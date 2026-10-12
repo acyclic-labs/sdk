@@ -11,7 +11,6 @@ use crate::storage::{
     ObjectId, ObjectRead, ObjectReadRetention, ObjectReceipt, ObjectResult, ObjectStore,
     ObjectStoreError, ObjectWrite, ReplayLimit, object_digest,
 };
-use bytes::Bytes;
 use acyclic_stream::OwnedBytes;
 use std::collections::HashMap;
 use std::mem::size_of;
@@ -28,8 +27,6 @@ struct AuthorityState {
     publication_gate_tail: u64,
     publication_reservation: Option<crate::PublicationReservation>,
     publication_proofs: HashMap<u64, MemoryPublicationProof>,
-    // Physical history is destroyed before its guard. HashMap bucket layout is
-    // excluded; each compiled typed entry retains only its logical envelope.
     #[cfg(not(target_arch = "wasm32"))]
     commits_custody: Option<crate::materializer::NativeAllocation>,
     _entry_envelope: MemoryEntryEnvelope,
@@ -111,7 +108,6 @@ enum MemoryCreatePlan {
     Publish(MemoryEntryEnvelope),
 }
 
-
 fn append_write_work(payload_bytes: u64) -> WorkCounters {
     WorkCounters {
         authority_records_appended: 1, authority_bytes_written: payload_bytes,
@@ -128,14 +124,12 @@ fn metadata_copy_work<T>(
     Ok(WorkCounters { bytes_copied: bytes, ..WorkCounters::default() })
 }
 
-
 fn install_authority_commits(state: &mut AuthorityState, mut buffer: AuthorityBuffer<DurableCommit>) {
     buffer.values.append(&mut state.commits);
     drop(std::mem::replace(&mut state.commits, buffer.values));
     #[cfg(not(target_arch = "wasm32"))]
     { state.commits_custody = buffer.custody; }
 }
-
 
 /// Deterministic single-process authority store.
 pub struct MemoryAuthorityStore {
@@ -145,10 +139,6 @@ pub struct MemoryAuthorityStore {
 
 impl MemoryAuthorityStore {
     /// Creates a deterministic authority store with a hard per-record payload bound.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a zero bound before allocating authority state.
     pub fn new(maximum_payload_bytes: u64) -> Result<Self, AuthorityStoreError> {
         if maximum_payload_bytes == 0 {
             return Err(AuthorityStoreError::PayloadTooLarge {
@@ -261,8 +251,6 @@ impl MemoryAuthorityStore {
             return state.head().map(|head| Some(CreateAuthorityOutcome::Existing(head)))
                 .map_err(|error| accounting.failure(error));
         }
-        // Another producer may consume the reserved capacity while the owner
-        // callback runs. Replan and reseal instead of allocating after the seal.
         if authorities.len() == authorities.capacity() { return Ok(None); }
         accounting.charge(authority_write_work())?;
         authorities.insert(authority, AuthorityState {
@@ -359,8 +347,6 @@ impl MemoryAuthorityStore {
         if actual != expected { return Ok(Some(false)); }
         let write = append_write_work(commit.payload.len() as u64);
         accounting.admit(write)?;
-        // A competing insertion may consume the capacity prepared before the
-        // owner seal. Return to preparation rather than allocate after it.
         if !authorities.contains_key(&authority) && authorities.len() >= authorities.capacity() {
             return Ok(None);
         }
@@ -839,8 +825,6 @@ impl crate::async_storage::ImmediateAuthorityStore for MemoryAuthorityStore {
         loop {
             let plan = self.plan_first_record(authority, &commit, &mut accounting)
                 .map_err(|failure| crate::FsError::from(failure.error))?;
-            // The state can change while the callback yields, including to a
-            // matching retained first record. Seal every publication attempt.
             accounting.check().map_err(|failure| crate::FsError::from(failure.error))?;
             guard(original).await?;
             accounting.check().map_err(|failure| crate::FsError::from(failure.error))?;
@@ -941,8 +925,6 @@ impl crate::async_storage::ImmediateAuthorityStore for MemoryAuthorityStore {
     {
         let mut accounting = AuthorityAccounting::native(original, cancellation).map_err(E::from)?;
         let plan = self.plan_append(&request, &mut accounting).map_err(|failure| E::from(failure.error))?;
-        // The complete original root is aliased, never replaced or reduced.
-        // Every store and ledger loan above ended before calling the owner.
         guard(original).await?;
         let value = self.publish_append(&request, plan, &mut accounting)
             .map_err(|failure| E::from(failure.error))?;
@@ -996,8 +978,7 @@ impl crate::async_storage::ImmediateAuthorityStore for MemoryAuthorityStore {
     }
 }
 
-/// Kept inline until an ordinary receipt is requested. Original native failures
-/// must not allocate the ordinary receipt's counters box.
+/// Kept inline until an ordinary receipt is requested.
 struct AuthorityMemoryFailure {
     error: AuthorityStoreError,
     work: WorkCounters,
@@ -1017,8 +998,7 @@ impl From<AuthorityMemoryFailure> for AuthorityFailure {
     }
 }
 
-/// Both projections run the same producer. Root loans are brief accounting
-/// leaves; no root mutex is retained while acquiring the authority mutex.
+/// Both projections run the same producer.
 struct AuthorityAccounting<'a> {
     work: WorkCounters,
     budget: WorkBudget,
@@ -1161,8 +1141,6 @@ impl<'a> AuthorityAccounting<'a> {
         &mut self, map: &mut HashMap<K, V>,
     ) -> Result<(), AuthorityMemoryFailure> {
         if map.len() < map.capacity() { return Ok(()); }
-        // This is the actual fallible growth API, not an invented per-insert
-        // operation or a fabricated bucket-capacity byte claim.
         self.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })?;
         map.try_reserve(1)
             .map_err(|error| self.failure(AuthorityStoreError::MemoryReplayAllocationFailed(error)))
@@ -1252,7 +1230,6 @@ fn authority_write_work() -> WorkCounters {
     }
 }
 
-
 fn bounded_page_bounds(
     commits: &[DurableCommit], after: Sequence, limit: ReplayLimit,
     accounting: &mut AuthorityAccounting<'_>,
@@ -1287,10 +1264,6 @@ fn bounded_page_bounds(
 }
 
 /// Deterministic immutable-object store.
-///
-/// Payloads retain their intrinsic byte custody. Shared reads clone the same
-/// carrier without allocating controls or adopting ordinary storage into native
-/// quotas; table capacity is accounted separately to the original writer.
 pub struct MemoryObjectStore {
     maximum_object_bytes: u64,
     objects: RwLock<MemoryObjectState>,
@@ -1385,10 +1358,6 @@ struct MemoryObjectReads {
 
 impl MemoryObjectStore {
     /// Creates a bounded memory object store.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`ObjectStoreError::TooLarge`] when the configured maximum is zero.
     pub fn new(maximum_object_bytes: u64) -> Result<Self, ObjectStoreError> {
         if maximum_object_bytes == 0 {
             return Err(ObjectStoreError::TooLarge {
@@ -1781,8 +1750,7 @@ impl crate::async_storage::ImmediateObjectStore for MemoryObjectStore {
         Ok(crate::PublicationHold::none())
     }
 
-    /// Like the ordinary PR237 preparation default, this in-memory provider
-    /// supplies no hosted or historical custody and creates no archive receipt.
+    /// Like the ordinary PR237 preparation default, this in-memory provider supplies no hosted or historical custody and creates no archive receipt.
     #[cfg(not(target_arch = "wasm32"))]
     fn prepare_generation_publication_with_native_work(
         &self, _request: &crate::kernel::PublishGenerationRequest,

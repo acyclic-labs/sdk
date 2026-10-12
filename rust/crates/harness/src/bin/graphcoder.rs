@@ -236,9 +236,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     writeln!(output, "terminal-mode stdin-is-terminal={stdin_is_terminal} interactive={interactive} headless={headless} process-id={}",
         std::process::id())?;
     writeln!(output, "{}", if fixture_mode {
-        "GraphCoder â€” fixture wire; UI playback only, no durable effects"
+        "GraphCoder — fixture wire; UI playback only, no durable effects"
     } else {
-        "GraphCoder â€” actual local Harness runtime; deterministic request-digest provider; live-model/native-process adapters unavailable"
+        "GraphCoder — actual local Harness runtime; deterministic request-digest provider; live-model/native-process adapters unavailable"
     })?;
     loop {
         if interactive { write!(output, "{}> ", if fixture_mode { "fixture" } else { "graphcoder" })?; }

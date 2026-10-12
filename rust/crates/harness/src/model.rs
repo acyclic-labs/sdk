@@ -745,7 +745,7 @@ impl ModelContent {
 
     /// Returns ordered media refs followed by their immutable option refs.
     #[must_use]
-    pub fn file_refs(&self) -> Vec<&FileRef> {
+    pub fn file_refs(&self) -> impl Iterator<Item = &FileRef> {
         self.file_parts().flat_map(|(file, policy)| {
             let configuration = match policy {
                 FileProjectionPolicy::Native(policy) => policy.configuration.as_ref()
@@ -753,7 +753,7 @@ impl ModelContent {
                 _ => None,
             };
             std::iter::once(file).chain(configuration)
-        }).collect()
+        })
     }
 
     /// Detects native media in ordinary data and paired result data.
@@ -764,11 +764,11 @@ impl ModelContent {
 
     /// Claims that the original authenticated host must verify before dispatch.
     #[must_use]
-    pub fn native_configurations(&self) -> Vec<&NativeConfigurationBinding> {
+    pub fn native_configurations(&self) -> impl Iterator<Item = &NativeConfigurationBinding> {
         self.file_parts().filter_map(|(_, policy)| match policy {
             FileProjectionPolicy::Native(policy) => policy.configuration.as_ref(),
             _ => None,
-        }).collect()
+        })
     }
 }
 
@@ -1373,7 +1373,7 @@ impl ModelRequest {
                         let tool = tools
                             .get(name)
                             .ok_or_else(|| Error::Invalid("model tool call is unbound".into()))?;
-                        crate::contract::validate_json_schema_value_with_io(
+                        crate::contract::validate_json_schema_value(
                             &tool.input_schema, arguments, "model tool arguments", io,
                         )?;
                         pending.insert(call_id, name);
@@ -1401,7 +1401,7 @@ impl ModelRequest {
                             let bytes = io.encode_json(content, io.remaining()?.bytes_encoded, false)?;
                             _bytes = io.guard_bytes(&bytes)?;
                             let envelope = io.decode_preparation::<Value>(&bytes)?;
-                            crate::contract::validate_json_schema_value_with_io(
+                            crate::contract::validate_json_schema_value(
                                 &tool.projection_schema, &envelope, "model tool result", Some(io),
                             )?;
                             }
@@ -1409,8 +1409,7 @@ impl ModelRequest {
                             let envelope = serde_json::to_value(content)
                                 .map_err(|error| Error::Invalid(error.to_string()))?;
                             crate::contract::validate_json_schema_value(
-                                &tool.projection_schema, &envelope, "model tool result",
-                            )?;
+                                &tool.projection_schema, &envelope, "model tool result", None)?;
                         }
                         }
                     }
@@ -1732,7 +1731,10 @@ impl PreparedModelRequest {
             {
                 _bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
             }
-            model_verify_descriptor(&reference, &bytes, io)?;
+            #[cfg(feature = "filesystem")]
+            reference.descriptor().verify_with_io(&bytes, io)?;
+            #[cfg(not(feature = "filesystem"))]
+            reference.descriptor().verify(&bytes)?;
             let segment: ModelPrefix = match io {
                 #[cfg(feature = "filesystem")]
                 Some(io) => io.decode_preparation::<ModelPrefix>(&bytes)?.into_retained(),
@@ -1830,35 +1832,12 @@ fn model_hasher_update(
     Ok(())
 }
 
-fn model_verify_descriptor(
-    file: &FileRef, bytes: &[u8], io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(crate::filesystem::PreparationIo::original_native_work) {
-        return file.descriptor().verify_with_native_work(bytes, work);
-    }
-    #[cfg(not(feature = "filesystem"))]
-    let _ = io;
-    #[cfg(feature = "filesystem")]
-    let work = acyclic_fs::WorkCounters {
-        bytes_hashed: if bytes.len() as u64 == file.descriptor().byte_length() { bytes.len() as u64 } else { 0 },
-        ..Default::default()
-    };
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io { io.preflight(work)?; }
-    let result = file.descriptor().verify(bytes);
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io { io.charge(work)?; }
-    result
-}
 
 async fn model_verify_content_files(
     content: &ModelContent, verifier: &dyn crate::conversation::ContentResidencyVerifier,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
-    let mut files = Vec::new();
-    content.visit_file_bindings(|file, _| model_vec_push(&mut files, file, io))?;
-    for file in files {
+    for file in content.file_refs() {
         model_step(io, 1)?;
         match io {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -1943,20 +1922,6 @@ impl ModelAttempt {
             request_digest: self.request_digest,
         }
     }
-}
-
-/// Borrowed durable attempt: native reconciliation never clones its prefix.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-#[derive(Clone, Copy, Debug)]
-pub struct NativeModelAttempt<'a> {
-    /// Owning execution.
-    pub operation_id: OperationId,
-    /// Zero-based logical step.
-    pub step: u32,
-    /// Exact dispatched request digest.
-    pub request_digest: [u8; 32],
-    /// Already retained durable events.
-    pub observed: &'a [ModelEvent],
 }
 
 /// An actual concrete stream box admitted before invoking its builder.
@@ -2077,7 +2042,7 @@ pub trait ModelProvider: acyclic_stream::ProviderPlatform {
     /// Reconciles a borrowed durable prefix without cloning or ordinary fallback.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn reconcile_with_native_work<'a>(
-        &'a self, _attempt: NativeModelAttempt<'a>, _work: &'a NativeMaterializationWork,
+        &'a self, _dispatch: ModelDispatch, _observed: &'a [ModelEvent], _work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Option<Vec<ModelEvent>>, NativeAllocation)>> {
         _work.remaining()?;
         Err(native_model_unsupported())
@@ -2194,8 +2159,8 @@ mod tests {
                     .is_err()
             );
             assert!(content.contains_native_media());
-            assert_eq!(content.file_refs(), vec![&media, &options]);
-            assert_eq!(content.native_configurations(), vec![&binding]);
+            assert_eq!(content.file_refs().collect::<Vec<_>>(), vec![&media, &options]);
+            assert_eq!(content.native_configurations().collect::<Vec<_>>(), vec![&binding]);
             let wire = serde_json::to_value(&content)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
             let decoded: ModelContent =
@@ -2216,7 +2181,7 @@ mod tests {
             }),
         ] {
             assert!(!content.contains_native_media());
-            assert!(content.native_configurations().is_empty());
+            assert!(content.native_configurations().next().is_none());
         }
         assert!(
             serde_json::from_value::<ModelDataPart>(
@@ -2327,7 +2292,7 @@ mod tests {
             model: Model::new("mock", "exact", "pinned", json!({}))?,
             messages: vec![ModelMessage {
                 role: ModelRole::User,
-                content: ModelContent::Text("ÃƒÂ©\0Ã°Å¸Â¦â‚¬\r\n".into()),
+                content: ModelContent::Text("é\0🦀\r\n".into()),
             }],
             tools: vec![crate::tool::ToolDefinition {
                 name: "echo".into(),
@@ -2348,7 +2313,7 @@ mod tests {
                 content: ModelContent::Part(ModelContentPart::ToolCall {
                     call_id: "call-1".into(),
                     name: "echo".into(),
-                    arguments: json!("ÃƒÂ©"),
+                    arguments: json!("é"),
                 }),
             },
             ModelMessage {
@@ -2356,7 +2321,7 @@ mod tests {
                 content: ModelContent::Part(ModelContentPart::ToolResult {
                     call_id: "call-1".into(),
                     name: "echo".into(),
-                    content: ToolResultContent::Json { value: json!("ÃƒÂ©") },
+                    content: ToolResultContent::Json { value: json!("é") },
                 }),
             },
         ]);
@@ -2433,14 +2398,14 @@ mod tests {
         let mut reader = PrefixReader::default();
         let attachment = store_prefix_bytes(
             &mut reader,
-            "attachment ÃƒÂ©".as_bytes().to_vec(),
+            "attachment é".as_bytes().to_vec(),
             "text/plain",
             77,
         )?;
         let mut root = request()?;
         root.messages[0].content = ModelContent::Parts(vec![
             ModelContentPart::Text {
-                text: "ÃƒÂ©\0Ã°Å¸Â¦â‚¬\r\n".into(),
+                text: "é\0🦀\r\n".into(),
             },
             ModelContentPart::File {
                 file: attachment.clone(),
@@ -2455,7 +2420,7 @@ mod tests {
             next.messages.push(ModelMessage {
                 role: ModelRole::User,
                 content: ModelContent::Text(format!(
-                    "child {depth}: ÃƒÂ©\0Ã°Å¸Â¦â‚¬; parent scratch retained"
+                    "child {depth}: é\0🦀; parent scratch retained"
                 )),
             });
             let next = PreparedModelRequest::prepare(next, limits, None)?;
@@ -2574,11 +2539,11 @@ mod tests {
     fn complete_tool_projection_envelopes_enforce_the_exact_render_bound() -> Result<()> {
         for content in [
             ToolResultContent::Json {
-                value: json!("ÃƒÂ©\0Ã°Å¸Â¦â‚¬"),
+                value: json!("é\0🦀"),
             },
             ToolResultContent::Parts {
                 parts: vec![ModelDataPart::Text {
-                    text: "ÃƒÂ©\0Ã°Å¸Â¦â‚¬".into(),
+                    text: "é\0🦀".into(),
                 }],
             },
         ] {

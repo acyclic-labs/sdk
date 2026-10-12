@@ -1,6 +1,4 @@
 //! Original Pi admission, before any selected native root is opened.
-//! New immutable owners receive only the SDK's explicit Pi built-in call grant;
-//! reopening never upgrades an existing credential's persisted policy.
 
 use super::*;
 use acyclic_harness::{
@@ -38,10 +36,6 @@ fn identity(
 }
 
 /// The catalog holds its existing opening reservation for this entire operation.
-/// Interrupted registration reloads the original owner and exact deterministic
-/// request; it never creates another task, key, budget or selected allocation.
-/// Native producers borrow the admitted service query's original ledger; root
-/// artifacts preserve their original filenames, upload keys and media types.
 pub(crate) async fn register(
     resources: &ServiceResources,
     session: &str,
@@ -225,4 +219,3 @@ pub(crate) async fn register(
     let controller = SessionController::open(directory, resources, work).await?;
     controller.retain_original_input(startup_custody)
 }
-

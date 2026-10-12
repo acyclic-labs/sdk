@@ -351,7 +351,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     assert_eq!(aggregate.reducer().conversation().and_then(|state| state.agent), Some(agent));
     assert!(first_custody.bytes() > 0);
     assert!(first_custody.work().shares_ledger(&native));
-    owner.authenticate_fork_parent(&audience)?;
+    owner.authenticate_fork_parent(&audience, &mut None)?;
     let canonical = aggregate.operation_event(command.operation_id).await?
         .ok_or_else(|| Error::NotFound("original canonical ROOT event".into()))?;
     assert!(matches!(&first, ApplyResult::Applied { event } if event == &canonical));
@@ -434,7 +434,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     drop(independent_retry);
     drop(independent_custody);
     assert_eq!(aggregate.reducer().revision(), 1);
-    owner.authenticate_fork_parent(&audience)?;
+    owner.authenticate_fork_parent(&audience, &mut None)?;
     let bootstrap = owner.root_bootstrap_binding_witness_with_native_work(&native).await?;
     let (original_root, root_custody) = owner.original_root_admission_with_native_work(&native).await?;
     owner.verify_root_bootstrap_context_with_native_work(

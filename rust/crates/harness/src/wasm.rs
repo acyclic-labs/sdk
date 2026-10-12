@@ -1788,7 +1788,7 @@ pub fn validate_task_children_page(
 pub fn validate_tool_value(schema: JsValue, value: JsValue) -> Result<JsValue, JsValue> {
     let schema: serde_json::Value = from_js(schema)?;
     let value: serde_json::Value = from_js(value)?;
-    crate::contract::validate_json_schema_value(&schema, &value, "tool value").map_err(js_error)?;
+    crate::contract::validate_json_schema_value(&schema, &value, "tool value", None).map_err(js_error)?;
     to_js(&value)
 }
 
@@ -2593,7 +2593,7 @@ pub fn validate_tool_invocation(definition: JsValue, invocation: JsValue) -> Res
         &definition.input_schema,
         &invocation.arguments,
         "tool input",
-    )
+     None,)
     .map_err(js_error)
 }
 
@@ -2603,7 +2603,7 @@ pub fn validate_tool_result(definition: JsValue, result: JsValue) -> Result<(), 
     let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
     definition.validate().map_err(js_error)?;
     let result: WasmToolResultInput = from_js(result)?;
-    validate_value(&definition.output_schema, &result.value, "tool output").map_err(js_error)
+    validate_value(&definition.output_schema, &result.value, "tool output", None).map_err(js_error)
 }
 
 /// Validates the explicit result envelope without granting file or option authority.
@@ -2629,7 +2629,7 @@ pub fn json_tool_projection_schema(
     #[wasm_bindgen(unchecked_param_type = "WasmToolJsonSchema")] value_schema: JsValue,
 ) -> Result<JsValue, JsValue> {
     let schema = crate::tool::json_projection_schema(from_js(value_schema)?);
-    crate::contract::compile_json_schema(&schema, "tool projection").map_err(js_error)?;
+    crate::contract::compile_json_schema(&schema, "tool projection", None).map_err(js_error)?;
     schema
         .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
         .map_err(|error| JsValue::from_str(&error.to_string()))
@@ -2656,8 +2656,8 @@ pub fn model_content_inventory(
         .validate_limits(from_js(limits)?)
         .map_err(js_error)?;
     to_js_admitted(&WasmModelContentInventoryWire {
-        files: content.file_refs(),
-        native_configurations: content.native_configurations(),
+        files: content.file_refs().collect(),
+        native_configurations: content.native_configurations().collect(),
     })
 }
 

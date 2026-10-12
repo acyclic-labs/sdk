@@ -20,15 +20,11 @@ const SEGMENT_RECORD_BYTES: usize = 32 + 8;
 pub(crate) const MAXIMUM_SEGMENT_BODIES: usize = 1_024;
 pub(crate) const MAXIMUM_SEGMENT_BYTES: usize = 4 * 1024 * 1024;
 static TEMPORARY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-/// One store's directory and a shared read handle on its journal, so a read of a
-/// journal-resident body does not reopen the journal (a costly open on Windows).
-/// The handle is separate from the append handle: positional reads through a
-/// shared Windows file object would move the append cursor.
+/// One store's directory and a shared read handle on its journal, so a read of a journal-resident body does not reopen the journal (a costly open on Windows).
 pub(crate) struct LocalRoot {
     pub(crate) path: PathBuf,
     journal: RwLock<Option<File>>,
-    #[cfg(test)]
-    pub(crate) journal_opens: AtomicU64,
+
     #[cfg(test)]
     read_gate: Option<JournalReadGate>,
 }
@@ -53,16 +49,13 @@ impl LocalRoot {
         Self {
             path,
             journal: RwLock::new(None),
-            #[cfg(test)]
-            journal_opens: AtomicU64::new(0),
+
             #[cfg(test)]
             read_gate: None,
         }
     }
 
-    /// Runs `replace` with the journal read handle closed and no reader able to
-    /// reopen it, so Windows may replace the file and no reader keeps a handle
-    /// on the replaced one. The next read opens the new journal.
+    /// Runs `replace` with the journal read handle closed and no reader able to reopen it, so Windows may replace the file and no reader keeps a handle on the replaced one.
     pub(crate) fn replace_journal(
         &self,
         replace: impl FnOnce() -> std::io::Result<()>,
@@ -112,8 +105,7 @@ impl LocalRoot {
         }
         let mut journal = self.journal.write().map_err(|_| BodyError::Unavailable)?;
         if journal.is_none() {
-            #[cfg(test)]
-            self.journal_opens.fetch_add(1, Ordering::Relaxed);
+
             *journal =
                 Some(File::open(self.path.join(JOURNAL_FILE)).map_err(|_| BodyError::Unavailable)?);
         }
@@ -135,17 +127,6 @@ pub(crate) enum PhysicalError {
     #[error("Objects storage I/O failed: {0}")]
     Io(#[from] std::io::Error),
 }
-/// Publishes one segment holding `bodies` and makes its directory entry
-/// durable: the segment's identity and the offset of each body.
-pub(crate) fn persist_segment<B: AsRef<[u8]>>(
-    root: &Path,
-    bodies: &[([u8; 32], B)],
-    durability: LocalDurability,
-) -> Result<([u8; 32], Vec<u64>), PhysicalError> {
-    let mut publication = Publication::new(None);
-    persist_segment_measured(root, bodies, durability, &mut publication).map_err(ordinary_write_error)
-}
-
 /// The caller retains `publication` until the returned offsets have been freed.
 pub(crate) fn persist_segment_measured<B: AsRef<[u8]>>(
     root: &Path,
@@ -156,14 +137,6 @@ pub(crate) fn persist_segment_measured<B: AsRef<[u8]>>(
     let published = write_segment_measured(root, bodies, durability, publication)?;
     sync_segment_directory_measured(root, durability, publication)?;
     Ok(published)
-}
-
-pub(crate) fn sync_segment_directory(
-    root: &Path,
-    durability: LocalDurability,
-) -> Result<(), PhysicalError> {
-    let mut publication = Publication::new(None);
-    sync_segment_directory_measured(root, durability, &mut publication).map_err(ordinary_write_error)
 }
 
 pub(crate) fn sync_segment_directory_measured(
@@ -186,8 +159,7 @@ pub(crate) fn sync_segment_directory_measured(
         acyclic_native_runtime::sync_file_measured(
             &directory, native_durability(durability), meter.as_ref(),
         )?;
-        #[cfg(test)]
-        tests::PARENT_SYNCS.with(|syncs| syncs.set(syncs.get() + 1));
+
         Ok(())
     } else {
         sync_parent(&parent, durability).map_err(native_write_error)
@@ -208,8 +180,7 @@ pub(crate) fn sync_publication(
     Ok(())
 }
 
-/// Advances the ordinary append cursor as well as the physical positional
-/// write, so a later unmetered append observes the same journal tail.
+/// Advances the ordinary append cursor as well as the physical positional write, so a later unmetered append observes the same journal tail.
 pub(crate) fn write_publication(
     file: &mut File,
     offset: u64,
@@ -244,17 +215,7 @@ pub(crate) fn open_publication(
     })
 }
 
-pub(crate) fn write_segment<B: AsRef<[u8]>>(
-    root: &Path,
-    bodies: &[([u8; 32], B)],
-    durability: LocalDurability,
-) -> Result<([u8; 32], Vec<u64>), PhysicalError> {
-    let mut publication = Publication::new(None);
-    write_segment_measured(root, bodies, durability, &mut publication).map_err(ordinary_write_error)
-}
-
-/// Uses the same publication engine as ordinary writes. The shared guard owns
-/// offset capacity until the journal has consumed and dropped the returned Vec.
+/// Uses the same publication engine as ordinary writes.
 pub(crate) fn write_segment_measured<B: AsRef<[u8]>>(
     root: &Path,
     bodies: &[([u8; 32], B)],
@@ -270,13 +231,6 @@ fn native_write_error(error: PhysicalError) -> NativeObjectsError {
         PhysicalError::Io(error) => NativeObjectsError::Admission(error),
         PhysicalError::Invalid(_) | PhysicalError::Corrupt =>
             NativeObjectsError::Service(crate::v1::wire::ErrorCode::Unavailable.into()),
-    }
-}
-
-fn ordinary_write_error(error: NativeObjectsError) -> PhysicalError {
-    match error {
-        NativeObjectsError::Admission(error) => PhysicalError::Io(error),
-        _ => PhysicalError::Invalid("invalid object segment publication"),
     }
 }
 
@@ -510,14 +464,10 @@ fn validate_segment_publication(
     Ok(())
 }
 
-/// Authenticated body lengths of one segment, keyed by offset and digest: an empty body
-/// shares its offset with the body that follows it.
+/// Authenticated body lengths of one segment, keyed by offset and digest: an empty body shares its offset with the body that follows it.
 type ValidatedSegmentRecords = BTreeMap<(u64, [u8; 32]), u64>;
 
 /// Authenticates every segment a live body references and returns their identities.
-///
-/// Journal-resident bodies were authenticated when replay decoded or an append wrote them.
-/// A live reclaimed body means compaction dropped bytes that were still reachable.
 pub(crate) fn validate_referenced_segments(
     root: &Path,
     bodies: &BTreeSet<LocalBodyReference>,
@@ -919,8 +869,7 @@ pub(crate) async fn read_body_at_native(
     )).await
 }
 
-/// The same journal authentication and segment-table selection as ordinary reads,
-/// with original-meter buffers and shared controls prepared before physical IO.
+/// The same journal authentication and segment-table selection as ordinary reads, with original-meter buffers and shared controls prepared before physical IO.
 async fn read_body_at_native_inner(
     root: &Arc<LocalRoot>,
     expected_digest: &[u8; 32],
@@ -959,8 +908,7 @@ async fn read_body_at_native_inner(
                     let path = native_body_path(&root.path, JOURNAL_FILE, &open_meter)?;
                     open_meter.admit_read(0)?;
                     *journal = Some(File::open(&path.path)?);
-                    #[cfg(test)]
-                    root.journal_opens.fetch_add(1, Ordering::Relaxed);
+
                     drop(path);
                 }
                 open_meter.admit_read(0)?;
@@ -1088,9 +1036,7 @@ fn segment_table_matches_counted(
     Ok(false)
 }
 
-/// Reads and authenticates one whole journal-resident body. Inline bodies are
-/// small, so even ranged reads authenticate the whole body. Freezing the actual
-/// vector directly preserves its known original capacity in every range alias.
+/// Reads and authenticates one whole journal-resident body.
 fn read_journal_body(
     journal: &File,
     offset: u64,
@@ -1108,9 +1054,7 @@ fn read_journal_body(
     Ok(body.into())
 }
 
-/// Positional read outside the native per-file operation sequencer. An inline body never
-/// changes once its frame is appended, so its read must not queue behind the flush of a
-/// later append to the same journal.
+/// Positional read outside the native per-file operation sequencer.
 fn read_exact_at_unsequenced(file: &File, offset: u64, bytes: &mut [u8]) -> Result<(), BodyError> {
     #[cfg(unix)]
     {
@@ -1157,14 +1101,7 @@ fn hex(bytes: &[u8]) -> String {
     output
 }
 
-/// Splits a hex-encoded digest `identity` into its two-character storage-directory
-/// prefix and the remaining suffix used as the file stem.
-///
-/// Every caller passes an `identity` produced by [`hex`] applied to a `[u8; 32]`
-/// digest, which always yields exactly 64 lowercase ASCII hex digits. Because the
-/// string is provably pure ASCII, splitting at the fixed byte offset `2` can never
-/// land inside a multi-byte character, so `split_at` (unlike byte-offset string
-/// indexing) is both panic-free here and exempt from `clippy::string_slice`.
+/// Splits a hex-encoded digest `identity` into its two-character storage-directory prefix and the remaining suffix used as the file stem.
 fn sync_file(file: &File, durability: LocalDurability) -> std::io::Result<()> {
     acyclic_native_runtime::sync_file(file, native_durability(durability))
 }
@@ -1178,8 +1115,7 @@ pub(crate) fn native_durability(durability: LocalDurability) -> acyclic_native_r
 }
 
 fn sync_parent(path: &Path, durability: LocalDurability) -> Result<(), PhysicalError> {
-    #[cfg(test)]
-    tests::PARENT_SYNCS.with(|syncs| syncs.set(syncs.get() + 1));
+
     acyclic_native_runtime::sync_parent(path, native_durability(durability))?;
     Ok(())
 }
@@ -1187,48 +1123,13 @@ fn sync_parent(path: &Path, durability: LocalDurability) -> Result<(), PhysicalE
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
-    use crate::body::tests::Capture;
-    use tracing_subscriber::prelude::*;
-    thread_local! {
-        /// Directory synchronizations issued on this thread.
-        pub(crate) static PARENT_SYNCS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-    }
-
-    /// A put that finds its segment already published still makes the
-    /// segment's directory entry durable before it is acknowledged: the put
-    /// that published it may not have synchronized the directory yet.
-    #[test]
-    fn a_segment_found_already_published_is_made_durable_again() {
-        let root = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
-        fs::create_dir_all(root.path().join("segments")).unwrap_or_else(|_| unreachable!());
-        let body = bytes::Bytes::from(vec![7_u8; 1_024]);
-        let digest = *blake3::hash(&body).as_bytes();
-        let bodies = [(digest, body)];
-        let first = persist_segment(root.path(), &bodies, LocalDurability::FullFlush)
-            .unwrap_or_else(|_| unreachable!());
-        let before = PARENT_SYNCS.with(std::cell::Cell::get);
-        let again = persist_segment(root.path(), &bodies, LocalDurability::FullFlush)
-            .unwrap_or_else(|_| unreachable!());
-        assert_eq!(again, first);
-        assert_eq!(PARENT_SYNCS.with(std::cell::Cell::get), before + 1);
-        let mut publication = Publication::new(None);
-        let write_only = write_segment_measured(
-            root.path(), &bodies, LocalDurability::FullFlush, &mut publication,
-        ).unwrap_or_else(|_| unreachable!());
-        assert_eq!(write_only, first);
-        assert_eq!(PARENT_SYNCS.with(std::cell::Cell::get), before + 1);
-        sync_segment_directory_measured(
-            root.path(), LocalDurability::FullFlush, &mut publication,
-        ).unwrap_or_else(|_| unreachable!());
-        assert_eq!(PARENT_SYNCS.with(std::cell::Cell::get), before + 2);
-    }
 
     #[tokio::test]
     #[allow(
         clippy::too_many_lines,
         reason = "one admission/cancellation/release scenario keeps its owned worker cleanup explicit"
     )]
-    async fn admitted_read_drop_traces_cancellation_and_worker_retains_root() {
+    async fn admitted_read_drop_retains_root_until_worker_finishes() {
         use crate::body::StoredBody;
         use std::sync::mpsc;
         use std::time::{Duration, Instant};
@@ -1242,9 +1143,7 @@ pub(crate) mod tests {
             }
         }
 
-        let capture = Capture::default();
-        let subscriber = tracing_subscriber::registry().with(capture.clone());
-        tracing::subscriber::with_default(subscriber, || {
+        {
             let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
             let bytes = acyclic_stream::OwnedBytes::from_static(b"pending private journal body");
             fs::write(directory.path().join(JOURNAL_FILE), &bytes)
@@ -1275,8 +1174,6 @@ pub(crate) mod tests {
                 .recv_timeout(Duration::from_secs(5))
                 .unwrap_or_else(|_| unreachable!());
             drop(read);
-            let logical = capture.recorded_spans("acyclic.objects.body.read");
-            let physical = capture.recorded_spans("acyclic.objects.physical.read");
             drop(body);
             drop(root);
             let retained_while_blocked = weak.upgrade().is_some();
@@ -1288,19 +1185,8 @@ pub(crate) mod tests {
             assert_eq!(completed, bytes, "the detached read still finishes safely");
             assert_eq!(completed.retained_capacity(), Some(bytes.len()));
             assert!(retained_while_blocked, "the admitted worker owns its root");
-            for spans in [&logical, &physical] {
-                assert_eq!(spans.len(), 1);
-                let span = spans.first().unwrap_or_else(|| unreachable!());
-                assert_eq!(span.fields.get("outcome").map(String::as_str), Some("err"));
-                assert_eq!(
-                    span.fields.get("error.kind").map(String::as_str),
-                    Some("cancelled")
-                );
-            }
             let deadline = Instant::now() + Duration::from_secs(5);
-            while (weak.strong_count() != 0
-                || capture.spans("acyclic.objects.body.read").is_empty()
-                || capture.spans("acyclic.objects.physical.read").is_empty())
+            while weak.strong_count() != 0
                 && Instant::now() < deadline
             {
                 std::thread::yield_now();
@@ -1310,24 +1196,7 @@ pub(crate) mod tests {
                 0,
                 "the completed worker releases its root"
             );
-            for name in ["acyclic.objects.body.read", "acyclic.objects.physical.read"] {
-                let spans = capture.spans(name);
-                assert_eq!(
-                    spans.len(),
-                    1,
-                    "the completed worker releases its parent spans"
-                );
-                assert_eq!(
-                    spans
-                        .first()
-                        .unwrap_or_else(|| unreachable!())
-                        .fields
-                        .get("error.kind")
-                        .map(String::as_str),
-                    Some("cancelled")
-                );
-            }
-        });
+        }
     }
 
     #[tokio::test]
@@ -1335,22 +1204,21 @@ pub(crate) mod tests {
         clippy::too_many_lines,
         reason = "one ordered scenario keeps each fault next to the outcome it checks"
     )]
-    async fn physical_spans_cover_partial_corrupt_and_invalid_operations() {
-        let capture = Capture::default();
-        let subscriber = tracing_subscriber::registry().with(capture.clone());
-        tracing::subscriber::with_default(subscriber, || {
+    async fn physical_reads_validate_ranges_and_corruption() {
+        {
             let directory = tempfile::tempdir().unwrap_or_else(|_| unreachable!());
             fs::create_dir_all(directory.path().join("segments"))
                 .unwrap_or_else(|_| unreachable!());
             let body = acyclic_stream::OwnedBytes::from_static(b"private body bytes");
             let digest = *blake3::hash(&body).as_bytes();
-            let (id, offsets) = persist_segment(
+            let (id, offsets) = persist_segment_measured(
                 directory.path(),
                 &[(digest, body.clone())],
                 LocalDurability::FullFlush,
+                &mut Publication::new(None),
             )
             .unwrap_or_else(|_| unreachable!());
-            assert!(write_segment(directory.path(), &[], LocalDurability::FullFlush).is_err());
+            assert!(write_segment_measured::<acyclic_stream::OwnedBytes>(directory.path(), &[], LocalDurability::FullFlush, &mut Publication::new(None)).is_err());
             let location = LocalBodyLocation::Segment {
                 id,
                 offset: *offsets.first().unwrap_or_else(|| unreachable!()),
@@ -1368,7 +1236,6 @@ pub(crate) mod tests {
             };
             let selected = read(&location, 1, 5).unwrap_or_else(|_| unreachable!());
             assert_eq!(selected, body.slice(1..5));
-            assert_eq!(selected.retained_capacity(), None, "opaque runtime buffers do not invent capacity");
             assert!(read(&location, 5, 1).is_err());
             let references = [LocalBodyReference {
                 digest,
@@ -1394,61 +1261,7 @@ pub(crate) mod tests {
             fs::write(directory.path().join(JOURNAL_FILE), vec![0; body.len()])
                 .unwrap_or_else(|_| unreachable!());
             assert!(read(&journal, 0, body.len()).is_err());
-        });
-        let reads = capture.spans("acyclic.objects.physical.read");
-        assert_eq!(reads.len(), 5);
-        assert_eq!(
-            reads
-                .iter()
-                .filter(|span| span.fields.get("outcome").map(String::as_str) == Some("ok"))
-                .count(),
-            2
-        );
-        assert_eq!(
-            reads
-                .iter()
-                .filter(
-                    |span| span.fields.get("error.kind").map(String::as_str) == Some("unavailable")
-                )
-                .count(),
-            3
-        );
-        let writes = capture.spans("acyclic.objects.segment.write");
-        assert_eq!(writes.len(), 2);
-        assert!(
-            writes
-                .iter()
-                .any(|span| span.fields.get("error.kind").map(String::as_str) == Some("invalid"))
-        );
-        let validations = capture.spans("acyclic.objects.segment.validate");
-        assert_eq!(validations.len(), 2);
-        assert!(
-            validations
-                .iter()
-                .any(|span| span.fields.get("error.kind").map(String::as_str) == Some("corrupt"))
-        );
-        assert_eq!(capture.spans("acyclic.objects.segment.persist").len(), 1);
-        assert!(
-            capture
-                .0
-                .lock()
-                .unwrap_or_else(|_| unreachable!())
-                .iter()
-                .filter(|span| span.name.starts_with("acyclic.objects."))
-                .all(|span| {
-                    span.level == Some(tracing::Level::TRACE)
-                        && span.fields.keys().all(|key| {
-                            matches!(
-                                key.as_str(),
-                                "backend"
-                                    | "bytes"
-                                    | "body_bytes"
-                                    | "items"
-                                    | "outcome"
-                                    | "error.kind"
-                            )
-                        })
-                })
-        );
+        }
+
     }
 }

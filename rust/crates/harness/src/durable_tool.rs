@@ -218,13 +218,13 @@ impl ResumableTool {
         if !scope.grants().contains(&required) {
             return Err(Error::Unauthorized(format!("scope lacks {required}")));
         }
-        validate_value(&self.definition.input_schema, &invocation.arguments, "tool input")?;
+        validate_value(&self.definition.input_schema, &invocation.arguments, "tool input", None)?;
         let initial = MachineCheckpoint {
             machine: self.machine.identity().clone(),
             revision: 0,
             state: self.machine.initialize(&invocation.arguments)?,
         };
-        validate_value(self.machine.state_schema(), &initial.state, "tool state")?;
+        validate_value(self.machine.state_schema(), &initial.state, "tool state", None)?;
         let admission = WorkflowAdmission {
             operation_id: invocation.operation_id,
             request_digest: crate::contract::canonical_json_digest(&(
@@ -349,7 +349,7 @@ impl ResumableTool {
         let admission = ToolPayload::native(WorkflowAdmission {
             operation_id: invocation.operation_id, request_digest, initial,
         }, admission_custody);
-        admission.value.validate_with_io(Some(io))?;
+        admission.value.validate(Some(io))?;
         Ok(NativeWorkflowAdmission { admission, registry, registry_custody })
     }
 
@@ -436,7 +436,7 @@ impl ResumableToolSession {
         self.host
             .step_checked(operation_id, idempotency_key, input, |transition| {
                 if let MachineStatus::Completed { value } = &transition.status {
-                    validate_value(output_schema, value, "tool output")?;
+                    validate_value(output_schema, value, "tool output", None)?;
                 }
                 Ok(())
             })
@@ -948,7 +948,7 @@ impl DurableToolRunner {
         if !scope.grants().contains(&required) {
             return Err(Error::Unauthorized(format!("scope lacks {required}")));
         }
-        validate_value(&definition.input_schema, &invocation.arguments, "tool input")?;
+        validate_value(&definition.input_schema, &invocation.arguments, "tool input", None)?;
         tool.executor.authorize_with_context(context, invocation)?;
         context.task().authorize_tool(definition, invocation).await
     }
@@ -1107,7 +1107,7 @@ fn validate_tool_identity(invocation: &ToolInvocation, io: Option<&crate::execut
 fn tool_validate_value(
     schema: &Value, value: &Value, label: &str, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
-    crate::contract::validate_json_schema_value_with_io(schema, value, label, io)
+    crate::contract::validate_json_schema_value(schema, value, label, io)
 }
 
 fn tool_json_bound<T: serde::Serialize>(

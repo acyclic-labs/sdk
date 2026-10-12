@@ -1209,8 +1209,8 @@ pub(super) fn context_contract_native<T: Serialize>(
     let encoded = (|| {
         crate::contract::validate_json_byte_bound_native_trusted(value, bounds,
             crate::wire::ErrorCode::Invalid, &mut |charge| io.codec_charge(charge))?;
-        crate::contract::json_value_bounded_native_trusted(value, bounds,
-            crate::wire::ErrorCode::Invalid, &mut |charge| io.codec_charge(charge))
+        crate::contract::json_value_bounded(value, bounds,
+            Some(crate::wire::ErrorCode::Invalid), &mut |charge| io.codec_charge(charge))
     })();
     match encoded {
         Ok(value) => Ok((value, io.into_custody())),
@@ -2563,7 +2563,7 @@ mod tests {
             current_input_index: Some(3), ..Context::default()
         };
         let prefix = compaction::clone_context_prefix(&source, 2, &mut None)?.0;
-        let output = message(ModelRole::Assistant, "summary")?.content.file_refs()[0].clone();
+        let output = message(ModelRole::Assistant, "summary")?.content.file_refs().next().unwrap().clone();
         let summary = ContextSummary { operation_id: crate::OperationId::new(), step: 0,
             source_messages: 2, source_digest: crate::contract::canonical_json_digest(&prefix)?, output };
         let (retained, reference) = DurableContextProvider::compact(
@@ -3595,7 +3595,7 @@ mod tests {
                 source_messages: u32::try_from(source.messages.len())
                     .map_err(|error| crate::Error::Invalid(error.to_string()))?,
                 source_digest: crate::contract::canonical_json_digest(source)?,
-                output: output.content.file_refs()[0].clone(),
+                output: output.content.file_refs().next().unwrap().clone(),
             })
         };
         let first_summary = make_summary(&source, "first-summary")?;
@@ -3627,7 +3627,7 @@ mod tests {
             compacted
                 .messages
                 .iter()
-                .all(|message| { !message.content.file_refs().contains(&&first_summary.output) })
+                .all(|message| { !message.content.file_refs().any(|file| file == &first_summary.output) })
         );
         Ok(())
     }
@@ -3667,7 +3667,7 @@ mod tests {
             source_digest: crate::contract::canonical_json_digest(&source)?,
             output: message(ModelRole::Assistant, "summary")?
                 .content
-                .file_refs()[0]
+                .file_refs().next().unwrap()
                 .clone(),
         };
         assert!(
@@ -3869,7 +3869,7 @@ mod tests {
             source_digest: crate::contract::canonical_json_digest(&projected)?,
             output: message(ModelRole::Assistant, "summary")?
                 .content
-                .file_refs()[0]
+                .file_refs().next().unwrap()
                 .clone(),
         };
         let (compacted, reference) = DurableContextProvider::compact(

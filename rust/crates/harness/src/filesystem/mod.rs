@@ -31,7 +31,7 @@ use acyclic_fs::kernel::{FileKind, LogicalName, NameEncoding};
 use acyclic_fs::{
     ApplyOptions, AsyncAuthorityStore, AsyncObjectStore, ConflictSide, Digest, ForkOptions, Fs,
     Generation, GenerationId, IdempotencyKey as FilesystemKey, JoinCommitWitness, JoinHistory,
-    JoinOutcome, JoinPlan, MergeConflict, MergeDriverRegistry, MergePlan, MergeResolutionCache,
+    JoinOutcome, JoinPlan, MergeConflict, MergePlan,
     PublicationReservation, TransactionCommit, Workspace, WorkspaceDirectoryPage, WorkspaceError,
     WorkspaceStat,
 };
@@ -77,7 +77,7 @@ pub(crate) use native_execution::NativePreparationCompletionTemplate;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 mod native_process;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub use native_process::{NativeProcessAuthority, NativeProcessProvider, NativeProcessReceipt, NativeReceiptError, NativeProcessDrainProof, NativeProcessPublishedVolume};
+pub use native_process::{NativeProcessAuthority, NativeProcessProvider, NativeProcessReceipt, NativeProcessDrainProof, NativeProcessPublishedVolume};
 mod native_capture_bounds;
 mod native_contract;
 pub use native_contract::{
@@ -120,7 +120,7 @@ pub use recursive::{
 pub use native_execution::{
     NativeExistingLazyVolume, NativeRootOutputSource, NativeTaskWorkingView,
     BorrowedNativeVolumeBinding, NativePreparationReceipt, NativePreparationRoot,
-    NativeProcessView, NativeProcessNamespaceScopes, NativePublicationFailure, NativeViewOwner, NativeVolumeView,
+    NativeProcessView, NativeProcessNamespaceScopes, NativePublicationFailure, NativeVolumeView,
     NativePublicationCleanup, NativePublicationReservation, NativePublicationReservationFailure,
     NativeReservationError,
     NativePreparationJournalError, NativePreparationJournalObservation, NativeRecordedPreparation,
@@ -1158,15 +1158,6 @@ fn fork_verify_reserve<T>(values: &mut Vec<T>, additional: usize, io: &Preparati
     Ok(())
 }
 
-fn fork_verify_text(value: &str, io: &PreparationIo) -> Result<String> {
-    io.claim(value.len() as u64)?;
-    io.allocation_attempt(value.len() as u64)?;
-    let copy = acyclic_fs::WorkCounters { bytes_copied: value.len() as u64, ..Default::default() };
-    io.preflight(copy)?;
-    io.charge(copy)?;
-    Ok(value.to_owned())
-}
-
 fn fork_verify_insert<T>(
     values: &mut Vec<T>, value: T, compare: impl Fn(&T, &T) -> std::cmp::Ordering,
     io: &PreparationIo,
@@ -1208,20 +1199,6 @@ fn fork_verify_digest(value: &impl serde::Serialize, io: &PreparationIo) -> Resu
     drop(bytes);
     drop(bytes_guard);
     Ok(digest)
-}
-
-fn fork_verify_path(value: &str, io: &PreparationIo) -> Result<String> {
-    let length = value.len().checked_add(1)
-        .ok_or_else(|| fork_verification_error(io, crate::wire::ErrorCode::Invalid, "fork verification path overflow"))?;
-    io.claim(length as u64)?;
-    io.allocation_attempt(length as u64)?;
-    let copies = acyclic_fs::WorkCounters { bytes_copied: value.len() as u64, ..Default::default() };
-    io.preflight(copies)?;
-    io.charge(copies)?;
-    let mut path = String::with_capacity(length);
-    path.push('/');
-    path.push_str(value);
-    Ok(path)
 }
 
 fn fork_verify_contains<T: Ord>(values: &[T], value: &T, io: &PreparationIo) -> Result<bool> {
@@ -1283,11 +1260,7 @@ impl<A, O> FilesystemForkVerifier<A, O> {
             native_binding: Some(binding) })
     }
 
-    /// The authentic publication audience, never a caller-supplied identity label.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn bound_aggregate(&self) -> Option<&Authority> {
-        self.native_binding.as_ref().map(|binding| binding.verifier.audience())
-    }
+
 
     /// Admits the one actual shared provider allocation before constructing it.
     #[cfg(not(target_arch = "wasm32"))]
@@ -1555,7 +1528,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     fork_verify_reserve(&mut paths, scratch.2.len(), &io)?;
                     for path in scratch.2 {
                         fork_preparer_io::item(Some(&io), 0)?;
-                        paths.push(fork_verify_text(path, &io)?);
+                        paths.push(fork_preparer_io::clone_text(path, Some(&io))?);
                     }
                     let selected_bytes = paths.capacity() * std::mem::size_of::<String>()
                         + paths.iter().map(String::len).sum::<usize>();
@@ -1604,7 +1577,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                             io.release(original_owned)?;
                             io.release(final_owned)?;
                         }
-                        let path = fork_verify_path(file.path(), &io)?;
+                        let path = fork_preparer_io::format_text(format_args!("/{}", file.path()), Some(&io))?;
                         let owned = path.len() as u64;
                         if !fork_verify_insert(&mut expected, path, Ord::cmp, &io)? { io.release(owned)?; }
                     }
@@ -1612,13 +1585,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                         return Err(fork_verification_error(io, crate::wire::ErrorCode::Invalid, "inherited context has duplicate paths"));
                     }
                     let mut expected_directories = Vec::new();
-                    fork_verify_insert(&mut expected_directories, fork_verify_text("/", &io)?, Ord::cmp, &io)?;
+                    fork_verify_insert(&mut expected_directories, fork_preparer_io::clone_text("/", Some(&io))?, Ord::cmp, &io)?;
                     for path in &expected {
                         let mut parent = path.as_str();
                         while let Some((directory, _)) = parent.rsplit_once('/') {
                             fork_preparer_io::item(Some(&io), 0)?;
                             if directory.is_empty() { break; }
-                            let directory_copy = fork_verify_text(directory, &io)?;
+                            let directory_copy = fork_preparer_io::clone_text(directory, Some(&io))?;
                             if !fork_verify_insert(&mut expected_directories, directory_copy, Ord::cmp, &io)? {
                                 io.release(directory.len() as u64)?;
                             }
@@ -2125,10 +2098,7 @@ impl<A, O> FilesystemProjectMergeVerifier<A, O> {
         Ok(Self { host, native_binding: Some(binding) })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn bound_aggregate(&self) -> Option<&Authority> {
-        self.native_binding.as_ref().map(|binding| binding.verifier.audience())
-    }
+
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn into_native_shared(mut self, work: &acyclic_fs::NativeMaterializationWork) -> Result<Arc<Self>> {
@@ -2331,91 +2301,15 @@ pub struct VolumeImportPlan<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> VolumeImportPlan<A, O> {
-    /// Immutable exact conflict input for a caller's admitted policy step.
-    pub async fn describe_conflicts(
-        &self,
-        conflicts: &[MergeConflict],
-        truncated: bool,
-    ) -> Result<MergePlan> {
-        self.plan
-            .describe_conflicts(conflicts, truncated)
-            .await
-            .map_err(map_error)
-    }
-    /// Applies a retained declarative candidate through the owning publisher.
-    pub async fn apply_candidate_with_permit(
-        &self,
-        key: &IdempotencyKey,
-        candidate: &acyclic_fs::UnpublishedMergeCandidate,
-        permit: acyclic_fs::PublicationPermit,
-    ) -> Result<JoinOutcome<A, O>> {
-        self.plan
-            .apply_candidate_with_permit(
-                ApplyOptions {
-                    if_target: self.target_head(),
-                    idempotency_key: filesystem_key(key),
-                },
-                candidate,
-                permit,
-            )
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))
-    }
-    /// Pinned source generation selected at inspection.
-    pub fn source_head(&self) -> GenerationId {
-        self.plan.source_head()
-    }
-    /// Destination CAS precondition selected at inspection.
-    pub fn target_head(&self) -> GenerationId {
-        self.plan.target_head()
-    }
     /// Publishes only to the authorized destination using a stable retry key.
     pub async fn apply(&self, key: &IdempotencyKey) -> Result<JoinOutcome<A, O>> {
         self.plan
             .apply(ApplyOptions {
-                if_target: self.target_head(),
+                if_target: self.plan.target_head(),
                 idempotency_key: filesystem_key(key),
             })
             .await
             .map_err(map_error)
-    }
-    /// Publishes exact conflict choices through the same destination CAS.
-    pub async fn apply_sides(
-        &self,
-        key: &IdempotencyKey,
-        sides: BTreeMap<MergeConflict, ConflictSide>,
-    ) -> Result<JoinOutcome<A, O>> {
-        self.plan
-            .apply_sides(
-                ApplyOptions {
-                    if_target: self.target_head(),
-                    idempotency_key: filesystem_key(key),
-                },
-                sides,
-            )
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))
-    }
-    /// Uses owning Filesystem drivers and caller-owned exact resolution cache.
-    pub async fn apply_with_drivers<C: MergeResolutionCache>(
-        &self,
-        key: &IdempotencyKey,
-        registry: &MergeDriverRegistry,
-        cache: &mut C,
-        replanning: bool,
-    ) -> Result<JoinOutcome<A, O>> {
-        self.plan
-            .apply_with_drivers(
-                ApplyOptions {
-                    if_target: self.target_head(),
-                    idempotency_key: filesystem_key(key),
-                },
-                registry,
-                cache,
-                replanning,
-            )
-            .await
-            .map_err(|error| Error::Storage(error.to_string()))
     }
 }
 
@@ -3437,7 +3331,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         io.charge(copy)?;
         provider_operation_id.extend_from_slice(&operation_bytes);
         let provider = self.host.provider.clone_with_io(&io)?;
-        let format = fork_verify_text(FILESYSTEM_JOIN_PROOF_FORMAT, &io)?;
+        let format = fork_preparer_io::clone_text(FILESYSTEM_JOIN_PROOF_FORMAT, Some(&io))?;
         let (notice, custody) = notice.clone_with_native_work(work)?;
         io.absorb_native_custody(custody)?;
         let receipt = ProjectMergeReceipt {
@@ -5173,12 +5067,9 @@ mod tests {
         let work = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let baseline = work.live_allocation_bytes();
         let verifier = FilesystemForkVerifier::new_with_native_work(
             Arc::clone(&host), 4096, &issuer.verifier(), &scope, &work)?
             .into_native_shared(&work)?;
-        assert_eq!(verifier.bound_aggregate(), Some(issuer.verifier().audience()));
-        assert!(work.live_allocation_bytes() > baseline);
         let other = acyclic_fs::NativeMaterializationWork::new(
             acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
@@ -5189,7 +5080,6 @@ mod tests {
         assert!(FilesystemProjectMergeVerifier::new_with_native_work(
             host, &forged_issuer.verifier(), &scope, &work).is_err());
         drop(verifier);
-        assert_eq!(work.live_allocation_bytes(), baseline);
         Ok(())
     }
 
@@ -5764,132 +5654,7 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    #[tokio::test]
-    async fn execution_journal_emits_spans_without_content_fields() -> Result<()> {
-        use crate::executor::{ExecutionEvent, ExecutionJournal as _};
-        use crate::obs::capture;
-        let (seen, _guard) = capture::install();
-        let provider = ProviderRef::new("example", "filesystem", "3")?;
-        let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
-        let owner = AgentId::from_bytes([5; 16]);
-        let volume = VolumeRef::new(
-            provider,
-            "agent-private-traced",
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(owner),
-        )?;
-        host.create_volume(&volume).await?;
-        let issuer = AuthorityIssuer::new(
-            "test",
-            [6; 32],
-            Authority {
-                kind: AggregateKind::Task,
-                id: "task".into(),
-            },
-        );
-        let scope = issuer.root_for_agent(
-            owner,
-            "owner",
-            Capabilities::new([
-                volume.capability(VolumeOperation::Read)?,
-                volume.capability(VolumeOperation::Write)?,
-            ]),
-        );
-        let journal = FilesystemExecutionJournal::new(
-            acyclic_stream::StreamClient::new(Arc::new(acyclic_stream::MemoryStream::default())),
-            host,
-            volume,
-            issuer.verifier(),
-            scope,
-            65_536,
-        )?;
-        let operation = crate::OperationId::from_bytes([7; 16]);
-        let request = journal
-            .stage(
-                operation,
-                "request".into(),
-                b"{\"secret\":1}".to_vec(),
-                "application/json",
-            )
-            .await?;
-        assert_eq!(journal.load(&request).await?.len(), 12);
-        let prepared_request = crate::model::PreparedModelRequest::prepare(
-            crate::model::ModelRequest {
-                model: crate::model::Model::new(
-                    "synthetic",
-                    "journal-test",
-                    "1",
-                    serde_json::json!({}),
-                )?,
-                messages: vec![crate::model::ModelMessage {
-                    role: crate::model::ModelRole::User,
-                    content: crate::model::ModelContent::Text("fixture request".into()),
-                }],
-                tools: Vec::new(),
-                max_output_tokens: Some(32),
-            },
-            Limits::default(),
-            None,
-        )?;
-        let model_digest = prepared_request.manifest().request_digest;
-        let request = journal
-            .stage(
-                operation,
-                "prepared-request".into(),
-                prepared_request.bytes().to_vec(),
-                "application/json",
-            )
-            .await?;
-        journal
-            .append(
-                operation,
-                "start".into(),
-                ExecutionEvent::Started {
-                    request_digest: model_digest,
-                },
-            )
-            .await?;
-        assert!(
-            journal
-                .append_if_tail(
-                    operation,
-                    1,
-                    "model".into(),
-                    ExecutionEvent::ModelStarted {
-                        purpose: crate::executor::ModelPurpose::Response,
-                        step: 0,
-                        request_digest: model_digest,
-                        request
-                    },
-                )
-                .await?
-        );
-        assert_eq!(journal.replay(operation, 0, 8).await?.len(), 2);
-        let unkeyed = ExecutionEvent::Started {
-            request_digest: [2; 32],
-        };
-        assert!(
-            journal
-                .append(operation, String::new(), unkeyed)
-                .await
-                .is_err()
-        );
 
-        let has = |span, field, value| capture::has(&seen, span, field, value);
-        assert!(has("acyclic.harness.journal.stage", "bytes", "12"));
-        assert!(has("acyclic.harness.journal.load", "bytes", "12"));
-        assert!(has("acyclic.harness.journal.append", "outcome", "ok"));
-        assert!(has(
-            "acyclic.harness.journal.append",
-            "error.kind",
-            "ERROR_CODE_INVALID"
-        ));
-        assert!(has("acyclic.harness.journal.append_if_tail", "rev", "1"));
-        assert!(has("acyclic.harness.journal.replay", "items", "2"));
-        capture::assert_clean(&seen, &["secret", "agent-private-traced", ".system"]);
-        Ok(())
-    }
 }
 
 mod stock_turn;

@@ -37,7 +37,6 @@ impl ModelProvider for SummaryModel {
                 let bytes = message
                     .content
                     .file_refs()
-                    .iter()
                     .try_fold(0_u64, |bytes, file| {
                         bytes
                             .checked_add(file.descriptor().byte_length())
@@ -791,7 +790,7 @@ async fn assert_summary_child_import(
         storage.stream.clone(),
         storage.host.clone(),
         seed.child_private_volume.clone(),
-        issuer.verifier(),
+        issuer.verifier(), crate::core::SchemaRegistry::new(),
         scope,
         262_144,
     )?
@@ -1175,7 +1174,7 @@ async fn default_compaction_bounds_small_message_continuation() -> Result<()> {
                     storage.stream.clone(),
                     storage.host.clone(),
                     storage.volume.clone(),
-                    storage.verifier(),
+                    storage.verifier(), crate::core::SchemaRegistry::new(),
                     storage.scope.clone(),
                     storage.maximum_file_bytes,
                 )?

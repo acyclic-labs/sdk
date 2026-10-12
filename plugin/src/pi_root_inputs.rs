@@ -1,10 +1,4 @@
 //! Immutable root-preparation inputs in the existing owner volume.
-//! Native reads use the original admitted task's content source. Every decoded
-//! artifact retains original-ledger custody through its final metadata consumer.
-//! Dispatch keeps the supplied SDK native context; cold reads obtain its genuine
-//! original metadata custody once and transfer it into the SDK shared context.
-//! Service-state preparation borrows its selection and moves the authenticated
-//! admission's original binding/root into retained input without reconstructing them.
 
 use super::{PiScratchAllocation, PiTaskBinding, pi_owner::PiOwnerConfig,
     pi_root::PiRootIntent, pi_root_allocation::PiRootAllocation};
@@ -122,7 +116,6 @@ fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
 }
 
 /// Read-only preparation authenticated against the original task admission.
-/// Data fields precede custody so destruction releases data before its guard.
 pub(crate) struct PiRootPreparation {
     command: WorkflowCommand,
     plan: TaskEffectPlan,
@@ -156,7 +149,7 @@ impl PiRootPreparation {
         let owner = PiOwnerConfig::load_readonly_with_native_work(private_root, session, work)?;
         runtime.verify_owner_with_native_work(&owner, work)?;
         owner.validate_root_with_native_work(&retained.binding, work)?;
-        let admitted = super::pi_recovery::authenticate_pi_task_with_native_work(
+        let admitted = super::pi_recovery::authenticate_pi_task(
             &runtime.runtime, &retained.binding,
             super::pi_recovery::PiTaskOrigin::Root(&retained.root), work,
         ).await?;
@@ -188,7 +181,7 @@ impl PiRootPreparation {
         let owner = PiOwnerConfig::load_readonly_with_native_work(private_root, session, work)?;
         runtime.verify_owner_with_native_work(&owner, work)?;
         owner.validate_root_with_native_work(&retained.binding, work)?;
-        let admitted = super::pi_recovery::authenticate_pi_task_with_native_work(
+        let admitted = super::pi_recovery::authenticate_pi_task(
             &runtime.runtime, &retained.binding,
             super::pi_recovery::PiTaskOrigin::Root(&retained.root), work,
         ).await?;
@@ -221,7 +214,7 @@ impl PiRootPreparation {
         let owner = PiOwnerConfig::load_readonly_with_native_work(private_root, session, work)?;
         runtime.verify_owner_with_native_work(&owner, work)?;
         owner.validate_root_with_native_work(binding, work)?;
-        let admitted = super::pi_recovery::authenticate_pi_task_with_native_work(
+        let admitted = super::pi_recovery::authenticate_pi_task(
             &runtime.runtime, binding, super::pi_recovery::PiTaskOrigin::RootState(state), work,
         ).await?;
         let context = match context {

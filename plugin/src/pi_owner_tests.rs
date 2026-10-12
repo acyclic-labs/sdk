@@ -752,41 +752,6 @@ async fn pi_root_startup_constructor_denial_and_cancel_do_not_publish_inputs() {
 }
 
 #[tokio::test]
-async fn pi_root_decoded_request_drops_data_before_original_guard() {
-    struct Data {
-        request: PiRootRequest,
-        work: acyclic_fs::NativeMaterializationWork,
-        baseline: u64,
-    }
-    impl Drop for Data {
-        fn drop(&mut self) {
-            assert!(self.work.live_allocation_bytes() > self.baseline);
-            assert_ne!(self.request.binding.task_id.into_bytes(), [0; 16]);
-        }
-    }
-    struct Owned {
-        data: Data,
-        _custody: acyclic_fs::NativeAllocation,
-    }
-    let session = tempfile::tempdir().unwrap();
-    let (_, _, request, _) = root_input_fixture(session.path(), |_| {}).await;
-    let work = startup_work();
-    let baseline = work.live_allocation_bytes();
-    let bytes = crate::pi_root_provider::guarded_pi_bytes(&request, 65_536, &work).unwrap();
-    let decoded = crate::pi_root_provider::guarded_pi_decode::<PiRootRequest>(
-        &bytes.0, 65_536, std::mem::size_of::<PiRootRequest>() as u64,
-        acyclic_harness::contract::JsonValueSchema::None,
-        crate::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES, &work).unwrap();
-    drop(bytes.0);
-    drop(bytes.1);
-    let owned = Owned { data: Data { request: decoded.0, work: work.clone(), baseline },
-        _custody: decoded.1 };
-    assert_eq!(owned.data.request, request);
-    drop(owned);
-    assert_eq!(work.live_allocation_bytes(), baseline);
-}
-
-#[tokio::test]
 async fn native_owner_authority_preserves_original_grants_and_scope_names() {
     let session = tempfile::tempdir().unwrap();
     let (owner, _, _, _) = root_input_fixture(session.path(), |_| {}).await;

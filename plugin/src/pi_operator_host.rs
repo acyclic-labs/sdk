@@ -143,7 +143,7 @@ pub(crate) async fn open_prepared_approval(runtime: &PiNativeRuntime, filesystem
         action_digest: pi_operator::parse_digest(descriptor.approval_digest)? };
     journal.open_interaction_with_native_work(interaction_id(binding.task_id, descriptor.operation, work)?, &interaction, work)?.await?;
     owner.verify_with_native_work(false, work).await?;
-    let _staged = crate::pi_root_provider::stage_pi_input_with_native_work(protected, filesystem, descriptor.operation,
+    let _staged = crate::pi_root_provider::stage_pi_input(protected, filesystem, descriptor.operation,
         "operator-approval", descriptor, work).await?;
     owner.verify_with_native_work(false, work).await
 }
@@ -270,7 +270,6 @@ pub(crate) async fn writeback_status(filesystem: &Arc<PiNativeFilesystem>, strea
 }
 
 /// Rejects invalid operator responses before staging an immutable Root control.
-/// The command host repeats this authentication under its fresh owned lease.
 pub(crate) async fn validate_approval_request(runtime: &PiNativeRuntime, filesystem: &Arc<PiNativeFilesystem>, protected: &PiOwnerConfig,
     session: &str, request: &PiOperatorRequest, work: &NativeMaterializationWork) -> Result<()> {
     pi_operator::verify_request(protected, session, request, work)?;
@@ -281,21 +280,20 @@ pub(crate) async fn validate_approval_request(runtime: &PiNativeRuntime, filesys
     let (original, _original_custody) = read_prepared_approval(runtime, filesystem, protected, &prepared.command.sdk_operation, work)
         .await?.ok_or_else(|| denied("operator operation has no original preparation"))?;
     let original_hash = pi_operator::approval_body_hash(&original, digest, *decision, work)?;
-    if original_hash != pi_operator::body_hash(&request.body, work)? {
+    if original_hash.0 != pi_operator::body_hash(&request.body, work)?.0 {
         return Err(denied("operator substituted the prepared selection, generations or digest"));
     }
     Ok(())
 }
 
-/// Signed responder authority stays in Root-only input storage. The existing
-/// workflow checkpoint carries only its ref, never a child-readable scope.
+/// Signed responder authority stays in Root-only input storage.
 pub(crate) async fn stage_operator_command(runtime: &PiNativeRuntime, protected: &PiOwnerConfig, filesystem: &Arc<PiNativeFilesystem>,
     request: &PiOperatorRequest, work: &NativeMaterializationWork) -> Result<(WorkflowCommand, acyclic_fs::NativeAllocation)> {
     validate_approval_request(runtime, filesystem, protected, &request.session_id, request, work).await?;
     let root = protected.policy().root_task;
     let operation_id = derived_with_native_work(original_operation_with_native_work(root, root, request.body.operation(), work)?,
         "selected-writeback-publish", work)?;
-    let mut staged = crate::pi_root_provider::stage_pi_operator_input_with_native_work(protected, filesystem,
+    let mut staged = crate::pi_root_provider::stage_pi_operator_input(protected, filesystem,
         operation_id, "command", request, work).await?;
     let mut kind = work.display(&format_args!("{PI_OPERATOR_COMMAND_KIND}")).map_err(native_error)?;
     staged.1.absorb(&mut kind.1).map_err(native_error)?;

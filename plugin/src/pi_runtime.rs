@@ -1,7 +1,4 @@
 //! Pi's registered root task over the existing durable runtime.
-//! Native startup borrows original journal/configuration sources, constructs
-//! guarded registered machines before model IO, and keeps retained policy and
-//! signed-scope metadata custody after the runtime's last consumer.
 
 use super::{
     PiScratchAllocation, PiTaskBinding,
@@ -21,9 +18,7 @@ use acyclic_harness::{
 use acyclic_stream::{StreamClient, StreamProvider};
 use std::sync::Arc;
 
-/// Trusted service configuration, supplied independently of route bytes. The
-/// signed storage scope may include the journal; task grants remain explicitly
-/// selected by `scope`. Neither credentials nor grants belong in route records.
+/// Trusted service configuration, supplied independently of route bytes.
 pub(crate) struct PiRuntimeAuthority {
     /// Original coordinator issuer, supplied only by protected root bootstrap.
     /// Recursive requests and retained routes never supply signing authority.
@@ -154,12 +149,11 @@ where
             stream, filesystem, &owner.policy().journal,
             owner.authority_with_native_work(work)?, work,
         ).await?;
-        let (observed, custody) = super::pi_recovery::observe_pi_session_with_native_work(
+        let (observed, custody) = super::pi_recovery::observe_pi_session(
             &runtime.runtime, state, work,
         ).await?;
         Ok((runtime, observed, custody))
     }
-
 
     /// Clean native startup over the same protected owner, registered machines
     /// and SDK runtime engine. No ordinary SDK constructor runs under a quota
@@ -279,7 +273,6 @@ where
         Ok(())
     }
 
-
     /// The same original admission operation and sealed task input, with SDK
     /// ownership retained on the caller's original native invocation.
     pub(crate) async fn admit_root_with_native_work(
@@ -299,7 +292,6 @@ where
         )?;
         self.runtime.task_host().admit_with_native_work(record, work)?.await
     }
-
 
     fn validate_root_intent(&self, binding: &PiTaskBinding, root: &PiRootIntent,
         work: &acyclic_fs::NativeMaterializationWork) -> acyclic_harness::Result<()> {

@@ -1,7 +1,4 @@
 //! Logical bucket/key Objects contract replacing public version history and snapshots.
-//!
-//! Reads and listings may lag mutations. Single-object publication and its conditions are
-//! atomic. Service-owned retained bytes are a private service contract, not public history.
 pub mod conformance;
 #[cfg(all(feature = "http", not(target_arch = "wasm32")))]
 pub mod http;
@@ -18,7 +15,6 @@ pub mod response;
 mod upload;
 
 /// Canonical HTTP route, input message, and output message inventory, relative to `/v1/objects/`.
-/// Streaming routes carry bounded NDJSON frames; see the Objects v1 HTTP contract document.
 pub const HTTP_ROUTES: &[(&str, &str, &str)] = &[
     ("buckets/create", "CreateBucketRequest", "Bucket"),
     ("buckets/head", "HeadBucketRequest", "Bucket"),
@@ -61,16 +57,10 @@ pub const HTTP_ROUTES: &[(&str, &str, &str)] = &[
 pub use memory::{MemoryObjects, MemoryOptions};
 
 /// Native composition capability for filesystem storage over logical Objects.
-///
-/// This is not a public service RPC. Implementations must execute a batch under
-/// one native authority admission, with one result per input in order. There is
-/// deliberately no default loop over public `put`/`get` calls: filesystem work
-/// accounting must not mistake multiple remote operations for one native batch.
 #[async_trait::async_trait]
 #[doc(hidden)]
 pub trait NativeBatchObjects: ObjectsProvider {
     /// Publishes ordered, individually atomic mutations in one native admission.
-    /// A failed item leaves its representation and retry receipt unchanged.
     async fn put_batch(
         &self,
         requests: Vec<(wire::PutObjectHeader, acyclic_stream::OwnedBytes)>,
@@ -83,7 +73,6 @@ pub trait NativeBatchObjects: ObjectsProvider {
     ) -> Vec<Result<Object, Error>>;
 
     /// Reads a genuine batch using the caller's original allocation owner.
-    /// Custom providers without this producer explicitly report unsupported.
     #[cfg(not(target_arch = "wasm32"))]
     fn get_batch_native(
         &self,
@@ -129,8 +118,7 @@ pub mod wire {
 /// Largest caller-supplied PEM CA, client certificate, or private key.
 #[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
 const MAX_PEM_BYTES: usize = 64 * 1024;
-/// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
-/// Acyclic platform's maximum bearer (12 KiB), so every platform-issued credential fits.
+/// Largest bearer credential, in bytes, that an SDK client accepts.
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 
 /// Canonical Objects v1 descriptor, including streaming service definitions.
@@ -351,9 +339,6 @@ impl NativeTransportErrors {
     }
 
     /// Holds the original total known wire quota admitted before the whole RPC.
-    /// Actual ready frames split this claim into their intrinsic owners; the
-    /// context retains only unused quota, never substitutes for last-alias custody.
-    /// Private transport backing capacity, deallocation and RSS remain opaque.
     pub(crate) fn retain_wire(
         &self, allocation: acyclic_native_runtime::ReadAllocation,
     ) -> Result<(), NativeObjectsError> {
@@ -369,7 +354,6 @@ impl NativeTransportErrors {
     }
 
     /// Transfers the same preadmitted wire quota to an actual immutable frame.
-    /// This neither allocates, adopts a payload, nor grants new read authority.
     #[cfg(feature = "grpc")]
     pub(crate) fn take_wire(
         &self, bytes: usize,
@@ -417,7 +401,6 @@ pub(crate) fn native_preparation_error(error: acyclic_stream::PreparedOwnedBytes
 }
 
 /// One buffered selection for callers that explicitly bound allocation.
-/// Streaming transports also expose framed upload/download APIs.
 #[derive(Debug)]
 pub struct Object {
     header: wire::GetObjectHeader,
@@ -554,15 +537,6 @@ impl<T> Future for ObjectsNativeFuture<'_, T> {
 }
 
 /// Admits the actual concrete native future before its physical box allocation.
-///
-/// Construct `future` using only pure moves of already funded request data and
-/// existing ownership handles. No allocation, codec work or I/O may run while
-/// constructing it before this meter check. An `async move` body remains inert
-/// until poll; an `async_trait` call may already have allocated a hidden box.
-/// The explicit current meter supplies admission, never a payload's prior payer.
-///
-/// # Errors
-/// Preserves the original current-meter admission or cancellation failure.
 #[cfg(not(target_arch = "wasm32"))]
 pub fn native_future<'a, T: 'a, F>(
     meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>, future: F,
@@ -597,7 +571,6 @@ pub struct ObjectsNativeRequest<T> {
 #[cfg(not(target_arch = "wasm32"))]
 impl<T> ObjectsNativeRequest<T> {
     /// Boxes the same original guard only after admission of that actual box.
-    /// The caller validates original guard provenance before this constructor.
     pub fn new<G>(
         data: T, guard: G,
         meter: &std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
@@ -613,7 +586,6 @@ impl<T> ObjectsNativeRequest<T> {
     /// Borrows request data without detaching its original ownership.
     pub const fn data(&self) -> &T { &self.data }
 
-    pub(crate) fn data_mut(&mut self) -> &mut T { &mut self.data }
 
     pub(crate) fn matches_meter(
         &self, meter: &std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
@@ -656,16 +628,6 @@ impl UploadBody {
         futures::StreamExt::boxed(stream).into()
     }
 
-    /// Admits an actual native source box before allocation using the original meter.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn from_native_stream<S>(
-        stream: S, meter: &std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> Result<Self, NativeObjectsError>
-    where S: futures::Stream<Item = Result<OwnedBytes, Error>> + Send + 'static {
-        meter.check()?;
-        let allocation = acyclic_native_runtime::ReadAllocation::new(meter, std::mem::size_of::<S>())?;
-        Ok(Self { stream: futures::StreamExt::boxed(stream), _allocation: Some(allocation) })
-    }
 }
 impl futures::Stream for UploadBody {
     type Item = Result<OwnedBytes, Error>;
@@ -762,13 +724,7 @@ impl Download {
         let maximum_bytes = usize::try_from(maximum_bytes)
             .map_err(|_| Error::from(wire::ErrorCode::QuotaExceeded))?;
         let bytes = if maximum_bytes == 0 { None } else {
-            let mut allocation = acyclic_native_runtime::ReadAllocation::new(&meter, maximum_bytes)?;
-            let mut bytes = Vec::new();
-            bytes.try_reserve_exact(maximum_bytes).map_err(|error| meter.allocation_failed(error))?;
-            allocation.reconcile_capacity(bytes.capacity())?;
-            bytes.resize(bytes.capacity(), 0);
-            Some(acyclic_stream::PreparedOwnedBytes::new(bytes, allocation, std::sync::Arc::clone(&meter))
-                .map_err(|failure| native_preparation_error(failure.into_error()))?)
+            Some(crate::body::prepare_native_bytes(maximum_bytes, &meter)?)
         };
         let allocation = acyclic_native_runtime::ReadAllocation::new(&meter, std::mem::size_of::<NativeTransportErrors>())?;
         let errors = std::sync::Arc::new(NativeTransportErrors {
@@ -782,7 +738,6 @@ impl Download {
     }
 
     /// Collects into storage prepared before this download's physical request.
-    /// The final freeze and every immutable alias reuse those existing controls.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn collect_native(
         self, mut prepared: PreparedNativeDownload,
@@ -864,7 +819,6 @@ pub trait ObjectsProvider: Send + Sync {
     ) -> Result<Object, Error>;
 
     /// Reads through the same provider using its original-meter body producer.
-    /// Custom implementations must opt in rather than return detached native bytes.
     #[cfg(not(target_arch = "wasm32"))]
     fn get_native(
         &self,

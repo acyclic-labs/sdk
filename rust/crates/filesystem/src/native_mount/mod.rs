@@ -4250,7 +4250,7 @@ impl NativeMountSession {
     pub(crate) fn flush_callbacks(&self) -> Result<(), NativeMountError> {
         match self.driver.as_ref() {
             #[cfg(target_os = "windows")]
-            Some(DriverSession::ProjFs(session)) => session.flush_callbacks(),
+            Some(DriverSession::ProjFs(session)) => session.flush_callbacks(None),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             Some(_) => Ok(()),
             #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -4280,7 +4280,7 @@ impl NativeMountSession {
     ) -> Result<(), NativeMountError> {
         match self.driver.as_ref() {
             #[cfg(target_os = "windows")]
-            Some(DriverSession::ProjFs(session)) => session.flush_callbacks_with_meter(work),
+            Some(DriverSession::ProjFs(session)) => session.flush_callbacks(Some(work)),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             Some(_) => Ok(()),
             #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -4317,7 +4317,7 @@ impl NativeMountSession {
             #[cfg(target_os = "macos")]
             Some(DriverSession::DarwinMount(session)) => session.revalidate_with_meter(work),
             #[cfg(target_os = "windows")]
-            Some(DriverSession::ProjFs(session)) => session.revalidate_with_meter(work),
+            Some(DriverSession::ProjFs(session)) => session.revalidate(Some(work)),
             #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
             Some(DriverSession::Unsupported) => {
                 let _ = work;
@@ -4383,7 +4383,7 @@ impl NativeMountSession {
             #[cfg(target_os = "linux")]
             Some(DriverSession::Fuse(session)) => session.revalidate(),
             #[cfg(target_os = "windows")]
-            Some(DriverSession::ProjFs(session)) => session.revalidate(),
+            Some(DriverSession::ProjFs(session)) => session.revalidate(None),
             #[cfg(target_os = "macos")]
             Some(DriverSession::DarwinMount(session)) => session.revalidate(),
             #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -5688,7 +5688,7 @@ fn stop_driver_with_meter(
         #[cfg(target_os = "macos")]
         DriverSession::DarwinMount(session) => session.stop_with_meter(work),
         #[cfg(target_os = "windows")]
-        DriverSession::ProjFs(session) => session.stop_with_meter(work),
+        DriverSession::ProjFs(session) => session.stop(work.native_materialization_work().cancellation()),
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         DriverSession::Unsupported => {
             let _ = work;
@@ -5706,7 +5706,7 @@ fn stop_driver_with_cleanup_wait(
         #[cfg(target_os = "macos")]
         DriverSession::DarwinMount(session) => session.stop_with_cleanup_wait(wait),
         #[cfg(target_os = "windows")]
-        DriverSession::ProjFs(session) => session.stop_with_cleanup_wait(wait),
+        DriverSession::ProjFs(session) => session.stop(wait),
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         DriverSession::Unsupported => {
             let _ = wait;

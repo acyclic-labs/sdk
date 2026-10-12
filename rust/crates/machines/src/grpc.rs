@@ -81,15 +81,12 @@ fn owner_private_socket(
 }
 
 impl Machines {
-    /// Connects to the endpoint and credentials named by `ACYCLIC_MACHINES_ENDPOINT`,
-    /// `ACYCLIC_MACHINES_CA_FILE`, `ACYCLIC_MACHINES_CERT_FILE`, and
-    /// `ACYCLIC_MACHINES_KEY_FILE`.
+    /// Connects to the endpoint and credentials named by `ACYCLIC_MACHINES_ENDPOINT`, `ACYCLIC_MACHINES_CA_FILE`, `ACYCLIC_MACHINES_CERT_FILE`, and `ACYCLIC_MACHINES_KEY_FILE`.
     pub async fn from_env() -> Result<Self, ProviderError> {
         Self::from_env_auth(BearerAuth::default()).await
     }
 
-    /// Connects using the endpoint/TLS files from the environment and an explicitly
-    /// supplied opaque account bearer. The credential is forwarded, never verified here.
+    /// Connects using the endpoint/TLS files from the environment and an explicitly supplied opaque account bearer.
     pub async fn from_env_with_bearer(token: &str) -> Result<Self, ProviderError> {
         Self::from_env_auth(BearerAuth::new(token)?).await
     }
@@ -129,8 +126,7 @@ impl Machines {
         Self::connect_auth(uri, tls, BearerAuth::default()).await
     }
 
-    /// Connects with mandatory mutual TLS and an explicit opaque account bearer
-    /// applied to every unary, watch, inspection, and operation polling request.
+    /// Connects with mandatory mutual TLS and an explicit opaque account bearer applied to every unary, watch, inspection, and operation polling request.
     pub async fn connect_with_bearer(
         uri: &str,
         tls: Tls<'_>,
