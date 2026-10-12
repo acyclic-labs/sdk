@@ -30,7 +30,6 @@ pub(super) struct RebaseLineage<A, O> {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 
-
     pub(crate) async fn workspace_common_ancestor_with_accounting(
         &self,
         source: &crate::Generation<A, O>,
@@ -67,7 +66,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         target_ancestors.retire(accounting)?;
         result
     }
-
 
     /// Computes the immutable source-parent identity used by a true merge
     pub(crate) async fn workspace_normalized_join_parent(
@@ -111,7 +109,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         accounting.record_completed(hashing)?;
         Ok(GenerationId::new(digest))
     }
-
 
     /// Resolves where a fork stands against the parent it was forked from:
     pub(super) async fn rebase_lineage(
@@ -189,7 +186,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             source_object,
         })
     }
-
 
     /// The parent head that a fork would rebase onto, or `None` when the fork
     pub(crate) async fn parent_advance(

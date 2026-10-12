@@ -19,13 +19,11 @@ impl StagedContent {
         }
     }
 
-
     /// Authenticated immutable blob-root identity created by this SDK.
     #[must_use]
     pub const fn root(&self) -> ObjectId {
         self.root
     }
-
 
     /// Exact staged logical byte length authenticated by the blob build.
     #[must_use]
@@ -35,7 +33,6 @@ impl StagedContent {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
-
 
     pub(crate) async fn make_records_durable(
         &self,
@@ -54,7 +51,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Ok(FsReceipt { value: flushed.value, work: total })
     }
 
-
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn make_records_durable_with_native_work(
         &self, config: VolumeConfig, records: &[FileRecord], original: &NativeMaterializationWork,
@@ -71,7 +67,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             crate::PublicationScope::Closure { objects: &closure.0, proven_at }, original, cancellation,
         ).await.map_err(FsError::from)
     }
-
 
     /// Holds the actual generation closure across an external durable publication.
     pub(crate) async fn make_generation_durable(
@@ -101,7 +96,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Ok(FsReceipt { value: flushed.value, work })
     }
 
-
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) async fn make_generation_durable_with_native_work(
         &self, volume: &Volume<A, O>, generation: GenerationId, original: &NativeMaterializationWork, cancellation: &CancellationToken,
@@ -123,7 +117,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         }.await;
         result.map_err(|error| (error, None))
     }
-
 
     pub(crate) async fn restore_workspace_generation(
         &self,
@@ -213,7 +206,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         })
     }
 
-
     /// Executes one active local-residency prediction through this filesystem's
     pub async fn execute_residency(
         &self,
@@ -231,7 +223,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         )
         .await
     }
-
 
     pub(super) async fn put_encoded_with_accounting(
         &self, kind: ObjectKind, mut encoded: (Vec<u8>, KernelOwnedAllocation), accounting: &mut KernelAccounting<'_>,
@@ -275,7 +266,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Ok(object)
     }
 
-
     /// Includes retained caller buffers across both canonical encoding and storage.
     pub(super) async fn put_generation_root(
         &self, root: &GenerationRoot, mut work: WorkCounters, budget: WorkBudget, cancellation: &CancellationToken, live_owned_bytes: u64,
@@ -292,7 +282,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         ).await.map_err(|failure| merge_simultaneous_failure(work, *failure.work, live_owned_bytes, failure.error))?;
         Ok((object, merge_simultaneous_work(work, child_work, live_owned_bytes, budget)?))
     }
-
 
     pub(super) async fn put_encoded(
         &self,
@@ -355,7 +344,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         budget.finish(result, &accounting)
     }
 
-
     pub(super) async fn stage_authored_blob_with_accounting(
         &self,
         content: acyclic_stream::OwnedBytes,
@@ -374,7 +362,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         result
     }
 
-
     /// Streams caller content into immutable authenticated chunks without
     pub async fn stage_content<R: AsyncBlobSource>(
         &self,
@@ -391,7 +378,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             measured(result, &accounting)
         }).await
     }
-
 
     pub(crate) async fn stage_content_with_accounting<R: AsyncBlobSource>(
         &self,

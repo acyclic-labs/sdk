@@ -2622,7 +2622,7 @@ impl NativeGeneration {
 
         let after = after.map(native_workspace_name).transpose()?;
         Box::pin(
-            async { self.inner.list_directory(&path, after.as_ref(), maximum_entries, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) },
+            async { self.inner.list_directory(&path, after.as_ref(), maximum_entries, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.0).map_err(|failure| failure.error) },
         )
         .await
         .map(native_workspace_directory_page)

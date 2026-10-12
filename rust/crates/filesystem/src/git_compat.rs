@@ -4446,7 +4446,7 @@ pub async fn walk_git_tree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     while let Some(directory) = pending.pop() {
         let mut after = None;
         loop {
-            let page = generation.list_directory(&directory, after.as_ref(), 1_024, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            let page = generation.list_directory(&directory, after.as_ref(), 1_024, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)?;
             for entry in &page.entries {
                 let name = entry
                     .name
@@ -5063,7 +5063,7 @@ where
     while let Some(directory) = pending.pop() {
         let mut after = None;
         loop {
-            let page = live.list_directory(&directory, after.as_ref(), 1_024, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            let page = live.list_directory(&directory, after.as_ref(), 1_024, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)?;
             for entry in &page.entries {
                 let name = entry
                     .name

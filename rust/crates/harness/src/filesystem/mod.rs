@@ -1009,7 +1009,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         }
         let budget = io.remaining()?;
         let changes = match initial.diff_to(head, u32::MAX, budget, io.cancellation()).await.map(|receipt| receipt.value.0) {
-            Ok(receipt) => receipt.value.0,
+            Ok(changes) => changes,
             Err(failure) => { io.spent(*failure.work)?; return Err(map_error(failure.error)); }
         };
         io.receive(changes.changed_paths(u32::MAX, budget, io.cancellation()).await).map(|(paths, _)| paths)
@@ -3684,10 +3684,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         scratch.absorb_native_custody(requested_custody)?;
         let page_custody;
         let mut page;
-        (page, page_custody) = generation.list_after_with_native_work(
-            &requested, after, maximum_entries as usize + usize::from(path.is_empty()),
+        (page, page_custody) = generation.list_directory(
+            &requested, after, maximum_entries.checked_add(u32::from(path.is_empty())).ok_or_else(|| Error::NativeWorkspace { source: acyclic_fs::WorkspaceError::Work(acyclic_fs::WorkError::Overflow), custody: None })?,
             work, work.cancellation(),
-        ).await.map_err(|source| Error::NativeWorkspace { source, custody: None })?;
+        ).await.map(|(page, allocation)| (page, allocation.expect("native directory allocation"))).map_err(|source| Error::NativeWorkspace { source, custody: None })?;
         output.absorb_native_custody(page_custody)?;
         guard().await?;
         if path.is_empty() {
@@ -4010,9 +4010,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         match generation {
             Some(reference) => self
                 .generation(&workspace, reference)
-                .await?.list_directory(path, after, maximum_entries, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                .await?.list_directory(path, after, maximum_entries, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)
                 .map_err(map_error),
-            None => workspace.list_directory(path, after, maximum_entries, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+            None => workspace.list_directory(path, after, maximum_entries, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)
                 .map_err(map_error),
         }
     }

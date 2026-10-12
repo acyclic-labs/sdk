@@ -5492,7 +5492,7 @@ where
 }
 
 #[cfg(all(feature = "local", feature = "native-mount", not(target_arch = "wasm32")))]
-async fn publish_native_transition_inner<A: crate::AsyncAuthorityStore, O: crate::AsyncObjectStore, F, Fut>(
+pub async fn publish_native_transition_inner<A: crate::AsyncAuthorityStore, O: crate::AsyncObjectStore, F, Fut>(
     from_generation: &crate::Generation<A, O>,
     to_generation: &crate::Generation<A, O>,
     state: &crate::LocalCoreStateStore,
@@ -5951,8 +5951,8 @@ where
     let mut after_custody = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     loop {
         let (mut page, mut page_custody) = generation
-            .list_after_with_native_work(&directory, after.as_ref(), 1_024, work, cancellation)
-            .await.map_err(|error| (error, None))?;
+            .list_directory(&directory, after.as_ref(), 1_024, work, cancellation)
+            .await.map(|(page, allocation)| (page, allocation.expect("native directory allocation"))).map_err(|error| (error, None))?;
         for entry in &page.entries {
             let mut index = 0;
             let mut found = false;
