@@ -467,7 +467,7 @@ impl CreationFixture {
             VolumeRef::new(filesystem_provider.clone(), "parent-private", VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([90;16])))?.capability(VolumeOperation::Read)?,
         ].into_iter().chain(extra.iter().map(|grant| (*grant).to_owned())));
-        let signed = issuer.root_for_agent(AgentId::from_bytes([80; 16]), "owner", grants.clone());
+        let signed = issuer.issue("owner", &grants, Some(AgentId::from_bytes([80; 16])), None, &mut None).expect("scope proof");
         let root_scope = RuntimeScope::new(grants, Limits::default())?
             .with_run_limits(crate::runtime::TaskRunLimits {
                 concurrency: Some(16), max_steps: Some(4), deadline_epoch_ms: None,
@@ -503,13 +503,13 @@ impl CreationFixture {
         });
         #[cfg(not(target_arch = "wasm32"))]
         let fs_creator = if let Some(work) = bootstrap {
-            FilesystemResourceCreationProvider::new_with_native_work(filesystem.clone(), &issuer, work)?
+            FilesystemResourceCreationProvider::new(filesystem.clone(), &issuer, Some(work))?
                 .into_native_shared(work)?
         } else {
-            Arc::new(FilesystemResourceCreationProvider::new(filesystem.clone(), issuer.clone())?)
+            Arc::new(FilesystemResourceCreationProvider::new(filesystem.clone(), &issuer, #[cfg(not(target_arch = "wasm32"))] None)?)
         };
         #[cfg(target_arch = "wasm32")]
-        let fs_creator = Arc::new(FilesystemResourceCreationProvider::new(filesystem.clone(), issuer.clone())?);
+        let fs_creator = Arc::new(FilesystemResourceCreationProvider::new(filesystem.clone(), &issuer, #[cfg(not(target_arch = "wasm32"))] None)?);
         let host = Arc::new(CoordinatorTaskHost::new(
             DistributedCoordinator::open(&stream, payloads.clone()).await?, stream,
             payloads, reader, authority, signed, issuer.verifier(&mut None).expect("verifier copy"), root_scope.clone(),
@@ -800,11 +800,11 @@ impl CreationFixture {
             VolumeOwner::Agent(parent_agent),
         )?;
         let private_head = self.filesystem.create_volume(&parent_private).await?;
-        let fork_scope = fork_issuer.root_for_agent(parent_agent, "fork-parent", Capabilities::new([
+        let fork_scope = fork_issuer.issue("fork-parent", &Capabilities::new([
             "conversation:bind".into(), "fork:publish".into(),
             parent_project.capability(VolumeOperation::Read)?,
             parent_private.capability(VolumeOperation::Read)?,
-        ]));
+        ]), Some(parent_agent), None, &mut None).expect("scope proof");
         let resolver = Arc::new(FilesystemContentVerifier::new(
             self.filesystem.clone(), &fork_issuer.verifier(&mut None).expect("verifier copy"), &fork_scope, 65_536, None,
         )?);
@@ -817,7 +817,7 @@ impl CreationFixture {
             idempotency_key: IdempotencyKey::new("created-fork-bind")?,
             expected_revision: 0, scope: fork_scope.clone(), causal_parent: None,
             action: Action::BindConversation { agent: parent_agent },
-        }).await?;
+        }, #[cfg(feature = "filesystem")] None, &mut None).await?;
         let project = VolumeRef::new(
             self.filesystem_provider.clone(), "child-project", VolumeClass::Project,
             VolumeOwner::Project("created-project".into()),
@@ -862,7 +862,7 @@ impl CreationFixture {
         )?.fork_history(
             aggregate.reducer(), 0,
             crate::store::HistoryReadLimits { maximum_events:2, maximum_bytes:65_536 },
-        ).await?;
+         &mut None).await?;
         let preparer = FilesystemForkPreparer::new(
             self.filesystem.clone(), aggregate.reducer().clone(), fork_issuer.verifier(&mut None).expect("verifier copy"),
             fork_scope.clone(), fork.selections.iter().find_map(|selection| match &selection.revision {
@@ -882,11 +882,12 @@ impl CreationFixture {
                 result.capability(VolumeOperation::Read)?, result.capability(VolumeOperation::Write)?,
             ].iter().map(String::as_str)));
         }
-        child = child.with_resource_proofs(preparer.creation_proofs(&fork, TaskId::from_bytes([83; 16]), None)?)?;
+        let (resources, proofs) = preparer.creation_allocations(&fork, TaskId::from_bytes([83; 16]), None)?;
+        child = child.with_resource_proofs(proofs)?;
         let request = ResourcePreparationRequest {
             command: None, source_checkpoint: None,
             provider: self.filesystem_provider.clone(), child,
-            resources: preparer.creation_resources(&fork, None)?, creation_grant: "fork:publish".into(),
+            resources, creation_grant: "fork:publish".into(),
             maximum_resources: if with_result {3} else {2}, maximum_work: 16_384, maximum_bytes: 16 * 1_024 * 1_024,
             payload: serde_json::to_value(&fork).map_err(|e| Error::Invalid(e.to_string()))?,
             input_files: Vec::new(), read_authorization: fork.authorized_source.clone(),
@@ -1733,8 +1734,7 @@ async fn native_declared_original_scope_mac_denial_precedes_admission_io() -> Re
     let foreign = crate::core::AuthorityIssuer::new(
         "created-controls-foreign", [93; 32], fixture.host.owner.clone(),
     );
-    declaration.owner_scope = foreign.root("foreign-declaration",
-        Capabilities::new(["operation:declare", "operation:observe"]));
+    declaration.owner_scope = foreign.issue("foreign-declaration", &Capabilities::new(["operation:declare", "operation:observe"]), None, None, &mut None).expect("scope proof");
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation)
         .expect("original finite scope authentication ledger");

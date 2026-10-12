@@ -109,11 +109,7 @@ async fn pi_root_input_staging_reuses_original_upload_and_narrow_read_authority(
     );
     let authority = owner.authority().unwrap();
     let issuer = AuthorityIssuer::new(ISSUER, owner.key, authority.verifier.audience().clone());
-    let task_scope = issuer.root_for_agent(
-        owner.policy.agent,
-        owner.policy.root_task.to_string(),
-        owner.policy.grants.clone(),
-    );
+    let task_scope = issuer.issue(&owner.policy.root_task.to_string(), &owner.policy.grants, Some(owner.policy.agent), None, &mut None).expect("scope proof");
     let read = ContentGrant::verify_read(&authority.verifier, &task_scope, &reference).unwrap();
     let original = filesystem
         .read_content(&reference, &read, owner.policy.maximum_payload_bytes)
@@ -638,9 +634,7 @@ fn native_owner_authority_preserves_original_grants_and_scope_names() {
     drop(conversation.0);
     drop(conversation.1);
     let ordinary_issuer = owner.effect_issuer();
-    let ordinary_effect_scope = ordinary_issuer.root_for_agent(
-        owner.policy.agent, owner.policy.root_task.to_string(), owner.policy.grants.clone(),
-    );
+    let ordinary_effect_scope = ordinary_issuer.issue(&owner.policy.root_task.to_string(), &owner.policy.grants, Some(owner.policy.agent), None, &mut None).expect("scope proof");
     let effect = owner.effect_authority_with_native_work(&work).unwrap();
     assert!(effect.0.2 == ordinary_effect_scope);
     let verifier = owner.effect_verifier_with_native_work(&work).unwrap();

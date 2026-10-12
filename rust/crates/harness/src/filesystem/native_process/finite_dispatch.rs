@@ -105,11 +105,11 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         check(work)?;
         self.owner.verify_with_native_work(false, work).await?;
         let mut io = crate::store::history::native_work_io(work)?;
-        let cursor = self.history.pin_with_work(0,
+        let cursor = self.history.pin(0,
             Some(&mut io)).await?;
-        let state = self.history.effect_with_work(&cursor, self.effect_id,
+        let state = self.history.effect(&cursor, self.effect_id,
             self.authority.history_limits,
-            Some(&mut io)).await?
+            Some(&mut io)).await.map(|state| state.map(|(state, _)| state))?
             .ok_or(receipt_error("native command has no committed effect admission"))?;
         if !examine(work, || state.status == EffectStatus::Dispatched)?
             || !examine(work, || state.attempts.last() == Some(&dispatch.attempt_id))?

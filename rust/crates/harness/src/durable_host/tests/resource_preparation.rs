@@ -35,7 +35,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
             .volume
             .capability(crate::conversation::VolumeOperation::Read)?,
     ]);
-    let signed = issuer.root("owner", grants.clone());
+    let signed = issuer.issue("owner", &grants, None, None, &mut None).expect("scope proof");
     let scope = RuntimeScope::new(grants, Limits::default())?;
     let schema = serde_json::json!({"type":"object"});
     let implementation = Arc::new(BatchMachine {

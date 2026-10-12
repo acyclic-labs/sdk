@@ -206,7 +206,7 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         let _native_metadata = match io.filter(|io| io.original_native_work().is_some()) {
             Some(io) => {
-                io.claim(std::mem::size_of::<Self>() as u64)?;
+                io.retain_owned(std::mem::size_of::<Self>() as u64)?;
                 Some(io.take_native_custody(io.owned_bytes()?.checked_sub(before)
                     .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                         "interaction host custody underflows"))?)?)
@@ -266,7 +266,7 @@ where
         let copied = acyclic_fs::WorkCounters { bytes_copied: length as u64, ..Default::default() };
         if let Some(io) = io {
             io.preflight(copied)?;
-            io.claim(length as u64)?;
+            io.retain_owned(length as u64)?;
             io.allocation_attempt(length as u64)?;
         }
         let mut kind = String::with_capacity(length);
@@ -317,10 +317,7 @@ where
                     "interaction attempt custody underflows"))?)).transpose()?;
             let command = Command { operation_id, idempotency_key, expected_revision,
                 scope, causal_parent: None, action: Action::OpenInteraction { ticket: command_ticket } };
-            let result = match owner {
-                Some(owner) => aggregate.execute_task_command_with_work(command, owner, &mut work).await,
-                None => aggregate.execute_with_work(command, &mut work).await,
-            };
+            let result = aggregate.execute(command, owner, &mut work).await;
             drop(aggregate);
             drop(attempt_hold);
             match result {
@@ -376,7 +373,7 @@ where
         let command = Command {
             operation_id, idempotency_key, expected_revision, scope, causal_parent: None, action: Action::ResolveInteraction { resolution },
         };
-        let result = aggregate.execute_with_work(command, &mut work).await;
+        let result = aggregate.execute(command, None, &mut work).await;
         drop(aggregate);
         drop(aggregate_hold);
         drop(command_hold);
@@ -554,8 +551,8 @@ where
                 bytes_hold = io.guard_bytes(&bytes)?;
                 let request = io.decode_preparation::<Interaction>(&bytes, crate::wire::ErrorCode::Storage)?;
                 let mut borrowed = io.history_io();
-                ticket.validate_decoded_request_with_work(&request, &mut Some(&mut borrowed))?;
-                let request = request.into_retained();
+                ticket.validate_decoded_request_with_work(&request.0, &mut Some(&mut borrowed))?;
+                let request = crate::filesystem::retain_decoded(request);
                 drop(bytes);
                 drop(bytes_hold);
                 request
@@ -646,8 +643,8 @@ where
         let request = match io {
             Some(io) => {
                 let request = io.decode_preparation::<Interaction>(&bytes, crate::wire::ErrorCode::Storage)?;
-                ticket.validate_decoded_request_with_work(&request, &mut work)?;
-                request.into_retained()
+                ticket.validate_decoded_request_with_work(&request.0, &mut work)?;
+                crate::filesystem::retain_decoded(request)
             }
             None => ticket.validate_request_bytes(&bytes)?,
         };
@@ -671,7 +668,7 @@ where
                 Some(io) => {
                     let response = io.decode_preparation::<InteractionResponse>(&bytes, crate::wire::ErrorCode::Storage)?;
                     ticket.validate_decoded_decision_with_work(
-                        &request, &resolution.outcome, detail, &response, &mut work)?;
+                        &request, &resolution.outcome, detail, &response.0, &mut work)?;
                 }
                 None => ticket.validate_decision_bytes(
                     &request, &resolution.outcome, detail, &bytes)?,
@@ -697,7 +694,7 @@ where
         };
         let aggregate_verifier = self.verifier.copy(&mut work)?;
         if let Some(io) = io {
-            io.claim(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;
+            io.retain_owned(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;
             io.allocation_attempt(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;
         }
         let content_verifier = FilesystemContentVerifier::new(Arc::clone(&self.host), &self.verifier, &self.owner_scope, self.maximum_bytes, io)?;
@@ -796,7 +793,7 @@ fn interaction_text(
     let copied = acyclic_fs::WorkCounters { bytes_copied: length as u64, ..Default::default() };
     if let Some(io) = io {
         io.preflight(copied)?;
-        io.claim(length as u64)?;
+        io.retain_owned(length as u64)?;
         io.allocation_attempt(length as u64)?;
     }
     let mut text = String::with_capacity(length);

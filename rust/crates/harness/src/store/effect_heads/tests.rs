@@ -30,7 +30,7 @@ async fn publish_lifecycle(
         operation_id: OperationId::from_bytes([number; 16]),
         idempotency_key: IdempotencyKey::new(format!("root-{number}"))?,
         expected_revision: reducer.revision(),
-        scope: issuer().root("owner", Capabilities::new(["lifecycle:manage"])),
+        scope: issuer().issue("owner", &Capabilities::new(["lifecycle:manage"]), None, None, &mut None).expect("scope proof"),
         causal_parent: None,
         action: Action::TransitionLifecycle {
             to: if number.is_multiple_of(2) {
@@ -131,8 +131,8 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
         1,
         1_000_000, &mut None)
     .await?;
-    assert_eq!(selected.head, None);
-    let exact = selected.consumed_bytes;
+    assert_eq!(selected.0, None);
+    let exact = selected.1;
     publish_lifecycle(&client, &mut reducer, 2).await?;
     assert_eq!(
         select_with_work(
@@ -143,7 +143,7 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
             1,
             exact, &mut None)
         .await?
-        .consumed_bytes,
+        .1,
         exact
     );
     assert!(matches!(

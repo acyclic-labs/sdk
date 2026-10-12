@@ -68,11 +68,11 @@ async fn open(root: &std::path::Path, agent: AgentId, model: Arc<CountedModel>, 
     let issuer = AuthorityIssuer::new("durable-continuation", [58; 32], authority.clone());
     let read = volume.capability(VolumeOperation::Read)?;
     let write = volume.capability(VolumeOperation::Write)?;
-    let scope = issuer.root_for_agent(agent, "owner", Capabilities::new([
+    let scope = issuer.issue("owner", &Capabilities::new([
         capability::CONVERSATION_BIND.to_owned(), capability::CONVERSATION_APPEND.to_owned(),
         capability::CONVERSATION_SELECT_CONTEXT.to_owned(), "model:generate".to_owned(),
         read.clone(), write.clone(),
-    ]));
+    ]), Some(agent), None, &mut None).expect("scope proof");
     let stream = Arc::new(acyclic_stream::LocalStream::open(
         root.join("stream"), Default::default()).await
         .map_err(|error| Error::Storage(error.to_string()))?);
@@ -82,7 +82,7 @@ async fn open(root: &std::path::Path, agent: AgentId, model: Arc<CountedModel>, 
             operation_id: OperationId::new(), idempotency_key: IdempotencyKey::new("bind-durable-10k")?,
             expected_revision: 0, scope: scope.clone(), causal_parent: None,
             action: Action::BindConversation { agent },
-        }).await?;
+        }, #[cfg(feature = "filesystem")] None, &mut None).await?;
     }
     let reader = Arc::new(FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"),
         &scope, 262_144, None)?);

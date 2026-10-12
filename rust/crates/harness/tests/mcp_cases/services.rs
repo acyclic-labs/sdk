@@ -49,7 +49,7 @@ impl InteractionRouter for Participant {
                 Interaction::Approval { .. } => InteractionResponse::Approval { approved: true, reason: None },
                 _ => return Err(Error::Unsupported("participant control is form/approval only".into())),
             };
-            let scope = self.issuer.root_for_agent(acyclic_harness::AgentId::from_bytes([41;16]), "participant", Capabilities::new(["interaction:resolve".into(), format!("interaction:respond:{id}")]));
+            let scope = self.issuer.issue("participant", &Capabilities::new(["interaction:resolve".into(), format!("interaction:respond:{id}")]), Some(acyclic_harness::AgentId::from_bytes([41;16])), None, &mut None).expect("scope proof");
             self.journal.resolve_interaction(id, response, &scope).await?;
             self.journal.interaction_outcome(id).await?.ok_or_else(|| Error::NotFound("recorded participant decision".into()))
         })

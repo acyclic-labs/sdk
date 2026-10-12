@@ -538,7 +538,7 @@ fn projection_step(io: Option<&crate::executor::PreparationIo>, items: u64) -> R
 fn projection_allocation(bytes: u64, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        io.claim(bytes)?;
+        io.retain_owned(bytes)?;
         io.allocation_attempt(bytes)?;
     }
     let _ = (bytes, io);
@@ -825,7 +825,7 @@ async fn read_projected_invocation<R: ContentResidencyVerifier + ?Sized>(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let parsed = read_projection_value(resolver, file, maximum_bytes, io).await?;
-        let (value, custody) = convert_projection_value(parsed.into_parts(), maximum_bytes, io)?;
+        let (value, custody) = convert_projection_value(parsed, maximum_bytes, io)?;
         custody.into_retained();
         return Ok(value);
     }
@@ -840,7 +840,7 @@ async fn read_projected_tool_result<R: ContentResidencyVerifier + ?Sized>(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let parsed = read_projection_value(resolver, file, maximum_bytes, io).await?;
-        let intermediate = convert_projection_value::<serde_json::Value>(parsed.into_parts(), maximum_bytes, io)?;
+        let intermediate = convert_projection_value::<serde_json::Value>(parsed, maximum_bytes, io)?;
         let (value, custody) = convert_projection_value(intermediate, maximum_bytes, io)?;
         custody.into_retained();
         return Ok(value);
@@ -983,7 +983,7 @@ fn convert_projection_value<'a, T: crate::filesystem::UploadRecord>(
 async fn read_projection_value<'io, R: ContentResidencyVerifier + ?Sized>(
     resolver: &R, file: &FileRef, maximum_bytes: u64,
     io: &'io crate::executor::PreparationIo,
-) -> Result<crate::filesystem::ReservedDecoded<'io, serde_json::Value>> {
+) -> Result<(serde_json::Value, crate::filesystem::DecodeReservation<'io>)> {
     io.check_cancellation()?;
     if file.descriptor().media_type() != "application/json"
         || file.descriptor().byte_length() > maximum_bytes
@@ -1002,7 +1002,7 @@ async fn read_projection_value<'io, R: ContentResidencyVerifier + ?Sized>(
     let parsed = io.decode_preparation::<serde_json::Value>(
         &bytes, crate::wire::ErrorCode::Invalid,
     )?;
-    validate_model_json_numbers(&parsed.value, Some(io))?;
+    validate_model_json_numbers(&parsed.0, Some(io))?;
     Ok(parsed)
 }
 

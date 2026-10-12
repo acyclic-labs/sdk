@@ -499,7 +499,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             let cursor = match request.cursor {
                 Some(cursor) if cursor.authority == binding.authority => cursor,
                 Some(_) => return Err(Error::Unauthorized("history cursor belongs to a different caller conversation".into())),
-                None => reader.pin(0).await?,
+                None => reader.pin(0, None).await?,
             };
             let page = reader.read_page(&cursor, acyclic_harness::store::HistoryReadLimits {
                 maximum_events: terminal::MAX_PAGE_EVENTS as u32,
