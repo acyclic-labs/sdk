@@ -176,7 +176,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                 value: json!(result),
             };
             let unchanged = canonical.clone();
-            let projection = projector.project(&invocation, &canonical)?;
+            let projection = projector.project(&invocation, &canonical, None)?.0;
             let content: ToolResultContent = serde_json::from_value(projection)
                 .map_err(|error| Error::Invalid(error.to_string()))?;
             let ToolResultContent::Parts { parts } = content else {
@@ -210,7 +210,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
                 value: json!(result),
             };
             assert_eq!(
-                search_projector.project(&invocation, &canonical)?,
+                search_projector.project(&invocation, &canonical, None)?.0,
                 json!({"kind":"json","value":canonical.value})
             );
             let write = context.tool::<WriteFileInput, FileResult>("acyclic.write_file")?;

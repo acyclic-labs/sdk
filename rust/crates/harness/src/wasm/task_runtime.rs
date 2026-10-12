@@ -307,7 +307,9 @@ impl ToolExecutor for HostTool {
     }
 }
 impl ToolProjection for HostTool {
-    fn project(&self, invocation: &ToolInvocation, result: &ToolResult) -> Result<Value> {
+    fn project(&self, invocation: &ToolInvocation, result: &ToolResult,
+        work: crate::NativeWork<'_>) -> Result<(Value, crate::NativeCustody)> {
+        self.supports_native_projection(work)?;
         let invocation = to_js(invocation)
             .map_err(|_| Error::Invalid("tool projection invocation encoding failed".into()))?;
         let result = to_js(result)
@@ -316,7 +318,8 @@ impl ToolProjection for HostTool {
             .project
             .call2(&JsValue::UNDEFINED, &invocation, &result)
             .map_err(|_| Error::Invalid("tool projection failed".into()))?;
-        from_js(value).map_err(|_| Error::Invalid("tool projection is invalid".into()))
+        from_js(value).map(|value| (value, None))
+            .map_err(|_| Error::Invalid("tool projection is invalid".into()))
     }
 }
 

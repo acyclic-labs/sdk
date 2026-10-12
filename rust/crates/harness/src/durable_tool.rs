@@ -635,7 +635,7 @@ impl DurableToolRunner {
             .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::NotFound,
                 reason: "admitted tool revision is not registered" })?;
         tool.executor.supports_native_execution(work)?;
-        tool.projection.supports_native_projection(work)?;
+        tool.projection.supports_native_projection(Some(work))?;
         if !self.journal.supports_native_execution(work)? {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
                 reason: "tool journal has no native execution producer" });
@@ -1088,10 +1088,12 @@ fn tool_project(
 ) -> Result<ToolPayload<Value>> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-        let (value, custody) = tool.projection.project_with_native_work(invocation, result, work)?;
+        let (value, custody) = tool.projection.project(invocation, result, Some(work))?;
+        let custody = custody.ok_or_else(|| tool_error(io, crate::wire::ErrorCode::Unsupported,
+            "tool projection has no native producer"))?;
         return Ok(ToolPayload::native(value, custody));
     }
-    Ok(ToolPayload::ordinary(tool.projection.project(invocation, result)?))
+    Ok(ToolPayload::ordinary(tool.projection.project(invocation, result, None)?.0))
 }
 
 fn tool_string(value: &str, io: Option<&crate::executor::PreparationIo>) -> Result<ToolPayload<String>> {

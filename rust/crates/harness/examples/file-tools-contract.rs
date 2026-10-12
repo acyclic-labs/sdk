@@ -142,23 +142,23 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             "source":{"file":file,"text":source},
             "range_read":{
                 "input":read_input,"canonical":read,
-                "full":ReadProjection(ProjectionMode::Full).project(&read_invocation,&read_result)?,
-                "reference":ReadProjection(ProjectionMode::Reference).project(&read_invocation,&read_result)?,
+                "full":ReadProjection(ProjectionMode::Full).project(&read_invocation,&read_result,None)?.0,
+                "reference":ReadProjection(ProjectionMode::Reference).project(&read_invocation,&read_result,None)?.0,
             },
             "literal_search":{
                 "input":search_input,"canonical":search,
-                "full":SearchProjection(ProjectionMode::Full).project(&search_invocation,&search_result)?,
-                "reference":SearchProjection(ProjectionMode::Reference).project(&search_invocation,&search_result)?,
+                "full":SearchProjection(ProjectionMode::Full).project(&search_invocation,&search_result,None)?.0,
+                "reference":SearchProjection(ProjectionMode::Reference).project(&search_invocation,&search_result,None)?.0,
             },
             "exact_read":{
                 "input":exact_input,"canonical":exact_result.value,
-                "full":ReadFileProjection(ProjectionMode::Full).project(&exact_invocation,&exact_result)?,
-                "reference":ReadFileProjection(ProjectionMode::Reference).project(&exact_invocation,&exact_result)?,
+                "full":ReadFileProjection(ProjectionMode::Full).project(&exact_invocation,&exact_result,None)?.0,
+                "reference":ReadFileProjection(ProjectionMode::Reference).project(&exact_invocation,&exact_result,None)?.0,
             },
             "file_result":{
                 "canonical":file_result.value,
-                "full":FileResultProjection(ProjectionMode::Full).project(&file_invocation,&file_result)?,
-                "reference":FileResultProjection(ProjectionMode::Reference).project(&file_invocation,&file_result)?,
+                "full":FileResultProjection(ProjectionMode::Full).project(&file_invocation,&file_result,None)?.0,
+                "reference":FileResultProjection(ProjectionMode::Reference).project(&file_invocation,&file_result,None)?.0,
             },
         })
     );

@@ -502,7 +502,9 @@ impl ToolExecutor for NativeProjector {
     }
 }
 impl ToolProjection for NativeProjector {
-    fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
+    fn project(&self, _: &ToolInvocation, result: &ToolResult,
+        work: acyclic_harness::NativeWork<'_>) -> Result<(Value, acyclic_harness::NativeCustody)> {
+        self.supports_native_projection(work)?;
         let expected: Vec<FileRef> = self.0.iter().map(|(file, _)| file.clone()).collect();
         if result.value != json!({"files":expected}) {
             return Err(Error::Conflict(
@@ -518,6 +520,7 @@ impl ToolProjection for NativeProjector {
         }))
         .collect();
         serde_json::to_value(ToolResultContent::Parts { parts })
+            .map(|value| (value, None))
             .map_err(|error| Error::Invalid(error.to_string()))
     }
 }
@@ -732,7 +735,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
         value: json!({"files":selected.iter().skip(2).map(|(file,_)|file.clone()).collect::<Vec<_>>()}),
     };
     let tool_content: ToolResultContent =
-        serde_json::from_value(projector.project(&invocation, &canonical)?)
+        serde_json::from_value(projector.project(&invocation, &canonical, None)?.0)
             .map_err(|error| Error::Invalid(error.to_string()))?;
     let mut messages = vec![ModelMessage {
         role: ModelRole::User,
@@ -1538,7 +1541,8 @@ where
                     value: serde_json::to_value(&converted)
                         .map_err(|error| Error::Invalid(error.to_string()))?,
                 },
-            )?,
+                None,
+            )?.0,
         )
         .map_err(|error| Error::Invalid(error.to_string()))?;
         let ToolResultContent::Parts { parts } = &projection else {

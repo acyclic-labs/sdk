@@ -297,8 +297,8 @@ async fn call(shared: &Shared, params: &Value) -> Value {
         Ok(result) => result,
         Err(error) => return error_result(format!("{name} failed: {error}")),
     };
-    let projection = match tool.projection.project(&invocation, &result) {
-        Ok(projection) => projection,
+    let projection = match tool.projection.project(&invocation, &result, None) {
+        Ok((projection, _)) => projection,
         Err(error) => return error_result(format!("{name} result could not be shown: {error}")),
     };
     let mut text = projection.to_string();

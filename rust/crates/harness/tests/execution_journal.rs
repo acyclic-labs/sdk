@@ -312,15 +312,19 @@ impl ToolExecutor for NoopTool {
     }
 }
 impl ToolProjection for NoopTool {
-    fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        Ok(serde_json::json!({"kind":"json","value":result.value}))
+    fn project(&self, _: &ToolInvocation, result: &ToolResult,
+        work: acyclic_harness::NativeWork<'_>) -> Result<(Value, acyclic_harness::NativeCustody)> {
+        self.supports_native_projection(work)?;
+        Ok((serde_json::json!({"kind":"json","value":result.value}), None))
     }
 }
 
 struct FixedProjection(Value);
 impl ToolProjection for FixedProjection {
-    fn project(&self, _: &ToolInvocation, _: &ToolResult) -> Result<Value> {
-        Ok(self.0.clone())
+    fn project(&self, _: &ToolInvocation, _: &ToolResult,
+        work: acyclic_harness::NativeWork<'_>) -> Result<(Value, acyclic_harness::NativeCustody)> {
+        self.supports_native_projection(work)?;
+        Ok((self.0.clone(), None))
     }
 }
 
