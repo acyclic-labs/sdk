@@ -13,10 +13,7 @@ use indexed_db_futures::{
     typed_array::Uint8Array,
 };
 use prost::Message;
-use std::{
-    rc::Rc,
-    sync::Arc,
-};
+use std::{rc::Rc, sync::Arc};
 use wasm_bindgen::{JsCast, JsValue};
 
 const JOURNAL: &str = "journal";
@@ -127,7 +124,8 @@ impl BrowserStream {
         cache: &mut Cache,
     ) -> Result<(u64, u64), StreamError> {
         if !cache.valid {
-            cache.provider = MemoryStream::new_with_clock(self.inner.limits.memory, Arc::new(BrowserClock));
+            cache.provider =
+                MemoryStream::new_with_clock(self.inner.limits.memory, Arc::new(BrowserClock));
             cache.cursor = 0;
         }
         cache.valid = false;
@@ -208,7 +206,11 @@ impl BrowserStream {
             }
         }
         let journal = crate::wire_codec::CanonicalWire::Journal(&command);
-        if journal.encoded_len(None, None).map_err(|_| StreamError::InvalidArgument)? > MAX_COMMAND_BYTES {
+        if journal
+            .encoded_len(None, None)
+            .map_err(|_| StreamError::InvalidArgument)?
+            > MAX_COMMAND_BYTES
+        {
             return Err(StreamError::LimitExceeded);
         }
         let encoded = journal.encode_to_vec().map_err(|_| StreamError::Capacity)?;
@@ -229,13 +231,28 @@ impl BrowserStream {
         cache.valid = false;
         let outcome = match command {
             Command::Append(request) => IdempotencyOutcome::Append(
-                memory::provider_result(cache.provider.apply_append(&request, None, Some(millis)).await)?.0.value,
+                memory::provider_result(
+                    cache
+                        .provider
+                        .apply_append(&request, None, Some(millis))
+                        .await,
+                )?
+                .0
+                .value,
             ),
             Command::Fork(request) => IdempotencyOutcome::Fork(cache.provider.fork(request).await?),
-            Command::Commit(request) => IdempotencyOutcome::Commit(cache.provider.commit_value(request, deadline, Some(millis)).await?),
+            Command::Commit(request) => IdempotencyOutcome::Commit(
+                cache
+                    .provider
+                    .commit_value(request, deadline, Some(millis))
+                    .await?,
+            ),
         };
         if existing
-            || matches!(outcome, IdempotencyOutcome::Append(AppendOutcome::TailConflict { .. })) && !has_key
+            || matches!(
+                outcome,
+                IdempotencyOutcome::Append(AppendOutcome::TailConflict { .. })
+            ) && !has_key
         {
             cache.valid = true;
             return Ok(outcome);

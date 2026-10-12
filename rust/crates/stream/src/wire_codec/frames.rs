@@ -15,7 +15,11 @@ pub fn read_response_wire(records: Vec<wire::Record>) -> wire::ReadResponse {
 
 /// Decodes one Read or Follow frame to its encoded `RecordBatch`.
 pub fn read_response_batch(value: wire::ReadResponse) -> Result<Bytes, StreamError> {
-    if value.delivery_token.as_ref().is_some_and(|token| token.len() != 32) {
+    if value
+        .delivery_token
+        .as_ref()
+        .is_some_and(|token| token.len() != 32)
+    {
         return Err(StreamError::Unavailable);
     }
     let length = usize::try_from(value.decoded_length)
