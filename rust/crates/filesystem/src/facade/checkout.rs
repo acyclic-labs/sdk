@@ -77,17 +77,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                 let expected = authority_head.ok_or_else(|| {
                     OperationFailure::new(FsError::WritableCheckoutRequiresHead, work)
                 })?;
-                let fenced = self
-                    .fs
-                    .inner
-                    .authority
-                    .fence(
-                        volume_authority_id(self.id),
-                        expected,
-                        remaining(work, budget)?,
-                        cancellation,
-                    )
-                    .await
+                let fenced = {
+                    let mut authority_work = crate::AuthorityWork::new(remaining(work, budget)?, cancellation);
+                    let result = self.fs.inner.authority.fence(volume_authority_id(self.id), expected, &mut authority_work).await;
+                    authority_work.receipt(result)
+                }
                     .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
                 work = add(work, fenced.work)?;
                 authority_head = Some(match fenced.value {
@@ -186,9 +180,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         if mode.access == AccessMode::ReadWrite
             && self.config.concurrency == ConcurrencyMode::ExclusiveWriter {
             let expected = authority_head.ok_or(FsError::WritableCheckoutRequiresHead)?;
-            authority_head = Some(match self.fs.inner.authority.fence_with_native_work(
-                volume_authority_id(self.id), expected, original, cancellation,
-            ).await? {
+            authority_head = Some(match {
+                let mut authority_work = crate::AuthorityWork::native(original, cancellation);
+                self.fs.inner.authority.fence(volume_authority_id(self.id), expected, &mut authority_work).await
+            }? {
                 FenceOutcome::Advanced(head) => head,
                 FenceOutcome::Conflict { actual } => return Err(FsError::ExclusiveWriterConflict { actual }),
             });

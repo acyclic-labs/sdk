@@ -59,9 +59,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         let result = self.create_volume_with_id_operation_with_accounting(
             volume_id, config, operation_id, &mut accounting, cancellation, |id, commit, budget| async move {
-                    let created = self.inner.authority.create_authority_with_first_record(
-                        id, commit, budget, cancellation,
-                    ).await;
+                    let created = {
+                        let mut authority_work = crate::AuthorityWork::new(budget, cancellation);
+                        let result = self.inner.authority.create_first_record(id, commit, &mut authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity));
+                        authority_work.receipt(result)
+                    };
                     let work = match &created { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
                     (created.map(|receipt| receipt.value).map_err(|failure| FsError::from(failure.error)), work)
                 },
@@ -232,9 +234,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             );
             self.publish_volume_creation_with_accounting(
                 creation, operation_id, closure, proven_at, &mut accounting, cancellation, |id, commit, budget| async move {
-                    let created = self.inner.authority.create_authority_with_first_record(
-                        id, commit, budget, cancellation,
-                    ).await;
+                    let created = {
+                        let mut authority_work = crate::AuthorityWork::new(budget, cancellation);
+                        let result = self.inner.authority.create_first_record(id, commit, &mut authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity));
+                        authority_work.receipt(result)
+                    };
                     let work = match &created { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
                     (created.map(|receipt| receipt.value).map_err(|failure| FsError::from(failure.error)), work)
                 },
@@ -303,17 +307,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
                 accounting.check()?;
-                let records = self.inner.authority.replay_with_native_work(
-                    volume_authority_id(volume_id), Sequence::GENESIS,
-                    ReplayLimit { records: 1, payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES }, original, cancellation,
-                ).await?;
+                let records = {
+                    let mut authority_work = crate::AuthorityWork::native(original, cancellation);
+                    self.inner.authority.replay(volume_authority_id(volume_id), Sequence::GENESIS, ReplayLimit { records: 1, payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES }, &mut authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority result retains its allocation")))
+                }?;
                 return decode_first_creation_record(volume_id, &records.0, &mut accounting);
             }
             let allowance = accounting.standalone_parts().expect("standalone creation read").2;
-            let records = self.inner.authority.replay(
-                volume_authority_id(volume_id), Sequence::GENESIS,
-                ReplayLimit { records: 1, payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES }, allowance, cancellation,
-            ).await;
+            let records = {
+                let mut authority_work = crate::AuthorityWork::new(allowance, cancellation);
+                let result = self.inner.authority.replay(volume_authority_id(volume_id), Sequence::GENESIS, ReplayLimit { records: 1, payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES }, &mut authority_work).await.map(|(value, _allocation)| value);
+                authority_work.receipt(result)
+            };
             let completed = match &records { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
             *accounting.standalone_parts().expect("standalone creation read").1 = completed;
             let records = records.map_err(|failure| FsError::from(failure.error))?;

@@ -105,9 +105,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> Result<crate::Generation<A, O>, (WorkspaceError, Option<NativeAllocation>)> {
         let publication = |id, commit, _| async move {
-            (self.inner.authority.create_authority_with_first_record_with_native_work(
-                id, commit, original, cancellation,
-            ).await.map_err(|error| WorkspaceError::from(FsError::from(error))), WorkCounters::UNCHARGED)
+            ({
+                let mut authority_work = crate::AuthorityWork::native(original, cancellation);
+                self.inner.authority.create_first_record(id, commit, &mut authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity))
+            }.map_err(|error| WorkspaceError::from(FsError::from(error))), WorkCounters::UNCHARGED)
         };
         self.create_workspace_with_operation_with_native_work_value(
             name, config, original_operation_id, original, cancellation, publication,
@@ -131,9 +132,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Fut: Future<Output = Result<(), E>> + Send + 'static,
     {
         let publication = |id, commit, _| async move {
-            (self.inner.authority.create_authority_with_first_record_guarded_with_native_work(
-                id, commit, original, cancellation, before_publication,
-            ).await, WorkCounters::UNCHARGED)
+            ({
+                let mut authority_work = crate::AuthorityWork::native(original, cancellation);
+                let mut owner = crate::NativeAuthorityGuard(before_publication.clone());
+                self.inner.authority.create_first_record(id, commit, &mut authority_work, Some(&mut owner)).await.map_err(|error| error.into_error(|error| E::from(FsError::from(error))))
+            }, WorkCounters::UNCHARGED)
         };
         self.create_workspace_with_operation_with_native_work_value(
             name, config, original_operation_id, original, cancellation, publication,

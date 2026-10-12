@@ -35,11 +35,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> Result<crate::workspace::WorkspaceDelete, WorkspaceError> {
         let cancellation = CancellationToken::new();
         let authority_id = volume_authority_id(volume.id);
-        let head = match self
-            .inner
-            .authority
-            .head(authority_id, WorkBudget::UNBOUNDED, &cancellation)
-            .await
+        let head = match {
+            let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+            let result = self.inner.authority.head(authority_id, &mut authority_work).await;
+            authority_work.receipt(result)
+        }
         {
             Ok(head) => head.value,
             Err(failure) if matches!(failure.error, AuthorityStoreError::Retired) => {
@@ -48,20 +48,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             Err(failure) => return Err(WorkspaceError::engine(failure)),
         };
         if head.sequence == Sequence::GENESIS { return Err(WorkspaceError::engine(FsError::EmptyAuthority)); }
-        let latest = self
-            .inner
-            .authority
-            .replay(
-                authority_id,
-                Sequence::new(head.sequence.get().saturating_sub(1)),
-                ReplayLimit {
-                    records: 1,
-                    payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES,
-                },
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
+        let latest = {
+            let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+            let result = self.inner.authority.replay(authority_id, Sequence::new(head.sequence.get().saturating_sub(1)), ReplayLimit {
+                            records: 1,
+                            payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES,
+                        }, &mut authority_work).await.map(|(value, _allocation)| value);
+            authority_work.receipt(result)
+        }
             .map_err(WorkspaceError::engine)?;
         let latest = latest.value.first().ok_or_else(|| {
             WorkspaceError::engine(FsError::InvalidAuthorityHistory)
@@ -84,18 +78,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let encoded = creation_commit(operation_id, encoded, WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|failure| WorkspaceError::engine(failure.error))?;
         let (commit, _) = encoded.value;
-        let appended = self
-            .inner
-            .authority
-            .compare_and_append(
-                authority_id,
-                head.epoch,
-                head,
-                commit,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
-            .await
+        let appended = {
+            let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+            let result = self.inner.authority.compare_and_append(crate::GuardedAppend { authority_id: authority_id, epoch: head.epoch, expected: head, commit: commit, permit: crate::PublicationPermit::Unrestricted }, &mut authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value);
+            authority_work.receipt(result)
+        }
             .map_err(WorkspaceError::engine)?;
         Ok(match appended.value {
             AppendOutcome::Committed(_) | AppendOutcome::AlreadyCommitted(_) => {
@@ -119,10 +106,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         authority_id: crate::AuthorityId,
         cancellation: &CancellationToken,
     ) -> Result<(), WorkspaceError> {
-        self.inner
-            .authority
-            .retire_authority(authority_id, WorkBudget::UNBOUNDED, cancellation)
-            .await
+        {
+            let mut authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation);
+            let result = self.inner.authority.retire_authority(authority_id, &mut authority_work).await;
+            authority_work.receipt(result)
+        }
             .map_err(WorkspaceError::engine)?;
         Ok(())
     }

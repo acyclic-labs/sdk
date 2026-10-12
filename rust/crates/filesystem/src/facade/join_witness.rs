@@ -181,9 +181,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
             cancellation.check().map_err(FsError::from)?;
-            let observed = self.inner.authority.find_operation_with_native_work(
-                volume_authority_id(workspace.id), operation_id, original, cancellation,
-            ).await.map_err(FsError::from)?;
+            let observed = {
+                let mut authority_work = crate::AuthorityWork::native(original, cancellation);
+                self.inner.authority.find_operation(volume_authority_id(workspace.id), operation_id, &mut authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority result retains its allocation")))
+            }.map_err(FsError::from)?;
             native = Some((observed.0, KernelOwnedAllocation::NativeOriginal(observed.1)));
         }
         let observed = match native {
@@ -221,9 +222,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let mut native = None;
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
-                let observed = self.inner.authority.find_operation_with_native_work(
-                    volume_authority_id(target.id), witness.operation_id, original, cancellation,
-                ).await.map_err(FsError::from)?;
+                let observed = {
+                    let mut authority_work = crate::AuthorityWork::native(original, cancellation);
+                    self.inner.authority.find_operation(volume_authority_id(target.id), witness.operation_id, &mut authority_work).await.map(|(value, allocation)| (value, allocation.expect("native authority result retains its allocation")))
+                }.map_err(FsError::from)?;
                 native = Some((observed.0, KernelOwnedAllocation::NativeOriginal(observed.1)));
             }
             let observed = match native {
