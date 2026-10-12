@@ -4576,6 +4576,7 @@ where
         let mut remaining = remaining_work(work, budget, 0)?;
         remaining.peak_allocation_bytes = remaining.peak_allocation_bytes
             .checked_sub(control_bytes).ok_or_else(counter_overflow)?;
+        let exactify_work = LazyTreapWork::new(remaining, cancellation);
         let exactified = Self {
             workspace,
             source: Arc::clone(&self.source),
@@ -4584,13 +4585,13 @@ where
             #[cfg(not(target_arch = "wasm32"))]
             allocation: None,
         }
-        .exactify("/", remaining, cancellation, crate::PublicationPermit::Unrestricted)
+        .exactify("/", crate::PublicationPermit::Unrestricted, &exactify_work)
         .await?;
         control_meter.release(control_bytes)?;
-        work = work.with_backend(exactified.work, control_bytes)?;
+        work = work.with_backend(exactify_work.spent(), control_bytes)?;
         work.verify(budget)?;
         Ok(OperationReceipt {
-            value: exactified.value,
+            value: exactified,
             work,
         })
     }
