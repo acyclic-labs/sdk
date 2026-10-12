@@ -510,12 +510,20 @@ impl LocalMount {
         permit: PublicationPermit,
     ) -> Result<(), String> {
         let name = std::str::from_utf8(name).map_err(display)?;
+        let work = acyclic_fs::NativeMaterializationWork::new(
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
+        .map_err(|(cause, _)| display(cause))?;
         self.routes
             .get(name)
             .ok_or_else(|| "mounted root route is missing".to_owned())?
-            .sync_with_permit(permit)
+            .sync_with_permit(permit, &work, |_| {
+                std::future::ready(Ok::<(), acyclic_fs::native_mount::MountLifecycleError>(()))
+            })
             .await
-            .map_err(display)
+            .map(|_| ())
+            .map_err(|failure| display(failure.cause))
     }
 
     pub(crate) async fn sync(&self) -> Result<(), String> {
