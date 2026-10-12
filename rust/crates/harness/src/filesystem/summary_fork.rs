@@ -115,7 +115,7 @@ fn copy_references(payloads: &References, child: &VolumeRef, generation: &str, i
         fork_preparer_io::item(io, std::mem::size_of::<([u8; 32], FileRef)>() as u64)?;
         let encoded = fork_preparer_io::hex_key(key, io)?;
         let path = crate::contract::preparation_format(format_args!(".system/inherited-conversation/summary-payloads/{encoded}"), io)?;
-        copies.insert(*key, crate::conversation::FileRef::new_with_io(child, &path, generation, source.descriptor(), source.display_name(), io)?);
+        copies.insert(*key, { let io = io; let descriptor = source.descriptor(); crate::executor::with_history_io(io, |work| crate::conversation::FileRef::new((child).copy(work)?, crate::filesystem::fork_preparer_io::clone_text(&path, io)?, crate::filesystem::fork_preparer_io::clone_text(generation, io)?, crate::conversation::FileDescriptor::new(*descriptor.sha256(), descriptor.byte_length(), crate::filesystem::fork_preparer_io::clone_text(descriptor.media_type(), io)?)?, crate::filesystem::fork_preparer_io::clone_text(source.display_name(), io)?, work)) }?);
     }
     Ok(copies)
 }
@@ -286,8 +286,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         }
         let planned_capture = SummaryForkCapture {
             selection: clone_selection(prepared.selection(), io)?,
-            context: crate::conversation::FileRef::new_with_io(child_private, ".system/inherited-conversation/summary-context.json",
-                ZERO_VERSION, &FileDescriptor::from_bytes_with_io(&planned_bytes, "application/json", io)?, "summary-context.json", io)?,
+            context: { let io = io; let descriptor = &FileDescriptor::from_bytes(&planned_bytes, "application/json", &mut (io).map(PreparationIo::history_io).as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo))?; crate::executor::with_history_io(io, |work| crate::conversation::FileRef::new((child_private).copy(work)?, crate::filesystem::fork_preparer_io::clone_text(".system/inherited-conversation/summary-context.json", io)?, crate::filesystem::fork_preparer_io::clone_text(ZERO_VERSION, io)?, crate::conversation::FileDescriptor::new(*descriptor.sha256(), descriptor.byte_length(), crate::filesystem::fork_preparer_io::clone_text(descriptor.media_type(), io)?)?, crate::filesystem::fork_preparer_io::clone_text("summary-context.json", io)?, work)) }?,
             payloads: into_files(planned, io)?,
             references: cloned_files(&references, io)?,
         };
@@ -339,7 +338,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                     }
                     None => journal.load(file).await?,
                 };
-                file.descriptor().verify(&bytes, io)?;
+                crate::executor::with_history_io(io, |work| file.descriptor().verify(&bytes, work))?;
                 let encoded = fork_preparer_io::hex_key(key, io)?;
                 writes.push(WorkspaceMutation::PutFile {
                     path: crate::contract::preparation_format(format_args!("/.system/inherited-conversation/summary-payloads/{encoded}"), io)?,
@@ -380,10 +379,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             ).await?
         };
         let context_version = fork_preparer_io::hex_key(generation.as_resource().key(), io)?;
-        let context = crate::conversation::FileRef::new_with_io(child_private,
-            ".system/inherited-conversation/summary-context.json",
-            &context_version, &FileDescriptor::from_bytes_with_io(&bytes, "application/json", io)?,
-            "summary-context.json", io)?;
+        let context = { let io = io; let descriptor = &FileDescriptor::from_bytes(&bytes, "application/json", &mut (io).map(PreparationIo::history_io).as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo))?; crate::executor::with_history_io(io, |work| crate::conversation::FileRef::new((child_private).copy(work)?, crate::filesystem::fork_preparer_io::clone_text(".system/inherited-conversation/summary-context.json", io)?, crate::filesystem::fork_preparer_io::clone_text(&context_version, io)?, crate::conversation::FileDescriptor::new(*descriptor.sha256(), descriptor.byte_length(), crate::filesystem::fork_preparer_io::clone_text(descriptor.media_type(), io)?)?, crate::filesystem::fork_preparer_io::clone_text("summary-context.json", io)?, work)) }?;
         let committed = self.host.read_pinned_io(&context, maximum_bytes, io).await?;
         if committed.as_ref() != bytes.as_ref() {
             return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Conflict, "summary fork retry changed its context"));

@@ -865,7 +865,7 @@ async fn capture_paths_batched_in_scope<A: AsyncAuthorityStore, O: AsyncObjectSt
             (receipt, candidate, unique)
         };
         let observed = observe_unique_paths(unique, &source_root, &cancellation, meter)?;
-        let mut states = lookup_capture_states(&candidate, observed, batch_size, meter).await?;
+        let mut states = lookup_capture_states(&mut candidate, observed, batch_size, meter).await?;
         let mut host_links = CaptureMap::new();
         let states_bytes = states.capacity() as u64 * std::mem::size_of::<CapturePathState>() as u64;
         let mut states = states.into_iter();
@@ -2272,7 +2272,7 @@ async fn capture_ranked_paths_from_root<A: AsyncAuthorityStore, O: AsyncObjectSt
 type CapturePathState = (Option<HostStat>, NamespacePath, Option<FileRecord>);
 
 async fn lookup_capture_states<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    checkout: &Checkout<A, O>,
+    checkout: &mut Checkout<A, O>,
     (observations, paths): (Vec<Option<HostStat>>, Vec<NamespacePath>),
     page_size: usize, meter: &CaptureWorkScope,
 ) -> Result<Vec<CapturePathState>, CaptureError> {
@@ -4640,7 +4640,7 @@ async fn settled_sparse_ranges(native: &std::sync::Arc<acyclic_native_runtime::N
                         };
                         cause
                     })?;
-                Ok(value)
+                Ok::<_, CaptureError>(value)
             }).await?;
 
             let chunk = read;
