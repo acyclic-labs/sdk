@@ -918,7 +918,7 @@ mod tests {
         ).await?.value;
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, _)| cause)?;
-        let producer = checkout.private_candidate_with_native_work(&original, &cancellation)?;
+        let producer = checkout.private_candidate(&original, &cancellation)?;
         let custody = producer.private_control_custody();
         let meter = original.native_read_meter();
         let baseline = original.live_allocation_bytes();

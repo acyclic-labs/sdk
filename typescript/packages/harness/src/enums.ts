@@ -63,9 +63,3 @@ export function decodeAggregateKind(value: number): AggregateKind {
   if (decoded === undefined) throw new TypeError(`unknown aggregate kind enum value: ${value}`);
   return decoded;
 }
-
-/** Stable object values retained by the existing GroupPolicies API. */
-export const groupPolicies = Object.freeze({
-  collectAll: Object.freeze({ kind: "collect-all" } as const),
-  cancelOnFailure: Object.freeze({ kind: "cancel-on-failure" } as const),
-});
