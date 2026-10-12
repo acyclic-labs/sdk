@@ -40,7 +40,7 @@ impl WorkspaceLineageStore for LocalCoreStateStore {
                 let root = &root;
                 let work = root._allocation.as_ref().expect("bound native work").work();
                 root.with_log(|log| {
-                    native_records::load_native_lineage(
+                    native_records::load::<WorkspaceLineageRecord>(
                         &root,
                         log,
                         workspace_id,
@@ -131,7 +131,13 @@ impl WorkspaceContextStore for LocalCoreStateStore {
                 let root = &root;
                 let work = root._allocation.as_ref().expect("bound native work").work();
                 root.with_log(|log| {
-                    native_records::load_native_context(&root, log, context_id, work, &cancellation)
+                    native_records::load::<WorkspaceContext>(
+                        &root,
+                        log,
+                        context_id,
+                        work,
+                        &cancellation,
+                    )
                 })
             })
             .await
@@ -205,7 +211,7 @@ impl WorkspaceContextStore for LocalCoreStateStore {
             root.with_log(|log| {
                 let contexts = load_all_contexts(root, log)?;
                 if !context_children_index_ready(root, log)? {
-                    log.commit(root, index_change(contexts.iter().cloned()))?;
+                    log.commit(root, index_change(contexts.iter().cloned())?)?;
                 }
                 Ok(contexts)
             })
@@ -261,7 +267,7 @@ impl WorkspaceContextStore for LocalCoreStateStore {
                 }
                 if !context_children_index_ready(root, log)? {
                     let contexts = load_all_contexts(root, log)?;
-                    log.commit(root, index_change(contexts))?;
+                    log.commit(root, index_change(contexts)?)?;
                 }
                 let affected_parents = before
                     .values()
@@ -269,7 +275,7 @@ impl WorkspaceContextStore for LocalCoreStateStore {
                     .chain(after.values().filter_map(|record| record.parent_context_id))
                     .collect::<BTreeSet<_>>();
                 let mut children = WorkspaceContextChildren::new();
-                for parent in affected_parents {
+                for &parent in &affected_parents {
                     let current = log.get::<ContextChildren>(root, parent)?;
                     children.insert(parent, current.unwrap_or_default().0);
                 }
@@ -282,10 +288,24 @@ impl WorkspaceContextStore for LocalCoreStateStore {
                 }
                 let mut change = Change::default();
                 for (context_id, record) in after {
-                    change.put(context_id, Some(record));
+                    change.put(
+                        (
+                            RecordKey::Context(context_id),
+                            Some(RecordValue::Context(record)),
+                        )
+                            .into(),
+                    )?;
                 }
-                for (parent, descendants) in children {
-                    change.put_children(parent, Some(descendants));
+                for parent in affected_parents {
+                    change.put_children(
+                        (
+                            RecordKey::Children(parent),
+                            children
+                                .remove(&parent)
+                                .map(|set| RecordValue::Children(ContextChildren(set))),
+                        )
+                            .into(),
+                    )?;
                 }
                 log.commit(root, change)?;
                 Ok(true)
@@ -354,7 +374,13 @@ impl WorkspaceContextStore for LocalCoreStateStore {
                             "discarded context replacement is absent".to_owned(),
                         )
                     })?;
-                    change.put(*context_id, Some(replacement));
+                    change.put(
+                        (
+                            RecordKey::Context(*context_id),
+                            Some(RecordValue::Context(replacement)),
+                        )
+                            .into(),
+                    )?;
                 }
                 log.commit(root_path, change)?;
                 Ok(outcome)
@@ -379,10 +405,15 @@ impl LocalCoreStateStore {
         &self,
         id: T::Id,
     ) -> Result<Option<T>, LocalCoreStateStoreError> {
+        let work = self.journal_work.as_ref();
+        if let Some(work) = work {
+            work.charge(crate::WorkCounters::UNCHARGED)?;
+        }
         if let Ownership::Owned(owner) = &self.ownership
-            && let Some(value) = owner.resident::<T>(id)
+            && let Ok(residents) = owner.residents.read()
+            && let Some(index) = residents.position(T::key(id), work)?
         {
-            return Ok(value);
+            return Ok(residents.0[index].value.clone().and_then(T::from_value));
         }
         self.transaction(move |root| root.with_log(|log| log.get::<T>(&root, id)))
             .await
@@ -402,7 +433,7 @@ impl LocalCoreStateStore {
                     return Ok(false);
                 }
                 let mut change = Change::default();
-                change.put(id, Some(replacement));
+                change.put((T::key(id), Some(replacement.into_value())).into())?;
                 log.commit(root, change)?;
                 Ok(true)
             })
@@ -412,13 +443,6 @@ impl LocalCoreStateStore {
 }
 
 impl Owner {
-    /// Returns a resident record (`Some(None)` for a known absence) without touching the log.
-    pub(super) fn resident<T: Logged>(&self, id: T::Id) -> Option<Option<T>> {
-        let residents = self.residents.read().ok()?;
-        let value = residents.get(&T::key(id))?;
-        Some(value.as_ref().and_then(T::from_value))
-    }
-
     pub(super) fn log(&self) -> MutexGuard<'_, Option<CoreLog>> {
         // A transaction that panics has taken the log, so a poisoned slot is
         // empty and the next transaction reopens and replays.

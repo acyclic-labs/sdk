@@ -73,15 +73,8 @@ impl LocalCoreStateStore {
                     if let Some(origin) = state.fork_origin {
                         generations.push((origin.snapshot.authored_generation, origin.config));
                     }
-                    if let Some(completed) = state.completed_selected_import {
-                        generations.extend([
-                            (completed.snapshot.authored_generation, completed.config),
-                            (completed.destination.authored_generation, completed.config),
-                            (
-                                completed.source.authored_generation,
-                                completed.source_config,
-                            ),
-                        ]);
+                    if let Some(roots) = state.selected_import_roots {
+                        generations.extend(roots.map(|(snapshot, config)| (snapshot.authored_generation, config)));
                     }
                 }
                 Ok(generations)
@@ -145,13 +138,9 @@ impl LocalCoreStateStore {
                                 .or(state.parent_workspace_id)
                         }))
                         .collect();
-                    if let Some(completed) = lazy.and_then(|state| state.completed_selected_import)
+                    if let Some(roots) = lazy.and_then(|state| state.selected_import_roots)
                     {
-                        for parent in [
-                            completed.snapshot.workspace_id,
-                            completed.destination.workspace_id,
-                            completed.source.workspace_id,
-                        ] {
+                        for parent in roots.map(|(snapshot, _)| snapshot.workspace_id) {
                             if parent != workspace && !parents.contains(&parent) {
                                 parents.push(parent);
                             }
@@ -174,8 +163,8 @@ impl LocalCoreStateStore {
             let root = &root;
             root.with_log(|log| {
                 let mut change = Change::default();
-                change.put::<WorkspaceLineageRecord>(workspace, None);
-                change.put::<LazyWorkspaceState>(workspace, None);
+                change.put((RecordKey::Lineage(workspace), None).into())?;
+                change.put((RecordKey::LazyWorkspace(workspace), None).into())?;
                 log.commit(root, change)
             })?;
             // Unsynchronized: a removal a crash undoes is found again by the
@@ -224,17 +213,9 @@ impl LocalCoreStateStore {
                         overlays.push(origin.snapshot.overlay);
                         shadows.push(origin.snapshot.shadows);
                     }
-                    if let Some(completed) = state.completed_selected_import {
-                        overlays.extend([
-                            completed.snapshot.overlay,
-                            completed.destination.overlay,
-                            completed.source.overlay,
-                        ]);
-                        shadows.extend([
-                            completed.snapshot.shadows,
-                            completed.destination.shadows,
-                            completed.source.shadows,
-                        ]);
+                    if let Some(roots) = state.selected_import_roots {
+                        overlays.extend(roots.map(|(snapshot, _)| snapshot.overlay));
+                        shadows.extend(roots.map(|(snapshot, _)| snapshot.shadows));
                     }
                     if let Some(pending) = state.pending_remove {
                         overlays.extend([pending.prior_overlay, pending.prepared_overlay]);
@@ -359,18 +340,10 @@ pub(super) fn load_content_addressed<T: DeserializeOwned + Serialize>(
     let Some(value) = read_locked(&mut namespace.record(family, &address)?)? else {
         return Ok(None);
     };
-    verify_content_address(address, &value)?;
-    Ok(Some(value))
-}
-
-pub(super) fn verify_content_address<T: Serialize>(
-    address: [u8; 32],
-    value: &T,
-) -> Result<(), LocalCoreStateStoreError> {
-    if content_address(value)? != address {
+    if content_address(&value)? != address {
         return Err(LocalCoreStateStoreError::Integrity);
     }
-    Ok(())
+    Ok(Some(value))
 }
 
 pub(super) fn content_address<T: Serialize>(

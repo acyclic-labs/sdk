@@ -36,7 +36,6 @@ use web_sys::Blob;
 
 const DATABASE_VERSION: u32 = 1;
 const OBJECTS: &str = "objects";
-const OBJECT_METADATA: &str = "object_metadata";
 const AUTHORITY_HEADS: &str = "authority_heads";
 const AUTHORITY_COMMITS: &str = "authority_commits";
 const AUTHORITY_OPERATIONS: &str = "authority_operations";
@@ -84,7 +83,6 @@ async fn open_database(name: &str) -> Result<Database, IndexedDbOpenError> {
             }
             for name in [
                 OBJECTS,
-                OBJECT_METADATA,
                 AUTHORITY_HEADS,
                 AUTHORITY_COMMITS,
                 AUTHORITY_OPERATIONS,
@@ -445,19 +443,18 @@ impl IndexedDbObjectStore {
         }
         Ok(())
     }
-    async fn length(
+    async fn object(
         io: &crate::AuthorityWork<'_>,
         tx: &Transaction<'_>,
         key: &str,
-    ) -> Result<Option<u64>, ObjectStoreError> {
-        io.get(tx, OBJECT_METADATA, key)
+    ) -> Result<Option<Blob>, ObjectStoreError> {
+        io.get(tx, OBJECTS, key)
             .await
             .map_err(object_error)?
             .map(|value| {
                 value
-                    .as_string()
-                    .and_then(|s| s.parse().ok())
-                    .ok_or_else(|| (ObjectStoreError::Corrupt))
+                    .dyn_into::<Blob>()
+                    .map_err(|_| ObjectStoreError::Corrupt)
             })
             .transpose()
     }
