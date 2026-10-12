@@ -205,7 +205,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
                 let (snapshot, custody) = crate::pi_lazy_capture::freeze_child_source(
                     live.context.context(), &live.owner, &live.view, &source, &live.original_work).await?;
                 source_custody = Some(custody);
-                owner.verify_with_native_work(false, work).await?;
+                owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
                 snapshot
             } else {
                 let frozen = self.native.source_frozen(command.commit.source_task)
@@ -421,11 +421,11 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         let frozen = freeze_created_root_source(self.protected.clone(), self.resources,
             self.filesystem.clone(), self.stream.clone(), shared, owner, caller, &input.root_key, actual, work).await?;
         let snapshot = frozen.0;
-        owner.verify_with_native_work(false, &work).await?;
+        owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(&work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         let observed = ObservedSource { caller: input.caller, sdk_operation: input.sdk_operation,
             root_key: input.root_key, snapshot };
         let _published = crate::pi_root_provider::stage_pi_input(&self.protected, &self.filesystem, command.operation_id, "root-source-observation", &observed, &work).await?;
-        owner.verify_with_native_work(false, &work).await?;
+        owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(&work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         ready(&PiRootSource { snapshot: observed.snapshot, root_key: &observed.root_key }, &work)
     }
 }
@@ -447,13 +447,13 @@ pub(crate) async fn freeze_created_root_source(
         .ok_or_else(|| unauthorized("Root freeze has no actual original created allocation"))?;
     crate::pi_lazy_capture::freeze_root_source_with_native_work(protected.policy().root_task,
         shared.context(), owner, &actual.physical, &actual.workspace, work, || async {
-            owner.verify_with_native_work(false, work).await?;
+            owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
             let preparation = crate::pi_root_provider::load_original_preparation_with_native_work(
                 &protected, &filesystem, &input.binding, root, shared.clone(), work).await?;
             crate::pi_root_provider::guard_created_root_source_with_native_work(protected.clone(),
                 resources, filesystem.clone(), stream.clone(), preparation,
                 owner, key, &original.0.1, work).await?;
-            owner.verify_with_native_work(false, work).await
+            owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await
         }).await
 }
 fn same_identity(left: &crate::PiTaskBinding, right: &crate::PiTaskBinding) -> bool {

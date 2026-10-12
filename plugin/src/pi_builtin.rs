@@ -590,7 +590,7 @@ pub(crate) async fn authorize_owner(context: &acyclic_harness::runtime::TaskCont
     if owner.task_id() != caller || context.durable_task_id() != Some(caller) {
         return Err(denied("builtin caller differs from its original task owner/context"));
     }
-    owner.verify_with_native_work(false, work).await
+    owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await
 }
 
 fn select_root_path<'p, 'r>(path: &'p str, roots: &'r std::collections::BTreeMap<String, String>,

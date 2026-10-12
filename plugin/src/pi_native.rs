@@ -810,7 +810,7 @@ pub(crate) async fn approve_command<P, A, O>(
 ) -> Result<InteractionId>
 where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectStore + 'static,
 {
-    owner.verify_with_native_work(false, work).await?;
+    owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
     let native_capability = "effect:provider:acyclic.pi.native";
     if context.durable_task_id() != Some(owner.task_id()) || binding.task_id != owner.task_id()
         || !context.scope().grants().contains(native_capability) || !protected.policy().grants.contains(native_capability)
@@ -836,7 +836,7 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acycli
     let title = pi_native_string(std::str::from_utf8(&title.0[..title.1]).expect("formatter copies UTF-8"), work)?;
     let interaction = (Interaction::approval(title.0.into(), command, digest)?, title.1);
     journal.open_interaction_with_native_work(approval, &interaction.0, work)?.await?;
-    owner.verify_with_native_work(false, work).await?;
+    owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
     let respond = native_fixed_text(format_args!("interaction:respond:{approval}"))?;
     let encoded_grants = super::pi_root_provider::guarded_pi_bytes(
         &["interaction:resolve", std::str::from_utf8(&respond.0[..respond.1]).expect("formatter copies UTF-8")], 1024, work)?;
@@ -845,7 +845,7 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acycli
     let responder = protected.conversation_authority_with_native_work(owner.task_id(), binding.agent_id, &grants.0, work)?;
     journal.resolve_interaction_with_native_work(approval,
         &InteractionResponse::Approval { approved: true, reason: None }, &responder.0.2, work)?.await?;
-    owner.verify_with_native_work(false, work).await?;
+    owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
     Ok(approval)
 }
 
@@ -894,7 +894,7 @@ impl PiNativeRootSeed {
     where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
           O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
     {
-        owner.verify_with_native_work(false, meter).await?;
+        owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(meter).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         if owner.task_id() != self.task || binding.task_id != self.task
             || shared.context().durable_task_id() != Some(self.task) || binding.scratch.volume != self.scratch
             || options.root != self.view_root || self.packet.operation_id() != NativePreparationRoot::operation(owner.task_id(), meter)?
@@ -949,7 +949,7 @@ impl PiNativeRootSeed {
                 continue;
             }
             self.packet.create_into_guarded(index, meter, || async {
-                owner.verify_with_native_work(false, meter).await?;
+                owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(meter).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
                 creator.authorize_settlement_with_native_work(owner, meter).await
             }).await?;
         }
@@ -992,7 +992,7 @@ impl PiNativeRootSeed {
         if !authority.2.work().shares_ledger(meter) || !original_volume_work.shares_ledger(meter) {
             return Err(native_error(acyclic_fs::NativeTreeMaterializationError::InvalidLayout));
         }
-        owner.verify_with_native_work(false, meter).await?;
+        owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(meter).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         if owner.task_id() != self.task || binding.task_id != self.task || context.durable_task_id() != Some(self.task)
             || binding.scratch.volume != self.scratch
         {
@@ -1060,7 +1060,7 @@ impl PiNativeRootSeed {
         {
             return Err(Error::Conflict("Pi lazy mount differs from the original actual filesystem workspace or seed generation".into()));
         }
-        owner.verify_with_native_work(false, meter).await?;
+        owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(meter).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         let authority_revision = native_digest(&(authority.0.audience(), &authority.1),
             context.scope().limits().file_bytes.min(super::MAXIMUM_ADAPTER_STATE_BYTES), meter)?;
         let mut volume_io = acyclic_harness::store::history::native_work_io(meter).map_err(native_error)?;
@@ -1100,7 +1100,7 @@ impl PiNativeRootSeed {
             code: acyclic_harness::wire::ErrorCode::Unauthorized,
             reason: "Pi mixed preparation has no retained original creator witness",
         })?;
-        owner.verify_with_native_work(false, meter).await?;
+        owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(meter).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         let allocation = seed.witnessed_allocation()?;
         if seed.service_identity.is_none() {
             return Err(Error::NativeBoundary {
@@ -1123,7 +1123,7 @@ impl PiNativeRootSeed {
             return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict,
                 reason: "Pi mixed view belongs to another original preparation operation" });
         }
-        owner.verify_with_native_work(false, meter).await?;
+        owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(meter).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         let view = view.into_arc_with_native_work(meter)?;
         let seed = retained.take().expect("original creator slot was exclusively borrowed throughout preparation");
         Ok(PiPreparedScratch { view, allocation: seed.allocation.expect("completed original creator witness was verified above"),

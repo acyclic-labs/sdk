@@ -285,7 +285,10 @@ impl Fixture {
     async fn release_publication(&mut self) -> Result<()> {
         let cancellation = CancellationToken::new();
         let meter = self.work.clone();
-        self.owner.verify_with_native_work(true, &meter).await?;
+        (async {
+            let mut io = acyclic_harness::store::history::native_work_io(&meter).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            self.owner.verify(true, &mut Some(&mut io)).await
+        }).await?;
         if let Some(reservation) = self.reservation.take() {
             reservation.1.release(&self.owner.native_view_owner(), &meter, &cancellation).await?;
             self._directory.publication_pending = false;
@@ -428,7 +431,10 @@ async fn required_pinned_pi_native_warm_supervisor_stop_drains_without_cancellin
     assert_eq!(observed.command, fixture.command);
     assert!(matches!(observed.effect.status, EffectStatus::Indeterminate));
     let original_work = observed.work;
-    fixture.owner.verify_with_native_work(false, &work).await?;
+    (async {
+        let mut io = acyclic_harness::store::history::native_work_io(&work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        fixture.owner.verify(false, &mut Some(&mut io)).await
+    }).await?;
     assert!(!<View as NativeProcessView<LocalStream>>::operation_cancellation(fixture.view.as_ref()).is_cancelled(),
         "stopping a warm native process must not retire the original mounted view");
     let diagnostic = observed.diagnostic.as_ref().ok_or_else(|| invalid("actual stop lacks its cleanup diagnostic"))?;

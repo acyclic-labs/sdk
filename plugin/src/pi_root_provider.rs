@@ -197,7 +197,7 @@ pub(crate) async fn guard_root_preparation_source_with_native_work<P: StreamProv
     let path = paths.get(root_key).ok_or(Error::NativeBoundary {
         code: ErrorCode::Unauthorized, reason: "root source has no original configured binding",
     })?;
-    current_owner.verify_with_native_work(false, work).await?;
+    current_owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
     let identity = work.root_identity(Path::new(path))
         .map_err(|cause| Error::NativeWork { cause, custody: None })?;
     if let Some(expected) = expected {
@@ -207,7 +207,7 @@ pub(crate) async fn guard_root_preparation_source_with_native_work<P: StreamProv
         }
     }
     context.verify_original_volume_read_with_native_work(current_owner, project, work).await?;
-    current_owner.verify_with_native_work(false, work).await?;
+    current_owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
     Ok(identity)
 }
 
@@ -387,7 +387,7 @@ pub(crate) async fn bind_root_output_context_with_native_work<P: StreamProvider 
         return Err(invalid());
     }
     current_owner.require_volume_grant(&binding.scratch.volume, VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
-    current_owner.verify_with_native_work(false, work).await?;
+    current_owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
     let preparation = load_original_preparation_with_native_work(&owner, &filesystem, binding, root,
         Arc::clone(&context), work).await?;
     let observer = root_provider(owner, resources, Arc::clone(&filesystem), stream,
@@ -1062,7 +1062,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
             }
         }
         for (key, path) in paths {
-            self.execution_owner()?.verify_with_native_work(false, work).await?;
+            self.execution_owner()?.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
             self.require_native_creation()?;
             let physical = self.acquire_original_source_with_native_work(key, path,
                 SharedRootAdmission::Fresh, None, work).await?;
@@ -1108,7 +1108,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         self.check_native_ledger(work)?;
         self.require_native_creation()?;
         let owner = self.execution_owner()?;
-        owner.verify_with_native_work(false, work).await?;
+        owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         self.bind_conversation_with_native_work(effect, attempt, work).await?;
         #[cfg(test)]
         self.test_fault_native("after-conversation-bind")?;
@@ -1126,7 +1126,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
                 let input = &inputs.0[key];
                 self.validate_attachment_with_native_work(input, effect, attempt, original.request_digest,
                     key, volume, path)?;
-                owner.verify_with_native_work(false, work).await?;
+                owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
                 self.require_native_creation()?;
                 let identity = guard_root_preparation_source_with_native_work(self.preparation.context.context(),
                     owner, &self.preparation, key, None, work).await?;
@@ -1154,7 +1154,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
                     || physical.source.inner().root_identity().to_bytes() != input.native_identity {
                     return Err(Self::native_failure("resumed root source differs from original allocation"));
                 }
-                owner.verify_with_native_work(false, work).await?;
+                owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
                 self.require_native_creation()?;
                 let workspace = match existing_workspace {
                     Some(workspace) => LocalLazyWorkspace::resume_root_observation_with_native_work(
@@ -1182,12 +1182,12 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
                 self.test_fault_native("after-root-creation")?;
             }
         }
-        owner.verify_with_native_work(false, work).await?;
+        owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         let volume = &self.preparation.request.binding.scratch.volume;
         owner.require_volume_grant(volume, VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         if self.creation_with_native_work(effect, attempt, "scratch", volume,
             VolumeConfig::portable(Lifecycle::Durable), work).await?.is_none() {
-            owner.verify_with_native_work(false, work).await?;
+            owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
             self.require_native_creation()?;
             let operation = self.creation_operation_with_native_work(effect, attempt, "scratch", work)?;
             let name = {
@@ -1201,7 +1201,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         }
         #[cfg(test)]
         self.test_fault_native("before-result-stage")?;
-        owner.verify_with_native_work(false, work).await?;
+        owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         let observation = self.observe_result_with_native_work(effect, attempt, original, true, work).await?
             .ok_or(Self::native_failure("root creator lacks authentic original resource acknowledgement"))?;
         #[cfg(test)]
@@ -1221,7 +1221,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
             || request.guarantee != original.0.guarantee || request.request_digest != original.0.request_digest {
             return Err(Self::native_failure("root dispatch differs from original durable attempt"));
         }
-        self.execution_owner()?.verify_with_native_work(false, work).await?;
+        self.execution_owner()?.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         if let Some(observation) = self.observe_result_with_native_work(effect, request.attempt_id,
             &original.0, false, work).await? {
             state.dispatched = true;
@@ -1236,14 +1236,14 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         work: &NativeMaterializationWork) -> Result<Option<(EffectObservation, NativeAllocation)>> {
         self.check_native_ledger(work)?;
         let mut state = self.state.lock().await;
-        self.execution_owner()?.verify_with_native_work(true, work).await?;
+        self.execution_owner()?.verify(true, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         let original = self.authenticate_with_native_work(attempt, false, work).await?;
         let effect = self.effect_id_with_native_work(work)?;
         if let Some(observation) = self.observe_result_with_native_work(effect, attempt, &original.0, true, work).await? {
             return Ok(Some(observation));
         }
         if self.creation_cancelled.load(std::sync::atomic::Ordering::SeqCst) { return Ok(None); }
-        match self.execution_owner()?.verify_with_native_work(false, work).await {
+        match self.execution_owner()?.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await {
             Ok(()) => {
                 state.dispatched = true;
                 self.allocate_with_native_work(effect, attempt, &original.0, &mut state, work).await.map(Some)

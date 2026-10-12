@@ -236,7 +236,7 @@ impl PiSession {
                 spawn_retain_custody(&mut retained_custody, custody)?;
             }
             let (acknowledgement, pending, prepared) = if let Some(live) = &live {
-                live.owner.verify_with_native_work(false, &work).await?;
+                live.owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(&work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
                 self.spawn_child_step(owner, native.clone(), &live.context, command, true, task, &work, &payload).await?
             } else {
                 self.spawn_root_step(native.clone(), command, true, Some(task), &work).await?
@@ -285,7 +285,7 @@ impl PiSession {
                 });
             }
         }
-        if let Some(live) = &live { live.owner.verify_with_native_work(false, &work).await?; }
+        if let Some(live) = &live { live.owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(&work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?; }
         self.spawn_save_created(&commit, operations, &prepared, &work)?;
         native.register_prepared(prepared).await?;
         let job = super::pi_lifecycle_session::spawn_native_job(&work, || async move {

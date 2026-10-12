@@ -108,7 +108,7 @@ impl<'a> PiControlHost<'a> {
         }
         let owner = self.runtime.runtime.task_host().journal_owner_with_native_work(task, fence, work).await?
             .with_invocation_cancellation(work.cancellation()).into_native_shared(work)?;
-        owner.verify_with_native_work(false, work).await?;
+        owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         if task == self.protected.policy().root_task && !matches!(&input.0.execution, PiTaskExecution::Host { .. }) {
             return Err(denied("selected native Root became a child"));
         }
@@ -532,7 +532,7 @@ impl PiControlHost<'_> {
             let live = destination_live.as_ref().ok_or_else(|| denied("destination original native view unavailable"))?;
             let (snapshot, custody) = crate::pi_lazy_capture::freeze_child_source(
                 live.context.context(), &live.owner, &live.view, &workspace, &live.original_work).await?;
-            owner.verify_with_native_work(false, work).await?;
+            owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
             (snapshot, custody)
         };
         let intent = SelectedImportIntent { caller: input.caller, source: input.source, root: key,

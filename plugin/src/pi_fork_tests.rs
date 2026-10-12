@@ -115,7 +115,10 @@ impl Fixture {
         let (preparation, journal) = async {
         let preparation = PiRootPreparation::load(&private_root, &relative_session, &runtime, &filesystem, &(request).binding, crate::pi_recovery::PiTaskOrigin::Root(&(request).root), Some(dispatch_context.clone()), &startup_work).await?;
         let owner = (&runtime).runtime.task_host().journal_owner_with_native_work((request).binding.task_id, &dispatch_fence, &startup_work).await?;
-        owner.verify_with_native_work(false, &startup_work).await?;
+        (async {
+            let mut io = acyclic_harness::store::history::native_work_io(&startup_work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            owner.verify(false, &mut Some(&mut io)).await
+        }).await?;
         Ok::<_, acyclic_harness::Error>((preparation, owner))
     }.await.unwrap();
         let journal = journal.into_native_shared(&startup_work).unwrap();

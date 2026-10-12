@@ -89,7 +89,7 @@ pub(crate) async fn open_prepared_approval(runtime: &PiNativeRuntime, filesystem
         || descriptor.session != binding.native_session_id || descriptor.private_volume != &binding.scratch.volume {
         return Err(denied("prepared approval changed the authenticated original Root output allocation"));
     }
-    owner.verify_with_native_work(false, work).await?;
+    owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
     let storage = protected.authority_with_native_work(work)?;
     let authority = protected.conversation_authority_with_native_work(binding.task_id, binding.agent_id,
         context.context().scope().grants(), work)?;
@@ -106,10 +106,10 @@ pub(crate) async fn open_prepared_approval(runtime: &PiNativeRuntime, filesystem
     let interaction = Interaction::Approval { prompt, operation_id: descriptor.operation,
         action_digest: pi_operator::parse_digest(descriptor.approval_digest)? };
     journal.open_interaction_with_native_work(acyclic_harness::durable_host::task_interaction_id_with_native_work(binding.task_id, descriptor.operation, work)?, &interaction, work)?.await?;
-    owner.verify_with_native_work(false, work).await?;
+    owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
     let _staged = crate::pi_root_provider::stage_pi_input(protected, filesystem, descriptor.operation,
         "operator-approval", descriptor, work).await?;
-    owner.verify_with_native_work(false, work).await
+    owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await
 }
 
 pub(crate) async fn require_resolved_approval<'a>(filesystem: &Arc<PiNativeFilesystem>, stream: &std::sync::Arc<LocalStream>,
@@ -347,7 +347,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         }
         let owner = self.runtime.runtime.task_host().journal_owner_with_native_work(root, &fence, work).await?
             .with_invocation_cancellation(work.cancellation()).into_native_shared(work)?;
-        owner.verify_with_native_work(false, work).await?;
+        owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         let (admitted, _admission_custody) = self.admission_input(root, work).await?;
         self.protected.validate_root(&admitted.binding, work)?;
         let crate::pi_task::PiTaskExecution::Host { root: original_root, .. } = admitted.execution else {
@@ -368,9 +368,9 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             let responder = self.protected.conversation_authority_with_native_work(root, self.protected.policy().agent,
                 &grants.0, work)?;
             let response = InteractionResponse::Approval { approved: decision == PiOperatorDecision::Approve, reason: None };
-            owner.verify_with_native_work(false, work).await?;
+            owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
             journal.resolve_interaction_with_native_work(id, &response, &responder.0.2, work)?.await?;
-            owner.verify_with_native_work(false, work).await?;
+            owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         }
         if decision == PiOperatorDecision::Decline {
             let journal = conversation_journal(&self.filesystem, &self.stream, &self.protected, &prepared, work)?;
@@ -395,7 +395,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             TaskCommandProgress::Pending => return Ok(TaskCommandProgress::Pending),
             TaskCommandProgress::Indeterminate => return Ok(TaskCommandProgress::Indeterminate),
         }
-        owner.verify_with_native_work(false, work).await?;
+        owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         let (status, native) = observe_writeback(&self.filesystem, &self.stream, self.resources, &self.protected,
             &prepared, work).await?;
         if status != "published" { return Ok(TaskCommandProgress::Pending); }

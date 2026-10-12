@@ -674,7 +674,7 @@ mod tests {
         }
         let (key, project) = fixture.root_request.binding.project_volumes.first_key_value().unwrap();
         fixture.context.verify_original_volume_read_with_native_work(&fixture.journal, project, work).await?;
-        fixture.journal.verify_with_native_work(false, work).await?;
+        fixture.journal.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         // Fixture::new obtained this protected result by observing the real
         // original Root effect and its actual Filesystem creator resources.
         let created = &fixture.root_allocation.roots[key];

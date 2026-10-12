@@ -142,7 +142,7 @@ impl PiWritebackPublicationGuard {
         {
             return Err(selected_unauthorized("writeback retained another original Root creator"));
         }
-        owner.verify_with_native_work(false, work).await?;
+        owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         let write_capability = {
             let volume = request.0.binding.project_volumes.get(key)
                 .ok_or_else(|| selected_unauthorized("writeback lost its original project"))?;
@@ -172,7 +172,7 @@ impl PiWritebackPublicationGuard {
     }
 
     pub(crate) async fn verify(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        self.owner.verify_with_native_work(false, work).await?;
+        self.owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         let volume = self.request.binding.project_volumes.get(&self.key)
             .ok_or_else(|| selected_unauthorized("writeback lost its retained original project"))?;
         if self.context.context().durable_task_id() != Some(self.owner.task_id())
@@ -192,7 +192,7 @@ impl PiWritebackPublicationGuard {
             return Err(selected_unauthorized("writeback changed its held original native Root identity"));
         }
         self.owner.require_volume_grant(volume, acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
-        self.owner.verify_with_native_work(false, work).await
+        self.owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await
     }
 }
 
@@ -338,14 +338,14 @@ impl<P: StreamProvider + 'static> PiSelectedPublicationGuard<P> {
             {
                 continue;
             }
-            owner.verify_with_native_work(false, work).await?;
+            owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
             if context.context().durable_task_id() != Some(owner.task_id())
                 || !context.context().scope().grants().contains(&self.write_capability)
             {
                 return Err(selected_unauthorized("selected publication lost its original caller or destination WRITE grant"));
             }
             owner.require_volume_grant(&self.volume, acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
-            owner.verify_with_native_work(false, work).await?;
+            owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         }
         Ok(())
     }

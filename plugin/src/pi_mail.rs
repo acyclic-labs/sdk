@@ -56,7 +56,7 @@ async fn authenticate<P: StreamProvider>(
         return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
             reason: "Pi mailbox caller differs from original owner" });
     }
-    owner.verify_with_native_work(false, work).await?;
+    owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
     Ok(owner.task_id())
 }
 
@@ -79,7 +79,7 @@ pub(crate) async fn prepare_send<P: StreamProvider, F: FnOnce(TaskId, TaskId) ->
     let caller = authenticate(context, owner, work).await?;
     authorize(caller, recipient)?;
     let command = stage_send(protected, filesystem, operation, caller, recipient, envelope, work).await?;
-    owner.verify_with_native_work(false, work).await?;
+    owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
     Ok((command.0, command.1))
 }
 

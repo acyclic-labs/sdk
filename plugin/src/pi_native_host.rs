@@ -443,7 +443,7 @@ impl PiNativeCommandHost {
         };
         let Some(view) = self.live_view(task) else { return Ok(None); };
         let Some(prepared) = self.prepared(task) else { return Ok(None); };
-        effect.owner.verify_with_native_work(false, &original_work).await?;
+        effect.owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(&original_work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         if effect.owner.task_id() != task || effect.context().durable_task_id() != Some(task) {
             return Err(unauthorized("Pi live source differs from its original owner/context"));
         }
@@ -496,7 +496,7 @@ impl PiNativeCommandHost {
             if outcome.0.is_none() {
                 let original_work = entry.handles.lock().await.preparation_work.as_ref()
                     .ok_or(Error::Indeterminate(effect.command))?.clone();
-                effect.owner.verify_with_native_work(false, &original_work).await?;
+                effect.owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(&original_work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
                 let view = self.live_view(task).ok_or_else(|| Error::Indeterminate(effect.command))?;
                 let snapshots = view.checkpoint_projects_with_native_work(
                     effect.owner.native_view_owner(), &original_work)?.await?;
@@ -602,7 +602,7 @@ impl PiNativeCommandHost {
         }
         work.cancellation().check().map_err(|_| native_error(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
         self.child_admission(task, &work).await?;
-        bound.owner.verify_with_native_work(false, &work).await?;
+        bound.owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(&work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         Ok(work)
     }
 
@@ -813,7 +813,7 @@ impl PiNativeCommandHost {
             let view = self.live_view(task).ok_or(Error::Indeterminate(effect.command))?;
             let original = handles.preparation_work.as_ref().cloned()
                 .ok_or_else(|| unauthorized("Pi cleanup has no original view work"))?;
-            effect.owner.verify_with_native_work(true, meter).await?;
+            effect.owner.verify(true, &mut Some(&mut acyclic_harness::store::history::native_work_io(meter).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
             handles.stop_startup_mount(effect.command)?;
             let LiveHandles { process_drained, drained, .. } = &mut *handles;
             match view.cleanup_mounts_with_native_work(effect.owner.native_view_owner(),
@@ -830,7 +830,7 @@ impl PiNativeCommandHost {
             *entry.view.write().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         }
         if handles.drained.is_none() { return Err(Error::Indeterminate(effect.command)); }
-        effect.owner.verify_with_native_work(true, meter).await?;
+        effect.owner.verify(true, &mut Some(&mut acyclic_harness::store::history::native_work_io(meter).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         handles.project_gate.release(&effect.owner, meter, cancellation, effect.command).await?;
         handles.scratch_gate.release(&effect.owner, meter, cancellation, effect.command).await?;
         Ok(())
@@ -881,7 +881,7 @@ impl PiNativeCommandHost {
         let mut handles = entry.handles.lock().await;
         let (owner, context, command) = handles.preparation_owner.as_ref().cloned()
             .ok_or_else(|| unauthorized("Pi cold rollback cannot adopt original native allocation capabilities"))?;
-        owner.verify_with_native_work(true, meter).await?;
+        owner.verify(true, &mut Some(&mut acyclic_harness::store::history::native_work_io(meter).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         let admission = self.child_admission(task, meter).await?;
         let input = &admission.1;
         let recorded_effect = self.original_effect(context.context(), input, command, meter).await?;
@@ -1105,7 +1105,7 @@ impl PiNativeCommandHost {
         }
         let owner = self.runtime.runtime.task_host()
             .journal_owner_with_native_work(task, fence, work).await?.into_native_shared(work)?;
-        owner.verify_with_native_work(recovery, work).await?;
+        owner.verify(recovery, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         Ok(((admitted.1, admitted.2), owner, original))
     }
 

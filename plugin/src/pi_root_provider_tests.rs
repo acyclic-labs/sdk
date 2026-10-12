@@ -113,7 +113,10 @@ impl Fixture {
         let (preparation, journal_owner) = async {
         let preparation = PiRootPreparation::load(&resources.private_state_root, session.strip_prefix(&resources.data).unwrap(), &runtime, &filesystem, &(request).binding, crate::pi_recovery::PiTaskOrigin::Root(&(request).root), Some(Arc::clone(&context)), &startup).await?;
         let owner = (&runtime).runtime.task_host().journal_owner_with_native_work((request).binding.task_id, &fence, &startup).await?;
-        owner.verify_with_native_work(false, &startup).await?;
+        (async {
+            let mut io = acyclic_harness::store::history::native_work_io(&startup).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            owner.verify(false, &mut Some(&mut io)).await
+        }).await?;
         Ok::<_, acyclic_harness::Error>((preparation, owner))
     }.await.unwrap();
         let journal_owner = journal_owner.into_native_shared(&startup).unwrap();
@@ -151,7 +154,10 @@ impl Fixture {
         let (preparation, journal_owner) = async {
         let preparation = PiRootPreparation::load(&self.resources.private_state_root, self.session.strip_prefix(&self.resources.data).unwrap(), &self.runtime, &self.filesystem, &(self.request).binding, crate::pi_recovery::PiTaskOrigin::Root(&(self.request).root), Some(Arc::clone(&context)), &self.startup).await?;
         let owner = (&self.runtime).runtime.task_host().journal_owner_with_native_work((self.request).binding.task_id, &fence, &self.startup).await?;
-        owner.verify_with_native_work(false, &self.startup).await?;
+        (async {
+            let mut io = acyclic_harness::store::history::native_work_io(&self.startup).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            owner.verify(false, &mut Some(&mut io)).await
+        }).await?;
         Ok::<_, acyclic_harness::Error>((preparation, owner))
     }.await.unwrap();
         let journal_owner = journal_owner.into_native_shared(&self.startup).unwrap();
@@ -252,7 +258,10 @@ async fn pi_created_root_guard_uses_actual_readonly_owner_without_snapshot_or_fr
         &result.0, &fixture.startup).await.unwrap();
     let (readonly_owner, readonly_context) = fixture.runtime.runtime.readonly_task_context_with_native_work(
         fixture.request.binding.task_id, &fixture.startup).await.unwrap();
-    assert!(readonly_owner.verify_with_native_work(false, &fixture.startup).await.is_err());
+    assert!((async {
+        let mut io = acyclic_harness::store::history::native_work_io(&fixture.startup).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        readonly_owner.verify(false, &mut Some(&mut io)).await
+    }).await.is_err());
     let key = fixture.request.binding.project_volumes.keys().next().unwrap();
     let preparation = load_original_preparation_with_native_work(&fixture.owner, &fixture.filesystem, &(fixture.request).binding, &(fixture.request).root, Arc::clone(&readonly_context), &fixture.startup).await.unwrap();
     let before = fixture.startup.receipt();

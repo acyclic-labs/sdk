@@ -278,7 +278,7 @@ impl<'a> PiWorkflowHost<'a> {
         let preparation = pi_root_inputs::PiRootPreparation::load(&self.resources.private_state_root, self.directory, &self.runtime, &self.filesystem, binding, pi_recovery::PiTaskOrigin::RootState(self.retained), Some(Arc::clone(&context)), work).await?;
         let owner = self.runtime.runtime.task_host().journal_owner_with_native_work(
             preparation.request.binding.task_id, fence, work).await?;
-        owner.verify_with_native_work(false, work).await?;
+        owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         pi_root_provider::bind_root_output_context_with_native_work(
             context, &owner, protected, self.resources,
             self.filesystem.clone(), self.stream.clone(), &preparation.request.binding, &preparation.request.root, work,
@@ -304,7 +304,7 @@ impl<'a> PiWorkflowHost<'a> {
         let preparation = pi_root_inputs::PiRootPreparation::load(&self.resources.private_state_root, self.directory, &self.runtime, &self.filesystem, binding, pi_recovery::PiTaskOrigin::RootState(self.retained), Some(Arc::clone(&context)), work).await?;
         let journal_owner = self.runtime.runtime.task_host().journal_owner_with_native_work(
             preparation.request.binding.task_id, fence, work).await?;
-        journal_owner.verify_with_native_work(false, work).await?;
+        journal_owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
         let expected = pi_root_provider::guarded_pi_value(
             &preparation.plan, MAXIMUM_CONTROL_MESSAGE_BYTES as u64, work,
         )?;

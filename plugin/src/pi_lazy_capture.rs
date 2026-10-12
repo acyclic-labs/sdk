@@ -178,7 +178,7 @@ where P: acyclic_stream::StreamProvider,
         return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
             reason: "Root snapshot requires its actual original Root context and owner" });
     }
-    owner.verify_with_native_work(false, work).await?;
+    owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
     let observed = physical.observe_with_native_work(work, &mut guard).await?;
     guard().await?;
     let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(work, work.cancellation()).map_err(native_lazy_error)?;
@@ -194,7 +194,7 @@ where P: acyclic_stream::StreamProvider,
         return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict,
             reason: "Root source freeze changed its guarded watcher observation" });
     }
-    owner.verify_with_native_work(false, work).await?;
+    owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
     drop(rebound);
     drop(observed.0);
     Ok((frozen, observed.1))
@@ -219,9 +219,9 @@ pub(crate) async fn freeze_child_source<P: acyclic_stream::StreamProvider>(
         return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
             reason: "Pi source checkpoint requires its actual source task context" });
     }
-    owner.verify_with_native_work(false, work).await?;
+    owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
     let checkpoint = view.checkpoint_projects_with_native_work(owner.native_view_owner(), work)?.await?;
-    owner.verify_with_native_work(false, work).await?;
+    owner.verify(false, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?)).await?;
     let mut selected = checkpoint.0.iter().filter(|(_, snapshot)| snapshot.workspace_id == source.workspace().id());
     let snapshot = selected.next().ok_or_else(|| Error::NativeBoundary {
         code: acyclic_harness::wire::ErrorCode::Unauthorized,

@@ -262,7 +262,10 @@ async fn pi_preparation_dispatch_requires_current_uncancelled_original_execution
     let (preparation, owner) = async {
         let preparation = PiRootPreparation::load(&fixture.private_root, Path::new(""), &fixture.runtime, &fixture.filesystem, &(fixture.request).binding, crate::pi_recovery::PiTaskOrigin::Root(&(fixture.request).root), Some(context.clone()), &fixture.work).await?;
         let owner = (&fixture.runtime).runtime.task_host().journal_owner_with_native_work((fixture.request).binding.task_id, &fence, &fixture.work).await?;
-        owner.verify_with_native_work(false, &fixture.work).await?;
+        (async {
+            let mut io = acyclic_harness::store::history::native_work_io(&fixture.work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            owner.verify(false, &mut Some(&mut io)).await
+        }).await?;
         Ok::<_, acyclic_harness::Error>((preparation, owner))
     }
     .await
@@ -279,7 +282,10 @@ async fn pi_preparation_dispatch_requires_current_uncancelled_original_execution
         async {
         let preparation = PiRootPreparation::load(&fixture.private_root, Path::new(""), &fixture.runtime, &fixture.filesystem, &(fixture.request).binding, crate::pi_recovery::PiTaskOrigin::Root(&(fixture.request).root), Some(context.clone()), &fixture.work).await?;
         let owner = (&fixture.runtime).runtime.task_host().journal_owner_with_native_work((fixture.request).binding.task_id, &stale, &fixture.work).await?;
-        owner.verify_with_native_work(false, &fixture.work).await?;
+        (async {
+            let mut io = acyclic_harness::store::history::native_work_io(&fixture.work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            owner.verify(false, &mut Some(&mut io)).await
+        }).await?;
         Ok::<_, acyclic_harness::Error>((preparation, owner))
     }
         .await
@@ -291,7 +297,10 @@ async fn pi_preparation_dispatch_requires_current_uncancelled_original_execution
         async {
         let preparation = PiRootPreparation::load(&fixture.private_root, Path::new(""), &fixture.runtime, &fixture.filesystem, &(fixture.request).binding, crate::pi_recovery::PiTaskOrigin::Root(&(fixture.request).root), Some(context), &fixture.work).await?;
         let owner = (&fixture.runtime).runtime.task_host().journal_owner_with_native_work((fixture.request).binding.task_id, &fence, &fixture.work).await?;
-        owner.verify_with_native_work(false, &fixture.work).await?;
+        (async {
+            let mut io = acyclic_harness::store::history::native_work_io(&fixture.work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            owner.verify(false, &mut Some(&mut io)).await
+        }).await?;
         Ok::<_, acyclic_harness::Error>((preparation, owner))
     }
         .await
