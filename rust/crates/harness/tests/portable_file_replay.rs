@@ -220,10 +220,10 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
     let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?;
     let writer = Arc::new(FilesystemContentPublisher::new(
         filesystem.clone(),
-        volume.clone(),
+        &volume,
         &issuer.verifier(&mut None).expect("verifier copy"),
         &signed,
-        65_536,
+        65_536, None,
     )?);
     let text = "original\r\n🦀 exact bytes\r\n";
     let source = writer
@@ -374,9 +374,9 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             Some(ContentBindings {
                 reader: Arc::new(FilesystemContentVerifier::new(
                     filesystem.clone(),
-                    issuer.verifier(&mut None).expect("verifier copy"),
-                    signed.clone(),
-                    65_536,
+                    &issuer.verifier(&mut None).expect("verifier copy"),
+                    &signed,
+                    65_536, None,
                 )?),
                 writer: Some(writer.clone()),
             }),
@@ -389,10 +389,10 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             inner: Arc::new(FilesystemExecutionJournal::new(
                 stream.clone(),
                 filesystem.clone(),
-                volume.clone(),
-                issuer.verifier(&mut None).expect("verifier copy"), acyclic_harness::core::SchemaRegistry::new(),
-                signed.clone(),
-                65_536,
+                &volume,
+                &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(),
+                &signed,
+                65_536, None,
             )?),
             reads: AtomicUsize::new(0),
             writes: AtomicUsize::new(0),

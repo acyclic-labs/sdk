@@ -105,9 +105,9 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
     let [request, result, schema, invalid_schema]: [FileRef; 4] = files.try_into().unwrap();
     let verifier = Arc::new(FilesystemContentVerifier::new(
         host,
-        issuer.verifier(&mut None).expect("verifier copy"),
-        scope.clone(),
-        4_096,
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
+        4_096, None,
     )?);
     let provider = Arc::new(test_stream::LostSessionAck::<MemoryStream>::default());
     let stream = provider.clone();

@@ -27,17 +27,14 @@ impl Fixture {
         let volume = VolumeRef::new(provider, "journal", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
         host.create_volume(&volume).await?;
         let issuer = AuthorityIssuer::new("pi-mail", [72;32], Authority { kind: AggregateKind::Task, id: "mail-original".into() });
-        let signed = issuer.issue("owner", &Capabilities::new([
-            "operation:declare".to_owned(), "operation:observe".to_owned(), "operation:cancel".to_owned(),
-            "task:spawn:pi.mail.test@1".to_owned(), "mail:send".to_owned(), "mail:read".to_owned(),
-            volume.capability(VolumeOperation::Read)?, volume.capability(VolumeOperation::Write)?,
-            volume.directory_read_capability("pi-inputs")?,
-        ]), Some(agent), None, &mut None).expect("scope proof");
-        let scope = RuntimeScope::new(Capabilities::new([
-            "operation:declare".to_owned(), "operation:observe".to_owned(), "operation:cancel".to_owned(),
-            "task:spawn:pi.mail.test@1".to_owned(), "mail:send".to_owned(), "mail:read".to_owned(),
-            volume.directory_read_capability("pi-inputs")?,
-        ]), Limits::default())?;
+        let grants = Capabilities::new([
+            "operation:declare", "operation:observe", "operation:cancel",
+            "task:spawn:pi.mail.test@1", "mail:send", "mail:read",
+        ].into_iter().map(str::to_owned).chain([volume.directory_read_capability("pi-inputs", &mut None)?]));
+        let signed = issuer.issue("owner", &Capabilities::new(grants.iter().map(str::to_owned).chain([
+            volume.capability(VolumeOperation::Read, &mut None)?, volume.capability(VolumeOperation::Write, &mut None)?,
+        ])), Some(agent), None, &mut None).expect("scope proof");
+        let scope = RuntimeScope::new(grants, Limits::default())?;
         let machine = Arc::new(Passive { identity: MachineIdentity { name: "pi.mail.test".into(), version: "1".into(), digest: [73; 32] }, schema: json!({"type":"object"}) });
         let mut tasks = TaskRegistry::default();
         tasks.register(TaskDefinition::<Value, Value>::resumable(machine.clone(), json!({"type":"object"}), json!({}))?)?;
@@ -115,7 +112,7 @@ async fn actual_mailbox_lost_ack_exact_sequence_and_original_sender() -> Result<
     assert_eq!(received.item.sequence, 1);
     assert_eq!(received.envelope, envelope);
     assert_eq!(received.sender, parent);
-    assert!(received_custody.bytes() > 0);
+    assert!(received_custody.work().shares_ledger(&work));
     assert!(work.live_allocation_bytes() > baseline);
     let (repeated, repeated_custody) = receive(&reopened, &binding, 0, 1, &work).await?;
     assert_eq!(repeated.unwrap().item, received.item);
@@ -189,7 +186,7 @@ fn bounded_envelope_rejects_unknown_fields_and_oversized_bodies() {
 }
 
 #[tokio::test]
-async fn actual_passive_inbox_precancellation_never_reads_or_recreates_a_ledger() -> Result<()> {
+async fn native_inbox_bounds_and_cancellation_reject_before_io() -> Result<()> {
     let fixture = Fixture::new().await?;
     let runtime = fixture.runtime().await?;
     let (_, task) = fixture.admit(&runtime).await?;
@@ -198,7 +195,6 @@ async fn actual_passive_inbox_precancellation_never_reads_or_recreates_a_ledger(
         scratch:crate::PiScratchBinding { volume:fixture.volume.clone(), allocation:crate::PiScratchAllocation::Preparing } };
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
-    let upstream = work.claim(19).unwrap();
     let before = work.receipt();
     let live = work.live_allocation_bytes();
     cancellation.cancel();
@@ -207,30 +203,6 @@ async fn actual_passive_inbox_precancellation_never_reads_or_recreates_a_ledger(
     drop(failure);
     assert_eq!(work.receipt(), before);
     assert_eq!(work.live_allocation_bytes(), live);
-    drop(upstream);
-    Ok(())
-}
-
-#[tokio::test]
-async fn invalid_native_receive_returns_static_denial_without_mailbox_io() -> Result<()> {
-    let fixture = Fixture::new().await?;
-    let runtime = fixture.runtime().await?;
-    let (_, task) = fixture.admit(&runtime).await?;
-    let binding = crate::PiTaskBinding {
-        native_session_id: "actual-parent".into(), task_id: task,
-        agent_id: AgentId::from_bytes([71; 16]), project_volumes: BTreeMap::new(),
-        results: None,
-        scratch: crate::PiScratchBinding {
-            volume: fixture.volume.clone(), allocation: crate::PiScratchAllocation::Preparing,
-        },
-    };
-    let cancellation = CancellationToken::new();
-    let work = NativeMaterializationWork::new(
-        crate::pi_root_provider::allocation_budget(), &cancellation,
-    ).unwrap();
-    let before = work.receipt();
-    let live = work.live_allocation_bytes();
-    cancellation.cancel();
     let failure = receive(&runtime, &binding, 0, 2, &work).await.err().unwrap();
     assert!(matches!(failure, Error::NativeBoundary {
         code: acyclic_harness::wire::ErrorCode::Invalid,

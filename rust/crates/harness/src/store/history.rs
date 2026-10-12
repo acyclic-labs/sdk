@@ -384,7 +384,7 @@ impl<P: StreamProvider> HistoryReader<P> {
             if messages.is_ok() { released?; }
         }
         let (mut conversation, _) =
-            crate::conversation::ConversationState::selected_view(messages?, work)?;
+            crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages: messages?, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, work)?;
         conversation.agent = source.agent;
         if through_sequence >= source.resident_after_sequence()
             && conversation.history_prefix_digest(through_sequence, work)?
@@ -712,7 +712,7 @@ impl<P: StreamProvider> HistoryReader<P> {
                 Error::Storage("selected history message is missing at its pinned cutoff".into())
             })?);
         }
-        let view = crate::conversation::ConversationState::selected_view(messages, &mut None).map(|(state, _)| state)?;
+        let view = crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).map(|(state, _)| state)?;
         crate::projection::validate_model_context_selection_at_revision(&view, selection, selection.conversation_revision, None)?;
         Ok(view)
     }

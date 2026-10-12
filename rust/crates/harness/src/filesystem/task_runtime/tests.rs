@@ -348,7 +348,7 @@ async fn native_admission_failure_precedes_post_dispatch_verification_and_deadli
     ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let commands = NativeAdmissionFailure {clock:fixture.clock.clone(),work,calls:AtomicUsize::new(0)};
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
-    match runtime.resume_task(lease.clone(),&commands,2).await {
+    match runtime.resume_task(lease.clone(),&commands,2, None).await {
         TaskWorkerAttempt::Unresolved {lease:original,error:Error::NativeWork {cause,custody}} => {
             assert_eq!(original.operation.operation_id,lease.operation.operation_id);
             assert_eq!(original.reservation,lease.reservation);
@@ -376,7 +376,7 @@ async fn expired_reopened_task_rejects_before_machine_or_tool_dispatch() -> Resu
     fixture.clock.0.store(20, Ordering::SeqCst);
     let reopened = fixture.runtime().await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
-    let attempt = reopened.resume_task(lease.clone(), &reopened.commands(), 2).await;
+    let attempt = reopened.resume_task(lease.clone(), &reopened.commands(), 2, None).await;
     assert!(matches!(attempt, TaskWorkerAttempt::Unresolved { error: Error::Indeterminate(_), .. }));
     assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 0);
     assert_eq!(fixture.machine.transitioned.load(Ordering::SeqCst), 0);
@@ -401,7 +401,7 @@ async fn hanging_tool_retains_original_intent_until_explicit_reconciliation() ->
     let runtime = fixture.runtime().await?;
     let lease = fixture.admit(&runtime).await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
-    let attempt = runtime.resume_task(lease.clone(), &runtime.commands(), 2).await;
+    let attempt = runtime.resume_task(lease.clone(), &runtime.commands(), 2, None).await;
     assert!(matches!(attempt, TaskWorkerAttempt::Unresolved { error: Error::Indeterminate(_), .. }));
     assert_eq!(fixture.tool.executed.load(Ordering::SeqCst), 1);
     let revision = runtime.open_task(task, LeaseFence::from(&lease.reservation)).await?.checkpoint().revision;
@@ -560,7 +560,7 @@ async fn cancelled_mail_reconciles_original_atomic_send_without_republication() 
             .map_err(|error| Error::Invalid(error.to_string()))?,
     ).await?;
     assert!(matches!(
-        runtime.resume_task(lease.clone(), &runtime.commands(), 1).await,
+        runtime.resume_task(lease.clone(), &runtime.commands(), 1, None).await,
         TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { .. })
     ));
     assert_eq!(runtime.task_host().inbox(task, 0, 8).await?.len(), 1);
@@ -568,7 +568,7 @@ async fn cancelled_mail_reconciles_original_atomic_send_without_republication() 
     fixture.clock.0.store(20, Ordering::SeqCst);
     let reopened = fixture.runtime().await?;
     assert!(matches!(
-        reopened.resume_task(lease.clone(), &reopened.commands(), 1).await,
+        reopened.resume_task(lease.clone(), &reopened.commands(), 1, None).await,
         TaskWorkerAttempt::Unresolved { error:Error::Indeterminate(_), .. }
     ));
     assert_eq!(reopened.task_host().observe_task(task).await?.reservation, Some(lease.reservation.clone()));
@@ -811,7 +811,7 @@ async fn native_stock_worker_stale_fence_and_expired_admission_precede_provider_
         if stale { lease.reservation.id.replace_range(0..1, "x"); }
         else { fixture.clock.0.store(20, Ordering::SeqCst); }
         let original = lease.clone();
-        let (attempt, custody) = runtime.run_task_with_native_work(lease, custody, &runtime.commands(), 2, &work).await?;
+        let (attempt, custody) = runtime.resume_task_with_native_work(lease, custody, &runtime.commands(), 2, &work).await?;
         match attempt {
             TaskWorkerAttempt::Unresolved { lease, error } => {
                 assert_eq!(lease, original);

@@ -7388,10 +7388,10 @@ pub(crate) mod tests {
         ];
         let content_scope = issuer.issue("native-owned-content", &Capabilities::new(volume_grants.clone()), Some(agent), None, &mut None).expect("scope proof");
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(
-            filesystem.clone(), volume.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &content_scope, 65_536,
+            filesystem.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &content_scope, 65_536, None,
         )?);
         let reader = Arc::new(FilesystemContentVerifier::new(
-            filesystem.clone(), issuer.verifier(&mut None).expect("verifier copy"), content_scope.clone(), 65_536,
+            filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &content_scope, 65_536, None,
         )?);
         let (host, owner, runtime_scope) = effect_task_fixture_with_storage(
             stream.clone(), "test.native-release", volume_grants,
@@ -7406,8 +7406,8 @@ pub(crate) mod tests {
             issuer.verifier(&mut None).expect("verifier copy"), content_scope.clone(), 65_536,
         )?);
         let journal = FilesystemExecutionJournal::for_task(
-            owner.clone(), attempt, attempt, filesystem.clone(), volume.clone(),
-            issuer.verifier(&mut None).expect("verifier copy"), content_scope.clone(), 65_536,
+            owner.clone(), attempt, attempt, filesystem.clone(), &volume,
+            &issuer.verifier(&mut None).expect("verifier copy"), &content_scope, 65_536, None,
         )?;
         let units = 100_000;
         let bytes = 100_000_000;
@@ -7567,7 +7567,7 @@ pub(crate) mod tests {
         let replacement_journal = FilesystemExecutionJournal::for_task(
             replacement_owner.clone(), OperationId::from_bytes([55; 16]),
             OperationId::from_bytes([55; 16]),
-            filesystem.clone(), volume.clone(), issuer.verifier(&mut None).expect("verifier copy"), content_scope.clone(), 65_536,
+            filesystem.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &content_scope, 65_536, None,
         )?;
         let other_volume = VolumeRef::new(
             filesystem_provider, "other-native-owned", VolumeClass::AgentPrivate,
@@ -7913,10 +7913,10 @@ pub(crate) mod tests {
                 attempt,
                 attempt,
                 filesystem.clone(),
-                volume.clone(),
-                issuer.verifier(&mut None).expect("verifier copy"),
-                content_scope.clone(),
-                65_536,
+                &volume,
+                &issuer.verifier(&mut None).expect("verifier copy"),
+                &content_scope,
+                65_536, None,
             )?;
             let model_request = journal
                 .stage(
@@ -8066,10 +8066,10 @@ pub(crate) mod tests {
             let unbound = crate::filesystem::FilesystemExecutionJournal::new(
                 stream.clone(),
                 filesystem.clone(),
-                volume.clone(),
-                issuer.verifier(&mut None).expect("verifier copy"), crate::core::SchemaRegistry::new(),
-                content_scope.clone(),
-                65_536,
+                &volume,
+                &issuer.verifier(&mut None).expect("verifier copy"), &crate::core::SchemaRegistry::new(),
+                &content_scope,
+                65_536, None,
             )?;
             unbound
                 .append(
@@ -8097,10 +8097,10 @@ pub(crate) mod tests {
                 uncharged,
                 uncharged,
                 filesystem.clone(),
-                volume.clone(),
-                issuer.verifier(&mut None).expect("verifier copy"),
-                content_scope.clone(),
-                65_536,
+                &volume,
+                &issuer.verifier(&mut None).expect("verifier copy"),
+                &content_scope,
+                65_536, None,
             )?;
             assert!(
                 adopted.replay(uncharged, 0, 64).await.is_err(),
@@ -8178,24 +8178,24 @@ pub(crate) mod tests {
                 attempt,
                 attempt,
                 filesystem.clone(),
-                volume.clone(),
-                issuer.verifier(&mut None).expect("verifier copy"),
-                content_scope.clone(),
-                65_536,
+                &volume,
+                &issuer.verifier(&mut None).expect("verifier copy"),
+                &content_scope,
+                65_536, None,
             )?
             .with_interaction_owner(
-                conversation_issuer.verifier(&mut None).expect("verifier copy"),
-                crate::core::SchemaRegistry::new(),
-                conversation_scope,
-                volume.clone(),
+                &conversation_issuer.verifier(&mut None).expect("verifier copy"),
+                &crate::core::SchemaRegistry::new(),
+                &conversation_scope,
+                &volume, None,
             )?;
             let unbound = crate::filesystem::FilesystemExecutionJournal::new(
                 stream.clone(),
                 filesystem.clone(),
-                volume.clone(),
-                issuer.verifier(&mut None).expect("verifier copy"), crate::core::SchemaRegistry::new(),
-                content_scope.clone(),
-                65_536,
+                &volume,
+                &issuer.verifier(&mut None).expect("verifier copy"), &crate::core::SchemaRegistry::new(),
+                &content_scope,
+                65_536, None,
             )?;
             let response_scope = conversation_issuer.issue("owner", &Capabilities::new([
                     "interaction:open".to_owned(),
@@ -8205,10 +8205,10 @@ pub(crate) mod tests {
             assert!(
                 matches!(
                     unbound.with_interaction_owner(
-                        conversation_issuer.verifier(&mut None).expect("verifier copy"),
-                        crate::core::SchemaRegistry::new(),
-                        response_scope,
-                        volume.clone(),
+                        &conversation_issuer.verifier(&mut None).expect("verifier copy"),
+                        &crate::core::SchemaRegistry::new(),
+                        &response_scope,
+                        &volume, None,
                     ),
                     Err(Error::Unauthorized(_))
                 ),
@@ -8325,16 +8325,16 @@ pub(crate) mod tests {
                 attempt,
                 attempt,
                 filesystem.clone(),
-                volume.clone(),
-                issuer.verifier(&mut None).expect("verifier copy"),
-                content_scope.clone(),
-                65_536,
+                &volume,
+                &issuer.verifier(&mut None).expect("verifier copy"),
+                &content_scope,
+                65_536, None,
             )?
             .with_interaction_owner(
-                conversation_issuer.verifier(&mut None).expect("verifier copy"),
-                crate::core::SchemaRegistry::new(),
-                conversation_scope,
-                volume.clone(),
+                &conversation_issuer.verifier(&mut None).expect("verifier copy"),
+                &crate::core::SchemaRegistry::new(),
+                &conversation_scope,
+                &volume, None,
             )?;
             journal
                 .open_interaction(approval_id, approval_request.clone())
@@ -8522,10 +8522,10 @@ pub(crate) mod tests {
                 attempt,
                 attempt,
                 filesystem.clone(),
-                volume.clone(),
-                issuer.verifier(&mut None).expect("verifier copy"),
-                content_scope.clone(),
-                65_536,
+                &volume,
+                &issuer.verifier(&mut None).expect("verifier copy"),
+                &content_scope,
+                65_536, None,
             )?;
             assert!(
                 journal
@@ -8608,10 +8608,10 @@ pub(crate) mod tests {
                 attempt,
                 attempt,
                 filesystem.clone(),
-                volume.clone(),
-                issuer.verifier(&mut None).expect("verifier copy"),
-                content_scope.clone(),
-                65_536,
+                &volume,
+                &issuer.verifier(&mut None).expect("verifier copy"),
+                &content_scope,
+                65_536, None,
             )?;
             reopened
                 .append(attempt, "settlement-69".into(), observation.clone())

@@ -98,9 +98,9 @@ async fn local_reopen_preserves_ref_only_history_fork_and_parent_merge() -> Resu
         host.create_volume(&private).await?;
         let reader = Arc::new(FilesystemContentVerifier::new(
             host.clone(),
-            issuer.verifier(&mut None).expect("verifier copy"),
-            scope.clone(),
-            64 * 1_024,
+            &issuer.verifier(&mut None).expect("verifier copy"),
+            &scope,
+            64 * 1_024, None,
         )?);
         let forks = Arc::new(CompositeForkVerifier::new(&[
             Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),

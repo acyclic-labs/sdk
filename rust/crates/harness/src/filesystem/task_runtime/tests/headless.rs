@@ -202,7 +202,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     let signed = issuer.issue("owner", &Capabilities::new(
         fixture.signed.capabilities().iter().chain(["conversation:bind", "conversation:append", "fork:publish"]),
     ), Some(agent), None, &mut None).expect("scope proof");
-    let reader = Arc::new(FilesystemContentVerifier::new(fixture.filesystem.clone(), issuer.verifier(), signed.clone(), 65_536)?);
+    let reader = Arc::new(FilesystemContentVerifier::new(fixture.filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?);
     let stream_provider = ProviderRef::new("restore", "stream", "2")?;
     let forks = Arc::new(CompositeForkVerifier::new(&[
         Arc::new(FilesystemForkVerifier::new(fixture.filesystem.clone(), 65_536)?),
@@ -216,7 +216,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     history.execute(Command { operation_id: OperationId::from_bytes([134; 16]), idempotency_key: IdempotencyKey::new("restore-message")?,
         expected_revision: 1, scope: signed.clone(), causal_parent: None, action: Action::AppendConversationMessage {
             message: Box::new(ConversationMessage { id: uuid::Uuid::from_bytes([134; 16]), sequence: 1, kind: MessageKind::User,
-                content: message.clone(), attachments: Vec::new().into(), reply_to: None, tool_call_id: None, extensions: BTreeMap::new() }),
+                content: message.clone(), attachments: crate::conversation::ReferencedAttachments::Inline { items: Vec::new() }, reply_to: None, tool_call_id: None, extensions: BTreeMap::new() }),
         } }).await?;
     let original_history = history.reducer().conversation().map(|state| state.messages().to_vec());
     let original_revision = history.reducer().revision();

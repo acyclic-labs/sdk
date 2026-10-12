@@ -64,6 +64,7 @@ async fn real_root_operator_rejects_pi_caller_forgery_foreign_operation_and_fore
     verify_request(&fixture.owner, &state.root_session_id, &request, &original_work).unwrap();
     let caller = pi_caller::issue(&fixture.owner, &state.root_session_id, &fixture.root_request.binding, &original_work).unwrap();
     let original = request.operator.clone();
+    let original_body = request.body.clone();
     request.operator = caller.0;
     assert!(verify_request(&fixture.owner, &state.root_session_id, &request, &original_work).is_err());
     request.operator = original;
@@ -73,6 +74,8 @@ async fn real_root_operator_rejects_pi_caller_forgery_foreign_operation_and_fore
     request.body = PiOperatorBody::Inspect { session: state.root_session_id.clone(), operation: "foreign-sdk-operation".into(),
         project_files: false, file_evidence: None };
     assert!(verify_request(&fixture.owner, &state.root_session_id, &request, &original_work).is_err());
+    request.body = original_body;
+    verify_request(&fixture.owner, &state.root_session_id, &request, &original_work).unwrap();
     let foreign = Fixture::new(None).await;
     assert!(verify_request(&foreign.owner, &state.root_session_id, &request, &original_work).is_err());
     let scope: Scope = fixture.owner.authority().unwrap().issuer.issue(&request.operator.id(), request.operator.capabilities(), Some(fixture.commit.child.agent_id), None, &mut None).expect("scope proof");
@@ -211,7 +214,7 @@ async fn passive_original_operation_pending_encodes_own_rpc_identity_without_tas
     assert_eq!(value["status"], "pending");
     assert!(value.get("tasks").is_none());
     assert!(value.get("operator").is_none());
-    assert!(custody.bytes() > 0);
+    assert!(custody.work().shares_ledger(&original_work));
     fixture.journal.verify_dispatch().await.unwrap();
     drop(value);
     drop(custody);

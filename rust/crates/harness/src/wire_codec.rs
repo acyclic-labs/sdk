@@ -673,7 +673,7 @@ mod tests {
                     sequence: 1,
                     kind: MessageKind::User,
                     content: file,
-                    attachments: Vec::new().into(),
+                    attachments: crate::conversation::ReferencedAttachments::Inline { items: Vec::new() },
                     reply_to: None,
                     tool_call_id: None,
                     extensions: BTreeMap::new(),

@@ -162,17 +162,17 @@ where
     let read_scope = issuer.issue("prefix-owner-approved-reader", &Capabilities::new(capabilities), Some(agent), None, &mut None).expect("scope proof");
     let reader = Arc::new(FilesystemContentVerifier::new(
         host.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        read_scope.clone(),
-        64 * 1024,
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &read_scope,
+        64 * 1024, None,
     )?);
     let journal = FilesystemExecutionJournal::new(
         stream.clone(),
         host.clone(),
-        private.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"), acyclic_harness::core::SchemaRegistry::new(),
-        read_scope.clone(),
-        64 * 1024,
+        &private,
+        &issuer.verifier(&mut None).expect("verifier copy"), &acyclic_harness::core::SchemaRegistry::new(),
+        &read_scope,
+        64 * 1024, None,
     )?
     .with_input_verifier(reader.clone());
     let children = if level == 0 {
@@ -236,7 +236,7 @@ where
         aggregate.reducer(),
         &issuer.verifier(&mut None).expect("verifier copy"),
         local_scope,
-        project.clone(),
+        &project, None,
     )?;
     let private_workspace = workspace_ref(private.provider().clone(), &private.storage_name()?)?;
     let before = host.resolve(&private_workspace).await?;
@@ -285,8 +285,8 @@ where
     assert_eq!(captured.get(1).map(Vec::as_slice), Some(completed.bytes()));
     drop(captured);
     let cold_journal = FilesystemExecutionJournal::new(
-        stream.clone(), host.clone(), private.clone(), issuer.verifier(),
-        SchemaRegistry::new(), read_scope, 64 * 1024,
+        stream.clone(), host.clone(), &private, &issuer.verifier(&mut None).expect("verifier copy"),
+        &SchemaRegistry::new(), &read_scope, 64 * 1024, None,
     )?.with_input_verifier(reader);
     executor.execute(input.clone(), &cold_journal).await?;
     let expected_reuse = match level {
@@ -426,9 +426,9 @@ where
 {
     let reader = Arc::new(FilesystemContentVerifier::new(
         host.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        scope,
-        64 * 1_024,
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
+        64 * 1_024, None,
     )?);
     let forks = Arc::new(CompositeForkVerifier::new(&[
         Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
@@ -609,9 +609,9 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
         let child_scope = scope(&child_issuer, child_agent, &child_private, &child_project)?;
         let parent_reader = Arc::new(FilesystemContentVerifier::new(
             host.clone(),
-            issuer.verifier(&mut None).expect("verifier copy"),
-            grant_scope.clone(),
-            64 * 1_024,
+            &issuer.verifier(&mut None).expect("verifier copy"),
+            &grant_scope,
+            64 * 1_024, None,
         )?);
         let preparer = FilesystemForkPreparer::new(
             host.clone(),
@@ -800,9 +800,9 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
             )?);
             let reader = Arc::new(FilesystemContentVerifier::new(
                 host.clone(),
-                issuer.verifier(&mut None).expect("verifier copy"),
-                grant_scope.clone(),
-                64 * 1024,
+                &issuer.verifier(&mut None).expect("verifier copy"),
+                &grant_scope,
+                64 * 1024, None,
             )?);
             let sibling_preparer = FilesystemForkPreparer::new(
                 host.clone(),
@@ -879,8 +879,8 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
                     aggregate.reducer(),
                     &issuer.verifier(&mut None).expect("verifier copy"),
                     &grant_scope,
-                    project.clone()
-                )?
+                    &project
+                , None)?
                 .stage_model_prefix(&root_private, &ModelPrefix::select(&model_request, None)?)
                 .await?
             );
@@ -940,9 +940,9 @@ async fn local_recursive_parent_forks_reopen_and_merge_project_only() -> Result<
         );
         let denied = FilesystemContentVerifier::new(
             host.clone(),
-            child_issuer.verifier(&mut None).expect("verifier copy"),
-            child_scope.clone(),
-            64 * 1024,
+            &child_issuer.verifier(&mut None).expect("verifier copy"),
+            &child_scope,
+            64 * 1024, None,
         )?;
         assert!(
             PreparedModelRequest::inherit(
@@ -1397,9 +1397,9 @@ async fn local_deep_same_path_recursive_forks_keep_parent_controls() -> Result<(
         let child_scope = scope(&child_issuer, child_agent, &child_private, &child_project)?;
         let reader = Arc::new(FilesystemContentVerifier::new(
             host.clone(),
-            issuer.verifier(&mut None).expect("verifier copy"),
-            grant_scope.clone(),
-            8 * 1_024,
+            &issuer.verifier(&mut None).expect("verifier copy"),
+            &grant_scope,
+            8 * 1_024, None,
         )?);
         let preparer = FilesystemForkPreparer::new(
             host.clone(),

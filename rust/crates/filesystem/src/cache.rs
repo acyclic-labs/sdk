@@ -271,13 +271,13 @@ impl Flight {
                         replacement.values.try_reserve_exact(capacity).map_err(|error| ObjectStoreError::Native(
                             crate::materializer::NativeTreeMaterializationError::AllocationFailed(error)))?;
                     }
-                    let copy = work.map(|work| work.reserve_copy((waiters.values.len() * size_of::<Waker>()) as u64)).transpose()?;
+                    let copy = work.map(|work| work.reserve_work(crate::WorkCounters { bytes_copied: (waiters.values.len() * size_of::<Waker>()) as u64, ..crate::WorkCounters::UNCHARGED })).transpose()?;
                     replacement.values.append(&mut waiters.values);
                     let copied = (replacement.values.len() * size_of::<Waker>()) as u64;
                     // Commit moved waiters before a late refusal, preserving all
                     // prior registrations. Free old storage before its guard.
                     drop(std::mem::replace(waiters, replacement));
-                    if let Some(copy) = copy { copy.record(copied)?; }
+                    if let Some(copy) = copy { { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }) }?; }
                     if let Some(work) = work {
                         KernelAccounting::native(work, work.cancellation())
                             .record_completed(WorkCounters::UNCHARGED)
@@ -983,15 +983,13 @@ impl<S: AsyncObjectStore> CachedObjectStore<S> {
             #[cfg(not(target_arch = "wasm32"))] native,
         ).map_err(|error| (error, prepared.work))?;
         #[cfg(not(target_arch = "wasm32"))]
-        let copy = native.map(|native| native.reserve_copy(
-            (prepared.leaders.values.len() * size_of::<ObjectReadRequest>()) as u64,
-        )).transpose().map_err(|error| (error.into(), prepared.work))?;
+        let copy = native.map(|native| native.reserve_work(crate::WorkCounters { bytes_copied: (prepared.leaders.values.len() * size_of::<ObjectReadRequest>()) as u64, ..crate::WorkCounters::UNCHARGED })).transpose().map_err(|error| (error.into(), prepared.work))?;
         requests.values.extend(prepared.leaders.values.iter().map(|leader| ObjectReadRequest {
             object_id: leader.object_id, maximum_bytes: leader.maximum_bytes,
         }));
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(copy) = copy {
-            copy.record((requests.values.len() * size_of::<ObjectReadRequest>()) as u64)
+            { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: (requests.values.len() * size_of::<ObjectReadRequest>()) as u64, ..crate::WorkCounters::UNCHARGED }) }
                 .map_err(|error| (error.into(), prepared.work))?;
         }
         let mut guards = BatchBuffer::new(prepared.leaders.values.len(), "object cache flight guard allocation failed",

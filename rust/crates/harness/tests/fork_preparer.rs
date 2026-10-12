@@ -125,9 +125,9 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     let stream = Arc::new(MemoryStream::default());
     let resolver = Arc::new(FilesystemContentVerifier::new(
         host.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        scope.clone(),
-        64 * 1_024,
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
+        64 * 1_024, None,
     )?);
     let mut aggregate = StreamAggregate::open(
         &stream,
@@ -488,7 +488,7 @@ async fn exact_fork_preparation_reconciles_without_allocating_another_child() ->
     let child_issuer = AuthorityIssuer::new("fork-e2e", [7; 32], uncertain.child.clone());
     let reader_scope = child_issuer.issue("attached-reader", &readable, Some(attached_reader), None, &mut None).expect("scope proof");
     let attached_resolver =
-        FilesystemContentVerifier::new(host.clone(), child_issuer.verifier(&mut None).expect("verifier copy"), reader_scope, 1_024)?;
+        FilesystemContentVerifier::new(host.clone(), &child_issuer.verifier(&mut None).expect("verifier copy"), &reader_scope, 1_024, None)?;
     attached_resolver
         .verify_manifest(&manifest, 1, &Limits::default())
         .await?;

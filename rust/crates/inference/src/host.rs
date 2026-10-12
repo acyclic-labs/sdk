@@ -164,7 +164,8 @@ impl Inference {
         )
     }
 
-    fn identity(&self) -> wire::RequestIdentity {
+    /// Allocates one request identity before effects, retaining this connection's client instance.
+    pub fn identity(&self) -> wire::RequestIdentity {
         wire::RequestIdentity {
             client_instance: self.0.client_instance.to_vec(),
             request_id: uuid::Uuid::now_v7().as_bytes().to_vec(),
@@ -304,13 +305,72 @@ impl Inference {
         }
     }
 
-    /// Recover a previously admitted warm commitment without creating another.
-    #[must_use]
-    pub fn recover_warm(&self, commitment: [u8; 32]) -> WarmContext {
-        WarmContext {
-            client: self.clone(),
-            commitment,
-        }
+    /// Admits or reconciles the same prepared warm-retention request.
+    #[tracing::instrument(
+        name = "acyclic.inference.warm.retain",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    pub async fn retain_warm(&self, request: &wire::RetainWarmRequest) -> Result<[u8; 32], Error> {
+        obs::finish(async {
+            bounded(request)?;
+            contract::validate_retain_request(request).map_err(|error| Error::Invalid(error.message()))?;
+            let view = self.warm().retain(self.request(request.clone())?).await?.into_inner();
+            contract::validate_retain_response(&view, request).map_err(|error| Error::Invalid(error.message()))?;
+            fixed(&view.commitment)
+        }.await)
+    }
+
+    /// Inspects one warm commitment and validates the returned lifecycle evidence.
+    #[tracing::instrument(
+        name = "acyclic.inference.warm.inspect",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    pub async fn inspect_warm(&self, commitment: [u8; 32]) -> Result<wire::WarmView, Error> {
+        obs::finish(async {
+            nonzero(&commitment)?;
+            let view = self.warm().inspect(self.request(wire::InspectWarmRequest {
+                commitment: commitment.to_vec(),
+            })?).await?.into_inner();
+            validate_warm_view(&view, None, Some(commitment))?;
+            Ok(view)
+        }.await)
+    }
+
+    /// Renews the same prepared warm promise without changing its requested policy.
+    #[tracing::instrument(
+        name = "acyclic.inference.warm.renew",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    pub async fn renew_warm(&self, request: &wire::RenewWarmRequest) -> Result<wire::WarmView, Error> {
+        obs::finish(async {
+            bounded(request)?;
+            contract::validate_renew_request(request).map_err(|error| Error::Invalid(error.message()))?;
+            let view = self.warm().renew(self.request(request.clone())?).await?.into_inner();
+            contract::validate_renew_response(&view, request).map_err(|error| Error::Invalid(error.message()))?;
+            Ok(view)
+        }.await)
+    }
+
+    /// Releases the same prepared warm promise and requires factual terminal release.
+    #[tracing::instrument(
+        name = "acyclic.inference.warm.release",
+        skip_all,
+        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
+    )]
+    pub async fn release_warm(&self, request: &wire::ReleaseWarmRequest) -> Result<wire::WarmView, Error> {
+        obs::finish(async {
+            bounded(request)?;
+            let commitment = fixed::<32>(&request.commitment)?;
+            let view = self.warm().release(self.request(request.clone())?).await?.into_inner();
+            validate_warm_view(&view, None, Some(commitment))?;
+            if wire::WarmState::try_from(view.state).unwrap_or(wire::WarmState::Unspecified) != wire::WarmState::Released {
+                return Err(Error::Invalid("warm release is not terminal"));
+            }
+            Ok(view)
+        }.await)
     }
 
     fn request<T>(&self, value: T) -> Result<Request<T>, Error> {
@@ -576,27 +636,17 @@ impl Context {
         }
     }
 
-    /// Prepare one replayable warm-retention admission for this exact revision.
+    /// Prepares one warm-retention request for this exact revision.
     #[must_use]
-    pub fn retain(&self, policy: Retention) -> RetainWarm {
-        RetainWarm {
-            client: self.client.clone(),
-            request: wire::RetainWarmRequest {
-                identity: Some(self.client.identity()),
-                context: self.revision.to_vec(),
-                latency_profile: if policy.idle_kv.is_some() {
-                    Vec::new()
-                } else {
-                    policy.latency_profile.to_vec()
-                },
-                expires_at_ms: policy.expires_at_ms,
-                idle_kv: policy
-                    .idle_kv
-                    .map(|(profile, idle_timeout_ms)| wire::IdleKvPolicy {
-                        profile: profile.to_vec(),
-                        idle_timeout_ms,
-                    }),
-            },
+    pub fn retain(&self, policy: Retention) -> wire::RetainWarmRequest {
+        wire::RetainWarmRequest {
+            identity: Some(self.client.identity()),
+            context: self.revision.to_vec(),
+            latency_profile: if policy.idle_kv.is_some() { Vec::new() } else { policy.latency_profile.to_vec() },
+            expires_at_ms: policy.expires_at_ms,
+            idle_kv: policy.idle_kv.map(|(profile, idle_timeout_ms)| wire::IdleKvPolicy {
+                profile: profile.to_vec(), idle_timeout_ms,
+            }),
         }
     }
 
@@ -609,226 +659,6 @@ impl Context {
                 action: Some(action),
             },
         }
-    }
-}
-
-/// Replayable warm admission. A failed observation must be reconciled by
-/// sending this same value, never by allocating another request identity.
-#[derive(Clone)]
-pub struct RetainWarm {
-    client: Inference,
-    request: wire::RetainWarmRequest,
-}
-
-impl RetainWarm {
-    /// Caller-known request identity allocated before effects.
-    #[must_use]
-    pub fn identity(&self) -> Option<&wire::RequestIdentity> {
-        self.request.identity.as_ref()
-    }
-
-    /// Admit or reconcile the exact warm promise.
-    ///
-    /// # Errors
-    /// Rejects malformed policy, transport failure, service rejection, or a
-    /// response not bound to the requested Context.
-    #[tracing::instrument(
-        name = "acyclic.inference.warm.retain",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn send(&self) -> Result<WarmContext, Error> {
-        obs::finish(
-            async {
-                bounded(&self.request)?;
-                contract::validate_retain_request(&self.request)
-                    .map_err(|error| Error::Invalid(error.message()))?;
-                let view = self
-                    .client
-                    .warm()
-                    .retain(self.client.request(self.request.clone())?)
-                    .await?
-                    .into_inner();
-                contract::validate_retain_response(&view, &self.request)
-                    .map_err(|error| Error::Invalid(error.message()))?;
-                Ok(WarmContext {
-                    client: self.client.clone(),
-                    commitment: fixed(&view.commitment)?,
-                })
-            }
-            .await,
-        )
-    }
-}
-
-/// Recoverable warm commitment. It never exposes physical placement or KV
-/// allocation identity and therefore remains valid through service rebalancing.
-#[derive(Clone)]
-pub struct WarmContext {
-    client: Inference,
-    commitment: [u8; 32],
-}
-
-impl WarmContext {
-    /// Stable commitment identity.
-    #[must_use]
-    pub const fn id(&self) -> [u8; 32] {
-        self.commitment
-    }
-
-    /// Inspect the latest durable logical warm fact.
-    ///
-    /// # Errors
-    /// Rejects transport/service failure or malformed commitment evidence.
-    #[tracing::instrument(
-        name = "acyclic.inference.warm.inspect",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn inspect(&self) -> Result<wire::WarmView, Error> {
-        obs::finish(
-            async {
-                nonzero(&self.commitment)?;
-                let view = self
-                    .client
-                    .warm()
-                    .inspect(self.client.request(wire::InspectWarmRequest {
-                        commitment: self.commitment.to_vec(),
-                    })?)
-                    .await?
-                    .into_inner();
-                validate_warm_view(&view, None, Some(self.commitment))?;
-                Ok(view)
-            }
-            .await,
-        )
-    }
-
-    /// Prepare an extension of the current promise. Reusing the returned builder
-    /// reconciles the same renewal; a failed renewal leaves the prior promise intact.
-    #[must_use]
-    pub fn renew(&self, expires_at_ms: u64) -> RenewWarm {
-        RenewWarm {
-            client: self.client.clone(),
-            request: wire::RenewWarmRequest {
-                identity: Some(self.client.identity()),
-                commitment: self.commitment.to_vec(),
-                expires_at_ms,
-                idle_timeout_ms: None,
-            },
-        }
-    }
-
-    /// Change idle timeout from the last verified use (initial pin before first use).
-    /// Does not advance last-use time or resurrect an expired/released commitment.
-    #[must_use]
-    pub fn renew_idle(&self, idle_timeout_ms: u64) -> RenewWarm {
-        RenewWarm {
-            client: self.client.clone(),
-            request: wire::RenewWarmRequest {
-                identity: Some(self.client.identity()),
-                commitment: self.commitment.to_vec(),
-                expires_at_ms: 0,
-                idle_timeout_ms: Some(idle_timeout_ms),
-            },
-        }
-    }
-
-    /// Prepare cleanup and release of only this warm promise.
-    #[must_use]
-    pub fn release(&self) -> ReleaseWarm {
-        ReleaseWarm {
-            client: self.client.clone(),
-            request: wire::ReleaseWarmRequest {
-                identity: Some(self.client.identity()),
-                commitment: self.commitment.to_vec(),
-            },
-        }
-    }
-}
-
-/// Replayable warm renewal.
-#[derive(Clone)]
-pub struct RenewWarm {
-    client: Inference,
-    request: wire::RenewWarmRequest,
-}
-
-impl RenewWarm {
-    /// Identity allocated before effects; reuse this builder to reconcile retries.
-    #[must_use]
-    pub fn identity(&self) -> Option<&wire::RequestIdentity> {
-        self.request.identity.as_ref()
-    }
-
-    /// Extend and reconcile this exact commitment.
-    ///
-    /// # Errors
-    /// Rejects malformed expiry, transport/service failure, or a foreign response.
-    #[tracing::instrument(
-        name = "acyclic.inference.warm.renew",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn send(&self) -> Result<wire::WarmView, Error> {
-        obs::finish(
-            async {
-                bounded(&self.request)?;
-                contract::validate_renew_request(&self.request)
-                    .map_err(|error| Error::Invalid(error.message()))?;
-                let view = self
-                    .client
-                    .warm()
-                    .renew(self.client.request(self.request.clone())?)
-                    .await?
-                    .into_inner();
-                contract::validate_renew_response(&view, &self.request)
-                    .map_err(|error| Error::Invalid(error.message()))?;
-                Ok(view)
-            }
-            .await,
-        )
-    }
-}
-
-/// Replayable cleanup-complete release.
-#[derive(Clone)]
-pub struct ReleaseWarm {
-    client: Inference,
-    request: wire::ReleaseWarmRequest,
-}
-
-impl ReleaseWarm {
-    /// Release or reconcile this exact warm promise.
-    ///
-    /// # Errors
-    /// Rejects transport/service failure or a response without factual release.
-    #[tracing::instrument(
-        name = "acyclic.inference.warm.release",
-        skip_all,
-        fields(outcome = obs::Empty, rpc.code = obs::Empty, error.kind = obs::Empty)
-    )]
-    pub async fn send(&self) -> Result<wire::WarmView, Error> {
-        obs::finish(
-            async {
-                bounded(&self.request)?;
-                let commitment = fixed::<32>(&self.request.commitment)?;
-                let view = self
-                    .client
-                    .warm()
-                    .release(self.client.request(self.request.clone())?)
-                    .await?
-                    .into_inner();
-                validate_warm_view(&view, None, Some(commitment))?;
-                if wire::WarmState::try_from(view.state).unwrap_or(wire::WarmState::Unspecified)
-                    != wire::WarmState::Released
-                {
-                    return Err(Error::Invalid("warm release is not terminal"));
-                }
-                Ok(view)
-            }
-            .await,
-        )
     }
 }
 
@@ -1219,10 +1049,7 @@ mod tests {
             client: client.clone(),
             revision: [2; 32],
         };
-        let warm = WarmContext {
-            client,
-            commitment: [1; 32],
-        };
+        let commitment = [1; 32];
         for baseline in [latency.clone(), idle.clone()] {
             let is_idle = baseline.idle_kv.is_some();
             let retain = context.retain(if is_idle {
@@ -1230,10 +1057,11 @@ mod tests {
             } else {
                 Retention::warm_until([6; 32], 110)
             });
-            let renew = if is_idle {
-                warm.renew_idle(10)
-            } else {
-                warm.renew(110)
+            let renew = wire::RenewWarmRequest {
+                identity: Some(client.identity()),
+                commitment: commitment.to_vec(),
+                expires_at_ms: if is_idle { 0 } else { 110 },
+                idle_timeout_ms: is_idle.then_some(10),
             };
             for fault in 0..6 {
                 let mut response = baseline.clone();
@@ -1252,8 +1080,8 @@ mod tests {
                     _ => {}
                 }
                 *fixture.0.lock().map_err(|_| "fixture lock poisoned")? = response;
-                assert_eq!(retain.send().await.is_ok(), fault == 0 || fault == 2);
-                assert_eq!(renew.send().await.is_ok(), fault == 0 || fault == 1);
+                assert_eq!(client.retain_warm(&retain).await.is_ok(), fault == 0 || fault == 2);
+                assert_eq!(client.renew_warm(&renew).await.is_ok(), fault == 0 || fault == 1);
             }
             let mut response = baseline;
             if let Some(policy) = response
@@ -1266,7 +1094,7 @@ mod tests {
                 response.latency_profile = vec![9; 32];
             }
             *fixture.0.lock().map_err(|_| "fixture lock poisoned")? = response;
-            assert!(retain.send().await.is_err());
+            assert!(client.retain_warm(&retain).await.is_err());
         }
         server.abort();
         let _cancelled = server.await;

@@ -83,10 +83,10 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
     let owner = issuer.issue("owner", &Capabilities::new([read.clone(), write.clone()]), Some(agent), None, &mut None).expect("scope proof");
     let writer = Arc::new(FilesystemContentPublisher::new(
         host.clone(),
-        volume,
+        &volume,
         &issuer.verifier(&mut None).expect("verifier copy"),
         &owner,
-        4096,
+        4096, None,
     )?);
     let source = writer
         .stage(
@@ -110,9 +110,9 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
     let reader = Arc::new(ReaderSpy {
         inner: Arc::new(FilesystemContentVerifier::new(
             host.clone(),
-            issuer.verifier(&mut None).expect("verifier copy"),
-            owner,
-            4096,
+            &issuer.verifier(&mut None).expect("verifier copy"),
+            &owner,
+            4096, None,
         )?),
         reads: AtomicUsize::new(0),
         corrupt: AtomicBool::new(false),

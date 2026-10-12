@@ -122,10 +122,11 @@ impl Fixture {
         Ok(TestJournal::new(
             stream,
             self.host.clone(),
-            private,
-            self.issuer.verifier(&mut None).expect("verifier copy"),
-            scope,
-            32_768,
+            &private,
+            &self.issuer.verifier(&mut None).expect("verifier copy"),
+            &acyclic_harness::core::SchemaRegistry::new(),
+            &scope,
+            32_768, None,
         )?
         .with_input_verifier(self.reader.clone()))
     }
@@ -157,9 +158,9 @@ impl Fixture {
             ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &volume, VolumeOperation::Write)?;
         let reader = Arc::new(FilesystemContentVerifier::new(
             host.clone(),
-            issuer.verifier(&mut None).expect("verifier copy"),
-            scope,
-            32_768,
+            &issuer.verifier(&mut None).expect("verifier copy"),
+            &scope,
+            32_768, None,
         )?);
         Ok(Self {
             host,
@@ -343,9 +344,9 @@ async fn discovery_denies_authority_and_bounds_work_without_partial_success() ->
     let scope = fixture.issuer.issue("denied", &Capabilities::default(), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
     let denied = FilesystemContentVerifier::new(
         fixture.host.clone(),
-        fixture.issuer.verifier(&mut None).expect("verifier copy"),
-        scope,
-        32_768,
+        &fixture.issuer.verifier(&mut None).expect("verifier copy"),
+        &scope,
+        32_768, None,
     )?;
     assert!(matches!(
         declaration.capture(&denied).await,
