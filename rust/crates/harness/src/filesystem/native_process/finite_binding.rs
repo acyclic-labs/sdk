@@ -16,7 +16,7 @@ pub(super) fn require_view_family<P: StreamProvider>(
 ) -> Result<()> {
     require_family(view.original_native_work(), work)?;
     view.operation_cancellation().check()
-        .map_err(acyclic_fs::NativeTreeMaterializationError::from)
+        .map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled)
         .map_err(Error::from)
 }
 
