@@ -638,6 +638,7 @@ mod tests {
         Capabilities, Outcome,
         conversation::Limits,
         runtime::{Bindings, RuntimeScope, TaskContext, TaskDefinition},
+        tool::JsonToolProjection,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -665,12 +666,6 @@ mod tests {
             _: OperationId,
         ) -> BoxProviderFuture<'a, Result<Option<McpToolResult>>> {
             Box::pin(async { Ok(None) })
-        }
-    }
-    struct Projection;
-    impl ToolProjection for Projection {
-        fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-            Ok(json!({"kind":"json","value":result.value}))
         }
     }
     fn catalog(revision: &str, names: &[&str]) -> McpCatalog {
@@ -763,7 +758,7 @@ mod tests {
         };
         let transport = Arc::new(Transport::default());
         let bound: Arc<dyn McpToolTransport> = transport.clone();
-        let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
+        let projection: Arc<dyn ToolProjection> = Arc::new(JsonToolProjection);
         let mut registry = ToolRegistry::default();
         for control in 0..13 {
             let mut input = original.clone();
@@ -872,7 +867,7 @@ mod tests {
         let mut replacement = catalog("2", &["a"]);
         replacement.schema_exposure = McpSchemaExposure::Selected { names: vec![] };
         let bound: Arc<dyn McpToolTransport> = Arc::new(Transport::default());
-        let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
+        let projection: Arc<dyn ToolProjection> = Arc::new(JsonToolProjection);
         let mut registry = ToolRegistry::default();
         original.install(&mut registry, None, &bound, &projection, 8, 8192)?;
         let approval = CatalogApproval {
@@ -1050,7 +1045,7 @@ mod tests {
     {
         let transport = Arc::new(ContextTransport::default());
         let bound: Arc<dyn McpToolTransport> = transport.clone();
-        let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
+        let projection: Arc<dyn ToolProjection> = Arc::new(JsonToolProjection);
         let mut registry = ToolRegistry::default();
         catalog("1", &["a"]).install(&mut registry, None, &bound, &projection, 8, 8192)?;
         let tool = registry
@@ -1124,7 +1119,7 @@ mod tests {
     fn catalog_reload_is_atomic_and_retains_pinned_removed_tools() -> Result<()> {
         let transport = Arc::new(Transport::default());
         let bound: Arc<dyn McpToolTransport> = transport.clone();
-        let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
+        let projection: Arc<dyn ToolProjection> = Arc::new(JsonToolProjection);
         let mut registry = ToolRegistry::default();
         let old = catalog("1", &["a", "b"]);
         old.install(&mut registry, None, &bound, &projection, 8, 8192)?;
@@ -1169,7 +1164,7 @@ mod tests {
         );
         let transport = Arc::new(Transport::default());
         let bound: Arc<dyn McpToolTransport> = transport.clone();
-        let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
+        let projection: Arc<dyn ToolProjection> = Arc::new(JsonToolProjection);
         let mut registry = ToolRegistry::default();
         catalog.install(&mut registry, None, &bound, &projection, 8, 8192)?;
         let tool = registry
@@ -1276,7 +1271,7 @@ mod tests {
             response: std::sync::Mutex::new(Some(receiver)),
         });
         let new_transport: Arc<dyn McpToolTransport> = Arc::new(Transport::default());
-        let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
+        let projection: Arc<dyn ToolProjection> = Arc::new(JsonToolProjection);
         let mut registry = ToolRegistry::default();
         let old_catalog = catalog("1", &["a"]);
         old_catalog.install(&mut registry, None, &old_transport, &projection, 8, 8192)?;
@@ -1325,7 +1320,7 @@ mod tests {
     #[test]
     fn every_selected_exposure_reload_is_atomic_including_empty_visibility() -> Result<()> {
         let transport: Arc<dyn McpToolTransport> = Arc::new(Transport::default());
-        let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
+        let projection: Arc<dyn ToolProjection> = Arc::new(JsonToolProjection);
         let names = ["a", "b", "c"];
         let selected = |revision: &str, mask: u8| {
             let mut value = catalog(revision, &names);

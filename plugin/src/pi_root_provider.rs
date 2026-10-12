@@ -416,13 +416,13 @@ pub(crate) async fn bind_root_output_context_with_native_work<P: StreamProvider 
 #[allow(clippy::too_many_arguments, reason = "independent original source and bounded observer arguments")]
 pub(crate) async fn prove_root_project_source_with_native_work<P: StreamProvider + 'static>(
     owner: Arc<PiOwnerConfig>, resources: &ServiceResources, filesystem: Arc<Host>, stream: std::sync::Arc<P>,
-    request: &PiRootRequest, project: &VolumeRef, snapshot: acyclic_fs::LazySnapshotRef,
+    binding: &super::PiTaskBinding, intent: &PiRootIntent, project: &VolumeRef, snapshot: acyclic_fs::LazySnapshotRef,
     context: Arc<acyclic_harness::NativeTaskContext>, current_owner: &TaskJournalOwner<P>,
     work: &NativeMaterializationWork,
 ) -> Result<()> {
     current_owner.require_volume_grant_with_native_work(project, VolumeOperation::Read, work)?;
     context.context().verify_original_volume_read_with_native_work(current_owner, project, work).await?;
-    let preparation = load_original_preparation_with_native_work(&owner, &filesystem, &request.binding, &request.root,
+    let preparation = load_original_preparation_with_native_work(&owner, &filesystem, binding, intent,
         Arc::clone(&context), work).await?;
     let provider = root_provider(owner, resources, filesystem, stream,
         preparation, None, work.clone())?;
@@ -432,8 +432,8 @@ pub(crate) async fn prove_root_project_source_with_native_work<P: StreamProvider
     let reference = provider.original_artifact_with_native_work(effect, attempt, "result", work).await?
         .ok_or_else(|| PiRootProvider::<P>::native_failure("root source has no canonical successful allocation output"))?;
     let recorded = provider.read_with_native_work::<PiRootAllocation>(&reference.0, work).await?;
-    recorded.0.validate(&request.binding)?;
-    let key = request.binding.project_volumes.iter().find_map(|(key, volume)| (volume == project).then_some(key))
+    recorded.0.validate(binding)?;
+    let key = binding.project_volumes.iter().find_map(|(key, volume)| (volume == project).then_some(key))
         .ok_or_else(|| PiRootProvider::<P>::native_failure("project is not an originally selected root source"))?;
     let root = &recorded.0.roots[key];
     if snapshot.workspace_id.into_bytes() != root.repository_workspace_id
@@ -443,7 +443,7 @@ pub(crate) async fn prove_root_project_source_with_native_work<P: StreamProvider
     let inputs_reference = provider.original_artifact_with_native_work(effect, attempt, "attachments", work).await?
         .ok_or_else(|| PiRootProvider::<P>::native_failure("root source has no original attachment input"))?;
     let inputs = provider.read_with_native_work::<BTreeMap<String, AttachmentInput>>(&inputs_reference.0, work).await?;
-    let PiRootIntent::Project { paths, .. } = &request.root else {
+    let PiRootIntent::Project { paths, .. } = intent else {
         return Err(PiRootProvider::<P>::native_failure("scratch-only root has no native project source"));
     };
     if !inputs.0.keys().eq(paths.keys()) {
@@ -524,23 +524,7 @@ pub(crate) async fn observe_pi_input(
 ) -> Result<Option<(FileRef, NativeAllocation)>> {
     let coordinates = pi_input_coordinates_with_native_work(
         owner, operation, label, ROOT_INPUT_DIRECTORY, "input", work)?;
-    let grant = pi_input_write_grant_with_native_work(owner, work)?;
-    let maximum = owner.policy().maximum_payload_bytes.min(super::MAXIMUM_ADAPTER_STATE_BYTES);
-    let result = filesystem.content_for_operation_with_native_work(
-        &owner.policy().journal, &grant.0, &coordinates.key.0, &coordinates.path.0, maximum, work).await;
-    let result = match result {
-        Ok(Some((reference, custody))) => {
-            if let Err(error) = validate_pi_input_media(owner, &reference, &coordinates.path.0,
-                &coordinates.display_name.0, "application/json") {
-                drop(reference);
-                drop(custody);
-                Err(error)
-            } else { Ok(Some((reference, custody))) }
-        }
-        result => result,
-    };
-    drop(coordinates);
-    result
+    observe_pi_input_at(owner, filesystem, coordinates, "application/json", work).await
 }
 
 #[allow(clippy::too_many_arguments, reason = "fixed trusted namespace shares the original publisher engine")]
@@ -602,6 +586,15 @@ where A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::AsyncObjectStore,
 {
     let media_type = root_input_media(name)?;
     let coordinates = root_input_coordinates_with_native_work(owner, name, work)?;
+    observe_pi_input_at(owner, filesystem, coordinates, media_type, work).await
+}
+
+async fn observe_pi_input_at<A, O>(
+    owner: &PiOwnerConfig, filesystem: &FilesystemHost<A, O>, coordinates: NativeInputCoordinates,
+    media_type: &str, work: &NativeMaterializationWork,
+) -> Result<Option<(FileRef, NativeAllocation)>>
+where A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::AsyncObjectStore,
+{
     let grant = pi_input_write_grant_with_native_work(owner, work)?;
     let maximum = owner.policy().maximum_payload_bytes.min(super::MAXIMUM_ADAPTER_STATE_BYTES);
     let result = filesystem.content_for_operation_with_native_work(
@@ -1400,28 +1393,15 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         attempt: EffectAttemptId, name: &str, work: &NativeMaterializationWork)
         -> Result<Option<(FileRef, NativeAllocation)>> {
         let coordinates = self.artifact_with_native_work(effect, attempt, name, work)?;
-        let grant = pi_input_write_grant_with_native_work(&self.owner, work)?;
-        let result = self.filesystem.content_for_operation_with_native_work(
-            &self.owner.policy().journal, &grant.0, &coordinates.key.0,
-            &coordinates.path.0, self.maximum(), work).await?;
-        match result {
-            Some((value, custody)) => {
-                let reference = (value, custody);
-                validate_pi_input_media(&self.owner, &reference.0, &coordinates.path.0,
-                    &coordinates.display_name.0, "application/json")?;
-                Ok(Some(reference))
-            }
-            None => Ok(None),
-        }
+        observe_pi_input_at(&self.owner, &self.filesystem, coordinates, "application/json", work).await
     }
 
     async fn stage_with_native_work(&self, effect: EffectId, attempt: EffectAttemptId,
         name: &str, value: &impl Serialize, work: &NativeMaterializationWork)
         -> Result<(FileRef, NativeAllocation)> {
         let coordinates = self.artifact_with_native_work(effect, attempt, name, work)?;
-        let (value, custody) = publish_pi_input_with_native_coordinates(&self.owner,
-            &*self.filesystem, value, "application/json", coordinates, work).await?;
-        Ok((value, custody))
+        publish_pi_input_with_native_coordinates(&self.owner,
+            &self.filesystem, value, "application/json", coordinates, work).await
     }
 
     async fn read_with_native_work<T: DeserializeOwned + Serialize>(&self, reference: &FileRef,

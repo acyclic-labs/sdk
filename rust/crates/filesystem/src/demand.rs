@@ -834,28 +834,11 @@ impl SourceWatchAllocationCustody {
 /// Live observation of every change made to one source outside every view
 pub trait SourceWatch: Send + Sync {
 
-    /// Delivers the original watch's preceding changes within this allowance,
-    fn fence(
-        &self, budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> DemandResult<()>;
+    /// Delivers preceding changes within the accounting allowance.
+    fn fence(&self, accounting: &mut crate::kernel::KernelAccounting<'_>) -> Result<(), DemandError>;
 
-    /// Fences this same subscription against the caller's original native
-    #[cfg(not(target_arch = "wasm32"))]
-    fn fence_with_native_work(&self, work: NativeSourceWork<'_>) -> Result<(), DemandError> {
-        crate::native_host::NativeHostWork::check(&work)?;
-        Err(DemandError::NativeWorkUnavailable)
-    }
-
-    /// Quiesces this original subscription using the same native engine.
-    fn stop(
-        &self, budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> DemandResult<()>;
-
-    /// Quiesces this subscription against the original native invocation.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn stop_with_native_work(&self, _work: NativeSourceWork<'_>) -> Result<(), DemandError> {
-        Err(DemandError::NativeWorkUnavailable)
-    }
+    /// Quiesces this subscription within the accounting allowance.
+    fn stop(&self, accounting: &mut crate::kernel::KernelAccounting<'_>) -> Result<(), DemandError>;
 
     /// Retires this owned subscription against its original birth-paid cleanup.
     #[cfg(not(target_arch = "wasm32"))]
@@ -883,6 +866,24 @@ pub trait SourceWatch: Send + Sync {
     fn is_exact(&self) -> bool;
 }
 
+/// Fences a watch using standalone or original native accounting.
+pub fn fence_watch<W: crate::facade::FsWork>(
+    watch: &dyn SourceWatch, work: W, cancellation: &CancellationToken,
+) -> W::Output<(), DemandError> {
+    let mut accounting = work.accounting(cancellation);
+    let result = watch.fence(&mut accounting);
+    work.finish(result, &accounting)
+}
+
+/// Stops a watch using standalone or original native accounting.
+pub fn stop_watch<W: crate::facade::FsWork>(
+    watch: &dyn SourceWatch, work: W, cancellation: &CancellationToken,
+) -> W::Output<(), DemandError> {
+    let mut accounting = work.accounting(cancellation);
+    let result = watch.stop(&mut accounting);
+    work.finish(result, &accounting)
+}
+
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 fn cancellation_error(error: crate::cancellation::CancellationWaitError) -> DemandError {
     match error {
@@ -908,9 +909,6 @@ struct NativeControlCursor {
     born: u128,
     retired: u128,
 }
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) type NativeObserverOverflow = std::sync::Mutex<Vec<DemandObserverCustody>>;
 
 #[cfg(not(target_arch = "wasm32"))]
 impl DemandObserverCustody {
@@ -1003,44 +1001,6 @@ impl NativeDemandReadMeter {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct NativeCheckoutControlSink<'a> {
-    roots: &'a mut DemandCancellationRoots,
-    original: &'a std::sync::Arc<NativeDemandReadMeter>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl NativeCheckoutControlSink<'_> {
-    pub(crate) fn owns(
-        &self, original: &std::sync::Arc<NativeDemandReadMeter>,
-        token: &std::sync::Arc<crate::kernel::ProofDataCustody>,
-    ) -> bool {
-        std::sync::Arc::ptr_eq(self.original, original)
-            && self.roots.owns_native_control(token)
-    }
-
-    pub(crate) fn register(
-        &mut self, token: &std::sync::Arc<crate::kernel::ProofDataCustody>,
-        allocations: &mut crate::kernel::allocation::AllocationLedger,
-        work: &mut WorkCounters, budget: WorkBudget,
-    ) -> Result<(), DemandError> {
-        let registered_native = self.roots.owns_native_control(token);
-        if !registered_native
-            && (token.retained_payload_bytes() != 0 || token.native_control_events() != (0, 0)) {
-            return Err(DemandError::InvalidRequest);
-        }
-        if !token.bind_native_original(self.original) { return Err(DemandError::InvalidRequest); }
-        self.roots.retain_observer(std::sync::Arc::clone(token), allocations, work, budget)?;
-        let mut overflow = self.roots.observer_overflow.as_ref().map(|overflow| overflow.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
-        let custody = self.roots.observers.iter_mut().flatten()
-            .chain(overflow.iter_mut().flat_map(|overflow| overflow.iter_mut()))
-            .find(|custody| std::sync::Arc::ptr_eq(&custody.token, token))
-            .expect("registered original constructor token");
-        custody.native.get_or_insert_with(NativeControlCursor::default);
-        Ok(())
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 struct DemandWatchCustody {
     token: std::sync::Weak<SourceWatchAllocationCustody>,
     adopted_bytes: u64,
@@ -1062,7 +1022,7 @@ pub(crate) struct DemandCancellationRoots {
     inline: [Option<(CancellationToken, crate::cancellation::CancellationWaitAdmission)>; 3],
     overflow: Vec<(CancellationToken, crate::cancellation::CancellationWaitAdmission)>,
     observers: [Option<DemandObserverCustody>; 3],
-    observer_overflow: Option<std::sync::Arc<NativeObserverOverflow>>,
+    observer_overflow: Option<std::sync::Arc<std::sync::Mutex<Vec<DemandObserverCustody>>>>,
     pending_items: u64,
     pending_outputs: u64,
     pending_work: WorkCounters,
@@ -1209,10 +1169,10 @@ impl DemandCancellationRoots {
             return Ok(true);
         }
         if self.observer_overflow.is_none() {
-            let bytes = std::mem::size_of::<NativeObserverOverflow>() as u64;
+            let bytes = std::mem::size_of::<std::sync::Mutex<Vec<DemandObserverCustody>>>() as u64;
             allocations.claim_bytes(bytes, 1, work, budget)
                 .map_err(|error| error.into_work_or(DemandError::InvalidRequest))?;
-            self.observer_overflow = Some(std::sync::Arc::new(NativeObserverOverflow::default()));
+            self.observer_overflow = Some(std::sync::Arc::new(std::sync::Mutex::<Vec<DemandObserverCustody>>::default()));
         }
         let mut overflow = self.observer_overflow.as_ref().expect("original overflow owner").lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if overflow.len() == overflow.capacity() {
@@ -1372,7 +1332,7 @@ impl CaptureTransientCustody {
     pub(crate) fn new_native(
         work: &crate::NativeMaterializationWork,
     ) -> Result<Arc<Self>, crate::NativeTreeMaterializationError> {
-        let header = work.claim_capture_custody_metadata()?;
+        let header = work.claim_allocation(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
         Ok(Arc::new(Self {
             retained: std::sync::atomic::AtomicU64::new(0),
             native_header: header,
@@ -1463,17 +1423,6 @@ impl OriginalDemandWork {
         }
     }
 
-    pub(crate) fn from_native_materialization_work(work: &crate::materializer::NativeMaterializationWork) -> Self {
-        Self {
-            state: Arc::clone(work.native_read_meter()),
-            resource: work.resource_allowance().cloned(),
-            capture_origin: work.capture_origin().cloned(),
-            invocation: work.invocation_view_state().cloned(),
-            #[cfg(feature = "native-mount")]
-            execution: work.source_execution_view().cloned(),
-        }
-    }
-
     pub(crate) fn resource_allowance(&self) -> Option<&Arc<crate::materializer::NativeResourceAllowance>> {
         self.resource.as_ref()
     }
@@ -1492,14 +1441,10 @@ impl OriginalDemandWork {
     }
 
     pub(crate) fn allocation_work(&self) -> Self {
-        Self {
-            state: Arc::clone(&self.state),
-            resource: self.resource.clone(),
-            capture_origin: self.capture_origin.clone(),
-            invocation: self.invocation.clone(),
-            #[cfg(feature = "native-mount")]
-            execution: None,
-        }
+        let work = self.clone();
+        #[cfg(feature = "native-mount")]
+        let work = Self { execution: None, ..work };
+        work
     }
 
     pub(crate) fn meter(&self) -> &std::sync::Arc<NativeDemandReadMeter> { &self.state }
@@ -1555,22 +1500,6 @@ impl<T: AsMut<crate::demand::DemandWork>> NativeDemandReadMeter<T> {
 
     pub(crate) fn with_original_leaf<R>(&self, operation: impl FnOnce(&mut T) -> R) -> R {
         operation(&mut *self.lock())
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl NativeDemandReadMeter {
-    pub(crate) fn with_native_checkout_controls<T>(
-        self: &std::sync::Arc<Self>,
-        operation: impl FnOnce(
-            &mut NativeCheckoutControlSink<'_>,
-            &mut crate::kernel::allocation::AllocationLedger,
-            &mut WorkCounters, WorkBudget, &CancellationToken,
-        ) -> T,
-    ) -> Result<T, DemandError> {
-        let mut original = self.lock();
-        let (mut sink, allocations, work, budget, cancellation) = original.native_checkout_control_parts(self);
-        Ok(operation(&mut sink, allocations, work, budget, cancellation))
     }
 }
 
@@ -2159,17 +2088,6 @@ impl DemandWork {
         Ok(())
     }
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn partition_native_work_items(&mut self, items: u64) -> Result<(), DemandError> {
-        let pending_work = self.cancellation_wait.pending_work.items_examined
-            .checked_sub(items).ok_or(DemandError::InvalidRequest)?;
-        let pending_items = self.cancellation_wait.pending_items.checked_add(items)
-            .ok_or(crate::WorkError::Overflow)?;
-        self.cancellation_wait.pending_work.items_examined = pending_work;
-        self.cancellation_wait.pending_items = pending_items;
-        Ok(())
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn refund_native_work(&mut self, unused: WorkCounters) -> Result<(), DemandError> {
         if let Some(resource) = self.resource_scope() {
             let original = self.with_resource_scope(None, |work| work.refund_native_work(unused));
@@ -2427,16 +2345,6 @@ impl DemandWork {
         WorkBudget, &CancellationToken,
     ) {
         (&mut self.allocations, &mut self.work, self.budget, &self.cancellation)
-    }
-
-    fn native_checkout_control_parts<'a>(
-        &'a mut self, original: &'a std::sync::Arc<NativeDemandReadMeter>,
-    ) -> (
-        NativeCheckoutControlSink<'a>, &'a mut crate::kernel::allocation::AllocationLedger,
-        &'a mut WorkCounters, WorkBudget, &'a CancellationToken,
-    ) {
-        let sink = NativeCheckoutControlSink { roots: &mut self.cancellation_wait, original };
-        (sink, &mut self.allocations, &mut self.work, self.budget, &self.cancellation)
     }
 
     pub(crate) fn owns_native_checkout_token(
@@ -3200,22 +3108,12 @@ struct FilteredWatch {
 }
 
 impl SourceWatch for FilteredWatch {
-    fn fence(&self, budget: WorkBudget, cancellation: &CancellationToken) -> DemandResult<()> {
-        self.inner.fence(budget, cancellation)
+    fn fence(&self, accounting: &mut crate::kernel::KernelAccounting<'_>) -> Result<(), DemandError> {
+        self.inner.fence(accounting)
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn fence_with_native_work(&self, work: NativeSourceWork<'_>) -> Result<(), DemandError> {
-        self.inner.fence_with_native_work(work)
-    }
-
-    fn stop(&self, budget: WorkBudget, cancellation: &CancellationToken) -> DemandResult<()> {
-        self.inner.stop(budget, cancellation)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn stop_with_native_work(&self, work: NativeSourceWork<'_>) -> Result<(), DemandError> {
-        self.inner.stop_with_native_work(work)
+    fn stop(&self, accounting: &mut crate::kernel::KernelAccounting<'_>) -> Result<(), DemandError> {
+        self.inner.stop(accounting)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -3985,11 +3883,8 @@ pub mod native {
             }
             if self.original_cleanup.is_some() { return Err(DemandError::NativeWorkUnavailable); }
             if self.lease.is_some() {
-                match accounting {
-                    crate::kernel::KernelAccounting::Standalone { work, budget, .. } => work.charge(&publication_cleanup(), budget)?,
-                    crate::kernel::KernelAccounting::BorrowedStandalone { work, budget, .. } => work.charge(&publication_cleanup(), budget)?,
-                    crate::kernel::KernelAccounting::NativeOriginal { .. } => unreachable!(),
-                }
+                let (_, work, budget, _) = accounting.standalone_parts().ok_or(DemandError::NativeWorkUnavailable)?;
+                work.charge(&publication_cleanup(), &budget)?;
                 if let Some(mut lease) = self.lease.take() { lease.restore(); }
             }
             Ok(())
@@ -4374,122 +4269,102 @@ pub mod native {
             work.finish(result)
         }
 
-        /// Opens only the original native root under an admitted finite budget.
-        pub async fn open_with_reference_measured(
-            path: PathBuf,
-            profile: FilesystemProfile,
-            limits: VolumeLimits,
-            reference: SourceReference,
-            observer: Option<Arc<dyn DemandDirectoryObserver>>,
-            budget: crate::WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> DemandResult<Self> {
-            cancellation.check().map_err(|_| OperationFailure::before_work(DemandError::Cancelled))?;
-            WorkCounters { backend_read_operations: 1, ..WorkCounters::default() }
-                .verify(budget)
-                .map_err(|error| OperationFailure::before_work(DemandError::Work(error)))?;
-            let mut work = DemandWork::new(budget, cancellation);
-            if let Err(error) = work.adopt(path.capacity() as u64)
-                .and_then(|()| work.allocate(std::mem::size_of::<NativeDemandReadMeter>() as u64)) {
-                return work.finish(Err(error));
-            }
-            let shared = Arc::new(NativeDemandReadMeter(std::sync::Mutex::new(work)));
-            let mut prepared = {
-                let mut work = shared.lock();
-                match work.prepare_cancelled(cancellation) {
-                    Ok(prepared) => {
-                        work.budget.items_examined -= prepared.cleanup_items();
-                        prepared
-                    }
-                    Err(error) => {
-                        drop(work);
-                        return OriginalDemandWork::from_meter(shared)
-                            .finish_operation(Err(cancellation_error(error)));
-                    }
-                }
-            };
-            let worker = shared.clone();
-            let task_meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = shared.clone();
-            let task = acyclic_native_runtime::run_blocking_io(
-                crate::obs::in_context(crate::obs::caller_context(), move || {
-                    let mut work = NativeSourceWork::ordinary(&worker);
-                    let input = SourceRootInput::from_admitted(path, &mut work)?;
-                    Self::open_blocking(input, profile, limits, reference, observer, &mut work)
-                }),
-                Some((task_meter, false)),
-            );
-            let (result, _) = await_source_job(task, &mut prepared, || {}).await;
-            prepared.retire_waker();
-            let original = OriginalDemandWork::from_meter(shared);
-            let closed = original.with_original_leaf(|work| {
-                work.restore_budget(budget);
-                let cleanup = work.finish_cancelled(prepared).map_err(cancellation_error);
-                (cleanup, work.take_native_io_failure(), work.check())
-            });
-            let result = match closed {
-                Ok((cleanup, failure, checked)) =>
-                    cleanup.and(failure.map_or(result, Err)).and_then(|value| checked.map(|()| value)),
-                Err(error) => Err(error),
-            };
-            original.finish_operation(result)
-        }
-
-        /// Opens the real root using the caller's original native invocation.
-        pub async fn open_with_reference_and_native_work(
-            path: &Path,
-            profile: FilesystemProfile,
-            limits: VolumeLimits,
-            reference: SourceReference,
-            observer: Option<Arc<dyn DemandDirectoryObserver>>,
-            work: &crate::materializer::NativeMaterializationWork,
-        ) -> Result<Self, DemandError> {
-            let mut work = NativeSourceWork::from_native_materialization_work(work);
-            let original = work.original_demand_work();
-            work.check()?;
-            work.admit(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })?;
-            let input = SourceRootInput::copy(path, &mut work)?;
-            let cancellation = work.materialization_work()?;
-            let mut cancelled = cancellation.cancellation().prepare_cancelled_with_native_work(&cancellation)
-                .map_err(cancellation_error)?;
-            let worker = original.clone();
-            let task_meter = work.materialization_work()?.runtime_meter_owner();
-            let spawned = acyclic_native_runtime::run_blocking_io(
-                crate::obs::in_context(crate::obs::caller_context(), move || {
-                    let mut work = NativeSourceWork::from_original_work(&worker);
-                    Self::open_blocking(input, profile, limits, reference, observer, &mut work)
-                }), Some((task_meter, false)),
-            );
-            let (result, selected_cancellation) = await_source_job(spawned, &mut cancelled, || {}).await;
-            cancelled.retire_waker();
-            drop(cancelled);
-            let native_failure = work.with_original_leaf(DemandWork::take_native_io_failure);
-            match result {
-                Err(error) => Err(native_failure.unwrap_or(error)),
-                Ok(value) => {
-                    if let Some(error) = native_failure { return Err(error); }
-                    if selected_cancellation { return Err(DemandError::Cancelled); }
+        /// Opens a native root using the supplied accounting context.
+        pub async fn open<W: crate::facade::FsWork + Send>(
+            path: std::borrow::Cow<'_, Path>, profile: FilesystemProfile, limits: VolumeLimits,
+            reference: Option<SourceReference>, observer: Option<Arc<dyn DemandDirectoryObserver>>,
+            work: W, cancellation: &CancellationToken,
+        ) -> W::Output<Self, DemandError> {
+            let mut accounting = work.accounting(cancellation);
+            let result = async {
+                cancellation.check().map_err(|_| DemandError::Cancelled)?;
+                let reference = reference.unwrap_or_else(|| SourceReference {
+                    identity: *uuid::Uuid::new_v4().as_bytes(), epoch: 0,
+                });
+                if let Some(original) = accounting.native_work() {
+                    let mut work = NativeSourceWork::from_native_materialization_work(original);
                     work.check()?;
-                    Ok(value)
+                    work.admit(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })?;
+                    let input = SourceRootInput::copy(path.as_ref(), &mut work)?;
+                    acyclic_native_runtime::initialize_native_io_services()?;
+                    let cancellation = work.materialization_work()?;
+                    let mut cancelled = cancellation.cancellation().prepare_cancelled_with_native_work(&cancellation)
+                        .map_err(cancellation_error)?;
+                    let worker = work.original_demand_work();
+                    work.check()?;
+                    let task_meter = cancellation.runtime_meter_owner();
+                    let spawned = acyclic_native_runtime::run_blocking_io(
+                        crate::obs::in_context(crate::obs::caller_context(), move || {
+                            let mut work = NativeSourceWork::from_original_work(&worker);
+                            Self::open_blocking(input, profile, limits, reference, observer, &mut work)
+                        }), Some((task_meter, false)),
+                    );
+                    let (result, selected_cancellation) = await_source_job(spawned, &mut cancelled, || {}).await;
+                    cancelled.retire_waker();
+                    drop(cancelled);
+                    let native_failure = work.with_original_leaf(DemandWork::take_native_io_failure);
+                    return native_failure.map_or(result, Err).and_then(|value| {
+                        if selected_cancellation { return Err(DemandError::Cancelled); }
+                        work.check().map(|()| value)
+                    });
                 }
-            }
-        }
-
-        /// Opens the root with an optional durable identity and directory observer.
-        pub async fn open(
-            path: impl AsRef<Path>,
-            profile: FilesystemProfile,
-            limits: VolumeLimits,
-            reference: Option<SourceReference>,
-            observer: Option<Arc<dyn DemandDirectoryObserver>>,
-        ) -> Result<Self, DemandError> {
-            let reference = reference.unwrap_or_else(|| SourceReference {
-                identity: *uuid::Uuid::new_v4().as_bytes(), epoch: 0,
-            });
-            acyclic_native_runtime::initialize_native_io_services()?;
-            Self::open_with_reference_measured(
-                path.as_ref().to_path_buf(), profile, limits, reference, observer,
-                crate::WorkBudget::UNBOUNDED, &CancellationToken::new(),
-            ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                let budget = accounting.remaining().map_err(SourceCursor::cursor_accounting_error)?;
+                cancellation.check().map_err(|_| DemandError::Cancelled)?;
+                WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED }.verify(budget)?;
+                acyclic_native_runtime::initialize_native_io_services()?;
+                let mut work = DemandWork::new(budget, cancellation);
+                let input = (|| {
+                    let path = match path {
+                        std::borrow::Cow::Owned(path) => { work.adopt(path.capacity() as u64)?; path }
+                        std::borrow::Cow::Borrowed(path) => crate::native_host::clone_path_with_work(path, &mut work)?.0,
+                    };
+                    work.allocate(std::mem::size_of::<NativeDemandReadMeter>() as u64)?;
+                    Ok(path)
+                })();
+                let path = match input {
+                    Ok(path) => path,
+                    Err(error) => return accept_source_result(work.finish(Err(error)), &mut accounting),
+                };
+                let shared = Arc::new(NativeDemandReadMeter(std::sync::Mutex::new(work)));
+                let mut prepared = {
+                    let mut work = shared.lock();
+                    match work.prepare_cancelled(cancellation) {
+                        Ok(prepared) => {
+                            work.budget.items_examined -= prepared.cleanup_items();
+                            prepared
+                        }
+                        Err(error) => {
+                            drop(work);
+                            return accept_source_result(OriginalDemandWork::from_meter(shared)
+                                .finish_operation(Err(cancellation_error(error))), &mut accounting);
+                        }
+                    }
+                };
+                let worker = shared.clone();
+                let task_meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = shared.clone();
+                let task = acyclic_native_runtime::run_blocking_io(
+                    crate::obs::in_context(crate::obs::caller_context(), move || {
+                        let mut work = NativeSourceWork::ordinary(&worker);
+                        let input = SourceRootInput::from_admitted(path, &mut work)?;
+                        Self::open_blocking(input, profile, limits, reference, observer, &mut work)
+                    }), Some((task_meter, false)),
+                );
+                let (result, _) = await_source_job(task, &mut prepared, || {}).await;
+                prepared.retire_waker();
+                let original = OriginalDemandWork::from_meter(shared);
+                let closed = original.with_original_leaf(|work| {
+                    work.restore_budget(budget);
+                    let cleanup = work.finish_cancelled(prepared).map_err(cancellation_error);
+                    (cleanup, work.take_native_io_failure(), work.check())
+                });
+                let result = match closed {
+                    Ok((cleanup, failure, checked)) =>
+                        cleanup.and(failure.map_or(result, Err)).and_then(|value| checked.map(|()| value)),
+                    Err(error) => Err(error),
+                };
+                accept_source_result(original.finish_operation(result), &mut accounting)
+            }.await;
+            work.finish(result, &accounting)
         }
 
         fn open_blocking<W: SourceDemandReadWork>(
@@ -6104,28 +5979,36 @@ pub mod native {
             self.backing.as_ref().map(Arc::clone)
         }
 
-        fn fence(
-            &self, budget: WorkBudget, cancellation: &CancellationToken,
-        ) -> DemandResult<()> {
-            let mut work = DemandWork::new(budget, cancellation);
-            let result = self.watch.watch.fence_measured(Duration::from_secs(10), &mut work).map(|_| ());
-            work.finish(result)
+        fn fence(&self, accounting: &mut crate::kernel::KernelAccounting<'_>) -> Result<(), DemandError> {
+            if let crate::kernel::KernelAccounting::NativeOriginal { work, cancellation } = accounting {
+                cancellation.check().map_err(|_| DemandError::Cancelled)?;
+                return self.watch.watch.fence_with_work(
+                    Duration::from_secs(10), &mut NativeSourceWork::from_native_materialization_work(work),
+                ).map(|_| ());
+            }
+            let budget = accounting.remaining().map_err(SourceCursor::cursor_accounting_error)?;
+            let answer = {
+                let (_, _, _, cancellation) = accounting.standalone_parts().ok_or(DemandError::NativeWorkUnavailable)?;
+                let mut work = DemandWork::new(budget, cancellation);
+                let result = self.watch.watch.fence_with_work(Duration::from_secs(10), &mut work).map(|_| ());
+                work.finish(result)
+            };
+            accept_source_result(answer, accounting)
         }
 
-        fn fence_with_native_work(&self, mut work: NativeSourceWork<'_>) -> Result<(), DemandError> {
-            self.watch.watch.fence_with_work(Duration::from_secs(10), &mut work).map(|_| ())
-        }
-
-        fn stop(
-            &self, budget: WorkBudget, cancellation: &CancellationToken,
-        ) -> DemandResult<()> {
-            let mut work = DemandWork::new(budget, cancellation);
-            let result = self.watch.watch.stop_measured(&mut work);
-            work.finish(result)
-        }
-
-        fn stop_with_native_work(&self, mut work: NativeSourceWork<'_>) -> Result<(), DemandError> {
-            self.watch.watch.stop_with_work(&mut work)
+        fn stop(&self, accounting: &mut crate::kernel::KernelAccounting<'_>) -> Result<(), DemandError> {
+            if let crate::kernel::KernelAccounting::NativeOriginal { work, cancellation } = accounting {
+                cancellation.check().map_err(|_| DemandError::Cancelled)?;
+                return self.watch.watch.stop_with_work(&mut NativeSourceWork::from_native_materialization_work(work));
+            }
+            let budget = accounting.remaining().map_err(SourceCursor::cursor_accounting_error)?;
+            let answer = {
+                let (_, _, _, cancellation) = accounting.standalone_parts().ok_or(DemandError::NativeWorkUnavailable)?;
+                let mut work = DemandWork::new(budget, cancellation);
+                let result = self.watch.watch.stop_with_work(&mut work);
+                work.finish(result)
+            };
+            accept_source_result(answer, accounting)
         }
 
         fn stop_with_cleanup_wait(&self, wait: &CancellationToken) -> Result<(), DemandError> {
@@ -6738,8 +6621,8 @@ mod tests {
         let root = tempfile::tempdir()?;
         std::fs::write(root.path().join("actual"), b"actual")?;
         let source = OrdinaryNativeSource(NativeDemandSource::open(
-            root.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None,
-        ).await?);
+            std::borrow::Cow::Owned(std::path::Path::new(root.path()).to_path_buf()), FilesystemProfile::Portable, VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?);
         let requested = path("/actual")?;
         let node = source.lookup(source.reference(), &requested, WorkBudget::UNBOUNDED,
             &CancellationToken::new()).await?.value.ok_or("actual file absent")?;
@@ -6801,8 +6684,8 @@ mod tests {
         let temporary = tempfile::tempdir()?;
         std::fs::write(temporary.path().join("present"), b"real source")?;
         let source = NativeDemandSource::open(
-            temporary.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None,
-        ).await?;
+            std::borrow::Cow::Owned(std::path::Path::new(temporary.path()).to_path_buf()), FilesystemProfile::Portable, VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let cancellation = CancellationToken::new();
         let budget = finite_watch_budget()?;
         let original = crate::NativeMaterializationWork::new(budget, &cancellation)
@@ -6947,7 +6830,7 @@ mod tests {
             watch: &dyn SourceWatch,
             reported: impl Fn(&[SourceChange]) -> bool,
         ) -> Result<Vec<SourceChange>, Box<dyn Error>> {
-            watch.fence(WorkBudget::UNBOUNDED, &CancellationToken::new())?;
+            fence_watch(watch, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
             let mut changes = self.take()?;
             while !reported(&changes) && std::time::Instant::now() < deadline {
@@ -6961,7 +6844,7 @@ mod tests {
     #[tokio::test]
     async fn native_source_watch_fence_honors_original_pre_cancellation() -> Result<(), Box<dyn Error>> {
         let root = tempfile::tempdir()?;
-        let source = NativeDemandSource::open(root.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None).await?;
+        let source = NativeDemandSource::open(std::borrow::Cow::Owned(std::path::Path::new(root.path()).to_path_buf()), FilesystemProfile::Portable, VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let subscription_cancellation = CancellationToken::new();
         let recorded = Arc::new(RecordedChanges::default());
         let subscribed = source.watch(recorded, WorkBudget::UNBOUNDED, &subscription_cancellation)?;
@@ -6970,21 +6853,21 @@ mod tests {
         assert!(watch.logical_owned_bytes() <= subscribed.work.peak_allocation_bytes);
         let cancellation = CancellationToken::new();
         cancellation.cancel();
-        let failure = watch.fence(WorkBudget::default(), &cancellation)
+        let failure = fence_watch(watch.as_ref(), WorkBudget::default(), &cancellation)
             .expect_err("pre-cancelled fence must not start host work");
         assert!(matches!(failure.error, DemandError::Cancelled));
         assert_eq!(*failure.work, WorkCounters::UNCHARGED);
-        let failure = watch.stop(WorkBudget::default(), &cancellation)
+        let failure = stop_watch(watch.as_ref(), WorkBudget::default(), &cancellation)
             .expect_err("pre-cancelled stop retains the original live subscription");
         assert!(matches!(failure.error, DemandError::Cancelled));
         assert_eq!(*failure.work, WorkCounters::UNCHARGED);
-        watch.fence(WorkBudget::UNBOUNDED, &subscription_cancellation)?;
-        let failure = watch.stop(WorkBudget::default(), &subscription_cancellation)
+        fence_watch(watch.as_ref(), WorkBudget::UNBOUNDED, &subscription_cancellation)?;
+        let failure = stop_watch(watch.as_ref(), WorkBudget::default(), &subscription_cancellation)
             .expect_err("native quiescence is admitted before starting cleanup");
         assert!(matches!(failure.error, DemandError::Work(_)));
         assert_eq!(*failure.work, WorkCounters::UNCHARGED);
-        watch.fence(WorkBudget::UNBOUNDED, &subscription_cancellation)?;
-        watch.stop(WorkBudget::UNBOUNDED, &subscription_cancellation)?;
+        fence_watch(watch.as_ref(), WorkBudget::UNBOUNDED, &subscription_cancellation)?;
+        stop_watch(watch.as_ref(), WorkBudget::UNBOUNDED, &subscription_cancellation)?;
         Ok(())
     }
 
@@ -6994,11 +6877,11 @@ mod tests {
         std::fs::create_dir(root.path().join("d"))?;
         std::fs::write(root.path().join("f"), b"one")?;
         let source = NativeDemandSource::open(
-            root.path(),
+            std::borrow::Cow::Owned(std::path::Path::new(root.path()).to_path_buf()),
             FilesystemProfile::Portable,
-            VolumeLimits::default(), None, None,
+            VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         )
-        .await?;
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let recorded = Arc::new(RecordedChanges::default());
         let cancellation = CancellationToken::new();
         let watch = source
@@ -7054,11 +6937,11 @@ mod tests {
         std::fs::create_dir(root.path().join(".git"))?;
         let source = FilteredDemandSource::new(
             NativeDemandSource::open(
-                root.path(),
+                std::borrow::Cow::Owned(std::path::Path::new(root.path()).to_path_buf()),
                 FilesystemProfile::Portable,
-                VolumeLimits::default(), None, None,
+                VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
             )
-            .await?,
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
             vec![path("/.git")?],
         );
         let recorded = Arc::new(RecordedChanges::default());
@@ -7096,11 +6979,11 @@ mod tests {
 
         let root = tempfile::tempdir()?;
         let source = NativeDemandSource::open(
-            root.path(),
+            std::borrow::Cow::Owned(std::path::Path::new(root.path()).to_path_buf()),
             FilesystemProfile::Posix,
-            VolumeLimits::default(), None, None,
+            VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         )
-        .await?;
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let reference = source.reference();
         let cancellation = CancellationToken::new();
         let identity = |name: &'static str| {
@@ -7149,11 +7032,11 @@ mod tests {
         let root = tempfile::tempdir()?;
         std::os::unix::fs::symlink("target", root.path().join("link"))?;
         let source = NativeDemandSource::open(
-            root.path(),
+            std::borrow::Cow::Owned(std::path::Path::new(root.path()).to_path_buf()),
             FilesystemProfile::Posix,
-            VolumeLimits::default(), None, None,
+            VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         )
-        .await?;
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let reference = source.reference();
         let cancellation = CancellationToken::new();
         let node = source.lookup(reference, &path("/link")?, WorkBudget::UNBOUNDED, &cancellation)
@@ -7183,11 +7066,11 @@ mod tests {
         std::fs::write(root.path().join("nested/file"), b"content")?;
         let observer = Arc::new(RecordingObserver::default());
         let source = NativeDemandSource::open(
-            root.path(),
+            std::borrow::Cow::Owned(std::path::Path::new(root.path()).to_path_buf()),
             FilesystemProfile::Portable,
-            VolumeLimits::default(), None, Some(observer.clone()),
+            VolumeLimits::default(), None, Some(observer.clone()), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         )
-        .await?;
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let reference = source.reference();
         source.lookup(reference, &path("/nested/file")?, WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await?;
@@ -7215,11 +7098,11 @@ mod tests {
         std::fs::write(root.path().join("seen"), body)?;
 
         let source = NativeDemandSource::open(
-            root.path(),
+            std::borrow::Cow::Owned(std::path::Path::new(root.path()).to_path_buf()),
             FilesystemProfile::Portable,
-            VolumeLimits::default(), None, None,
+            VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         )
-        .await?;
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let provider = &source;
         let reference = provider.reference();
         let cancellation = CancellationToken::new();
@@ -7274,11 +7157,11 @@ mod tests {
             open.flush()?;
         }
         let source = NativeDemandSource::open(
-            root.path(),
+            std::borrow::Cow::Owned(std::path::Path::new(root.path()).to_path_buf()),
             FilesystemProfile::Portable,
-            VolumeLimits::default(), None, None,
+            VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         )
-        .await?;
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let provider = &source;
         let reference = provider.reference();
         let cancellation = CancellationToken::new();
@@ -7320,11 +7203,11 @@ mod tests {
     {
         let root = tempfile::tempdir()?;
         let source = NativeDemandSource::open(
-            root.path(),
+            std::borrow::Cow::Owned(std::path::Path::new(root.path()).to_path_buf()),
             FilesystemProfile::Portable,
-            VolumeLimits::default(), None, None,
+            VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         )
-        .await?;
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let permits = source.occupy_all_requests().await?;
         let cancellation = CancellationToken::new();
         let root_path = path("/")?;
@@ -7372,8 +7255,8 @@ mod tests {
         std::fs::create_dir(&root)?;
         std::fs::write(root.join("file"), contents)?;
         let source =
-            NativeDemandSource::open(&root, FilesystemProfile::Portable, VolumeLimits::default(), None, None)
-                .await?;
+            NativeDemandSource::open(std::borrow::Cow::Owned(std::path::Path::new(&root).to_path_buf()), FilesystemProfile::Portable, VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let reference = source.reference();
         let cancellation = CancellationToken::new();
         let node = source.lookup(reference, &path("/file")?, WorkBudget::UNBOUNDED, &cancellation)
@@ -7473,11 +7356,11 @@ mod tests {
         let temporary = tempfile::tempdir()?;
         std::fs::write(temporary.path().join("file"), b"remote")?;
         let source = NativeDemandSource::open(
-            temporary.path(),
+            std::borrow::Cow::Owned(std::path::Path::new(temporary.path()).to_path_buf()),
             FilesystemProfile::Portable,
-            VolumeLimits::default(), None, None,
+            VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         )
-        .await?
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
         .remote();
         let reference = source.reference();
         let cancellation = CancellationToken::new();
@@ -7503,8 +7386,8 @@ mod tests {
         let temporary = tempfile::tempdir()?;
         std::fs::write(temporary.path().join("file"), b"remote")?;
         let source = NativeDemandSource::open(
-            temporary.path(), FilesystemProfile::Portable, VolumeLimits::default(), None, None,
-        ).await?.remote();
+            std::borrow::Cow::Owned(std::path::Path::new(temporary.path()).to_path_buf()), FilesystemProfile::Portable, VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.remote();
         let reference = source.reference();
         let cancellation = CancellationToken::new();
         let budget = WorkBudget {
@@ -7533,8 +7416,8 @@ mod tests {
         }
         assert!(!cancellation.is_cancelled());
         let reopened = NativeDemandSource::open(
-            temporary.path(), FilesystemProfile::Portable, VolumeLimits::default(), Some(reference), None,
-        ).await?;
+            std::borrow::Cow::Owned(std::path::Path::new(temporary.path()).to_path_buf()), FilesystemProfile::Portable, VolumeLimits::default(), Some(reference), None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         assert_eq!(source.root_identity(), reopened.root_identity());
         let read = reopened.read_range(reference, &requested, node.version, 0, 6, budget, &cancellation).await?;
         assert_eq!(read.value.bytes.as_ref(), b"remote");
@@ -7615,11 +7498,11 @@ mod tests {
     async fn dropping_request_cancels_admitted_worker() -> Result<(), Box<dyn Error>> {
         let root = tempfile::tempdir()?;
         let source = NativeDemandSource::open(
-            root.path(),
+            std::borrow::Cow::Owned(std::path::Path::new(root.path()).to_path_buf()),
             FilesystemProfile::Portable,
-            VolumeLimits::default(), None, None,
+            VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         )
-        .await?;
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (stopped_tx, stopped_rx) = tokio::sync::oneshot::channel();
         let request = tokio::spawn(async move {
@@ -7642,11 +7525,11 @@ mod tests {
             std::fs::write(root.path().join(name), b"x")?;
         }
         let source = NativeDemandSource::open(
-            root.path(),
+            std::borrow::Cow::Owned(std::path::Path::new(root.path()).to_path_buf()),
             FilesystemProfile::Portable,
-            VolumeLimits::default(), None, None,
+            VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         )
-        .await?;
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let reference = source.reference();
         let directory = path("/")?;
         let live = CancellationToken::new();
@@ -7683,11 +7566,11 @@ mod tests {
             std::fs::write(root.path().join(name), b"x")?;
         }
         let source = NativeDemandSource::open(
-            root.path(),
+            std::borrow::Cow::Owned(std::path::Path::new(root.path()).to_path_buf()),
             FilesystemProfile::Portable,
-            VolumeLimits::default(), None, None,
+            VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         )
-        .await?;
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let reference = source.reference();
         let directory = path("/")?;
         let cancellation = CancellationToken::new();
@@ -7740,11 +7623,11 @@ mod tests {
         std::fs::create_dir(root.path().join("directory"))?;
         std::fs::write(root.path().join("file"), b"old")?;
         let source = NativeDemandSource::open(
-            root.path(),
+            std::borrow::Cow::Owned(std::path::Path::new(root.path()).to_path_buf()),
             FilesystemProfile::Portable,
-            VolumeLimits::default(), None, None,
+            VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
         )
-        .await?;
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let reference = source.reference();
         let cancellation = CancellationToken::new();
         let node = source.lookup(reference, &path("/file")?, WorkBudget::UNBOUNDED, &cancellation)
@@ -7856,7 +7739,7 @@ mod tests {
         let root = tempfile::tempdir()?;
         std::fs::write(root.path().join(&host_name), b"data")?;
         let source =
-            NativeDemandSource::open(root.path(), FilesystemProfile::Windows, limits, None, None).await?;
+            NativeDemandSource::open(std::borrow::Cow::Owned(std::path::Path::new(root.path()).to_path_buf()), FilesystemProfile::Windows, limits, None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let exact = NamespacePath::new(vec![name], limits)?;
         assert!(
             source
@@ -7877,7 +7760,7 @@ mod tests {
         let root = tempfile::tempdir()?;
         std::fs::write(root.path().join(host_name), b"data")?;
         let source =
-            NativeDemandSource::open(root.path(), profile, VolumeLimits::default(), None, None).await?;
+            NativeDemandSource::open(std::borrow::Cow::Owned(std::path::Path::new(root.path()).to_path_buf()), profile, VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let exact = NamespacePath::new(vec![name], VolumeLimits::default())?;
         let node = source.lookup(source.reference(), &exact, WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await?

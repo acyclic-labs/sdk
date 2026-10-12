@@ -603,7 +603,7 @@ impl NativeMaterializationWork {
 
     /// Retains the original invocation for native queue completion.
     pub(crate) fn original_demand_work(&self) -> crate::demand::OriginalDemandWork {
-        crate::demand::OriginalDemandWork::from_native_materialization_work(self)
+        crate::demand::NativeSourceWork::from_native_materialization_work(self).original_demand_work()
     }
 
     pub(crate) fn from_original_demand_work(work: &crate::demand::OriginalDemandWork) -> Result<Self, crate::DemandError> {
@@ -917,19 +917,6 @@ impl NativeMaterializationWork {
         self.state.register_native_checkout_control(self, producer, header_guard)
     }
 
-    /// Constructs private controls through registered original custody.
-    pub(crate) fn with_native_checkout_controls<T, E: From<NativeTreeMaterializationError>>(
-        &self,
-        operation: impl FnOnce(
-            &mut crate::demand::NativeCheckoutControlSink<'_>,
-            &mut crate::kernel::allocation::AllocationLedger,
-            &mut crate::WorkCounters, crate::WorkBudget, &crate::CancellationToken,
-        ) -> Result<T, E>,
-    ) -> Result<T, E> {
-        self.state.with_native_checkout_controls(operation)
-            .map_err(|error| E::from(native_materialization_work_error(error)))?
-    }
-
     /// The failure path must have destroyed all of the leaf's own backing.
     pub(crate) fn allocations<T, E: From<NativeTreeMaterializationError>>(&self, operation: impl FnOnce(&mut crate::kernel::allocation::AllocationLedger, &mut crate::WorkCounters, crate::WorkBudget, &crate::CancellationToken) -> Result<T, E>) -> Result<(T, NativeAllocation), E> {
         let (result, bytes, released) = self.state(|state| {
@@ -1014,19 +1001,10 @@ impl NativeMaterializationWork {
         Ok(NativeAllocation { meter: self.allocation_work(), bytes, capture: None })
     }
 
-    fn claim_root_metadata(&self, bytes: u64) -> Result<NativeAllocation, NativeTreeMaterializationError> {
+    /// Claims original-ledger bookkeeping without resource attribution.
+    pub(crate) fn claim_root_metadata(&self, bytes: u64) -> Result<NativeAllocation, NativeTreeMaterializationError> {
         let root = Self { state: std::sync::Arc::clone(&self.state), cancellation: self.cancellation.clone(), resource: None, capture_origin: None, invocation: self.invocation.clone(), #[cfg(feature = "native-mount")] execution: None };
         root.claim_allocation(bytes, 1, crate::WorkCounters::UNCHARGED)
-    }
-
-    /// Funds only the actual capture token's compiled logical Self.
-    pub(crate) fn claim_capture_custody_metadata(&self) -> Result<NativeAllocation, NativeTreeMaterializationError> {
-        self.claim_allocation(std::mem::size_of::<crate::demand::CaptureTransientCustody>() as u64, 1, crate::WorkCounters::UNCHARGED)
-    }
-
-    /// Funds only root-owned registered checkout-token bookkeeping.
-    pub(crate) fn claim_checkout_token_metadata(&self) -> Result<NativeAllocation, NativeTreeMaterializationError> {
-        self.claim_root_metadata(std::mem::size_of::<crate::kernel::ProofDataCustody>() as u64)
     }
 
     /// Transfers a registered capture's paid scratch custody.
@@ -1479,8 +1457,7 @@ impl NativeWorkReservation {
 
     /// Borrows accepted cleanup credit and an optional caller wait token.
     pub(crate) fn loan<'a>(&'a mut self, wait: Option<&'a crate::CancellationToken>) -> NativeCleanupLoan<'a> {
-        let original = self.meter.clone();
-        NativeCleanupLoan { credit: parking_lot::Mutex::new(self), original, wait }
+        NativeCleanupLoan { credit: parking_lot::Mutex::new(self), wait }
     }
 
     /// Transfers reserved work within the same aggregate allowance.
@@ -1609,13 +1586,12 @@ impl Drop for NativeWorkReservation {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct NativeCleanupLoan<'a> {
     credit: parking_lot::Mutex<&'a mut NativeWorkReservation>,
-    original: NativeMaterializationWork,
     wait: Option<&'a crate::CancellationToken>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl NativeCleanupLoan<'_> {
-    pub(crate) fn original_work(&self) -> &NativeMaterializationWork { &self.original }
+    pub(crate) fn original_work(&self) -> NativeMaterializationWork { self.credit.lock().meter.clone() }
     pub(crate) fn cancellation(&self) -> Option<&crate::CancellationToken> { self.wait }
     pub(crate) fn check_wait(&self) -> Result<(), NativeTreeMaterializationError> {
         self.wait.map_or(Ok(()), |wait| {
@@ -3722,7 +3698,7 @@ impl<S: MaterializationJournalStore> JournaledMaterializer<S, std::sync::Arc<Nat
         let failure_slot = NativeStageUncertainty::<E>::new(&original)
             .map_err(|error| E::from(MaterializationError::Backend(error)))?;
         let state = std::sync::Mutex::new(Some(NativeStageJournal::<S::ActionCompletion<'_>>::Journal(journal)));
-        let reader = generation.workspace().readonly_pinned_reader_with_native_work(
+        let reader = generation.workspace().reader(
             generation.id(), &original, original.cancellation(),
         ).await.map_err(E::from)?;
         let mut control = |phase| {
@@ -3900,10 +3876,8 @@ impl NativeTreeMaterializationBackend {
                     let allocation = match step {
                         MaterializationPreparationAllocation::Operation => crate::native_host::create_new_directory_held_with_work(&parent, leaf, &mut &work)?,
                         MaterializationPreparationAllocation::Target | MaterializationPreparationAllocation::Backup => {
-                            let expected = crate::NativeRootIdentity::from_bytes(progress.operation.ok_or(NativeTreeMaterializationError::InvalidLayout)?);
-                            let operation = with_native_walk_leaf(leaf, &work, |name| open_native_walk_directory(&parent, name, &work))?;
-                            let actual = crate::native_host::directory_identity(&operation, &mut &work)?;
-                            if actual != expected { return Err(NativeTreeMaterializationError::AllocationChanged { expected, actual }); }
+                            let expected = progress.operation.ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+                            let operation = Self::recorded_preparation_child(&parent, leaf, expected, &work)?;
                             if let Some(expected) = progress.target { Self::recorded_preparation_child(&operation, Path::new("target"), expected, &work)?; }
                             crate::native_host::create_new_directory_held_with_work(&operation, match step { MaterializationPreparationAllocation::Target => Path::new("target"), _ => Path::new("backup") }, &mut &work)?
                         }
@@ -4382,7 +4356,7 @@ impl MaterializationBackend for std::sync::Arc<NativeTreeMaterializationBackend>
                 let (image, custody) = encode_native_witness(Some(before), Some(after), Some(native_metadata(&metadata)), &backend.work())?;
                 return Ok(MaterializationPreimage { image, custody: Some(custody) });
             }
-            let before = backend.fingerprint(&live, !matches!(edit, MaterializationEdit::SetMetadata { .. }))?;
+            let before = backend.fingerprint(&live, true)?;
             let after = match edit {
                 MaterializationEdit::Install { .. } => match backend.fingerprint(&target, true)? {
                     Some(image) => Some(image),
@@ -4470,7 +4444,7 @@ impl MaterializationBackend for std::sync::Arc<NativeTreeMaterializationBackend>
             let (live, target, backup) = backend.paths(path);
             let (before, after) = decode_native_witness(&preimage.image)?;
             if let MaterializationEdit::SetMetadata { image, .. } = edit {
-                let current = backend.fingerprint(&live, !matches!(edit, MaterializationEdit::SetMetadata { .. }))?;
+                let current = backend.fingerprint(&live, false)?;
                 if current == after {
                     return Ok(());
                 }
@@ -4485,10 +4459,7 @@ impl MaterializationBackend for std::sync::Arc<NativeTreeMaterializationBackend>
             let target_exists = target_fingerprint.is_some();
             let live_fingerprint = backend.fingerprint(&live, true)?;
             let live_exists = live_fingerprint.is_some();
-            if !backup_exists && !target_exists && live_fingerprint == after {
-                return Ok(());
-            }
-            if backup_exists && !target_exists && live_fingerprint == after {
+            if !target_exists && live_fingerprint == after {
                 return Ok(());
             }
             if backup_exists && live_fingerprint.is_some() && live_fingerprint != after {
@@ -4945,9 +4916,10 @@ fn hash_native_metadata_edit(
     metadata: &crate::native_host::HostStat,
     desired: Option<&NativeMetadataImage>,
     hasher: &mut blake3::Hasher,
-) {
+    work: &NativeMaterializationWork,
+) -> Result<(), NativeTreeMaterializationError> {
     let file_type = metadata.file_type();
-    hasher.update(if file_type.is_symlink() {
+    let kind: &[u8] = if file_type.is_symlink() {
         b"link"
     } else if file_type.is_dir() {
         b"directory"
@@ -4955,7 +4927,15 @@ fn hash_native_metadata_edit(
         b"file"
     } else {
         b"special"
-    });
+    };
+    #[cfg(unix)]
+    let bytes = 24;
+    #[cfg(windows)]
+    let bytes = if metadata.is_dir() || file_type.is_file() { 20 } else { 4 };
+    #[cfg(not(any(unix, windows)))]
+    let bytes = 1;
+    work.charge(crate::WorkCounters { source_entries_visited: 1, bytes_hashed: kind.len() as u64 + bytes, ..crate::WorkCounters::UNCHARGED })?;
+    hasher.update(kind);
     #[cfg(unix)]
     {
         for value in [metadata.dev(), metadata.ino()] {
@@ -4989,20 +4969,15 @@ fn hash_native_metadata_edit(
         || metadata.permissions().readonly(),
         |value| value.readonly,
     ))]);
+    #[cfg(windows)]
+    if metadata.is_dir() || file_type.is_file() { hasher.update(&native_stat_identity(metadata).to_bytes()); }
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 fn native_metadata_fingerprint(metadata: &crate::native_host::HostStat, desired: Option<&NativeMetadataImage>, work: &NativeMaterializationWork) -> Result<[u8; 32], NativeTreeMaterializationError> {
-    let kind: &[u8] = if metadata.file_type().is_symlink() { b"link" } else if metadata.is_dir() { b"directory" } else if metadata.file_type().is_file() { b"file" } else { b"special" };
-    #[cfg(unix)]
-    let metadata_bytes = 24;
-    #[cfg(windows)]
-    let metadata_bytes = if metadata.is_dir() || metadata.file_type().is_file() { 20 } else { 4 };
-    work.charge(crate::WorkCounters { source_entries_visited: 1, bytes_hashed: kind.len() as u64 + metadata_bytes, ..crate::WorkCounters::default() })?;
     let mut hasher = blake3::Hasher::new();
-    hash_native_metadata_edit(metadata, desired, &mut hasher);
-    #[cfg(windows)]
-    if metadata.is_dir() || metadata.file_type().is_file() { hasher.update(&native_stat_identity(metadata).to_bytes()); }
+    hash_native_metadata_edit(metadata, desired, &mut hasher, work)?;
     Ok(*hasher.finalize().as_bytes())
 }
 
@@ -5235,22 +5210,19 @@ fn hash_native_entry_shallow(
     contents: bool,
 ) -> Result<Option<NativeHashFrame>, NativeTreeMaterializationError> {
     use std::io::Read as _;
-    let kind: &[u8] = if metadata.file_type().is_symlink() { b"link" } else if metadata.is_dir() { b"directory" } else if metadata.file_type().is_file() { b"file" } else { b"special" };
-    #[cfg(unix)]
-    let metadata_bytes = if contents { 81 } else { 24 };
-    #[cfg(windows)]
-    let metadata_bytes = if contents { 33 } else if metadata.is_dir() || metadata.file_type().is_file() { 20 } else { 4 };
-    #[cfg(not(any(unix, windows)))]
-    let metadata_bytes = if contents { 9 } else { 1 };
-    backend.work().charge(crate::WorkCounters { source_entries_visited: 1, bytes_hashed: kind.len() as u64 + metadata_bytes, ..crate::WorkCounters::default() })?;
     if !contents {
-        hash_native_metadata_edit(metadata, None, hasher);
-        #[cfg(windows)]
-        if metadata.is_dir() || metadata.file_type().is_file() {
-            hasher.update(&native_stat_identity(metadata).to_bytes());
-        }
+        hash_native_metadata_edit(metadata, None, hasher, &backend.work())?;
         return Ok(None);
     }
+    let kind: &[u8] = if metadata.file_type().is_symlink() { b"link" } else if metadata.is_dir() { b"directory" } else if metadata.file_type().is_file() { b"file" } else { b"special" };
+    #[cfg(unix)]
+    let metadata_bytes = 81;
+    #[cfg(windows)]
+    let metadata_bytes = 33;
+    #[cfg(not(any(unix, windows)))]
+    let metadata_bytes = 9;
+    backend.work().charge(crate::WorkCounters { source_entries_visited: 1, bytes_hashed: kind.len() as u64 + metadata_bytes, ..crate::WorkCounters::default() })?;
+
     hasher.update(kind);
     hasher.update(&metadata.len().to_le_bytes());
     hasher.update(&[u8::from(native_stat_readonly(metadata))]);
@@ -5312,54 +5284,25 @@ fn hash_native_entry_shallow(
 fn hash_native_name(work: &NativeMaterializationWork, name: &std::ffi::OsStr, hasher: &mut blake3::Hasher) -> Result<(), NativeTreeMaterializationError> {
     let length = name.as_encoded_bytes().len() as u64;
     work.charge(crate::WorkCounters { bytes_hashed: length, ..crate::WorkCounters::default() })?;
-    hash_native_os_str(name, hasher);
+    hasher.update(name.as_encoded_bytes());
     Ok(())
 }
 
-#[cfg(all(unix, not(target_arch = "wasm32")))]
-fn hash_native_metadata(
-    metadata: &crate::native_host::HostStat,
-    hasher: &mut blake3::Hasher,
-) {
-    for value in [
-        metadata.dev(),
-        metadata.ino(),
-        u64::from(metadata.mode()),
-    ] {
-        hasher.update(&value.to_le_bytes());
-    }
+#[cfg(not(target_arch = "wasm32"))]
+fn hash_native_metadata(metadata: &crate::native_host::HostStat, hasher: &mut blake3::Hasher) {
+    #[cfg(unix)]
     {
-        for value in [
-            metadata.nlink(),
-            u64::from(metadata.uid()),
-            u64::from(metadata.gid()),
-            metadata.rdev(),
-        ] {
+        for value in [metadata.dev(), metadata.ino(), u64::from(metadata.mode()),
+            metadata.nlink(), u64::from(metadata.uid()), u64::from(metadata.gid()), metadata.rdev()] {
             hasher.update(&value.to_le_bytes());
         }
         hasher.update(&metadata.mtime().to_le_bytes());
         hasher.update(&metadata.mtime_nsec().to_le_bytes());
     }
-}
-
-#[cfg(all(windows, not(target_arch = "wasm32")))]
-fn hash_native_metadata(
-    metadata: &crate::native_host::HostStat,
-    hasher: &mut blake3::Hasher,
-) {
-    hasher.update(&u64::from(metadata.file_attributes()).to_le_bytes());
-    {
-        for value in [metadata.last_write_time(), metadata.len()] {
-            hasher.update(&value.to_le_bytes());
-        }
+    #[cfg(windows)]
+    for value in [u64::from(metadata.file_attributes()), metadata.last_write_time(), metadata.len()] {
+        hasher.update(&value.to_le_bytes());
     }
-}
-
-#[cfg(all(not(unix), not(windows), not(target_arch = "wasm32")))]
-fn hash_native_metadata(
-    _metadata: &cap_std::fs::Metadata,
-    _hasher: &mut blake3::Hasher,
-) {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -5400,17 +5343,6 @@ fn encode_native_metadata(
         return Err(writer.failure.take().unwrap_or_else(|| error.into()));
     }
     Ok((writer.image, writer.allocation))
-}
-
-#[cfg(all(unix, not(target_arch = "wasm32")))]
-fn hash_native_os_str(value: &std::ffi::OsStr, hasher: &mut blake3::Hasher) {
-    use std::os::unix::ffi::OsStrExt as _;
-    hasher.update(value.as_bytes());
-}
-
-#[cfg(all(not(unix), not(windows), not(target_arch = "wasm32")))]
-fn hash_native_os_str(value: &std::ffi::OsStr, hasher: &mut blake3::Hasher) {
-    hasher.update(value.to_string_lossy().as_bytes());
 }
 
 /// Native tree publication failure.

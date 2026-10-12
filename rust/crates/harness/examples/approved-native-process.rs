@@ -458,7 +458,7 @@ where
         .open_interaction(
             approval,
             Interaction::approval(
-                "Run this exact example process",
+                "Run this exact example process".into(),
                 command,
                 request.approval_digest(task_id, command)?,
             )?,
@@ -499,6 +499,7 @@ where
         SchemaRegistry::new(),
         content.clone(),
         registry,
+        None, None,
     )?);
     let mut restart = Restart {
         task: task_id,
@@ -720,6 +721,7 @@ where
         SchemaRegistry::new(),
         content.clone(),
         registry,
+        None, None,
     )?);
     Ok(Recovery {
         owner,

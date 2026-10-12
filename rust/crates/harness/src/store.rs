@@ -274,9 +274,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 "extension migration request is invalid".into(),
             ));
         }
-        if let Some(revision) = self.operation_revision(request.operation_id).await? {
+        if let Some(event) = self.operation_event(request.operation_id).await? {
             return self
-                .replay_extension_migration(request, scope, publisher, revision)
+                .replay_extension_migration(request, scope, publisher, event.revision)
                 .await;
         }
         self.reducer.preflight_extension_migration(
@@ -858,7 +858,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             drop(event);
             let record_bytes = operations::sdk_record_retained_bytes(&record, work);
             drop(record);
-            if let Some(work) = work.as_deref_mut() { work.release_record(record_bytes)?; }
+            if let Some(work) = work.as_deref_mut() { work.release_owned(record_bytes)?; }
         }
         if let Some(work) = work.as_deref_mut() {
             work.release_owned(events_retained_bytes)?;
@@ -946,11 +946,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }
     }
 
-    /// Configures the event/retry cache; canonical Stream history and live projections remain authoritative.
-    pub fn with_resident_event_limit(mut self, maximum: usize) -> Result<Self> {
-        self.set_resident_event_limit(maximum)?;
-        Ok(self)
-    }
 
     /// Reconfigures the bounded event/retry cache without moving a borrowed aggregate.
     pub fn set_resident_event_limit(&mut self, maximum: usize) -> Result<()> {
@@ -993,12 +988,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         self
     }
 
-    /// Configures content and projection bounds for future admissions.
-    pub fn with_limits(mut self, limits: Limits) -> Result<Self> {
-        self.set_limits(limits)?;
-        Ok(self)
-    }
-
     /// Updates admission bounds without discarding the verified projection.
     pub fn set_limits(&mut self, limits: Limits) -> Result<()> {
         limits.validate(&mut None)?;
@@ -1023,14 +1012,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
             self.reducer.event_verifier(),
             operation, 2 * acyclic_stream::MAX_RECORD_BYTES as u64, true, &mut None,
         ).await.map(|(event, _)| event)
-    }
-
-    /// Exact historical operation revision, independent of the resident retry index.
-    pub async fn operation_revision(&self, operation: OperationId) -> Result<Option<u64>> {
-        Ok(self
-            .operation_event(operation)
-            .await?
-            .map(|event| event.revision))
     }
 
     /// Exact committed model selection, including operations archived from resident state.
@@ -1293,7 +1274,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             self.validate_causal_reference(event.causal_parent.as_ref(), &mut None)
                 .await?;
             let publication = checkpoints::publication_with_work(&self.client, &self.reducer, &event, &mut None).await?;
-            let request = publication.request(&self.client, idempotency_key).await?;
+            let request = publication.request(&self.client, idempotency_key, &mut None).await?.0;
             let fork_guard = if let crate::core::Action::PublishFork { seed } = &command.action {
                 let verifier = self
                     .fork_verifier
@@ -1343,7 +1324,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             };
             let result = match outcome {
                 CommitOutcome::Committed(envelope) => {
-                    if publication.verify(&envelope).is_err() {
+                    if publication.verify(&envelope, &mut None).is_err() {
                         return Err(Error::Indeterminate(publication.operation_id));
                     }
                     match self.reducer.apply_committed(event.clone(), &mut None).and_then(|result|
@@ -1463,7 +1444,11 @@ impl<P: StreamProvider> StreamAggregate<P> {
             let (bytes, claim) = Self::read_admission_content_with_work(
                 verifier.as_ref(), reference, scratch.work()).await?;
             scratch.adopt(claim)?;
-            let validated = ticket.validate_request_bytes_with_work(&bytes, scratch.work());
+            let validated = ticket.validate_request_bytes(&bytes, scratch.work()).and_then(|request| {
+                let measured = request.1;
+                drop(request);
+                scratch.work().as_deref_mut().map_or(Ok(()), |io| io.release_owned(measured))
+            });
             drop(bytes);
             let released = scratch.relinquish(claim);
             return match validated {
@@ -1498,16 +1483,16 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let (request_bytes, request_claim) = Self::read_admission_content_with_work(
             verifier.as_ref(), &ticket.request, scratch.work()).await?;
         scratch.adopt(request_claim)?;
-        let request = ticket.validate_request_bytes_owned_with_work(&request_bytes, scratch.work())?;
-        scratch.adopt(request.measured_owned_bytes())?;
+        let request = ticket.validate_request_bytes(&request_bytes, scratch.work())?;
+        scratch.adopt(request.1)?;
         let (bytes, claim) = Self::read_admission_content_with_work(
             verifier.as_ref(), reference, scratch.work()).await?;
         scratch.adopt(claim)?;
         match detail_outcome {
             Some(outcome) => ticket.validate_decision_bytes(
-                request.request(), outcome, reference, &bytes, scratch.work()),
+                &request.0, outcome, reference, &bytes, scratch.work()),
             None => ticket.validate_answer_bytes(
-                request.request(), reference, &bytes, scratch.work()),
+                &request.0, reference, &bytes, scratch.work()),
         }
     }
 
@@ -1537,7 +1522,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 Error::Unsupported("interaction content verifier is not bound".into())
             })?;
             let bytes = verifier.read(&ticket.request, ticket.request.descriptor().byte_length(), None)?.await?;
-            ticket.validate_request_bytes(&bytes)?;
+            ticket.validate_request_bytes(&bytes, &mut None)?;
         }
         if let crate::core::Action::ResolveInteraction { resolution } = action
             && let InteractionOutcome::Answered { answer } = &resolution.outcome
@@ -1550,7 +1535,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 .interaction(&resolution.id)
                 .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
             let request_bytes = verifier.read(&ticket.request, ticket.request.descriptor().byte_length(), None)?.await?;
-            let request = ticket.validate_request_bytes(&request_bytes)?;
+            let request = ticket.validate_request_bytes(&request_bytes, &mut None)?.0;
             let answer_bytes = verifier.read(answer, answer.descriptor().byte_length(), None)?.await?;
             ticket.validate_answer_bytes(&request, answer, &answer_bytes, &mut None)?;
         }
@@ -1565,7 +1550,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 .interaction(&resolution.id)
                 .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
             let request_bytes = verifier.read(&ticket.request, ticket.request.descriptor().byte_length(), None)?.await?;
-            let request = ticket.validate_request_bytes(&request_bytes)?;
+            let request = ticket.validate_request_bytes(&request_bytes, &mut None)?.0;
             let detail_bytes = verifier.read(detail, detail.descriptor().byte_length(), None)?.await?;
             ticket.validate_decision_bytes(&request, &resolution.outcome, detail, &detail_bytes, &mut None)?;
         }
@@ -1778,7 +1763,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let path = reference.authority.stream_path(work)?;
         let path_bytes = if work.is_some() { path.capacity() as u64 } else { 0 };
         let read = match operations::stream(&self.client, &path, work) {
-            Ok(stream) => operations::one_record(&self.client, stream.stream.path(),
+            Ok(stream) => operations::one_record(&self.client, stream.0.path(),
                 reference.revision.saturating_sub(1), work).await,
             Err(error) => Err(error),
         };
@@ -1794,7 +1779,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let decoded = crate::wire_codec::decode_event(&record.value, work);
         drop(record);
         let released_record = match work.as_deref_mut() {
-            Some(observer) => observer.release_record(raw), None => Ok(()),
+            Some(observer) => observer.release_owned(raw), None => Ok(()),
         };
         let ((authority, event), event_retained) = match decoded {
             Ok(decoded) => { released_record?; decoded },
@@ -2122,9 +2107,9 @@ mod tests {
         let client = provider.clone();
         let mut writer = with_content(
             StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
-                .await?
-                .with_resident_event_limit(1)?,
+                .await?,
         );
+        writer.set_resident_event_limit(1)?;
         let original = command(1)?;
         let first = writer.execute(original.clone(), #[cfg(feature = "filesystem")] None, &mut None).await?;
         let ApplyResult::Applied { event } = first else {
@@ -2294,7 +2279,8 @@ mod tests {
                 .first()
                 .ok_or_else(|| Error::Storage("head record missing".into()))?
                 .value,
-        )?;
+            None,
+        )?.0;
         forged["sequence"] = json!(2);
         head.append(crate::contract::canonical_json_bytes(&forged)?)
             .await?;
@@ -2324,9 +2310,9 @@ mod tests {
         let client = provider.clone();
         let mut writer = with_content(
             StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
-                .await?
-                .with_resident_event_limit(1)?,
+                .await?,
         );
+        writer.set_resident_event_limit(1)?;
         let agent = crate::AgentId::from_bytes([8; 16]);
         let file = content()?;
         let scope = issuer().issue("message-writer", &Capabilities::new([
@@ -2478,7 +2464,8 @@ mod tests {
                 .first()
                 .ok_or_else(|| Error::Storage("message index missing".into()))?
                 .value,
-        )?;
+            None,
+        )?.0;
         let forged_id = uuid::Uuid::from_u128(50_000);
         forged["message_id"] = json!(forged_id);
         acyclic_stream::Stream::new(std::sync::Arc::clone(&client), format!(
@@ -2491,7 +2478,8 @@ mod tests {
                 .first()
                 .ok_or_else(|| Error::Storage("message index missing".into()))?
                 .value,
-        )?;
+            None,
+        )?.0;
         forged_sequence["sequence"] = json!(20_001);
         acyclic_stream::Stream::new(std::sync::Arc::clone(&client), "harness/v2/conversation-sequences/conversations/conversation-1/20001")?
             .append(crate::contract::canonical_json_bytes(&forged_sequence)?)
@@ -2750,9 +2738,7 @@ mod tests {
                 selection.conversation_revision,
                 selection.clone(),
                 &TestContent,
-                3,
-                8,
-                65_536,
+                crate::conversation::Limits { context_messages: 3, attachments: 8, render_bytes: 65_536, ..Default::default() },
                 8,
                 None,
             )
@@ -2788,9 +2774,9 @@ mod tests {
         let client = Arc::new(MemoryStream::default());
         let mut writer = with_content(
             StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
-                .await?
-                .with_resident_event_limit(2)?,
+                .await?,
         );
+        writer.set_resident_event_limit(2)?;
         let original = command(1)?;
         let first = writer.execute(original.clone(), #[cfg(feature = "filesystem")] None, &mut None).await?;
         for identity in 2..=5 {
@@ -2832,9 +2818,9 @@ mod tests {
                 authority(),
                 issuer().verifier(&mut None).expect("verifier copy"),
                 schemas(), Some(snapshot), crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
-            .await?
-            .with_resident_event_limit(2)?,
+            .await?,
         );
+        restored.set_resident_event_limit(2)?;
         assert_eq!(restored.reducer().archived_through_revision(), 3);
         let ApplyResult::Replayed { event } = restored.execute(original, #[cfg(feature = "filesystem")] None, &mut None).await? else {
             return Err(Error::Invalid("cold retry was not replayed".into()));
@@ -3614,7 +3600,7 @@ mod tests {
             host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?;
         let reader = Arc::new(FilesystemContentVerifier::new(
             host, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?);
-        let request = Interaction::question("original published prompt", json!({"type": "string"}))?;
+        let request = Interaction::question("original published prompt".into(), json!({"type": "string"}))?;
         let published = crate::contract::canonical_json_bytes(&request)?;
         let reference = publisher.stage_once(OperationId::from_bytes([95; 16]),
             "interactions/request.json", &published, "application/json", "request.json").await?;
@@ -3641,7 +3627,7 @@ mod tests {
         assert_eq!(claim, 0, "native carrier owns its claim, not the observer");
         let alias = bytes.clone();
         let empty_alias = alias.slice(0..0);
-        ticket.validate_request_bytes_with_work(&alias, &mut Some(&mut io))?;
+        ticket.validate_request_bytes(&alias, &mut Some(&mut io))?;
         drop(bytes);
         drop(alias);
         assert!(empty_alias.is_empty());
@@ -3687,7 +3673,7 @@ mod tests {
     -> Result<()> {
         let client = Arc::new(MemoryStream::default());
         let request =
-            Interaction::question("secret prompt", json!({"type": "string", "minLength": 2}))?;
+            Interaction::question("secret prompt".into(), json!({"type": "string", "minLength": 2}))?;
         let request_bytes =
             serde_json::to_vec(&request).map_err(|error| Error::Invalid(error.to_string()))?;
         let answer_bytes = br#"{"type":"question","value":"yes"}"#;

@@ -89,13 +89,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             .as_deref()
             .and_then(|io| io.original_native_work())
             .cloned();
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let current_private = match native.as_ref() {
-            Some(native) => scope.current_created_private_volume_with_native_work(native)?,
-            None => scope.current_created_private_volume()?,
-        };
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let current_private = scope.current_created_private_volume()?;
+        let current_private = scope.current_created_private_volume(quota.work())?;
         let Some(current_private) = current_private else {
             return Ok((Vec::new(), 0));
         };

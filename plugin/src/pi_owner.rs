@@ -505,14 +505,13 @@ pub(crate) fn root_effects_with_native_work<P: StreamProvider + 'static>(
         .with_result_resolver_with_native_work(content.clone(), work)?;
     providers.register_with_native_work(provider, work)?;
     let ((audience, issuer, scope), custody) = authorization;
-    ConversationEffectHost::new_with_native_work(
+    ConversationEffectHost::new(
         stream, audience, issuer, scope, SchemaRegistry::new(),
-        content, providers, custody, work,
+        content, providers, Some(custody), Some(work),
     )?.into_arc_with_native_work(work)
 }
 
-// Tuple layout keeps every original payload ahead of all of its guards on
-// cancellation or a failed merge. Retired guards are empty only after absorb.
+// Drop tuple payloads before their allocation guards.
 fn combine_native_metadata<T, const N: usize>(
     mut owned: (T, NativeAllocation, [NativeAllocation; N]),
 ) -> Result<(T, NativeAllocation)> {

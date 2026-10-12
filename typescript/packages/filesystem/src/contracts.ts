@@ -7,7 +7,7 @@ import {
   DEFAULT_VOLUME_LIMITS as GENERATED_VOLUME_LIMITS,
 } from "../generated/defaults.js";
 
-/** Derives readonly customer DTOs from the generated Rust contract. */
+/** Readonly customer contracts derived from Rust DTOs. */
 type ReadonlyDeep<T> = T extends (...args: never[]) => unknown
   ? T
   : T extends Uint8Array
@@ -790,12 +790,7 @@ export interface FsCheckout {
 export interface NativeMount {
   readonly id: Uint8Array;
   readonly destination: string;
-  /**
-   * Waits until the mount reflects every change to its checkout made so far,
-   * including changes made through the checkout rather than the mount. Those
-   * reach the mount on their own shortly after; call this to read one through
-   * the mount immediately.
-   */
+  /** Wait until the mount reflects all preceding checkout changes. */
   revalidate(): void;
   stop(): boolean;
 }
@@ -920,11 +915,7 @@ export interface SourceResult {
   readonly generationId: Uint8Array | undefined;
 }
 
-/*
- * Keep the module-level factory surface tied to wasm-bindgen's generated
- * exports. The only refinements here are the serde option/result types that
- * this package validates at its adapter boundary.
- */
+// Refine only serde values validated at the adapter boundary.
 type GeneratedWasmFactories = Pick<
   typeof WasmBinding,
   | "default"
@@ -973,7 +964,7 @@ export interface RawWorkspaceContextRegistry {
 
 export type WasmRawWorkspaceContextRegistry = RawWorkspaceContextRegistry;
 
-// Override only erased inputs and handles that inherit those typed inputs.
+// Inherit generated methods; refine remaining erased serde values.
 type WasmWithArgs<Base, Args extends object> = Omit<Base, keyof Args> & {
   [Key in keyof Args & keyof Base]: Base[Key] extends (...args: infer _Args) => infer Result
     ? (...args: Args[Key] extends readonly unknown[] ? Args[Key] : never) => Result

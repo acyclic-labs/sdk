@@ -13,7 +13,7 @@ import { WorkersService } from "../../workers/generated/proto/workers/v1/workers
 import { StreamService } from "../../stream/generated/proto/stream/v1/stream_pb.js";
 import { BucketsService, ObjectsService, MultipartService } from "../../objects/generated/proto/objects/v1/objects_pb.js";
 import { ActorsClient } from "../dist/index.js";
-import { WorkersClient } from "../../workers/dist/grpc.js";
+import { WorkersClient } from "../../workers/dist/index.js";
 import { createStreamGrpcClient } from "../../stream/dist/grpc.js";
 import { createObjectsV1GrpcClients } from "../../objects/dist/v1-grpc.js";
 

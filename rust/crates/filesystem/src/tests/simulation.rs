@@ -23,8 +23,8 @@ fn proposal(operation: u8, fingerprint: u8) -> ProposedCommit {
     }
 }
 
-#[test]
-fn delayed_objects_are_invisible_until_bounded_flush() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn delayed_objects_are_invisible_until_bounded_flush() -> Result<(), Box<dyn std::error::Error>> {
     let simulation = Simulation::default();
     simulation.schedule(ScheduledSimulationFault {
         operation: SimulationOperation::ObjectPut,
@@ -34,42 +34,38 @@ fn delayed_objects_are_invisible_until_bounded_flush() -> Result<(), Box<dyn std
     let (_, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let (object_id, bytes) = object(b"delayed");
-    crate::async_storage::poll_ready(objects.put(
+    (objects.put(
         object_id,
         bytes.clone(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("simulated put suspended")??;
-    let missing_result = crate::async_storage::poll_ready(objects.read(
+    )).await?;
+    let missing_result = (objects.read(
         object_id,
         64,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("simulated read suspended")?;
+    )).await;
     let Err(missing) = missing_result else {
         return Err("delayed object became visible before flush".into());
     };
     assert!(matches!(missing.error, ObjectStoreError::Missing));
-    let flushed = crate::async_storage::poll_ready(
-        simulation.flush_object_visibility(WorkBudget::UNBOUNDED, &cancellation),
-    )
-    .ok_or("simulated visibility flush suspended")??;
+    let flushed = (
+        simulation.flush_object_visibility(WorkBudget::UNBOUNDED, &cancellation)
+    ).await?;
     assert_eq!(flushed.value, 1);
-    let visible = crate::async_storage::poll_ready(objects.read(
+    let visible = (objects.read(
         object_id,
         64,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("simulated read suspended")??;
+    )).await?;
     assert_eq!(visible.value.bytes, bytes);
     Ok(())
 }
 
-#[test]
-fn corrupt_and_partial_reads_are_exactly_scheduled() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn corrupt_and_partial_reads_are_exactly_scheduled() -> Result<(), Box<dyn std::error::Error>> {
     let simulation = Simulation::default();
     simulation.schedule(ScheduledSimulationFault {
         operation: SimulationOperation::ObjectRead,
@@ -84,37 +80,34 @@ fn corrupt_and_partial_reads_are_exactly_scheduled() -> Result<(), Box<dyn std::
     let (_, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let (object_id, bytes) = object(b"authenticated");
-    crate::async_storage::poll_ready(objects.put(
+    (objects.put(
         object_id,
         bytes,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("simulated put suspended")??;
-    let corrupt = crate::async_storage::poll_ready(objects.read(
+    )).await?;
+    let corrupt = (objects.read(
         object_id,
         64,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("simulated read suspended")??;
+    )).await?;
     assert_ne!(
         object_digest(object_id.kind, &corrupt.value.bytes),
         object_id.digest
     );
-    let partial = crate::async_storage::poll_ready(objects.read(
+    let partial = (objects.read(
         object_id,
         64,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("simulated read suspended")??;
+    )).await?;
     assert_eq!(partial.value.bytes.len(), b"authenticated".len() - 1);
     Ok(())
 }
 
-#[test]
-fn ambiguous_append_is_durable_and_retry_resolves_identity()
+#[tokio::test]
+async fn ambiguous_append_is_durable_and_retry_resolves_identity()
 -> Result<(), Box<dyn std::error::Error>> {
     let simulation = Simulation::default();
     simulation.schedule(ScheduledSimulationFault {
@@ -125,26 +118,24 @@ fn ambiguous_append_is_durable_and_retry_resolves_identity()
     let (authority, _) = simulation.stores();
     let cancellation = CancellationToken::new();
     let authority_id = AuthorityId::from_bytes([7; 16]);
-    let created = crate::async_storage::poll_ready(authority.create_authority(
+    let created = (authority.create_authority(
         authority_id,
         Epoch::GENESIS,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("simulated authority create suspended")??;
+    )).await?;
     let CreateAuthorityOutcome::Created(head) = created.value else {
         return Err("fresh simulated authority already existed".into());
     };
     let proposed = proposal(3, 4);
-    let ambiguous_result = crate::async_storage::poll_ready(authority.compare_and_append(
+    let ambiguous_result = (authority.compare_and_append(
         authority_id,
         Epoch::GENESIS,
         head,
         proposed.clone(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("simulated append suspended")?;
+    )).await;
     let Err(ambiguous) = ambiguous_result else {
         return Err("scheduled ambiguous append returned success".into());
     };
@@ -152,21 +143,20 @@ fn ambiguous_append_is_durable_and_retry_resolves_identity()
         ambiguous.error,
         AuthorityStoreError::Indeterminate { .. }
     ));
-    let retry = crate::async_storage::poll_ready(authority.compare_and_append(
+    let retry = (authority.compare_and_append(
         authority_id,
         Epoch::GENESIS,
         head,
         proposed,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("simulated append retry suspended")??;
+    )).await?;
     assert!(matches!(retry.value, AppendOutcome::AlreadyCommitted(_)));
     Ok(())
 }
 
-#[test]
-fn duplicate_replay_and_fence_change_are_observable_without_hidden_repair()
+#[tokio::test]
+async fn duplicate_replay_and_fence_change_are_observable_without_hidden_repair()
 -> Result<(), Box<dyn std::error::Error>> {
     let simulation = Simulation::default();
     simulation.schedule(ScheduledSimulationFault {
@@ -182,29 +172,27 @@ fn duplicate_replay_and_fence_change_are_observable_without_hidden_repair()
     let (authority, _) = simulation.stores();
     let cancellation = CancellationToken::new();
     let authority_id = AuthorityId::from_bytes([8; 16]);
-    let created = crate::async_storage::poll_ready(authority.create_authority(
+    let created = (authority.create_authority(
         authority_id,
         Epoch::GENESIS,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("simulated authority create suspended")??;
+    )).await?;
     let CreateAuthorityOutcome::Created(head) = created.value else {
         return Err("fresh simulated authority already existed".into());
     };
-    let committed = crate::async_storage::poll_ready(authority.compare_and_append(
+    let committed = (authority.compare_and_append(
         authority_id,
         Epoch::GENESIS,
         head,
         proposal(5, 6),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("simulated append suspended")??;
+    )).await?;
     let AppendOutcome::Committed(commit) = committed.value else {
         return Err("first simulated append did not commit".into());
     };
-    let replay = crate::async_storage::poll_ready(authority.replay(
+    let replay = (authority.replay(
         authority_id,
         Sequence::GENESIS,
         ReplayLimit {
@@ -213,10 +201,9 @@ fn duplicate_replay_and_fence_change_are_observable_without_hidden_repair()
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("simulated replay suspended")??;
+    )).await?;
     assert_eq!(replay.value, vec![commit.clone(), commit.clone()]);
-    let fenced = crate::async_storage::poll_ready(authority.compare_and_append(
+    let fenced = (authority.compare_and_append(
         authority_id,
         Epoch::GENESIS,
         Head {
@@ -227,14 +214,13 @@ fn duplicate_replay_and_fence_change_are_observable_without_hidden_repair()
         proposal(7, 8),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("simulated fenced append suspended")??;
+    )).await?;
     assert!(matches!(fenced.value, AppendOutcome::Fenced { .. }));
     Ok(())
 }
 
-#[test]
-fn fence_before_append_preserves_nested_budget_failure_work()
+#[tokio::test]
+async fn fence_before_append_preserves_nested_budget_failure_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let simulation = Simulation::default();
     simulation.schedule(ScheduledSimulationFault {
@@ -245,17 +231,16 @@ fn fence_before_append_preserves_nested_budget_failure_work()
     let (authority, _) = simulation.stores();
     let cancellation = CancellationToken::new();
     let authority_id = AuthorityId::from_bytes([81; 16]);
-    let created = crate::async_storage::poll_ready(authority.create_authority(
+    let created = (authority.create_authority(
         authority_id,
         Epoch::GENESIS,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("simulated authority create suspended")??;
+    )).await?;
     let CreateAuthorityOutcome::Created(head) = created.value else {
         return Err("fresh simulated authority already existed".into());
     };
-    let result = crate::async_storage::poll_ready(authority.compare_and_append(
+    let result = (authority.compare_and_append(
         authority_id,
         Epoch::GENESIS,
         head,
@@ -267,8 +252,7 @@ fn fence_before_append_preserves_nested_budget_failure_work()
             ..WorkBudget::UNBOUNDED
         },
         &cancellation,
-    ))
-    .ok_or("simulated fenced append suspended")?;
+    )).await;
     let failure = result
         .err()
         .ok_or("zero append budget unexpectedly published after fencing")?;
@@ -288,8 +272,8 @@ fn fence_before_append_preserves_nested_budget_failure_work()
     Ok(())
 }
 
-#[test]
-fn scheduling_is_bounded_typed_and_traceable() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn scheduling_is_bounded_typed_and_traceable() -> Result<(), Box<dyn std::error::Error>> {
     let simulation = Simulation::new(SimulationOptions {
         maximum_scheduled_faults: 1,
         maximum_trace_entries: 2,
@@ -328,12 +312,11 @@ fn scheduling_is_bounded_typed_and_traceable() -> Result<(), Box<dyn std::error:
     let (_, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let (object_id, _) = object(b"x");
-    let rejected_result = crate::async_storage::poll_ready(objects.contains(
+    let rejected_result = (objects.contains(
         object_id,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("simulated contains suspended")?;
+    )).await;
     let Err(rejected) = rejected_result else {
         return Err("scheduled contains rejection succeeded".into());
     };
@@ -352,12 +335,11 @@ fn scheduling_is_bounded_typed_and_traceable() -> Result<(), Box<dyn std::error:
         SimulationFault::PartitionBefore,
     )?;
     assert_eq!(next.occurrence, 2);
-    let second_result = crate::async_storage::poll_ready(objects.contains(
+    let second_result = (objects.contains(
         object_id,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("second simulated contains suspended")?;
+    )).await;
     let Err(second) = second_result else {
         return Err("scheduled next partition succeeded".into());
     };
@@ -367,10 +349,9 @@ fn scheduling_is_bounded_typed_and_traceable() -> Result<(), Box<dyn std::error:
 }
 
 fn assert_authority_before_work<T>(
-    result: Option<AuthorityResult<T>>,
+    result: AuthorityResult<T>,
     cancelled: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let result = result.ok_or("simulated authority operation suspended")?;
     let Err(failure) = result else {
         return Err("simulated authority operation unexpectedly succeeded".into());
     };
@@ -383,7 +364,7 @@ fn assert_authority_before_work<T>(
     Ok(())
 }
 
-fn exercise_authority_before_work(
+async fn exercise_authority_before_work(
     fault: Option<SimulationFault>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let simulation = Simulation::default();
@@ -417,35 +398,35 @@ fn exercise_authority_before_work(
     };
     let cancelled = fault.is_none();
     assert_authority_before_work(
-        crate::async_storage::poll_ready(authority.create_authority(
+        (authority.create_authority(
             authority_id,
             Epoch::GENESIS,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )),
+        )).await,
         cancelled,
     )?;
     assert_authority_before_work(
-        crate::async_storage::poll_ready(authority.head(
+        (authority.head(
             authority_id,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )),
+        )).await,
         cancelled,
     )?;
     assert_authority_before_work(
-        crate::async_storage::poll_ready(authority.compare_and_append(
+        (authority.compare_and_append(
             authority_id,
             Epoch::GENESIS,
             head,
             proposal(44, 45),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )),
+        )).await,
         cancelled,
     )?;
     assert_authority_before_work(
-        crate::async_storage::poll_ready(authority.replay(
+        (authority.replay(
             authority_id,
             Sequence::GENESIS,
             ReplayLimit {
@@ -454,25 +435,25 @@ fn exercise_authority_before_work(
             },
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )),
+        )).await,
         cancelled,
     )?;
     assert_authority_before_work(
-        crate::async_storage::poll_ready(authority.fence(
+        (authority.fence(
             authority_id,
             head,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )),
+        )).await,
         cancelled,
     )?;
     assert_authority_before_work(
-        crate::async_storage::poll_ready(authority.find_operation(
+        (authority.find_operation(
             authority_id,
             operation_id,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )),
+        )).await,
         cancelled,
     )?;
     assert!(simulation.trace()?.is_empty() == cancelled);
@@ -480,10 +461,9 @@ fn exercise_authority_before_work(
 }
 
 fn assert_object_before_work<T>(
-    result: Option<ObjectResult<T>>,
+    result: ObjectResult<T>,
     cancelled: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let result = result.ok_or("simulated object operation suspended")?;
     let Err(failure) = result else {
         return Err("simulated object operation unexpectedly succeeded".into());
     };
@@ -496,7 +476,7 @@ fn assert_object_before_work<T>(
     Ok(())
 }
 
-fn exercise_object_before_work(
+async fn exercise_object_before_work(
     fault: Option<SimulationFault>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let simulation = Simulation::default();
@@ -526,66 +506,66 @@ fn exercise_object_before_work(
     }];
     let cancelled = fault.is_none();
     assert_object_before_work(
-        crate::async_storage::poll_ready(objects.put(
+        (objects.put(
             object_id,
             bytes,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )),
+        )).await,
         cancelled,
     )?;
     assert_object_before_work(
-        crate::async_storage::poll_ready(objects.read(
+        (objects.read(
             object_id,
             64,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )),
+        )).await,
         cancelled,
     )?;
     assert_object_before_work(
-        crate::async_storage::poll_ready(objects.read_many(
+        (objects.read_many(
             &requests,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )),
+        )).await,
         cancelled,
     )?;
     assert_object_before_work(
-        crate::async_storage::poll_ready(objects.contains(
+        (objects.contains(
             object_id,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )),
+        )).await,
         cancelled,
     )?;
     assert!(simulation.trace()?.is_empty() == cancelled);
     Ok(())
 }
 
-#[test]
-fn every_operation_rejects_and_partitions_before_inner_work()
+#[tokio::test]
+async fn every_operation_rejects_and_partitions_before_inner_work()
 -> Result<(), Box<dyn std::error::Error>> {
     for fault in [
         SimulationFault::RejectBefore,
         SimulationFault::PartitionBefore,
     ] {
-        exercise_authority_before_work(Some(fault))?;
-        exercise_object_before_work(Some(fault))?;
+        exercise_authority_before_work(Some(fault)).await?;
+        exercise_object_before_work(Some(fault)).await?;
     }
     Ok(())
 }
 
-#[test]
-fn every_operation_honours_precancellation_before_inner_work()
+#[tokio::test]
+async fn every_operation_honours_precancellation_before_inner_work()
 -> Result<(), Box<dyn std::error::Error>> {
-    exercise_authority_before_work(None)?;
-    exercise_object_before_work(None)?;
+    exercise_authority_before_work(None).await?;
+    exercise_object_before_work(None).await?;
     Ok(())
 }
 
-#[test]
-fn stale_head_and_batch_read_faults_are_budgeted_and_exact()
+#[tokio::test]
+async fn stale_head_and_batch_read_faults_are_budgeted_and_exact()
 -> Result<(), Box<dyn std::error::Error>> {
     let stale = Head {
         epoch: Epoch::GENESIS,
@@ -606,20 +586,18 @@ fn stale_head_and_batch_read_faults_are_budgeted_and_exact()
     let (authority, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let authority_id = AuthorityId::from_bytes([52; 16]);
-    let observed = crate::async_storage::poll_ready(authority.head(
+    let observed = (authority.head(
         authority_id,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("stale head suspended")??;
+    )).await?;
     assert_eq!(observed.value, stale);
     assert_eq!(observed.work.authority_records_read, 1);
-    let too_small = crate::async_storage::poll_ready(authority.head(
+    let too_small = (authority.head(
         authority_id,
         WorkBudget::default(),
         &cancellation,
-    ))
-    .ok_or("bounded stale head suspended")?;
+    )).await;
     assert!(matches!(
         too_small,
         Err(AuthorityFailure {
@@ -629,13 +607,12 @@ fn stale_head_and_batch_read_faults_are_budgeted_and_exact()
     ));
 
     let (object_id, bytes) = object(b"batch-fault");
-    crate::async_storage::poll_ready(objects.put(
+    (objects.put(
         object_id,
         bytes,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("object put suspended")??;
+    )).await?;
     let requests = [ObjectReadRequest {
         object_id,
         maximum_bytes: 64,
@@ -650,28 +627,26 @@ fn stale_head_and_batch_read_faults_are_budgeted_and_exact()
             fault,
         })?;
     }
-    let corrupt = crate::async_storage::poll_ready(objects.read_many(
+    let corrupt = (objects.read_many(
         &requests,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("corrupt batch read suspended")??;
+    )).await?;
     assert_ne!(
         object_digest(object_id.kind, &corrupt.value[0].bytes),
         object_id.digest
     );
-    let partial = crate::async_storage::poll_ready(objects.read_many(
+    let partial = (objects.read_many(
         &requests,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("partial batch read suspended")??;
+    )).await?;
     assert_eq!(partial.value[0].bytes.len(), b"batch-fault".len() - 1);
     Ok(())
 }
 
-#[test]
-fn simulator_bounds_duplicate_schedule_and_trace_exhaustion_are_fail_closed()
+#[tokio::test]
+async fn simulator_bounds_duplicate_schedule_and_trace_exhaustion_are_fail_closed()
 -> Result<(), Box<dyn std::error::Error>> {
     assert!(matches!(
         Simulation::new(SimulationOptions {
@@ -707,20 +682,18 @@ fn simulator_bounds_duplicate_schedule_and_trace_exhaustion_are_fail_closed()
     let cancellation = CancellationToken::new();
     let (object_id, _) = object(b"trace");
     assert!(
-        crate::async_storage::poll_ready(objects.contains(
+        (objects.contains(
             object_id,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("scheduled trace operation suspended")?
+        )).await
         .is_err()
     );
-    let exhausted = crate::async_storage::poll_ready(objects.contains(
+    let exhausted = (objects.contains(
         object_id,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("trace exhaustion suspended")?
+    )).await
     .err()
     .ok_or("trace exhaustion was ignored")?;
     assert!(matches!(exhausted.error, ObjectStoreError::Rejected(_)));
@@ -728,8 +701,8 @@ fn simulator_bounds_duplicate_schedule_and_trace_exhaustion_are_fail_closed()
     Ok(())
 }
 
-#[test]
-fn delayed_object_admission_is_idempotent_bounded_and_digest_checked()
+#[tokio::test]
+async fn delayed_object_admission_is_idempotent_bounded_and_digest_checked()
 -> Result<(), Box<dyn std::error::Error>> {
     let simulation = Simulation::new(SimulationOptions {
         maximum_scheduled_faults: 4,
@@ -747,56 +720,51 @@ fn delayed_object_admission_is_idempotent_bounded_and_digest_checked()
     let (_, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let (first_id, first_bytes) = object(b"four");
-    let digest_failure = crate::async_storage::poll_ready(objects.put(
+    let digest_failure = (objects.put(
         first_id,
         OwnedBytes::from_static(b"bad!"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("digest mismatch put suspended")?
+    )).await
     .err()
     .ok_or("digest mismatch was admitted")?;
     assert!(matches!(
         digest_failure.error,
         ObjectStoreError::DigestMismatch
     ));
-    crate::async_storage::poll_ready(objects.put(
+    (objects.put(
         first_id,
         first_bytes.clone(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("delayed put suspended")??;
-    let repeated = crate::async_storage::poll_ready(objects.put(
+    )).await?;
+    let repeated = (objects.put(
         first_id,
         first_bytes,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("idempotent delayed put suspended")??;
+    )).await?;
     assert_eq!(repeated.work.backend_write_operations, 1);
 
     let (second_id, second_bytes) = object(b"x");
-    let bounded = crate::async_storage::poll_ready(objects.put(
+    let bounded = (objects.put(
         second_id,
         second_bytes,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("bounded delayed put suspended")?
+    )).await
     .err()
     .ok_or("delayed-object bound was ignored")?;
     assert!(matches!(bounded.error, ObjectStoreError::Rejected(_)));
-    let flushed = crate::async_storage::poll_ready(
-        simulation.flush_object_visibility(WorkBudget::UNBOUNDED, &cancellation),
-    )
-    .ok_or("delayed object flush suspended")??;
+    let flushed = (
+        simulation.flush_object_visibility(WorkBudget::UNBOUNDED, &cancellation)
+    ).await?;
     assert_eq!(flushed.value, 1);
     Ok(())
 }
 
-#[test]
-fn empty_corrupt_reads_and_authority_passthroughs_remain_typed()
+#[tokio::test]
+async fn empty_corrupt_reads_and_authority_passthroughs_remain_typed()
 -> Result<(), Box<dyn std::error::Error>> {
     let simulation = Simulation::default();
     simulation.schedule(ScheduledSimulationFault {
@@ -807,54 +775,48 @@ fn empty_corrupt_reads_and_authority_passthroughs_remain_typed()
     let (authority, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let (empty_id, empty_bytes) = object(b"");
-    crate::async_storage::poll_ready(objects.put(
+    (objects.put(
         empty_id,
         empty_bytes,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("empty object put suspended")??;
-    let corrupt = crate::async_storage::poll_ready(objects.read(
+    )).await?;
+    let corrupt = (objects.read(
         empty_id,
         0,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("empty corrupt read suspended")?
+    )).await
     .err()
     .ok_or("empty corrupt read succeeded")?;
     assert!(matches!(corrupt.error, ObjectStoreError::Corrupt));
 
     let authority_id = AuthorityId::from_bytes([71; 16]);
-    crate::async_storage::poll_ready(authority.create_authority(
+    (authority.create_authority(
         authority_id,
         Epoch::GENESIS,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("authority creation suspended")??;
-    let missing = crate::async_storage::poll_ready(authority.find_operation(
+    )).await?;
+    let missing = (authority.find_operation(
         authority_id,
         OperationId::from_bytes([72; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("operation lookup suspended")??;
+    )).await?;
     assert!(missing.value.is_none());
-    let head = crate::async_storage::poll_ready(authority.head(
+    let head = (authority.head(
         authority_id,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("authority head suspended")??
+    )).await?
     .value;
-    let fenced = crate::async_storage::poll_ready(authority.fence(
+    let fenced = (authority.fence(
         authority_id,
         head,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("authority fence suspended")??;
+    )).await?;
     assert!(matches!(
         fenced.value,
         FenceOutcome::Advanced(advanced) if advanced.epoch.get() == 2
@@ -862,8 +824,8 @@ fn empty_corrupt_reads_and_authority_passthroughs_remain_typed()
     Ok(())
 }
 
-#[test]
-fn poisoned_simulation_authority_and_object_surfaces_fail_closed()
+#[tokio::test]
+async fn poisoned_simulation_authority_and_object_surfaces_fail_closed()
 -> Result<(), Box<dyn std::error::Error>> {
     let simulation = Simulation::default();
     let state = Arc::clone(&simulation.state);
@@ -885,32 +847,30 @@ fn poisoned_simulation_authority_and_object_surfaces_fail_closed()
 
     let (authority, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
-    let authority_failure = crate::async_storage::poll_ready(authority.head(
+    let authority_failure = (authority.head(
         AuthorityId::from_bytes([80; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("poisoned authority lookup unexpectedly suspended")?
+    )).await
     .err()
     .ok_or("poisoned authority lookup unexpectedly succeeded")?;
     assert!(matches!(
         authority_failure.error,
         AuthorityStoreError::CorruptStatic(_)
     ));
-    let object_failure = crate::async_storage::poll_ready(objects.contains(
+    let object_failure = (objects.contains(
         object(b"poisoned").0,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("poisoned object lookup unexpectedly suspended")?
+    )).await
     .err()
     .ok_or("poisoned object lookup unexpectedly succeeded")?;
     assert!(matches!(object_failure.error, ObjectStoreError::Corrupt));
     Ok(())
 }
 
-#[test]
-fn corrupt_delayed_visibility_state_preserves_nested_failure_work()
+#[tokio::test]
+async fn corrupt_delayed_visibility_state_preserves_nested_failure_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
 
@@ -926,10 +886,9 @@ fn corrupt_delayed_visibility_state_preserves_nested_failure_work()
             .insert(object_id, OwnedBytes::from_static(b"forged"));
         state.pending_object_bytes = 6;
     }
-    let failure = crate::async_storage::poll_ready(
-        simulation.flush_object_visibility(WorkBudget::UNBOUNDED, &cancellation),
-    )
-    .ok_or("corrupt delayed flush unexpectedly suspended")?
+    let failure = (
+        simulation.flush_object_visibility(WorkBudget::UNBOUNDED, &cancellation)
+    ).await
     .err()
     .ok_or("corrupt delayed object unexpectedly published")?;
     assert!(matches!(failure.error, ObjectStoreError::DigestMismatch));
@@ -945,10 +904,9 @@ fn corrupt_delayed_visibility_state_preserves_nested_failure_work()
         state.pending_objects.insert(object_id, bytes);
         state.pending_object_bytes = 0;
     }
-    let failure = crate::async_storage::poll_ready(
-        simulation.flush_object_visibility(WorkBudget::UNBOUNDED, &cancellation),
-    )
-    .ok_or("underflowing delayed flush unexpectedly suspended")?
+    let failure = (
+        simulation.flush_object_visibility(WorkBudget::UNBOUNDED, &cancellation)
+    ).await
     .err()
     .ok_or("underflowing delayed accounting unexpectedly succeeded")?;
     assert!(matches!(failure.error, ObjectStoreError::Corrupt));
@@ -1038,35 +996,39 @@ struct OpaqueOriginalAuthority {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl crate::storage::AuthorityStore for OpaqueOriginalAuthority {
-    fn create_authority(&self, id: AuthorityId, epoch: Epoch, budget: WorkBudget) -> AuthorityResult<CreateAuthorityOutcome> {
+impl crate::async_storage::AsyncAuthorityStore for OpaqueOriginalAuthority {
+    async fn create_authority(&self, id: AuthorityId, epoch: Epoch, budget: WorkBudget, cancellation: &crate::CancellationToken) -> AuthorityResult<CreateAuthorityOutcome> {
+        cancellation.check().map_err(|_| crate::AuthorityFailure::before_work(crate::AuthorityStoreError::Cancelled))?;
         self.ordinary_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        crate::storage::AuthorityStore::create_authority(&self.inner, id, epoch, budget)
+        crate::async_storage::AsyncAuthorityStore::create_authority(&self.inner, id, epoch, budget, cancellation).await
     }
-    fn head(&self, id: AuthorityId, budget: WorkBudget) -> AuthorityResult<Head> {
+    async fn head(&self, id: AuthorityId, budget: WorkBudget, cancellation: &crate::CancellationToken) -> AuthorityResult<Head> {
+        cancellation.check().map_err(|_| crate::AuthorityFailure::before_work(crate::AuthorityStoreError::Cancelled))?;
         self.ordinary_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        crate::storage::AuthorityStore::head(&self.inner, id, budget)
+        crate::async_storage::AsyncAuthorityStore::head(&self.inner, id, budget, cancellation).await
     }
-    fn compare_and_append(&self, id: AuthorityId, epoch: Epoch, expected: Head, commit: ProposedCommit, budget: WorkBudget) -> AuthorityResult<AppendOutcome> {
+    async fn compare_and_append(&self, id: AuthorityId, epoch: Epoch, expected: Head, commit: ProposedCommit, budget: WorkBudget, cancellation: &crate::CancellationToken) -> AuthorityResult<AppendOutcome> {
+        cancellation.check().map_err(|_| crate::AuthorityFailure::before_work(crate::AuthorityStoreError::Cancelled))?;
         self.ordinary_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        crate::storage::AuthorityStore::compare_and_append(&self.inner, id, epoch, expected, commit, budget)
+        crate::async_storage::AsyncAuthorityStore::compare_and_append(&self.inner, id, epoch, expected, commit, budget, cancellation).await
     }
-    fn replay(&self, id: AuthorityId, after: Sequence, limit: ReplayLimit, budget: WorkBudget) -> AuthorityResult<Vec<DurableCommit>> {
+    async fn replay(&self, id: AuthorityId, after: Sequence, limit: ReplayLimit, budget: WorkBudget, cancellation: &crate::CancellationToken) -> AuthorityResult<Vec<DurableCommit>> {
+        cancellation.check().map_err(|_| crate::AuthorityFailure::before_work(crate::AuthorityStoreError::Cancelled))?;
         self.ordinary_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        crate::storage::AuthorityStore::replay(&self.inner, id, after, limit, budget)
+        crate::async_storage::AsyncAuthorityStore::replay(&self.inner, id, after, limit, budget, cancellation).await
     }
-    fn fence(&self, id: AuthorityId, expected: Head, budget: WorkBudget) -> AuthorityResult<FenceOutcome> {
+    async fn fence(&self, id: AuthorityId, expected: Head, budget: WorkBudget, cancellation: &crate::CancellationToken) -> AuthorityResult<FenceOutcome> {
+        cancellation.check().map_err(|_| crate::AuthorityFailure::before_work(crate::AuthorityStoreError::Cancelled))?;
         self.ordinary_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        crate::storage::AuthorityStore::fence(&self.inner, id, expected, budget)
+        crate::async_storage::AsyncAuthorityStore::fence(&self.inner, id, expected, budget, cancellation).await
     }
-    fn find_operation(&self, id: AuthorityId, operation: OperationId, budget: WorkBudget) -> AuthorityResult<Option<DurableCommit>> {
+    async fn find_operation(&self, id: AuthorityId, operation: OperationId, budget: WorkBudget, cancellation: &crate::CancellationToken) -> AuthorityResult<Option<DurableCommit>> {
+        cancellation.check().map_err(|_| crate::AuthorityFailure::before_work(crate::AuthorityStoreError::Cancelled))?;
         self.ordinary_calls.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        crate::storage::AuthorityStore::find_operation(&self.inner, id, operation, budget)
+        crate::async_storage::AsyncAuthorityStore::find_operation(&self.inner, id, operation, budget, cancellation).await
     }
-}
 
-#[cfg(not(target_arch = "wasm32"))]
-impl crate::async_storage::ImmediateAuthorityStore for OpaqueOriginalAuthority {}
+}
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]

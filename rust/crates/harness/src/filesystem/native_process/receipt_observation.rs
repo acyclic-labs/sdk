@@ -90,23 +90,8 @@ pub(super) fn receipt_bytes(value: &Receipt) -> Result<u64> {
     }
 }
 
-const RECEIPT_LABELS: &str = concat!(
-    "launch observed dispatch plan conversation task command fence approval approval_digest ",
-    "provider effect_id attempt_id request_digest effect_kind request guarantee ",
-    "result_schema kind id reservation_id placement state planned dispatched succeeded failed indeterminate result message ",
-    "diagnostic publication_failure invocation_failure work destination completed volume generation namespace path writable authority_revision ",
-    "materialized_directory lazy_mount snapshot source authored_generation overlay shadows ",
-    "published index operation context Authored Lazy workspace_id config profile concurrency lifecycle case_sensitivity unicode symbolic_links hard_links sparse_files limits ",
-    "portable posix windows browser exclusive_writer optimistic serialized_authority ephemeral durable sensitive profile_folded preserve require_nfc identity epoch ",
-    "maximum_path_bytes maximum_component_bytes maximum_path_depth maximum_object_bytes maximum_mutations_per_batch maximum_paths_per_batch maximum_checkout_dependencies maximum_directory_page_entries maximum_page_height maximum_read_bytes maximum_files_per_generation maximum_objects_per_generation maximum_generation_bytes ",
-    "sha256 byte_length media_type display_name version class owner project agent session ",
-    "authorityRecordsRead authorityRecordsAppended authorityBytesRead authorityBytesWritten ",
-    "objectProbes backendReadOperations backendWriteOperations durabilityOperations ",
-    "pageReads pageWrites objectBytesRead objectBytesWritten bytesHashed bytesCopied bytesEncoded ",
-    "sourceBytesRead sourcePathComponents sourceEntriesVisited outputBytes itemsExamined itemsReturned ",
-    "allocationOperations peakAllocationBytes materializations ",
-    "native receipt capacity overflows native receipt admission overflows SHA-256 digest must contain exactly 32 bytes"
-);
+// Serde diagnostic label bound for the closed receipt graph.
+const RECEIPT_DIAGNOSTIC_LABEL_BYTES: u64 = 1765;
 
 impl super::super::PreparationRecord for Receipt {
     fn maximum_slot_bytes() -> u64 {
@@ -116,7 +101,7 @@ impl super::super::PreparationRecord for Receipt {
         let content = size_of::<(serde::__private229::de::Content<'static>, serde::__private229::de::Content<'static>)>() as u64;
         typed + 30 * content
     }
-    fn diagnostic_label_bytes() -> u64 { RECEIPT_LABELS.len() as u64 }
+    fn diagnostic_label_bytes() -> u64 { RECEIPT_DIAGNOSTIC_LABEL_BYTES }
 }
 
 fn decode(bytes: &[u8], io: &super::super::PreparationIo,
@@ -138,7 +123,7 @@ pub(super) async fn read<P: StreamProvider>(
     let client = owner.stream();
     check(work)?;
     let io = super::super::PreparationIo::from_native_work(work)?;
-    let mut history_io = io.history_io();
+    let mut history_io = &io;
     let mut observer = Some(&mut history_io as &mut dyn crate::store::history::HistoryIo);
     let bounds = match crate::store::operations::bounds_with_work(&client, path, &mut observer).await? {
         Ok(bounds) => bounds,
@@ -149,7 +134,7 @@ pub(super) async fn read<P: StreamProvider>(
     if !(1..=2).contains(&bounds.tail) { return Err(boundary(crate::wire::ErrorCode::Storage, "invalid native receipt length")); }
     let stream = crate::store::operations::stream(&client, path.as_str(), &mut observer)?;
     let mut records = crate::store::operations::read_records_with_work(
-        &client, &stream.stream, 0, bounds.tail as u32, &mut observer,
+        &client, &stream.0, 0, bounds.tail as u32, &mut observer,
     ).await?.map_err(|error| crate::distributed::sdk_error(error, &observer))?;
     check(work)?;
     let first = records.next(&mut observer).await?.ok_or(boundary(crate::wire::ErrorCode::Storage, "missing native launch receipt"))?;
@@ -195,9 +180,9 @@ pub(super) async fn authenticate_core_launch<P: StreamProvider>(
     work: &NativeMaterializationWork,
 ) -> Result<()> {
     let io = super::super::PreparationIo::from_native_work(work)?;
-    let cursor = reader.pin(0, Some(&mut io.history_io())).await?;
+    let cursor = reader.pin(0, Some(&mut &io)).await?;
     let state = reader.effect(&cursor, launch.dispatch.effect_id, authority.history_limits,
-        Some(&mut io.history_io())).await.map(|state| state.map(|(state, _)| state))?
+        Some(&mut &io)).await.map(|state| state.map(|(state, _)| state))?
         .ok_or(boundary(crate::wire::ErrorCode::Storage, "native receipt has no retained core effect"))?;
     if !examine(work, || state.request_digest == launch.dispatch.request_digest)?
         || !examine(work, || state.request == launch.plan.request)?
@@ -223,8 +208,10 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             None => {
                 self.owner.require_volume_grant_with_native_work(self.plan.request.volume(),
                     crate::conversation::VolumeOperation::Read, work)?;
-                let bytes = self.authority.content.read(&self.plan.request, self.owner.input_limits().file_bytes, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
-                let (request, custody) = NativeProcessRequest::decode_with_native_work(bytes.as_ref(), work)?;
+                let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+                let bytes = self.authority.content.read(&self.plan.request, self.owner.input_limits().file_bytes, Some(&io))?.await?;
+                let (request, custody) = crate::filesystem::native_decoded(io.decode(
+                    std::marker::PhantomData::<NativeProcessRequest>, &bytes, crate::wire::ErrorCode::Storage)?)?;
                 drop(bytes);
                 Ok((Cow::Owned(request), Some(custody)))
             }

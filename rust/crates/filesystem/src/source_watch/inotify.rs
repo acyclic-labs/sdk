@@ -699,23 +699,17 @@ impl PlatformWatch {
         &self, wait: &crate::CancellationToken,
     ) -> Result<(), DemandError> {
         // Only the original owner carries credits accepted before native birth. The caller's token controls waiting, never that owner's authority.
-        self.shared.delivery.original.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
+        let original = self.shared.delivery.original.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
         if wait.is_cancelled() { return Err(DemandError::Cancelled); }
-        self.stop_from_birth_prepaid_with_wait(Some(wait))?;
+        self.stop(&mut crate::demand::NativeSourceWork::from_original_work(original), Some(wait), true)?;
         if wait.is_cancelled() { return Err(DemandError::Cancelled); }
         Ok(())
     }
 
     pub(super) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
-        self.stop_from_birth_prepaid_with_wait(None)
-    }
-
-    fn stop_from_birth_prepaid_with_wait(
-        &self, wait: Option<&crate::CancellationToken>,
-    ) -> Result<(), DemandError> {
         self.shared.delivery.ensure_stop_available()?;
         let original = self.shared.delivery.original.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
-        self.stop(&mut crate::demand::NativeSourceWork::from_original_work(original), wait, true)
+        self.stop(&mut crate::demand::NativeSourceWork::from_original_work(original), None, true)
     }
 
     fn stop<W: SourceDemandReadWork>(
@@ -1059,23 +1053,10 @@ impl Shared {
         &self, directory: i32, relative: &Path, work: &mut W,
     ) -> Result<i32, DemandError> {
         if self.stopping.load(Ordering::Acquire) { return Err(DemandError::Cancelled); }
-        // Render the held descriptor on the stack: only the final C path is owned, and it is admitted before any bytes are copied.
-        let mut digits = [0_u8; 10];
-        let mut start = digits.len();
-        let mut descriptor = directory as u32;
-        loop {
-            start -= 1;
-            digits[start] = b'0' + (descriptor % 10) as u8;
-            descriptor /= 10;
-            if descriptor == 0 {
-                break;
-            }
-        }
+        let (prefix, prefix_length) = proc_fd_path(directory);
         let relative = relative.as_os_str().as_bytes();
-        let prefix = b"/proc/self/fd/";
-        let length = prefix.len()
-            .checked_add(digits.len() - start)
-            .and_then(|length| length.checked_add(usize::from(!relative.is_empty())))
+        let length = prefix_length
+            .checked_add(usize::from(!relative.is_empty()))
             .and_then(|length| length.checked_add(relative.len()))
             .and_then(|length| length.checked_add(1))
             .ok_or(WorkError::Overflow)?;
@@ -1085,8 +1066,7 @@ impl Shared {
             work.allocate(bytes)?;
             work.record(WorkCounters { bytes_copied: bytes - 1, ..WorkCounters::default() })?;
             let mut path = Vec::with_capacity(length);
-            path.extend_from_slice(prefix);
-            path.extend_from_slice(&digits[start..]);
+            path.extend_from_slice(&prefix[..prefix_length]);
             if !relative.is_empty() {
                 path.push(b'/');
                 path.extend_from_slice(relative);
@@ -1651,6 +1631,15 @@ mod admission_tests {
     use crate::cancellation::CancellationToken;
     use crate::source_watch::HostChangeSink;
 
+    #[cfg(feature = "native-mount")]
+    const ORIGINAL_BUDGET: WorkBudget = WorkBudget {
+        backend_read_operations: 128, backend_write_operations: 128,
+        source_bytes_read: 1024 * 1024, bytes_copied: 1024 * 1024,
+        items_examined: 4096, items_returned: 4096,
+        allocation_operations: 128, peak_allocation_bytes: 1024 * 1024,
+        ..WorkBudget::UNCHARGED
+    };
+
     struct Ignored;
     impl HostChangeSink for Ignored {
         fn logical_owned_bytes(&self) -> u64 { 0 }
@@ -1782,12 +1771,7 @@ mod admission_tests {
         let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let cancellation = CancellationToken::new();
         let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
-            WorkBudget {
-                backend_read_operations: 128, backend_write_operations: 128,
-                source_bytes_read: 1024 * 1024, bytes_copied: 1024 * 1024,
-                items_examined: 4096, allocation_operations: 128,
-                peak_allocation_bytes: 1024 * 1024, ..WorkBudget::default()
-            }, &cancellation,
+            WorkBudget { items_returned: 0, ..ORIGINAL_BUDGET }, &cancellation,
         ))));
         let mut work = crate::demand::NativeSourceWork::new(&original);
         let delivery = Arc::new(Delivery::new_with_work(Arc::new(Ignored), &mut work)?);
@@ -1859,12 +1843,7 @@ mod admission_tests {
         let root = tempfile::tempdir()?;
         let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
-            WorkBudget {
-                backend_read_operations: 128, backend_write_operations: 128,
-                source_bytes_read: 1024 * 1024, bytes_copied: 1024 * 1024,
-                items_examined: 4096, allocation_operations: 128,
-                peak_allocation_bytes: 1024 * 1024, ..WorkBudget::default()
-            }, &CancellationToken::new(),
+            WorkBudget { items_returned: 0, ..ORIGINAL_BUDGET }, &CancellationToken::new(),
         ))));
         let mut work = crate::demand::NativeSourceWork::new(&original);
         let delivery = Arc::new(Delivery::new_with_work(Arc::new(Ignored), &mut work)?);
@@ -1944,13 +1923,7 @@ mod admission_tests {
         let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let cancellation = CancellationToken::new();
         let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
-            WorkBudget {
-                backend_read_operations: 128, backend_write_operations: 128,
-                source_bytes_read: 1024 * 1024, bytes_copied: 1024 * 1024,
-                items_examined: 4096, items_returned: 4096,
-                allocation_operations: 128, peak_allocation_bytes: 1024 * 1024,
-                ..WorkBudget::default()
-            }, &cancellation,
+            ORIGINAL_BUDGET, &cancellation,
         ))));
         let (entered, receive) = std::sync::mpsc::channel();
         let sink = Arc::new(PanicsAfterRelease {
@@ -2021,13 +1994,7 @@ mod admission_tests {
         let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let cancellation = CancellationToken::new();
         let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
-            WorkBudget {
-                backend_read_operations: 128, backend_write_operations: 128,
-                source_bytes_read: 1024 * 1024, bytes_copied: 1024 * 1024,
-                items_examined: 4096, items_returned: 4096,
-                allocation_operations: 128, peak_allocation_bytes: 1024 * 1024,
-                ..WorkBudget::default()
-            }, &cancellation,
+            ORIGINAL_BUDGET, &cancellation,
         ))));
         let sink = Arc::new(Cancels {
             original: Arc::downgrade(&original), cancellation: cancellation.clone(),
@@ -2103,13 +2070,7 @@ mod admission_tests {
         let root = tempfile::tempdir()?;
         let host = crate::native_host::HostRoot::open(root.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let original = Arc::new(crate::demand::NativeDemandReadMeter(Mutex::new(DemandWork::new(
-            WorkBudget {
-                backend_read_operations: 128, backend_write_operations: 128,
-                source_bytes_read: 1024 * 1024, bytes_copied: 1024 * 1024,
-                items_examined: 4096, items_returned: 4096,
-                allocation_operations: 128, peak_allocation_bytes: 1024 * 1024,
-                ..WorkBudget::default()
-            }, &CancellationToken::new(),
+            ORIGINAL_BUDGET, &CancellationToken::new(),
         ))));
         let lifetime = Arc::downgrade(&original);
         let sink = Arc::new(Retires {

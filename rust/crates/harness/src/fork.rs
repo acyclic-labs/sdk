@@ -499,14 +499,14 @@ impl CompositeForkVerifier {
         let mut verified_files = BTreeSet::new();
         let mut reference_bytes = BTreeMap::new();
         let (direct_manifest_reads, member_grants) = collect_manifest_grants(seed, owned)?;
-        let mut volume_readers = ForkVolumeReaders::new(seed, owned)?;
+        let volume_readers = ForkVolumeReaders::new(seed, owned)?;
         self.verify_reference_files(seed, &mut verified_files, &mut reference_bytes, owned)
             .await?;
         self.verify_attachment_manifests(
             seed,
             &mut verified_files,
             &mut reference_bytes,
-            &mut volume_readers,
+            &volume_readers,
             &direct_manifest_reads,
             &member_grants,
             owned,
@@ -544,7 +544,7 @@ impl CompositeForkVerifier {
         seed: &ForkSeed,
         verified_files: &mut BTreeSet<[u8; 32]>,
         reference_bytes: &mut BTreeMap<&'a ProviderRef, u64>,
-        volume_readers: &mut ForkVolumeReaders,
+        volume_readers: &ForkVolumeReaders,
         direct_manifest_reads: &DirectManifestReads,
         member_grants: &ManifestMemberGrants,
         owned: &mut CodecQuota<'_, '_>,
@@ -606,7 +606,7 @@ impl CompositeForkVerifier {
     fn verify_manifest_grants(
         manifest: &FileRef,
         items: &[crate::conversation::Attachment],
-        volume_readers: &mut ForkVolumeReaders,
+        volume_readers: &ForkVolumeReaders,
         direct_manifest_reads: &DirectManifestReads,
         member_grants: &ManifestMemberGrants,
         owned: &mut CodecQuota<'_, '_>,
@@ -626,24 +626,12 @@ impl CompositeForkVerifier {
                 "fork reference is not in its published manifest".into(),
             ));
         }
-        let implicit_readers = volume_readers.implicit_readers(manifest.volume(), owned)?;
-        let mut manifest_readers = BTreeSet::new();
-        if let Some(grants) = grants {
-            for readers in grants.values() {
-                for reader in readers {
-                    if !manifest_readers.contains(reader) {
-                        owned.slots::<AgentId>(1)?;
-                        manifest_readers.insert(*reader);
-                    }
-                }
-            }
-        }
-        for reader in manifest_readers {
-            if !implicit_readers.contains(&reader)
-                && !direct_manifest_reads.iter().any(|(file, agent)| {
-                    file == &manifest_capability && *agent == reader
-                })
-            {
+        let volume = manifest.volume();
+        let volume_digest = crate::contract::canonical_json_digest_with_work(volume,
+            crate::store::default_projection_read_limits().maximum_bytes, owned.work())?;
+        for reader in grants.into_iter().flat_map(BTreeMap::values).flatten() {
+            if !volume_readers.allows(volume, &volume_digest, reader)
+                && !direct_manifest_reads.contains(&(manifest_capability, *reader)) {
                 return Err(Error::Invalid(
                     "fork omits a manifest attachment read grant".into(),
                 ));
@@ -688,21 +676,12 @@ fn collect_manifest_grants(
 
 /// Precomputed reader authority for a fork.
 struct ForkVolumeReaders {
-    all: BTreeSet<AgentId>,
     selected_projects: BTreeSet<[u8; 32]>,
     shared: BTreeMap<[u8; 32], BTreeSet<AgentId>>,
-    implicit: BTreeMap<[u8; 32], BTreeSet<AgentId>>,
 }
 
 impl ForkVolumeReaders {
     fn new(seed: &ForkSeed, owned: &mut CodecQuota<'_, '_>) -> Result<Self> {
-        let mut all = BTreeSet::new();
-        for agent in std::iter::once(seed.child_agent).chain(seed.attached_agents.iter().copied()) {
-            if !all.contains(&agent) {
-                owned.slots::<AgentId>(1)?;
-                all.insert(agent);
-            }
-        }
         let mut selected_projects = BTreeSet::new();
         for resource in &seed.resources {
             if let ResourceRevision::Project { volume, .. } = &resource.revision {
@@ -730,49 +709,18 @@ impl ForkVolumeReaders {
             }
         }
         Ok(Self {
-            all,
             selected_projects,
             shared,
-            implicit: BTreeMap::new(),
         })
     }
 
-    /// Readers that can resolve a file through a whole-volume grant rather than through a direct exact-file reference.
-    fn implicit_readers(
-        &mut self,
-        volume: &VolumeRef,
-        owned: &mut CodecQuota<'_, '_>,
-    ) -> Result<&BTreeSet<AgentId>> {
-        let key = crate::contract::canonical_json_digest_with_work(volume, crate::store::default_projection_read_limits().maximum_bytes, owned.work())?;
-        if self.implicit.contains_key(&key) {
-            let readers = self.implicit.get(&key)
-                .ok_or_else(|| Error::Invalid("fork reader cache entry disappeared".into()))?;
-            return Ok(readers);
-        }
-        owned.slots::<([u8; 32], BTreeSet<AgentId>)>(1)?;
-        let mut implicit_readers = BTreeSet::new();
+    fn allows(&self, volume: &VolumeRef, digest: &[u8; 32], reader: &AgentId) -> bool {
         match volume.class() {
-            VolumeClass::AgentPrivate => {
-                if let VolumeOwner::Agent(owner) = volume.owner()
-                    && self.all.contains(owner)
-                {
-                    owned.slots::<AgentId>(1)?;
-                    implicit_readers.insert(*owner);
-                }
-            }
-            VolumeClass::Project if self.selected_projects.contains(&key) => {
-                owned.slots::<AgentId>(self.all.len())?;
-                implicit_readers.extend(self.all.iter().copied());
-            }
-            VolumeClass::SessionShared => {
-                if let Some(granted) = self.shared.get(&key) {
-                    owned.slots::<AgentId>(granted.len())?;
-                    implicit_readers.extend(granted.iter().copied());
-                }
-            }
-            VolumeClass::Project => {}
+            VolumeClass::AgentPrivate => volume.owner() == &VolumeOwner::Agent(*reader),
+            VolumeClass::Project => self.selected_projects.contains(digest),
+            VolumeClass::SessionShared => self.shared.get(digest)
+                .is_some_and(|readers| readers.contains(reader)),
         }
-        Ok(self.implicit.entry(key).or_insert(implicit_readers))
     }
 }
 
@@ -1475,32 +1423,9 @@ impl<'a, 'b> CodecQuota<'a, 'b> {
         Ok(bytes)
     }
 
-    fn capability<T: Serialize + ?Sized>(&mut self, prefix: &str, value: &T) -> Result<String> {
-        let digest = crate::contract::canonical_json_digest_with_work(value, crate::store::default_projection_read_limits().maximum_bytes, self.work())?;
-        let length = prefix.len().checked_add(64)
-            .ok_or_else(|| Error::Invalid("fork capability storage overflows".into()))?;
-        if let Some(observer) = self.work().as_deref_mut() {
-            observer.admit_allocation(length as u64)?;
-        }
-        self.retain(length as u64)?;
-        let mut capability = String::new();
-        capability.try_reserve_exact(length).map_err(|error| Error::Invalid(error.to_string()))?;
-        if let Some(observer) = self.work().as_deref_mut() {
-            observer.copy_bytes(length as u64)?;
-        }
-        capability.push_str(prefix);
-        capability.push_str(blake3::Hash::from_bytes(digest).to_hex().as_str());
-        self.retain((capability.capacity() - length) as u64)?;
-        Ok(capability)
-    }
-
     pub(super) fn file_digest(&mut self, file: &FileRef) -> Result<[u8; 32]> {
         file.validate(self.work())?;
         crate::contract::canonical_json_digest_with_work(file, crate::store::default_projection_read_limits().maximum_bytes, self.work())
-    }
-
-    pub(super) fn volume_capability(&mut self, volume: &VolumeRef) -> Result<String> {
-        self.capability("volume:read:", volume)
     }
 
     fn stream_path(&mut self, authority: &Authority) -> Result<String> {
@@ -2228,15 +2153,17 @@ impl ForkSeed {
             }
         }
         let (direct_manifest_reads, member_grants) = collect_manifest_grants(self, &mut work)?;
-        let mut volume_readers = ForkVolumeReaders::new(self, &mut work)?;
+        let volume_readers = ForkVolumeReaders::new(self, &mut work)?;
         for manifest in &self.attachment_manifests {
             work.checkpoint()?;
             let capability = work.file_digest(manifest)?;
-            let implicit_readers = volume_readers.implicit_readers(manifest.volume(), &mut work)?;
+            let volume = manifest.volume();
+            let volume_digest = crate::contract::canonical_json_digest_with_work(volume,
+                crate::store::default_projection_read_limits().maximum_bytes, work.work())?;
             if let Some(grants) = member_grants.get(&capability) {
                 for reader in grants.values().flat_map(|readers| readers.iter()) {
                     work.checkpoint()?;
-                    if !implicit_readers.contains(reader)
+                    if !volume_readers.allows(volume, &volume_digest, reader)
                         && !direct_manifest_reads.contains(&(capability, *reader))
                     {
                         return Err(work.invalid("fork omits a manifest file read grant"));
@@ -2769,7 +2696,7 @@ mod tests {
         seed.child_result_volume = Some(VolumeRef::new(
             provider.clone(), "independent-child-result", VolumeClass::AgentPrivate,
             VolumeOwner::Agent(seed.child_agent))?);
-        seed.child_result_generation = Some(GenerationRef::new(provider.clone(), [73; 32], None)?);
+        seed.child_result_generation = Some(GenerationRef::new(provider.clone(), [73; 32].into(), None)?);
         seed.validate(&mut None)?;
         let mut mutation = seed.clone();
         mutation.child_result_generation = None;
@@ -2779,7 +2706,7 @@ mod tests {
         assert_eq!(mutation.validate(&mut None).unwrap_err().code(), crate::wire::ErrorCode::Invalid);
         mutation = seed;
         mutation.child_result_generation = Some(GenerationRef::new(
-            ProviderRef::new(provider.namespace().into(), provider.family().into(), "foreign-result-provider".into(), &mut None)?, [73; 32], None)?);
+            ProviderRef::new(provider.namespace().into(), provider.family().into(), "foreign-result-provider".into(), &mut None)?, [73; 32].into(), None)?);
         assert_eq!(mutation.validate(&mut None).unwrap_err().code(), crate::wire::ErrorCode::Invalid);
         Ok(())
     }
@@ -2884,11 +2811,11 @@ mod tests {
         )?;
         let source = ResourceRevision::Project {
             volume: parent,
-            generation: GenerationRef::new(provider.clone(), [1; 32], None)?,
+            generation: GenerationRef::new(provider.clone(), [1; 32].into(), None)?,
         };
         let revision = ResourceRevision::Project {
             volume: child,
-            generation: GenerationRef::new(provider.clone(), [2; 32], None)?,
+            generation: GenerationRef::new(provider.clone(), [2; 32].into(), None)?,
         };
         CapturedResource {
             source: source.clone(),
@@ -2910,7 +2837,7 @@ mod tests {
                 VolumeClass::Project,
                 VolumeOwner::Project("other".into()),
             )?,
-            generation: GenerationRef::new(provider, [3; 32], None)?,
+            generation: GenerationRef::new(provider, [3; 32].into(), None)?,
         };
         assert!(
             CapturedResource {

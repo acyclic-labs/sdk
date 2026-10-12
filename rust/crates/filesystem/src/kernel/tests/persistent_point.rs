@@ -1,3 +1,4 @@
+use crate::async_storage::AsyncObjectStore;
 use super::*;
 use crate::foundation::{Digest, FileId};
 use crate::kernel::file_table_mutation::FileTableFormat;
@@ -8,7 +9,7 @@ use crate::kernel::{
     TreeEntry, encode_file_table_page, file_table_page_id,
 };
 use crate::memory::MemoryObjectStore;
-use crate::storage::{ObjectKind, ObjectStore};
+use crate::storage::{ObjectKind, };
 use acyclic_stream::OwnedBytes;
 
 fn record(byte: u8) -> FileRecord {
@@ -24,17 +25,16 @@ fn record(byte: u8) -> FileRecord {
     }
 }
 
-fn put(
+async fn put(
     store: &MemoryObjectStore,
     page: &FileTablePage,
 ) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let id = file_table_page_id(page, 8)?;
-    ObjectStore::put(
+    AsyncObjectStore::put(
         store,
         id,
         OwnedBytes::from(encode_file_table_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
-        WorkBudget::UNBOUNDED,
-    )?;
+        WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
     Ok(id)
 }
 
@@ -113,7 +113,7 @@ fn authenticated_leaf_and_internal_bounds_are_total() -> Result<(), Box<dyn std:
 async fn native_point_uses_the_original_counters_and_retires_scratch()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = put(&store, &FileTablePage::Leaf(vec![record(1), record(2)]))?;
+    let root = put(&store, &FileTablePage::Leaf(vec![record(1), record(2)])).await?;
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
@@ -136,7 +136,7 @@ async fn native_point_uses_the_original_counters_and_retires_scratch()
 async fn native_point_denies_scratch_before_provider_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let root = put(&store, &FileTablePage::Leaf(vec![record(1)]))?;
+    let root = put(&store, &FileTablePage::Leaf(vec![record(1)])).await?;
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(
         WorkBudget { allocation_operations: 1, ..WorkBudget::UNBOUNDED }, &cancellation,

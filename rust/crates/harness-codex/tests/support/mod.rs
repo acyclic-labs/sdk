@@ -13,8 +13,7 @@ use acyclic_harness::{
     resources::ProviderRef,
     runtime::RuntimeScope,
     tool::{
-        Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry,
-        ToolResult,
+        JsonToolProjection, Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolRegistry, ToolResult,
     },
 };
 use acyclic_harness_codex::meter::{MeterVerdict, ResponsesUsage, UsageMeter};
@@ -204,31 +203,20 @@ pub fn message_turn(n: usize, text: &str) -> Vec<Value> {
 }
 
 /// A response whose only output is a function call.
-pub fn function_call_turn(n: usize, name: &str, arguments: &Value) -> Vec<Value> {
-    turn(
-        n,
-        &json!({
-            "type": "function_call", "id": format!("fc_{n}"), "call_id": format!("call_{n}"),
-            "name": name, "arguments": arguments.to_string(), "status": "completed"
-        }),
-    )
-}
-
-/// A response whose only output is a call to a tool inside a namespace
-/// (how Codex 0.155.1 offers MCP tools: namespace `mcp__<server>`).
-pub fn namespaced_call_turn(
+pub fn function_call_turn(
     n: usize,
-    namespace: &str,
+    namespace: Option<&str>,
     name: &str,
     arguments: &Value,
 ) -> Vec<Value> {
-    turn(
-        n,
-        &json!({
-            "type": "function_call", "id": format!("fc_{n}"), "call_id": format!("call_{n}"),
-            "namespace": namespace, "name": name, "arguments": arguments.to_string(), "status": "completed"
-        }),
-    )
+    let mut item = json!({
+        "type": "function_call", "id": format!("fc_{n}"), "call_id": format!("call_{n}"),
+        "name": name, "arguments": arguments.to_string(), "status": "completed"
+    });
+    if let Some(namespace) = namespace {
+        item["namespace"] = namespace.into();
+    }
+    turn(n, &item)
 }
 
 // ------------------------------------------------------------------- meter
@@ -241,13 +229,6 @@ pub struct RecordingMeter {
 }
 
 impl RecordingMeter {
-    pub fn stopping_after(calls: usize) -> Self {
-        Self {
-            stop_after: Some(calls),
-            ..Self::default()
-        }
-    }
-
     pub fn recorded(&self) -> Vec<ResponsesUsage> {
         self.recorded.lock().expect("meter").clone()
     }
@@ -406,14 +387,6 @@ impl ToolExecutor for Echo {
     }
 }
 
-struct Identity;
-
-impl ToolProjection for Identity {
-    fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-        Ok(json!({"kind":"json","value":result.value}))
-    }
-}
-
 fn tool(name: &str) -> Tool {
     Tool {
         definition: ToolDefinition {
@@ -432,7 +405,7 @@ fn tool(name: &str) -> Tool {
             ),
         },
         executor: Arc::new(Echo),
-        projection: Arc::new(Identity),
+        projection: Arc::new(JsonToolProjection),
     }
 }
 

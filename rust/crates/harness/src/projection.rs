@@ -10,9 +10,9 @@ use crate::{
     model::{FileProjectionPolicy, ModelContent, ModelContentPart, ModelMessage, ModelRole},
     tool::ToolInvocation,
 };
+use std::borrow::Cow;
 use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
-use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -184,7 +184,6 @@ fn validate_selected_tool_pairs(
     current: &ConversationMessage,
     ids: &[Uuid],
 ) -> Result<()> {
-    let included = ids.iter().copied().collect::<HashSet<_>>();
     for id in ids {
         let message = if *id == current.id {
             Some(current)
@@ -195,7 +194,7 @@ fn validate_selected_tool_pairs(
             message.kind == MessageKind::ToolResult
                 && !message
                     .reply_to
-                    .is_some_and(|call| included.contains(&call))
+                    .is_some_and(|call| ids.contains(&call))
         }) {
             return Err(Error::Invalid(
                 "context budget splits a tool exchange; compact or change selection".into(),
@@ -241,70 +240,50 @@ impl SelectedModelContext {
         if let Some(work) = native {
             work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
         }
-        let matches = if self.messages.len() == self.selection.message_ids.len() {
-            match self.messages.last().filter(|last| last.role == ModelRole::User) {
-                Some(last) => {
-                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                    if let Some(work) = native {
-                        // One bounded logical DTO comparison, not invented byte reads or another Value walk.
-                        work.charge(acyclic_fs::WorkCounters { items_examined: 1,
-                            ..acyclic_fs::WorkCounters::default() })
-                            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                        let matches = &last.content == input;
-                        work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                        matches
-                    } else {
-                        &last.content == input
-                    }
-                    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-                    { &last.content == input }
-                }
-                None => false,
-            }
-        } else {
-            false
-        };
-        if !matches {
+        let mut matches = false;
+        if let Some(last) = self.messages.last().filter(|last|
+            self.messages.len() == self.selection.message_ids.len() && last.role == ModelRole::User)
+        {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if native.is_some() {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "selected context must end with the current user input" });
+            if let Some(work) = native {
+                work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })
+                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
             }
-            return Err(Error::Invalid(
-                "selected context must end with the current user input".into(),
-            ));
+            matches = &last.content == input;
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if let Some(work) = native {
+                work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            }
         }
-        let _ = io;
+        if !matches {
+            return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
+                "selected context must end with the current user input"));
+        }
         Ok(())
     }
 }
 
 
 /// Projects a selection from the explicitly pinned conversation revision.
-#[allow(clippy::too_many_arguments,
-    reason = "the original revision selection ABI adds only its original optional preparation IO")]
 pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
     conversation: &ConversationState,
     conversation_revision: u64,
     selection: ModelContextSelection,
     resolver: &R,
-    maximum_messages: usize,
-    maximum_attachments: usize,
-    maximum_render_bytes: u64,
+    limits: Limits,
     maximum_projected_attachments: usize,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<SelectedModelContext> {
     crate::executor::with_history_io(io, |work| validate_model_context_selection(conversation, &selection, conversation_revision, work))?;
-    if maximum_messages == 0
-        || maximum_render_bytes == 0
-        || maximum_render_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
+    if limits.context_messages == 0
+        || limits.render_bytes == 0
+        || limits.render_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
         || maximum_projected_attachments as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
-        || selection.message_ids.len() > maximum_messages
+        || selection.message_ids.len() > limits.context_messages
     {
         return Err(projection_invalid(io, "selected message count exceeds projection limit"));
     }
     let mut messages = crate::model::vec_with_capacity::<ModelMessage>(selection.message_ids.len(), io)?;
-    let mut tool_calls = ProjectionIndex::new(io);
     for id in &selection.message_ids {
         crate::model::charge_items(io, 1)?;
         let message = conversation
@@ -312,12 +291,11 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
             .ok_or_else(|| projection_invalid(io, "selected conversation message is missing"))?;
         if message.kind == MessageKind::ToolCall {
             let invocation: ProjectedToolInvocation =
-                read_projected_invocation(resolver, &message.content, maximum_render_bytes, io).await?;
+                read_projected_invocation(resolver, &message.content, limits.render_bytes, io).await?;
             validate_projection_tool_identity(&invocation.call_id, &invocation.name, io)?;
             if message.tool_call_id.as_deref() != Some(invocation.call_id.as_str()) {
                 return Err(projection_invalid(io, "tool call artifact identity does not match its record"));
             }
-            tool_calls.insert(&message.id, messages.len())?;
             messages.push(ModelMessage {
                 role: ModelRole::Assistant,
                 content: ModelContent::Part(ModelContentPart::ToolCall {
@@ -336,9 +314,14 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
                 .tool_call_id
                 .as_deref()
                 .ok_or_else(|| projection_invalid(io, "tool result lacks call identity"))?;
-            let linked = message.reply_to.map(|id| tool_calls.get(&id)).transpose()?
-                .flatten().and_then(|position| messages.get(*position))
-                .ok_or_else(|| projection_invalid(io, "selected tool result lacks its call"))?;
+            let mut linked = None;
+            if let Some(reply) = message.reply_to {
+                for (id, projected) in selection.message_ids[..messages.len()].iter().zip(&messages).rev() {
+                    crate::model::charge_items(io, 1)?;
+                    if *id == reply { linked = Some(projected); break; }
+                }
+            }
+            let linked = linked.ok_or_else(|| projection_invalid(io, "selected tool result lacks its call"))?;
             let ModelContent::Part(ModelContentPart::ToolCall {
                 call_id: linked_call_id, name, ..
             }) = &linked.content else {
@@ -347,10 +330,12 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
             if linked_call_id != call_id {
                 return Err(projection_invalid(io, "selected tool result lacks its call"));
             }
-            let attachments = resolve_projection_attachments(message, resolver, maximum_attachments, io).await?;
-            let projection = projection_result_attachment(attachments.as_slice(), io)?;
+            let _attachments_hold;
+            let (attachments, hold) = resolve_projection_attachments(message, resolver, limits.attachments, io).await?;
+            _attachments_hold = hold;
+            let projection = projection_result_attachment(attachments.as_ref(), io)?;
             let value =
-                read_projected_tool_result(resolver, &projection.file, maximum_render_bytes, io).await?;
+                read_projected_tool_result(resolver, &projection.file, limits.render_bytes, io).await?;
             let call_id = crate::executor::stock_string_copy(call_id, io)?;
             let name = crate::executor::stock_string_copy(name, io)?;
             messages.push(ModelMessage {
@@ -380,24 +365,26 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
             }
         };
         let primary_policy = match message.content.descriptor().media_type() {
-            "image/png" | "image/jpeg" | "image/gif" | "image/webp" => projection_native_image(maximum_render_bytes, io)?,
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp" => projection_native_image(limits.render_bytes, io)?,
             kind if kind.starts_with("text/")
-                && message.content.descriptor().byte_length() <= maximum_render_bytes =>
+                && message.content.descriptor().byte_length() <= limits.render_bytes =>
             {
                 FileProjectionPolicy::BoundedFull
             }
             _ => FileProjectionPolicy::Reference,
         };
-        let attachments = resolve_projection_attachments(message, resolver, maximum_attachments, io).await?;
-        let projected_count = attachments.as_slice().len().min(maximum_projected_attachments);
-        let omitted_count = attachments.as_slice().len() - projected_count;
+        let attachments_hold;
+        let (attachments, hold) = resolve_projection_attachments(message, resolver, limits.attachments, io).await?;
+        attachments_hold = hold;
+        let projected_count = attachments.len().min(maximum_projected_attachments);
+        let omitted_count = attachments.len() - projected_count;
         let capacity = 1 + projected_count + usize::from(omitted_count != 0);
         let mut parts = crate::model::vec_with_capacity::<ModelContentPart>(capacity, io)?;
         parts.push(ModelContentPart::File {
             file: crate::model::clone_file(&message.content, io)?,
             policy: primary_policy,
         });
-        attachments.append_projected(projected_count, &mut parts, maximum_render_bytes, io)?;
+        append_projected_attachments(attachments, attachments_hold, projected_count, &mut parts, limits.render_bytes, io)?;
         if omitted_count > 0 {
             let text = projection_omission_text(omitted_count, io)?;
             parts.push(ModelContentPart::Text { text });
@@ -407,8 +394,6 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
             content: ModelContent::Parts(parts),
         });
     }
-    drop(tool_calls);
-
     Ok(SelectedModelContext {
         selection,
         messages,
@@ -428,60 +413,53 @@ pub fn validate_model_context_selection(
     }
     if let Some(checkpoint) = &selection.checkpoint { checkpoint.validate(work)?; }
     let mut previous_sequence = 0;
-    let mut quota = crate::wire_codec::CodecQuota::from_retained(work, 0);
-    let mut tool_calls = HashMap::<Uuid, &ConversationMessage>::new();
-    for id in &selection.message_ids {
-        if let Some(observer) = quota.work().as_deref_mut() {
+    for (index, id) in selection.message_ids.iter().enumerate() {
+        if let Some(observer) = work.as_deref_mut() {
             observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
         }
         let message = conversation.message(*id).ok_or_else(||
-            crate::scheduler::diagnostic(quota.work(), Invalid, "selected conversation message is missing"))?;
+            crate::scheduler::diagnostic(work, Invalid, "selected conversation message is missing"))?;
         if message.sequence <= previous_sequence || message.sequence > conversation_revision {
-            return Err(crate::scheduler::diagnostic(quota.work(), Invalid,
+            return Err(crate::scheduler::diagnostic(work, Invalid,
                 "model context selection is not ordered and unique"));
         }
         previous_sequence = message.sequence;
-        message.validate(quota.work())?;
+        message.validate(work)?;
         match message.kind {
             MessageKind::ToolCall => {
                 if message.content.descriptor().media_type() != "application/json" {
-                    return Err(crate::scheduler::diagnostic(quota.work(), Invalid,
+                    return Err(crate::scheduler::diagnostic(work, Invalid,
                         "tool artifact type or rendering limit is invalid"));
                 }
-                if let Some(observer) = quota.work().as_deref_mut() {
-                    observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-                }
-                let bytes = tool_calls.len().checked_add(1)
-                    .and_then(|count| count.checked_mul(std::mem::size_of::<(Uuid, &ConversationMessage)>()))
-                    .ok_or_else(|| crate::scheduler::diagnostic(quota.work(), Invalid,
-                        "projection index ownership overflows"))?;
-                quota.replace(bytes as u64)?;
-                if let Some(observer) = quota.work().as_deref_mut() {
-                    observer.admit_copy(16)?;
-                    observer.copy_bytes(16)?;
-                }
-                tool_calls.insert(*id, message);
             }
             MessageKind::ToolResult => {
                 if message.content.descriptor().media_type() != "application/json" {
-                    return Err(crate::scheduler::diagnostic(quota.work(), Invalid,
+                    return Err(crate::scheduler::diagnostic(work, Invalid,
                         "tool result artifact type is invalid"));
                 }
                 let call_id = message.tool_call_id.as_deref().ok_or_else(||
-                    crate::scheduler::diagnostic(quota.work(), Invalid, "tool result lacks call identity"))?;
-                let linked_call_id = if let Some(id) = message.reply_to {
-                    if let Some(observer) = quota.work().as_deref_mut() {
-                        observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                    crate::scheduler::diagnostic(work, Invalid, "tool result lacks call identity"))?;
+                let mut linked_call_id = None;
+                if let Some(reply) = message.reply_to {
+                    for id in selection.message_ids[..index].iter().rev() {
+                        if let Some(observer) = work.as_deref_mut() {
+                            observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                        }
+                        if *id == reply {
+                            linked_call_id = conversation.message(reply)
+                                .filter(|call| call.kind == MessageKind::ToolCall)
+                                .and_then(|call| call.tool_call_id.as_deref());
+                            break;
+                        }
                     }
-                    tool_calls.get(&id).and_then(|call| call.tool_call_id.as_deref())
-                } else { None };
+                }
                 if linked_call_id != Some(call_id) {
-                    return Err(crate::scheduler::diagnostic(quota.work(), Invalid,
+                    return Err(crate::scheduler::diagnostic(work, Invalid,
                         "selected tool result lacks its call"));
                 }
             }
             MessageKind::System | MessageKind::User | MessageKind::Assistant => {}
-            _ => return Err(crate::scheduler::diagnostic(quota.work(), Unsupported,
+            _ => return Err(crate::scheduler::diagnostic(work, Unsupported,
                 "message kind requires a specialized model projection")),
         }
     }
@@ -568,124 +546,59 @@ fn validate_projection_tool_identity(
     ToolInvocation::validate_identity(call_id, Some(name), &mut None)
 }
 
-struct ProjectionIndex<'a> {
-    values: HashMap<Uuid, usize>,
-    io: Option<&'a crate::executor::PreparationIo>,
-}
-
-impl Drop for ProjectionIndex<'_> {
-    fn drop(&mut self) {
-        #[cfg(feature = "filesystem")]
-        let bytes = self.values.len() * std::mem::size_of::<(Uuid, usize)>();
-        drop(std::mem::take(&mut self.values));
-        #[cfg(feature = "filesystem")]
-        if let Some(io) = self.io {
-            io.release(bytes as u64).expect("projection index owns its live logical slots");
-        }
-    }
-}
-
-impl<'a> ProjectionIndex<'a> {
-    fn new(io: Option<&'a crate::executor::PreparationIo>) -> Self {
-        Self { values: HashMap::new(), io }
-    }
-
-    // Callers validate unique ordered message ids before insertion.
-    fn insert(&mut self, id: &Uuid, value: usize) -> Result<()> {
-        crate::model::charge_items(self.io, 1)?;
-        #[cfg(feature = "filesystem")]
-        if let Some(io) = self.io {
-            let bytes = std::mem::size_of::<(Uuid, usize)>() as u64;
-            self.values.len().checked_add(1)
-                .and_then(|count| count.checked_mul(std::mem::size_of::<(Uuid, usize)>()))
-                .ok_or_else(|| projection_invalid(Some(io), "projection index ownership overflows"))?;
-            let slot = io.reserve_decode(bytes)?;
-            let copied = acyclic_fs::WorkCounters {
-                bytes_copied: 16, ..Default::default()
-            };
-            io.preflight(copied)?;
-            io.charge(copied)?;
-            slot.into_retained();
-        }
-        self.values.insert(*id, value);
+fn append_projected_attachments(
+    attachments: Cow<'_, [Attachment]>, source_hold: Option<crate::conversation::ContentHold<'_>>,
+    count: usize, parts: &mut Vec<ModelContentPart>, maximum_render_bytes: u64,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<()> {
+    let mut append = |file: FileRef| -> Result<()> {
+        let policy = match file.descriptor().media_type() {
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp" =>
+                projection_native_image(maximum_render_bytes, io)?,
+            _ => FileProjectionPolicy::Reference,
+        };
+        parts.push(ModelContentPart::File { file, policy });
         Ok(())
-    }
-
-    fn get(&self, id: &Uuid) -> Result<Option<&usize>> {
-        crate::model::charge_items(self.io, 1)?;
-        Ok(self.values.get(id))
-    }
-}
-
-enum ProjectionAttachments<'a> {
-    Borrowed(&'a [Attachment]),
-    Owned(Vec<Attachment>, Option<crate::conversation::ContentHold<'a>>),
-}
-
-impl ProjectionAttachments<'_> {
-    fn as_slice(&self) -> &[Attachment] {
-        match self {
-            Self::Borrowed(items) => items,
-            Self::Owned(items, _) => items,
-        }
-    }
-}
-
-impl ProjectionAttachments<'_> {
-    fn append_projected(
-        self, count: usize, parts: &mut Vec<ModelContentPart>, maximum_render_bytes: u64,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<()> {
-        let mut append = |file: FileRef| -> Result<()> {
-            let policy = match file.descriptor().media_type() {
-                "image/png" | "image/jpeg" | "image/gif" | "image/webp" =>
-                    projection_native_image(maximum_render_bytes, io)?,
-                _ => FileProjectionPolicy::Reference,
-            };
-            parts.push(ModelContentPart::File { file, policy });
-            Ok(())
-        };
-        // Both holds outlive the manifest data, including on early failure.
-        let source_hold;
-        let _hold;
-        let items = match self {
-            Self::Borrowed(items) => {
-                for attachment in items.iter().take(count) {
-                    crate::model::charge_items(io, 1)?;
-                    crate::executor::with_history_io(io, |work| attachment.validate(work))?;
-                    append(crate::model::clone_file(&attachment.file, io)?)?;
-                }
-                return Ok(());
-            }
-            Self::Owned(items, hold) => { source_hold = hold; items },
-        };
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let move_files = if let Some(io) = io.filter(|io| io.uses_native_work()) {
-            let hold = source_hold.as_ref().expect("native manifest retains ownership");
-            let mut retained = 0_u64;
+    };
+    // Both holds outlive the manifest data, including on early failure.
+    let _hold;
+    let items = match attachments {
+        Cow::Borrowed(items) => {
             for attachment in items.iter().take(count) {
-                crate::model::charge_items(Some(io), 1)?;
-                retained = retained.checked_add(attachment.file.logical_owned_bytes()?)
-                    .ok_or_else(|| projection_invalid(Some(io), "projected file ownership overflows"))?;
+                crate::model::charge_items(io, 1)?;
+                crate::executor::with_history_io(io, |work| attachment.validate(work))?;
+                append(crate::model::clone_file(&attachment.file, io)?)?;
             }
-            let discarded = hold.bytes().checked_sub(retained)
-                .ok_or_else(|| projection_invalid(Some(io), "projected files exceed manifest ownership"))?;
-            // Manifest and output use the same projection observer.
-            _hold = Some(io.guard_owned(discarded)?);
-            source_hold.expect("checked manifest ownership").into_retained();
-            true
-        } else { _hold = source_hold; io.is_none() };
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let move_files = { _hold = source_hold; io.is_none() };
-        for attachment in items.into_iter().take(count) {
-            crate::model::charge_items(io, 1)?;
-            crate::executor::with_history_io(io, |work| attachment.validate(work))?;
-            let file = if move_files { attachment.file }
-                else { crate::model::clone_file(&attachment.file, io)? };
-            append(file)?;
+            return Ok(());
         }
-        Ok(())
+        Cow::Owned(items) => items,
+    };
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    let move_files = if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
+        let hold = source_hold.as_ref().expect("native manifest retains ownership");
+        let mut retained = 0_u64;
+        for attachment in items.iter().take(count) {
+            crate::model::charge_items(Some(io), 1)?;
+            retained = retained.checked_add(attachment.file.logical_owned_bytes()?)
+                .ok_or_else(|| projection_invalid(Some(io), "projected file ownership overflows"))?;
+        }
+        let discarded = hold.bytes().checked_sub(retained)
+            .ok_or_else(|| projection_invalid(Some(io), "projected files exceed manifest ownership"))?;
+        // Manifest and output use the same projection observer.
+        _hold = Some(io.guard_owned(discarded)?);
+        source_hold.expect("checked manifest ownership").into_retained();
+        true
+    } else { _hold = source_hold; io.is_none() };
+    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+    let move_files = { _hold = source_hold; io.is_none() };
+    for attachment in items.into_iter().take(count) {
+        crate::model::charge_items(io, 1)?;
+        crate::executor::with_history_io(io, |work| attachment.validate(work))?;
+        let file = if move_files { attachment.file }
+            else { crate::model::clone_file(&attachment.file, io)? };
+        append(file)?;
     }
+    Ok(())
 }
 
 fn projection_native_image(
@@ -703,7 +616,7 @@ fn projection_native_image(
 async fn resolve_projection_attachments<'a, R: ContentResidencyVerifier + ?Sized>(
     message: &'a ConversationMessage, resolver: &'a R, maximum_attachments: usize,
     io: Option<&'a crate::executor::PreparationIo>,
-) -> Result<ProjectionAttachments<'a>> {
+) -> Result<(Cow<'a, [Attachment]>, Option<crate::conversation::ContentHold<'a>>)> {
     #[cfg(feature = "filesystem")]
     if let Some(io) = io { io.check_cancellation()?; }
     match &message.attachments {
@@ -711,14 +624,14 @@ async fn resolve_projection_attachments<'a, R: ContentResidencyVerifier + ?Sized
             if items.len() > maximum_attachments {
                 return Err(projection_invalid(io, "selected message exceeds attachment projection limit"));
             }
-            Ok(ProjectionAttachments::Borrowed(items))
+            Ok((Cow::Borrowed(items), None))
         }
         ReferencedAttachments::Manifest { manifest, item_count } => {
             if *item_count as usize > maximum_attachments {
                 return Err(projection_invalid(io, "selected message exceeds attachment projection limit"));
             }
             let (items, hold) = crate::conversation::load_manifest(resolver, manifest, *item_count, io).await?;
-            Ok(ProjectionAttachments::Owned(items, hold))
+            Ok((Cow::Owned(items), hold))
         }
     }
 }
@@ -847,7 +760,7 @@ fn convert_projection_value<'a, T: crate::filesystem::UploadRecord>(
         .checked_add(additional.as_ref().expect("conversion reservation").bytes())
         .ok_or_else(|| projection_invalid(Some(io), "owned tool conversion allowance overflows"))?;
     #[cfg(not(target_arch = "wasm32"))]
-    if io.uses_native_work() {
+    if io.original_native_work().is_some() {
         reservation.take().expect("source reservation").into_retained();
         additional.take().expect("conversion reservation").into_retained();
         native_custody = Some(io.take_native_custody(total)?);
@@ -897,7 +810,7 @@ async fn read_projection_value<'io, R: ContentResidencyVerifier + ?Sized>(
     }
     let _source_hold;
     let bytes = resolver.read(file, maximum_bytes, Some(io))?.await?;
-    _source_hold = if io.uses_native_work() { None } else {
+    _source_hold = if io.original_native_work().is_some() { None } else {
         bytes.retained_capacity().map(|capacity| io.reserve_decode(capacity as u64)).transpose()?
     };
     if bytes.len() as u64 > maximum_bytes {
@@ -1166,9 +1079,7 @@ mod tests {
                 (&conversation).logical_revision(),
                 selection.clone(),
                 &resolver,
-                256,
-                1,
-                128 * 1024,
+                crate::conversation::Limits { context_messages: 256, attachments: 1, render_bytes: 128 * 1024, ..Default::default() },
                 1,
                 None,
             )
@@ -1182,9 +1093,7 @@ mod tests {
                 (&conversation).logical_revision(),
                 selection.clone(),
                 &resolver,
-                256,
-                2,
-                128 * 1024,
+                crate::conversation::Limits { context_messages: 256, attachments: 2, render_bytes: 128 * 1024, ..Default::default() },
                 2,
                 None,
             )
@@ -1201,7 +1110,7 @@ mod tests {
         conversation.append(message, &mut None)?;
         let resolver = Resolver { bytes, ..Resolver::default() };
         let projected =
-            select_model_context(&conversation, (&conversation).logical_revision(), selection, &resolver, 256, 2, 128 * 1024, 2, None).await?;
+            select_model_context(&conversation, (&conversation).logical_revision(), selection, &resolver, crate::conversation::Limits { context_messages: 256, attachments: 2, render_bytes: 128 * 1024, ..Default::default() }, 2, None).await?;
         assert_eq!(projected.messages.len(), 1);
         assert_eq!(resolver.calls.load(Ordering::SeqCst), 1);
         Ok(())
@@ -1255,7 +1164,7 @@ mod tests {
             fn read<'a>(&'a self, _: &'a FileRef, _: u64, io: Option<&'a crate::executor::PreparationIo>)
                 -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
                 crate::conversation::BoundedContentFuture::new(io, || async move {
-                    let counter = if io.is_some_and(|io| io.uses_native_work()) { &self.native } else { &self.ordinary };
+                    let counter = if io.is_some_and(|io| io.original_native_work().is_some()) { &self.native } else { &self.ordinary };
                     counter.fetch_add(1, Ordering::SeqCst);
                     Ok(acyclic_stream::OwnedBytes::from_static(b"[]"))
                 })

@@ -89,13 +89,13 @@ async fn empty_fork_keeps_lineage_without_deleting_excluded_parent_paths()
     parent.write_text("/concurrent.txt", "user").await?;
     let source = child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let target = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let plan = child.join_into(&parent).plan_at(&source, &target).await?;
+    let plan = child.join_into(&parent).plan_at(&source, &target, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let options = ApplyOptions {
         if_target: target.id(),
         idempotency_key: IdempotencyKey::new(),
     };
     assert!(matches!(
-        plan.apply(options).await?,
+        plan.apply(options, crate::PublicationPermit::Unrestricted).await?,
         JoinOutcome::Applied(_)
     ));
     assert_eq!(parent.read("/memory.txt", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"parent");
@@ -132,12 +132,12 @@ async fn selected_fork_import_preserves_omissions_and_detects_selected_conflicts
         parent.write_text("/excluded.txt", "updated").await?;
         let source = child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let target = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        let plan = child.join_into(&parent).plan_at(&source, &target).await?;
+        let plan = child.join_into(&parent).plan_at(&source, &target, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         assert!(matches!(
             plan.apply(ApplyOptions {
                 if_target: target.id(),
                 idempotency_key: IdempotencyKey::new()
-            })
+            }, crate::PublicationPermit::Unrestricted)
             .await?,
             JoinOutcome::Applied(_)
         ));
@@ -155,7 +155,7 @@ async fn selected_fork_import_preserves_omissions_and_detects_selected_conflicts
             plan.apply(ApplyOptions {
                 if_target: parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(),
                 idempotency_key: IdempotencyKey::new()
-            })
+            }, crate::PublicationPermit::Unrestricted)
             .await?,
             JoinOutcome::Conflicted { .. }
         ));
@@ -213,13 +213,13 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
             let target = parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             let plan = source
                 .join_into(&parent)
-                .plan_at(&selected_head, &target)
-                .await?;
+                .plan_at(&selected_head, &target, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             assert!(matches!(
                 plan.apply(ApplyOptions {
                     if_target: target.id(),
                     idempotency_key: IdempotencyKey::new()
-                })
+                }, crate::PublicationPermit::Unrestricted)
                 .await?,
                 JoinOutcome::Applied(_)
             ));
@@ -238,14 +238,14 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
             assert_eq!(source.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), source_head.id());
             let repeated = source
                 .join_into(&parent)
-                .plan_at(&selected_head, &parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?)
-                .await?;
+                .plan_at(&selected_head, &parent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             assert!(matches!(
                 repeated
                     .apply(ApplyOptions {
                         if_target: repeated.target_head(),
                         idempotency_key: IdempotencyKey::new()
-                    })
+                    }, crate::PublicationPermit::Unrestricted)
                     .await?,
                 JoinOutcome::NoChanges(_)
             ));
@@ -268,7 +268,7 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
         plan.apply(ApplyOptions {
             if_target: plan.target_head(),
             idempotency_key: IdempotencyKey::new()
-        })
+        }, crate::PublicationPermit::Unrestricted)
         .await?,
         JoinOutcome::Applied(_)
     ));
@@ -302,7 +302,7 @@ async fn filtered_fork_rebase_preserves_local_and_parent_changes() -> Result<(),
         plan.apply(ApplyOptions {
             if_target: plan.target_head(),
             idempotency_key: IdempotencyKey::new()
-        })
+        }, crate::PublicationPermit::Unrestricted)
         .await?,
         JoinOutcome::Applied(_)
     ));
@@ -340,7 +340,7 @@ async fn nested_filtered_fork_uses_its_pinned_inheritance_as_delta_baseline()
     plan.apply(ApplyOptions {
         if_target: plan.target_head(),
         idempotency_key: IdempotencyKey::new(),
-    })
+    }, crate::PublicationPermit::Unrestricted)
     .await?;
     assert_eq!(root.read("/keep", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"root");
     assert_eq!(root.read("/omit", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"root");
@@ -351,7 +351,7 @@ async fn nested_filtered_fork_uses_its_pinned_inheritance_as_delta_baseline()
         plan.apply(ApplyOptions {
             if_target: plan.target_head(),
             idempotency_key: IdempotencyKey::new(),
-        })
+        }, crate::PublicationPermit::Unrestricted)
         .await?,
         JoinOutcome::Conflicted { .. }
     ));
@@ -360,7 +360,7 @@ async fn nested_filtered_fork_uses_its_pinned_inheritance_as_delta_baseline()
     plan.apply(ApplyOptions {
         if_target: plan.target_head(),
         idempotency_key: IdempotencyKey::new(),
-    })
+    }, crate::PublicationPermit::Unrestricted)
     .await?;
     assert_eq!(root.read("/keep", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"edited");
     assert_eq!(parent.read("/keep", 32, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref(), b"inherited");
@@ -550,22 +550,22 @@ async fn exact_generation_restore_is_fenced_and_idempotent() -> Result<(), Box<d
     let key = IdempotencyKey::from_bytes([0x51; 16]);
 
     assert!(matches!(
-        workspace.restore_generation(&first, second.id(), key).await?,
+        workspace.restore_generation(&first, second.id(), key, crate::PublicationPermit::Unrestricted).await?,
         WorkspaceRestore::Restored(ref generation) if generation.id() == first.id()
     ));
     assert!(matches!(
-        workspace.restore_generation(&first, second.id(), key).await?,
+        workspace.restore_generation(&first, second.id(), key, crate::PublicationPermit::Unrestricted).await?,
         WorkspaceRestore::AlreadyRestored(ref generation) if generation.id() == first.id()
     ));
     assert!(matches!(
         workspace
-            .restore_generation(&second, first.id(), key)
+            .restore_generation(&second, first.id(), key, crate::PublicationPermit::Unrestricted)
             .await?,
         WorkspaceRestore::IdempotencyConflict
     ));
     assert!(matches!(
         workspace
-            .restore_generation(&second, second.id(), IdempotencyKey::new())
+            .restore_generation(&second, second.id(), IdempotencyKey::new(), crate::PublicationPermit::Unrestricted)
             .await?,
         WorkspaceRestore::Stale(ref generation) if generation.id() == first.id()
     ));
@@ -658,6 +658,7 @@ async fn path_apply_is_three_way_conflict_checked() -> Result<(), Box<dyn Error>
                 &["file".to_owned()],
                 current.id(),
                 IdempotencyKey::from_bytes([0x64; 16]),
+                crate::PublicationPermit::Unrestricted,
             )
             .await?,
         WorkspacePathApply::Applied(_)
@@ -690,6 +691,7 @@ async fn path_apply_is_three_way_conflict_checked() -> Result<(), Box<dyn Error>
             &["file".to_owned()],
             conflict_current.id(),
             IdempotencyKey::from_bytes([0x66; 16]),
+            crate::PublicationPermit::Unrestricted,
         )
         .await?
     else {
@@ -722,7 +724,7 @@ async fn repeated_join_preserves_prior_incremental_publications() -> Result<(), 
             .apply(ApplyOptions {
                 if_target: first.target_head(),
                 idempotency_key: IdempotencyKey::from_bytes([0x68; 16]),
-            })
+            }, crate::PublicationPermit::Unrestricted)
             .await?,
         JoinOutcome::Applied(_)
     ));
@@ -733,7 +735,7 @@ async fn repeated_join_preserves_prior_incremental_publications() -> Result<(), 
             .apply(ApplyOptions {
                 if_target: second.target_head(),
                 idempotency_key: IdempotencyKey::from_bytes([0x69; 16]),
-            })
+            }, crate::PublicationPermit::Unrestricted)
             .await?,
         JoinOutcome::Applied(_)
     ));
@@ -1461,12 +1463,12 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
         .apply(ApplyOptions {
             if_target: expected,
             idempotency_key,
-        })
+        }, crate::PublicationPermit::Unrestricted)
         .await?;
     let JoinOutcome::Applied(joined) = outcome else {
         return Err("join did not publish".into());
     };
-    let witness = plan.commit_witness(&joined, idempotency_key)?;
+    let witness = plan.commit_witness(&joined, idempotency_key, WorkBudget::UNBOUNDED, &CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert!(main.verify_join_commit(&witness).await?);
     let mut forged = serde_json::to_value(witness)?;
     forged["source_generation"] =
@@ -1478,14 +1480,14 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
             .ok_or("join operation was not recoverable")?
             .id(),
-        joined.id()
+        joined.generation.id()
     );
     assert!(
         main.operation_generation(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
             .is_none()
     );
-    assert_eq!(joined.read("/base", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, OwnedBytes::from_static(b"base"));
+    assert_eq!(joined.generation.read("/base", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, OwnedBytes::from_static(b"base"));
     assert_eq!(main.read("/agent", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, OwnedBytes::from_static(b"agent"));
     assert_eq!(main.read("/main", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, OwnedBytes::from_static(b"main"));
     assert_eq!(
@@ -1496,7 +1498,7 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
         plan.apply(ApplyOptions {
             if_target: expected,
             idempotency_key,
-        })
+        }, crate::PublicationPermit::Unrestricted)
         .await?,
         JoinOutcome::AlreadyApplied(_)
     ));
@@ -1535,7 +1537,7 @@ async fn exact_generation_join_matches_head_plan_and_rejects_stale_target()
     agent.write_text("/agent", "agent").await?;
     let source = agent.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let target = main.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let planned = agent.join_into(&main).plan_at(&source, &target).await?;
+    let planned = agent.join_into(&main).plan_at(&source, &target, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(planned.source_head(), source.id());
     assert_eq!(planned.target_head(), target.id());
     let current = agent.join_into(&main).plan().await?;
@@ -1544,14 +1546,14 @@ async fn exact_generation_join_matches_head_plan_and_rejects_stale_target()
 
     main.write_text("/advanced", "advanced").await?;
     assert!(matches!(
-        agent.join_into(&main).plan_at(&source, &target).await,
+        agent.join_into(&main).plan_at(&source, &target, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
         Err(WorkspaceError::StaleTarget)
     ));
     assert!(matches!(
         agent
             .join_into(&main)
-            .plan_at(&target, &main.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?)
-            .await,
+            .plan_at(&target, &main.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error),
         Err(WorkspaceError::ForeignGeneration)
     ));
     Ok(())
@@ -1768,7 +1770,7 @@ async fn join_rejects_a_stale_target_without_mutation() -> Result<(), Box<dyn Er
         .apply(ApplyOptions {
             if_target: expected,
             idempotency_key: IdempotencyKey::new(),
-        })
+        }, crate::PublicationPermit::Unrestricted)
         .await?;
     assert!(matches!(outcome, JoinOutcome::StaleTarget(_)));
     assert!(main.read("/agent", 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
@@ -1805,7 +1807,7 @@ async fn semantic_change_set_and_overlap_conflict_are_exact() -> Result<(), Box<
         plan.apply(ApplyOptions {
             if_target: plan.target_head(),
             idempotency_key: IdempotencyKey::new(),
-        })
+        }, crate::PublicationPermit::Unrestricted)
         .await?,
         JoinOutcome::Conflicted {
             truncated: false,
@@ -1874,7 +1876,7 @@ async fn merge_drivers_resolve_and_publish_real_workspace_joins() -> Result<(), 
         return Err("resolved join did not publish".into());
     };
     assert!(
-        main.verify_join_commit(&plan.commit_witness(&application, join_key)?)
+        main.verify_join_commit(&plan.commit_witness(&application, join_key, WorkBudget::UNBOUNDED, &CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error)?)
             .await?
     );
     assert_eq!(
@@ -1906,7 +1908,7 @@ async fn default_text_driver_projects_markers_and_publishes_them() -> Result<(),
         .apply(ApplyOptions {
             if_target: plan.target_head(),
             idempotency_key: IdempotencyKey::new(),
-        })
+        }, crate::PublicationPermit::Unrestricted)
         .await?
     else {
         return Err("text join did not expose its conflict".into());
@@ -2208,7 +2210,7 @@ async fn generation_reader_resolves_many_paths_from_one_pinned_root() -> Result<
     let present = customer_path("/present", config)?;
     let absent = customer_path("/absent", config)?;
 
-    let reader = generation.reader().await?;
+    let reader = generation.workspace().checkout(GenerationSelector::Exact(generation.id()), CheckoutMode::read_only_pinned(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.pinned_reader().map_err(WorkspaceError::engine)?;
     let descriptions = reader
         .describe_files(
             &[present, absent],
@@ -3156,7 +3158,7 @@ async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
             plan.apply(ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new()
-            })
+            }, crate::PublicationPermit::Unrestricted)
             .await?,
             JoinOutcome::Applied(_)
         ));
@@ -3185,7 +3187,7 @@ async fn reopened_sibling_promotions_return_conflict_without_missing_objects()
             plan.apply(ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new()
-            })
+            }, crate::PublicationPermit::Unrestricted)
             .await?,
             JoinOutcome::Conflicted { .. }
         ));
@@ -3227,7 +3229,7 @@ async fn sibling_forks_adding_distinct_files_join_in_sequence() -> Result<(), Bo
             .apply(ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
-            })
+            }, crate::PublicationPermit::Unrestricted)
             .await?;
         let applied = match outcome {
             JoinOutcome::Applied(_) => true,
@@ -3280,7 +3282,7 @@ async fn sibling_directories_created_independently_merge_by_path() -> Result<(),
             .apply(ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
-            })
+            }, crate::PublicationPermit::Unrestricted)
             .await?
         {
             JoinOutcome::Applied(_) => {}
@@ -3338,7 +3340,7 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
                 .apply(ApplyOptions {
                     if_target: plan.target_head(),
                     idempotency_key: IdempotencyKey::new(),
-                })
+                }, crate::PublicationPermit::Unrestricted)
                 .await?
             {
                 JoinOutcome::Applied(_) => Vec::new(),
@@ -3367,7 +3369,7 @@ async fn sibling_files_created_independently_merge_by_path() -> Result<(), Box<d
         .apply(ApplyOptions {
             if_target: plan.target_head(),
             idempotency_key: IdempotencyKey::new(),
-        })
+        }, crate::PublicationPermit::Unrestricted)
         .await?
     {
         // Folded into the file main already holds: nothing left to publish.
@@ -3442,7 +3444,7 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
             .apply(ApplyOptions {
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
-            })
+            }, crate::PublicationPermit::Unrestricted)
             .await?;
         if let JoinOutcome::Conflicted { conflicts, .. } = outcome {
             let described = plan.describe_conflicts(&conflicts, false).await?;
@@ -3475,7 +3477,7 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
         .apply(ApplyOptions {
             if_target: plan.target_head(),
             idempotency_key: IdempotencyKey::new(),
-        })
+        }, crate::PublicationPermit::Unrestricted)
         .await?
     else {
         return Err("a mode conflict on the shared directory was not reported".into());
@@ -3959,7 +3961,7 @@ async fn native_guarded_fork_denial_keeps_prepared_work_without_destination_auth
         observed_seals.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         std::future::ready(Err(WorkspaceError::from(crate::FsError::MutationNotAllowed)))
     };
-    let failure = workspace.fork_with_permit_guarded_with_native_work(
+    let failure = workspace.fork_with_native_work(
         "native-guarded-fork-denied", ForkOptions::from_generation(frozen, IdempotencyKey::new())
             .inherit_paths(vec!["/selected".to_owned()]),
         crate::PublicationPermit::Unrestricted, &original, &cancellation, &mut deny,
@@ -3986,9 +3988,9 @@ async fn native_selected_restore_honors_the_real_retained_authority_reservation(
     let original = crate::NativeMaterializationWork::new(
         selected_transaction_budget(), &cancellation,
     ).map_err(|(error, _)| error)?;
-    let reservation = workspace.reserve_publication_with_native_work(
+    let reservation = workspace.reserve_publication(
         IdempotencyKey::new().operation_id(), &original, &cancellation,
-    ).await.map_err(|(error, _)| error)?;
+    ).await?;
     let before = original.receipt();
     let key = IdempotencyKey::new();
     let paths = vec!["/selected".to_owned()];
@@ -4011,8 +4013,8 @@ async fn native_selected_restore_honors_the_real_retained_authority_reservation(
     ).await?;
     assert!(matches!(restored, TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_)));
     assert_eq!(workspace.read("/selected", 6, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, OwnedBytes::from_static(b"frozen"));
-    workspace.release_publication_with_native_work(reservation, &original, &cancellation)
-        .await.map_err(|(error, _)| error)?;
+    workspace.release_publication(reservation, &original, &cancellation)
+        .await?;
     original.receipt().verify(selected_transaction_budget())?;
     Ok(())
 }
@@ -4029,9 +4031,9 @@ async fn native_guarded_fork_rejects_an_unrelated_source_reservation_without_reb
     let original = crate::NativeMaterializationWork::new(
         selected_transaction_budget(), &cancellation,
     ).map_err(|(error, _)| error)?;
-    let reservation = workspace.reserve_publication_with_native_work(
+    let reservation = workspace.reserve_publication(
         IdempotencyKey::new().operation_id(), &original, &cancellation,
-    ).await.map_err(|(error, _)| error)?;
+    ).await?;
     let before = original.receipt().authority_records_appended;
     let permit = crate::PublicationPermit::Reservation {
         operation_id: reservation.operation_id.into_bytes(),
@@ -4039,7 +4041,7 @@ async fn native_guarded_fork_rejects_an_unrelated_source_reservation_without_reb
         expected: reservation.expected,
     };
     let mut allow = |_: &crate::NativeMaterializationWork| std::future::ready(Ok::<(), WorkspaceError>(()));
-    let failed = workspace.fork_with_permit_guarded_with_native_work(
+    let failed = workspace.fork_with_native_work(
         "native-fork-reserved-destination", ForkOptions::from_generation(frozen, IdempotencyKey::new()),
         permit, &original, &cancellation, &mut allow,
     ).await.err().ok_or("a source reservation was incorrectly rebound to a new destination")?;
@@ -4048,8 +4050,8 @@ async fn native_guarded_fork_rejects_an_unrelated_source_reservation_without_reb
             crate::AuthorityStoreError::RejectedStatic(_)))));
     assert_eq!(original.receipt().authority_records_appended, before);
     assert!(fs.open_workspace("native-fork-reserved-destination", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
-    workspace.release_publication_with_native_work(reservation, &original, &cancellation)
-        .await.map_err(|(error, _)| error)?;
+    workspace.release_publication(reservation, &original, &cancellation)
+        .await?;
     Ok(())
 }
 
@@ -4074,10 +4076,10 @@ async fn contextual_operation_record_retains_original_witness_after_head_advance
     workspace.write("/later", bytes::Bytes::from_static(b"later unrelated generation")).await?;
     let current = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_ne!(current.id(), original_generation.id());
-    let observed = workspace.operation_generation_record_measured(
+    let observed = workspace.operation_generation_record(
         key, WorkBudget::UNBOUNDED, &cancellation,
     ).await?;
-    let (generation, record) = observed.value.ok_or("original operation disappeared")?;
+    let (generation, record) = observed.value.0.ok_or("original operation disappeared")?;
     assert_eq!(generation.id(), original_generation.id());
     assert_eq!(record.operation_id, key.operation_id());
     let mut decode_work = crate::WorkCounters::UNCHARGED;
@@ -4096,9 +4098,9 @@ async fn contextual_operation_record_retains_original_witness_after_head_advance
     assert_eq!(workspace.operation_generation(
         key, WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value.ok_or("generation-only projection lost the operation")?.id(), original_generation.id());
-    assert!(workspace.operation_generation_record_measured(
+    assert!(workspace.operation_generation_record(
         IdempotencyKey::new(), WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value.is_none());
+    ).await?.value.0.is_none());
     Ok(())
 }
 
@@ -4126,9 +4128,9 @@ async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_
         TransactionCommit::Committed(generation) | TransactionCommit::AlreadyCommitted(generation) => generation,
         _ => return Err("the current genuine reservation did not authorize publication".into()),
     };
-    let (_, record) = workspace.operation_generation_record_measured(
+    let (_, record) = workspace.operation_generation_record(
         key, WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value.ok_or("the original publication disappeared")?;
+    ).await?.value.0.ok_or("the original publication disappeared")?;
     let mut work = crate::WorkCounters::UNCHARGED;
     let mut allocations = crate::kernel::allocation::AllocationLedger::default();
     let mut accounting = crate::kernel::allocation::KernelAccounting::borrowed_standalone(
@@ -4198,9 +4200,9 @@ async fn original_fingerprint_metadata_never_authorizes_a_foreign_current_reserv
     assert!(rejected.work.bytes_hashed > 0);
     assert_eq!(rejected.work.authority_records_appended, 0);
     assert_eq!(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id(), original_head.id());
-    assert!(workspace.operation_generation_record_measured(
+    assert!(workspace.operation_generation_record(
         key, WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value.is_none());
+    ).await?.value.0.is_none());
     workspace.release_publication(target_reservation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     foreign.release_publication(foreign_reservation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     Ok(())

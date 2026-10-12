@@ -8,7 +8,7 @@ use super::{
     TreeMutationError, decode_file_metadata,
 };
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
-use super::persistent_point::{Owned, absorb, retire_allocation};
+use super::persistent_point::{Owned, retire_allocation};
 use super::persistent_diff::{diff_file_records_with_accounting, diff_tree_entries_with_accounting};
 use super::file_table_mutation::apply_file_table_mutations_with_accounting;
 use super::tree_mutation::{TreeFormat, apply_tree_mutations_with_accounting};
@@ -436,7 +436,7 @@ fn merge_generation_core<'a, 'accounting, S: AsyncObjectStore>(
                     None => {
                         let parent = build_checkpoint_with_accounting(store, CheckpointRequest { base: request.base_generation,
                             file_table: request.ours.file_table, merge_parent: None }, limits, accounting, cancellation).await?;
-                        (parent.value, GenerationId::new(parent.value.digest))
+                        (parent, GenerationId::new(parent.digest))
                     }
                 };
                 let merged = build_checkpoint_with_accounting(store, CheckpointRequest { base: parent, file_table: merged_table,
@@ -456,7 +456,7 @@ fn merge_generation_core<'a, 'accounting, S: AsyncObjectStore>(
                 });
                 if let Err(error) = copied { parents.retire(accounting)?; return Err(error); }
                 let Owned { value: parents, allocation, .. } = parents;
-                Ok((MergeGenerationOutcome::Prepared { generation_root: merged.value, generation_id: GenerationId::new(merged.value.digest),
+                Ok((MergeGenerationOutcome::Prepared { generation_root: merged, generation_id: GenerationId::new(merged.digest),
                     root: GenerationRoot { volume_id: request.ours.volume_id, root_file_id: request.ours.root_file_id,
                         file_table: merged_table, parents, required_features: request.ours.continuation_features() } }, allocation))
             }.await;
@@ -694,10 +694,10 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
                         resolved = Some(ours_value);
                     } else if a.kind != super::FileKind::Directory && b.kind != super::FileKind::Directory {
                         state.file_folds.ensure_for_push(usize::MAX, accounting)?;
-                        let (name, allocation) = super::persistent_io::clone_key_with_accounting::<TreeFormat>(name, limits.maximum_name_bytes, accounting)?;
+                        let (name, mut allocation) = super::persistent_io::clone_key_with_accounting::<TreeFormat>(name, limits.maximum_name_bytes, accounting)?;
                         let bytes = TreeFormat::key_owned_bytes(&name);
                         state.file_folds.value.push(FileFold { directory_id, name, ours: a.file_id, theirs: b.file_id });
-                        absorb(&mut state.file_folds.allocation, allocation)?;
+                        state.file_folds.allocation.absorb(&mut allocation)?;
                         state.file_folds.bytes = state.file_folds.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
                         resolved = Some(ours_value);
                     }
@@ -706,17 +706,17 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
                     conflicted = true;
                     if state.conflicts.value.len() < maximum_conflicts as usize {
                         state.conflicts.ensure_for_push(maximum_conflicts as usize, accounting)?;
-                        let (name, allocation) = super::persistent_io::clone_key_with_accounting::<TreeFormat>(name, limits.maximum_name_bytes, accounting)?;
+                        let (name, mut allocation) = super::persistent_io::clone_key_with_accounting::<TreeFormat>(name, limits.maximum_name_bytes, accounting)?;
                         let bytes = TreeFormat::key_owned_bytes(&name);
                         state.conflicts.value.push(MergeConflict::Binding { directory_id, name });
-                        absorb(&mut state.conflicts.allocation, allocation)?;
+                        state.conflicts.allocation.absorb(&mut allocation)?;
                         state.conflicts.bytes = state.conflicts.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
                     } else { state.truncated = true; }
                     continue;
                 };
                 if resolved != ours_value {
                     mutations.ensure_for_push(usize::MAX, accounting)?;
-                    let (mutation, allocation, bytes) = match resolved {
+                    let (mutation, mut allocation, bytes) = match resolved {
                         Some(entry) => {
                             let (entry, allocation) = super::persistent_io::clone_value_with_accounting::<TreeFormat>(entry, limits.maximum_name_bytes, accounting)?;
                             let bytes = TreeFormat::value_owned_bytes(&entry);
@@ -731,7 +731,7 @@ async fn merge_directory_record_with_resolutions_async<S: AsyncObjectStore>(
                         }
                     };
                     mutations.value.push(mutation);
-                    absorb(&mut mutations.allocation, allocation)?;
+                    mutations.allocation.absorb(&mut allocation)?;
                     mutations.bytes = mutations.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
                 }
             }
@@ -783,9 +783,9 @@ async fn fold_additions<S: AsyncObjectStore>(
             name.retire(accounting)?;
         } else if state.conflicts.value.len() < maximum_conflicts as usize {
             state.conflicts.ensure_for_push(maximum_conflicts as usize, accounting)?;
-            let Owned { value: name, allocation, bytes } = name;
+            let Owned { value: name, mut allocation, bytes } = name;
             state.conflicts.value.push(MergeConflict::Binding { directory_id: fold.directory_id, name });
-            absorb(&mut state.conflicts.allocation, allocation)?;
+            state.conflicts.allocation.absorb(&mut allocation)?;
             state.conflicts.bytes = state.conflicts.bytes.checked_add(bytes).ok_or(WorkError::Overflow)?;
         } else { state.truncated = true; name.retire(accounting)?; }
     }

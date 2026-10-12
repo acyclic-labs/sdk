@@ -40,7 +40,7 @@ fn executor(
     provider: Arc<CapturingModel>,
 ) -> Result<acyclic_harness::executor::StockExecutor> {
     Ok(acyclic_harness::executor::StockExecutor::new(
-        acyclic_harness::model::Model::new("test", "model", "1", serde_json::Value::Null)?,
+        acyclic_harness::model::Model::new("test".into(), "model".into(), "1".into(), serde_json::Value::Null)?,
         provider,
         ContextPipeline::default().with(Arc::new(snapshot.stage(ContextPlacement::Prepend)?)),
         acyclic_harness::tool::ToolRegistry::default(),
@@ -614,7 +614,7 @@ async fn pinned_reads_fail_closed_for_missing_generation_and_outside_root() -> R
     let mut source = first_skill(&captured)?.source.clone();
     source.generation = acyclic_harness::resources::GenerationRef::new(
         fixture.volume.provider().clone(),
-        [255; 32],
+        [255; 32].into(),
         Some("missing".into()),
     )?;
     assert!(source.read(fixture.reader.as_ref()).await.is_err());

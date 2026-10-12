@@ -161,7 +161,7 @@ impl<I, O> TaskDefinition<I, O> {
             return Err(task_workflow_error(task_original_work(io)?, crate::wire::ErrorCode::Invalid,
                 "resumable task requires an implementation digest"));
         }
-        validate_task_schemas_with_io(&input_schema, &output_schema, true, io)?;
+        crate::executor::with_history_io(io, |work| validate_task_schemas(&input_schema, &output_schema, true, work))?;
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;
@@ -192,6 +192,7 @@ impl<I, O> TaskDefinition<I, O> {
             &input,
             &output,
             matches!(&self.implementation, TaskImplementation::Resumable(_)),
+            &mut None,
         )?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         { self.native_definition_source = None; }
@@ -834,7 +835,7 @@ fn task_definition_digest_with_io(
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<[u8; 32]> {
     validate_identity(name, version, io)?;
-    validate_task_schemas_with_io(input_schema, output_schema, machine_digest.is_some(), io)?;
+    crate::executor::with_history_io(io, |work| validate_task_schemas(input_schema, output_schema, machine_digest.is_some(), work))?;
     let mut invalid = machine_digest == Some([0; 32]);
     if !invalid {
         for value in requirements {
@@ -905,11 +906,7 @@ pub fn task_admission_identities(
     ))
 }
 
-pub(crate) fn validate_task_schemas(input: &Value, output: &Value, resumable: bool) -> Result<()> {
-    validate_task_schemas_with_work(input, output, resumable, &mut None)
-}
-
-fn validate_task_schemas_with_work(
+pub(crate) fn validate_task_schemas(
     input: &Value, output: &Value, resumable: bool,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
@@ -927,21 +924,6 @@ fn validate_task_schemas_with_work(
     }
     Ok(())
 }
-fn validate_task_schemas_with_io(
-    input: &Value, output: &Value, resumable: bool,
-    io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    #[cfg(feature = "filesystem")]
-    let mut observer = io.map(crate::executor::PreparationIo::history_io);
-    #[cfg(feature = "filesystem")]
-    let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-    #[cfg(not(feature = "filesystem"))]
-    let mut work = None;
-    #[cfg(not(feature = "filesystem"))]
-    let _ = io;
-    validate_task_schemas_with_work(input, output, resumable, &mut work)
-}
-
 fn validate_identity(
     name: &str, version: &str, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
@@ -1053,7 +1035,7 @@ fn task_registered_portable_admission(
         parent, resource_proofs, grants, limits: scope.limits(), run_limits: scope.run_limits(),
         policy: None, extensions, execution: None,
     };
-    record.validate_with_work(quota.work())?;
+    record.validate(quota.work())?;
     quota.transfer();
     Ok(record)
 }
@@ -1398,20 +1380,7 @@ impl TaskRegistry {
     }
 
     /// Uses the same registered metadata for an erased stock child command.
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn child_admission(
-        &self,
-        operation: OperationId,
-        name: &str,
-        version: &str,
-        input: Value,
-        parent: TaskId,
-        scope: &RuntimeScope,
-    ) -> Result<TaskAdmissionRecord> {
-        self.registered_admission_with_work(operation, name, version, input, Some(parent), None, scope, &mut None)
-    }
-
-    fn registered_admission_with_work(
+    fn registered_admission(
         &self, operation: OperationId, name: &str, version: &str, input: Value,
         parent: Option<TaskId>, expected_digest: Option<[u8; 32]>, scope: &RuntimeScope,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -1488,19 +1457,6 @@ impl TaskRegistry {
     }
 
     pub(crate) fn validate_durable_admission(
-        &self,
-        identity: &ComponentIdentity,
-        machine: &MachineIdentity,
-        input_schema: Option<&Value>,
-        output_schema: &Value,
-        input: Option<&Value>,
-    ) -> Result<()> {
-        self.validate_durable_admission_with_work(
-            identity,machine,input_schema,output_schema,input,&mut None,
-        )
-    }
-
-    pub(crate) fn validate_durable_admission_with_work(
         &self, identity: &ComponentIdentity, machine: &MachineIdentity,
         input_schema: Option<&Value>, output_schema: &Value, input: Option<&Value>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -1818,7 +1774,7 @@ impl TaskAdmissionRecord {
             extensions,
             execution,
         };
-        record.validate()?;
+        record.validate(&mut None)?;
         Ok(record)
     }
 
@@ -1828,17 +1784,13 @@ impl TaskAdmissionRecord {
         proofs: Vec<crate::resource_preparation::ResourceCreationProofRef>,
     ) -> Result<Self> {
         self.resource_proofs = proofs;
-        self.validate()?;
+        self.validate(&mut None)?;
         Ok(self)
     }
 
-    /// Validates the provider-neutral request independently of registration.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    pub(crate) fn validate_with_work(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    /// Validates the admission on the optional history observer.
+    pub fn validate(
+        &self, work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         if [&self.task.name, &self.task.version, &self.machine.name, &self.machine.version]
@@ -1873,7 +1825,7 @@ impl TaskAdmissionRecord {
                 return Err(crate::store::guarded_boundary(quota.work(), crate::wire::ErrorCode::Invalid, "task admission repeats a created resource proof"));
             }
         }
-        validate_task_schemas_with_work(&self.input_schema, &self.output_schema, true, quota.work())?;
+        validate_task_schemas(&self.input_schema, &self.output_schema, true, quota.work())?;
         crate::contract::validate_json_schema_value_with_work(
             &self.input_schema, &self.input, "task input", quota.work(),
         )?;
@@ -1919,13 +1871,9 @@ impl TaskAdmissionRecord {
         serde_json::to_value(self.canonical_payload()).expect("task admission serializes")
     }
 
-    /// Rejects missing, extra, or noncanonical v2 admission fields.
-    pub fn from_canonical_value(value: Value) -> Result<Self> {
-        Self::from_canonical_value_counted_with_work(value, &mut None).map(|(admission, _)| admission)
-    }
-
-    pub(crate) fn from_canonical_value_counted_with_work(
-        value: Value, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    /// Decodes the canonical admission and reports its new container bytes.
+    pub fn from_canonical_value(
+        value: Value, work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<(Self, u64)> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let canonical = crate::store::history::canonical_bytes_with_work(
@@ -1941,7 +1889,7 @@ impl TaskAdmissionRecord {
             return Err(crate::store::guarded_boundary(quota.work(), crate::wire::ErrorCode::Invalid, "unsupported task admission contract"));
         }
         let (admission, added) = Self::from_owned_body_with_work(body, quota.work())?;
-        admission.validate_with_work(quota.work())?;
+        admission.validate(quota.work())?;
         let expected = crate::store::history::canonical_bytes_with_work(
             &admission.canonical_payload(), acyclic_stream::MAX_RECORD_BYTES as u64, quota.work(),
         )?;
@@ -3510,60 +3458,30 @@ impl RuntimeScope {
     }
 
     /// Returns the actor authenticated by the scratch allocation.
-    pub(crate) fn current_created_agent(&self) -> Result<Option<crate::AgentId>> {
-        self.current_created_private_volume()?.map(|volume| match volume.owner() {
-            crate::conversation::VolumeOwner::Agent(agent) => Ok(*agent),
-            _ => Err(Error::Unauthorized("current created scratch is not agent-owned".into())),
-        }).transpose()
-    }
-
-    pub(crate) fn current_created_private_volume(&self) -> Result<Option<&VolumeRef>> {
-        Ok(self.created_access.as_ref().map(|access| access.current_content(&mut None))
-            .transpose()?.flatten().map(|binding| &binding.volume))
-    }
-
-    pub(crate) fn current_created_authority(&self) -> Result<Option<&crate::core::Authority>> {
-        Ok(self.created_access.as_ref().map(|access| access.current_content(&mut None))
-            .transpose()?.flatten().and_then(|binding| binding.authority.as_ref()))
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn current_created_private_volume_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Option<&VolumeRef>> {
-        work.charge(acyclic_fs::WorkCounters::default())
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(self.created_access.as_ref().map(|access|
-            access.current_content(&mut Some(&mut io)))
-            .transpose()?.flatten().map(|binding| &binding.volume))
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn current_created_authority_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Option<&crate::core::Authority>> {
-        work.charge(acyclic_fs::WorkCounters::default())
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let mut io = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(self.created_access.as_ref().map(|access|
-            access.current_content(&mut Some(&mut io)))
-            .transpose()?.flatten().and_then(|binding| binding.authority.as_ref()))
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn current_created_agent_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
+    pub(crate) fn current_created_agent(
+        &self, work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<Option<crate::AgentId>> {
-        work.charge(acyclic_fs::WorkCounters::default())
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        self.current_created_private_volume_with_native_work(work)?.map(|volume| match volume.owner() {
+        self.current_created_private_volume(work)?.map(|volume| match volume.owner() {
             crate::conversation::VolumeOwner::Agent(agent) => Ok(*agent),
-            _ => Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "current created scratch is not agent-owned" }),
+            _ => Err(scope_metadata_boundary(work, crate::wire::ErrorCode::Unauthorized,
+                "current created scratch is not agent-owned")),
         }).transpose()
+    }
+
+    pub(crate) fn current_created_private_volume(
+        &self, work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<Option<&VolumeRef>> {
+        if let Some(io) = work.as_deref() { io.check_cancellation()?; }
+        Ok(self.created_access.as_ref().map(|access| access.current_content(work))
+            .transpose()?.flatten().map(|binding| &binding.volume))
+    }
+
+    pub(crate) fn current_created_authority(
+        &self, work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<Option<&crate::core::Authority>> {
+        if let Some(io) = work.as_deref() { io.check_cancellation()?; }
+        Ok(self.created_access.as_ref().map(|access| access.current_content(work))
+            .transpose()?.flatten().and_then(|binding| binding.authority.as_ref()))
     }
 
     pub(crate) fn created_grants(&self) -> Option<&Capabilities> {
@@ -3899,16 +3817,7 @@ pub struct TaskDependencyEnvironment {
 }
 
 /// Validates an immutable task dependency graph and its provider requirements.
-pub fn validate_task_requirements(
-    tasks: &BTreeMap<(String, String), BTreeSet<String>>,
-    tools: &BTreeSet<(String, String)>,
-    environment: &TaskDependencyEnvironment,
-    grants: &BTreeSet<String>,
-) -> Result<()> {
-    validate_task_requirements_observed(tasks, tools, environment, grants, None)
-}
-
-fn validate_task_requirements_observed(
+pub(crate) fn validate_task_requirements(
     tasks: &BTreeMap<(String, String), BTreeSet<String>>,
     tools: &BTreeSet<(String, String)>, environment: &TaskDependencyEnvironment,
     grants: &BTreeSet<String>, io: StartupIo<'_>,
@@ -3929,18 +3838,14 @@ fn visit_task_dependency(
     match marks.get(key).copied() {
         Some(1) => {
             return Err(native_startup::error(io, crate::wire::ErrorCode::Invalid,
-                "task dependency cycle", || Error::Invalid(format!(
-                    "task dependency cycle at {}@{}", key.0, key.1,
-                ))));
+                "task dependency cycle"));
         }
         Some(2) => return Ok(()),
         _ => {}
     }
     let requirements = tasks.get(key).ok_or_else(|| {
         native_startup::error(io, crate::wire::ErrorCode::Invalid,
-            "unsatisfied task requirement", || Error::Invalid(format!(
-                "unsatisfied task requirement: task:{}@{}", key.0, key.1,
-            )))
+            "unsatisfied task requirement")
     })?;
     native_startup::item(io, std::mem::size_of::<((String, String), u8)>())?;
     marks.insert((native_startup::text(&key.0, io)?, native_startup::text(&key.1, io)?), 1);
@@ -3957,24 +3862,24 @@ fn validate_requirement(
     environment: &TaskDependencyEnvironment, grants: &BTreeSet<String>, io: StartupIo<'_>,
 ) -> Result<()> {
     native_startup::item(io, 0)?;
-    if let Some(target) = parse_dependency_target_observed(requirement, "task:", io)? {
+    if let Some(target) = parse_dependency_target(requirement, "task:", io)? {
         if !tasks.contains_key(&target) {
             return Err(native_startup::error(io, crate::wire::ErrorCode::Invalid,
-                "unsatisfied task requirement", || missing_task_requirement(requirement)));
+                "unsatisfied task requirement"));
         }
         return visit_task_dependency(&target, marks, tasks, tools, environment, grants, io);
     }
-    if let Some(target) = parse_dependency_target_observed(requirement, "tool:", io)? {
+    if let Some(target) = parse_dependency_target(requirement, "tool:", io)? {
         return tools.contains(&target).then_some(()).ok_or_else(|| {
             native_startup::error(io, crate::wire::ErrorCode::Invalid,
-                "unsatisfied tool requirement", || Error::Invalid(format!("unsatisfied tool requirement: {requirement}")))
+                "unsatisfied tool requirement")
         });
     }
     if provider_requirement_satisfied(requirement, environment, grants, io)? {
         return Ok(());
     }
     Err(native_startup::error(io, crate::wire::ErrorCode::Invalid,
-        "unsatisfied task requirement", || missing_task_requirement(requirement)))
+        "unsatisfied task requirement"))
 }
 
 fn provider_requirement_satisfied(
@@ -4000,7 +3905,7 @@ fn provider_requirement_satisfied(
             Ok(true)
         } else {
             Err(native_startup::error(io, crate::wire::ErrorCode::Invalid,
-                "unsatisfied task requirement", || missing_task_requirement(requirement)))
+                "unsatisfied task requirement"))
         };
     }
     if let Some(grant) = requirement.strip_prefix("grant:") {
@@ -4009,11 +3914,11 @@ fn provider_requirement_satisfied(
     if let Some(extension) = requirement.strip_prefix("extension:") {
         let (name, version) = extension.rsplit_once('@').ok_or_else(|| {
             native_startup::error(io, crate::wire::ErrorCode::Invalid,
-                "invalid extension dependency", || Error::Invalid(format!("invalid extension dependency {requirement}")))
+                "invalid extension dependency")
         })?;
         let version = version.parse::<u32>().map_err(|_| {
             native_startup::error(io, crate::wire::ErrorCode::Invalid,
-                "invalid extension dependency", || Error::Invalid(format!("invalid extension dependency {requirement}")))
+                "invalid extension dependency")
         })?;
         return Ok(!name.is_empty()
             && !name.contains('@')
@@ -4025,7 +3930,7 @@ fn provider_requirement_satisfied(
 }
 
 
-fn parse_dependency_target_observed(
+fn parse_dependency_target(
     requirement: &str, prefix: &str, io: StartupIo<'_>,
 ) -> Result<Option<(String, String)>> {
     let Some(value) = requirement.strip_prefix(prefix) else {
@@ -4035,12 +3940,8 @@ fn parse_dependency_target_observed(
         .rsplit_once('@')
         .filter(|(name, version)| !name.is_empty() && !version.is_empty() && !name.contains('@'))
         .ok_or_else(|| native_startup::error(io, crate::wire::ErrorCode::Invalid,
-            "invalid task dependency", || Error::Invalid(format!("invalid {prefix} dependency {requirement}"))))?;
+            "invalid task dependency"))?;
     Ok(Some((native_startup::text(target.0, io)?, native_startup::text(target.1, io)?)))
-}
-
-fn missing_task_requirement(requirement: &str) -> Error {
-    Error::Invalid(format!("unsatisfied task requirement: {requirement}"))
 }
 
 #[allow(
@@ -4487,9 +4388,9 @@ pub(crate) fn validate_child_page<'a>(
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-type NativeCustody = acyclic_fs::NativeAllocation;
+pub(crate) type NativeCustody = acyclic_fs::NativeAllocation;
 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-type NativeCustody = ();
+pub(crate) type NativeCustody = ();
 
 enum ContextSource<'a> {
     Ordinary(std::marker::PhantomData<&'a ()>),
@@ -4530,8 +4431,8 @@ impl AgentHarness {
         if let Some(work) = task_original_work(io)? {
             let mut observer = crate::store::history::native_work_io(work)
                 .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            observed.validate_with_work(&mut Some(&mut observer))?;
-            self.tasks.validate_durable_admission_with_work(
+            observed.validate(&mut Some(&mut observer))?;
+            self.tasks.validate_durable_admission(
                 &observed.task, &observed.machine, Some(&observed.input_schema),
                 &observed.output_schema, Some(&observed.input), &mut Some(&mut observer),
             )?;
@@ -4574,13 +4475,14 @@ impl AgentHarness {
         }
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let _ = io;
-        observed.validate()?;
+        observed.validate(&mut None)?;
         self.tasks.validate_durable_admission(
             &observed.task,
             &observed.machine,
             Some(&observed.input_schema),
             &observed.output_schema,
             Some(&observed.input),
+            &mut None,
         )?;
         if observed.resource_proofs.is_empty() {
             self.scope.narrow(observed.grants.clone(), observed.limits)?
@@ -5134,7 +5036,7 @@ impl AgentHarness {
     ) -> Result<Arc<Self>> {
         if concurrency == 0 {
             return Err(native_startup::error(startup, crate::wire::ErrorCode::Invalid,
-                "runtime concurrency must be positive", || Error::Invalid("runtime concurrency must be positive".into())));
+                "runtime concurrency must be positive"));
         }
         scope.run_limits().validate_observed(startup)?;
         let concurrency = scope.concurrency_bound(concurrency);
@@ -5171,8 +5073,7 @@ impl AgentHarness {
         }
         if resumable_tools.definitions().next().is_some() && !durable_ready {
             return Err(native_startup::error(startup, crate::wire::ErrorCode::Invalid,
-                "resumable tools require durable task admission and state",
-                || Error::Invalid("resumable tools require durable task admission and state".into())));
+                "resumable tools require durable task admission and state"));
         }
         for definition in resumable_tools.definitions() {
             native_startup::item(startup, 0)?;
@@ -5190,8 +5091,7 @@ impl AgentHarness {
                 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
                 let pinned = resumable_tools.get(&definition.name, &definition.revision, &mut None)?;
                 let pinned = pinned.ok_or_else(|| native_startup::error(startup,
-                    crate::wire::ErrorCode::Invalid, "resumable registry differs from its definitions",
-                    || Error::Invalid("resumable registry differs from its definitions".into())))?;
+                    crate::wire::ErrorCode::Invalid, "resumable registry differs from its definitions"))?;
                 let same_adapter = adapter.definition == *definition && {
                     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                     let same_identity = if let Some(io) = startup {
@@ -5211,9 +5111,7 @@ impl AgentHarness {
                 };
                 if same_adapter { continue; }
                 return Err(native_startup::error(startup, crate::wire::ErrorCode::Conflict,
-                    "live and resumable implementations differ",
-                    || Error::Conflict(format!("live and resumable implementations differ for tool {}@{}",
-                        definition.name, definition.revision))));
+                    "live and resumable implementations differ"));
             }
         }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -5375,12 +5273,7 @@ impl AgentHarness {
         model: Model,
         provider: Arc<dyn ModelProvider>,
     ) -> Result<Arc<Self>> {
-        Model::new(
-            model.provider.clone(),
-            model.name.clone(),
-            model.revision.clone(),
-            model.options.clone(),
-        )?;
+        model.validate()?;
         let mut bound = self.as_ref().clone();
         bound.model = Some(ModelBinding { model, provider });
         Ok(Arc::new(bound))
@@ -5709,9 +5602,7 @@ impl AgentHarness {
             .ok_or_else(|| Error::Unsupported("durable task state is not bound".into()))?;
         let retained = state.observe_admission(task_id).await?;
         let context = self.durable_context(task_id, retained.operation_id).await?;
-        context
-            .open_resumable_task(definition, fence, journal)
-            .await
+        definition.open(&context, fence, journal).await
     }
 
     /// Builds the stock child request from the existing registered metadata.
@@ -5726,8 +5617,9 @@ impl AgentHarness {
         scope: &RuntimeScope,
     ) -> Result<TaskAdmissionRecord> {
         self.assert_durable_policy_bindings(None)?;
-        self.tasks
-            .child_admission(operation, name, version, input, parent, scope)
+        self.tasks.registered_admission(
+            operation, name, version, input, Some(parent), None, scope, &mut None,
+        )
     }
 
     /// Builds a registered descendant request using the original guarded input.
@@ -5745,7 +5637,7 @@ impl AgentHarness {
         let mut io = crate::store::history::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         crate::store::history::HistoryIo::absorb_native_custody(&mut io, input.1)?;
-        let record = self.tasks.registered_admission_with_work(
+        let record = self.tasks.registered_admission(
             operation, name, version, input.0, Some(parent), None, scope, &mut Some(&mut io),
         )?;
         let bytes = (std::mem::size_of::<TaskAdmissionRecord>() as u64)
@@ -5779,7 +5671,7 @@ impl AgentHarness {
         let (value, custody) = input;
         io.absorb_native_custody(custody)?;
         let identity = definition.identity();
-        let mut record = self.tasks.registered_admission_with_work(
+        let mut record = self.tasks.registered_admission(
             operation, &identity.name, &identity.version, value, None, Some(identity.digest),
             &self.scope, &mut Some(&mut io),
         )?;
@@ -5791,7 +5683,7 @@ impl AgentHarness {
                 digest: identity.digest,
             }),
         };
-        record.validate_with_work(&mut Some(&mut io))?;
+        record.validate(&mut Some(&mut io))?;
         let bytes = (std::mem::size_of::<TaskAdmissionRecord>() as u64)
             .checked_add(record.logical_owned_bytes()?)
             .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
@@ -6232,17 +6124,9 @@ impl AgentHarness {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "resumed scope changes original authority bounds or extensions" });
         }
-        for (ancestor, descendant) in [
-            (self.scope.run_limits.concurrency.map(|value| value as u64),
-                admitted.run_limits.concurrency.map(|value| value as u64)),
-            (self.scope.run_limits.max_steps.map(|value| value as u64),
-                admitted.run_limits.max_steps.map(|value| value as u64)),
-            (self.scope.run_limits.deadline_epoch_ms, admitted.run_limits.deadline_epoch_ms),
-        ] {
-            if ancestor.is_some_and(|bound| descendant.is_none_or(|value| value > bound)) {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "resumed scope widens original task run limits" });
-            }
+        if !self.scope.run_limits.allows(&admitted.run_limits) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                reason: "resumed scope widens original task run limits" });
         }
         Ok(())
     }
@@ -6336,7 +6220,7 @@ fn validate_task_dependencies(
         native_startup::item(io, std::mem::size_of::<String>())?;
         grants.insert(native_startup::text(grant, io)?);
     }
-    validate_task_requirements_observed(&task_requirements, &available_tools, &environment, &grants, io)
+    validate_task_requirements(&task_requirements, &available_tools, &environment, &grants, io)
 }
 
 /// One admitted task's mailbox borrowed from its current owner token.
@@ -6411,7 +6295,7 @@ mod native_volume_callback;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 pub use native_volume_callback::NativeVolumeCallbackGuard;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub(crate) use native_volume_callback::{NativeVolumeCallbackPorts, NativeVolumePublicationGuard};
+pub(crate) use native_volume_callback::NativeVolumePublicationGuard;
 /// Capability-scoped context passed to live task code.
 pub struct TaskContext {
     harness: Arc<AgentHarness>,
@@ -7539,16 +7423,6 @@ impl TaskContext {
         serde_json::from_value(result.value).map_err(|error| Error::Invalid(error.to_string()))
     }
 
-    /// Opens this context's registered task from its retained admission.
-    pub async fn open_resumable_task<I: 'static, O: 'static>(
-        &self,
-        definition: &Arc<TaskDefinition<I, O>>,
-        fence: crate::scheduler::LeaseFence,
-        journal: Arc<dyn WorkflowJournal>,
-    ) -> Result<ResumableTaskSession> {
-        definition.open(self, fence, journal).await
-    }
-
     /// Returns any pending approval before dispatching the action.
     pub(crate) async fn authorize_tool(
         &self, definition: &ToolDefinition, invocation: &ToolInvocation,
@@ -7928,7 +7802,7 @@ impl TaskContext {
         }
         let mut io = crate::store::history::native_work_io(work)?;
         let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut io);
-        paid.0.validate_with_work(&mut observed)?;
+        paid.0.validate(&mut observed)?;
         if !scope.grants.contains(capability::INTERACTION_ROUTE) {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "scope lacks interaction:route" });
@@ -7976,20 +7850,6 @@ impl TaskContext {
         Ok((paid.0, paid.1))
     }
 
-    /// Opens a schema-constrained question by stable identity.
-    pub async fn ask(
-        &self,
-        operation_id: OperationId,
-        prompt: impl Into<String>,
-        response_schema: Value,
-    ) -> Result<InteractionOutcome> {
-        self.interact(
-            operation_id,
-            Interaction::question(prompt, response_schema)?,
-        )
-        .await
-    }
-
     /// Sends a donor-authorized parcel under the retained owner fence and route.
     pub async fn send(
         &self,
@@ -8007,7 +7867,16 @@ impl TaskContext {
     /// Reads only one retained parcel selected by this task's original receive command.
     pub async fn read_received_mail(
         &self, receive_operation: OperationId, item: &InboxItem,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(original) = work.as_deref().and_then(|io| io.original_native_work()) {
+            return self.native_mailbox(original)?.read_received_with_native_work(receive_operation, item, original)?.await;
+        }
+        if work.is_some() {
+            return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Unsupported,
+                "parcel read requires an original native observer"));
+        }
         let mailbox = self.owned_mailbox.as_ref()
             .ok_or_else(|| Error::Unauthorized("parcel read requires a retained mailbox owner".into()))?;
         mailbox.validate_scope(&self.scope)?;
@@ -8385,7 +8254,7 @@ impl DurableBatchRequest {
                 return Err(Error::Invalid("batch repeats a created resource proof".into()));
             }
         }
-        validate_task_schemas(&self.input_schema, &self.output_schema, true)?;
+        validate_task_schemas(&self.input_schema, &self.output_schema, true, &mut None)?;
         self.scope.limits().validate(&mut None)?;
         self.scope.run_limits().validate(&mut None)?;
         if let Some(policy) = &self.policy {
@@ -9368,14 +9237,11 @@ mod tests {
         let environment = TaskDependencyEnvironment::default();
         let grants = BTreeSet::new();
         let missing = dependency_fixture(&[("parent", &["task:leaf@1"])]);
-        assert!(validate_task_requirements(&missing, &tools, &environment, &grants).is_err());
+        assert!(validate_task_requirements(&missing, &tools, &environment, &grants, None).is_err());
 
         let cycle = dependency_fixture(&[("left", &["task:right@1"]), ("right", &["task:left@1"])]);
-        let result = validate_task_requirements(&cycle, &tools, &environment, &grants);
+        let result = validate_task_requirements(&cycle, &tools, &environment, &grants, None);
         assert!(result.is_err());
-        if let Err(error) = result {
-            assert!(error.to_string().contains("task dependency cycle"));
-        }
     }
 
     #[test]
@@ -9467,11 +9333,11 @@ mod tests {
             .insert((String::from("example.state"), 3));
         let grants = BTreeSet::from([String::from("task:run")]);
         assert!(
-            validate_task_requirements(&tasks, &BTreeSet::new(), &environment, &grants).is_ok()
+            validate_task_requirements(&tasks, &BTreeSet::new(), &environment, &grants, None).is_ok()
         );
         environment.extensions.clear();
         assert!(
-            validate_task_requirements(&tasks, &BTreeSet::new(), &environment, &grants).is_err()
+            validate_task_requirements(&tasks, &BTreeSet::new(), &environment, &grants, None).is_err()
         );
     }
 
@@ -9717,7 +9583,7 @@ mod tests {
             None,
         )?
         .bind_model(
-            Model::new("root", "model", "1", Value::Null)?,
+            Model::new("root".into(), "model".into(), "1".into(), Value::Null)?,
             root_provider.clone(),
         )?;
         let context = TaskContext {
@@ -9747,7 +9613,7 @@ mod tests {
         let child = context.scoped_model(
             Capabilities::new(["model:generate"]),
             Limits::default(),
-            Model::new("child", "model", "2", Value::Null)?,
+            Model::new("child".into(), "model".into(), "2".into(), Value::Null)?,
             child_provider.clone(),
         )?;
         child.model_events(vec![message.clone()], None).await?;
@@ -10501,7 +10367,8 @@ mod tests {
         let record = TaskAdmissionRecord::from_canonical_value(
             serde_json::from_str(include_str!("../fixtures/v2/task-admission.json"))
                 .map_err(|error| Error::Invalid(error.to_string()))?,
-        )?;
+            &mut None,
+        )?.0;
         let task_id = TaskId::from_bytes([4; 16]);
         let definition =
             TaskDefinition::live("test.local", "1", |context, input: u64| async move {
@@ -10513,7 +10380,7 @@ mod tests {
         let definition = runtime.task::<u64, (OperationId, u64)>("test.local@1")?;
         let mut routed = runtime.as_ref().clone();
         routed.execution = Some(Arc::new(RouteProbe {
-            spawner: Arc::new(SplitSpawner {
+            spawner: Arc::new(SplitState {
                 task_id,
                 record: record.clone(),
             }),
@@ -10536,17 +10403,12 @@ mod tests {
         Ok(())
     }
 
-    struct SplitSpawner {
-        task_id: TaskId,
-        record: TaskAdmissionRecord,
-    }
-
     #[test]
     fn v2_task_admission_and_execution_placement_fixtures_are_canonical() -> Result<()> {
         let admission_fixture = include_str!("../fixtures/v2/task-admission.json").trim();
         let admission_value: Value = serde_json::from_str(admission_fixture)
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        let admission = TaskAdmissionRecord::from_canonical_value(admission_value)?;
+        let admission = TaskAdmissionRecord::from_canonical_value(admission_value, &mut None)?.0;
         assert_eq!(
             crate::contract::canonical_json_bytes(&admission.canonical_value())?,
             admission_fixture.as_bytes()
@@ -10621,7 +10483,7 @@ mod tests {
         Ok(())
     }
 
-    impl TaskSpawner for SplitSpawner {
+    impl TaskSpawner for SplitState {
         fn policy_identity(&self) -> Option<ComponentIdentity> {
             None
         }
@@ -10676,13 +10538,13 @@ mod tests {
             extensions: None,
             execution: None,
         };
-        assert!(TaskAdmissionRecord::from_canonical_value(record.canonical_value())? == record);
+        assert!(TaskAdmissionRecord::from_canonical_value(record.canonical_value(), &mut None)?.0 == record);
         let mut unknown = record.canonical_value();
         unknown
             .as_object_mut()
             .ok_or_else(|| Error::Invalid("task admission object".into()))?
             .insert("legacy_content".into(), Value::Null);
-        assert!(TaskAdmissionRecord::from_canonical_value(unknown).is_err());
+        assert!(TaskAdmissionRecord::from_canonical_value(unknown, &mut None).is_err());
         let harness = Bindings {
             tasks,
             tools: ToolRegistry::default(),
@@ -10694,7 +10556,7 @@ mod tests {
                 task_id,
                 record: record.clone(),
             })),
-            spawner: Some(Arc::new(SplitSpawner {
+            spawner: Some(Arc::new(SplitState {
                 task_id,
                 record: record.clone(),
             })),
@@ -10736,7 +10598,7 @@ mod tests {
         ));
         let mut changed_request = record.clone();
         changed_request.input = serde_json::json!({"value": 4});
-        let mismatched_spawner = harness.bind_spawner(Arc::new(SplitSpawner {
+        let mismatched_spawner = harness.bind_spawner(Arc::new(SplitState {
             task_id,
             record: changed_request,
         }))?;
@@ -10960,12 +10822,13 @@ mod tests {
             group_id,
             batch_id,
             policy: BatchGroupPolicy::CollectAll,
-            spawner: Arc::new(SplitSpawner {
+            spawner: Arc::new(SplitState {
                 task_id: TaskId::from_bytes([23; 16]),
                 record: TaskAdmissionRecord::from_canonical_value(
                     serde_json::from_str(include_str!("../fixtures/v2/task-admission.json"))
                         .map_err(|error| Error::Invalid(format!("fixture is invalid: {error}")))?,
-                )?,
+                    &mut None,
+                )?.0,
             }),
             extensions: None,
             entries: vec![
@@ -11495,7 +11358,7 @@ mod tests {
 
         let wire: Value = serde_json::from_str(include_str!("../fixtures/v2/task-admission.json"))
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        let mut admission = TaskAdmissionRecord::from_canonical_value(wire.clone())?;
+        let mut admission = TaskAdmissionRecord::from_canonical_value(wire.clone(), &mut None)?.0;
         let provider = ProviderRef::new("test".into(), "creator".into(), "1".into(), &mut None)?;
         let proof = ResourceCreationProofRef {
             provider: provider.clone(),
@@ -11524,7 +11387,7 @@ mod tests {
         let child = admission.with_resource_proofs(vec![proof.clone()])?;
         assert_eq!(child.grants, original_grants);
         let canonical = child.canonical_value();
-        assert!(TaskAdmissionRecord::from_canonical_value(canonical.clone())? == child);
+        assert!(TaskAdmissionRecord::from_canonical_value(canonical.clone(), &mut None)?.0 == child);
         assert!(
             child
                 .clone()
@@ -11543,7 +11406,7 @@ mod tests {
             .as_object_mut()
             .ok_or_else(|| Error::Invalid("fixture is not an object".into()))?
             .remove("resource_proofs");
-        assert!(TaskAdmissionRecord::from_canonical_value(missing).is_err());
+        assert!(TaskAdmissionRecord::from_canonical_value(missing, &mut None).is_err());
         Ok(())
     }
 }
