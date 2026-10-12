@@ -2754,7 +2754,7 @@ impl Reducer {
         self.authority_verifier.verify_audience(&self.authority)?;
         self.authority_verifier.verify(scope)?;
         require_capability(scope, capability::EXTENSION_MIGRATE)?;
-        ContentGrant::verify(
+        ContentGrant::authorize_volume(
             &self.authority_verifier,
             scope,
             destination,
@@ -3181,7 +3181,7 @@ impl Reducer {
                         content.volume(), VolumeOperation::Write, work,
                     )?;
                 } else {
-                    ContentGrant::verify(
+                    ContentGrant::authorize_volume(
                         &self.authority_verifier, &command.scope, content.volume(), VolumeOperation::Write,
                         acyclic_stream::MAX_RECORD_BYTES as u64, work,
                     )?;
