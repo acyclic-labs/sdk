@@ -150,6 +150,5 @@ pub use extension::{
 #[cfg(feature = "filesystem")]
 pub use resource_preparation::ChildScratchCreationProof;
 pub use live::{
-    TaskGroup, TaskHandle, completion_stream, first_success, join_all, ordered_reduce, quorum,
-    race,
+    TaskGroup, TaskHandle, completion_stream, first_success, join_all, ordered_reduce,
 };
