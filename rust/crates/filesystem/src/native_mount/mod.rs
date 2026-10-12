@@ -380,10 +380,10 @@ pub trait MountOpenFile: Send + Sync + 'static {
     /// Settles this actual handle's queued effects before durability acknowledgement.
     fn settle_with_meter(&self, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
     /// Returns the owned sparse range and its original producer's exact claim.
-    fn read_sparse_range_with_meter(&self, offset: u64, length: u32, work: &NativeMaterializationWork)
+    fn read_sparse_range(&self, offset: u64, length: u32, work: &NativeMaterializationWork)
         -> Result<(MountSparseRange, crate::NativeAllocation), MountSourceError>;
     /// Consumes the exact already-admitted sparse payload, including capacities known before each span's conversion to `Bytes`.
-    fn write_sparse_range_with_meter(&self, offset: u64, range: (MountSparseRange, crate::NativeAllocation),
+    fn write_sparse_range(&self, offset: u64, range: (MountSparseRange, crate::NativeAllocation),
         work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
 
     /// Returns current identity, size, and metadata for `fstat`-style calls.
@@ -433,75 +433,6 @@ pub trait MountOpenFile: Send + Sync + 'static {
         Ok(())
     }
 
-    /// Reads one bounded sparse range without materializing holes.
-    fn read_sparse_range(
-        &self,
-        offset: u64,
-        length: u32,
-    ) -> Result<MountSparseRange, MountSourceError> {
-        let logical_bytes = u64::from(length);
-        let end = offset.checked_add(logical_bytes).ok_or_else(|| {
-            MountSourceError::Invalid("sparse range overflows the file address space".to_owned())
-        })?;
-        let mut spans = Vec::new();
-        let mut cursor = offset;
-        while cursor < end {
-            let Some(data_offset) = self.seek(cursor, MountSeekTarget::Data)? else {
-                break;
-            };
-            if data_offset >= end {
-                break;
-            }
-            let hole_offset = self
-                .seek(data_offset, MountSeekTarget::Hole)?
-                .unwrap_or(end)
-                .min(end);
-            if hole_offset <= data_offset {
-                return Err(MountSourceError::Engine(
-                    "sparse seek made no forward progress".to_owned(),
-                ));
-            }
-            let span_length = u32::try_from(hole_offset - data_offset).map_err(|_| {
-                MountSourceError::Invalid("sparse span exceeds callback bounds".to_owned())
-            })?;
-            let bytes = self.read_range(data_offset, span_length)?;
-            if bytes.len() != usize::try_from(span_length).unwrap_or(usize::MAX) {
-                return Err(MountSourceError::Stale);
-            }
-            spans.push(MountSparseSpan {
-                relative_offset: data_offset - offset,
-                bytes,
-            });
-            cursor = hole_offset;
-        }
-        Ok(MountSparseRange {
-            logical_bytes,
-            spans,
-        })
-    }
-
-    /// Replaces one range from a sparse snapshot, preserving every hole.
-    fn write_sparse_range(
-        &self,
-        offset: u64,
-        range: &MountSparseRange,
-    ) -> Result<(), MountSourceError> {
-        let end = offset.checked_add(range.logical_bytes).ok_or_else(|| {
-            MountSourceError::Invalid("sparse range overflows the file address space".to_owned())
-        })?;
-        let current = self.lookup()?.node.logical_bytes;
-        if end > current {
-            self.resize(end)?;
-        }
-        self.allocate_range(offset, range.logical_bytes, MountRangeAllocation::PunchHole)?;
-        for span in &range.spans {
-            let destination = offset.checked_add(span.relative_offset).ok_or_else(|| {
-                MountSourceError::Invalid("sparse span offset overflows".to_owned())
-            })?;
-            self.write_range(destination, Bytes::copy_from_slice(span.bytes.as_ref()))?;
-        }
-        Ok(())
-    }
 }
 
 /// One bounded directory item.
@@ -4350,26 +4281,18 @@ mod tests {
         let host = tempfile::tempdir()?;
         std::fs::write(host.path().join("a"), b"shared")?;
         std::fs::hard_link(host.path().join("a"), host.path().join("b"))?;
-        let path = |name: &str| -> Result<NamespacePath, Box<dyn std::error::Error>> {
-            Ok(NamespacePath::new(
-                vec![LogicalName::new(
-                    NameEncoding::Utf8,
-                    name.as_bytes().to_vec(),
-                    limits.maximum_component_bytes,
-                )?],
-                limits,
-            )?)
+        let path = |name: &str| portable_path(limits, &[name.as_bytes()]);
+        let options = CaptureOptions {
+            expected_root_identity: capture_root_identity(host.path())?,
+            source_root: host.path().to_path_buf(),
+            maximum_paths: 2,
+            maximum_extent_spans: 16,
         };
         let paths = [path("a")?, path("b")?];
         crate::native_capture::capture_paths_batched_with_baseline(
             &mut checkout,
             &paths,
-            &CaptureOptions {
-                expected_root_identity: capture_root_identity(host.path())?,
-                source_root: host.path().to_path_buf(),
-                maximum_paths: 2,
-                maximum_extent_spans: 16,
-            },
+            &options,
             1,
             WorkBudget::UNBOUNDED,
             &cancellation,
@@ -4389,52 +4312,18 @@ mod tests {
             .record
             .ok_or("second captured link missing")?;
         assert_eq!(first.file_id, second.file_id);
-        std::fs::hard_link(host.path().join("a"), host.path().join("z"))?;
-        let additional = path("z")?;
-        capture_paths(
-            &mut checkout,
-            &[paths[0].clone(), additional.clone()],
-            &CaptureOptions {
-                expected_root_identity: capture_root_identity(host.path())?,
-                source_root: host.path().to_path_buf(),
-                maximum_paths: 2,
-                maximum_extent_spans: 16,
-            },
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await?;
-        let additional_id = checkout
-            .lookup_no_follow(&additional, WorkBudget::UNBOUNDED, &cancellation)
-            .await?
-            .value
-            .record
-            .ok_or("additional link missing")?
-            .file_id;
-        assert_eq!(additional_id, first.file_id);
-        std::fs::hard_link(host.path().join("a"), host.path().join("0"))?;
-        let earlier_alias = path("0")?;
-        capture_paths(
-            &mut checkout,
-            &[paths[0].clone(), earlier_alias.clone()],
-            &CaptureOptions {
-                expected_root_identity: capture_root_identity(host.path())?,
-                source_root: host.path().to_path_buf(),
-                maximum_paths: 2,
-                maximum_extent_spans: 16,
-            },
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
-        .await?;
-        let earlier_id = checkout
-            .lookup_no_follow(&earlier_alias, WorkBudget::UNBOUNDED, &cancellation)
-            .await?
-            .value
-            .record
-            .ok_or("earlier alias missing")?
-            .file_id;
-        assert_eq!(earlier_id, first.file_id);
+        for name in ["z", "0"] {
+            std::fs::hard_link(host.path().join("a"), host.path().join(name))?;
+            let additional = path(name)?;
+            capture_paths(
+                &mut checkout, &[paths[0].clone(), additional.clone()], &options,
+                WorkBudget::UNBOUNDED, &cancellation,
+            ).await?;
+            let additional_id = checkout
+                .lookup_no_follow(&additional, WorkBudget::UNBOUNDED, &cancellation)
+                .await?.value.record.ok_or("additional link missing")?.file_id;
+            assert_eq!(additional_id, first.file_id);
+        }
         std::fs::hard_link(host.path().join("a"), host.path().join("c"))?;
         let third = path("c")?;
         let watch = capture_watch_batch(
@@ -4446,12 +4335,7 @@ mod tests {
                 changes: vec![WatchChange::Created(third.clone())],
                 original: Default::default(),
             },
-            &CaptureOptions {
-                expected_root_identity: capture_root_identity(host.path())?,
-                source_root: host.path().to_path_buf(),
-                maximum_paths: 1,
-                maximum_extent_spans: 16,
-            },
+            &CaptureOptions { maximum_paths: 1, ..options.clone() },
             &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
@@ -4477,12 +4361,7 @@ mod tests {
         capture_paths(
             &mut checkout,
             std::slice::from_ref(&existing),
-            &CaptureOptions {
-                expected_root_identity: capture_root_identity(host.path())?,
-                source_root: host.path().to_path_buf(),
-                maximum_paths: 1,
-                maximum_extent_spans: 16,
-            },
+            &CaptureOptions { maximum_paths: 1, ..options.clone() },
             WorkBudget::UNBOUNDED,
             &cancellation,
         )
@@ -4505,12 +4384,7 @@ mod tests {
                 changes: vec![WatchChange::Created(existing.clone())],
                 original: Default::default(),
             },
-            &CaptureOptions {
-                expected_root_identity: capture_root_identity(host.path())?,
-                source_root: host.path().to_path_buf(),
-                maximum_paths: 1,
-                maximum_extent_spans: 16,
-            },
+            &CaptureOptions { maximum_paths: 1, ..options },
             &crate::CapturePolicy::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
