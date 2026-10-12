@@ -22,7 +22,7 @@ use crate::{
     tool::ToolApprovalVerifier,
 };
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
-use super::fork_preparer_io::{PreparationIo, PreparationRecord, preparation_slot_bytes};
+use super::fork_preparer_io::{PreparationIo, PreparationRecord};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use acyclic_stream::{
     AppendOutcome, IdempotencyKey as StreamKey, StreamError, StreamProvider,
@@ -1011,12 +1011,8 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             return Err(invalid("execution journal requires a private volume and positive limit"));
         }
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-            match io {
-                Some(io) => ContentGrant::verify_original_volume_with_io(
-                    verifier, scope, volume, operation, io,
-                )?,
-                None => { ContentGrant::verify(verifier, scope, volume, operation)?; }
-            }
+            crate::executor::with_history_io(io, |work|
+                ContentGrant::authorize_volume(verifier, scope, volume, operation, u64::MAX, work))?;
         }
         if !matches!(verifier.audience().kind,
             crate::core::AggregateKind::Conversation | crate::core::AggregateKind::Task)
@@ -1025,7 +1021,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
         let mut observer = io.map(PreparationIo::history_io);
         let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-        let volume = volume.clone_with_work(&mut work)?;
+        let volume = volume.copy(&mut work)?;
         let verifier = verifier.clone_with_work(&mut work)?;
         let schemas = schemas.clone_with_work(&mut work)?;
         let scope = scope.clone_with_work(&mut work)?;
@@ -1283,7 +1279,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             ).await,
             None => {
                 let grant = ContentGrant::verify(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Write)?;
+                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Write, u64::MAX, &mut None)?;
                 self.host.put_internal_content(
                     &self.volume, &grant, &path, bytes, media_type, "execution.json",
                     self.maximum_payload_bytes, &key, InternalContentClass::Execution,
@@ -1298,17 +1294,13 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             return Err(canonical_boundary(io, crate::wire::ErrorCode::Unauthorized,
                 "journal content belongs to another private volume"));
         }
-        match io {
-            Some(io) => {
-                ContentGrant::verify_original_volume_with_io(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io)?;
-                self.host.read_pinned_io(reference, self.maximum_payload_bytes, Some(io)).await
-            }
-            None => {
-                let grant = ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Read)?;
-                self.host.read_content(reference, &grant, self.maximum_payload_bytes).await
-            }
-        }
+        crate::executor::with_history_io(io, |work|
+            ContentGrant::authorize_volume(&self.verifier, &self.scope, &self.volume,
+                VolumeOperation::Read, u64::MAX, work))?;
+        if io.is_none() { reference.validate(&mut None)?; }
+        let bytes = self.host.read_pinned_io(reference, self.maximum_payload_bytes, io).await?;
+        if io.is_none() { self.host.retain_file_generation(reference).await?; }
+        Ok(bytes)
     }
 
     fn journal_read_stream_error(
@@ -1506,21 +1498,10 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                     "journal event refers to another private volume"));
             }
             let _bytes_hold;
-            let native_bytes;
-            let ordinary_bytes;
-            let bytes = if let Some(io) = io {
-                super::fork_preparer_io::item(Some(io), 0)?;
-                ContentGrant::verify_original_volume_with_io(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io)?;
-                native_bytes = self.host.read_pinned_io(reference, self.maximum_payload_bytes, Some(io)).await?;
-                _bytes_hold = io.guard_bytes(&native_bytes)?;
-                native_bytes.as_ref()
-            } else {
-                _bytes_hold = None;
-                let grant = ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Read)?;
-                ordinary_bytes = self.host.read_content(reference, &grant, self.maximum_payload_bytes).await?;
-                ordinary_bytes.as_ref()
-            };
+            super::fork_preparer_io::item(io, 0)?;
+            let owned_bytes = self.load_content(reference, io).await?;
+            _bytes_hold = io.map(|io| io.guard_bytes(&owned_bytes)).transpose()?.flatten();
+            let bytes = owned_bytes.as_ref();
             if let ExecutionEvent::ModelStarted { request_digest, .. } = event {
                 let limits = self
                     .owner
@@ -1600,8 +1581,9 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                         "exact file read is not granted"));
                 }
             } else {
-                ContentGrant::verify_original_volume_with_io(
-                    &self.verifier, &self.scope, reference.volume(), VolumeOperation::Read, io)?;
+                crate::executor::with_history_io(Some(io), |work|
+                    ContentGrant::authorize_volume(&self.verifier, &self.scope, reference.volume(),
+                        VolumeOperation::Read, u64::MAX, work))?;
             }
             let before = io.owned_bytes()?;
             let _bytes_hold;
@@ -2530,7 +2512,7 @@ mod tests {
             .map(|journal| journal.with_turn(operation, turn))
         };
         let turn = OperationId::new();
-        let operation = super::super::task_runtime::execution_operation(crate::TaskId::new(), turn);
+        let operation = super::super::task_runtime::execution_operation(crate::TaskId::new(), turn, None)?;
         assert_ne!(operation, turn);
         let event = ExecutionEvent::Started {
             request_digest: [9; 32],
@@ -2863,8 +2845,8 @@ mod tests {
         })?;
         let execution_operation = super::super::task_runtime::execution_operation(
             crate::TaskId::new(),
-            complete_operation,
-        );
+            complete_operation, None,
+        )?;
         assert_ne!(execution_operation, complete_operation);
         let bound = new_journal()?
             .with_turn(execution_operation, complete_operation)
