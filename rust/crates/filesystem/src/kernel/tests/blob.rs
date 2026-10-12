@@ -143,8 +143,8 @@ fn blob_leaf_encoding_has_a_locked_golden_vector() -> Result<(), Box<dyn std::er
         "07070707070707070707070707070707",
         "07070707070707070707070707070707"
     ))?;
-    assert_eq!(encode_blob_page(&page, 1)?, expected);
-    assert_eq!(decode_blob_page(&expected, DecodeLimits::default())?, page);
+    assert_eq!(encode_blob_page(&page, 1, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?, expected);
+    assert_eq!(decode_blob_page(&expected, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?, page);
     let page_id = blob_page_id(&page, 1)?;
     assert_eq!(page_id.kind, ObjectKind::Blob);
     assert_eq!(page_id.digest, object_digest(ObjectKind::Blob, &expected));
@@ -158,9 +158,9 @@ fn blob_leaf_encoding_has_a_locked_golden_vector() -> Result<(), Box<dyn std::er
             page: page_id,
         }]),
     };
-    let internal_bytes = encode_blob_page(&internal, 1)?;
+    let internal_bytes = encode_blob_page(&internal, 1, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     assert_eq!(
-        decode_blob_page(&internal_bytes, DecodeLimits::default())?,
+        decode_blob_page(&internal_bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
         internal
     );
     assert_eq!(
@@ -241,22 +241,22 @@ fn blob_page_codec_rejects_every_noncanonical_shape() -> Result<(), Box<dyn std:
             }]),
         },
     ] {
-        assert!(encode_blob_page(&invalid, 8).is_err());
+        assert!(encode_blob_page(&invalid, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed).is_err());
         assert!(blob_page_id(&invalid, 8).is_err());
     }
     assert!(matches!(
-        encode_blob_page(&valid, 0),
+        encode_blob_page(&valid, 0, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed),
         Err(CanonicalDecodeError::FieldTooLarge {
             observed: 1,
             maximum: 0,
         })
     ));
 
-    let encoded = encode_blob_page(&valid, 1)?;
+    let encoded = encode_blob_page(&valid, 1, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     let mut unknown_tag = encoded.clone();
     unknown_tag[26] = 99;
     assert!(matches!(
-        decode_blob_page(&unknown_tag, DecodeLimits::default()),
+        decode_blob_page(&unknown_tag, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())),
         Err(CanonicalDecodeError::UnknownTag {
             field: "blob_page",
             tag: 99,
@@ -264,14 +264,14 @@ fn blob_page_codec_rejects_every_noncanonical_shape() -> Result<(), Box<dyn std:
     ));
     let mut trailing = encoded.clone();
     trailing.push(0);
-    assert!(decode_blob_page(&trailing, DecodeLimits::default()).is_err());
-    assert!(decode_blob_page(&encoded[..encoded.len() - 1], DecodeLimits::default()).is_err());
+    assert!(decode_blob_page(&trailing, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).is_err());
+    assert!(decode_blob_page(&encoded[..encoded.len() - 1], DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).is_err());
     let limited = DecodeLimits {
         maximum_page_items: 0,
         ..DecodeLimits::default()
     };
     assert!(matches!(
-        decode_blob_page(&encoded, limited),
+        decode_blob_page(&encoded, limited, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())),
         Err(CanonicalDecodeError::FieldTooLarge {
             observed: 1,
             maximum: 0,
@@ -301,7 +301,7 @@ fn tiny_range_reads_only_one_intersecting_chunk() -> Result<(), Box<dyn std::err
             },
         ]),
     };
-    let bytes = encode_blob_page(&page, 8)?;
+    let bytes = encode_blob_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     let root = put(&store, ObjectKind::Blob, OwnedBytes::from(bytes))?;
     let result = read_blob_range(
         &store,
@@ -381,7 +381,7 @@ fn owned_blob_pages_and_chunks_preserve_exact_range_results()
     let root = put(
         &store.inner,
         ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(&page, 8)?),
+        OwnedBytes::from(encode_blob_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
     )?;
     let read = crate::async_storage::poll_ready(read_blob_range_async(
         &store,
@@ -440,7 +440,7 @@ fn asynchronous_blob_ranges_batch_intersecting_leaf_chunks()
     let root = put(
         &store,
         ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(&page, 8)?),
+        OwnedBytes::from(encode_blob_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
     )?;
     let read = crate::async_storage::poll_ready(read_blob_range_async(
         &store,
@@ -591,7 +591,7 @@ fn owned_blob_page_releases_retention_when_decoded_cache_rejects_admission()
     let root = put(
         &store.inner,
         ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(&page, 8)?),
+        OwnedBytes::from(encode_blob_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
     )?;
     store
         .reject_decoded_admission
@@ -643,7 +643,7 @@ fn blob_read_exposes_nearest_authenticated_unvisited_chunk()
     let root = put(
         &store,
         ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(&page, 8)?),
+        OwnedBytes::from(encode_blob_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
     )?;
     let read = read_blob_range(
         &store,
@@ -690,7 +690,7 @@ fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
     let missing_root = put(
         &store,
         ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(&missing_page, 8)?),
+        OwnedBytes::from(encode_blob_page(&missing_page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
     )?;
     let missing = read_blob_range(
         &store,
@@ -723,7 +723,7 @@ fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
     let short_root = put(
         &store,
         ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(&short_page, 8)?),
+        OwnedBytes::from(encode_blob_page(&short_page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
     )?;
     let short = read_blob_range(
         &store,
@@ -833,7 +833,7 @@ fn blob_read_allocations_are_admitted_before_decode_queue_and_output_growth()
     let root = put(
         &store,
         ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(&page, 2)?),
+        OwnedBytes::from(encode_blob_page(&page, 2, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
     )?;
     let limits = DecodeLimits {
         maximum_page_items: 2,
@@ -885,7 +885,7 @@ fn parent_child_bound_forgery_fails_closed() -> Result<(), Box<dyn std::error::E
             chunk,
         }]),
     };
-    let leaf_bytes = encode_blob_page(&leaf, 8)?;
+    let leaf_bytes = encode_blob_page(&leaf, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     let leaf_id = put(&store, ObjectKind::Blob, OwnedBytes::from(leaf_bytes))?;
     let root = BlobPage {
         first_offset: 1,
@@ -896,7 +896,7 @@ fn parent_child_bound_forgery_fails_closed() -> Result<(), Box<dyn std::error::E
             page: leaf_id,
         }]),
     };
-    let root_bytes = encode_blob_page(&root, 8)?;
+    let root_bytes = encode_blob_page(&root, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     let root_id = put(&store, ObjectKind::Blob, OwnedBytes::from(root_bytes))?;
     assert!(matches!(
         read_blob_range(
@@ -1279,7 +1279,7 @@ fn empty_source_builds_one_authenticated_empty_root() -> Result<(), Box<dyn std:
     assert_eq!(built.work.backend_write_operations, 1);
     let encoded = ObjectStore::read(&store, built.root, 127, WorkBudget::UNBOUNDED)?.value;
     assert_eq!(
-        decode_blob_page(&encoded, DecodeLimits::default())?,
+        decode_blob_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
         BlobPage {
             first_offset: 0,
             end_offset: 0,
@@ -1486,7 +1486,7 @@ fn decoded_blob_shape_and_sync_source_cancellation_fail_before_hidden_work()
             },
         }]),
     };
-    let encoded = encode_blob_page(&page, 1)?;
+    let encoded = encode_blob_page(&page, 1, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     let limits = DecodeLimits {
         maximum_page_items: 1,
         ..DecodeLimits::default()

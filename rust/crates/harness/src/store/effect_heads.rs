@@ -5,7 +5,7 @@ use crate::{
     EffectId, Error, Result,
     core::{Authority, AuthorityVerifier, Event},
 };
-use acyclic_stream::{StreamClient, StreamPath, StreamProvider};
+use acyclic_stream::{StreamPath, StreamProvider};
 use serde::{Deserialize, Serialize};
 
 type Digest = [u8; 32];
@@ -232,14 +232,14 @@ fn charge(used: &mut u64, amount: u64, maximum: u64) -> Result<()> {
 }
 
 async fn root_at<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
     revision: u64,
     maximum_bytes: u64,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Root> {
-    verifier.verify_audience(authority)?;
+    verifier.verify_audience(authority, &mut None)?;
     if revision == 0 {
         return Ok(Root {
             hash: None,
@@ -335,7 +335,7 @@ fn right(effect: EffectId, bit: u8) -> bool {
 }
 
 async fn load_node<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     hash: Digest,
     used: &mut u64,
@@ -377,7 +377,7 @@ async fn load_node<P: StreamProvider>(
 }
 
 async fn walk<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     effect: EffectId,
     root: Option<Digest>,
@@ -445,7 +445,7 @@ async fn walk<P: StreamProvider>(
 }
 
 async fn stage_node<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     node: Node,
     work: &mut Option<&mut dyn HistoryIo>,
@@ -476,7 +476,7 @@ async fn stage_node<P: StreamProvider>(
 }
 
 async fn update<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     effect: EffectId,
     head: Head,
@@ -561,7 +561,7 @@ async fn update<P: StreamProvider>(
 }
 
 pub(super) async fn publication_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
     event: &Event,
@@ -574,8 +574,8 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
         .revision
         .checked_sub(1)
         .ok_or_else(|| Error::Invalid("effect cut publication revision must be positive".into()))?;
-    let (encoded_authority, encoded_event) =
-        crate::wire_codec::decode_event_with_work(&publication.bytes, work)?;
+    let ((encoded_authority, encoded_event), _) =
+        crate::wire_codec::decode_event(&publication.bytes, work)?;
     let decoded_owned = crate::core::source_inventory(&encoded_event)?
         + encoded_authority.id.capacity() as u64;
     let admitted = (|| {
@@ -636,7 +636,7 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
     }
     let canonical_digest = *blake3::hash(&publication.bytes).as_bytes();
     let proof = verifier.effect_history_root_proof_with_work(event.revision, canonical_digest, previous.hash, work)?;
-    let canonical_path = authority.stream_path_with_work(work)?;
+    let canonical_path = authority.stream_path(work)?;
     let path_owned = canonical_path.capacity() as u64;
     let cloned_authority = match work.as_deref_mut() {
         Some(observer) => observer.clone_authority(authority),
@@ -672,7 +672,7 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
 
 
 pub(super) async fn select_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
     effect: EffectId,

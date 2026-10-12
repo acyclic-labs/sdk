@@ -736,15 +736,15 @@ pub enum MountSourceError {
     /// Original Linux metadata cause, moved without formatting a diagnostic.
     #[cfg(target_os = "linux")]
     #[error("filesystem engine failure: source demand failed: {0}")]
-    LinuxMetadata(#[source] crate::native_host::LinuxMetadataError),
+    LinuxMetadata(#[source] crate::native_host::NativeMetadataError),
     /// Original macOS metadata cause, moved without formatting a diagnostic.
     #[cfg(target_os = "macos")]
     #[error("filesystem engine failure: source demand failed: {0}")]
-    MacMetadata(#[source] crate::native_host::MacMetadataError),
+    MacMetadata(#[source] crate::native_host::NativeMetadataError),
     /// Original Windows metadata cause, moved without formatting a diagnostic.
     #[cfg(windows)]
     #[error("filesystem engine failure: source demand failed: {0}")]
-    WindowsMetadata(#[source] crate::native_host::WindowsMetadataError),
+    WindowsMetadata(#[source] crate::native_host::NativeMetadataError),
     /// Original preallocated source-watch failure and its physical owner.
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
     #[error("filesystem engine failure: source demand failed: {0}")]
@@ -2922,7 +2922,7 @@ impl NativeMountSession {
     pub(crate) fn flush_callbacks(&self) -> Result<(), NativeMountError> {
         match self.driver.as_ref() {
             #[cfg(target_os = "windows")]
-            Some(DriverSession::ProjFs(session)) => session.flush_callbacks(None),
+            Some(DriverSession::ProjFs(session)) => session.flush_callbacks(&NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| projfs::detach_work_error(cause))?),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             Some(_) => Ok(()),
             #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -2937,7 +2937,7 @@ impl NativeMountSession {
     ) -> Result<(), NativeMountError> {
         match self.driver.as_ref() {
             #[cfg(target_os = "windows")]
-            Some(DriverSession::ProjFs(session)) => session.flush_callbacks(Some(work)),
+            Some(DriverSession::ProjFs(session)) => session.flush_callbacks(work),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             Some(_) => Ok(()),
             #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -2955,21 +2955,21 @@ impl NativeMountSession {
     ) -> Result<(), NativeMountError> {
         let driver = self.driver.as_ref()
             .ok_or_else(|| NativeMountError::Io(std::io::ErrorKind::NotConnected.into()))?;
-        with_driver!(driver, session, session.revalidate_with_meter(work), session.revalidate(Some(work)), Err(NativeMountError::UnsupportedTarget))
+        with_driver!(driver, session, session.revalidate_with_meter(work), session.revalidate(work), Err(NativeMountError::UnsupportedTarget))
     }
 
     /// Drops the kernel's cached entry/attributes for one mount-relative path (leading `/` optional).
     pub fn invalidate(&self, path: &[u8]) -> Result<(), NativeMountError> {
         let driver = self.driver.as_ref()
             .ok_or_else(|| NativeMountError::Driver("session is stopped".to_owned()))?;
-        with_driver!(driver, session, session.invalidate(path), Err(NativeMountError::UnsupportedTarget))
+        with_driver!(driver, session, session.invalidate(path), session.invalidate(path, &NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| projfs::detach_work_error(cause))?), Err(NativeMountError::UnsupportedTarget))
     }
 
     /// Brings kernel caches in line with a changed source view.
     pub fn revalidate(&self) -> Result<(), NativeMountError> {
         let driver = self.driver.as_ref()
             .ok_or_else(|| NativeMountError::Driver("session is stopped".to_owned()))?;
-        with_driver!(driver, session, session.revalidate(), session.revalidate(None), Ok(()))
+        with_driver!(driver, session, session.revalidate(), session.revalidate(&NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map_err(|(cause, _)| projfs::detach_work_error(cause))?), Ok(()))
     }
 
     /// Takes the operation of every request the FUSE session served so far.
@@ -3075,7 +3075,7 @@ impl NativeMountSession {
             if let Some(owner) = self.startup_source_watch.as_mut() {
                 let stopped = if owner.is_stopped() { Ok(false) } else {
                     match &work {
-                        NativeSessionStopWork::Meter(meter) => owner.stop_with_meter(meter),
+                        NativeSessionStopWork::Meter(meter) => owner.stop(&mut adapter::NativeDemandCarrier::Native(meter)).map_err(NativeMountError::from),
                         NativeSessionStopWork::AcceptedWait(wait) => owner.stop_with_cleanup_wait(wait).map_err(NativeMountError::from),
                     }
                 };
@@ -3949,7 +3949,7 @@ fn start_driver_into<F>(
 ) -> Result<(), DriverStartFailure>
 where F: FnOnce(&mut NativeMountRetirement) -> Result<(), NativeMountError> {
     let mut driver = None;
-    let result = projfs::ProjFsSession::start_into(request, source, work, &mut driver, retirement, prepare);
+    let result = projfs::ProjFsSession::start(request, source, work, &mut driver, retirement, prepare);
     *out = driver.map(DriverSession::ProjFs);
     result
 }
@@ -4534,7 +4534,7 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(10);
         while readiness.iter().any(|path| !path.is_file()) {
             for child in &mut children {
-                if let Some(status) = child.try_wait()? {
+                if let Some(status) = child.try_wait(None)? {
                     return Err(format!("reclaim child exited before release: {status}").into());
                 }
             }
@@ -4591,7 +4591,7 @@ mod tests {
         let mut child = child;
         let deadline = Instant::now() + Duration::from_secs(10);
         while !ready.is_file() {
-            if let Some(status) = child.try_wait()? {
+            if let Some(status) = child.try_wait(None)? {
                 return Err(format!("lock child exited before readiness: {status}").into());
             }
             if Instant::now() >= deadline {

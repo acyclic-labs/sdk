@@ -1,7 +1,4 @@
 //! Ordered regular-file mutation across canonical inline and sparse payloads.
-//!
-//! Standalone receipts and native calls share one transition machine. Native
-//! scratch remains attached to the original invocation until its data is dropped.
 
 use super::allocation::KernelAccounting;
 use super::persistent_point::Owned;
@@ -165,7 +162,6 @@ pub(crate) async fn apply_regular_mutation_async<S: AsyncObjectStore>(
         .await.map_err(|error| OperationFailure::new(project_regular_error(error), accounting.spent()))
 }
 
-/// Ordinary and original-native mutations run the same inline/sparse transitions.
 pub(crate) async fn apply_regular_mutation_with_accounting<S: AsyncObjectStore>(
     store: &S, payload: FilePayload, mutation: RegularMutation, config: VolumeConfig,
     accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
@@ -407,7 +403,7 @@ async fn promote_inline<S: AsyncObjectStore>(
             accounting, config.limits.maximum_object_bytes, false,
         );
         let native = encoder.is_native();
-        let encoded = super::blob::encode_blob_page_with_steps(
+        let encoded = super::blob::encode_blob_page(
             &page.value, config.limits.maximum_directory_page_entries,
             |step| encoder.observe(step),
             |error| super::extent_mutation::PageEncodeAccounting::reserve_error(error, native),
@@ -572,17 +568,6 @@ fn charge_copy(accounting: &mut KernelAccounting<'_>, bytes: u64) -> Result<(), 
 }
 
 fn regular_error(error: RegularMutationError) -> FsError { FsError::DetachedMutation(error) }
-
-#[cfg(test)]
-fn regular_allocation_error(error: super::allocation::AllocationError) -> FsError {
-    use super::allocation::AllocationError;
-    regular_error(match error {
-        AllocationError::Work(error) => error.into(),
-        AllocationError::Overflow | AllocationError::ReleaseInvariant => RegularMutationError::RangeOverflow,
-        AllocationError::InvalidCapacity | AllocationError::CapacityExceeded | AllocationError::AllocationFailed =>
-            RegularMutationError::AllocationFailed,
-    })
-}
 
 pub(super) fn project_regular_error(error: FsError) -> RegularMutationError {
     match error {

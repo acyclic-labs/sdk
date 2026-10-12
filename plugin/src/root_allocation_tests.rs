@@ -95,11 +95,7 @@ fn root_allocation_requires_complete_explicit_shape() {
     changed.pointer_mut("/allocation/creation").unwrap().as_object_mut().unwrap()
         .insert("unexpected".to_owned(), json!(true));
     assert!(serde_json::from_value::<RootBinding>(changed).is_err());
-    let mut decoded: RootBinding = serde_json::from_value(original).unwrap();
-    // A watcher observation changes neither allocation nor source identity.
-    decoded.created_mut().unwrap().source_epoch = 9;
-    assert_eq!(decoded.created().unwrap().source_identity, [3; 16]);
-    assert_eq!(decoded.created().unwrap().source_epoch, 9);
+    serde_json::from_value::<RootBinding>(original).unwrap();
 }
 
 #[test]

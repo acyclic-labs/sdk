@@ -39,7 +39,7 @@ fn agent_owned_read_delegation_is_independent_of_volume_role() -> Result<()> {
             .delegate_private_directory_read(&scope, reader, "reader", &volume, "selected")?;
         assert!(
             ContentGrant::verify_directory_read(
-                &issuer.verifier(),
+                &issuer.verifier(&mut None).expect("verifier copy"),
                 &delegated,
                 &volume,
                 "selected",
@@ -47,7 +47,7 @@ fn agent_owned_read_delegation_is_independent_of_volume_role() -> Result<()> {
             .is_ok()
         );
         assert!(ContentGrant::verify_directory_read(
-            &issuer.verifier(), &delegated, &volume, "outside",
+            &issuer.verifier(&mut None).expect("verifier copy"), &delegated, &volume, "outside",
         ).is_err());
         for unauthorized in [
             issuer.root_for_agent(reader, "foreign", Capabilities::new([capability])),
@@ -130,7 +130,7 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
     host.create_volume(&root).await?;
     host.create_volume(&builtins).await?;
     let root_writer =
-        ContentGrant::verify(&issuer.verifier(), &setup, &root, VolumeOperation::Write)?;
+        ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &setup, &root, VolumeOperation::Write)?;
     host.put_content(
         &root,
         &root_writer,
@@ -143,7 +143,7 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
     )
     .await?;
     let builtin_writer = ContentGrant::verify(
-        &issuer.verifier(),
+        &issuer.verifier(&mut None).expect("verifier copy"),
         &setup,
         &builtins,
         VolumeOperation::Write,
@@ -163,9 +163,9 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
     let root_workspace = workspace_ref(provider.clone(), &root.storage_name()?)?;
     let pinned = host.resolve(&root_workspace).await?;
     let root_reader =
-        ContentGrant::verify(&issuer.verifier(), &scope, &root, VolumeOperation::Read)?;
+        ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &root, VolumeOperation::Read)?;
     let skills_writer =
-        ContentGrant::verify(&issuer.verifier(), &scope, &skills, VolumeOperation::Write)?;
+        ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &skills, VolumeOperation::Write)?;
     host.fork_volume(
         &root,
         &root_reader,
@@ -178,7 +178,7 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
     .await?;
     assert!(
         ContentGrant::verify(
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             &scope,
             &builtins,
             VolumeOperation::Write
@@ -186,7 +186,7 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
         .is_err()
     );
     assert!(
-        ContentGrant::verify(&issuer.verifier(), &scope, &root, VolumeOperation::Write).is_err()
+        ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &root, VolumeOperation::Write).is_err()
     );
     let foreign = issuer.root_for_agent(
         foreign_agent,
@@ -195,7 +195,7 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
     );
     assert!(
         ContentGrant::verify(
-            &issuer.verifier(),
+            &issuer.verifier(&mut None).expect("verifier copy"),
             &foreign,
             &skills,
             VolumeOperation::Write
@@ -203,7 +203,7 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
         .is_err()
     );
     let builtin_reader =
-        ContentGrant::verify(&issuer.verifier(), &scope, &builtins, VolumeOperation::Read)?;
+        ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &builtins, VolumeOperation::Read)?;
     assert_eq!(
         host.read_content(&builtin, &builtin_reader, 1024)
             .await?
@@ -230,14 +230,14 @@ async fn skills_are_explicitly_forked_and_imported_with_read_only_builtins() -> 
     let skills_workspace = workspace_ref(provider.clone(), &skills.storage_name()?)?;
     let selected = host.resolve(&skills_workspace).await?;
     let skills_reader =
-        ContentGrant::verify(&issuer.verifier(), &scope, &skills, VolumeOperation::Read)?;
+        ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &scope, &skills, VolumeOperation::Read)?;
     let approved = issuer.root_for_agent(
         agent,
         "approved-writeback",
         Capabilities::new([root.capability(VolumeOperation::Write)?]),
     );
     let destination_writer =
-        ContentGrant::verify(&issuer.verifier(), &approved, &root, VolumeOperation::Write)?;
+        ContentGrant::verify(&issuer.verifier(&mut None).expect("verifier copy"), &approved, &root, VolumeOperation::Write)?;
     let plan = host
         .prepare_volume_import(
             &skills,

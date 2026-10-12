@@ -91,7 +91,7 @@ async fn chosen_child_default_source_and_foreign_project_do_not_import_transcrip
     let created = fixture.create_filesystem_child().await?;
     let original = created.report.request;
     let arguments = ForkToolArguments { id: original.child_agent, msg: "review exact source".into(), source: None };
-    assert_eq!(arguments.source_task(fixture.root, fixture.root_scope.limits())?, fixture.root);
+    assert_eq!(arguments.source_task(fixture.root, fixture.root_scope.limits(), &mut None)?, fixture.root);
     let project = original.selections.iter().find_map(|selection| match &selection.revision {
         crate::fork::ResourceRevision::Project { volume, generation } => Some((volume.clone(), generation.clone())),
         _ => None,

@@ -51,7 +51,7 @@ impl ModelTokenCount {
             io.check_cancellation()?;
             io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
         }
-        if self.request_digest != request.manifest().request_digest
+        if self.request_digest != request.request_digest()
             || self.message_tokens.len() != request.request().messages.len()
         {
             return Err(token_count_invalid(work, "token count does not bind the prepared request"));
@@ -124,7 +124,7 @@ mod tests {
         let prepared =
             PreparedModelRequest::prepare(request.clone(), crate::conversation::Limits::default(), None)?;
         let mut count = ModelTokenCount {
-            request_digest: prepared.manifest().request_digest,
+            request_digest: prepared.request_digest(),
             fixed_tokens: u32::MAX,
             message_tokens: vec![u32::MAX],
         };

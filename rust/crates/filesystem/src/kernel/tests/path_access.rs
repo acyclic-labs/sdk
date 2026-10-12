@@ -3,7 +3,7 @@ use super::super::allocation::AllocationLedger;
 use crate::foundation::{Digest, FileId, VolumeId};
 use crate::kernel::{
     FileMetadata, FileTablePage, GenerationRoot, InlineFileData, LogicalName, MetadataField,
-    NameEncoding, TreeChild, TreeEntry, TreePage, encode_file_metadata, encode_file_table_page,
+    NameEncoding, TreeEntry, TreePage, encode_file_metadata, encode_file_table_page,
     encode_tree_page,
 };
 use crate::memory::MemoryObjectStore;
@@ -15,8 +15,7 @@ use crate::storage::{
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-/// A direct provider fixture has no enclosing query ledger. Its callbacks must
-/// include the whole existing cache backing, not subtract an external claim.
+use crate::kernel::Child;
 fn setup_cache<'a, S>(
     store: &'a S, entries: usize, budget: WorkBudget,
     custody: Option<&'a super::super::ProofDataCustody>,
@@ -37,7 +36,6 @@ fn cache_resident<S>(cache: &OperationReadCache<'_, S>) -> Result<u64, WorkError
     OperationReadCache::<S>::slot_bytes(&state)?.checked_add(state.retained_owned_bytes).ok_or(WorkError::Overflow)
 }
 
-/// Exercises the same original-context leaf as read, put and contains callbacks.
 fn completed_backend(
     prior: WorkCounters, backend: WorkCounters, resident: u64, budget: WorkBudget,
 ) -> Result<WorkCounters, OperationFailure<crate::FsError>> {
@@ -291,28 +289,24 @@ fn fixture(
     let metadata = put(
         store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata())?,
+        encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let main_name = LogicalName::new(NameEncoding::Utf8, b"main.rs".to_vec(), 255)?;
     let src_tree = put(
         store,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![TreeEntry {
+        encode_tree_page(&TreePage::Leaf(vec![TreeEntry {
                 name: main_name.clone(),
                 file_id,
                 kind: FileKind::Regular,
-            }]),
-            8,
-        )?,
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let src_name = LogicalName::new(NameEncoding::Utf8, b"src".to_vec(), 255)?;
     let alias_name = LogicalName::new(NameEncoding::Utf8, b"alias".to_vec(), 255)?;
     let root_tree = put(
         store,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![
+        encode_tree_page(&TreePage::Leaf(vec![
                 TreeEntry {
                     name: alias_name,
                     file_id: src_id,
@@ -323,15 +317,12 @@ fn fixture(
                     file_id: src_id,
                     kind: FileKind::Directory,
                 },
-            ]),
-            8,
-        )?,
+            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let file_table = put(
         store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(
-            &FileTablePage::Leaf(vec![
+        encode_file_table_page(&FileTablePage::Leaf(vec![
                 FileRecord {
                     file_id: root_id,
                     kind: FileKind::Directory,
@@ -353,9 +344,7 @@ fn fixture(
                     metadata,
                     payload: FilePayload::InlineRegular(InlineFileData::new(b"fn main() {}")?),
                 },
-            ]),
-            8,
-        )?,
+            ]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     Ok((
         GenerationRoot {
@@ -379,20 +368,17 @@ fn binding_fixture(
     let metadata = put(
         store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata())?,
+        encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let child_name = LogicalName::new(NameEncoding::Utf8, b"child".to_vec(), 255)?;
     let root_tree = put(
         store,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![TreeEntry {
+        encode_tree_page(&TreePage::Leaf(vec![TreeEntry {
                 name: child_name.clone(),
                 file_id: child_id,
                 kind: declared_kind,
-            }]),
-            8,
-        )?,
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let mut records = vec![FileRecord {
         file_id: root_id,
@@ -407,7 +393,7 @@ fn binding_fixture(
                 let empty_tree = put(
                     store,
                     ObjectKind::TreePage,
-                    encode_tree_page(&TreePage::Leaf(Vec::new()), 8)?,
+                    encode_tree_page(&TreePage::Leaf(Vec::new()), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
                 )?;
                 FilePayload::Directory {
                     entries: empty_tree,
@@ -427,7 +413,7 @@ fn binding_fixture(
     let file_table = put(
         store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(&FileTablePage::Leaf(records), 8)?,
+        encode_file_table_page(&FileTablePage::Leaf(records), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     Ok((
         GenerationRoot {
@@ -662,36 +648,29 @@ fn batch_rejects_authenticated_child_bounds_and_preserves_failure_work()
     let metadata = put(
         &store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata())?,
+        encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let leaf = put(
         &store,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![TreeEntry {
+        encode_tree_page(&TreePage::Leaf(vec![TreeEntry {
                 name: LogicalName::new(NameEncoding::Utf8, b"src".to_vec(), 255)?,
                 file_id: src_id,
                 kind: FileKind::Directory,
-            }]),
-            8,
-        )?,
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let malformed_root_tree = put(
         &store,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Internal(vec![TreeChild {
-                first_name: LogicalName::new(NameEncoding::Utf8, b"zzz".to_vec(), 255)?,
+        encode_tree_page(&TreePage::Internal(vec![Child {
+                first: LogicalName::new(NameEncoding::Utf8, b"zzz".to_vec(), 255)?,
                 page: leaf,
-            }]),
-            8,
-        )?,
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let file_table = put(
         &store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(
-            &FileTablePage::Leaf(vec![FileRecord {
+        encode_file_table_page(&FileTablePage::Leaf(vec![FileRecord {
                 file_id: root_id,
                 kind: FileKind::Directory,
                 link_count: 1,
@@ -699,9 +678,7 @@ fn batch_rejects_authenticated_child_bounds_and_preserves_failure_work()
                 payload: FilePayload::Directory {
                     entries: malformed_root_tree,
                 },
-            }]),
-            8,
-        )?,
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let malformed_generation = GenerationRoot {
         volume_id: generation.volume_id,

@@ -20,7 +20,7 @@ use std::mem::zeroed;
 use std::os::windows::ffi::OsStrExt as _;
 use std::os::windows::io::{AsHandle, AsRawHandle, FromRawHandle, RawHandle};
 use std::path::Path;
-use std::sync::{Arc, Mutex, OnceLock, Weak, mpsc};
+use std::sync::{Arc, Mutex, Weak, mpsc};
 use std::task::{Wake, Waker};
 use windows_sys::Wdk::Storage::FileSystem::{
     FILE_MODE_INFORMATION, FILE_SYNCHRONOUS_IO_ALERT, FILE_SYNCHRONOUS_IO_NONALERT,
@@ -419,8 +419,12 @@ const MAX_READ_WINDOW: usize = 512 * 1024;
 
 struct ReadWindow {
     offset: u64,
-    length: usize,
+    // Parts contain result indices and cumulative byte ends.
     parts: Vec<(usize, usize)>,
+}
+
+impl ReadWindow {
+    fn length(&self) -> usize { self.parts.last().expect("nonempty read window").1 }
 }
 
 fn read_windows(reads: &[OwnedRead]) -> io::Result<Vec<ReadWindow>> {
@@ -432,19 +436,17 @@ fn read_windows(reads: &[OwnedRead]) -> io::Result<Vec<ReadWindow>> {
             continue;
         }
         if let Some(window) = windows.last_mut()
-            && window.offset.checked_add(window.length as u64) == Some(read.offset)
+            && window.offset.checked_add(window.length() as u64) == Some(read.offset)
             && window
-                .length
+                .length()
                 .checked_add(read.length)
                 .is_some_and(|length| length <= MAX_READ_WINDOW)
         {
-            window.parts.push((index, read.length));
-            window.length += read.length;
+            window.parts.push((index, window.length() + read.length));
             continue;
         }
         windows.push(ReadWindow {
             offset: read.offset,
-            length: read.length,
             parts: vec![(index, read.length)],
         });
     }
@@ -469,13 +471,7 @@ fn poll_proactor(proactor: &mut Proactor, timeout: Option<std::time::Duration>) 
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(super) struct FileIdentity {
-    volume: u64,
-    id: [u8; 16],
-}
-
-pub(super) fn file_identity(file: &File) -> io::Result<FileIdentity> {
+pub(super) fn file_identity(file: &File) -> io::Result<super::FileIdentity> {
     // SAFETY: FILE_ID_INFO is an initialized POD output buffer and the file
     // handle remains live for the synchronous metadata query.
     let mut info: FILE_ID_INFO = unsafe { zeroed() };
@@ -498,10 +494,7 @@ pub(super) fn file_identity(file: &File) -> io::Result<FileIdentity> {
             "filesystem did not provide a stable file identity",
         ));
     }
-    Ok(FileIdentity {
-        volume: info.VolumeSerialNumber,
-        id: info.FileId.Identifier,
-    })
+    Ok((info.VolumeSerialNumber, info.FileId.Identifier))
 }
 
 /// Starts `executable __service --signal-ready` detached, with the write end of a fresh pipe as its standard output and the only handle it inherits, and returns the read end.
@@ -670,11 +663,10 @@ struct Driver {
     wake: Waker,
 }
 
-static DRIVER: OnceLock<Mutex<Option<Driver>>> = OnceLock::new();
+static DRIVER: Mutex<Option<Driver>> = Mutex::new(None);
 
 fn driver() -> io::Result<Driver> {
-    let slot = DRIVER.get_or_init(|| Mutex::new(None));
-    let mut slot = slot
+    let mut slot = DRIVER
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some(driver) = slot.as_ref() {
@@ -748,7 +740,6 @@ enum Pending {
     Read {
         batch: u64,
         key: Key<ReadOp>,
-        requested: usize,
         parts: Vec<(usize, usize)>,
     },
     Write {
@@ -885,7 +876,7 @@ impl DriverState {
         let mut buffers = Vec::with_capacity(windows.len());
         for window in &windows {
             let mut buffer = Vec::new();
-            if let Err(error) = buffer.try_reserve_exact(window.length) {
+            if let Err(error) = buffer.try_reserve_exact(window.length()) {
                 finish(Err(io::Error::other(error)));
                 return;
             }
@@ -908,10 +899,9 @@ impl DriverState {
             },
         );
         for (window, buffer) in windows.into_iter().zip(buffers) {
-            let requested = window.length;
             let op = ReadAt::new(fd.clone(), window.offset, buffer);
             match self.proactor.push(op) {
-                PushEntry::Ready(result) => self.read_done(batch, window.parts, requested, result),
+                PushEntry::Ready(result) => self.read_done(batch, window.parts, result),
                 PushEntry::Pending(key) => {
                     let id = self.id();
                     let wake = Waker::from(Arc::new(CompletionWake {
@@ -924,7 +914,6 @@ impl DriverState {
                         Pending::Read {
                             batch,
                             key,
-                            requested,
                             parts: window.parts,
                         },
                     );
@@ -1048,34 +1037,9 @@ impl DriverState {
                     return;
                 }
                 PushEntry::Ready(result) => {
-                    let (count, op) = result.into_parts();
-                    bytes = op.into_inner();
-                    match count {
-                        Ok(count) if count == bytes.len() => {
-                            self.done(batch, index, Ok(None));
-                            return;
-                        }
-                        Ok(0) => {
-                            self.done(batch, index, Err(io::Error::from(io::ErrorKind::WriteZero)));
-                            return;
-                        }
-                        Ok(count) if count < bytes.len() => {
-                            offset += count as u64;
-                            bytes = bytes.slice(count..);
-                        }
-                        Ok(_) => {
-                            self.done(
-                                batch,
-                                index,
-                                Err(io::Error::other("write completion exceeded buffer")),
-                            );
-                            return;
-                        }
-                        Err(error) => {
-                            self.done(batch, index, Err(error));
-                            return;
-                        }
-                    }
+                    let Some((written, suffix)) = self.write_done(batch, index, result) else { return; };
+                    offset += written as u64;
+                    bytes = suffix;
                 }
             }
         }
@@ -1089,7 +1053,6 @@ impl DriverState {
             Pending::Read {
                 batch,
                 key,
-                requested,
                 parts,
             } => match self.proactor.pop(key) {
                 PushEntry::Pending(key) => {
@@ -1098,12 +1061,11 @@ impl DriverState {
                         Pending::Read {
                             batch,
                             key,
-                            requested,
                             parts,
                         },
                     );
                 }
-                PushEntry::Ready(result) => self.read_done(batch, parts, requested, result),
+                PushEntry::Ready(result) => self.read_done(batch, parts, result),
             },
             Pending::Write {
                 batch,
@@ -1125,41 +1087,39 @@ impl DriverState {
                     );
                 }
                 PushEntry::Ready(result) => {
-                    let (count, op) = result.into_parts();
-                    let bytes = op.into_inner();
-                    match count {
-                        Ok(count) if count == bytes.len() => self.done(batch, index, Ok(None)),
-                        Ok(0) => {
-                            self.done(batch, index, Err(io::Error::from(io::ErrorKind::WriteZero)));
-                        }
-                        Ok(count) if count < bytes.len() => self.write_piece(
-                            batch,
-                            index,
-                            file,
-                            offset + count as u64,
-                            bytes.slice(count..),
-                        ),
-                        Ok(_) => self.done(
-                            batch,
-                            index,
-                            Err(io::Error::other("write completion exceeded buffer")),
-                        ),
-                        Err(error) => self.done(batch, index, Err(error)),
+                    if let Some((written, suffix)) = self.write_done(batch, index, result) {
+                        self.write_piece(batch, index, file, offset + written as u64, suffix);
                     }
                 }
             },
         }
     }
 
+    fn write_done(
+        &mut self, batch: u64, index: usize, result: compio_buf::BufResult<usize, WriteOp>,
+    ) -> Option<(usize, Bytes)> {
+        let (count, op) = result.into_parts();
+        let bytes = op.into_inner();
+        let result = match count {
+            Ok(count) if count == bytes.len() => Ok(()),
+            Ok(0) => Err(io::ErrorKind::WriteZero.into()),
+            Ok(count) if count < bytes.len() => return Some((count, bytes.slice(count..))),
+            Ok(_) => Err(io::Error::other("write completion exceeded buffer")),
+            Err(error) => Err(error),
+        };
+        self.done(batch, index, result.map(|()| None));
+        None
+    }
+
     fn read_done(
         &mut self,
         batch: u64,
         parts: Vec<(usize, usize)>,
-        requested: usize,
         result: compio_buf::BufResult<usize, ReadOp>,
     ) {
         let (count, op) = result.into_parts();
         let mut buffer = op.into_inner();
+        let requested = parts.last().expect("nonempty read window").1;
         let result = count.and_then(|count| {
             if count > requested || count > buffer.capacity() {
                 return Err(io::Error::other("read completion exceeded buffer"));
@@ -1174,8 +1134,7 @@ impl DriverState {
         match result {
             Ok(bytes) => {
                 let mut start = 0;
-                for (index, length) in parts {
-                    let end = start + length;
+                for (index, end) in parts {
                     let value = if start < bytes.len() {
                         bytes.slice(start..end.min(bytes.len()))
                     } else {

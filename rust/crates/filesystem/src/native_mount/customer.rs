@@ -306,7 +306,7 @@ where
         cancellation: &crate::CancellationToken,
     ) -> Result<(), MountLifecycleError> {
         cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
-        self.source.capture_host_with_identity_with_native_work(
+        self.source.capture_host(
             &self.source_root, paths, self.source_identity, scope,
             Some(Arc::clone(&self.baseline)), work,
         ).await?;
@@ -608,7 +608,7 @@ where
     pub async fn sync(&self) -> Result<(), MountLifecycleError> {
         flush_session_callbacks(&self.session)?;
         self.source
-            .sync_async(crate::PublicationPermit::Unrestricted, None).expect("unmetered unit construction cannot fail")
+            .sync_async(crate::PublicationPermit::Unrestricted)
             .await
             .map_err(MountLifecycleError::Source)?;
         Ok(())
@@ -621,7 +621,7 @@ where
     ) -> Result<(), MountLifecycleError> {
         flush_session_callbacks(&self.session)?;
         self.source
-            .sync_async(permit, None).expect("unmetered unit construction cannot fail")
+            .sync_async(permit)
             .await
             .map_err(MountLifecycleError::Source)
     }
@@ -701,7 +701,7 @@ where
         };
         session.stop().map_err(MountLifecycleError::Native)?;
         owner.take();
-        self.source.cancel();
+        { let cleanup = crate::CancellationToken::new(); let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cleanup); self.source.cancel(&mut super::adapter::NativeDemandCarrier::Borrowed(&mut work)).expect("ordinary SDK source cancellation uses the same unbounded cleanup engine"); }
         Ok(())
     }
 }
@@ -1156,8 +1156,10 @@ where
         frozen: crate::LazySnapshotRef,
         native_work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountLifecycleError> {
-        self.source.lazy.validate_snapshot_with_native_work(
-            frozen, &native_work,
+        self.source.lazy.validate_snapshot(
+            frozen, &crate::lazy_workspace::LazyTreapWork::native_with_work(
+                native_work, native_work.cancellation(),
+            ).map_err(MountLifecycleError::Lazy)?,
         ).await.map_err(MountLifecycleError::Lazy)
     }
 
@@ -1543,8 +1545,8 @@ where
                     WorkspaceError::StaleGeneration,
                 ));
             }
-            let expected_source = self.source_file_id_with_work(
-                node, &original, cancellation,
+            let expected_source = self.source_file_id(
+                &node.file_identity, &mut crate::kernel::allocation::KernelAccounting::native(&original, cancellation),
             ).map_err(MountLifecycleError::Lazy)?;
             original.charge(crate::WorkCounters {
                 bytes_hashed: (b"acyclic-fs-lazy-mount-root-v1\0".len() + 16 + root_text.0.len() + node.version.0.len()) as u64,
@@ -1703,8 +1705,8 @@ where
                 mount_id: MountId::new(), volume_id, destination: session_destination.0,
                 writable: options.writable,
             };
-            let initialized = match LazyMountSource::new_with_native_work(
-                lazy, authored, root_text, root_allocation, &mut source_allocation, native_work,
+            let initialized = match LazyMountSource::new(
+                lazy, authored, root_text, super::adapter::NativeDemandCarrier::Native(native_work), Some((root_allocation, &mut source_allocation)),
             ) {
                 Ok(source) => source,
                 Err(error) => return Err(MountLifecycleError::Native(
@@ -1750,11 +1752,11 @@ fn prepare_root_identity_with_work(
     work: &crate::NativeMaterializationWork, expected_identity: Option<NativeRootIdentity>,
 ) -> Result<NativeRootIdentity, MountLifecycleError> {
     let original = work.clone();
-    let root = crate::native_host::HostRoot::open_with_work(source_root, &mut &original)?;
+    let root = crate::native_host::HostRoot::open(source_root, &mut &original)?;
     if expected_identity.is_some_and(|expected| expected != root.identity()) {
         return Err(MountLifecycleError::Source(MountSourceError::Stale));
     }
-    if !root.stat_with_work(selected_root, &mut &original)?.is_dir() {
+    if !root.stat(selected_root, &mut &original)?.is_dir() {
         return Err(MountLifecycleError::NativePolicy("selected native working-set directory is absent"));
     }
     Ok(root.identity())
@@ -2051,14 +2053,14 @@ where
                         ).map_err(MountLifecycleError::Workspace)
                     },
                 )?;
-                if checkout.lookup_no_follow_with_native_work(&root.0, original, cancellation)
+                if checkout.lookup_no_follow(&root.0, original, cancellation)
                     .await.map_err(WorkspaceError::from)?.record
                     .is_none_or(|record| record.kind != FileKind::Directory)
                 {
                     return Err(MountLifecycleError::Workspace(WorkspaceError::NotDirectory));
                 }
                 if expected_root_identity.is_none() {
-                    let candidate = checkout.private_candidate_with_native_work(original, cancellation)
+                    let candidate = checkout.private_candidate(original, cancellation)
                         .map_err(WorkspaceError::from)?;
                     let reader = candidate.into_pinned_reader_with_native_work(original, cancellation)
                         .map_err(WorkspaceError::from)?;
@@ -2095,7 +2097,7 @@ where
                 if expected_root_identity.is_some() {
                     let capture = original.native_volume_work(capture_budget)?;
                     let capture_meter = capture.clone();
-                    source.capture_host_with_identity_with_native_work(
+                    source.capture_host(
                         &source_root.0, &[MountPath::root()], source_identity,
                         HostCaptureScope::Subtree, Some(Arc::clone(&baseline)), &capture_meter,
                     ).await?;
