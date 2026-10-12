@@ -29,16 +29,11 @@ async fn native_authority_fixture()
     let id = AuthorityId::from_bytes([0xe1; 16]);
     let budget = native_authority_budget();
     let CreateAuthorityOutcome::Created(head) = ({
-        let __authority_args = (id, Epoch::GENESIS, budget, &crate::CancellationToken::new());
-        let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+        let authority_cancellation = &crate::CancellationToken::new();
+
+        let mut __authority_work = crate::AuthorityWork::new(budget, authority_cancellation);
         let __authority_result = store
-            .create_authority(
-                __authority_args.0,
-                __authority_args.1,
-                &mut __authority_work,
-                None::<&mut ()>,
-            )
+            .create_authority(id, Epoch::GENESIS, &mut __authority_work, None::<&mut ()>)
             .await
             .map_err(|error| error.into_error(std::convert::identity));
         __authority_work.receipt(__authority_result)
@@ -48,27 +43,21 @@ async fn native_authority_fixture()
         return Err("native fixture authority already exists".into());
     };
     let AppendOutcome::Committed(commit) = ({
-        let __authority_args = (
-            id,
-            Epoch::GENESIS,
-            head,
-            ProposedCommit {
-                operation_id: OperationId::from_bytes([0xe2; 16]),
-                fingerprint: Digest::from_bytes([0xe3; 32]),
-                payload: bytes::Bytes::from(vec![0x5a; 8_192]),
-            },
-            budget,
-            &crate::CancellationToken::new(),
-        );
-        let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.4, __authority_args.5);
+        let authority_input_3 = ProposedCommit {
+            operation_id: OperationId::from_bytes([0xe2; 16]),
+            fingerprint: Digest::from_bytes([0xe3; 32]),
+            payload: bytes::Bytes::from(vec![0x5a; 8_192]),
+        };
+        let authority_cancellation = &crate::CancellationToken::new();
+
+        let mut __authority_work = crate::AuthorityWork::new(budget, authority_cancellation);
         let __authority_result = store
             .compare_and_append(
                 crate::GuardedAppend {
-                    authority_id: __authority_args.0,
-                    epoch: __authority_args.1,
-                    expected: __authority_args.2,
-                    commit: __authority_args.3,
+                    authority_id: id,
+                    epoch: Epoch::GENESIS,
+                    expected: head,
+                    commit: authority_input_3,
                     permit: crate::PublicationPermit::Unrestricted,
                 },
                 &mut __authority_work,
@@ -530,15 +519,12 @@ async fn opaque_immediate_native_mutations_reject_before_io_and_preserve_ordinar
     assert_eq!(work.receipt(), prefix);
     assert!(matches!(
         ({
-            let __authority_args = (id, WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+            let authority_cancellation = &crate::CancellationToken::new();
+
             let mut __authority_work =
-                crate::AuthorityWork::new(__authority_args.1, __authority_args.2);
-            let __authority_result = AsyncAuthorityStore::head(
-                store.as_ref(),
-                __authority_args.0,
-                &mut __authority_work,
-            )
-            .await;
+                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
+            let __authority_result =
+                AsyncAuthorityStore::head(store.as_ref(), id, &mut __authority_work).await;
             __authority_work.receipt(__authority_result)
         }),
         Err(AuthorityFailure {
@@ -547,13 +533,13 @@ async fn opaque_immediate_native_mutations_reject_before_io_and_preserve_ordinar
         })
     ));
     let ordinary = (async {
-        let __authority_args = (id, request.commit, WorkBudget::UNBOUNDED, &cancellation);
-        let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+        let authority_input_1 = request.commit;
+
+        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __authority_result = AsyncAuthorityStore::create_first_record(
             &store,
-            __authority_args.0,
-            __authority_args.1,
+            id,
+            authority_input_1,
             &mut __authority_work,
             None::<&mut ()>,
         )

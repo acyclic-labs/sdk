@@ -452,18 +452,14 @@ pub(super) async fn assert_authority_volume_identity_fails_closed()
     );
     let expected_authority = volume_authority_id(expected_volume);
     let active = ({
-        let __authority_args = (
-            expected_authority,
-            Epoch::GENESIS,
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
+        let authority_cancellation = &crate::CancellationToken::new();
+
         let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
         let __authority_result = AsyncAuthorityStore::create_authority(
             &*authority,
-            __authority_args.0,
-            __authority_args.1,
+            expected_authority,
+            Epoch::GENESIS,
             &mut __authority_work,
             None::<&mut ()>,
         )
@@ -502,23 +498,19 @@ pub(super) async fn assert_authority_volume_identity_fails_closed()
     )?
     .value;
     ({
-        let __authority_args = (
-            expected_authority,
-            head.epoch,
-            Head::genesis(head.epoch),
-            proposal,
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
+        let authority_input_1 = head.epoch;
+        let authority_input_2 = Head::genesis(head.epoch);
+        let authority_cancellation = &crate::CancellationToken::new();
+
         let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.4, __authority_args.5);
+            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
         let __authority_result = AsyncAuthorityStore::compare_and_append(
             &*authority,
             crate::GuardedAppend {
-                authority_id: __authority_args.0,
-                epoch: __authority_args.1,
-                expected: __authority_args.2,
-                commit: __authority_args.3,
+                authority_id: expected_authority,
+                epoch: authority_input_1,
+                expected: authority_input_2,
+                commit: proposal,
                 permit: crate::PublicationPermit::Unrestricted,
             },
             &mut __authority_work,
@@ -540,18 +532,15 @@ pub(super) async fn assert_authority_volume_identity_fails_closed()
 
     let empty_volume = VolumeId::from_bytes([228; 16]);
     ({
-        let __authority_args = (
-            volume_authority_id(empty_volume),
-            Epoch::GENESIS,
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
+        let authority_input_0 = volume_authority_id(empty_volume);
+        let authority_cancellation = &crate::CancellationToken::new();
+
         let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
         let __authority_result = AsyncAuthorityStore::create_authority(
             &*authority,
-            __authority_args.0,
-            __authority_args.1,
+            authority_input_0,
+            Epoch::GENESIS,
             &mut __authority_work,
             None::<&mut ()>,
         )

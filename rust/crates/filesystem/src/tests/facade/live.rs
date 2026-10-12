@@ -915,16 +915,12 @@ async fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
     ))
     .await?;
     let fence_expected = (async {
-        let __authority_args = (
-            volume_authority_id(volume_id),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        );
-        let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.1, __authority_args.2);
+        let authority_input_0 = volume_authority_id(volume_id);
+
+        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __authority_result = AsyncAuthorityStore::head(
             &fs.inner.authority,
-            __authority_args.0,
+            authority_input_0,
             &mut __authority_work,
         )
         .await;
@@ -933,18 +929,13 @@ async fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
     .await?
     .value;
     let fence = (async {
-        let __authority_args = (
-            volume_authority_id(volume_id),
-            fence_expected,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        );
-        let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+        let authority_input_0 = volume_authority_id(volume_id);
+
+        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __authority_result = AsyncAuthorityStore::fence(
             &fs.inner.authority,
-            __authority_args.0,
-            __authority_args.1,
+            authority_input_0,
+            fence_expected,
             &mut __authority_work,
         )
         .await;

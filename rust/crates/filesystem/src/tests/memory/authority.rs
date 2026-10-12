@@ -5,18 +5,14 @@ async fn authority_is_fenced_and_replay_is_bounded() -> Result<(), Box<dyn std::
     let store = MemoryAuthorityStore::default();
     let authority_id = AuthorityId::from_bytes([1; 16]);
     let created = ({
-        let __authority_args = (
-            authority_id,
-            Epoch::GENESIS,
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
+        let authority_cancellation = &crate::CancellationToken::new();
+
         let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
         let __authority_result = store
             .create_authority(
-                __authority_args.0,
-                __authority_args.1,
+                authority_id,
+                Epoch::GENESIS,
                 &mut __authority_work,
                 None::<&mut ()>,
             )
@@ -37,23 +33,17 @@ async fn authority_is_fenced_and_replay_is_bounded() -> Result<(), Box<dyn std::
     };
     assert!(matches!(
         ({
-            let __authority_args = (
-                authority_id,
-                Epoch::GENESIS,
-                head,
-                commit,
-                WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            );
+            let authority_cancellation = &crate::CancellationToken::new();
+
             let mut __authority_work =
-                crate::AuthorityWork::new(__authority_args.4, __authority_args.5);
+                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
             let __authority_result = store
                 .compare_and_append(
                     crate::GuardedAppend {
-                        authority_id: __authority_args.0,
-                        epoch: __authority_args.1,
-                        expected: __authority_args.2,
-                        commit: __authority_args.3,
+                        authority_id: authority_id,
+                        epoch: Epoch::GENESIS,
+                        expected: head,
+                        commit: commit,
                         permit: crate::PublicationPermit::Unrestricted,
                     },
                     &mut __authority_work,
@@ -68,32 +58,21 @@ async fn authority_is_fenced_and_replay_is_bounded() -> Result<(), Box<dyn std::
         AppendOutcome::Committed(_)
     ));
     let current = ({
-        let __authority_args = (
-            authority_id,
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
+        let authority_cancellation = &crate::CancellationToken::new();
+
         let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.1, __authority_args.2);
-        let __authority_result = store.head(__authority_args.0, &mut __authority_work).await;
+            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
+        let __authority_result = store.head(authority_id, &mut __authority_work).await;
         __authority_work.receipt(__authority_result)
     })?
     .value;
     let fenced = ({
-        let __authority_args = (
-            authority_id,
-            current,
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
+        let authority_cancellation = &crate::CancellationToken::new();
+
         let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
         let __authority_result = store
-            .fence(
-                __authority_args.0,
-                __authority_args.1,
-                &mut __authority_work,
-            )
+            .fence(authority_id, current, &mut __authority_work)
             .await;
         __authority_work.receipt(__authority_result)
     })?;
@@ -102,23 +81,19 @@ async fn authority_is_fenced_and_replay_is_bounded() -> Result<(), Box<dyn std::
     };
     assert_eq!(fenced_head.epoch.get(), 2);
     let page = ({
-        let __authority_args = (
-            authority_id,
-            Sequence::GENESIS,
-            ReplayLimit {
-                records: 1,
-                payload_bytes: 7,
-            },
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
+        let authority_input_2 = ReplayLimit {
+            records: 1,
+            payload_bytes: 7,
+        };
+        let authority_cancellation = &crate::CancellationToken::new();
+
         let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.3, __authority_args.4);
+            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
         let __authority_result = store
             .replay(
-                __authority_args.0,
-                __authority_args.1,
-                __authority_args.2,
+                authority_id,
+                Sequence::GENESIS,
+                authority_input_2,
                 &mut __authority_work,
             )
             .await
@@ -135,18 +110,14 @@ async fn authority_payload_and_replay_bounds_preserve_forward_progress()
     let store = MemoryAuthorityStore::new(2)?;
     let authority_id = AuthorityId::from_bytes([11; 16]);
     let head = match ({
-        let __authority_args = (
-            authority_id,
-            Epoch::GENESIS,
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
+        let authority_cancellation = &crate::CancellationToken::new();
+
         let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
         let __authority_result = store
             .create_authority(
-                __authority_args.0,
-                __authority_args.1,
+                authority_id,
+                Epoch::GENESIS,
                 &mut __authority_work,
                 None::<&mut ()>,
             )
@@ -168,23 +139,17 @@ async fn authority_payload_and_replay_bounds_preserve_forward_progress()
     };
     assert!(matches!(
         ({
-            let __authority_args = (
-                authority_id,
-                Epoch::GENESIS,
-                head,
-                commit,
-                WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            );
+            let authority_cancellation = &crate::CancellationToken::new();
+
             let mut __authority_work =
-                crate::AuthorityWork::new(__authority_args.4, __authority_args.5);
+                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
             let __authority_result = store
                 .compare_and_append(
                     crate::GuardedAppend {
-                        authority_id: __authority_args.0,
-                        epoch: __authority_args.1,
-                        expected: __authority_args.2,
-                        commit: __authority_args.3,
+                        authority_id: authority_id,
+                        epoch: Epoch::GENESIS,
+                        expected: head,
+                        commit: commit,
                         permit: crate::PublicationPermit::Unrestricted,
                     },
                     &mut __authority_work,
@@ -200,23 +165,19 @@ async fn authority_payload_and_replay_bounds_preserve_forward_progress()
     ));
     assert!(matches!(
         ({
-            let __authority_args = (
-                authority_id,
-                Sequence::GENESIS,
-                ReplayLimit {
-                    records: 1,
-                    payload_bytes: 1,
-                },
-                WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            );
+            let authority_input_2 = ReplayLimit {
+                records: 1,
+                payload_bytes: 1,
+            };
+            let authority_cancellation = &crate::CancellationToken::new();
+
             let mut __authority_work =
-                crate::AuthorityWork::new(__authority_args.3, __authority_args.4);
+                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
             let __authority_result = store
                 .replay(
-                    __authority_args.0,
-                    __authority_args.1,
-                    __authority_args.2,
+                    authority_id,
+                    Sequence::GENESIS,
+                    authority_input_2,
                     &mut __authority_work,
                 )
                 .await
@@ -242,23 +203,17 @@ async fn authority_payload_and_replay_bounds_preserve_forward_progress()
     };
     assert!(matches!(
         ({
-            let __authority_args = (
-                authority_id,
-                Epoch::GENESIS,
-                oversized_head,
-                oversized,
-                WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            );
+            let authority_cancellation = &crate::CancellationToken::new();
+
             let mut __authority_work =
-                crate::AuthorityWork::new(__authority_args.4, __authority_args.5);
+                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
             let __authority_result = store
                 .compare_and_append(
                     crate::GuardedAppend {
-                        authority_id: __authority_args.0,
-                        epoch: __authority_args.1,
-                        expected: __authority_args.2,
-                        commit: __authority_args.3,
+                        authority_id: authority_id,
+                        epoch: Epoch::GENESIS,
+                        expected: oversized_head,
+                        commit: oversized,
                         permit: crate::PublicationPermit::Unrestricted,
                     },
                     &mut __authority_work,
@@ -286,18 +241,14 @@ async fn replay_stops_at_the_payload_bound_after_contiguous_progress()
     let store = MemoryAuthorityStore::default();
     let authority_id = AuthorityId::from_bytes([16; 16]);
     let created = ({
-        let __authority_args = (
-            authority_id,
-            Epoch::GENESIS,
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
+        let authority_cancellation = &crate::CancellationToken::new();
+
         let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
         let __authority_result = store
             .create_authority(
-                __authority_args.0,
-                __authority_args.1,
+                authority_id,
+                Epoch::GENESIS,
                 &mut __authority_work,
                 None::<&mut ()>,
             )
@@ -313,27 +264,22 @@ async fn replay_stops_at_the_payload_bound_after_contiguous_progress()
         ([19; 16], [20; 32], bytes::Bytes::from_static(b"bb")),
     ] {
         let appended = ({
-            let __authority_args = (
-                authority_id,
-                Epoch::GENESIS,
-                head,
-                ProposedCommit {
-                    operation_id: OperationId::from_bytes(operation),
-                    fingerprint: Digest::from_bytes(fingerprint),
-                    payload,
-                },
-                WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            );
+            let authority_input_3 = ProposedCommit {
+                operation_id: OperationId::from_bytes(operation),
+                fingerprint: Digest::from_bytes(fingerprint),
+                payload,
+            };
+            let authority_cancellation = &crate::CancellationToken::new();
+
             let mut __authority_work =
-                crate::AuthorityWork::new(__authority_args.4, __authority_args.5);
+                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
             let __authority_result = store
                 .compare_and_append(
                     crate::GuardedAppend {
-                        authority_id: __authority_args.0,
-                        epoch: __authority_args.1,
-                        expected: __authority_args.2,
-                        commit: __authority_args.3,
+                        authority_id: authority_id,
+                        epoch: Epoch::GENESIS,
+                        expected: head,
+                        commit: authority_input_3,
                         permit: crate::PublicationPermit::Unrestricted,
                     },
                     &mut __authority_work,
@@ -354,23 +300,19 @@ async fn replay_stops_at_the_payload_bound_after_contiguous_progress()
         };
     }
     let replay = ({
-        let __authority_args = (
-            authority_id,
-            Sequence::GENESIS,
-            ReplayLimit {
-                records: 2,
-                payload_bytes: 3,
-            },
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
+        let authority_input_2 = ReplayLimit {
+            records: 2,
+            payload_bytes: 3,
+        };
+        let authority_cancellation = &crate::CancellationToken::new();
+
         let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.3, __authority_args.4);
+            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
         let __authority_result = store
             .replay(
-                __authority_args.0,
-                __authority_args.1,
-                __authority_args.2,
+                authority_id,
+                Sequence::GENESIS,
+                authority_input_2,
                 &mut __authority_work,
             )
             .await
@@ -398,14 +340,11 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
     let authority_id = AuthorityId::from_bytes([21; 16]);
     assert!(matches!(
         ({
-            let __authority_args = (
-                authority_id,
-                WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            );
+            let authority_cancellation = &crate::CancellationToken::new();
+
             let mut __authority_work =
-                crate::AuthorityWork::new(__authority_args.1, __authority_args.2);
-            let __authority_result = store.head(__authority_args.0, &mut __authority_work).await;
+                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
+            let __authority_result = store.head(authority_id, &mut __authority_work).await;
             __authority_work.receipt(__authority_result)
         }),
         Err(AuthorityFailure {
@@ -414,18 +353,14 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
         })
     ));
     let created = ({
-        let __authority_args = (
-            authority_id,
-            Epoch::GENESIS,
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
+        let authority_cancellation = &crate::CancellationToken::new();
+
         let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
         let __authority_result = store
             .create_authority(
-                __authority_args.0,
-                __authority_args.1,
+                authority_id,
+                Epoch::GENESIS,
                 &mut __authority_work,
                 None::<&mut ()>,
             )
@@ -437,7 +372,8 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
         return Err("authority unexpectedly existed".into());
     };
     assert!(matches!(
-        ({ let __authority_args = (authority_id, Epoch::GENESIS, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = store.create_authority(__authority_args.0, __authority_args.1, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })?
+        ({ let authority_cancellation = &crate::CancellationToken::new();
+         let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation); let __authority_result = store.create_authority(authority_id, Epoch::GENESIS, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })?
             .value,
         CreateAuthorityOutcome::Existing(actual) if actual == genesis
     ));
@@ -449,23 +385,18 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
         payload: bytes::Bytes::from_static(b"durable"),
     };
     let committed = ({
-        let __authority_args = (
-            authority_id,
-            Epoch::GENESIS,
-            genesis,
-            proposed.clone(),
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
+        let authority_input_3 = proposed.clone();
+        let authority_cancellation = &crate::CancellationToken::new();
+
         let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.4, __authority_args.5);
+            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
         let __authority_result = store
             .compare_and_append(
                 crate::GuardedAppend {
-                    authority_id: __authority_args.0,
-                    epoch: __authority_args.1,
-                    expected: __authority_args.2,
-                    commit: __authority_args.3,
+                    authority_id: authority_id,
+                    epoch: Epoch::GENESIS,
+                    expected: genesis,
+                    commit: authority_input_3,
                     permit: crate::PublicationPermit::Unrestricted,
                 },
                 &mut __authority_work,
@@ -480,15 +411,19 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
         return Err("first append was not committed".into());
     };
     assert!(matches!(
-        ({ let __authority_args = (authority_id, Epoch::GENESIS, genesis, proposed.clone(), WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.4, __authority_args.5); let __authority_result = store.compare_and_append(crate::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: crate::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })?
+        ({ let authority_input_3 = proposed.clone();
+        let authority_cancellation = &crate::CancellationToken::new();
+         let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation); let __authority_result = store.compare_and_append(crate::GuardedAppend { authority_id: authority_id, epoch: Epoch::GENESIS, expected: genesis, commit: authority_input_3, permit: crate::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })?
             .value,
         AppendOutcome::AlreadyCommitted(actual) if actual == durable
     ));
     assert!(matches!(
-        ({ let __authority_args = (authority_id, Epoch::GENESIS, genesis, ProposedCommit {
+        ({ let authority_input_3 = ProposedCommit {
                     fingerprint: Digest::from_bytes([24; 32]),
                     ..proposed
-                }, WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),); let mut __authority_work = crate::AuthorityWork::new(__authority_args.4, __authority_args.5); let __authority_result = store.compare_and_append(crate::GuardedAppend { authority_id: __authority_args.0, epoch: __authority_args.1, expected: __authority_args.2, commit: __authority_args.3, permit: crate::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })?
+                };
+        let authority_cancellation = &crate::CancellationToken::new();
+         let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation); let __authority_result = store.compare_and_append(crate::GuardedAppend { authority_id: authority_id, epoch: Epoch::GENESIS, expected: genesis, commit: authority_input_3, permit: crate::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })?
             .value,
         AppendOutcome::IdempotencyConflict {
             committed_fingerprint,
@@ -496,20 +431,12 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
     ));
     assert_eq!(
         ({
-            let __authority_args = (
-                authority_id,
-                operation_id,
-                WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            );
+            let authority_cancellation = &crate::CancellationToken::new();
+
             let mut __authority_work =
-                crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
             let __authority_result = store
-                .find_operation(
-                    __authority_args.0,
-                    __authority_args.1,
-                    &mut __authority_work,
-                )
+                .find_operation(authority_id, operation_id, &mut __authority_work)
                 .await
                 .map(|(value, _allocation)| value);
             __authority_work.receipt(__authority_result)
@@ -519,20 +446,13 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
     );
     assert!(
         ({
-            let __authority_args = (
-                authority_id,
-                OperationId::from_bytes([25; 16]),
-                WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            );
+            let authority_input_1 = OperationId::from_bytes([25; 16]);
+            let authority_cancellation = &crate::CancellationToken::new();
+
             let mut __authority_work =
-                crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
             let __authority_result = store
-                .find_operation(
-                    __authority_args.0,
-                    __authority_args.1,
-                    &mut __authority_work,
-                )
+                .find_operation(authority_id, authority_input_1, &mut __authority_work)
                 .await
                 .map(|(value, _allocation)| value);
             __authority_work.receipt(__authority_result)
@@ -541,39 +461,31 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
         .is_none()
     );
     let current = ({
-        let __authority_args = (
-            authority_id,
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
+        let authority_cancellation = &crate::CancellationToken::new();
+
         let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.1, __authority_args.2);
-        let __authority_result = store.head(__authority_args.0, &mut __authority_work).await;
+            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
+        let __authority_result = store.head(authority_id, &mut __authority_work).await;
         __authority_work.receipt(__authority_result)
     })?
     .value;
     let stale = ({
-        let __authority_args = (
-            authority_id,
-            Epoch::GENESIS,
-            genesis,
-            ProposedCommit {
-                operation_id: OperationId::from_bytes([26; 16]),
-                fingerprint: Digest::from_bytes([27; 32]),
-                payload: bytes::Bytes::from_static(b"stale"),
-            },
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
+        let authority_input_3 = ProposedCommit {
+            operation_id: OperationId::from_bytes([26; 16]),
+            fingerprint: Digest::from_bytes([27; 32]),
+            payload: bytes::Bytes::from_static(b"stale"),
+        };
+        let authority_cancellation = &crate::CancellationToken::new();
+
         let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.4, __authority_args.5);
+            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
         let __authority_result = store
             .compare_and_append(
                 crate::GuardedAppend {
-                    authority_id: __authority_args.0,
-                    epoch: __authority_args.1,
-                    expected: __authority_args.2,
-                    commit: __authority_args.3,
+                    authority_id: authority_id,
+                    epoch: Epoch::GENESIS,
+                    expected: genesis,
+                    commit: authority_input_3,
                     permit: crate::PublicationPermit::Unrestricted,
                 },
                 &mut __authority_work,
@@ -589,20 +501,12 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
         AppendOutcome::Conflict { actual } if actual == current
     ));
     let fenced = ({
-        let __authority_args = (
-            authority_id,
-            current,
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
+        let authority_cancellation = &crate::CancellationToken::new();
+
         let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
         let __authority_result = store
-            .fence(
-                __authority_args.0,
-                __authority_args.1,
-                &mut __authority_work,
-            )
+            .fence(authority_id, current, &mut __authority_work)
             .await;
         __authority_work.receipt(__authority_result)
     })?;
@@ -611,20 +515,12 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
     };
     assert_eq!(fenced_head.epoch.get(), 2);
     let repeated_fence = ({
-        let __authority_args = (
-            authority_id,
-            current,
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
+        let authority_cancellation = &crate::CancellationToken::new();
+
         let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
         let __authority_result = store
-            .fence(
-                __authority_args.0,
-                __authority_args.1,
-                &mut __authority_work,
-            )
+            .fence(authority_id, current, &mut __authority_work)
             .await;
         __authority_work.receipt(__authority_result)
     })?;
@@ -635,27 +531,22 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
         }
     );
     let wrong_epoch = ({
-        let __authority_args = (
-            authority_id,
-            Epoch::GENESIS,
-            fenced_head,
-            ProposedCommit {
-                operation_id: OperationId::from_bytes([28; 16]),
-                fingerprint: Digest::from_bytes([29; 32]),
-                payload: bytes::Bytes::from_static(b"fenced"),
-            },
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
+        let authority_input_3 = ProposedCommit {
+            operation_id: OperationId::from_bytes([28; 16]),
+            fingerprint: Digest::from_bytes([29; 32]),
+            payload: bytes::Bytes::from_static(b"fenced"),
+        };
+        let authority_cancellation = &crate::CancellationToken::new();
+
         let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.4, __authority_args.5);
+            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
         let __authority_result = store
             .compare_and_append(
                 crate::GuardedAppend {
-                    authority_id: __authority_args.0,
-                    epoch: __authority_args.1,
-                    expected: __authority_args.2,
-                    commit: __authority_args.3,
+                    authority_id: authority_id,
+                    epoch: Epoch::GENESIS,
+                    expected: fenced_head,
+                    commit: authority_input_3,
                     permit: crate::PublicationPermit::Unrestricted,
                 },
                 &mut __authority_work,
@@ -682,20 +573,15 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
     ] {
         assert!(matches!(
             ({
-                let __authority_args = (
-                    authority_id,
-                    Sequence::GENESIS,
-                    invalid,
-                    WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                );
+                let authority_cancellation = &crate::CancellationToken::new();
+
                 let mut __authority_work =
-                    crate::AuthorityWork::new(__authority_args.3, __authority_args.4);
+                    crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
                 let __authority_result = store
                     .replay(
-                        __authority_args.0,
-                        __authority_args.1,
-                        __authority_args.2,
+                        authority_id,
+                        Sequence::GENESIS,
+                        invalid,
                         &mut __authority_work,
                     )
                     .await
@@ -710,23 +596,20 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
     }
     assert!(matches!(
         ({
-            let __authority_args = (
-                authority_id,
-                Sequence::new(2),
-                ReplayLimit {
-                    records: 1,
-                    payload_bytes: 16,
-                },
-                WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            );
+            let authority_input_1 = Sequence::new(2);
+            let authority_input_2 = ReplayLimit {
+                records: 1,
+                payload_bytes: 16,
+            };
+            let authority_cancellation = &crate::CancellationToken::new();
+
             let mut __authority_work =
-                crate::AuthorityWork::new(__authority_args.3, __authority_args.4);
+                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
             let __authority_result = store
                 .replay(
-                    __authority_args.0,
-                    __authority_args.1,
-                    __authority_args.2,
+                    authority_id,
+                    authority_input_1,
+                    authority_input_2,
                     &mut __authority_work,
                 )
                 .await

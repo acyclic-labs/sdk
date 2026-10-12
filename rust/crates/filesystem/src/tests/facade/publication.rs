@@ -169,18 +169,13 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
         .is_some()
     );
     let lookup = (async {
-        let __authority_args = (
-            volume_authority_id(volume_id),
-            operation_id,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        );
-        let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+        let authority_input_0 = volume_authority_id(volume_id);
+
+        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __authority_result = AsyncAuthorityStore::find_operation(
             &volume.fs.inner.authority,
-            __authority_args.0,
-            __authority_args.1,
+            authority_input_0,
+            operation_id,
             &mut __authority_work,
         )
         .await

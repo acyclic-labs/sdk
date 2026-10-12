@@ -414,18 +414,15 @@ async fn indeterminate_post_append_retry_resolves_one_durable_publication()
     assert_eq!(checkout_state(&checkout), before);
     assert!(
         ({
-            let __authority_args = (
-                volume_authority_id(volume.id()),
-                operation_id,
-                WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            );
+            let authority_input_0 = volume_authority_id(volume.id());
+            let authority_cancellation = &crate::CancellationToken::new();
+
             let mut __authority_work =
-                crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
             let __authority_result = AsyncAuthorityStore::find_operation(
                 &*authority,
-                __authority_args.0,
-                __authority_args.1,
+                authority_input_0,
+                operation_id,
                 &mut __authority_work,
             )
             .await
@@ -459,23 +456,20 @@ async fn indeterminate_post_append_retry_resolves_one_durable_publication()
     ));
     assert!(!checkout.has_pending_mutations());
     let history = ({
-        let __authority_args = (
-            volume_authority_id(volume.id()),
-            Sequence::GENESIS,
-            ReplayLimit {
-                records: 8,
-                payload_bytes: 64 * 1024,
-            },
-            WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        );
+        let authority_input_0 = volume_authority_id(volume.id());
+        let authority_input_2 = ReplayLimit {
+            records: 8,
+            payload_bytes: 64 * 1024,
+        };
+        let authority_cancellation = &crate::CancellationToken::new();
+
         let mut __authority_work =
-            crate::AuthorityWork::new(__authority_args.3, __authority_args.4);
+            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
         let __authority_result = AsyncAuthorityStore::replay(
             &*authority,
-            __authority_args.0,
-            __authority_args.1,
-            __authority_args.2,
+            authority_input_0,
+            Sequence::GENESIS,
+            authority_input_2,
             &mut __authority_work,
         )
         .await
