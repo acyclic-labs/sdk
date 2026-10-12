@@ -130,6 +130,32 @@ impl Publication {
             .map_err(|_| NativeObjectsError::from(NativeObjectsCause::Service(Unavailable.into())))?;
         Ok(output)
     }
+
+    fn relocated(
+        &mut self, body: &StoredBody, moves: &crate::body::LocalBodyRelocations,
+    ) -> Result<Option<StoredBody>, NativeObjectsError> {
+        self.check()?;
+        match body {
+            StoredBody::Memory(_) => Ok(None),
+            StoredBody::Composite { parts, length } => {
+                if !has_relocation(body, moves) { return Ok(None); }
+                let mut moved = Vec::new();
+                self.reserve(&mut moved, parts.value.len())?;
+                for part in &parts.value {
+                    let relocated = self.relocated(part, moves)?;
+                    self.codec(0, std::mem::size_of::<StoredBody>(), 0, || {
+                        moved.push(relocated.unwrap_or_else(|| part.clone()));
+                    })?;
+                }
+                composite_publication(moved, *length, self).map(Some)
+            }
+            StoredBody::Local { root, digest, length, location } => {
+                Ok(moves.get(&(location.clone(), *digest)).map(|location| StoredBody::Local {
+                    root: Arc::clone(root), digest: *digest, length: *length, location: location.clone(),
+                }))
+            }
+        }
+    }
 }
 
 pub(super) fn service_error(error: NativeObjectsError) -> Error {
@@ -163,14 +189,12 @@ fn composite_publication(parts: Vec<StoredBody>, length: usize, publication: &mu
     }
 }
 
-fn relocated_publication(body: &StoredBody, moves: &crate::body::LocalBodyRelocations, publication: &Publication) -> Result<Option<StoredBody>, NativeObjectsError> {
-    use crate::body::BodyReadMode;
-    let mode = match &publication.native {
-        Some((meter, _)) => { meter.check()?; BodyReadMode::Native(Arc::clone(meter)) }
-        None => BodyReadMode::Ordinary,
-    };
-    body.relocated(&|location, digest| moves.get(&(location.clone(), *digest)).cloned(), &mode)
-        .map_err(Into::into)
+fn has_relocation(body: &StoredBody, moves: &crate::body::LocalBodyRelocations) -> bool {
+    match body {
+        StoredBody::Memory(_) => false,
+        StoredBody::Composite { parts, .. } => parts.value.iter().any(|part| has_relocation(part, moves)),
+        StoredBody::Local { location, digest, .. } => moves.contains_key(&(location.clone(), *digest)),
+    }
 }
 
 fn unpersisted(body: &StoredBody) -> bool {
