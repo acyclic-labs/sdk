@@ -461,7 +461,7 @@ where A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
             let path_hold = io.guard_owned(path.capacity() as u64)?;
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = io.original_native_work() {
-                let stat = pinned.stat_with_native_work(&path, work, io.cancellation()).await
+                let stat = pinned.stat(&path, work, io.cancellation()).await.map_err(|error| (error, None))
                     .map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
                 if stat.kind != FileKind::Regular { return Err(io.invalid("prefix requires a regular file")); }
                 let length = stat.logical_bytes.ok_or_else(|| io.invalid("file length is missing"))?;
@@ -2838,7 +2838,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         let target_generation = if let Some(target) = selected_target {
             fork_preparer_io::generation(self.host, &target_workspace, target, &io).await?
         } else {
-            target_workspace.head_with_native_work(work, work.cancellation()).await
+            target_workspace.head(work, work.cancellation()).await.map_err(|error| (error, None))
                 .map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?
         };
         guard().await?;
@@ -4086,7 +4086,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let generation = if let Some(expected) = expected_generation {
             fork_preparer_io::generation(self, &workspace, expected, &scratch).await?
         } else {
-            workspace.head_with_native_work(work, work.cancellation()).await
+            workspace.head(work, work.cancellation()).await.map_err(|error| (error, None))
                 .map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?
         };
         guard().await?;
@@ -4508,8 +4508,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             Some(reference) => {
                 let generation = self.generation(&workspace, reference).await?;
                 workspace
-                    .begin_transaction_at(&generation, key)
-                    .await
+                    .begin_transaction_at(&generation, key, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                     .map_err(map_error)?
             }
             None => workspace.begin_transaction(key, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(map_error)?,

@@ -309,7 +309,7 @@ impl PiForkCoordinator {
         let workspace = self.resources.fs.open_workspace_with_native_work(&name.0, work, work.cancellation()).await
             .map_err(native_workspace_error)?;
         (owner).verify_with_native_work(false, &self.work).await?;
-        let head = workspace.head_with_native_work(work, work.cancellation()).await.map_err(native_workspace_error)?;
+        let head = workspace.head(work, work.cancellation()).await.map_err(|error| native_workspace_error((error, None)))?;
         (owner).verify_with_native_work(false, &self.work).await?;
         acyclic_harness::resources::GenerationRef::new_with_native_work(
             volume.provider(), head.id().digest().as_bytes(), None, work)

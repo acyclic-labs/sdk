@@ -463,8 +463,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             if reservation.is_none() {
                 return Ok(());
             }
-            let head = workspace.head_with_native_work(work, cancellation)
-                .await.map_err(|(cause, custody)| Error::NativeWorkspace { source: cause, custody })?;
+            let head = workspace.head(work, cancellation)
+                .await.map_err(|source| Error::NativeWorkspace { source, custody: None })?;
             if head.id() != original_generation {
                 return Err(reservation_selection("native reservation generation differs from original selection"));
             }
@@ -1502,9 +1502,9 @@ where
                     &workspace, binding.generation, volume_work,
                 ).await?;
                 if binding.writable {
-                    let head = workspace.head_with_native_work(
+                    let head = workspace.head(
                         volume_work, cancellation,
-                    ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+                    ).await.map_err(|source| Error::NativeWorkspace { source, custody: None })?;
                     if head.id() != generation.id() {
                         return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, reason: "native destination generation is stale" });
                     }

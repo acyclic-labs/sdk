@@ -6157,7 +6157,7 @@ where
         if excluded { continue; }
         if before_directory && after_directory {
             let (absolute, _absolute_custody) = native_absolute_string(&path, &work)?;
-            let stat = to_generation.stat_with_native_work(&absolute, &work, cancellation).await?;
+            let stat = to_generation.stat(&absolute, &work, cancellation).await.map_err(|error| (error, None))?;
             let (image, mut image_custody) = encode_native_metadata(&stat.metadata, &work)?;
             path_allocation.absorb(&mut image_custody)?;
             native_vec_push(&mut metadata_edits, (MaterializationEdit::SetMetadata { path, image }, path_allocation), &mut metadata_storage)?;
@@ -6299,7 +6299,7 @@ async fn native_preflight_path<A: crate::AsyncAuthorityStore, O: crate::AsyncObj
     native_vec_push(&mut pending, (path, walk_children, custody), &mut storage)?;
     while let Some((path, walk_children, _custody)) = pending.pop() {
         let (absolute, _absolute_custody) = native_absolute_string(&path, work)?;
-        let source = match generation.stat_with_native_work(&absolute, work, cancellation).await {
+        let source = match generation.stat(&absolute, work, cancellation).await.map_err(|error| (error, None)) {
             Ok(source) => Some(source),
             Err((crate::WorkspaceError::NotFound, allocation)) => { drop(allocation); None }
             Err(cause) => return Err(cause.into()),

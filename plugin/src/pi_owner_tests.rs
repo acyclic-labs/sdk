@@ -149,7 +149,7 @@ async fn pi_root_input_staging_reuses_original_upload_and_narrow_read_authority(
         .open_workspace_with_native_work(&owner.policy.journal.storage_name().unwrap(), &observation, observation.cancellation())
         .await
         .unwrap();
-    let original_head = workspace.head_with_native_work(&observation, observation.cancellation()).await.unwrap().id();
+    let original_head = workspace.head(&observation, observation.cancellation()).await.unwrap().id();
     let PiRootIntent::Project { paths, .. } = &mut changed.root else {
         unreachable!()
     };
@@ -164,7 +164,7 @@ async fn pi_root_input_staging_reuses_original_upload_and_narrow_read_authority(
             .await
             .is_err()
     );
-    assert_eq!(workspace.head_with_native_work(&observation, observation.cancellation()).await.unwrap().id(), original_head);
+    assert_eq!(workspace.head(&observation, observation.cancellation()).await.unwrap().id(), original_head);
     assert_eq!(
         filesystem
             .read_content(&reference, &read, owner.policy.maximum_payload_bytes)
@@ -360,7 +360,7 @@ async fn pi_root_input_staging_requires_original_owner_explicit_read_and_finite_
             .open_workspace_with_native_work(&owner.policy.journal.storage_name().unwrap(), &observation, observation.cancellation())
             .await
             .unwrap();
-        let original_head = workspace.head_with_native_work(&observation, observation.cancellation()).await.unwrap().id();
+        let original_head = workspace.head(&observation, observation.cancellation()).await.unwrap().id();
         if failure == "owner" {
             fs::remove_file(session.path().join(OWNER_FILE)).unwrap();
         }
@@ -374,7 +374,7 @@ async fn pi_root_input_staging_requires_original_owner_explicit_read_and_finite_
         assert!(result.is_err(), "accepted {failure}");
         assert!(!session.path().join("unopened-selected-root").exists());
         assert_eq!(
-            workspace.head_with_native_work(&observation, observation.cancellation()).await.unwrap().id(),
+            workspace.head(&observation, observation.cancellation()).await.unwrap().id(),
             original_head,
             "mutated storage for {failure}"
         );
@@ -590,7 +590,7 @@ async fn pi_root_startup_quota_and_cancellation_do_not_publish_inputs() {
     let (owner, filesystem, request, raw) = root_input_fixture(session.path(), None, |_| {}).await;
     let observation = crate::pi_fork::tests::work();
     let workspace = raw.open_workspace_with_native_work(&owner.policy.journal.storage_name().unwrap(), &observation, observation.cancellation()).await.unwrap();
-    let original = workspace.head_with_native_work(&observation, observation.cancellation()).await.unwrap().id();
+    let original = workspace.head(&observation, observation.cancellation()).await.unwrap().id();
     let limited = NativeMaterializationWork::new(WorkBudget {
         peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 1,
         ..crate::pi_root_provider::allocation_budget()
@@ -599,7 +599,7 @@ async fn pi_root_startup_quota_and_cancellation_do_not_publish_inputs() {
     assert!(matches!(stage_root_command(&owner, &filesystem, &request, &limited).await,
         Err(Error::NativeWork { cause: NativeTreeMaterializationError::Work(_), .. })));
     assert_eq!(limited.live_allocation_bytes(), baseline);
-    assert_eq!(workspace.head_with_native_work(&observation, observation.cancellation()).await.unwrap().id(), original);
+    assert_eq!(workspace.head(&observation, observation.cancellation()).await.unwrap().id(), original);
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
     let before = work.receipt();
@@ -607,7 +607,7 @@ async fn pi_root_startup_quota_and_cancellation_do_not_publish_inputs() {
     assert!(matches!(stage_root_command(&owner, &filesystem, &request, &work).await,
         Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
     assert_eq!(work.receipt(), before);
-    assert_eq!(workspace.head_with_native_work(&observation, observation.cancellation()).await.unwrap().id(), original);
+    assert_eq!(workspace.head(&observation, observation.cancellation()).await.unwrap().id(), original);
     assert!(!session.path().join("unopened-selected-root").exists());
 }
 

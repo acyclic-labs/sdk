@@ -191,7 +191,7 @@ impl Fixture {
         let observation = work();
         self.raw.open_workspace_with_native_work(&self.owner.policy.journal.storage_name().unwrap(),
             &observation, observation.cancellation()).await.unwrap()
-            .head_with_native_work(&observation, observation.cancellation()).await.unwrap().id()
+            .head(&observation, observation.cancellation()).await.unwrap().id()
     }
 
     async fn load(&self) -> Result<PiRootPreparation> {
