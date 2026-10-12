@@ -1,6 +1,6 @@
 //! Provider-owned fork preparation journal and exact Filesystem captures.
 
-use super::{FilesystemHost, ParentProjectController, WorkspaceMutation, map_error, workspace_ref};
+use super::{FilesystemHost, ParentProjectController, WorkspaceMutation, map_error};
 use crate::contract::capability;
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
@@ -68,59 +68,14 @@ fn seed_creation_volumes(seed: &ForkSeed) -> Result<impl Iterator<Item=(&VolumeR
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct AllocationClaim {
+pub(crate) struct AllocationClaim {
     operation_id: OperationId,
     preparation_digest: [u8; 32],
-    task_origin: Option<ResourceCreationOrigin>,
+    pub(crate) task_origin: Option<ResourceCreationOrigin>,
     parent: Authority,
     child: Authority,
     volume: VolumeRef,
     role: ForkAllocationRole,
-}
-
-/// A read-only observation of the actual protected fork allocation journal.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) struct OriginalForkAllocationClaim {
-    claim: AllocationClaim,
-    request: crate::resource_preparation::ResourcePreparationRequest,
-    custody: acyclic_fs::NativeAllocation,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl OriginalForkAllocationClaim {
-    pub(crate) fn origin(&self) -> &ResourceCreationOrigin {
-        self.claim.task_origin.as_ref().expect("authenticated fork claim retains its original task")
-    }
-
-    pub(crate) fn request(&self) -> &crate::resource_preparation::ResourcePreparationRequest {
-        &self.request
-    }
-
-    pub(crate) fn matches_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> bool {
-        self.custody.matches_work(work)
-    }
-
-    pub(crate) fn into_request(
-        self,
-    ) -> Result<(crate::resource_preparation::ResourcePreparationRequest, acyclic_fs::NativeAllocation)> {
-        let released = bounded_io::UploadRecord::logical_owned_bytes(&self.claim)?;
-        let Self { claim, request, mut custody } = self;
-        drop(claim);
-        if let Err(cause) = custody.release(released) {
-            drop(request);
-            return Err(Error::NativeWork { cause, custody: Some(custody) });
-        }
-        Ok((request, custody))
-    }
-
-    pub(crate) fn into_native_error(
-        self, cause: acyclic_fs::NativeTreeMaterializationError,
-    ) -> Error {
-        let Self { claim, request, custody } = self;
-        drop(claim);
-        drop(request);
-        Error::NativeWork { cause, custody: Some(custody) }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -1075,12 +1030,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
     }
 
     fn journal_ref(&self, request: &ForkRequest) -> Result<WorkspaceRef> {
-        let name = bounded_io::format_text(
-            format_args!("harness-fork-preparation-{}", request.operation_id), self.io.as_ref())?;
-        match &self.io {
-            Some(io) => WorkspaceRef::new(self.host.provider.clone_with_io(io)?, name.into_bytes(), None),
-            None => workspace_ref(self.host.provider.clone(), &name),
-        }
+        preparation_journal(&self.host.provider, request.operation_id, self.io.as_ref())
     }
 
     async fn read_claim(&self, journal: &WorkspaceRef, request: &ForkRequest) -> Result<bool> {
@@ -1648,7 +1598,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
 
 /// The member proof is produced by the canonical authenticated manifest traversal and retained in the protected original report/seed binding.
 pub(super) fn require_reference_donor(grants: &crate::Capabilities, reference: &ReferenceGrant) -> Result<()> {
-    reference.validate()?;
+    reference.validate(&mut None)?;
     if crate::runtime::read_granted(grants, &reference.file)? {
         return Ok(());
     }
@@ -1777,14 +1727,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 
     /// Reads the original protected claim through the same bounded codec as publication verification.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn observe_original_fork_allocation_claim_with_native_work<'a, P: StreamProvider>(
+    pub(crate) fn fork_allocation<'a, P: StreamProvider>(
         &'a self,
         witness: &'a crate::durable_host::TaskAdmissionReadonlyWitness<P>,
         query: &'a Arc<crate::runtime::NativeTaskContext>,
         admitted: &'a crate::resource_preparation::ResourcePreparationRequest,
         volume: &'a VolumeRef,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, Option<OriginalForkAllocationClaim>>> {
+    ) -> Result<crate::NativeFutureBundle<'a, Option<(AllocationClaim, crate::resource_preparation::ResourcePreparationRequest, acyclic_fs::NativeAllocation)>>> {
         let original = witness.original_preparation_request_with_native_work(query, work)?;
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
@@ -1831,7 +1781,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             )?;
             let encoded_hold;
             let encoded = io.encode(&*fork, MAX_REQUEST_BYTES.min(request.maximum_bytes))?;
-            encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
+            encoded_hold = io.guard_bytes(&encoded)?;
             let hash = WorkCounters { bytes_hashed: encoded.len() as u64, ..WorkCounters::default() };
             io.preflight(hash)?;
             let preparation_digest = *blake3::hash(&encoded).as_bytes();
@@ -1867,7 +1817,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             drop(fork);
             let retained = io.owned_bytes()?;
             let custody = io.take_native_custody(retained)?;
-            Ok(Some(OriginalForkAllocationClaim { claim, request, custody }))
+            Ok(Some((claim, request, custody)))
         })
     }
 
@@ -2068,6 +2018,12 @@ fn reference_selection(
     }
     if let Some(io) = io { io.claim(std::mem::size_of::<(String, crate::AgentId)>() as u64)?; }
     Ok(selected.insert(selection))
+}
+
+fn preparation_journal(provider: &ProviderRef, operation: OperationId, io: Option<&PreparationIo>) -> Result<WorkspaceRef> {
+    let name = bounded_io::format_text(format_args!("harness-fork-preparation-{operation}"), io)?;
+    let provider = match io { Some(io) => provider.clone_with_io(io)?, None => provider.clone() };
+    WorkspaceRef::new(provider, name.into_bytes(), None)
 }
 
 fn allocation_ref(provider: &ProviderRef, volume: &VolumeRef, io: Option<&PreparationIo>) -> Result<WorkspaceRef> {

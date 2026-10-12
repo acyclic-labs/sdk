@@ -1321,7 +1321,7 @@ where
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "readonly fork request differs from its original admission" });
         }
-        let claim = self.filesystem.observe_original_fork_allocation_claim_with_native_work(
+        let claim = self.filesystem.fork_allocation(
             &witness, query, &original.0, &self.volume, work,
         )?.await?;
         let Some(claim) = claim else { return Ok(None); };
