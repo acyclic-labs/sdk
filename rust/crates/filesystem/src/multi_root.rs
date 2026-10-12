@@ -536,7 +536,7 @@ where
             if_target: plan.target_head(),
             idempotency_key: operation,
         };
-        let initial = plan.apply(options, permit).await?;
+        let initial = plan.apply(options, BTreeMap::new(), permit).await?;
         let JoinOutcome::Conflicted {
             conflicts,
             truncated,

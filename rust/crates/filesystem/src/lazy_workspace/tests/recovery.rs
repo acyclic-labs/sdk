@@ -135,11 +135,7 @@ async fn open_recovers_remove_intent_from_authored_state() {
     else {
         panic!("expected authored file");
     };
-    let record = root
-        .workspace()
-        .record_by_id(stat.file_id)
-        .await
-        .expect("authored record");
+    let record = root.workspace().checkout(crate::model::GenerationSelector::Head, crate::model::CheckoutMode::read_only_pinned(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.expect("checkout").value.read_file_record_by_id(stat.file_id, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.expect("authored record").value;
     let staged_shadows = root
         .insert_shadow(
             prior.shadows,

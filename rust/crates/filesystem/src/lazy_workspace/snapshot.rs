@@ -71,7 +71,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                             crate::PublicationPermit::Unrestricted,
                             original,
                             cancellation,
-                            crate::NativeAuthorityGuard((|_| async { Ok::<(), LazyWorkspaceError>(()) }).clone()),
+                            crate::NativeAuthorityGuard(|_: &crate::NativeMaterializationWork| std::future::ready(Ok::<(), LazyWorkspaceError>(()))),
                         )
                         .await?
                 };
