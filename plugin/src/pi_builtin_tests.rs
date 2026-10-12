@@ -24,7 +24,7 @@ async fn original_native_actor(
 
 #[tokio::test]
 async fn issued_task_context_alone_cannot_bypass_the_accepted_tool_callback() {
-    let fixture = crate::pi_fork::tests::Fixture::new().await;
+    let fixture = crate::pi_fork::tests::Fixture::new(None).await;
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
     let (context, _owner) = original_native_actor(&fixture, &work).await;
@@ -39,7 +39,7 @@ async fn issued_task_context_alone_cannot_bypass_the_accepted_tool_callback() {
 
 #[tokio::test]
 async fn builtin_arguments_cannot_substitute_the_original_sdk_invocation_actor() {
-    let fixture = crate::pi_fork::tests::Fixture::new().await;
+    let fixture = crate::pi_fork::tests::Fixture::new(None).await;
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
     let (context, _owner) = original_native_actor(&fixture, &work).await;
@@ -77,13 +77,13 @@ fn original_builtin_operation_binds_caller_tool_and_phase() {
     let root = TaskId::from_bytes([2; 16]);
     let read = request(PiBuiltinIo::EditRead { maximum_bytes: MAXIMUM_BUILTIN_BYTES });
     let write = request(PiBuiltinIo::EditWrite { content: "new".into(), expected_sha256: "00".repeat(32) });
-    assert_ne!(read.operation(root), write.operation(root));
+    assert_ne!(read.operation(root, &crate::pi_fork::tests::work()).unwrap(), write.operation(root, &crate::pi_fork::tests::work()).unwrap());
     let mut other = read.clone();
     other.caller = TaskId::from_bytes([3; 16]);
-    assert_ne!(read.operation(root), other.operation(root));
+    assert_ne!(read.operation(root, &crate::pi_fork::tests::work()).unwrap(), other.operation(root, &crate::pi_fork::tests::work()).unwrap());
     other = read.clone();
     other.sdk_operation.push_str("-other");
-    assert_ne!(read.operation(root), other.operation(root));
+    assert_ne!(read.operation(root, &crate::pi_fork::tests::work()).unwrap(), other.operation(root, &crate::pi_fork::tests::work()).unwrap());
 }
 
 #[test]
@@ -143,7 +143,7 @@ fn read_fallback_cannot_launder_owner_denials_or_outside_variants() {
 
 #[tokio::test]
 async fn real_original_owner_grant_and_cancel_checks_are_used_by_builtins() {
-    let fixture = crate::pi_fork::tests::Fixture::new().await;
+    let fixture = crate::pi_fork::tests::Fixture::new(None).await;
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
     let (context, owner) = original_native_actor(&fixture, &work).await;
@@ -185,7 +185,7 @@ async fn real_original_owner_grant_and_cancel_checks_are_used_by_builtins() {
 #[tokio::test]
 async fn genuine_held_sdk_leaf_preserves_allowed_read_write_and_exact_edit() {
     use sha2::{Digest as _, Sha256};
-    let fixture = crate::pi_fork::tests::Fixture::new().await;
+    let fixture = crate::pi_fork::tests::Fixture::new(None).await;
     let temporary = tempfile::tempdir().unwrap();
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
@@ -214,7 +214,7 @@ async fn genuine_held_sdk_leaf_preserves_allowed_read_write_and_exact_edit() {
 #[cfg(unix)]
 #[tokio::test]
 async fn genuine_held_sdk_leaf_rejects_symlink_outside_before_read_or_write() {
-    let fixture = crate::pi_fork::tests::Fixture::new().await;
+    let fixture = crate::pi_fork::tests::Fixture::new(None).await;
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().join("view");
     std::fs::create_dir(&root).unwrap();
@@ -234,7 +234,7 @@ async fn genuine_held_sdk_leaf_rejects_symlink_outside_before_read_or_write() {
 
 #[tokio::test]
 async fn original_task_cancellation_and_replaced_root_fail_before_leaf_io() {
-    let fixture = crate::pi_fork::tests::Fixture::new().await;
+    let fixture = crate::pi_fork::tests::Fixture::new(None).await;
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path().join("view");
     std::fs::create_dir(&root).unwrap();
@@ -257,7 +257,7 @@ async fn original_task_cancellation_and_replaced_root_fail_before_leaf_io() {
 
 #[tokio::test]
 async fn failed_whole_file_checks_spend_the_original_quota_without_reading_payload() {
-    let fixture = crate::pi_fork::tests::Fixture::new().await;
+    let fixture = crate::pi_fork::tests::Fixture::new(None).await;
     let temporary = tempfile::tempdir().unwrap();
     std::fs::write(temporary.path().join("file"), b"larger than request").unwrap();
     let cancellation = CancellationToken::new();
@@ -287,11 +287,11 @@ async fn failed_whole_file_checks_spend_the_original_quota_without_reading_paylo
 #[tokio::test]
 async fn actual_child_result_identity_cannot_be_labeled_as_a_native_builtin_volume() {
     use acyclic_harness::filesystem::{NativeViewManifest, NativeViewOptions, NativeVolumeMapping, NativeVolumeNamespace};
-    let fixture = crate::pi_fork::tests::Fixture::new().await;
+    let fixture = crate::pi_fork::tests::Fixture::new(None).await;
     let cancellation = CancellationToken::new();
     let work = NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
     let (context, owner) = original_native_actor(&fixture, &work).await;
-    let plan = fixture.plan_with_native_work(&work).await;
+    let plan = fixture.plan(&work).await;
     let coordinator = crate::pi_fork::PiForkCoordinator::new(
         fixture.runtime.clone(), fixture.filesystem.clone(), fixture.stream.clone(),
         &fixture.resources, fixture.owner.clone(), &work).unwrap();

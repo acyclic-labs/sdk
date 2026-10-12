@@ -1,12 +1,9 @@
 use super::*;
+use crate::pi_fork::tests::work;
 use crate::{pi_caller, pi_fork::tests::Fixture};
 use acyclic_harness::{core::Scope, filesystem::FilesystemExecutionJournal,
     executor::ExecutionJournal, interaction::{Interaction, InteractionResponse}, tool::ToolApprovalVerifier,
     InteractionId};
-
-fn work() -> NativeMaterializationWork {
-    NativeMaterializationWork::new(pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap()
-}
 
 #[test]
 fn operator_cli_requires_explicit_original_operation_and_decision() {
@@ -50,7 +47,7 @@ fn prepared_descriptor_admission_fails_before_typed_growth_without_fake_allocati
 
 #[tokio::test]
 async fn real_root_operator_rejects_pi_caller_forgery_foreign_operation_and_foreign_owner() {
-    let fixture = Fixture::new().await;
+    let fixture = Fixture::new(None).await;
     let state = crate::AdapterState { root_session_id: fixture.root_request.binding.native_session_id.clone(),
         root_agent_id: "fork-root".into(), task_binding: crate::PluginTaskBinding::Pi(Box::new(fixture.root_request.binding.clone())),
         ..crate::AdapterState::default() };
@@ -79,7 +76,7 @@ async fn real_root_operator_rejects_pi_caller_forgery_foreign_operation_and_fore
     request.body = PiOperatorBody::Inspect { session: state.root_session_id.clone(), operation: "foreign-sdk-operation".into(),
         project_files: false, file_evidence: None };
     assert!(verify_request(&fixture.owner, &state.root_session_id, &request, &original_work).is_err());
-    let foreign = Fixture::new().await;
+    let foreign = Fixture::new(None).await;
     assert!(verify_request(&foreign.owner, &state.root_session_id, &request, &original_work).is_err());
     let scope: Scope = fixture.owner.authority().unwrap().issuer.root_for_agent(fixture.commit.child.agent_id,
         request.operator.id(), request.operator.capabilities().clone());
@@ -89,13 +86,12 @@ async fn real_root_operator_rejects_pi_caller_forgery_foreign_operation_and_fore
     drop(parsed_custody);
 }
 
-/// Production LocalStream, Filesystem and admitted Root conversation.
 #[tokio::test]
 async fn original_root_interaction_rejects_wrong_digest_foreign_operation_and_decline_survives_reopen() {
-    let fixture = Fixture::new().await;
+    let fixture = Fixture::new(None).await;
     fixture.journal.verify_dispatch().await.unwrap();
     let root = fixture.owner.policy().root_task;
-    let operation = crate::pi_fork::derived(crate::pi_fork::original_operation(root, root, "writeback-sdk"), "selected-writeback");
+    let operation = crate::pi_fork::derived(crate::pi_fork::original_operation(root, root, "writeback-sdk", &crate::pi_fork::tests::work()).unwrap(), "selected-writeback", &crate::pi_fork::tests::work()).unwrap();
     let grants = Capabilities::new(fixture.owner.policy().grants.iter().map(str::to_owned).chain([
         "interaction:open".into(), "interaction:resolve".into(), "interaction:observe".into(),
     ]));
@@ -106,8 +102,14 @@ async fn original_root_interaction_rejects_wrong_digest_foreign_operation_and_de
     let digest = *blake3::hash(b"exact-original-root-selected-writeback-input").as_bytes();
     let journal = make_journal();
     journal.open_interaction(approval, Interaction::approval("Exact Root writeback", operation, digest).unwrap()).await.unwrap();
-    let (_, _, responder) = fixture.owner.conversation_authority(root, fixture.owner.policy().agent,
-        Capabilities::new(["interaction:resolve".into(), format!("interaction:respond:{approval}")])).unwrap();
+    let response_grants = Capabilities::new(["interaction:resolve".into(), format!("interaction:respond:{approval}")]);
+    let foreign = acyclic_harness::core::AuthorityIssuer::new(issuer.id(), [213; 32], issuer.verifier().audience().clone())
+        .root_for_agent(fixture.owner.policy().agent, "foreign-root", response_grants.clone());
+    assert!(journal.resolve_interaction(approval, InteractionResponse::Approval { approved: true, reason: None }, &foreign).await.is_err());
+    let (_, _, other) = fixture.owner.conversation_authority(TaskId::from_bytes([213; 16]),
+        fixture.owner.policy().agent, response_grants.clone()).unwrap();
+    assert!(journal.resolve_interaction(approval, InteractionResponse::Approval { approved: true, reason: None }, &other).await.is_err());
+    let (_, _, responder) = fixture.owner.conversation_authority(root, fixture.owner.policy().agent, response_grants).unwrap();
     journal.resolve_interaction(approval, InteractionResponse::Approval { approved: false, reason: None }, &responder).await.unwrap();
     drop(journal); // Host ACK was not retained by the client.
     let reopened = make_journal();
@@ -122,6 +124,9 @@ async fn original_root_interaction_rejects_wrong_digest_foreign_operation_and_de
     drop(reopened);
     let reopened = make_journal();
     ToolApprovalVerifier::verify(&reopened, approved, operation, digest).await.unwrap();
+    assert!(reopened.resolve_interaction(InteractionId::from_bytes([215; 16]),
+        InteractionResponse::Approval { approved: true, reason: None }, &responder).await.is_err());
+    assert!(reopened.open_interaction(approved, Interaction::approval("Changed reused request", operation, [213; 32]).unwrap()).await.is_err());
     assert!(ToolApprovalVerifier::verify(&reopened, approved, operation, [213; 32]).await.is_err());
     assert!(ToolApprovalVerifier::verify(&reopened, approved, OperationId::from_bytes([214; 16]), digest).await.is_err());
     fixture.journal.verify_dispatch().await.unwrap();
@@ -131,9 +136,9 @@ async fn original_root_interaction_rejects_wrong_digest_foreign_operation_and_de
 async fn actual_admitted_child_cannot_read_root_only_operator_proof_or_upgrade_its_caller() {
     use acyclic_harness::{filesystem::{TaskWorkerAttempt, TaskWorkerOutcome},
         distributed::Worker, scheduler::{LeaseFence, ResourceSnapshot}};
-    let fixture = Fixture::new().await;
+    let fixture = Fixture::new(None).await;
     let work = work();
-    let plan = fixture.plan_with_native_work(&work).await;
+    let plan = fixture.plan(&work).await;
     let coordinator = crate::pi_fork::PiForkCoordinator::new(
         fixture.runtime.clone(), fixture.filesystem.clone(), fixture.stream.clone(),
         &fixture.resources, fixture.owner.clone(), &work).unwrap();
@@ -165,9 +170,9 @@ async fn actual_admitted_child_cannot_read_root_only_operator_proof_or_upgrade_i
     drop(request);
     drop(request_custody);
     let mut request = parsed_request;
-    let original = crate::pi_fork::original_operation_with_native_work(fixture.owner.policy().root_task,
+    let original = crate::pi_fork::original_operation(fixture.owner.policy().root_task,
         fixture.owner.policy().root_task, request.body.operation(), &work).unwrap();
-    let operation = crate::pi_fork::derived_with_native_work(original, "selected-writeback-publish", &work).unwrap();
+    let operation = crate::pi_fork::derived(original, "selected-writeback-publish", &work).unwrap();
     let private_custody;
     let private;
     (private, private_custody) = pi_root_provider::stage_pi_operator_input(
@@ -192,7 +197,7 @@ async fn actual_admitted_child_cannot_read_root_only_operator_proof_or_upgrade_i
 
 #[tokio::test]
 async fn passive_original_operation_pending_encodes_own_rpc_identity_without_task_graph() {
-    let fixture = Fixture::new().await;
+    let fixture = Fixture::new(None).await;
     let session = "original-passive-rpc-session";
     let native_session = &fixture.root_request.binding.native_session_id;
     let caller = fixture.owner.policy().root_task;

@@ -1,4 +1,5 @@
 use super::*;
+use crate::pi_fork::tests::work;
 use acyclic_harness::{AgentId, Capabilities, TaskId,
     conversation::{Limits, VolumeClass, VolumeOwner, VolumeRef},
     resources::ProviderRef, runtime::TaskRunLimits, scheduler::SessionLimits};
@@ -11,11 +12,11 @@ fn fixture() -> (pi_owner::PiOwnerConfig, AdapterState) {
         VolumeOwner::Agent(agent)).unwrap();
     let scratch = VolumeRef::new(provider, "scratch", VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent)).unwrap();
-    let owner = pi_owner::PiOwnerConfig::new(pi_owner::PiOwnerPolicy {
+    let owner = pi_owner::PiOwnerConfig::new(&pi_owner::PiOwnerPolicy {
         root_task: task, agent, journal, grants: Capabilities::new(["operation:declare", "operation:observe"]),
         limits: Limits::default(), run_limits: TaskRunLimits::default(),
         session_limits: SessionLimits::default(), concurrency: 1, maximum_payload_bytes: 4096,
-    }).unwrap();
+    }, None, &crate::pi_fork::tests::work()).unwrap();
     let state = AdapterState { root_session_id: "native-root".to_owned(),
         root_agent_id: "native-root".to_owned(), task_binding: PluginTaskBinding::Pi(Box::new(PiTaskBinding {
             native_session_id: "native-root".to_owned(), task_id: task, agent_id: agent,
@@ -31,7 +32,7 @@ fn fixture() -> (pi_owner::PiOwnerConfig, AdapterState) {
 fn extra_grants_and_scope_claim_substitution_are_rejected() {
     let (owner, state) = fixture();
     let PluginTaskBinding::Pi(binding) = &state.task_binding else { unreachable!() };
-    let work = caller_work();
+    let work = work();
     let caller = issue(&owner, &state.root_session_id, binding, &work).unwrap();
     let expanded = owner.authority().unwrap().issuer.root_for_agent(binding.agent_id,
         caller.0.id(), Capabilities::new([CALLER_CAPABILITY, "operation:declare"]));
@@ -44,12 +45,6 @@ fn extra_grants_and_scope_claim_substitution_are_rejected() {
     assert!(verify(&owner, &state, &substituted, "native-root", &work).is_err());
 }
 
-fn caller_work() -> acyclic_fs::NativeMaterializationWork {
-    acyclic_fs::NativeMaterializationWork::new(
-        pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new(),
-    ).unwrap()
-}
-
 #[test]
 fn native_caller_uses_original_claim_encoding_and_original_owner() {
     let (owner, mut state) = fixture();
@@ -57,7 +52,7 @@ fn native_caller_uses_original_claim_encoding_and_original_owner() {
     let PluginTaskBinding::Pi(binding) = &mut state.task_binding else { unreachable!() };
     binding.native_session_id = state.root_session_id.clone();
     let PluginTaskBinding::Pi(binding) = &state.task_binding else { unreachable!() };
-    let work = caller_work();
+    let work = work();
     let caller = issue(&owner, &state.root_session_id, binding, &work).unwrap();
     assert_eq!(serde_json::from_str::<Value>(caller.0.id()).unwrap(), json!({
         "version":1,"root_session":state.root_session_id,"native_session":binding.native_session_id,"task":binding.task_id
@@ -83,7 +78,7 @@ fn native_caller_uses_original_claim_encoding_and_original_owner() {
 fn native_caller_environment_retains_only_the_original_caller_proof() {
     let (owner, state) = fixture();
     let PluginTaskBinding::Pi(binding) = &state.task_binding else { unreachable!() };
-    let work = caller_work();
+    let work = work();
     let environment = issued_environment(&owner, &state.root_session_id, binding, &work).unwrap();
     assert_eq!(environment.0.len(), 1);
     let caller: Scope = serde_json::from_str(environment.0.get(CALLER_ENVIRONMENT).unwrap()).unwrap();

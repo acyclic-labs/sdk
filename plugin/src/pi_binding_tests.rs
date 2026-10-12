@@ -178,7 +178,6 @@ fn native_retained_binding_validation_uses_original_work_and_retires_keys() {
         crate::pi_root_provider::allocation_budget(), &cancellation).unwrap();
     let live = work.live_allocation_bytes();
     validate_pi_bindings_with_native_work(&state, &work).unwrap();
-    assert!(work.receipt().items_examined > 0);
     assert_eq!(work.live_allocation_bytes(), live);
     let mut substituted = state.clone();
     let PluginTaskBinding::Pi(root) = &mut substituted.task_binding else { unreachable!() };

@@ -8,7 +8,7 @@ fn created_route(fixture: &Fixture, plan: &pi_fork::PiForkPlan,
     Route {
         task_binding: PluginTaskBinding::Pi(Box::new(prepared.binding.clone())),
         agent_id: plan.commit.alias.clone(), turn_id: plan.commit.sdk_operation.clone(),
-        context_id: pi_fork::PiForkOperations::new(plan.original).fork.into_bytes(),
+        context_id: pi_fork::PiForkOperations::new(plan.original, &crate::pi_fork::tests::work()).unwrap().fork.into_bytes(),
         root_id, parent_agent_id: fixture.root_request.binding.native_session_id.clone(),
         roots: BTreeMap::from([(key.clone(), RouteRoot {
             root_id, repository_workspace_id: prepared.workspace.workspace().id().into_bytes(),
@@ -16,17 +16,17 @@ fn created_route(fixture: &Fixture, plan: &pi_fork::PiForkPlan,
         })]),
         mount_path: pi_native::planned_native_paths(&fixture.resources,
             &fixture.root_request.binding.native_session_id, prepared.binding.task_id,
-            Some(key)).unwrap().view_root,
+            Some(key), &crate::pi_fork::tests::work()).unwrap().0.view_root,
         lifecycle: RouteLifecycle::Active,
     }
 }
 
 #[tokio::test]
 async fn created_native_catalog_requires_original_alias_operation_uuid_and_creator() {
-    let fixture = Fixture::new().await;
-    let plan = fixture.plan().await;
+    let fixture = Fixture::new(None).await;
+    let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
     let prepared = fixture.advance_with(&fixture.coordinator(), &fixture.context, &fixture.journal,
-        fixture.fence.clone(), &plan, fixture.source.clone(),
+        &fixture.fence, &plan, fixture.source.clone(),
         pi_root_provider::allocation_budget(), CancellationToken::new())
         .await.unwrap().unwrap();
     let route = created_route(&fixture, &plan, &prepared);
@@ -55,10 +55,10 @@ async fn created_native_catalog_requires_original_alias_operation_uuid_and_creat
 
 #[tokio::test]
 async fn cold_source_observation_retains_original_cut_without_claiming_child_work() {
-    let fixture = Fixture::new().await;
-    let plan = fixture.plan().await;
+    let fixture = Fixture::new(None).await;
+    let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
     let prepared = fixture.advance_with(&fixture.coordinator(), &fixture.context, &fixture.journal,
-        fixture.fence.clone(), &plan, fixture.source.clone(),
+        &fixture.fence, &plan, fixture.source.clone(),
         pi_root_provider::allocation_budget(), CancellationToken::new())
         .await.unwrap().unwrap();
     let task = prepared.binding.task_id;
@@ -79,10 +79,10 @@ async fn cold_source_observation_retains_original_cut_without_claiming_child_wor
 
 #[tokio::test]
 async fn cold_created_child_dispatch_is_only_initial_and_unreserved() {
-    let fixture = Fixture::new().await;
-    let plan = fixture.plan().await;
+    let fixture = Fixture::new(None).await;
+    let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
     let prepared = fixture.advance_with(&fixture.coordinator(), &fixture.context, &fixture.journal,
-        fixture.fence.clone(), &plan, fixture.source.clone(),
+        &fixture.fence, &plan, fixture.source.clone(),
         pi_root_provider::allocation_budget(), CancellationToken::new())
         .await.unwrap().unwrap();
     let cancellation = CancellationToken::new();
@@ -95,8 +95,8 @@ async fn cold_created_child_dispatch_is_only_initial_and_unreserved() {
         available: acyclic_harness::scheduler::ResourceSnapshot::default(),
         labels: BTreeMap::new(),
     };
-    fixture.runtime.runtime.run_operation(&worker, prepared.binding.task_id,
-        &fixture.runtime.runtime.commands(), 1).await.unwrap().unwrap();
+    fixture.runtime.runtime.run_operation_with_native_work(&worker, prepared.binding.task_id,
+        &fixture.runtime.runtime.commands(), 1, &work).await.unwrap();
     assert!(!original_native_first_dispatch_pending(&fixture.runtime, &fixture.stream,
         &fixture.owner, &plan, &work).await.unwrap());
     fixture.runtime.runtime.task_host().cancel(prepared.binding.task_id).await.unwrap();

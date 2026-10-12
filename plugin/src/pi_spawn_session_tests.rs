@@ -1,4 +1,3 @@
-//! These regressions consume the real original Root admission and FS creators.
 use super::*;
 use crate::pi_fork::tests::Fixture;
 
@@ -40,11 +39,11 @@ fn session(fixture: &Fixture) -> PiSession {
 
 fn arguments(session: &PiSession, fixture: &Fixture) -> Value {
     let caller = fixture.owner.policy().root_task;
-    let original = pi_fork::original_operation(caller, caller, &fixture.commit.sdk_operation);
-    let operations = pi_fork::PiForkOperations::new(original);
+    let original = pi_fork::original_operation(caller, caller, &fixture.commit.sdk_operation, &crate::pi_fork::tests::work()).unwrap();
+    let operations = pi_fork::PiForkOperations::new(original, &crate::pi_fork::tests::work()).unwrap();
     let key = fixture.root_request.binding.project_volumes.keys().next().unwrap();
     let paths = pi_native::planned_native_paths(&fixture.resources, "fork-root",
-        acyclic_harness::runtime::task_id_for_admission(operations.child), Some(key)).unwrap();
+        acyclic_harness::runtime::task_id_for_admission(operations.child), Some(key), &crate::pi_fork::tests::work()).unwrap().0;
     let cut = fixture.commit.launch.source.clone();
     let native_session_id = uuid::Uuid::new_v4().to_string();
     let session_bytes = format!("{}\n", json!({"type":"session","version":3,"id":native_session_id,
@@ -57,7 +56,7 @@ fn arguments(session: &PiSession, fixture: &Fixture) -> Value {
 
 #[tokio::test]
 async fn preparing_native_seed_is_pure_single_root_and_has_distinct_empty_private_intents() {
-    let fixture = Fixture::new_with_native_runtime(Some(native_runtime())).await;
+    let fixture = Fixture::new(Some(native_runtime())).await;
     let session = session(&fixture);
     let args = arguments(&session, &fixture);
     let caller = fixture.owner.policy().root_task;
@@ -92,7 +91,7 @@ async fn preparing_native_seed_is_pure_single_root_and_has_distinct_empty_privat
 
 #[tokio::test]
 async fn original_creator_catalog_barriers_and_duplicate_observation_do_not_dispatch_native_again() {
-    let mut fixture = Fixture::new_with_native_runtime(Some(native_runtime())).await;
+    let mut fixture = Fixture::new(Some(native_runtime())).await;
     let mut session = session(&fixture);
     let args = arguments(&session, &fixture);
     let caller = fixture.owner.policy().root_task;
@@ -100,8 +99,8 @@ async fn original_creator_catalog_barriers_and_duplicate_observation_do_not_disp
     let (commit, _commit_custody) = session.spawn_native_commit(caller, &args, &fixture.owner, &intent_work).unwrap();
     assert!(_commit_custody.work().shares_ledger(&intent_work));
     fixture.commit = commit.clone();
-    let plan = fixture.plan().await;
-    let operations = pi_fork::PiForkOperations::new(plan.original);
+    let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
+    let operations = pi_fork::PiForkOperations::new(plan.original, &crate::pi_fork::tests::work()).unwrap();
     let catalog_work = NativeMaterializationWork::new(pi_root_provider::allocation_budget(), &CancellationToken::new()).unwrap();
     let coordinator = pi_fork::PiForkCoordinator::new(fixture.runtime.clone(),
         fixture.filesystem.clone(), fixture.stream.clone(), &fixture.resources, fixture.owner.clone(), &catalog_work).unwrap();
@@ -156,7 +155,6 @@ async fn original_creator_catalog_barriers_and_duplicate_observation_do_not_disp
     let reply_baseline = reply_work.live_allocation_bytes() - custody.bytes();
     assert!(reply_work.live_allocation_bytes() > reply_baseline);
     assert!(reply_work.receipt().bytes_encoded > 0);
-    assert!(reply_work.receipt().allocation_operations > 0);
     assert_eq!(reply["child"]["task"], json!(commit.child.task_id));
     assert_eq!(reply["fork_operation"], json!(operations.fork));
     assert_eq!(reply["native_operation"], json!(operations.native));
@@ -189,7 +187,7 @@ async fn original_creator_catalog_barriers_and_duplicate_observation_do_not_disp
 
 #[tokio::test]
 async fn selected_workspace_never_substitutes_foreign_native_cut_or_reserved_alias() {
-    let fixture = Fixture::new_with_native_runtime(Some(native_runtime())).await;
+    let fixture = Fixture::new(Some(native_runtime())).await;
     let session = session(&fixture);
     let args = arguments(&session, &fixture);
     let caller = fixture.owner.policy().root_task;

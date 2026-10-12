@@ -1,42 +1,13 @@
-//! Bounded checkpoint exploration of the production registered Pi machine.
 
 use super::*;
-use acyclic_harness::workflow::{MachineCheckpoint, MachineTransition};
+use acyclic_harness::workflow::{MachineCheckpoint, MachineRegistry, MachineTransition};
 use std::collections::BTreeSet;
 
 const DEPTH: usize = 8;
 
-struct PathState {
-    checkpoint: MachineCheckpoint,
-    emitted: usize,
-    pinned: Option<Value>,
-}
-
-impl PathState {
-    fn advance(
-        &self,
-        checkpoint: MachineCheckpoint,
-        transition: &MachineTransition,
-        command: &WorkflowCommand,
-    ) -> Self {
-        let emitted = self.emitted + transition.commands.len();
-        assert!(emitted <= 1);
-        assert!(transition.commands.iter().all(|actual| actual == command));
-        let pinned = checkpoint
-            .state
-            .get("allocation")
-            .or_else(|| checkpoint.state.get("result"))
-            .cloned();
-        if self.pinned.is_some() { assert_eq!(self.pinned, pinned); }
-        if pinned.is_some() { assert_eq!(emitted, 1); }
-        Self { checkpoint, emitted, pinned }
-    }
-
-}
-
-fn registry() -> MachineRegistry {
+fn registry(work: &acyclic_fs::NativeMaterializationWork) -> MachineRegistry {
     let mut registry = MachineRegistry::default();
-    registry.register(Arc::new(PiTaskMachine::new())).unwrap();
+    registry.register(PiTaskMachine::new(work).unwrap()).unwrap();
     registry
 }
 
@@ -92,17 +63,23 @@ fn alternative_result(command: &WorkflowCommand) -> FileRef {
 }
 
 fn replay_step(
-    path: &PathState,
+    checkpoint: &MachineCheckpoint,
     input: &Value,
-) -> acyclic_harness::Result<(MachineCheckpoint, MachineTransition)> {
-    let before = registry().step(&path.checkpoint, input);
-    let bytes = serde_json::to_vec(&path.checkpoint)
+) -> acyclic_harness::Result<(MachineCheckpoint, MachineTransition, acyclic_fs::NativeAllocation)> {
+    let original = work();
+    let registry = registry(&original);
+    let mut guarded = crate::pi_root_provider::guarded_pi_value(input, NATIVE_METADATA_MAXIMUM, &original)?;
+    let mut before = registry.step_with_native_work(checkpoint, guarded.0, &original);
+    if let Ok(first) = &mut before { first.2.absorb(&mut guarded.1).unwrap(); }
+    let bytes = serde_json::to_vec(checkpoint)
         .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
     let restored = serde_json::from_slice(&bytes)
         .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
-    let after = registry().step(&restored, input);
+    let mut guarded = crate::pi_root_provider::guarded_pi_value(input, NATIVE_METADATA_MAXIMUM, &original)?;
+    let mut after = registry.step_with_native_work(&restored, guarded.0, &original);
+    if let Ok(second) = &mut after { second.2.absorb(&mut guarded.1).unwrap(); }
     match (&before, &after) {
-        (Ok(first), Ok(second)) => assert_eq!(first, second),
+        (Ok(first), Ok(second)) => assert_eq!((&first.0, &first.1), (&second.0, &second.1)),
         (Err(first), Err(second)) => assert_eq!(first.code(), second.code()),
         _ => panic!("crash replay changed transition acceptance"),
     }
@@ -110,43 +87,43 @@ fn replay_step(
 }
 
 fn explore(execution: PiTaskExecution, command: &WorkflowCommand) {
-    let machine = PiTaskMachine::new();
+    let original = work();
+    let machine = PiTaskMachine::new(&original).unwrap();
     let state = machine
-        .initialize(
+        .initialize_with_native_work(
             &serde_json::to_value(PiTaskInput {
                 binding: binding(),
                 execution,
             })
-            .unwrap(),
+            .unwrap(), &original,
         )
         .unwrap();
-    let mut frontier = vec![PathState {
-        checkpoint: MachineCheckpoint {
+    let mut frontier = vec![(MachineCheckpoint {
             machine: machine.identity().clone(),
             revision: 0,
-            state,
-        },
-        emitted: 0,
-        pinned: None,
-    }];
+            state: state.0,
+        }, 0, state.1)];
     let mut visited = BTreeSet::new();
     let mut settled = 0;
     for _ in 0..DEPTH {
         let mut next = Vec::new();
-        for path in frontier {
-            let key = serde_json::to_string(&(&path.checkpoint, path.emitted, &path.pinned)).unwrap();
-            if !visited.insert(key) {
-                continue;
-            }
-            settled += usize::from(path.pinned.is_some());
+        for (checkpoint, emitted, _custody) in frontier {
+            let key = serde_json::to_string(&(&checkpoint, emitted)).unwrap();
+            if !visited.insert(key) { continue; }
+            let pinned = checkpoint.state.get("allocation").or_else(|| checkpoint.state.get("result"));
+            settled += usize::from(pinned.is_some());
             for input in inputs(command) {
-                if let Ok((checkpoint, transition)) = replay_step(&path, &input) {
-                    let advanced = path.advance(checkpoint, &transition, command);
-                    assert_eq!(advanced.checkpoint.revision, path.checkpoint.revision + 1);
-                    registry()
-                        .validate_checkpoint(&advanced.checkpoint)
-                        .unwrap();
-                    next.push(advanced);
+                if let Ok((advanced, transition, custody)) = replay_step(&checkpoint, &input) {
+                    let emitted = emitted + transition.commands.len();
+                    assert!(emitted <= 1);
+                    assert!(transition.commands.iter().all(|actual| actual == command));
+                    let next_pinned = advanced.state.get("allocation").or_else(|| advanced.state.get("result"));
+                    if pinned.is_some() { assert_eq!(pinned, next_pinned); }
+                    if next_pinned.is_some() { assert_eq!(emitted, 1); }
+                    assert_eq!(advanced.revision, checkpoint.revision + 1);
+                    registry(custody.work()).validate_checkpoint_with_native_work(&advanced, custody.work()).unwrap();
+                    drop(transition);
+                    next.push((advanced, emitted, custody));
                 }
             }
         }

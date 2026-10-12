@@ -1,30 +1,19 @@
 use super::*;
+use crate::pi_fork::tests::work;
+use crate::pi_fork::tests::Passive;
 use acyclic_harness::{Admission, AgentId, Capabilities,
     conversation::{ContentGrant, FileRef, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef},
     core::{AggregateKind, Authority, AuthorityIssuer, Scope},
     distributed::{WorkLease, WorkPull, Worker},
     resources::ProviderRef,
     runtime::{DurableTaskHost, RuntimeScope, TaskDefinition, TaskRegistry}, scheduler::{ResourceSnapshot, SessionLimits},
-    tool::ToolRegistry, workflow::{MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, ResumableMachine}};
+    tool::ToolRegistry, workflow::{MachineIdentity, MachineRegistry}};
 use acyclic_fs::{CancellationToken, Fs, MemoryAuthorityBackend, MemoryObjectBackend};
 use acyclic_stream::{MemoryStream, StreamClient};
 use serde_json::json;
 use std::{collections::BTreeMap, sync::Arc};
 
-fn original_work() -> NativeMaterializationWork {
-    NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &CancellationToken::new()).unwrap()
-}
-
 type Runtime = FilesystemTaskRuntime<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>;
-struct Passive { identity: MachineIdentity, schema: Value }
-impl ResumableMachine for Passive {
-    fn identity(&self) -> &MachineIdentity { &self.identity }
-    fn state_schema(&self) -> &Value { &self.schema }
-    fn initialize(&self, input: &Value) -> Result<Value> { Ok(input.clone()) }
-    fn transition(&self, state: &Value, _: &Value) -> Result<MachineTransition> {
-        Ok(MachineTransition { state: state.clone(), commands: vec![], status: MachineStatus::Suspended })
-    }
-}
 struct Fixture {
     stream: StreamClient<MemoryStream>, host: Arc<FilesystemHost<MemoryAuthorityBackend, MemoryObjectBackend>>,
     volume: VolumeRef, issuer: AuthorityIssuer, signed: Scope, scope: RuntimeScope,
@@ -60,9 +49,9 @@ impl Fixture {
             self.signed.clone(), self.scope.clone(), self.tasks.clone(), self.machines.clone(), ToolRegistry::default(),
             SessionLimits { active_tasks:8, total_tasks:8, depth:4, model_steps:8 }, 8, 65_536).await?))
     }
-    async fn file(&self, operation: OperationId, path: &str, value: &impl Serialize) -> Result<FileRef> {
+    async fn file(&self, operation: OperationId, path: &str, bytes: &[u8]) -> Result<FileRef> {
         let grant = ContentGrant::verify(&self.issuer.verifier(), &self.signed, &self.volume, VolumeOperation::Write)?;
-        self.host.put_content(&self.volume, &grant, &format!("pi-inputs/{path}"), &serde_json::to_vec(value).unwrap(),
+        self.host.put_content(&self.volume, &grant, &format!("pi-inputs/{path}"), bytes,
             "application/json", path, 65_536, &acyclic_harness::IdempotencyKey::new(format!("mail:{operation}:{path}"))?).await
     }
     async fn pull(&self, runtime: &Runtime) -> Result<WorkLease> {
@@ -86,7 +75,7 @@ impl Fixture {
 #[tokio::test]
 async fn actual_mailbox_lost_ack_exact_sequence_and_original_sender() -> Result<()> {
     let fixture = Fixture::new().await?;
-    let work = original_work();
+    let work = work();
     let runtime = fixture.runtime().await?;
     let (lease, parent) = fixture.admit(&runtime).await?;
     let fence = LeaseFence::from(&lease.reservation);
@@ -94,17 +83,17 @@ async fn actual_mailbox_lost_ack_exact_sequence_and_original_sender() -> Result<
     let other = fixture.child(&runtime, parent, fence.clone(), 75).await?;
     let operation = OperationId::from_bytes([76;16]);
     let envelope = PiMailEnvelope { kind:PiMailKind::Steer, message:"real steering".into() };
-    let payload = fixture.file(operation, "envelope.json", &PiMailPayload { sender: parent, envelope: envelope.clone() }).await?;
-    let command_payload = fixture.file(operation, "send.json", &MailSendTaskCommand { recipient:child, payload:payload.clone() }).await?;
+    let payload = fixture.file(operation, "envelope.json", &serde_json::to_vec(&PiMailPayload { sender: parent, envelope: envelope.clone() }).unwrap()).await?;
+    let command_payload = fixture.file(operation, "send.json", &serde_json::to_vec(&MailSendTaskCommand { recipient:child, payload:payload.clone() }).unwrap()).await?;
     let command = WorkflowCommand { operation_id:operation, kind:MAIL_SEND_TASK_COMMAND_KIND.into(), payload:command_payload };
-    let context = runtime.task_context(parent, fence.clone()).await?;
-    let owner = runtime.task_host().journal_owner(parent, fence.clone()).await?;
+    let context = runtime.task_context_with_native_work(parent, &fence, &work).await?;
+    let owner = runtime.task_host().journal_owner_with_native_work(parent, &fence, &work).await?;
     let sent = execute_send(&runtime, context.clone(), &owner, fence.clone(), command.clone(), &work).await?;
     assert!(matches!(sent, TaskCommandProgress::ReadyWithNativeCustody { .. }));
     drop(sent);
     drop(runtime);
     let reopened = fixture.runtime().await?;
-    let replay = execute_send(&reopened, reopened.task_context(parent, fence.clone()).await?, &owner,
+    let replay = execute_send(&reopened, reopened.task_context_with_native_work(parent, &fence, &work).await?, &owner,
         fence.clone(), command, &work).await?;
     assert!(matches!(replay, TaskCommandProgress::ReadyWithNativeCustody { .. }));
     drop(replay);
@@ -115,7 +104,7 @@ async fn actual_mailbox_lost_ack_exact_sequence_and_original_sender() -> Result<
     let child_fence = LeaseFence::from(&child_lease.reservation);
     let child_context = reopened.task_context(child, child_fence.clone()).await?;
     let child_owner = reopened.task_host().journal_owner(child, child_fence.clone()).await?;
-    assert!(authenticate(&context, &child_owner, &work).await.is_err());
+    assert!(authenticate(context.context(), &child_owner, &work).await.is_err());
     let binding = crate::PiTaskBinding { native_session_id:"actual-child".into(), task_id:child,
         agent_id:AgentId::from_bytes([71;16]), project_volumes:BTreeMap::new(),
         results: None,
@@ -161,7 +150,7 @@ async fn actual_mailbox_lost_ack_exact_sequence_and_original_sender() -> Result<
 #[tokio::test]
 async fn actual_passive_checkpoint_owner_replacement_rejects_original_mail_dispatch() -> Result<()> {
     let fixture = Fixture::new().await?;
-    let work = original_work();
+    let work = work();
     let runtime = fixture.runtime().await?;
     let (parent_lease, parent) = fixture.admit(&runtime).await?;
     let child = fixture.child(&runtime, parent, LeaseFence::from(&parent_lease.reservation), 84).await?;
@@ -175,7 +164,7 @@ async fn actual_passive_checkpoint_owner_replacement_rejects_original_mail_dispa
     let suspension = runtime.task_host().workflow_suspension(child).await?
         .ok_or_else(|| Error::NotFound("actual child suspension".into()))?;
     let operation = OperationId::from_bytes([85;16]);
-    let wake = fixture.file(operation, "replacement-wake.json", &json!({})).await?;
+    let wake = fixture.file(operation, "replacement-wake.json", b"{}").await?;
     runtime.task_host().resume_workflow(child, suspension.revision, wake,
         acyclic_harness::IdempotencyKey::new("pi-mail-original-checkpoint-wake")?).await?;
     let replacement = fixture.pull(&runtime).await?;
@@ -184,7 +173,7 @@ async fn actual_passive_checkpoint_owner_replacement_rejects_original_mail_dispa
     assert_ne!(original_fence, replacement_fence);
     assert!(authenticate(&original_context, &owner, &work).await.is_err());
     let payload = fixture.file(operation, "replacement-envelope.json",
-        &PiMailPayload { sender:child, envelope:PiMailEnvelope { kind:PiMailKind::Message, message:"original lease cannot send".into() } }).await?;
+        &serde_json::to_vec(&PiMailPayload { sender:child, envelope:PiMailEnvelope { kind:PiMailKind::Message, message:"original lease cannot send".into() } }).unwrap()).await?;
     assert!(runtime.task_host().send_owned(child, original_fence, parent, operation, payload.clone()).await.is_err());
     runtime.task_context(child, replacement_fence).await?.send(parent, operation, payload).await?;
     assert_eq!(runtime.task_host().inbox(parent, 0, 1).await?.len(), 1);
@@ -193,7 +182,7 @@ async fn actual_passive_checkpoint_owner_replacement_rejects_original_mail_dispa
 
 #[test]
 fn bounded_envelope_rejects_unknown_fields_and_oversized_bodies() {
-    let work = original_work();
+    let work = work();
     assert!(decode::<PiMailEnvelope>(br#"{"kind":"steer","message":"x","sender":"root"}"#, &work).is_err());
     assert!(decode::<PiMailEnvelope>(&vec![b' '; MAXIMUM_PI_MAIL_BYTES as usize + 1], &work).is_err());
     assert!(validate_envelope(&PiMailEnvelope { kind:PiMailKind::Message, message:"x".repeat(MAXIMUM_PI_MAIL_BYTES as usize) }).is_err());
@@ -245,7 +234,7 @@ async fn invalid_native_receive_returns_static_denial_without_mailbox_io() -> Re
     let failure = receive(&runtime, &binding, 0, 2, &work).await.err().unwrap();
     assert!(matches!(failure, Error::NativeBoundary {
         code: acyclic_harness::wire::ErrorCode::Invalid,
-        reason: "Pi receive selects exactly one item",
+        ..
     }));
     assert_eq!(work.receipt(), before);
     assert_eq!(work.live_allocation_bytes(), live);

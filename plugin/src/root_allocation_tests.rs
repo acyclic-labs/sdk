@@ -69,33 +69,15 @@ fn root_allocation_requires_complete_explicit_shape() {
         }),
     };
     let original = serde_json::to_value(&root).unwrap();
-    for field in ["root_id", "path", "allocation"] {
-        let mut changed = original.clone();
-        changed.as_object_mut().unwrap().remove(field);
-        assert!(
-            serde_json::from_value::<RootBinding>(changed).is_err(),
-            "{field}"
-        );
-    }
-    for field in [
-        "repository_workspace_id",
-        "source_identity",
-        "source_epoch",
-        "native_root_identity",
+    for pointer in [
+        "/root_id", "/path", "/allocation",
+        "/allocation/creation/repository_workspace_id", "/allocation/creation/source_identity",
+        "/allocation/creation/source_epoch", "/allocation/creation/native_root_identity",
     ] {
         let mut changed = original.clone();
-        changed
-            .get_mut("allocation")
-            .unwrap()
-            .get_mut("creation")
-            .unwrap()
-            .as_object_mut()
-            .unwrap()
-            .remove(field);
-        assert!(
-            serde_json::from_value::<RootBinding>(changed).is_err(),
-            "{field}"
-        );
+        let (parent, field) = pointer.rsplit_once('/').unwrap();
+        changed.pointer_mut(parent).unwrap().as_object_mut().unwrap().remove(field);
+        assert!(serde_json::from_value::<RootBinding>(changed).is_err(), "{pointer}");
     }
     for allocation in [
         Value::Null,
@@ -110,13 +92,7 @@ fn root_allocation_requires_complete_explicit_shape() {
         assert!(serde_json::from_value::<RootBinding>(changed).is_err());
     }
     let mut changed = original.clone();
-    changed
-        .get_mut("allocation")
-        .unwrap()
-        .get_mut("creation")
-        .unwrap()
-        .as_object_mut()
-        .unwrap()
+    changed.pointer_mut("/allocation/creation").unwrap().as_object_mut().unwrap()
         .insert("unexpected".to_owned(), json!(true));
     assert!(serde_json::from_value::<RootBinding>(changed).is_err());
     let mut decoded: RootBinding = serde_json::from_value(original).unwrap();
