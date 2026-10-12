@@ -180,8 +180,24 @@ async fn pi_root_provider_allocates_actual_lazy_roots_and_original_scratch_gener
         assert!(same_allocation(&allocation.0, &actual.0));
         assert_eq!(allocation.0.roots.len(), usize::from(!scratch_only));
         let schema = PiRootAllocation::schema(&fixture.request.binding, &fixture.startup).unwrap();
+        let mut schemas = SchemaRegistry::new();
+        schemas.register("plugin.test.allocation", 1, schema.0, [1; 32],
+            acyclic_harness::core::ExtensionForkPolicy::Inherit, [], None).unwrap();
+        let authority = acyclic_harness::core::Authority {
+            kind: acyclic_harness::core::AggregateKind::Conversation, id: "schema-test".into(),
+        };
+        let issuer = acyclic_harness::core::AuthorityIssuer::new("schema-test", [1; 32], authority.clone());
+        let reducer = acyclic_harness::core::Reducer::new(authority, issuer.verifier(&mut None).unwrap(), schemas);
+        let validate = |value: &serde_json::Value| {
+            let bytes = serde_json::to_vec(value).unwrap();
+            let descriptor = acyclic_harness::conversation::FileDescriptor::from_bytes(
+                &bytes, "application/json", &mut None).unwrap();
+            let file = acyclic_harness::conversation::FileRef::new(fixture.owner.policy().journal.clone(),
+                "allocation.json".into(), "schema-test".into(), descriptor, "allocation.json".into(), &mut None).unwrap();
+            reducer.validate_custom_bytes("plugin.test.allocation", 1, &file, &bytes)
+        };
         let original_value = serde_json::to_value(&allocation.0).unwrap();
-        acyclic_harness::tool::validate_value(&schema.0, &original_value, "allocation").unwrap();
+        validate(&original_value).unwrap();
         for case in ["missing_root", "foreign_provider", "zero_workspace", "extra_field"] {
             let mut value = original_value.clone();
             match case {
@@ -194,7 +210,7 @@ async fn pi_root_provider_allocates_actual_lazy_roots_and_original_scratch_gener
             }
             assert!(!serde_json::from_value::<PiRootAllocation>(value.clone())
                 .is_ok_and(|allocation| allocation.validate(&fixture.request.binding).is_ok()));
-            assert!(acyclic_harness::tool::validate_value(&schema.0, &value, "allocation").is_err());
+            assert!(validate(&value).is_err());
         }
         assert!(fixture.provider.observe_conversation_with_native_work(dispatch.effect_id,
             dispatch.attempt_id, &fixture.startup).await.unwrap());
