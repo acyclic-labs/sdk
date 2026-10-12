@@ -42,7 +42,7 @@ pub(super) fn native_request<T>(
     data: T, custody: KernelOwnedAllocation, work: &crate::NativeMaterializationWork,
 ) -> Result<acyclic_objects::v1::ObjectsNativeRequest<T>, crate::FsError> {
     match (data, custody) {
-        (data, KernelOwnedAllocation::NativeOriginal(custody)) if custody.matches_work(work) =>
+        (data, KernelOwnedAllocation::NativeOriginal(custody)) if custody.work().shares_allocation_context(work) =>
             acyclic_objects::v1::ObjectsNativeRequest::new(data, custody, &work.runtime_meter())
                 .map_err(|error| native_objects_error(error).into()),
         (data, custody) => {

@@ -986,7 +986,7 @@ impl NativeDemandReadMeter {
             return Err(Error::InvalidLayout);
         }
         let mut work = self.lock();
-        work.with_invocation_scope(native.invocation_view_state().map(Arc::downgrade), |work| work.check())
+        work.with_invocation_scope(native.invocation.as_ref().map(Arc::downgrade), |work| work.check())
             .map_err(crate::materializer::native_materialization_work_error)?;
         if work.cancellation_wait.owns_native_control(producer) || !producer.bind_native_original(self) {
             return Err(Error::InvalidLayout);
@@ -1514,11 +1514,11 @@ impl<'a> NativeSourceWork<'a> {
     /// Borrows the caller's original native accounting context.
     pub fn from_native_materialization_work(work: &'a crate::materializer::NativeMaterializationWork) -> Self {
         Self {
-            original: work.native_read_meter(), resource: work.resource_allowance(),
-            capture_origin: work.capture_origin(),
-            invocation: work.invocation_view_state(),
+            original: &work.state, resource: work.resource.as_ref(),
+            capture_origin: work.capture_origin.as_ref(),
+            invocation: work.invocation.as_ref(),
             #[cfg(feature = "native-mount")]
-            execution: work.source_execution_view(),
+            execution: work.execution.as_ref(),
             native_original: true, operation_stop: None,
         }
     }
@@ -2049,7 +2049,7 @@ impl DemandWork {
     pub(crate) fn refund_native_work(&mut self, unused: WorkCounters) -> Result<(), DemandError> {
         if let Some(resource) = self.resource_scope() {
             let original = self.with_resource_scope(None, |work| work.refund_native_work(unused));
-            let scoped = resource.refund_work(unused);
+            let scoped = resource.refund(unused, None);
             return original.and(scoped);
         }
         let pending = unused.remaining(self.cancellation_wait.pending_work)?;
@@ -2063,7 +2063,7 @@ impl DemandWork {
     pub(crate) fn record_native_work(&mut self, actual: WorkCounters) -> Result<(), DemandError> {
         if let Some(resource) = self.resource_scope() {
             let original = self.with_resource_scope(None, |work| work.record_native_work(actual));
-            let scoped = resource.complete_work(actual);
+            let scoped = resource.complete(actual, actual, None);
             return original.and(scoped);
         }
         let restored = self.refund_native_work(actual);
@@ -2398,14 +2398,14 @@ impl DemandWork {
         let restored = kind.counter(&mut self.budget).checked_add(maximum).ok_or(crate::WorkError::Overflow)?;
         *kind.counter(&mut self.budget) = restored;
         if let Some(pending) = pending { *self.pending_credit(kind).expect("tracked credit") = pending; }
-        self.resource_scope().map_or(Ok(()), |resource| resource.refund_credit(kind, maximum, None))
+        self.resource_scope().map_or(Ok(()), |resource| resource.refund(kind.delta(maximum), None))
     }
 
     pub(crate) fn complete(&mut self, kind: crate::materializer::NativeResourceCredit, maximum: u64, actual: u64) -> Result<(), DemandError> {
         use crate::materializer::NativeResourceCredit as Credit;
         if let Some(resource) = self.resource_scope() {
             let recorded = self.with_resource_scope(None, |work| work.complete(kind, maximum, actual));
-            return recorded.and(resource.complete_credit(kind, maximum, actual));
+            return recorded.and(resource.complete(kind.delta(maximum), kind.delta(actual), None));
         }
         let mut delta = WorkCounters::UNCHARGED;
         *kind.counter(&mut delta) = actual;
@@ -3535,6 +3535,7 @@ impl<D: DemandSource> DemandSource for FilteredDemandSource<D> {
 #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
 pub mod native {
     use super::*;
+    use crate::native_host::{HostRoot, HostStat, HostStatReader, NativeHostWork as _};
     use crate::model::{FilesystemProfile, VolumeLimits};
     #[cfg(unix)]
     use crate::native_host::HostListedEntry;
@@ -6578,13 +6579,13 @@ mod tests {
         let observer = RecordingObserver::default();
         let before = work.receipt();
         assert!(matches!(observer.observe_directory_with_native_work(
-            &path("/")?, NativeSourceWork::new(work.native_read_meter()),
+            &path("/")?, NativeSourceWork::new(&work.state),
         ), Err(DemandError::NativeWorkUnavailable)));
         assert!(observer.directories.lock().map_err(|_| "observer lock poisoned")?.is_empty());
         assert_eq!(work.receipt(), before);
         cancellation.cancel();
         assert!(matches!(observer.observe_directory_with_native_work(
-            &path("/")?, NativeSourceWork::new(work.native_read_meter()),
+            &path("/")?, NativeSourceWork::new(&work.state),
         ), Err(DemandError::Cancelled)));
         assert!(observer.directories.lock().map_err(|_| "observer lock poisoned")?.is_empty());
         assert_eq!(work.receipt(), before);

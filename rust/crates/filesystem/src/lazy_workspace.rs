@@ -1166,7 +1166,7 @@ fn memory_lazy_native_put_node<K: Ord, V: MemoryLazyNode>(
     key: K, value: NativeOwnedCoreState<V>, digest: [u8; 32],
     original: &crate::NativeMaterializationWork,
 ) -> Result<(), LazyWorkspaceError> {
-    if !value.allocation.matches_work(original) {
+    if !value.allocation.work().shares_allocation_context(original) {
         return Err(LazyWorkspaceError::NativeLedgerMismatch);
     }
     let (value, allocation) = value.into_parts();
@@ -1783,7 +1783,7 @@ impl<'a> LazyTreapWork<'a> {
             }
             #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } =>
-                original.native_read_meter().with_original_leaf(|work| work.work),
+                original.state.with_original_leaf(|work| work.work),
         }
     }
 
@@ -1839,7 +1839,7 @@ impl<'a> LazyTreapWork<'a> {
             }
             #[cfg(not(target_arch = "wasm32"))]
             LazyTreapMeter::NativeOriginal { original, .. } =>
-                original.native_read_meter().with_original_leaf(|work| work.merge(additional)).map_err(Into::into),
+                original.state.with_original_leaf(|work| work.merge(additional)).map_err(Into::into),
         };
         match result {
             Err(error) => Err(error),
@@ -3661,7 +3661,6 @@ impl LazyWorkspaceError {
             | Self::NativeRecordOwnershipConflict(_, allocation)
             | Self::NativeRecordContextTransaction(_, allocation)
             | Self::NativeRecordCorrupt(_, allocation) => Some(allocation),
-            Self::NativeWork(error) => error.native_failure_allocation_mut(),
             Self::NativeWorkspaceCause(cause) => Some(&mut cause.custody),
             Self::Filesystem(error)
             | Self::WorkspaceCause(WorkspaceError::Filesystem(error)) => {
@@ -3678,7 +3677,6 @@ impl LazyWorkspaceError {
         error: &mut FsError,
     ) -> Option<&mut Option<crate::materializer::NativeAllocation>> {
         match error {
-            FsError::NativeKernel(error) => error.native_failure_allocation_mut(),
             FsError::BlobBuild(crate::kernel::BlobBuildError::Context(error)) => {
                 Self::filesystem_native_failure_allocation_mut(error)
             }
@@ -4164,7 +4162,7 @@ where
     ) -> Result<NativePublicationSnapshot, LazyWorkspaceError> {
         let cancellation = original.cancellation();
         cancellation.check().map_err(|_| LazyWorkspaceError::Cancelled)?;
-        original.native_read_meter().with_original_leaf(|work| {
+        original.state.with_original_leaf(|work| {
             work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })
         })?;
         let owned = self.store.load_lazy_workspace_with_native_work(self.workspace.id(), original)
@@ -4209,9 +4207,9 @@ where
         let head = self.workspace.head(
             original, cancellation,
         ).await.map_err(|error| native_workspace_error_pair((error, None)))?;
-        original.native_read_meter().with_original_leaf(|work| work.check())?;
+        original.state.with_original_leaf(|work| work.check())?;
         if self.source.reference() != state.source { return Err(LazyWorkspaceError::StaleSource); }
-        original.native_read_meter().with_original_leaf(|work| {
+        original.state.with_original_leaf(|work| {
             work.charge(WorkCounters {
             bytes_hashed: (LAZY_SNAPSHOT_DOMAIN.len() + self.workspace.id().into_bytes().len()
                 + head.id().digest().as_bytes().len() + state.source.identity.len()
@@ -4224,7 +4222,7 @@ where
         let snapshot = LazySnapshotRef::new(
             self.workspace.id(), head.id(), state.source, state.overlay, state.shadows,
         );
-        original.native_read_meter().with_original_leaf(|work| work.check())?;
+        original.state.with_original_leaf(|work| work.check())?;
         if self.source.reference() != state.source { return Err(LazyWorkspaceError::StaleSource); }
         drop(head);
         Ok(snapshot)
@@ -6436,7 +6434,7 @@ where
                         ).await
                         }
                         None => {
-                            $owner.read_symbolic_link($path, $budget, cancellation).await,
+                            $owner.read_symbolic_link($path, $budget, cancellation).await
                     }
                     }
                     .map_err(measured_workspace_error)
@@ -8832,7 +8830,7 @@ where
                 let maximum_bytes = match &accounting.meter {
                     LazyTreapMeter::Standalone { budget, .. } => budget.source_bytes_read,
                     #[cfg(not(target_arch = "wasm32"))]
-                    LazyTreapMeter::NativeOriginal { original, .. } => original.native_read_meter()
+                    LazyTreapMeter::NativeOriginal { original, .. } => original.state
                         .with_original_leaf(|meter| meter.budget.source_bytes_read),
                 };
                 let applied = projection.apply_resolved_promotion(
