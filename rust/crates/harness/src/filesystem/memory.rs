@@ -328,7 +328,7 @@ fn require_volume_grant(
 ) -> Result<()> {
     let scope =
         scope.ok_or_else(|| Error::Unauthorized("file tool requires a scoped caller".into()))?;
-    let capability = volume.capability(operation)?;
+    let capability = volume.capability(operation, &mut None)?;
     if !scope.grants().contains(&capability) {
         return Err(Error::Unauthorized(format!("scope lacks {capability}")));
     }
@@ -673,6 +673,7 @@ impl MemoryHarnessStorage {
             Uuid::new_v4().to_string(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),
+            &mut None,
         )?;
         let memory_store = new_memory_store(&volume, maximum_file_bytes)?;
         host.create_volume(&volume).await?;
@@ -682,27 +683,22 @@ impl MemoryHarnessStorage {
         };
         let key = *blake3::hash(&OperationId::new().into_bytes()).as_bytes();
         let issuer = AuthorityIssuer::new("local-harness", key, conversation.clone());
-        let read_capability = volume.capability(VolumeOperation::Read)?;
-        let write_capability = volume.capability(VolumeOperation::Write)?;
-        let scope = issuer.root_for_agent(
-            agent,
-            "owner",
-            Capabilities::new([
+        let read_capability = volume.capability(VolumeOperation::Read, &mut None)?;
+        let write_capability = volume.capability(VolumeOperation::Write, &mut None)?;
+        let scope = issuer.issue("owner", &Capabilities::new([
                 capability::CONVERSATION_BIND.to_owned(),
                 capability::CONVERSATION_APPEND.to_owned(),
                 capability::CONVERSATION_SELECT_CONTEXT.to_owned(),
                 capability::INTERACTION_OPEN.to_owned(),
                 read_capability.clone(),
                 write_capability.clone(),
-            ]),
-        );
+            ]), Some(agent), None, &mut None).expect("scope proof");
         let stream = Arc::new(MemoryStream::default());
         let mut aggregate = StreamAggregate::open(
             &stream,
             conversation.clone(),
             issuer.verifier(&mut None).expect("verifier copy"),
-            SchemaRegistry::new(),
-        )
+            SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
         .await?;
         aggregate
             .execute(Command {
@@ -712,7 +708,7 @@ impl MemoryHarnessStorage {
                 scope: scope.clone(),
                 causal_parent: None,
                 action: Action::BindConversation { agent },
-            })
+            }, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         let input = Arc::new(FilesystemContentVerifier::new(Arc::clone(&host), &issuer.verifier(&mut None).expect("verifier copy"), &scope, maximum_file_bytes, None)?);
         let journal = Arc::new(
@@ -901,7 +897,7 @@ impl MemoryHarnessStorage {
 
     /// Resolves a pinned reference under an owner-issued signed read scope.
     pub async fn read_delegated(&self, scope: &Scope, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
-        self.delegated_reader(scope)?.read(file).await
+        self.delegated_reader(scope)?.read(file, self.maximum_file_bytes, None)?.await
     }
 
     /// Shares a private subtree with a named agent.
@@ -976,13 +972,10 @@ impl MemoryHarnessStorage {
         id: InteractionId,
         response: InteractionResponse,
     ) -> Result<InteractionOutcome> {
-        let responder = self.issuer.root(
-            format!("local-responder:{id}"),
-            Capabilities::new([
+        let responder = self.issuer.issue(&format!("local-responder:{id}"), &Capabilities::new([
                 capability::INTERACTION_RESOLVE.to_owned(),
                 capability::interaction_respond(id),
-            ]),
-        );
+            ]), None, None, &mut None).expect("scope proof");
         self.journal
             .resolve_interaction(id, response, &responder)
             .await?;
@@ -1523,7 +1516,7 @@ mod tests {
                 assert_eq!(result.value, json!("pinned text"));
                 let projection = tool.projection.project(&invocation, &result)?;
                 assert_eq!(projection, expected_projection);
-                let content = tool.definition.validate_projection(&projection)?;
+                let content = tool.definition.validate_projection(&projection, limits, None)?;
                 content.validate_limits(limits, &mut None)?;
                 assert!(matches!(
                     content.validate_limits(Limits {
@@ -1968,12 +1961,7 @@ mod tests {
             b"private attachment body"
         );
         assert!(
-            ContentGrant::verify(
-                &storage.verifier(),
-                &delegated,
-                storage.volume(),
-                VolumeOperation::Write
-            )
+            ContentGrant::verify(&storage.verifier(), &delegated, storage.volume(), VolumeOperation::Write, u64::MAX, &mut None)
             .is_err()
         );
         let directory = storage.delegate_directory_read(reader, "attached-directory", "input")?;
@@ -2013,12 +2001,7 @@ mod tests {
                 .is_ok()
         );
         assert!(
-            ContentGrant::verify(
-                &storage.verifier(),
-                &directory,
-                storage.volume(),
-                VolumeOperation::Write
-            )
+            ContentGrant::verify(&storage.verifier(), &directory, storage.volume(), VolumeOperation::Write, u64::MAX, &mut None)
             .is_err()
         );
         let output = storage

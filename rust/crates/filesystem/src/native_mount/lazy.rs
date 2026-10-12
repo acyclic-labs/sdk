@@ -432,10 +432,8 @@ pub(super) fn mount_demand_error(error: DemandError) -> MountSourceError {
 fn mount_watch_error(error: crate::watch::NativeWatchError) -> MountSourceError {
     use crate::watch::NativeWatchError as WatchError;
     let reason = match error {
-        WatchError::Io(text) => return MountSourceError::NativeWatchIo(text),
-        WatchError::Backend(text) => return MountSourceError::NativeWatchBackend(text),
-        WatchError::OriginalIo(error) => return MountSourceError::NativeWatchOriginalIo(error),
-        WatchError::OriginalBackend(error) => return MountSourceError::NativeWatchOriginalBackend(error),
+        WatchError::Io(error) => return MountSourceError::NativeWatchOriginalIo(error),
+        WatchError::Backend(error) => return MountSourceError::NativeWatchOriginalBackend(error),
         WatchError::SourceStartup(owner) => return MountSourceError::SourceWatchStartup(owner),
         WatchError::SourceStartupFailed { cause, watch } =>
             return MountSourceError::NativeWatchSourceStartupFailed { cause, watch },
@@ -929,15 +927,16 @@ where
             &mut work.meter, &cancellation, Some(authored.cancellation()),
         ).await?;
         let changed = if let Some(original) = work.meter.original_native_work() {
-            lazy.stage_exact_into_checkout_with_native_work(
-                &mut candidate.checkout, path, expected_source, MAXIMUM_PROMOTION_BYTES,
-                &original, &cancellation,
+            lazy.stage_into_checkout(
+                &mut candidate.checkout, None, path, expected_source, MAXIMUM_PROMOTION_BYTES,
+                &LazyTreapWork::native_with_work(&original, &cancellation).map_err(native_lazy_error)?,
             ).await.map_err(native_lazy_error)?
         } else {
+            let accounting = LazyTreapWork::new(work.remaining().map_err(mount_demand_error)?, &cancellation);
             let result = lazy.stage_into_checkout(
-                &mut candidate.checkout, None, path, expected_source, MAXIMUM_PROMOTION_BYTES,
-                work.remaining().map_err(mount_demand_error)?, &cancellation,
+                &mut candidate.checkout, None, path, expected_source, MAXIMUM_PROMOTION_BYTES, &accounting,
             ).await;
+            let result = accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure());
             let changed = work.accept(result, lazy_error)?;
             work.with_work(|work| work.retain_checkout_control(
                 &candidate.checkout.private_control_custody(),
@@ -1269,7 +1268,6 @@ impl Drop for DirectoryCarrierScratch<'_, '_> {
     }
 }
 
-
 fn directory_removal_bytes(names: &Vec<String>) -> Result<u64, MountSourceError> {
     let backing = names.capacity().checked_mul(std::mem::size_of::<String>())
         .ok_or(MountSourceError::Work(crate::WorkError::Overflow))? as u64;
@@ -1452,32 +1450,7 @@ impl<T> CursorTable<T> {
         token
     }
 
-    fn remember(
-        &self, generation: (u64, u64), cursor: T,
-    ) -> Result<Vec<u8>, MountSourceError> {
-        let token = self.next_token();
-        let mut entries = self.entries.lock().map_err(|_| MountSourceError::Stale)?;
-        while entries.len() >= self.maximum {
-            let Some(oldest) = entries.first_key_value().map(|(&key, _)| key) else { break; };
-            entries.remove(&oldest);
-        }
-        entries.insert(token, StampedCursor { generation, cursor, native_cleanup: None, _native_cleanup_allocation: None });
-        Ok(token.to_le_bytes().to_vec())
-    }
-
     fn take(
-        &self, generation: (u64, u64), cursor: Option<&[u8]>,
-    ) -> Result<Option<T>, MountSourceError> {
-        let Some(cursor) = cursor else { return Ok(None); };
-        let bytes: [u8; 8] = cursor.try_into().map_err(|_| MountSourceError::Stale)?;
-        let stamped = self.entries.lock().map_err(|_| MountSourceError::Stale)?
-            .remove(&u64::from_le_bytes(bytes)).ok_or(MountSourceError::Stale)?;
-        if stamped.generation != generation { return Err(MountSourceError::Stale); }
-        Ok(Some(stamped.cursor))
-    }
-
-
-    fn take_with_carrier(
         &self,
         generation: (u64, u64),
         cursor: Option<&[u8]>,
@@ -1514,15 +1487,7 @@ impl<T> CursorTable<T> {
         Ok(Some(stamped.cursor))
     }
 
-    #[cfg(test)]
-    fn take_with_work(
-        &self, generation: (u64, u64), cursor: Option<&[u8]>,
-        work: &mut crate::demand::DemandWork,
-    ) -> Result<Option<T>, MountSourceError> {
-        self.take_with_carrier(generation, cursor, &mut super::adapter::NativeDemandCarrier::Borrowed(work))
-    }
-
-    fn remember_with_carrier(
+    fn remember(
         &self,
         generation: (u64, u64),
         cursor: T,
@@ -1618,22 +1583,6 @@ impl<T> CursorTable<T> {
         Ok(MountOwnedBuffer { value: token_bytes, legacy_bytes: 8, allocation: None })
     }
 
-    #[cfg(test)]
-    fn remember_with_work(
-        &self, generation: (u64, u64), cursor: T,
-        work: &mut crate::demand::DemandWork,
-    ) -> Result<Vec<u8>, MountSourceError> {
-        self.remember_with_carrier(generation, cursor, &mut super::adapter::NativeDemandCarrier::Borrowed(work))
-            .map(|owned| owned.into_parts().0)
-    }
-
-    fn clear_with_cleanup_wait(
-        &self, wait: &crate::CancellationToken,
-    ) -> Result<(), MountSourceError> {
-        self.clear_with_cleanup(Some(wait))
-    }
-
-
     fn clear_with_cleanup(
         &self, wait: Option<&crate::CancellationToken>,
     ) -> Result<(), MountSourceError> {
@@ -1667,12 +1616,12 @@ impl<T> CursorTable<T> {
         }
     }
 
-    fn clear_with_carrier(
+    fn retire(
         &self,
         carrier: &mut super::adapter::NativeDemandCarrier<'_>,
     ) -> Result<(), MountSourceError> {
         if let Some(original) = carrier.original_native_work() {
-            return self.clear_with_cleanup_wait(original.cancellation());
+            return self.clear_with_cleanup(Some(original.cancellation()));
         }
         loop {
             let removed = carrier.with_work(|work| {
@@ -1685,13 +1634,6 @@ impl<T> CursorTable<T> {
             drop(removed);
             carrier.with_work(|work| work.record(crate::WorkCounters::UNCHARGED)).map_err(mount_demand_error)?;
         }
-    }
-
-    fn clear_with_work(
-        &self,
-        work: &mut crate::demand::DemandWork,
-    ) -> Result<(), MountSourceError> {
-        self.clear_with_carrier(&mut super::adapter::NativeDemandCarrier::Borrowed(work))
     }
 
     fn clear(&self) {
@@ -1893,7 +1835,6 @@ struct SelectedImportProof {
     source_config: crate::model::VolumeConfig,
     input: crate::Digest,
 }
-
 
 struct SelectedMountInput<'a> {
     destination: crate::LazySnapshotRef,
@@ -2877,7 +2818,7 @@ where
             return self.cancel_with_cleanup_wait(original.cancellation());
         }
         self.authored.cancel_with_carrier(carrier)?;
-        self.cursors.clear_with_carrier(carrier)?;
+        self.cursors.retire(carrier)?;
         let Some(watch) = self.source_watch.as_ref() else { return Ok(()); };
         watch.stop(carrier).map(|_| ())
     }
@@ -3165,7 +3106,6 @@ where
         Ok(())
     }
 
-
     async fn stage_detached_records_measured(
         &self,
         records: &[(FileRecord, FileMetadata)],
@@ -3254,19 +3194,17 @@ where
             let custody = self.removals.lock().map_err(|_| MountSourceError::Stale)?.publication;
             if let (Some(custody), Some(original)) = (custody, native.as_ref())
                 && custody.selected.is_some()
-                && let Some(generation) = self.lazy.selected_import_generation_with_work(
-                    custody.operation, original, cancellation,
-                ).await.map_err(native_lazy_error)?
+                && let Some(generation) = self.lazy.operation_generation(crate::IdempotencyKey::from_bytes(custody.operation.into_bytes()), &LazyTreapWork::native_with_work(original, cancellation).map_err(native_lazy_error)?).await.map_err(native_lazy_error)?
             {
-                return self.finish_acknowledged_mount_custody_with_sync_work(
+                return self.finish_acknowledged_mount_custody(
                     custody.operation, generation, work, original, cancellation,
                 ).await?.ok_or(MountSourceError::Indeterminate).map(|_| ()).map_err(E::from);
             }
             let mut committed = if let Some(original) = native.as_ref() {
-                self.lazy.mount_removal_publication_with_work(original, cancellation).await.map_err(native_lazy_error)?
+                (async { let accounting = LazyTreapWork::native_with_work(original, cancellation)?; self.lazy.mount_removal_publication(&accounting).await }).await.map_err(native_lazy_error)?
             } else {
                 let (budget, prior_live) = work.sdk_scope()?;
-                let result = self.lazy.mount_removal_publication(budget, cancellation).await;
+                let result = (async { let accounting = LazyTreapWork::new(budget, cancellation); let result = self.lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await;
                 work.accept_sdk(result, prior_live, lazy_error)?
             };
             if let Some(custody) = custody {
@@ -3275,17 +3213,10 @@ where
                         let (paths, records) = self.frozen_mount_inputs(custody.operation, work)?;
                         let selected_inputs = SelectedInputsLoan::take(&self.removals, custody.operation, work)?;
                         if let Some(original) = native.as_ref() {
-                            self.lazy.prepare_mount_removals_combined_with_work(
-                                &paths.value, selected_inputs.value.as_ref().map_or(&[], |effects| effects.paths.as_slice()),
-                                &records.value, IdempotencyKey::from_bytes(custody.operation.into_bytes()),
-                                original, cancellation,
-                            ).await.map_err(native_lazy_error)?;
+                            (async { let accounting = LazyTreapWork::native_with_work(original, cancellation)?; self.lazy.prepare_mount_removals(&paths.value, selected_inputs.value.as_ref().map_or(&[], |effects| effects.paths.as_slice()), &records.value, IdempotencyKey::from_bytes(custody.operation.into_bytes()), &accounting).await }).await.map_err(native_lazy_error)?;
                         } else {
                             let (budget, prior_live) = work.sdk_scope()?;
-                            let result = self.lazy.prepare_mount_removals(
-                                &paths.value, &records.value, IdempotencyKey::from_bytes(custody.operation.into_bytes()),
-                                budget, cancellation,
-                            ).await;
+                            let result = (async { let accounting = LazyTreapWork::new(budget, cancellation); let result = self.lazy.prepare_mount_removals(&paths.value, &[], &records.value, IdempotencyKey::from_bytes(custody.operation.into_bytes()), &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await;
                             work.accept_sdk(result, prior_live, lazy_error)?;
                         }
                         selected_inputs.discard();
@@ -3310,19 +3241,17 @@ where
                 if let Some(original) = native.as_ref()
                     && custody.selected.is_some()
                 {
-                    let generation = self.lazy.selected_import_generation_with_work(
-                        custody.operation, original, cancellation,
-                    ).await.map_err(native_lazy_error)?.ok_or(MountSourceError::Indeterminate)?;
-                    return self.finish_acknowledged_mount_custody_with_sync_work(
+                    let generation = self.lazy.operation_generation(crate::IdempotencyKey::from_bytes(custody.operation.into_bytes()), &LazyTreapWork::native_with_work(original, cancellation).map_err(native_lazy_error)?).await.map_err(native_lazy_error)?.ok_or(MountSourceError::Indeterminate)?;
+                    return self.finish_acknowledged_mount_custody(
                         custody.operation, generation, work, original, cancellation,
                     ).await?.ok_or(MountSourceError::Indeterminate).map(|_| ()).map_err(E::from);
                 }
                 if committed.is_some() {
                     let finished = if let Some(original) = native.as_ref() {
-                        self.lazy.finish_mount_removals_with_work(original, cancellation).await.map_err(native_lazy_error)?
+                        (async { let accounting = LazyTreapWork::native_with_work(original, cancellation)?; self.lazy.finish_mount_removals(&accounting).await }).await.map_err(native_lazy_error)?
                     } else {
                         let (budget, prior_live) = work.sdk_scope()?;
-                        let result = self.lazy.finish_mount_removals(budget, cancellation).await;
+                        let result = (async { let accounting = LazyTreapWork::new(budget, cancellation); let result = self.lazy.finish_mount_removals(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await;
                         work.accept_sdk(result, prior_live, lazy_error)?
                     };
                     if !finished { return Err(E::from(MountSourceError::Stale)); }
@@ -3337,10 +3266,10 @@ where
             }
             if let Some(committed) = committed {
                 let published = if let Some(original) = native.as_ref() {
-                    self.lazy.finish_mount_removals_with_work(original, cancellation).await.map_err(native_lazy_error)?
+                    (async { let accounting = LazyTreapWork::native_with_work(original, cancellation)?; self.lazy.finish_mount_removals(&accounting).await }).await.map_err(native_lazy_error)?
                 } else {
                     let (budget, prior_live) = work.sdk_scope()?;
-                    let result = self.lazy.finish_mount_removals(budget, cancellation).await;
+                    let result = (async { let accounting = LazyTreapWork::new(budget, cancellation); let result = self.lazy.finish_mount_removals(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await;
                     work.accept_sdk(result, prior_live, lazy_error)?
                 };
                 if (committed || retained) && !published { return Err(E::from(MountSourceError::Stale)); }
@@ -3406,52 +3335,7 @@ where
         Ok(())
     }
 
-    pub(super) async fn finish_acknowledged_mount_custody_with_carrier(
-        &self, operation: crate::OperationId, generation: crate::GenerationId,
-        carrier: &mut super::adapter::NativeDemandCarrier<'_>,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<Option<crate::LazySnapshotRef>, MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
-        match carrier {
-            super::adapter::NativeDemandCarrier::Borrowed(work) =>
-                super::adapter::BorrowedNativeDemandMeter::new(work)?
-                    .run_async(|meter| async move {
-                        self.finish_acknowledged_mount_custody_with_meter(
-                            operation, generation, &meter, cancellation,
-                        ).await
-                    }).await,
-            super::adapter::NativeDemandCarrier::Shared(meter) =>
-                self.finish_acknowledged_mount_custody_with_meter(
-                    operation, generation, meter, cancellation,
-                ).await,
-            super::adapter::NativeDemandCarrier::Native(original) => {
-                let original = *original;
-                let mut work = MountSyncWork::new(
-                    &self.authored, super::adapter::NativeDemandCarrier::Native(original),
-                )?;
-                self.finish_acknowledged_mount_custody_with_sync_work(
-                    operation, generation, &mut work, original, cancellation,
-                ).await
-            }
-        }
-    }
-
-    async fn finish_acknowledged_mount_custody_with_meter(
-        &self, operation: crate::OperationId, generation: crate::GenerationId,
-        meter: &Arc<crate::demand::NativeDemandReadMeter>,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<Option<crate::LazySnapshotRef>, MountSourceError>
-    where A: AsyncAuthorityStore, O: AsyncObjectStore {
-        let mut work = MountSyncWork::new(
-            &self.authored, super::adapter::NativeDemandCarrier::Shared(meter),
-        )?;
-        let original = crate::NativeMaterializationWork::from_meter(Arc::clone(meter));
-        self.finish_acknowledged_mount_custody_with_sync_work(
-            operation, generation, &mut work, &original, cancellation,
-        ).await
-    }
-
-    fn finish_acknowledged_mount_custody_with_sync_work<'a, 'work>(
+    fn finish_acknowledged_mount_custody<'a, 'work>(
         &'a self, operation: crate::OperationId, generation: crate::GenerationId,
         work: &'a mut MountSyncWork<'work>, original: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
@@ -3463,9 +3347,7 @@ where
             work.items(1)?;
             let custody = self.removals.lock().map_err(|_| MountSourceError::Stale)?.publication;
             let Some(custody) = custody else {
-                return self.lazy.selected_import_snapshot_for_generation_with_work(
-                    operation, generation, &original, &cancellation,
-                ).await.map(Some).map_err(native_lazy_error);
+                return self.lazy.selected_import_snapshot_for_generation(operation, generation, &LazyTreapWork::native_with_work(&original, &cancellation).map_err(native_lazy_error)?).await.map(Some).map_err(native_lazy_error);
             };
             if custody.operation != operation { return Ok(None); }
             let Some(proof) = custody.selected else { return Ok(None); };
@@ -3478,10 +3360,7 @@ where
                 }
                 self.mark_mount_published(operation)?;
             }
-            let snapshot = self.lazy.selected_committed_snapshot_with_work(
-                operation, generation, proof.checkpoint, proof.source,
-                proof.source_config, proof.input, &original, &cancellation,
-            ).await.map_err(native_lazy_error)?;
+            let snapshot = self.lazy.selected_committed_snapshot(operation, generation, proof.checkpoint, proof.source, proof.source_config, proof.input, &LazyTreapWork::native_with_work(&original, &cancellation).map_err(native_lazy_error)?).await.map_err(native_lazy_error)?;
             self.finish_mount_custody(operation, work)?;
             Ok(Some(snapshot))
         })
@@ -3796,15 +3675,14 @@ where
         cancellation: &crate::CancellationToken,
     ) -> Result<Option<crate::LazySnapshotRef>, MountSourceError>
     where A: AsyncAuthorityStore, O: AsyncObjectStore {
-        let Some(generation) = self.lazy.selected_import_generation_with_work(
-            operation, original, cancellation,
-        ).await.map_err(native_lazy_error)? else { return Ok(None); };
+        let Some(generation) = self.lazy.operation_generation(crate::IdempotencyKey::from_bytes(operation.into_bytes()), &LazyTreapWork::native_with_work(original, cancellation).map_err(native_lazy_error)?).await.map_err(native_lazy_error)? else { return Ok(None); };
         let mut carrier = super::adapter::NativeDemandCarrier::Native(original);
         let _stable = self.source_view.write_stable_with_carrier(
             None, &mut carrier, cancellation, Some(self.authored.cancellation()),
         ).await?.into_mutation_phase();
-        self.finish_acknowledged_mount_custody_with_carrier(
-            operation, generation, &mut carrier, cancellation,
+        let mut work = MountSyncWork::new(&self.authored, carrier)?;
+        self.finish_acknowledged_mount_custody(
+            operation, generation, &mut work, original, cancellation,
         ).await?.map(Some).ok_or(MountSourceError::Indeterminate)
     }
 
@@ -3850,9 +3728,7 @@ where
         E: From<MountSourceError> + Send + 'static,
     {
         let selected_proof = if let Some(input) = &selected {
-            let generation = self.lazy.selected_import_generation_with_work(
-                input.operation, input.original, cancellation,
-            ).await.map_err(native_lazy_error)?;
+            let generation = self.lazy.operation_generation(crate::IdempotencyKey::from_bytes(input.operation.into_bytes()), &LazyTreapWork::native_with_work(input.original, cancellation).map_err(native_lazy_error)?).await.map_err(native_lazy_error)?;
             let proof = SelectedImportProof {
                 checkpoint: input.destination, source: input.plan.source,
                 source_config: input.plan.source_config,
@@ -3870,23 +3746,18 @@ where
             }
             if let Some(generation) = generation {
                 if custody.is_some() {
-                    return self.finish_acknowledged_mount_custody_with_sync_work(
+                    return self.finish_acknowledged_mount_custody(
                         input.operation, generation, work, input.original, cancellation,
                     ).await.map_err(E::from);
                 }
-                return self.lazy.selected_committed_snapshot_with_work(
-                    input.operation, generation, proof.checkpoint, proof.source,
-                    proof.source_config, proof.input, input.original, cancellation,
-                ).await.map(Some).map_err(native_lazy_error).map_err(E::from);
+                return self.lazy.selected_committed_snapshot(input.operation, generation, proof.checkpoint, proof.source, proof.source_config, proof.input, &LazyTreapWork::native_with_work(input.original, cancellation).map_err(native_lazy_error)?).await.map(Some).map_err(native_lazy_error).map_err(E::from);
             }
             if custody.is_some() {
                 self.recover_pending_mount_change_measured(
                     permit, work, cancellation, before_publication,
                 ).await?;
-                let generation = self.lazy.selected_import_generation_with_work(
-                    input.operation, input.original, cancellation,
-                ).await.map_err(native_lazy_error)?.ok_or(MountSourceError::Indeterminate)?;
-                return self.finish_acknowledged_mount_custody_with_sync_work(
+                let generation = self.lazy.operation_generation(crate::IdempotencyKey::from_bytes(input.operation.into_bytes()), &LazyTreapWork::native_with_work(input.original, cancellation).map_err(native_lazy_error)?).await.map_err(native_lazy_error)?.ok_or(MountSourceError::Indeterminate)?;
+                return self.finish_acknowledged_mount_custody(
                     input.operation, generation, work, input.original, cancellation,
                 ).await.map_err(E::from);
             }
@@ -3917,10 +3788,9 @@ where
         let PreparedMountSync { mut candidate, epoch, stamp, inputs, mut records } =
             self.prepare_sync_candidate_from_inputs(inputs, work, cancellation).await?;
         let mut effects = if let Some(input) = &selected {
-            let effects = self.lazy.prepare_selected_import_into_checkout_with_work(
-                input.destination, input.plan, &mut candidate.checkout, input.operation,
-                input.original, cancellation,
-            ).await.map_err(native_lazy_error)?;
+            let effects = (async { let accounting = LazyTreapWork::native_with_work(input.original, cancellation)?; self.lazy.prepare_selected_import_into_checkout(
+                input.destination, input.plan, &mut candidate.checkout, input.operation, &accounting,
+            ).await }).await.map_err(native_lazy_error)?;
             let original_records = records.value.iter().map(|(record, metadata)| (record, metadata));
             let selected_records = effects.records.iter().map(|(record, metadata)| (record, metadata));
             let count = mount_record_union(
@@ -4020,17 +3890,10 @@ where
         };
         let selected_inputs = SelectedInputsLoan::take(&self.removals, operation_id, work)?;
         if let Some(original) = native {
-            self.lazy.prepare_mount_removals_combined_with_work(
-                paths, selected_inputs.value.as_ref().map_or(&[], |effects| effects.paths.as_slice()),
-                &records.value, IdempotencyKey::from_bytes(operation_id.into_bytes()),
-                original, cancellation,
-            ).await.map_err(native_lazy_error)?;
+            (async { let accounting = LazyTreapWork::native_with_work(original, cancellation)?; self.lazy.prepare_mount_removals(paths, selected_inputs.value.as_ref().map_or(&[], |effects| effects.paths.as_slice()), &records.value, IdempotencyKey::from_bytes(operation_id.into_bytes()), &accounting).await }).await.map_err(native_lazy_error)?;
         } else {
             let (budget, prior_live) = work.sdk_scope()?;
-            let result = self.lazy.prepare_mount_removals(
-                paths, &records.value, IdempotencyKey::from_bytes(operation_id.into_bytes()),
-                budget, cancellation,
-            ).await;
+            let result = (async { let accounting = LazyTreapWork::new(budget, cancellation); let result = self.lazy.prepare_mount_removals(paths, &[], &records.value, IdempotencyKey::from_bytes(operation_id.into_bytes()), &accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await;
             work.accept_sdk(result, prior_live, lazy_error)?;
         }
         selected_inputs.discard();
@@ -4053,18 +3916,16 @@ where
         }
         self.mark_mount_published(operation_id)?;
         if let Some(input) = &selected {
-            let generation = self.lazy.selected_import_generation_with_work(
-                operation_id, input.original, cancellation,
-            ).await.map_err(native_lazy_error)?.ok_or(MountSourceError::Indeterminate)?;
-            return self.finish_acknowledged_mount_custody_with_sync_work(
+            let generation = self.lazy.operation_generation(crate::IdempotencyKey::from_bytes(operation_id.into_bytes()), &LazyTreapWork::native_with_work(input.original, cancellation).map_err(native_lazy_error)?).await.map_err(native_lazy_error)?.ok_or(MountSourceError::Indeterminate)?;
+            return self.finish_acknowledged_mount_custody(
                 operation_id, generation, work, input.original, cancellation,
             ).await.map_err(E::from);
         }
         let finished = if let Some(original) = native {
-            self.lazy.finish_mount_removals_with_work(original, cancellation).await.map_err(native_lazy_error)?
+            (async { let accounting = LazyTreapWork::native_with_work(original, cancellation)?; self.lazy.finish_mount_removals(&accounting).await }).await.map_err(native_lazy_error)?
         } else {
             let (budget, prior_live) = work.sdk_scope()?;
-            let result = self.lazy.finish_mount_removals(budget, cancellation).await;
+            let result = (async { let accounting = LazyTreapWork::new(budget, cancellation); let result = self.lazy.finish_mount_removals(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await;
             work.accept_sdk(result, prior_live, lazy_error)?
         };
         if !finished { return Err(E::from(MountSourceError::Stale)); }
@@ -5230,7 +5091,7 @@ where
                     owner, scratch.carrier, cancellation, Some(self.authored.cancellation()),
                 ).await?;
                 observation.ensure_publication_resolved()?;
-                let state = self.lazy.state_with_native_work(&original, cancellation).await
+                let state = self.lazy.state(&LazyTreapWork::native_with_work(&original, cancellation).map_err(native_lazy_error)?).await
                     .map_err(native_lazy_error)?;
                 let mut page = self.lazy.list_directory_in_state_with_native_work(
                     state.as_state(), &text, cursor.take(), DIRECTORY_PROMOTION_PAGE,
@@ -5551,7 +5412,7 @@ where
             return Err(MountSourceError::NotFound);
         }
         let generation = (lease.generation, removal_epoch);
-        let held = self.cursors.take_with_carrier(generation, cursor, scratch.carrier)?;
+        let held = self.cursors.take(generation, cursor, scratch.carrier)?;
         let (stamp, mut cursor) = match held {
             Some((stamp, cursor)) => (stamp, Some(cursor)),
             None => (ViewStamp::current(), None),
@@ -5568,7 +5429,7 @@ where
             ).await?;
             observation.ensure_publication_resolved()?;
             if let Some(original) = &original {
-                let state = self.lazy.state_with_native_work(original, &caller).await
+                let state = self.lazy.state(&LazyTreapWork::native_with_work(original, &caller).map_err(directory_lazy_error)?).await
                     .map_err(directory_lazy_error)?;
                 let mut checkout = observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
                     .expect("unbounded observer preserves a validated checkout").value;
@@ -5576,6 +5437,7 @@ where
                     state.as_state(), &text, cursor, maximum_entries, original, &caller,
                     Some(&mut checkout), Some((&removed_children, opaque)), None,
                 ).await.map_err(directory_lazy_error)?;
+                let LazyReadonlyNode::Native(state) = state else { unreachable!("native state retains native funding") };
                 let (state, allocation) = state.into_parts();
                 (MountOwnedBuffer { value: page.page, legacy_bytes: 0, allocation: Some(page.allocation) },
                     MountOwnedBuffer { value: state, legacy_bytes: 0, allocation: Some(allocation) })
@@ -5592,7 +5454,7 @@ where
                 ).map_err(directory_lazy_error)?.checked_add(page.next.as_ref()
                     .map(LazyDirectoryCursor::retained_bytes).transpose().map_err(directory_lazy_error)?.unwrap_or(0))
                     .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
-                let state_bytes = state.logical_owned_bytes();
+                let state_bytes = std::mem::size_of_val(&state) as u64;
                 let bytes = page_bytes.checked_add(state_bytes)
                     .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
                 scratch.track(bytes)?;
@@ -5690,7 +5552,7 @@ where
         if !unchanged || !same_epoch { return Err(MountSourceError::Stale); }
         let mut cursor_bytes = 0;
         let next_cursor = if let Some(cursor) = page.value.next.take() {
-            let token = self.cursors.remember_with_carrier(generation, (stamp, cursor), scratch.carrier)?;
+            let token = self.cursors.remember(generation, (stamp, cursor), scratch.carrier)?;
             let (token, mut allocation, bytes) = token.into_parts();
             if let Some(allocation) = &mut allocation { scratch.absorb_native(allocation)?; }
             cursor_bytes = bytes;
@@ -5928,7 +5790,7 @@ where
             })?
         } else { crate::WorkCounters::UNCHARGED };
         let mut completion = original.reserve_work(delta).map_err(MountSourceError::NativeWork)?;
-        if rebound { self.cursors.clear_with_carrier(&mut carrier)?; }
+        if rebound { self.cursors.retire(&mut carrier)?; }
         let result = operation(detached);
         let result = match result {
             Ok(value) if rebound => {
@@ -8767,7 +8629,7 @@ mod tests {
         let rejected_prefix = inspections.lock().expect("owner inspection evidence")[0];
         assert!(failure.work.authority_records_read >= rejected_prefix.2);
         assert!(failure.work.backend_read_operations >= rejected_prefix.3);
-        assert_eq!(view.lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, Some(false));
+        assert_eq!((async { let cancellation = &crate::CancellationToken::new(); let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, cancellation); let result = view.lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, Some(false));
         assert_eq!(view.authored.shared_checkout().lock().await.retained_operation_id(), original);
         let mut snapshot_work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
         let snapshot_failure = view.snapshot(
@@ -8808,7 +8670,7 @@ mod tests {
         assert!(failure.work.backend_read_operations >= evidence[1].3 + evidence[2].3);
         drop(evidence);
         assert!(view.lazy.workspace().operation_generation(IdempotencyKey::from_bytes(original.into_bytes())).await?.is_some());
-        assert_eq!(view.lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, Some(false));
+        assert_eq!((async { let cancellation = &crate::CancellationToken::new(); let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, cancellation); let result = view.lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, Some(false));
         assert_eq!(view.authored.shared_checkout().lock().await.retained_operation_id(), next);
         {
             let identities = view.detached.lock().map_err(|_| "poisoned identities")?;
@@ -8834,7 +8696,7 @@ mod tests {
         assert!(checks.load(std::sync::atomic::Ordering::Relaxed) > 0);
         assert!(completed.work.authority_records_appended > 0);
         assert!(view.lazy.workspace().operation_generation(IdempotencyKey::from_bytes(next.into_bytes())).await?.is_some());
-        assert_eq!(view.lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, None);
+        assert_eq!((async { let cancellation = &crate::CancellationToken::new(); let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, cancellation); let result = view.lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, None);
         assert_eq!(held.read_range(0, 9)?.as_ref(), b"epoch-two");
         assert_eq!(held.lookup()?.node.file_id, identity);
         assert_eq!(std::fs::read(root.path().join("source-only"))?, b"source");
@@ -8868,7 +8730,7 @@ mod tests {
         assert!(failure.work.items_examined > 0);
         assert!(failure.work.backend_read_operations > 0);
         let operation = view.authored.shared_checkout().lock().await.retained_operation_id();
-        assert_eq!(view.lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, Some(false));
+        assert_eq!((async { let cancellation = &crate::CancellationToken::new(); let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, cancellation); let result = view.lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, Some(false));
         let stopped = crate::CancellationToken::new();
         stopped.cancel();
         let cancelled = view.sync_async_with_permit(
@@ -8884,7 +8746,7 @@ mod tests {
         assert!(view.lazy.workspace().operation_generation(
             IdempotencyKey::from_bytes(operation.into_bytes()),
         ).await?.is_some());
-        assert!(view.lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.is_none());
+        assert!((async { let cancellation = &crate::CancellationToken::new(); let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, cancellation); let result = view.lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.is_none());
         assert!(matches!(view.lazy.lookup("/source-only").await,
             Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound)));
         assert_eq!(open.read_range(0, 8)?.as_ref(), b"detached");
@@ -8931,9 +8793,7 @@ mod tests {
         assert_eq!(failure.work.authority_records_appended, 0);
         let mut prepared = store.load_lazy_workspace(view.lazy.workspace().id()).await?
             .ok_or("missing actual prepared binding")?;
-        let recovered = view.lazy.finish_mount_removals(
-            crate::WorkBudget::UNBOUNDED, &cancellation,
-        ).await?;
+        let recovered = (async { let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, &cancellation); let result = view.lazy.finish_mount_removals(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await?;
         assert!(!recovered.value);
         let current = store.load_lazy_workspace(view.lazy.workspace().id()).await?
             .ok_or("missing recovered binding")?;
@@ -8946,7 +8806,7 @@ mod tests {
         assert!(matches!(denied.semantic_error(), LazyWorkspaceError::Work(_)));
         assert!(denied.spent_work().items_examined > 0);
         assert_eq!(denied.spent_work().bytes_copied, 0);
-        assert_eq!(view.lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, None);
+        assert_eq!((async { let cancellation = &crate::CancellationToken::new(); let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, cancellation); let result = view.lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, None);
         let original_operation = view.removals.lock().map_err(|_| "poisoned removals")?
             .publication.ok_or("missing original custody")?.operation;
         held.write_range(0, Bytes::from_static(b"epoch-two"))?;
@@ -8967,7 +8827,7 @@ mod tests {
         assert!(view.lazy.workspace().operation_generation(
             IdempotencyKey::from_bytes(original_operation.into_bytes()),
         ).await?.is_some());
-        assert_eq!(view.lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, None);
+        assert_eq!((async { let cancellation = &crate::CancellationToken::new(); let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, cancellation); let result = view.lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, None);
         {
             let identities = view.detached.lock().map_err(|_| "poisoned identities")?;
             let entry = detached_entry(&identities, identity).ok_or("missing live identity")?;
@@ -9008,11 +8868,9 @@ mod tests {
         )?;
         work.sync_authored(&view.authored, crate::PublicationPermit::Unrestricted, true, &cancellation).await?;
         view.mark_mount_published(operation)?;
-        let result = view.lazy.finish_mount_removals(
-            work.remaining().map_err(mount_demand_error)?, &cancellation,
-        ).await;
+        let result = (async { let accounting = LazyTreapWork::new(work.remaining().map_err(mount_demand_error)?, &cancellation); let result = view.lazy.finish_mount_removals(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await;
         assert!(work.accept(result, lazy_error)?);
-        assert_eq!(view.lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, None);
+        assert_eq!((async { let cancellation = &crate::CancellationToken::new(); let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, cancellation); let result = view.lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, None);
         let original_generation = view.lazy.workspace().operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.ok_or("original operation was not physically published")?;
         held.write_range(0, Bytes::from_static(b"epoch-two"))?;
         view.remove(&next, None)?;
@@ -9429,7 +9287,7 @@ mod tests {
         );
         view.recover_pending_mount_change(crate::PublicationPermit::Unrestricted)
             .await?;
-        assert!(lazy.mount_removal_publication(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.is_none());
+        assert!((async { let cancellation = &crate::CancellationToken::new(); let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, cancellation); let result = lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.is_none());
         Ok(())
     }
 
@@ -9796,41 +9654,44 @@ mod tests {
     fn finite_cursor_admission_preserves_authority_on_denial()
     -> Result<(), Box<dyn std::error::Error>> {
         let cursors = CursorTable::new(1);
-        let first = cursors.remember((2, 1), 1_u8)?;
+        let setup_cancellation = crate::CancellationToken::new();
+        let mut setup_work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &setup_cancellation);
+        let mut setup = super::super::adapter::NativeDemandCarrier::Borrowed(&mut setup_work);
+        let first = cursors.remember((2, 1), 1_u8, &mut setup).map(|owned| owned.into_parts().0)?;
         let caller = crate::CancellationToken::new();
         let mut budget = finite_directory_budget();
         budget.allocation_operations = 0;
         let mut denied = crate::demand::DemandWork::new(budget, &caller);
         assert!(matches!(
-            cursors.remember_with_work((2, 1), 2_u8, &mut denied),
+            cursors.remember((2, 1), 2_u8, &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut denied)).map(|owned| owned.into_parts().0),
             Err(MountSourceError::Work(_))
         ));
         assert_eq!(denied.work.allocation_operations, 0);
-        assert_eq!(cursors.take((2, 1), Some(&first))?, Some(1));
+        assert_eq!(cursors.take((2, 1), Some(&first), &mut setup)?, Some(1));
 
-        let retained = cursors.remember((2, 1), 3_u8)?;
+        let retained = cursors.remember((2, 1), 3_u8, &mut setup).map(|owned| owned.into_parts().0)?;
         let stopped = crate::CancellationToken::new();
         stopped.cancel();
         let mut cancelled = crate::demand::DemandWork::new(finite_directory_budget(), &stopped);
         assert!(matches!(
-            cursors.take_with_work((2, 1), Some(&retained), &mut cancelled),
+            cursors.take((2, 1), Some(&retained), &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut cancelled)),
             Err(MountSourceError::Cancelled)
         ));
-        assert_eq!(cursors.take((2, 1), Some(&retained))?, Some(3));
+        assert_eq!(cursors.take((2, 1), Some(&retained), &mut setup)?, Some(3));
 
         let mut allowed = crate::demand::DemandWork::new(finite_directory_budget(), &caller);
-        let token = cursors.remember_with_work((2, 1), 4_u8, &mut allowed)?;
+        let token = cursors.remember((2, 1), 4_u8, &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut allowed)).map(|owned| owned.into_parts().0)?;
         assert_eq!(token.capacity(), 8);
         assert_eq!(allowed.work.allocation_operations, 1);
         assert_eq!(allowed.work.peak_allocation_bytes, 8);
-        assert_eq!(cursors.take_with_work((2, 1), Some(&token), &mut allowed)?, Some(4));
-        let stale = cursors.remember_with_work((2, 1), 5_u8, &mut allowed)?;
+        assert_eq!(cursors.take((2, 1), Some(&token), &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut allowed))?, Some(4));
+        let stale = cursors.remember((2, 1), 5_u8, &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut allowed)).map(|owned| owned.into_parts().0)?;
         assert!(matches!(
-            cursors.take_with_work((2, 2), Some(&stale), &mut allowed),
+            cursors.take((2, 2), Some(&stale), &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut allowed)),
             Err(MountSourceError::Stale)
         ));
         assert!(matches!(
-            cursors.take((2, 1), Some(&stale)),
+            cursors.take((2, 1), Some(&stale), &mut setup),
             Err(MountSourceError::Stale)
         ));
         Ok(())
@@ -9840,24 +9701,27 @@ mod tests {
     fn finite_cursor_retirement_preserves_unvisited_prefix()
     -> Result<(), Box<dyn std::error::Error>> {
         let cursors = CursorTable::new(3);
-        let first = cursors.remember((2, 1), vec![1_u8; 5])?;
-        let second = cursors.remember((2, 1), vec![2_u8; 7])?;
+        let setup_cancellation = crate::CancellationToken::new();
+        let mut setup_work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &setup_cancellation);
+        let mut setup = super::super::adapter::NativeDemandCarrier::Borrowed(&mut setup_work);
+        let first = cursors.remember((2, 1), vec![1_u8; 5], &mut setup).map(|owned| owned.into_parts().0)?;
+        let second = cursors.remember((2, 1), vec![2_u8; 7], &mut setup).map(|owned| owned.into_parts().0)?;
         let caller = crate::CancellationToken::new();
         let mut budget = finite_directory_budget();
         budget.items_examined = 1;
         let mut denied = crate::demand::DemandWork::new(budget, &caller);
-        assert!(matches!(cursors.clear_with_work(&mut denied), Err(MountSourceError::Work(_))));
+        assert!(matches!(cursors.retire(&mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut denied)), Err(MountSourceError::Work(_))));
         assert_eq!(denied.work.items_examined, 1);
         assert_eq!(denied.work.peak_allocation_bytes, 0);
-        assert!(matches!(cursors.take((2, 1), Some(&first)), Err(MountSourceError::Stale)));
+        assert!(matches!(cursors.take((2, 1), Some(&first), &mut setup), Err(MountSourceError::Stale)));
         assert!(cursors.entries.lock().expect("cursor authority").contains_key(&u64::from_le_bytes(
             second.as_slice().try_into().expect("cursor token"),
         )));
         let mut retry = crate::demand::DemandWork::new(finite_directory_budget(), &caller);
-        cursors.clear_with_work(&mut retry)?;
+        cursors.retire(&mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut retry))?;
         assert_eq!(retry.work.items_examined, 1);
         assert_eq!(retry.work.peak_allocation_bytes, 0);
-        assert!(matches!(cursors.take((2, 1), Some(&second)), Err(MountSourceError::Stale)));
+        assert!(matches!(cursors.take((2, 1), Some(&second), &mut setup), Err(MountSourceError::Stale)));
         Ok(())
     }
 
@@ -9882,14 +9746,17 @@ mod tests {
         let payload = || Payload { meter: Arc::clone(&meter), drops: Arc::clone(&drops) };
         let cursors = CursorTable::new(1);
         let mut carrier = super::super::adapter::NativeDemandCarrier::Shared(&meter);
-        let stale = cursors.remember((2, 1), payload())?;
+        let setup_cancellation = crate::CancellationToken::new();
+        let mut setup_work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &setup_cancellation);
+        let mut setup = super::super::adapter::NativeDemandCarrier::Borrowed(&mut setup_work);
+        let stale = cursors.remember((2, 1), payload(), &mut setup).map(|owned| owned.into_parts().0)?;
         assert!(matches!(
-            cursors.take_with_carrier((2, 2), Some(&stale), &mut carrier),
+            cursors.take((2, 2), Some(&stale), &mut carrier),
             Err(MountSourceError::Stale)
         ));
         assert_eq!(drops.load(Ordering::Relaxed), 1);
-        cursors.remember((2, 1), payload())?;
-        cursors.remember_with_carrier((2, 1), payload(), &mut carrier)?;
+        cursors.remember((2, 1), payload(), &mut setup).map(|owned| owned.into_parts().0)?;
+        cursors.remember((2, 1), payload(), &mut carrier)?;
         assert_eq!(drops.load(Ordering::Relaxed), 2);
         let mut denied_budget = finite_directory_budget();
         denied_budget.allocation_operations = 0;
@@ -9898,13 +9765,13 @@ mod tests {
         )));
         let mut denied_carrier = super::super::adapter::NativeDemandCarrier::Shared(&denied_meter);
         assert!(matches!(
-            cursors.remember_with_carrier((2, 1), Payload {
+            cursors.remember((2, 1), Payload {
                 meter: Arc::clone(&denied_meter), drops: Arc::clone(&drops),
             }, &mut denied_carrier),
             Err(MountSourceError::Work(_))
         ));
         assert_eq!(drops.load(Ordering::Relaxed), 3);
-        cursors.clear_with_carrier(&mut carrier)?;
+        cursors.retire(&mut carrier)?;
         assert_eq!(drops.load(Ordering::Relaxed), 4);
         Ok(())
     }
@@ -9932,7 +9799,7 @@ mod tests {
         let drops = Arc::new(AtomicU64::new(0));
         let native = original.clone();
         let mut carrier = super::super::adapter::NativeDemandCarrier::Native(&native);
-        let token = table.remember_with_carrier((2, 1), Payload {
+        let token = table.remember((2, 1), Payload {
             table: Arc::downgrade(&table), original: original.clone(), drops: Arc::clone(&drops),
         }, &mut carrier)?;
         drop(token);
@@ -9940,18 +9807,18 @@ mod tests {
         let live_before = original.live_allocation_bytes();
         let stopped_wait = crate::CancellationToken::new();
         stopped_wait.cancel();
-        assert!(matches!(table.clear_with_cleanup_wait(&stopped_wait), Err(MountSourceError::Cancelled)));
+        assert!(matches!(table.clear_with_cleanup(Some(&stopped_wait)), Err(MountSourceError::Cancelled)));
         assert_eq!(drops.load(Ordering::Acquire), 0);
         assert_eq!(original.receipt(), before);
         root_stop.cancel();
-        table.clear_with_cleanup_wait(&crate::CancellationToken::new())?;
+        table.clear_with_cleanup(Some(&crate::CancellationToken::new()))?;
         assert_eq!(drops.load(Ordering::Acquire), 1);
         assert!(table.physically_empty()?);
         let completed = original.receipt();
         assert_eq!(completed.items_examined, before.items_examined + 1);
         assert_eq!(completed.allocation_operations, before.allocation_operations);
         assert!(original.live_allocation_bytes() < live_before);
-        table.clear_with_cleanup_wait(&stopped_wait)?;
+        table.clear_with_cleanup(Some(&stopped_wait))?;
         assert_eq!(original.receipt(), completed);
         Ok(())
     }
@@ -9967,13 +9834,12 @@ mod tests {
         let native = original.clone();
         let mut carrier = super::super::adapter::NativeDemandCarrier::Native(&native);
         let before = original.receipt();
-        assert!(matches!(table.remember_with_carrier((2, 1), 7_u8, &mut carrier),
+        assert!(matches!(table.remember((2, 1), 7_u8, &mut carrier),
             Err(MountSourceError::NativeWork(_))));
         assert!(table.physically_empty()?);
         assert_eq!(original.receipt(), before);
         Ok(())
     }
-
 
     #[test]
     fn finite_cursor_custody_survives_take_and_foreign_scope_until_payload_drop()
@@ -9998,17 +9864,20 @@ mod tests {
             .values().next().ok_or("missing cursor")?.generation;
         original.admit(crate::WorkCounters::UNCHARGED)?;
         let before = original.remaining()?.peak_allocation_bytes;
-        let held = view.cursors.take_with_carrier(generation, Some(token), &mut native)?
+        let held = view.cursors.take(generation, Some(token), &mut native)?
             .ok_or("missing owned cursor")?;
         assert!(held.1.retained_bytes()? > 0);
         assert_eq!(held.1.unclaimed_retained_bytes()?, 0);
         assert_eq!(original.remaining()?.peak_allocation_bytes, before);
-        let token = view.cursors.remember(generation, held)?;
+        let setup_cancellation = crate::CancellationToken::new();
+        let mut setup_work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &setup_cancellation);
+        let mut setup = super::super::adapter::NativeDemandCarrier::Borrowed(&mut setup_work);
+        let token = view.cursors.remember(generation, held, &mut setup).map(|owned| owned.into_parts().0)?;
         let mut foreign_budget = budget;
         foreign_budget.allocation_operations = 0;
         foreign_budget.peak_allocation_bytes = 0;
         let mut foreign = crate::demand::DemandWork::new(foreign_budget, &caller);
-        let held = view.cursors.take_with_work(generation, Some(&token), &mut foreign)?
+        let held = view.cursors.take(generation, Some(&token), &mut super::super::adapter::NativeDemandCarrier::Borrowed(&mut foreign))?
             .ok_or("missing borrowed cursor")?;
         assert_eq!(foreign.work.allocation_operations, 0);
         assert_eq!(foreign.work.peak_allocation_bytes, 0);
@@ -10227,32 +10096,35 @@ mod tests {
     #[test]
     fn abandoned_directory_cursors_are_bounded_and_cleared() {
         let cursors = CursorTable::new(2);
-        let first = cursors.remember((2, 1), 1_u8).expect("first cursor");
-        let second = cursors.remember((2, 1), 2_u8).expect("second cursor");
-        let third = cursors.remember((2, 1), 3_u8).expect("third cursor");
+        let setup_cancellation = crate::CancellationToken::new();
+        let mut setup_work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &setup_cancellation);
+        let mut setup = super::super::adapter::NativeDemandCarrier::Borrowed(&mut setup_work);
+        let first = cursors.remember((2, 1), 1_u8, &mut setup).map(|owned| owned.into_parts().0).expect("first cursor");
+        let second = cursors.remember((2, 1), 2_u8, &mut setup).map(|owned| owned.into_parts().0).expect("second cursor");
+        let third = cursors.remember((2, 1), 3_u8, &mut setup).map(|owned| owned.into_parts().0).expect("third cursor");
 
         assert!(matches!(
-            cursors.take((2, 1), Some(&first)),
+            cursors.take((2, 1), Some(&first), &mut setup),
             Err(MountSourceError::Stale)
         ));
         assert_eq!(
-            cursors.take((2, 1), Some(&second)).expect("second token"),
+            cursors.take((2, 1), Some(&second), &mut setup).expect("second token"),
             Some(2)
         );
         assert_eq!(
-            cursors.take((2, 1), Some(&third)).expect("third token"),
+            cursors.take((2, 1), Some(&third), &mut setup).expect("third token"),
             Some(3)
         );
 
-        let stale = cursors.remember((2, 1), 4_u8).expect("stale cursor");
+        let stale = cursors.remember((2, 1), 4_u8, &mut setup).map(|owned| owned.into_parts().0).expect("stale cursor");
         assert!(matches!(
-            cursors.take((3, 1), Some(&stale)),
+            cursors.take((3, 1), Some(&stale), &mut setup),
             Err(MountSourceError::Stale)
         ));
-        let retained = cursors.remember((2, 1), 5_u8).expect("retained cursor");
+        let retained = cursors.remember((2, 1), 5_u8, &mut setup).map(|owned| owned.into_parts().0).expect("retained cursor");
         cursors.clear();
         assert!(matches!(
-            cursors.take((2, 1), Some(&retained)),
+            cursors.take((2, 1), Some(&retained), &mut setup),
             Err(MountSourceError::Stale)
         ));
     }
@@ -10790,7 +10662,6 @@ mod tests {
         Ok(())
     }
 
-
     #[test]
     fn finite_opened_source_reads_keep_original_meter_identity_and_cancellation()
     -> Result<(), Box<dyn std::error::Error>> {
@@ -11290,129 +11161,98 @@ mod tests {
             self.inner.reference()
         }
 
-        fn watch(
+        fn watch<W: crate::facade::FsWork + Send>(
             &self,
             sink: Arc<dyn SourceChangeSink>,
-            budget: crate::WorkBudget,
+            funding: W,
             cancellation: &crate::CancellationToken,
-        ) -> crate::demand::DemandResult<Option<Box<dyn SourceWatch>>> {
-            let mut work = crate::demand::DemandWork::new(budget, cancellation);
+        ) -> W::Output<Option<Box<dyn SourceWatch>>, DemandError> {
+            let mut accounting = funding.accounting(cancellation);
             let result = (|| {
-                work.check().map_err(mount_demand_error)?;
-                if !self.watched { return Ok(None); }
-                work.allocate(std::mem::size_of::<CountedSink>() as u64).map_err(mount_demand_error)?;
-                let sink = Arc::new(CountedSink { inner: sink, reports: Arc::clone(&self.reports) });
-                let remaining = work.remaining().map_err(mount_demand_error)?;
-                mount_accept(&mut work, self.inner.watch(sink, remaining, cancellation), mount_demand_error)
-            })();
+                let budget = crate::demand::ordinary_source_budget(&accounting)?;
+                let answer = (|| {
+                    let mut work = crate::demand::DemandWork::new(budget, cancellation);
+                    let result = (|| {
+                        work.check().map_err(mount_demand_error)?;
+                        if !self.watched { return Ok(None); }
+                        work.allocate(std::mem::size_of::<CountedSink>() as u64).map_err(mount_demand_error)?;
+                        let sink = Arc::new(CountedSink { inner: sink, reports: Arc::clone(&self.reports) });
+                        let remaining = work.remaining().map_err(mount_demand_error)?;
+                        mount_accept(&mut work, self.inner.watch(sink, remaining, cancellation), mount_demand_error)
+                })();
             result.map(|value| crate::OperationReceipt { value, work: work.work })
                 .map_err(|error| crate::OperationFailure::new(source_callback_error(error), work.work))
+        })();
+                crate::demand::accept_source_result(answer, &mut accounting)
+            })();
+            funding.finish(result, &accounting)
         }
 
-        async fn lookup(
+        async fn lookup<W: crate::facade::FsWork + Send>(
             &self,
             source: SourceReference,
             path: &crate::kernel::NamespacePath,
-            budget: crate::WorkBudget,
+            work: W,
             cancellation: &crate::CancellationToken,
-        ) -> crate::demand::DemandResult<Option<SourceNode>> {
+        ) -> W::Output<Option<SourceNode>, DemandError> {
             self.lookups.fetch_add(1, Ordering::AcqRel);
-            self.inner.lookup(source, path, budget, cancellation).await
+            self.inner.lookup(source, path, work, cancellation).await
         }
 
-        async fn list_page(
+        async fn list_page<W: crate::facade::FsWork + Send>(
             &self,
             source: SourceReference,
             directory: &crate::kernel::NamespacePath,
             cursor: Option<crate::demand::SourceCursor>,
             maximum_entries: u32,
-            budget: crate::WorkBudget,
+            work: W,
             cancellation: &crate::CancellationToken,
-        ) -> crate::demand::DemandResult<crate::demand::SourceDirectoryPage> {
+        ) -> W::Output<crate::demand::SourceDirectoryPage, DemandError> {
             self.inner
-                .list_page(source, directory, cursor, maximum_entries, budget, cancellation)
+                .list_page(source, directory, cursor, maximum_entries, work, cancellation)
                 .await
         }
 
-        async fn read_range(
+        async fn read_range<W: crate::facade::FsWork + Send>(
             &self,
             source: SourceReference,
             path: &crate::kernel::NamespacePath,
             expected: crate::demand::SourceVersion,
             offset: u64,
             length: u64,
-            budget: crate::WorkBudget,
+            work: W,
             cancellation: &crate::CancellationToken,
-        ) -> crate::demand::DemandResult<crate::kernel::OwnedSourceChunk> {
+        ) -> W::Output<crate::kernel::OwnedSourceChunk, DemandError> {
             self.inner
-                .read_range(source, path, expected, offset, length, budget, cancellation)
+                .read_range(source, path, expected, offset, length, work, cancellation)
                 .await
         }
 
-        async fn open_file(
+        async fn open_file<W: crate::facade::FsWork + Send>(
             &self,
             source: SourceReference,
             path: &crate::kernel::NamespacePath,
             expected: crate::demand::SourceVersion,
-            budget: crate::WorkBudget,
+            work: W,
             cancellation: &crate::CancellationToken,
-        ) -> crate::demand::DemandResult<Box<dyn DemandFile>> {
+        ) -> W::Output<Box<dyn DemandFile>, DemandError> {
             self.opens.fetch_add(1, Ordering::AcqRel);
             self.inner
-                .open_file(source, path, expected, budget, cancellation)
+                .open_file(source, path, expected, work, cancellation)
                 .await
         }
 
-        async fn lookup_with_native_work(
-            &self, source: SourceReference, path: &crate::kernel::NamespacePath,
-            work: crate::demand::NativeSourceWork<'_>,
-        ) -> Result<Option<SourceNode>, DemandError> {
-            self.lookups.fetch_add(1, Ordering::AcqRel);
-            self.inner.lookup_with_native_work(source, path, work).await
-        }
-
-        async fn list_page_with_native_work(
-            &self, source: SourceReference, path: &crate::kernel::NamespacePath,
-            cursor: Option<crate::demand::SourceCursor>, maximum_entries: u32,
-            work: crate::demand::NativeSourceWork<'_>,
-        ) -> Result<crate::demand::SourceDirectoryPage, DemandError> {
-            self.inner.list_page_with_native_work(source, path, cursor, maximum_entries, work).await
-        }
-
-        async fn open_file_with_native_work(
-            &self, source: SourceReference, path: &crate::kernel::NamespacePath,
-            expected: crate::demand::SourceVersion, work: crate::demand::NativeSourceWork<'_>,
-        ) -> Result<Box<dyn DemandFile>, DemandError> {
-            self.opens.fetch_add(1, Ordering::AcqRel);
-            self.inner.open_file_with_native_work(source, path, expected, work).await
-        }
-
-        async fn read_range_with_native_work(
-            &self, source: SourceReference, path: &crate::kernel::NamespacePath,
-            expected: crate::demand::SourceVersion, offset: u64, length: u64,
-            work: crate::demand::NativeSourceWork<'_>,
-        ) -> Result<crate::kernel::OwnedSourceChunk, DemandError> {
-            self.inner.read_range_with_native_work(source, path, expected, offset, length, work).await
-        }
-
-        async fn read_link_with_native_work(
-            &self, source: SourceReference, path: &crate::kernel::NamespacePath,
-            expected: crate::demand::SourceVersion, maximum_bytes: u64,
-            work: crate::demand::NativeSourceWork<'_>,
-        ) -> Result<crate::kernel::OwnedSourceChunk, DemandError> {
-            self.inner.read_link_with_native_work(source, path, expected, maximum_bytes, work).await
-        }
-
-        async fn read_link(
+        async fn read_link<W: crate::facade::FsWork + Send>(
             &self,
             source: SourceReference,
             path: &crate::kernel::NamespacePath,
             expected: crate::demand::SourceVersion,
-            budget: crate::WorkBudget,
+            maximum_bytes: u64,
+            work: W,
             cancellation: &crate::CancellationToken,
-        ) -> crate::demand::DemandResult<crate::kernel::OwnedSourceChunk> {
+        ) -> W::Output<crate::kernel::OwnedSourceChunk, DemandError> {
             self.inner
-                .read_link(source, path, expected, budget, cancellation)
+                .read_link(source, path, expected, maximum_bytes, work, cancellation)
                 .await
         }
     }

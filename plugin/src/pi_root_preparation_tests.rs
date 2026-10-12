@@ -171,8 +171,7 @@ impl Fixture {
             request.binding.clone(), request.root.clone(), command.clone(), &work,
         ).await.unwrap();
         assert!(matches!(admission.0, acyclic_harness::Admission::Accepted(_)));
-        drop(admission.0);
-        drop(admission.1);
+        drop(admission);
         Self {
             runtime,
             filesystem,
@@ -191,7 +190,7 @@ impl Fixture {
         let observation = work();
         self.raw.open_workspace_with_native_work(&self.owner.policy.journal.storage_name().unwrap(),
             &observation, observation.cancellation()).await.unwrap()
-            .head_with_native_work(&observation, observation.cancellation()).await.unwrap().id()
+            .head(&observation, observation.cancellation()).await.unwrap().id()
     }
 
     async fn load(&self) -> Result<PiRootPreparation> {
@@ -254,7 +253,7 @@ async fn pi_preparation_dispatch_requires_current_uncancelled_original_execution
     else {
         panic!("root did not obtain its original execution lease");
     };
-    host.start_task(&lease).await.unwrap();
+    host.start_task(&lease, None).await.unwrap();
     let fence = LeaseFence::from(&lease.reservation);
     let head = fixture.head().await;
     let context = fixture.runtime.runtime.task_context_with_native_work(

@@ -555,12 +555,6 @@ impl MaterializeOptions {
         }
     }
 
-    /// Requires the original physical allocation without adopting a replacement.
-    #[must_use]
-    pub fn expected_root_identity(mut self, identity: Option<crate::NativeRootIdentity>) -> Self {
-        self.expected_root_identity = identity;
-        self
-    }
 }
 
 /// Exact result and host-side movement facts.
@@ -1226,8 +1220,8 @@ async fn restore_checkout_host_path_on_source<A: AsyncAuthorityStore, O: AsyncOb
                     let mut work = NativeSourceWork::new(&work);
                     validate_host_relative_measured(relative, &mut work)?;
                     (
-                        restore_path(&options.destination, None, &allocation_work)?,
-                        restore_path(relative, None, &allocation_work)?,
+                        allocation_work.path(&options.destination, None).map_err(materialize_native_error)?,
+                        allocation_work.path(relative, None).map_err(materialize_native_error)?,
                     )
                 };
                 let expected_root_identity = options.expected_root_identity;
@@ -1343,13 +1337,6 @@ struct PreparedRestore {
     lock: File,
 }
 
-fn restore_path(
-    parent: &Path, name: Option<&Path>, work: &crate::NativeMaterializationWork,
-) -> Result<(PathBuf, crate::NativeAllocation), MaterializeError> {
-    let (path, allocation) = work.path(parent, name).map_err(materialize_native_error)?;
-    Ok((path, allocation))
-}
-
 fn prepare_restore(
     destination_root: (PathBuf, crate::NativeAllocation),
     relative: (PathBuf, crate::NativeAllocation),
@@ -1380,12 +1367,12 @@ fn prepare_restore(
         )?,
     }
     let stage_parent_path = match replacement {
-        HostPathReplacement::Atomic => restore_path(
-            destination_root.0.parent().ok_or(MaterializeError::InvalidPath)?, None, &allocation_work,
-        )?,
-        HostPathReplacement::LiveMount => restore_path(
-            &destination_root.0, Some(relative.0.parent().unwrap_or_else(|| Path::new(""))), &allocation_work,
-        )?,
+        HostPathReplacement::Atomic => allocation_work.path(
+            destination_root.0.parent().ok_or(MaterializeError::InvalidPath)?, None,
+        ).map_err(materialize_native_error)?,
+        HostPathReplacement::LiveMount => allocation_work.path(
+            &destination_root.0, Some(relative.0.parent().unwrap_or_else(|| Path::new(""))),
+        ).map_err(materialize_native_error)?,
     };
     let stage_parent_root = match replacement {
         HostPathReplacement::Atomic => HostRoot::open(&stage_parent_path.0, work)
@@ -1396,7 +1383,7 @@ fn prepare_restore(
     let stage_owner = stage_parent_root.create_dir_all_held_measured(Path::new(""), work)
         .map_err(restore_demand_error)?;
     let (stage_name, stage_root) = create_restore_stage(&stage_owner, &allocation_work, work)?;
-    let stage_path = match restore_path(&stage_parent_path.0, Some(&stage_name.0), &allocation_work) {
+    let stage_path = match allocation_work.path(&stage_parent_path.0, Some(&stage_name.0)).map_err(materialize_native_error) {
         Ok(path) => path,
         Err(error) => {
             let identity = stage_root.identity();
@@ -2305,7 +2292,16 @@ async fn apply_host_attributes_offloaded(
             let target = root.0.open_linux_metadata_target(path.0.path(), work)?;
             #[cfg(target_os = "macos")]
             let target = root.0.open_macos_metadata_target(path.0.path(), work)?;
-            let result = target.set_extended_attributes(&attributes.0, work);
+            #[cfg(target_os = "linux")]
+            let result = crate::native_host::set_extended_attributes(&target, &attributes.0, work);
+            #[cfg(target_os = "macos")]
+            let result = match &target {
+                crate::native_host::MacMetadataTarget::Held(file) =>
+                    crate::native_host::set_extended_attributes(file, &attributes.0, work),
+                crate::native_host::MacMetadataTarget::Noop { .. } => work.check().and(Err(
+                    crate::native_host::NativeMetadataError("named_attributes on a non-ordinary file kind").into(),
+                )),
+            };
             #[cfg(target_os = "macos")]
             {
                 let target_bytes = target.logical_owned_bytes();
@@ -2342,7 +2338,9 @@ async fn apply_host_metadata_offloaded(
         let target = root.0.open_macos_metadata_target(path.0.path(), work)?;
         #[cfg(windows)]
         let target = root.0.open_windows_metadata_target_wide(&path.0.units, work)?;
-        #[cfg(unix)]
+        #[cfg(target_os = "linux")]
+        { crate::native_host::apply_linux_metadata(&target, metadata, work) }
+        #[cfg(target_os = "macos")]
         { target.apply(metadata, work) }
         #[cfg(windows)]
         { crate::native_host::apply_windows_metadata(target, metadata, work) }
@@ -2644,7 +2642,7 @@ mod restore_recovery_tests {
         let cancellation = CancellationToken::new();
         let mut receipt = GenerationReceipt::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)?;
         let failure = validate_options(
-            &MaterializeOptions::native(&destination).expected_root_identity(Some(original)),
+            &MaterializeOptions { expected_root_identity: Some(original), ..MaterializeOptions::native(&destination) },
             &mut receipt,
         ).err().ok_or("replacement was accepted")?;
         assert!(matches!(failure.error, MaterializeError::AllocationChanged { expected, actual: found }
@@ -2990,8 +2988,8 @@ mod restore_recovery_tests {
         let allocation_work = (&native_work).clone();
         let mut work = NativeSourceWork::new(&original);
         let failure = prepare_restore(
-            restore_path(&destination, None, &allocation_work)?,
-            restore_path(Path::new("nested/entry"), None, &allocation_work)?, Some(expected),
+            allocation_work.path(&destination, None).map_err(materialize_native_error)?,
+            allocation_work.path(Path::new("nested/entry"), None).map_err(materialize_native_error)?, Some(expected),
             HostPathReplacement::Atomic, &mut work,
         ).err().ok_or("swapped restore root was accepted")?;
         assert!(matches!(failure, MaterializeError::AllocationChanged { expected: found, .. } if found == expected));

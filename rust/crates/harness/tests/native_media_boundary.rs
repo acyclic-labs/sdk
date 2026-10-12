@@ -558,10 +558,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
     let issuer = AuthorityIssuer::new("native-boundary", [21; 32], authority.clone());
     let read = volume.capability(VolumeOperation::Read)?;
     let write = volume.capability(VolumeOperation::Write)?;
-    let owner = issuer.root_for_agent(
-        agent_id,
-        "owner",
-        Capabilities::new([
+    let owner = issuer.issue("owner", &Capabilities::new([
             read.clone(),
             write,
             "extension:configure".into(),
@@ -572,8 +569,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
             "model:generate".into(),
             "task:spawn:fixture.native_replay@1".into(),
             "tool:call:example.convert_image".into(),
-        ]),
-    );
+        ]), Some(agent_id), None, &mut None).expect("scope proof");
     let writer = FilesystemContentPublisher::new(
         host.clone(),
         &volume,
@@ -1107,11 +1103,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
         id: acyclic_harness::ConversationId::new().to_string(),
     };
     let journal_issuer = AuthorityIssuer::new("native-conversation", [22; 32], journal_authority);
-    let journal_scope = journal_issuer.root_for_agent(
-        agent_id,
-        "conversation-owner",
-        Capabilities::new([read.clone(), volume.capability(VolumeOperation::Write)?]),
-    );
+    let journal_scope = journal_issuer.issue("conversation-owner", &Capabilities::new([read.clone(), volume.capability(VolumeOperation::Write)?]), Some(agent_id), None, &mut None).expect("scope proof");
     let journal = Arc::new(FilesystemExecutionJournal::new(
         Arc::new(MemoryStream::default()),
         host.clone(),
@@ -1352,9 +1344,9 @@ where
     )?;
     let mut tasks = TaskRegistry::default();
     tasks.register(definition)?;
-    let definition = tasks.get_version::<u64, u64>("fixture.native_replay", "1")?;
+    let definition = tasks.get_version::<u64, u64>("fixture.native_replay", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
     let mut machines = MachineRegistry::default();
-    machines.register(machine)?;
+    machines.register(machine, &mut None)?;
     let stream = Arc::new(MemoryStream::default());
     let admission = OperationId::from_bytes([115; 16]);
     let task = TaskId::from_bytes(admission.into_bytes());
@@ -1366,13 +1358,9 @@ where
             id: task.to_string(),
         },
     );
-    let signed = issuer.root_for_agent(
-        signed
+    let signed = issuer.issue("native-replay-task-owner", signed.capabilities(), Some(signed
             .agent()
-            .ok_or_else(|| Error::Unauthorized("original Agent identity absent".into()))?,
-        "native-replay-task-owner",
-        signed.capabilities().clone(),
-    );
+            .ok_or_else(|| Error::Unauthorized("original Agent identity absent".into()))?), None, &mut None).expect("scope proof");
     let turn = OperationId::from_bytes([116; 16]);
     let mut model = MockAdapter::new(reader);
     model.receipts_enabled = true;
@@ -1453,7 +1441,7 @@ where
                 WorkPull::Idle => return Err(Error::NotFound("original task lease".into())),
                 WorkPull::Unresolved { error, .. } => return Err(error),
             };
-            runtime.task_host().start_task(&lease).await?;
+            runtime.task_host().start_task(&lease, None).await?;
             fence = Some(LeaseFence::from(&lease.reservation));
         }
         let original = runtime.task_host().observe_admission(task).await?;
@@ -1731,7 +1719,7 @@ where
         project.capability(VolumeOperation::Read)?,
         project.capability(VolumeOperation::Write)?,
     ]);
-    let scope = issuer.root_for_agent(agent, "media-parent", grants);
+    let scope = issuer.issue("media-parent", &grants, Some(agent), None, &mut None).expect("scope proof");
     let journal = FilesystemExecutionJournal::new(
         stream.clone(),
         host.clone(),
@@ -1869,8 +1857,7 @@ where
         &stream,
         parent.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(reader.clone())
     .with_fork_verifier(forks.clone());
@@ -1915,7 +1902,7 @@ where
                 scope: scope.clone(),
                 causal_parent: None,
                 action,
-            })
+            }, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
     }
     let child_agent = AgentId::new();
@@ -2002,10 +1989,7 @@ where
         )
         .await?;
     let child_issuer = AuthorityIssuer::new("media-fork-child", [43; 32], child.clone());
-    let child_scope = child_issuer.root_for_agent(
-        child_agent,
-        "media-child",
-        Capabilities::new(
+    let child_scope = child_issuer.issue("media-child", &Capabilities::new(
             [
                 "conversation:bind".into(),
                 child_private.capability(VolumeOperation::Read)?,
@@ -2021,8 +2005,7 @@ where
                     .map(|grant| grant.capability())
                     .collect::<Result<Vec<_>>>()?,
             ),
-        ),
-    );
+        ), Some(child_agent), None, &mut None).expect("scope proof");
     let child_reader = Arc::new(FilesystemContentVerifier::new(
         host.clone(),
         &child_issuer.verifier(&mut None).expect("verifier copy"),
@@ -2033,8 +2016,7 @@ where
         &stream,
         child,
         child_issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(child_reader.clone())
     .with_fork_verifier(forks);

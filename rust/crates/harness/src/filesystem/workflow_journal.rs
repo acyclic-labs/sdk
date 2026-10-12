@@ -108,18 +108,16 @@ pub struct FilesystemWorkflowJournal<P, A, O> {
 }
 
 /// A private original-owner observation, usable only with an atomic workflow tail comparison.
-pub(crate) struct WorkflowReleaseWitness<'a, P> {
-    owner: &'a TaskJournalOwner<P>,
+pub(crate) struct WorkflowReleaseWitness<'a> {
+    binding: (crate::TaskId, &'a crate::scheduler::LeaseFence),
     path: &'a str,
     tail: u64,
 }
 
-impl<P: StreamProvider> WorkflowReleaseWitness<'_, P> {
-    pub(crate) fn task_binding(&self) -> (crate::TaskId, &crate::scheduler::LeaseFence) {
-        self.owner.task_binding()
+impl WorkflowReleaseWitness<'_> {
+    pub(crate) fn condition(&self) -> ((crate::TaskId, &crate::scheduler::LeaseFence), (&str, u64)) {
+        (self.binding, (self.path, self.tail))
     }
-    pub(crate) fn path(&self) -> &str { self.path }
-    pub(crate) fn tail(&self) -> u64 { self.tail }
 }
 
 impl<P, A, O> FilesystemWorkflowJournal<P, A, O>
@@ -180,13 +178,12 @@ where
         owner.validate_storage(verifier, maximum_payload_bytes, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
         let stream = owner.stream();
         let io = PreparationIo::from_native_work(work)?;
-        ContentGrant::verify_original_volume_with_io(verifier, scope, volume, VolumeOperation::Read, &io)?;
-        ContentGrant::verify_original_volume_with_io(verifier, scope, volume, VolumeOperation::Write, &io)?;
-        let (verifier, verifier_custody) = verifier.clone_with_native_work(work)?;
-        io.absorb_native_custody(verifier_custody)?;
-        let (scope, scope_custody) = scope.clone_with_native_work(work)?;
-        io.absorb_native_custody(scope_custody)?;
-        let volume = volume.copy(&io)?;
+        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+            ContentGrant::authorize_volume(verifier, scope, volume, operation, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()))?;
+        }
+        let verifier = verifier.copy(&mut Some(&mut io.history_io()))?;
+        let scope = scope.copy(&mut Some(&mut io.history_io()))?;
+        let volume = volume.copy(&mut Some(&mut io.history_io()))?;
         let identity_io = PreparationIo::from_native_work(work)?;
         let _identity;
         let identity = crate::contract::preparation_format(format_args!("{}", owner.operation_id()), Some(&identity_io))?;
@@ -240,12 +237,9 @@ where
         {
             return Err(Error::Invalid("workflow journal binding is invalid".into()));
         }
-        if let Some(io) = io {
-            ContentGrant::verify_original_volume_with_io(&verifier, &scope, &volume, VolumeOperation::Read, io)?;
-            ContentGrant::verify_original_volume_with_io(&verifier, &scope, &volume, VolumeOperation::Write, io)?;
-        } else {
-            ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Read)?;
-            ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Write)?;
+        if io.is_none() {
+            ContentGrant::authorize_volume(&verifier, &scope, &volume, VolumeOperation::Read, u64::MAX, &mut None)?;
+            ContentGrant::authorize_volume(&verifier, &scope, &volume, VolumeOperation::Write, u64::MAX, &mut None)?;
         }
         let path_hold;
         let path = crate::contract::preparation_format(
@@ -282,7 +276,6 @@ where
         &self, reference: &FileRef, verify_payloads: bool, verify_machine: bool,
         io: Option<&PreparationIo>,
     ) -> Result<WorkflowRecord> {
-        self.require_machine_io(verify_machine, io)?;
         let _prefix;
         let prefix = crate::contract::preparation_format(
             format_args!(".system/workflows/{}/", self.id()), io,
@@ -320,8 +313,8 @@ where
         Ok(record)
     }
 
-    fn require_machine_io(&self, verify_machine: bool, io: Option<&PreparationIo>) -> Result<()> {
-        if verify_machine && io.is_some() {
+    fn require_machine_io(&self, io: Option<&PreparationIo>) -> Result<()> {
+        if io.is_some() {
             #[cfg(not(target_arch = "wasm32"))]
             if io.and_then(PreparationIo::original_native_work).is_some() {
                 return self.owner.as_ref().map_or(Ok(()), |owner| owner.require_native_workflow_validation());
@@ -336,7 +329,7 @@ where
         &self, after: u64, maximum: u32, verify_payloads: bool,
         verify_machine: bool, io: Option<&PreparationIo>,
     ) -> Result<Vec<WorkflowRecord>> {
-        self.require_machine_io(verify_machine, io)?;
+        if verify_machine { self.require_machine_io(io)?; }
         if maximum == 0 {
             return Err(observation_boundary(io, crate::wire::ErrorCode::Invalid,
                 "workflow page bounds are invalid"));
@@ -486,13 +479,13 @@ where
 
     pub(crate) async fn prove_release_with_io(
         &self, io: &PreparationIo,
-    ) -> Result<Option<WorkflowReleaseWitness<'_, P>>> {
+    ) -> Result<Option<WorkflowReleaseWitness<'_>>> {
         let Some(record) = self.observe_latest_record(Some(io)).await? else { return Ok(None); };
         if !matches!(record.transition.status, MachineStatus::Suspended) { return Ok(None); }
         let owner = self.owner.as_ref().ok_or_else(|| {
             Error::Unsupported("workflow release requires its original task owner".into())
         })?;
-        Ok(Some(WorkflowReleaseWitness { owner, path: &self.path, tail: record.next.revision }))
+        Ok(Some(WorkflowReleaseWitness { binding: owner.task_binding(), path: &self.path, tail: record.next.revision }))
     }
 
     async fn verify_observation_owner(
@@ -575,14 +568,14 @@ where
                     return Err(observation_boundary(Some(io), crate::wire::ErrorCode::Unauthorized,
                         "workflow content belongs to another private volume"));
                 }
-                ContentGrant::verify_original_volume_with_io(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io,
+                ContentGrant::authorize_volume(
+                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()),
                 )?;
                 self.host.read_pinned_io(reference, self.maximum_payload_bytes, Some(io)).await
             }
             None => {
                 let read = ContentGrant::verify(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read,
+                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, u64::MAX, &mut None,
                 )?;
                 self.host.read_content(reference, &read, self.maximum_payload_bytes).await
             }
@@ -600,9 +593,8 @@ where
         let mut matched_page_owned = 0;
         let mut previous: Option<WorkflowRecord> = None;
         let mut matched = None;
-        let mut revision = 0;
-        let mut terminal = false;
         loop {
+            let revision = previous.as_ref().map_or(0, |prior| prior.next.revision);
             let before_page = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let page = self.replay_records(
                 revision, WORKFLOW_REPLAY_PAGE_RECORDS, false, true, io,
@@ -616,14 +608,13 @@ where
             if page.is_empty() { break; }
             for record in page {
                 let checkpoint = previous.as_ref().map_or(&admission.initial, |prior| &prior.next);
+                let terminal = previous.as_ref().is_some_and(|prior| !matches!(prior.transition.status, MachineStatus::Suspended));
                 validate_workflow_next(checkpoint, terminal, &identities.reserved, &identities.keys, &record, io)
                     .map_err(|error| match error {
                         Error::NativeWork { .. } => error,
                         _ => Error::Storage("workflow history diverges from admission or reuses an identity".into()),
                     })?;
                 identities.advance(&record)?;
-                revision = record.next.revision;
-                terminal = !matches!(&record.transition.status, MachineStatus::Suspended);
                 if let Some(prior) = previous.take() {
                     if prior.operation_id == operation_id {
                         matched = Some(prior);
@@ -646,6 +637,7 @@ where
             }
             previous_page_owned = if page_has_match { 0 } else { page_owned };
         }
+        let revision = previous.as_ref().map_or(0, |prior| prior.next.revision);
         if let Some(io) = io { io.check_cancellation()?; }
         for identity in candidate.operation_ids() {
             if let Some(io) = io { io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?; }
@@ -656,6 +648,7 @@ where
         }
         if require_next && revision == candidate.prior.revision {
             let checkpoint = previous.as_ref().map_or(&admission.initial, |prior| &prior.next);
+            let terminal = previous.as_ref().is_some_and(|prior| !matches!(prior.transition.status, MachineStatus::Suspended));
             validate_workflow_next(checkpoint, terminal, &identities.reserved, &identities.keys, candidate, io)?;
         }
         if let Some(prior) = previous
@@ -801,16 +794,9 @@ where
         _key = io.map(|io| io.guard_owned(key.capacity() as u64)).transpose()?;
         let key = IdempotencyKey::new(key)?;
         let _grant;
-        let grant = match io {
-            Some(io) => {
-                let mut borrowed = io.history_io();
-                ContentGrant::verify_with_work(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Write,
-                    io.remaining()?.bytes_encoded, &mut Some(&mut borrowed),
-                )?
-            }
-            None => ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Write)?,
-        };
+        let maximum = io.map(|io| io.remaining().map(|remaining| remaining.bytes_encoded)).transpose()?.unwrap_or(u64::MAX);
+        let grant = crate::executor::with_history_io(io, |work| ContentGrant::verify(
+            &self.verifier, &self.scope, &self.volume, VolumeOperation::Write, maximum, work))?;
         _grant = io.map(|io| io.guard_owned(grant.logical_owned_bytes()?)).transpose()?;
         self.host.put_content_impl(&self.volume, &grant, &path, &bytes, "application/json",
             if transition.is_some() { "transition.json" } else { "admission.json" },
@@ -933,7 +919,7 @@ where
         record: WorkflowRecord,
         io: Option<&PreparationIo>,
     ) -> Result<WorkflowCommitOutcome> {
-        self.require_machine_io(true, io)?;
+        self.require_machine_io(io)?;
         if let Some(io) = io { io.check_cancellation()?; }
         if let Some(owner) = &self.owner {
             let mut borrowed = io.map(PreparationIo::history_io);
@@ -1000,22 +986,13 @@ where
         }
         let appended = self.append_reference(&self.path, idempotency_key.as_str(), expected_revision,
             record.operation_id, &reference, io).await;
-        if self.owner.is_some() {
-            if appended? {
-                return Ok(WorkflowCommitOutcome::Applied(record));
-            }
-            return match self.reconcile(&record, io).await? {
-                Some(previous) => Ok(previous),
-                None => Err(Error::Conflict("workflow checkpoint or ownership changed".into())),
-            };
-        }
         match appended {
             Ok(true) => Ok(WorkflowCommitOutcome::Applied(record)),
             Ok(false) => match self.reconcile(&record, io).await? {
                 Some(previous) => Ok(previous),
-                None => Err(Error::Conflict("workflow checkpoint revision is stale".into())),
+                None => Err(Error::Conflict("workflow checkpoint or ownership changed".into())),
             },
-            Err(Error::Indeterminate(_)) => match self.reconcile(&record, io).await {
+            Err(Error::Indeterminate(_)) if self.owner.is_none() => match self.reconcile(&record, io).await {
                 Ok(Some(previous)) => Ok(previous),
                 Ok(None) | Err(Error::Storage(_)) => {
                     Err(Error::Indeterminate(record.operation_id))
@@ -1080,20 +1057,14 @@ where
         _path = io.map(|io| io.guard_owned(path.capacity() as u64)).transpose()?;
         let appended = self.append_reference(&path, "admission", 0, admission.operation_id,
             &reference, io).await;
-        if self.owner.is_some() {
-            if appended? { return Ok(admission); }
-            return match self.read_admission(io).await? {
-                Some(existing) if existing == admission => Ok(existing),
-                Some(_) => Err(Error::Conflict("workflow admission identity is already bound".into())),
-                None => Err(Error::Conflict("workflow admission ownership changed".into())),
-            };
-        }
         match appended {
             Ok(true) => Ok(admission),
+            Err(error) if self.owner.is_some() => Err(error),
             Ok(false) | Err(Error::Conflict(_)) =>
                 match self.read_admission(io).await? {
                     Some(existing) if existing == admission => Ok(existing),
                     Some(_) => Err(Error::Conflict("workflow admission identity is already bound".into())),
+                    None if self.owner.is_some() => Err(Error::Conflict("workflow admission ownership changed".into())),
                     None => Err(Error::Indeterminate(admission.operation_id)),
                 },
             Err(Error::Indeterminate(_)) => match self.read_admission(io).await {

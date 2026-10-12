@@ -152,7 +152,7 @@ struct InitialLookups {
 }
 
 /// Applies one ordered namespace, metadata, and content batch to a generation.
-pub async fn apply_generation_mutations_async<S: AsyncObjectStore>(
+pub async fn apply_generation_mutations<S: AsyncObjectStore>(
     store: &S,
     generation: &GenerationRoot,
     operations: Vec<Mutation>,
@@ -160,30 +160,10 @@ pub async fn apply_generation_mutations_async<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<GenerationMutationReceipt, GenerationMutationFailure> {
-    let (receipt, _operations) = apply_generation_mutations_retaining_async(
-        store,
-        generation,
-        operations,
-        config,
-        budget,
-        cancellation,
-    )
-    .await?;
-    Ok(receipt)
-}
-
-pub(crate) async fn apply_generation_mutations_retaining_async<S: AsyncObjectStore>(
-    store: &S,
-    generation: &GenerationRoot,
-    operations: Vec<Mutation>,
-    config: VolumeConfig,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-) -> Result<(GenerationMutationReceipt, Vec<Mutation>), GenerationMutationFailure> {
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
     apply_generation_mutations_retaining_with_accounting(
         store, generation, operations, config, &mut accounting, cancellation,
-    ).await.map(|(receipt, operations, _)| (receipt, operations))
+    ).await.map(|(receipt, _, _)| receipt)
         .map_err(|error| OperationFailure::new(generation_error(error), accounting.spent()))
 }
 
@@ -449,24 +429,6 @@ fn generation_error(error: crate::FsError) -> GenerationMutationError {
         crate::FsError::Config(error) => error.into(),
         _ => unreachable!("standalone generation leaves return typed generation/read/work errors"),
     }
-}
-
-/// Synchronous adapter over [`apply_generation_mutations_async`].
-pub fn apply_generation_mutations<S: crate::ImmediateObjectStore>(
-    store: &S,
-    generation: &GenerationRoot,
-    operations: Vec<Mutation>,
-    config: VolumeConfig,
-    budget: WorkBudget,
-) -> Result<GenerationMutationReceipt, GenerationMutationFailure> {
-    crate::async_storage::poll_immediate(apply_generation_mutations_async(
-        store,
-        generation,
-        operations,
-        config,
-        budget,
-        &CancellationToken::new(),
-    ))
 }
 
 async fn verify_created_identities<S: AsyncObjectStore>(

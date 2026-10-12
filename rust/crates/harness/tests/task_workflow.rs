@@ -464,8 +464,7 @@ where
         stream,
         issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(),
-    )
+        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?;
     let events = aggregate.reducer().events_after(0, 64)?;
     assert_eq!(events.len(), 2, "request retry must reuse its ticket");
@@ -499,11 +498,7 @@ where
             .await,
         Err(Error::Unauthorized(_))
     ));
-    let responder = issuer.root_for_agent(
-        agent,
-        "approver",
-        Capabilities::new(["interaction:resolve".to_owned(), ticket.responder_grant()]),
-    );
+    let responder = issuer.issue("approver", &Capabilities::new(["interaction:resolve".to_owned(), ticket.responder_grant()]), Some(agent), None, &mut None).expect("scope proof");
     interactions
         .resolve_approval(
             OperationId::from_bytes([92; 16]),
@@ -796,10 +791,7 @@ async fn worker_restart_with_options(
         id: "worker-owner".into(),
     };
     let issuer = AuthorityIssuer::new("worker-restart", [23; 32], authority);
-    let signed = issuer.root_for_agent(
-        agent,
-        "owner",
-        Capabilities::new([
+    let signed = issuer.issue("owner", &Capabilities::new([
             "operation:declare".to_owned(),
             "operation:observe".to_owned(),
             "operation:cancel".to_owned(),
@@ -814,8 +806,7 @@ async fn worker_restart_with_options(
             "task:spawn:test.child@1".to_owned(),
             volume.capability(VolumeOperation::Read)?,
             volume.capability(VolumeOperation::Write)?,
-        ]),
-    );
+        ]), Some(agent), None, &mut None).expect("scope proof");
     let conversation_issuer = AuthorityIssuer::new(
         "worker-approval",
         [54; 32],
@@ -824,16 +815,12 @@ async fn worker_restart_with_options(
             id: "worker-approval".into(),
         },
     );
-    let conversation_scope = conversation_issuer.root_for_agent(
-        agent,
-        "owner",
-        Capabilities::new([
+    let conversation_scope = conversation_issuer.issue("owner", &Capabilities::new([
             "conversation:bind".to_owned(),
             "interaction:open".to_owned(),
             volume.capability(VolumeOperation::Read)?,
             volume.capability(VolumeOperation::Write)?,
-        ]),
-    );
+        ]), Some(agent), None, &mut None).expect("scope proof");
     let grants = if allow_mail_read {
         signed.capabilities().clone()
     } else {
@@ -876,9 +863,9 @@ async fn worker_restart_with_options(
         input_schema,
         json!({"type":"integer"}),
     )?)?;
-    let definition = tasks.get_version::<Value, u64>("test.restart", "1")?;
+    let definition = tasks.get_version::<Value, u64>("test.restart", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
     let mut machines = MachineRegistry::default();
-    machines.register(machine)?;
+    machines.register(machine, &mut None)?;
     if with_child {
         let child = Arc::new(CompletedChildMachine(TaskMachine {
             identity: MachineIdentity {
@@ -893,7 +880,7 @@ async fn worker_restart_with_options(
             json!({"type":"integer"}),
             json!({"type":"integer"}),
         )?)?;
-        machines.register(child)?;
+        machines.register(child, &mut None)?;
     }
     let operation = OperationId::from_bytes([25; 16]);
     let task = TaskId::from_bytes(operation.into_bytes());
@@ -967,8 +954,7 @@ async fn worker_restart_with_options(
                         &stream,
                         conversation_issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
                         conversation_issuer.verifier(&mut None).expect("verifier copy"),
-                        SchemaRegistry::new(),
-                    )
+                        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
                     .await?;
                     aggregate
                         .execute(Command {
@@ -1137,9 +1123,9 @@ async fn worker_restart_with_options(
         }
         Ok::<_, Error>(())
         }).await?;
-        let mut coordinator = DistributedCoordinator::open(&stream, reader.clone())
+        let mut coordinator = DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None)
             .await?
-            .with_payload_store(payloads.clone());
+            ;
         let stop = boxed_restart_phase(|| async {
         if reopened && !uncertain && !with_mail_send {
             assert!(!runtime.poll_task_wake(task, None).await?);
@@ -1301,7 +1287,7 @@ async fn worker_restart_with_options(
                         runtime.run_task(first_wake, &runtime.commands(), 2).await?,
                         TaskWorkerOutcome::Suspended { revision: 1, .. }
                     ));
-                    let next_wait = DistributedCoordinator::open(&stream, reader.clone()).await?;
+                    let next_wait = DistributedCoordinator::open(&stream, reader.clone(), None, &mut None).await?;
                     assert_eq!(
                         next_wait
                             .scheduler()
@@ -1319,7 +1305,7 @@ async fn worker_restart_with_options(
                     assert_eq!(discover_wakes(&runtime, None).await?, vec![task]);
                     assert!(!runtime.poll_task_wake(task, None).await?);
                 }
-                let wake_projection = DistributedCoordinator::open(&stream, reader.clone()).await?;
+                let wake_projection = DistributedCoordinator::open(&stream, reader.clone(), None, &mut None).await?;
                 let woken = wake_projection
                     .scheduler()
                     .operation(operation)
@@ -1433,7 +1419,7 @@ async fn worker_restart_with_options(
                         .is_err()
                 );
                 assert_eq!(model.generated.load(Ordering::SeqCst), 0);
-                coordinator.refresh().await?;
+                coordinator.refresh(&mut None).await?;
                 let retained = coordinator
                     .scheduler()
                     .operation(operation)
@@ -1549,7 +1535,7 @@ async fn worker_restart_with_options(
                             .tail,
                         72
                     );
-                    coordinator.refresh().await?;
+                    coordinator.refresh(&mut None).await?;
                     assert_eq!(
                         coordinator
                             .scheduler()
@@ -1759,7 +1745,7 @@ async fn worker_restart_with_options(
             assert!(
                 matches!(outcome, TaskWorkerOutcome::Reconciling { lease: retained } if retained == lease)
             );
-            coordinator.refresh().await?;
+            coordinator.refresh(&mut None).await?;
             assert_eq!(
                 coordinator
                     .scheduler()
@@ -1783,7 +1769,7 @@ async fn worker_restart_with_options(
             assert!(
                 matches!(outcome, TaskWorkerOutcome::Completed { task: completed } if completed == task)
             );
-            coordinator.refresh().await?;
+            coordinator.refresh(&mut None).await?;
             let retained = coordinator
                 .scheduler()
                 .operation(operation)
@@ -2002,12 +1988,12 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
     let private = VolumeRef::new(provider.clone(), "private", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
     let authority = Authority { kind: AggregateKind::Conversation, id: "custom-merge-parent".into() };
     let issuer = AuthorityIssuer::new("custom-merge", [142; 32], authority.clone());
-    let signed = issuer.root_for_agent(agent, "owner", Capabilities::new([
+    let signed = issuer.issue("owner", &Capabilities::new([
         "conversation:bind".into(), "fork:publish".into(), "project:merge".into(),
         project.capability(VolumeOperation::Read)?, project.capability(VolumeOperation::Write)?,
         source.capability(VolumeOperation::Read)?, source.capability(VolumeOperation::Write)?,
         private.capability(VolumeOperation::Read)?, private.capability(VolumeOperation::Write)?,
-    ]));
+    ]), Some(agent), None, &mut None).expect("scope proof");
     let mut parent = Reducer::new(authority, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
     parent.apply(Command { operation_id: OperationId::from_bytes([143; 16]), idempotency_key: IdempotencyKey::new("bind")?,
         expected_revision: 0, scope: signed.clone(), causal_parent: None, action: Action::BindConversation { agent } })?;
@@ -2076,7 +2062,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
             .ok_or_else(|| Error::Invalid("candidate missing".into()))?).map_err(|e| Error::Invalid(e.to_string()))?;
         let controller = ParentProjectController::new(&host, &parent, &issuer.verifier(&mut None).expect("verifier copy"), &signed, &project, None)?;
         let plan = controller.prepare_project_import_at(&source, &source_head, &target_head).await?;
-        let denied = issuer.root_for_agent(agent, "no-write", Capabilities::new([source.capability(VolumeOperation::Read)?]));
+        let denied = issuer.issue("no-write", &Capabilities::new([source.capability(VolumeOperation::Read, &mut None)?]), Some(agent), None, &mut None).expect("scope proof");
         let unauthorized = ParentProjectController::new(&host, &parent, &issuer.verifier(&mut None).expect("verifier copy"), &denied, &project, None)?;
         assert!(unauthorized.apply_project_merge_candidate(&plan, operation, &candidate).await.is_err());
         let mut changed = candidate.clone();
@@ -2152,10 +2138,7 @@ async fn stock_restart_with_publication_fault(
         id: "task-owner".into(),
     };
     let issuer = AuthorityIssuer::new("task-restart", [7; 32], authority.clone());
-    let signed = issuer.root_for_agent(
-        agent,
-        "owner",
-        Capabilities::new([
+    let signed = issuer.issue("owner", &Capabilities::new([
             "operation:declare".to_owned(),
             "operation:observe".to_owned(),
             "operation:cancel".to_owned(),
@@ -2163,13 +2146,12 @@ async fn stock_restart_with_publication_fault(
             "model:generate".to_owned(),
             volume.capability(VolumeOperation::Read)?,
             volume.capability(VolumeOperation::Write)?,
-        ]),
-    );
+        ]), Some(agent), None, &mut None).expect("scope proof");
     let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?
         .with_run_limits(TaskRunLimits {
             max_steps: Some(1),
             ..TaskRunLimits::default()
-        })?;
+        }, &mut None)?;
     let machine: Arc<dyn ResumableMachine> = Arc::new(TaskMachine {
         identity: MachineIdentity {
             name: "test.restart".into(),
@@ -2185,9 +2167,9 @@ async fn stock_restart_with_publication_fault(
     )?;
     let mut tasks = TaskRegistry::default();
     tasks.register(definition)?;
-    let definition = tasks.get_version::<u64, u64>("test.restart", "1")?;
+    let definition = tasks.get_version::<u64, u64>("test.restart", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
     let mut machines = MachineRegistry::default();
-    machines.register(machine)?;
+    machines.register(machine, &mut None)?;
     let operation = OperationId::from_bytes([3; 16]);
     let task = TaskId::from_bytes(operation.into_bytes());
     let step = OperationId::from_bytes([4; 16]);
@@ -2241,9 +2223,9 @@ async fn stock_restart_with_publication_fault(
             65_536, None,
         )?);
         let host = CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&stream, reader.clone())
+            DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None)
                 .await?
-                .with_payload_store(payloads.clone()),
+                ,
             stream.clone(),
             payloads.clone(),
             reader.clone(),
@@ -2262,7 +2244,7 @@ async fn stock_restart_with_publication_fault(
             }
         } else {
             session_limits
-        })?;
+        }, None)?;
         if reopened {
             assert!(host.observe_admission(task).await.is_err());
         }
@@ -2308,9 +2290,9 @@ async fn stock_restart_with_publication_fault(
                 .await,
             Err(Error::Unauthorized(_))
         ));
-        let mut coordinator = DistributedCoordinator::open(&stream, reader)
+        let mut coordinator = DistributedCoordinator::open(&stream, reader, Some(payloads), &mut None)
             .await?
-            .with_payload_store(payloads);
+            ;
         assert_eq!(
             coordinator.scheduler().session_limits(operation, &mut None)?,
             session_limits
@@ -2351,7 +2333,7 @@ async fn stock_restart_with_publication_fault(
                     SchedulerEvent::Started {
                         operation_id: operation,
                         fence: fence.clone(),
-                    },
+                    }, &mut None,
                 )
                 .await?;
         }
@@ -2483,7 +2465,7 @@ async fn stock_restart_with_publication_fault(
             if cancel_after_failure {
                 assert!(matches!(rejected, Err(Error::Conflict(message))
                     if message == "cancelled task cannot publish new execution work"));
-                coordinator.refresh().await?;
+                coordinator.refresh(&mut None).await?;
                 assert_eq!(coordinator.scheduler(), &before_fresh_attempt);
             } else {
                 assert!(rejected.is_err());
@@ -2535,7 +2517,7 @@ async fn stock_restart_with_publication_fault(
             );
             assert_eq!(model.generated.load(Ordering::SeqCst), 1);
             assert_eq!(model.reconciled.load(Ordering::SeqCst), 0);
-            coordinator.refresh().await?;
+            coordinator.refresh(&mut None).await?;
             let retained = coordinator
                 .scheduler()
                 .operation(operation)
@@ -2552,7 +2534,7 @@ async fn stock_restart_with_publication_fault(
                 let old = previous_lease
                     .as_ref()
                     .ok_or_else(|| Error::NotFound("cancelled task lease".into()))?;
-                coordinator.refresh().await?;
+                coordinator.refresh(&mut None).await?;
                 assert_eq!(
                     coordinator
                         .scheduler()
@@ -2592,7 +2574,7 @@ async fn stock_restart_with_publication_fault(
                     &issuer.verifier(&mut None).expect("verifier copy"),
                     operation,
                     IdempotencyKey::new("cancel-uncertain-model")?,
-                    false,
+                    false, &mut None,
                 )
                 .await?;
             assert!(coordinator.pull(&worker).await?.is_none());
@@ -2680,7 +2662,7 @@ async fn stock_restart_with_publication_fault(
                     &issuer.verifier(&mut None).expect("verifier copy"),
                     operation,
                     IdempotencyKey::new("cancel")?,
-                    false,
+                    false, &mut None,
                 )
                 .await?;
             assert!(
@@ -2725,20 +2707,20 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
     let agent = AgentId::new();
     let volume = VolumeRef::new(provider.clone(), "private", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
     let issuer = AuthorityIssuer::new("stock-mail", [81;32], Authority { kind: AggregateKind::Task, id: "stock-mail".into() });
-    let signed = issuer.root_for_agent(agent, "owner", Capabilities::new([
+    let signed = issuer.issue("owner", &Capabilities::new([
         "operation:declare".to_owned(), "operation:observe".to_owned(), "operation:cancel".to_owned(),
         "task:spawn:acyclic.stock_turn@1".to_owned(), "model:generate".to_owned(),
         "mail:send".to_owned(), "mail:read".to_owned(),
         volume.capability(VolumeOperation::Read)?, volume.capability(VolumeOperation::Write)?,
-    ]));
+    ]), Some(agent), None, &mut None).expect("scope proof");
     let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?;
     let machine = Arc::new(StockTurnMachine::new());
     let definition = machine.definition()?;
     let mut tasks = TaskRegistry::default();
     tasks.register(definition)?;
-    let definition = tasks.get_version::<Value, acyclic_harness::executor::TurnOutput>("acyclic.stock_turn", "1")?;
+    let definition = tasks.get_version::<Value, acyclic_harness::executor::TurnOutput>("acyclic.stock_turn", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
     let mut machines = MachineRegistry::default();
-    machines.register(machine)?;
+    machines.register(machine, &mut None)?;
     let operation = OperationId::new();
     let task = TaskId::from_bytes(operation.into_bytes());
     let receive_operation = OperationId::new();
@@ -2777,7 +2759,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
             let WorkPull::Claimed(lease) = runtime.task_host().pull_work(&worker).await? else {
                 return Err(Error::NotFound("stock lease".into()));
             };
-            runtime.task_host().start_task(&lease).await?;
+            runtime.task_host().start_task(&lease, None).await?;
             let fence = LeaseFence::from(&lease.reservation);
             for (path, bytes) in [("first", b"first steering".as_slice()), ("second", b"later steering".as_slice())].into_iter().filter(|_| queued) {
                 let payload = payloads.stage(OperationId::new(), path, bytes).await?;

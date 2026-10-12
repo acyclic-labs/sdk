@@ -172,10 +172,10 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         let cancelled = if let Some(io) = io {
             let work = io.original_native_work().ok_or_else(|| observed::boundary(Some(io), crate::wire::ErrorCode::Unsupported, "native cancellation requires original work"))?;
-            self.host.cancellation_requested_with_native_work(task, work).await?
-        } else { self.host.cancellation_requested(task).await? };
+            self.host.cancellation_requested(task, Some(work)).await?
+        } else { self.host.cancellation_requested(task, None).await? };
         #[cfg(target_arch = "wasm32")]
-        let cancelled = self.host.cancellation_requested(task).await?;
+        let cancelled = self.host.cancellation_requested(task, None).await?;
         if cancelled {
             self.settle_observed(task, fence, Outcome::Cancelled, io).await?;
             Ok(WorkerTurn::Completed { task })

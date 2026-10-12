@@ -175,7 +175,7 @@ async fn actual_child_result_identity_cannot_be_labeled_as_a_native_builtin_volu
         fixture.runtime.clone(), fixture.filesystem.clone(), fixture.stream.clone(),
         &fixture.resources, fixture.owner.clone(), &work).unwrap();
     let prepared = fixture.advance_with(&coordinator, context.context(), &owner, &fixture.fence,
-        &plan, fixture.source.clone(), work.remaining().unwrap(),
+        &plan, fixture.root_handle.workspace.clone(), work.remaining().unwrap(),
         cancellation).await.unwrap().unwrap();
     let binding = &prepared.binding;
     let temporary = tempfile::tempdir().unwrap();

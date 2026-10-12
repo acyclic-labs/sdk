@@ -109,7 +109,7 @@ fn assemble(adapter: FileTool) -> Result<Tool> {
         projection_schema,
         output_schema,
     };
-    definition.validate()?;
+    definition.validate(&mut None)?;
     let implementation = Arc::new(adapter);
     Ok(Tool {
         definition,
@@ -193,7 +193,7 @@ fn public_path(path: &str) -> Result<()> {
 
 impl FileTool {
     async fn run(&self, context: ToolContext, invocation: ToolInvocation) -> Result<ToolResult> {
-        invocation.validate()?;
+        ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), &mut None)?;
         let task = context.task();
         self.authorize_with_context(&context, &invocation)?;
         let value = match self {
@@ -273,7 +273,7 @@ impl FileTool {
         scope: Option<&RuntimeScope>,
         invocation: &ToolInvocation,
     ) -> Result<()> {
-        invocation.validate()?;
+        ToolInvocation::validate_identity(&invocation.call_id, Some(&invocation.name), &mut None)?;
         let scope = scope.ok_or_else(|| {
             Error::Unauthorized("file tool requires original runtime scope".into())
         })?;

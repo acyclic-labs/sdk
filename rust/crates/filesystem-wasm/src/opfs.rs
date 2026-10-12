@@ -1,9 +1,4 @@
 //! Authoritative origin-private immutable object storage.
-//!
-//! Rust byte carriers keep their allocation ownership across reads and clones.
-//! Bounded concurrent windows admit logical buffer, handle, and future-frame
-//! retention before materialization; browser-owned storage allocations are not
-//! native physical-quota guarantees.
 
 use acyclic_fs::storage::ObjectWrite;
 use acyclic_fs::{

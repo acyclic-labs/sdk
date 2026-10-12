@@ -1476,7 +1476,7 @@ async fn generation_descends_from<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         if !visited.insert(candidate) || visited.len() > 65_536 {
             continue;
         }
-        for parent in workspace.generation(candidate, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.parents().await? {
+        for parent in workspace.generation(candidate, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.parents(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? {
             if parent == ancestor {
                 return Ok(true);
             }

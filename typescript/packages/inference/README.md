@@ -11,23 +11,23 @@ import { Inference } from "@acyclic-labs/inference";
 
 // Set ACYCLIC_INFERENCE_ENDPOINT (HTTPS) and ACYCLIC_API_KEY.
 const inference = await Inference.fromEnv();
-const { models } = await inference.models();
+const { models } = await inference.client.listModels();
 console.log(models);
 ```
 
-`Inference` is the identity-preserving high-level API. A `Context` points to an immutable revision: edits, forks, and transfers return new handles. Items read from a revision use the generated protobuf `Item` type. `Context.generate(...)` returns a `Run`; save `run.id()` so you can call `inference.recoverRun(id)` after an interrupted request, inspect progress, stream `run.events()`, or obtain `run.result()`. Warm commitments have separate retain, renew, inspect, and release operations.
+`Inference` retains the client-instance identity; prepare generated requests with `inference.identity()` before dispatch and reuse them for retries. `inference.client` operates on immutable revision, Run, and warm-commitment IDs. Save the Run request ID before dispatch; use `inspectRun`, `watchRun`, and `resultRun` to recover its state.
 
 For custom authentication, use `new Inference(new InferenceClient(new HttpInferenceTransport(endpoint, () => ({ authorization: `Bearer ${token}` }))))`. The transport requires an absolute HTTPS URL and enforces bounded responses. The client validates protobuf responses through the bundled Rust WebAssembly contract. Import generated protobuf types and schemas from `@acyclic-labs/inference/proto`.
 
 ## Idle KV pins (source contract)
 
 Discover an opaque policy in `models[].idleKvProfiles`, then call
-`context.retain({ idleKv: { profile, idleTimeoutMs }, identity })`. Rust uses
-`context.retain(Retention::idle_kv(profile, idle_timeout_ms))`. This paid KV pin
+`client.retainWarm(request)` with `request.idleKv = { profile, idleTimeoutMs }`. Rust uses
+`Inference::retention_request(revision, Retention::idle_kv(profile, idle_timeout_ms))`. This paid KV pin
 does not guarantee capacity, throughput, or latency. Keep the request identity
-for retries; Rust admission and renewal builders preserve it when cloned.
+for retries; prepared requests retain it when cloned.
 
-`warm.renewIdle(timeout, { identity })` (Rust `renew_idle(timeout)`) changes the
+`client.renewWarm(request)` with `request.idleTimeoutMs` (Rust `idle_timeout_ms`) changes the
 timeout measured from the last verified actual Run reuse, or from the initial
 verified pin time before first use. It does not reset the idle window. Only
 actual Run reuse of the pinned revision or descendant prefix advances last-use;

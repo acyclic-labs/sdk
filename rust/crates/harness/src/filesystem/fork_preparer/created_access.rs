@@ -225,9 +225,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             if birth.id() != initial_generation {
                 return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root bootstrap initial generation differs from its actual birth"));
             }
-            let selected = birth.workspace().generation_with_native_work(
+            let selected = birth.workspace().generation(
                 selected_generation, work, io.cancellation(),
-            ).await.map_err(native_workspace_error)?;
+            ).await.map_err(|error| native_workspace_error((error, None)))?;
             let native_snapshot = if let Some((lazy, frozen)) = native_import {
                 if lazy.backing.workspace_id() != birth.workspace_id() {
                     return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root bootstrap import names another original workspace"));
@@ -1097,8 +1097,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
             };
             let scope = {
                 let mut observer = io.history_io();
-                self.issuer.root_for_agent_with_work(context.agent(), &id, &capabilities,
-                    &mut Some(&mut observer))?
+                self.issuer.issue(&id, &capabilities, Some(context.agent()), None, &mut Some(&mut observer))?
             };
             let id_capacity = id.capacity() as u64;
             let capabilities_capacity = capabilities.logical_owned_bytes()?;
@@ -1183,10 +1182,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             let write = bounded_io::join_text("volume:write:", &name["harness-".len()..], io)?;
             self.created_scope(allocation.agent, "created:", proof, name, [read, write], io)?
         } else {
-            self.issuer.root_for_agent(allocation.agent,
-                format!("created:{}:{}", proof.preparation, allocation.volume.storage_name(&mut None)?),
-                Capabilities::new([allocation.volume.capability(VolumeOperation::Read, &mut None)?,
-                    allocation.volume.capability(VolumeOperation::Write, &mut None)?]))
+            self.issuer.issue(&format!("created:{}:{}", proof.preparation, allocation.volume.storage_name(&mut None)?), &Capabilities::new([allocation.volume.capability(VolumeOperation::Read, &mut None)?,
+                    allocation.volume.capability(VolumeOperation::Write, &mut None)?]), Some(allocation.agent), None, &mut None).expect("scope proof")
         };
         let verifier = if let Some(io) = io {
             let mut observer = io.history_io();
@@ -1237,9 +1234,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 let capability = bounded_io::join_text("", &suffix, io)?;
                 self.created_scope(source_agent, "created-reference:", proof, suffix, [capability], io)?
             } else {
-                self.issuer.root_for_agent(source_agent,
-                    format!("created-reference:{}:{}", proof.preparation, file.read_capability()?),
-                    Capabilities::new([file.read_capability()?]))
+                self.issuer.issue(&format!("created-reference:{}:{}", proof.preparation, file.read_capability()?), &Capabilities::new([file.read_capability()?]), Some(source_agent), None, &mut None).expect("scope proof")
             };
             let verifier = if let Some(io) = io {
                 let mut observer = io.history_io();
@@ -1289,7 +1284,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         let capabilities = Capabilities::new(capabilities);
         let temporary = suffix.capacity() as u64 + id.capacity() as u64 + capabilities.logical_owned_bytes()?;
         let mut observer = io.history_io();
-        let scope = self.issuer.root_for_agent_with_work(agent, &id, &capabilities, &mut Some(&mut observer))?;
+        let scope = self.issuer.issue(&id, &capabilities, Some(agent), None, &mut Some(&mut observer))?;
         drop((suffix, id, capabilities));
         io.release(temporary)?;
         Ok(scope)
@@ -1718,14 +1713,13 @@ mod tests {
                 let audience = Authority { kind: AggregateKind::Conversation, id: "genuine-original-root-bootstrap".into() };
                 let issuer = AuthorityIssuer::new("created-owner", [80; 32], audience.clone());
                 let foreign_agent = AgentId::from_bytes([186; 16]);
-                let scope = issuer.root_for_agent(foreign_agent, "foreign-prior-root-bind", Capabilities::new(["conversation:bind"]));
+                let scope = issuer.issue("foreign-prior-root-bind", &Capabilities::new(["conversation:bind"]), Some(foreign_agent), None, &mut None).expect("scope proof");
                 let mut aggregate = crate::store::StreamAggregate::open(
-                    &fixture.stream, audience, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(),
-                ).await?;
+                    &fixture.stream, audience, issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
                 aggregate.execute(Command { operation_id: OperationId::from_bytes([186; 16]),
                     idempotency_key: IdempotencyKey::new("genuine-foreign-prior-root-bind")?,
                     expected_revision: 0, causal_parent: None,
-                    action: Action::BindConversation { agent: foreign_agent }, scope }).await?;
+                    action: Action::BindConversation { agent: foreign_agent }, scope }, #[cfg(feature = "filesystem")] None, &mut None).await?;
             }
             let actor = if prior_foreign_bind { AgentId::from_bytes([80; 16]) }
                 else { AgentId::from_bytes([187; 16]) };
