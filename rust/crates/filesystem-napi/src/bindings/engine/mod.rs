@@ -45,6 +45,7 @@ impl NativeFs {
     pub async fn open(root: String, object_cache: NativeObjectCacheOptions) -> Result<Self> {
         let mut options = LocalOptions::new(root);
         options.object_cache = native_object_cache_options(object_cache)?;
+        acyclic_native_runtime::initialize_native_io_services().map_err(napi_error)?;
         let inner = LocalFs::local(options).await.map_err(napi_error)?;
         Ok(Self {
             inner: Arc::new(inner),

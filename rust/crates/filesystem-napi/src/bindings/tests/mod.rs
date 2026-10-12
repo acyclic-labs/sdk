@@ -882,9 +882,20 @@ async fn native_materialization_writes_checkout_bytes()
     let root = tempfile::tempdir()?;
     let destination = tempfile::tempdir()?;
     let cancellation = CancellationToken::new();
-    let fs = LocalFs::local(LocalOptions::new(root.path())).await?;
+    let cache = ObjectCacheOptions::default();
+    let fs = NativeFs::open(
+        root.path().to_string_lossy().into_owned(),
+        NativeObjectCacheOptions {
+            maximum_entries: NapiU32(cache.maximum_entries),
+            maximum_bytes: bigint(cache.maximum_bytes),
+            maximum_in_flight: NapiU32(cache.maximum_in_flight),
+            maximum_waiters_per_object: NapiU32(cache.maximum_waiters_per_object),
+        },
+    )
+    .await?;
     let volume = NativeVolume {
         inner: fs
+            .inner
             .create_volume(test_config(), WorkBudget::UNBOUNDED, &cancellation)
             .await?
             .value,
