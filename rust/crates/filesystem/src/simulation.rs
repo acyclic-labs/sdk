@@ -1,17 +1,18 @@
 //! Deterministic bounded fault simulator for authority and immutable-object backends.
 
-use crate::async_storage::{AsyncAuthorityStore, AsyncObjectStore, GenerationForkSource, StorageFuture};
+use crate::async_storage::{AsyncAuthorityStore, AsyncObjectStore, GenerationForkSource};
 use crate::cancellation::CancellationToken;
 use crate::foundation::{
     AuthorityId, DurableCommit, Epoch, Head, OperationId, ProposedCommit, Sequence,
 };
 use crate::performance::{WorkBudget, WorkCounters};
+use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
 use crate::storage::{
     AppendOutcome, AuthorityFailure, AuthorityResult, AuthorityStoreError, CreateAuthorityOutcome,
     ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectReceipt,
     ObjectResult, ObjectStoreError, PublicationReservation, ReplayLimit, ReservationOutcome, object_digest,
 };
-use acyclic_stream::OwnedBytes;
+use acyclic_stream::{OwnedBytes, ProviderTask};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use thiserror::Error;
@@ -176,8 +177,7 @@ struct State {
     occurrences: [u64; SIMULATION_OPERATION_COUNT],
     faults: BTreeMap<(SimulationOperation, u64), SimulationFault>,
     trace: Vec<SimulationTrace>,
-    #[cfg(not(target_arch = "wasm32"))]
-    trace_native: Option<crate::materializer::NativeAllocation>,
+    trace_allocation: KernelOwnedAllocation,
     pending_objects: BTreeMap<ObjectId, OwnedBytes>,
     pending_object_bytes: u64,
 }
@@ -188,7 +188,7 @@ impl State {
         &mut self,
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(), ObjectStoreError> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::native(
+        let mut accounting = KernelAccounting::native(
             work, work.cancellation(),
         );
         self.prepare_trace(&mut accounting).map_err(crate::async_storage::sequential_read_error)
@@ -196,7 +196,7 @@ impl State {
 
     fn prepare_trace(
         &mut self,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        accounting: &mut KernelAccounting<'_>,
     ) -> Result<(), crate::FsError> {
         accounting.check()?;
         if self.trace.len() == self.options.maximum_trace_entries {
@@ -211,27 +211,19 @@ impl State {
         let delta = WorkCounters { bytes_copied: copied, ..WorkCounters::UNCHARGED };
         accounting.admit(delta)?;
         let allocation = accounting.claim_owned(bytes, 1)?;
-        let mut replacement = SimulationTraceReplacement { trace: Vec::new(), allocation };
-        replacement.trace.try_reserve_exact(capacity)
+        let mut replacement = (Vec::new(), allocation);
+        replacement.0.try_reserve_exact(capacity)
             .map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
-        let actual = u64::try_from(replacement.trace.capacity().checked_mul(
+        let actual = u64::try_from(replacement.0.capacity().checked_mul(
             std::mem::size_of::<SimulationTrace>(),
         ).ok_or(crate::WorkError::Overflow)?).map_err(|_| crate::WorkError::Overflow)?;
-        accounting.reconcile_owned(&mut replacement.allocation, bytes, actual)?;
+        accounting.reconcile_owned(&mut replacement.1, bytes, actual)?;
         accounting.admit(delta)?;
-        replacement.trace.extend_from_slice(&self.trace);
+        replacement.0.extend_from_slice(&self.trace);
         accounting.record_completed(delta)?;
-        let SimulationTraceReplacement { trace, allocation } = replacement;
+        let (trace, allocation) = replacement;
         self.trace = trace;
-        #[cfg(not(target_arch = "wasm32"))]
-        {
-            self.trace_native = match allocation {
-                crate::kernel::allocation::KernelOwnedAllocation::Standalone => None,
-                crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(guard) => Some(guard),
-            };
-        }
-        #[cfg(target_arch = "wasm32")]
-        let _ = allocation;
+        self.trace_allocation = allocation;
         Ok(())
     }
 
@@ -247,13 +239,11 @@ impl State {
             .ok_or("simulation operation occurrence overflow")?;
         self.occurrences[operation as usize] = occurrence;
         let fault = self.faults.remove(&(operation, occurrence));
-        #[cfg(not(target_arch = "wasm32"))]
         let replaces_trace = self.trace.len() == self.trace.capacity();
         self.trace
             .try_reserve(1)
             .map_err(|_| "simulation trace allocation failed")?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if replaces_trace { self.trace_native = None; }
+        if replaces_trace { self.trace_allocation = KernelOwnedAllocation::Standalone; }
         self.trace.push(SimulationTrace {
             operation,
             occurrence,
@@ -302,8 +292,7 @@ impl<A, O> Simulation<A, O> {
                 occurrences: [0; SIMULATION_OPERATION_COUNT],
                 faults: BTreeMap::new(),
                 trace: Vec::new(),
-                #[cfg(not(target_arch = "wasm32"))]
-                trace_native: None,
+                trace_allocation: KernelOwnedAllocation::Standalone,
                 pending_objects: BTreeMap::new(),
                 pending_object_bytes: 0,
             })),
@@ -400,7 +389,9 @@ impl<A, O: AsyncObjectStore> Simulation<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<u64> {
-        self.flush_object_visibility_engine(SimulationWriteWork::Ordinary(budget), cancellation).await
+        self.flush_object_visibility_engine(SimulationWriteWork::Ordinary(&budget), cancellation).await
+            .map(|(value, work)| ObjectReceipt { value, work })
+            .map_err(|(error, work)| ObjectFailure::new(error, work))
     }
 
     /// Publishes delayed aliases under the caller's original native ledger.
@@ -411,76 +402,71 @@ impl<A, O: AsyncObjectStore> Simulation<A, O> {
         cancellation: &CancellationToken,
     ) -> Result<u64, ObjectStoreError> {
         self.flush_object_visibility_engine(SimulationWriteWork::Native(work), cancellation).await
-            .map(|receipt| receipt.value).map_err(|failure| failure.error)
+            .map(|(value, _)| value).map_err(|(error, _)| error)
     }
 
     async fn flush_object_visibility_engine(
         &self,
         accounting: SimulationWriteWork<'_>,
         cancellation: &CancellationToken,
-    ) -> ObjectResult<u64> {
+    ) -> Result<(u64, WorkCounters), (ObjectStoreError, WorkCounters)> {
         let mut work = WorkCounters::default();
         let mut published = 0_u64;
         #[cfg(not(target_arch = "wasm32"))]
         if let SimulationWriteWork::Native(native) = accounting {
-            native.remaining().map_err(|error| ObjectFailure::before_work(error.into()))?;
+            native.remaining().map_err(|error| (error.into(), WorkCounters::UNCHARGED))?;
         }
         loop {
             cancellation
                 .check()
-                .map_err(|_| ObjectFailure::new(ObjectStoreError::Cancelled, work))?;
+                .map_err(|_| (ObjectStoreError::Cancelled, work))?;
             let next = {
                 let state = self
                     .state
                     .lock()
-                    .map_err(|_| ObjectFailure::new(ObjectStoreError::Corrupt, work))?;
+                    .map_err(|_| (ObjectStoreError::Corrupt, work))?;
                 state
                     .pending_objects
                     .first_key_value()
                     .map(|(object_id, bytes)| (*object_id, bytes.clone()))
             };
             let Some((object_id, bytes)) = next else {
-                return Ok(ObjectReceipt {
-                    value: published,
-                    work,
-                });
+                return Ok((published, work));
             };
-            let receipt = match accounting {
+            let completed = match accounting {
                 SimulationWriteWork::Ordinary(budget) => {
-                    let remaining = work.remaining(budget)
-                        .map_err(|error| ObjectFailure::new(error.into(), work))?;
+                    let remaining = work.remaining(*budget)
+                        .map_err(|error| (error.into(), work))?;
                     self.objects.put(object_id, bytes, remaining, cancellation).await
+                        .map(|receipt| receipt.work).map_err(|failure| (failure.error, *failure.work))
                 }
                 #[cfg(not(target_arch = "wasm32"))]
                 SimulationWriteWork::Native(native) => {
                     self.objects.put_with_native_work(object_id, bytes, native, cancellation).await
-                        .map(|()| ObjectReceipt { value: (), work: WorkCounters::default() })
-                        .map_err(ObjectFailure::before_work)
+                        .map(|()| WorkCounters::UNCHARGED)
+                        .map_err(|error| (error, WorkCounters::UNCHARGED))
                 }
-                #[cfg(target_arch = "wasm32")]
-                SimulationWriteWork::Lifetime(_) => unreachable!(),
-            }.map_err(|failure| {
-                let nested = *failure.work;
+            }.map_err(|(error, nested)| {
                 match work.checked_add(nested) {
-                    Ok(combined) => ObjectFailure::new(failure.error, combined),
-                    Err(error) => ObjectFailure::new(error.into(), work),
+                    Ok(combined) => (error, combined),
+                    Err(error) => (error.into(), work),
                 }
             })?;
             work = work
-                .checked_add(receipt.work)
-                .map_err(|error| ObjectFailure::new(error.into(), work))?;
+                .checked_add(completed)
+                .map_err(|error| (error.into(), work))?;
             let mut state = self
                 .state
                 .lock()
-                .map_err(|_| ObjectFailure::new(ObjectStoreError::Corrupt, work))?;
+                .map_err(|_| (ObjectStoreError::Corrupt, work))?;
             if let Some(removed) = state.pending_objects.remove(&object_id) {
                 state.pending_object_bytes = state
                     .pending_object_bytes
                     .checked_sub(u64::try_from(removed.len()).unwrap_or(u64::MAX))
-                    .ok_or_else(|| ObjectFailure::new(ObjectStoreError::Corrupt, work))?;
+                    .ok_or_else(|| (ObjectStoreError::Corrupt, work))?;
             }
             published = published.checked_add(1).ok_or_else(|| {
-                ObjectFailure::new(ObjectStoreError::Work(crate::WorkError::Overflow), work)
+                (ObjectStoreError::Work(crate::WorkError::Overflow), work)
             })?;
         }
     }
@@ -488,21 +474,7 @@ impl<A, O: AsyncObjectStore> Simulation<A, O> {
 
 impl Default for Simulation {
     fn default() -> Self {
-        let (authority, objects) = reference_backends();
-        Self {
-            state: Arc::new(Mutex::new(State {
-                options: SimulationOptions::default(),
-                occurrences: [0; SIMULATION_OPERATION_COUNT],
-                faults: BTreeMap::new(),
-                trace: Vec::new(),
-                #[cfg(not(target_arch = "wasm32"))]
-                trace_native: None,
-                pending_objects: BTreeMap::new(),
-                pending_object_bytes: 0,
-            })),
-            authority: Arc::new(authority),
-            objects: Arc::new(objects),
-        }
+        Self::new(SimulationOptions::default()).expect("positive default simulation bounds")
     }
 }
 
@@ -524,12 +496,9 @@ pub struct SimulatedObjectStore<O = crate::LogicalObjectStore<acyclic_objects::v
 
 #[derive(Clone, Copy)]
 enum SimulationWriteWork<'a> {
-    Ordinary(WorkBudget),
+    Ordinary(&'a WorkBudget),
     #[cfg(not(target_arch = "wasm32"))]
     Native(&'a crate::materializer::NativeMaterializationWork),
-    #[cfg(target_arch = "wasm32")]
-    #[allow(dead_code)]
-    Lifetime(std::marker::PhantomData<&'a ()>),
 }
 
 impl SimulationWriteWork<'_> {
@@ -538,25 +507,21 @@ impl SimulationWriteWork<'_> {
             Self::Ordinary(_) => ObjectStoreError::Rejected(cause.to_owned()),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native(_) => ObjectStoreError::Simulation(cause),
-            #[cfg(target_arch = "wasm32")]
-            Self::Lifetime(_) => unreachable!(),
         }
     }
 
-    fn charge(self, delta: WorkCounters) -> ObjectResult<()> {
+    fn charge(self, delta: WorkCounters) -> Result<WorkCounters, (ObjectStoreError, WorkCounters)> {
         match self {
             Self::Ordinary(budget) => {
-                delta.verify(budget)
-                    .map_err(|error| ObjectFailure::before_work(error.into()))?;
-                Ok(ObjectReceipt { value: (), work: delta })
+                delta.verify(*budget)
+                    .map_err(|error| (error.into(), WorkCounters::UNCHARGED))?;
+                Ok(delta)
             }
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native(work) => {
-                work.charge(delta).map_err(|error| ObjectFailure::before_work(error.into()))?;
-                Ok(ObjectReceipt { value: (), work: WorkCounters::default() })
+                work.charge(delta).map_err(|error| (error.into(), WorkCounters::UNCHARGED))?;
+                Ok(WorkCounters::default())
             }
-            #[cfg(target_arch = "wasm32")]
-            Self::Lifetime(_) => unreachable!(),
         }
     }
 }
@@ -588,115 +553,90 @@ impl<O: AsyncObjectStore> SimulatedObjectStore<O> {
         object: SimulationWrite,
         accounting: SimulationWriteWork<'_>,
         cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
+    ) -> Result<WorkCounters, (ObjectStoreError, WorkCounters)> {
         cancellation.check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+            .map_err(|_| (ObjectStoreError::Cancelled, WorkCounters::UNCHARGED))?;
         let fault = {
             let mut state = self.state.lock()
-                .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Corrupt))?;
+                .map_err(|_| (ObjectStoreError::Corrupt, WorkCounters::UNCHARGED))?;
             #[cfg(not(target_arch = "wasm32"))]
             if let SimulationWriteWork::Native(work) = accounting {
-                state.prepare_native_trace(work).map_err(ObjectFailure::before_work)?;
+                state.prepare_native_trace(work).map_err(|error| (error, WorkCounters::UNCHARGED))?;
             }
             state.intercept(SimulationOperation::ObjectPut)
                 .map(|(_, fault)| fault)
-                .map_err(|cause| ObjectFailure::before_work(accounting.simulation_error(cause)))?
+                .map_err(|cause| (accounting.simulation_error(cause), WorkCounters::UNCHARGED))?
         };
         match fault {
             Some(SimulationFault::RejectBefore) => {
-                return Err(ObjectFailure::before_work(accounting.simulation_error("scheduled rejection")));
+                return Err((accounting.simulation_error("scheduled rejection"), WorkCounters::UNCHARGED));
             }
             Some(SimulationFault::PartitionBefore) => {
-                return Err(ObjectFailure::before_work(accounting.simulation_error("scheduled partition")));
+                return Err((accounting.simulation_error("scheduled partition"), WorkCounters::UNCHARGED));
             }
             _ => {}
         }
         if matches!(fault, Some(SimulationFault::DelayObjectVisibility)) {
             let (object_id, bytes, hashed) = object.parts();
             let length = u64::try_from(bytes.len())
-                .map_err(|_| ObjectFailure::before_work(crate::WorkError::Overflow.into()))?;
+                .map_err(|_| (crate::WorkError::Overflow.into(), WorkCounters::UNCHARGED))?;
             let hash_bytes = if hashed { 0 } else {
                 length.checked_add(crate::OBJECT_DIGEST_ENVELOPE_BYTES)
-                    .ok_or_else(|| ObjectFailure::before_work(crate::WorkError::Overflow.into()))?
+                    .ok_or_else(|| (crate::WorkError::Overflow.into(), WorkCounters::UNCHARGED))?
             };
             let work = accounting.charge(WorkCounters {
                 bytes_hashed: hash_bytes,
                 ..WorkCounters::default()
-            })?.work;
+            })?;
             if !hashed && object_digest(object_id.kind, bytes) != object_id.digest {
-                return Err(ObjectFailure::new(ObjectStoreError::DigestMismatch, work));
+                return Err((ObjectStoreError::DigestMismatch, work));
             }
             cancellation.check()
-                .map_err(|_| ObjectFailure::new(ObjectStoreError::Cancelled, work))?;
+                .map_err(|_| (ObjectStoreError::Cancelled, work))?;
             let mut state = self.state.lock()
-                .map_err(|_| ObjectFailure::new(ObjectStoreError::Corrupt, work))?;
+                .map_err(|_| (ObjectStoreError::Corrupt, work))?;
             if let Some(existing) = state.pending_objects.get(&object_id) {
                 if existing != bytes {
-                    return Err(ObjectFailure::new(ObjectStoreError::Corrupt, work));
+                    return Err((ObjectStoreError::Corrupt, work));
                 }
-                return Ok(ObjectReceipt { value: (), work });
+                return Ok(work);
             }
             let next_count = state.pending_objects.len().checked_add(1)
-                .ok_or_else(|| ObjectFailure::new(crate::WorkError::Overflow.into(), work))?;
+                .ok_or_else(|| (crate::WorkError::Overflow.into(), work))?;
             let next_bytes = state.pending_object_bytes.checked_add(length)
-                .ok_or_else(|| ObjectFailure::new(crate::WorkError::Overflow.into(), work))?;
+                .ok_or_else(|| (crate::WorkError::Overflow.into(), work))?;
             if next_count > state.options.maximum_pending_objects
                 || next_bytes > state.options.maximum_pending_object_bytes
             {
-                return Err(ObjectFailure::new(accounting.simulation_error(
+                return Err((accounting.simulation_error(
                     "simulation delayed-object bound exhausted"), work));
             }
             let (_, bytes) = object.into_parts();
             state.pending_objects.insert(object_id, bytes);
             state.pending_object_bytes = next_bytes;
-            return Ok(ObjectReceipt { value: (), work });
+            return Ok(work);
         }
         match accounting {
             SimulationWriteWork::Ordinary(budget) => match object {
-                SimulationWrite::Plain(id, bytes) => self.inner.put(id, bytes, budget, cancellation).await,
-                SimulationWrite::Hashed(object) => self.inner.put_hashed(object, budget, cancellation).await,
-            },
+                SimulationWrite::Plain(id, bytes) => self.inner.put(id, bytes, *budget, cancellation).await,
+                SimulationWrite::Hashed(object) => self.inner.put_hashed(object, *budget, cancellation).await,
+            }.map(|receipt| receipt.work).map_err(|failure| (failure.error, *failure.work)),
             #[cfg(not(target_arch = "wasm32"))]
             SimulationWriteWork::Native(work) => {
                 let result = match object {
                     SimulationWrite::Plain(id, bytes) => self.inner.put_with_native_work(id, bytes, work, cancellation).await,
                     SimulationWrite::Hashed(object) => self.inner.put_hashed_with_native_work(object, work, cancellation).await,
                 };
-                result.map(|()| ObjectReceipt { value: (), work: WorkCounters::default() })
-                    .map_err(ObjectFailure::before_work)
+                result.map(|()| WorkCounters::UNCHARGED)
+                    .map_err(|error| (error, WorkCounters::UNCHARGED))
             }
-            #[cfg(target_arch = "wasm32")]
-            SimulationWriteWork::Lifetime(_) => unreachable!(),
-        }
-    }
-
-    async fn put_many_engine(
-        &self,
-        writes: &[crate::storage::ObjectWrite],
-        accounting: SimulationWriteWork<'_>,
-        cancellation: &CancellationToken,
-    ) -> ObjectResult<()> {
-        cancellation.check()
-            .map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
-        // Preserve the existing batch seam: only single puts are intercepted.
-        match accounting {
-            SimulationWriteWork::Ordinary(budget) => self.inner.put_many(writes, budget, cancellation).await,
-            #[cfg(not(target_arch = "wasm32"))]
-            SimulationWriteWork::Native(work) => {
-                work.remaining().map_err(|error| ObjectFailure::before_work(error.into()))?;
-                self.inner.put_many_with_native_work(writes, work, cancellation).await
-                    .map(|()| ObjectReceipt { value: (), work: WorkCounters::default() })
-                    .map_err(ObjectFailure::before_work)
-            }
-            #[cfg(target_arch = "wasm32")]
-            SimulationWriteWork::Lifetime(_) => unreachable!(),
         }
     }
 
     fn read_fault(
         &self,
         operation: SimulationOperation,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        accounting: &mut KernelAccounting<'_>,
     ) -> Result<Option<SimulationFault>, crate::FsError> {
         accounting.check()?;
         let mut state = self.state.lock().map_err(|_| ObjectStoreError::Corrupt)?;
@@ -715,84 +655,63 @@ impl<O: AsyncObjectStore> SimulatedObjectStore<O> {
 
     async fn read_engine(
         &self, object_id: ObjectId, maximum_bytes: u64,
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-        cancellation: &CancellationToken,
-    ) -> Result<SimulationReadValue, crate::FsError> {
+        accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
+    ) -> Result<ObjectRead, crate::FsError> {
         let fault = self.read_fault(SimulationOperation::ObjectRead, accounting)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = accounting.native_work() {
-            let mut value = self.inner.read_with_native_work(
-                object_id, maximum_bytes, work, cancellation,
-            ).await?;
-            if let Some(altered) = altered_read_data(value.read(), fault, accounting)? {
-                *value.read_mut() = altered;
-            }
-            return Ok(SimulationReadValue::Native(value));
-        }
-        let result = self.inner.read(
-            object_id, maximum_bytes, accounting.remaining()?, cancellation,
-        ).await;
-        let mut value = match result {
-            Ok(receipt) => {
-                crate::async_storage::merge_completed_object_read(
-                    accounting, receipt.work, object_read_retained_bytes(&receipt.value),
-                )?;
-                receipt.value
-            }
-            Err(failure) => {
-                crate::async_storage::merge_completed_object_read(accounting, *failure.work, 0)?;
-                return Err(failure.error.into());
-            }
+        let mut value = match accounting {
+            #[cfg(not(target_arch = "wasm32"))]
+            KernelAccounting::NativeOriginal { work, .. } => self.inner
+                .read_with_native_work(object_id, maximum_bytes, work, cancellation).await?.into_read(),
+            _ => match self.inner.read(object_id, maximum_bytes, accounting.remaining()?, cancellation).await {
+                Ok(receipt) => {
+                    crate::async_storage::merge_completed_object_read(
+                        accounting, receipt.work, object_read_retained_bytes(&receipt.value),
+                    )?;
+                    receipt.value
+                }
+                Err(failure) => {
+                    crate::async_storage::merge_completed_object_read(accounting, *failure.work, 0)?;
+                    return Err(failure.error.into());
+                }
+            },
         };
-        if let Some(altered) = altered_read_data(&value, fault, accounting)? {
-            value = altered;
-        }
-        Ok(SimulationReadValue::Portable(value))
+        if let Some(altered) = altered_read_data(&value, fault, accounting)? { value = altered; }
+        Ok(value)
     }
 
     async fn read_many_engine(
-        &self, requests: &[ObjectReadRequest],
-        accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+        &self, requests: &[ObjectReadRequest], accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<SimulationReadBatchValue, crate::FsError> {
+    ) -> Result<(Vec<ObjectRead>, KernelOwnedAllocation), crate::FsError> {
         let fault = self.read_fault(SimulationOperation::ObjectReadMany, accounting)?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = accounting.native_work() {
-            let mut values = self.inner.read_many_with_native_work(
-                requests, work, cancellation,
-            ).await?;
-            if let Some(first) = values.reads_mut().first_mut()
-                && let Some(altered) = altered_read_data(first, fault, accounting)? {
-                *first = altered;
+        // Keep the vector before its guard throughout fallible fault injection.
+        let mut values = match accounting {
+            #[cfg(not(target_arch = "wasm32"))]
+            KernelAccounting::NativeOriginal { work, .. } => {
+                let (reads, allocation) = self.inner.read_many_with_native_work(requests, work, cancellation).await?.into_parts();
+                (reads, KernelOwnedAllocation::NativeOriginal(allocation))
             }
-            return Ok(SimulationReadBatchValue::Native(values));
-        }
-        let result = self.inner.read_many(requests, accounting.remaining()?, cancellation).await;
-        let mut values = match result {
-            Ok(receipt) => {
-                let retained = receipt.value.iter().try_fold(
-                    u64::try_from(receipt.value.capacity().checked_mul(
-                        std::mem::size_of::<ObjectRead>(),
-                    ).ok_or(crate::WorkError::Overflow)?).map_err(|_| crate::WorkError::Overflow)?,
-                    |bytes, read| bytes.checked_add(object_read_retained_bytes(read))
-                        .ok_or(crate::WorkError::Overflow),
-                )?;
-                crate::async_storage::merge_completed_object_read(
-                    accounting, receipt.work, retained,
-                )?;
-                receipt.value
-            }
-            Err(failure) => {
-                crate::async_storage::merge_completed_object_read(accounting, *failure.work, 0)?;
-                return Err(failure.error.into());
-            }
+            _ => match self.inner.read_many(requests, accounting.remaining()?, cancellation).await {
+                Ok(receipt) => {
+                    let retained = receipt.value.iter().try_fold(
+                        u64::try_from(receipt.value.capacity().checked_mul(std::mem::size_of::<ObjectRead>())
+                            .ok_or(crate::WorkError::Overflow)?).map_err(|_| crate::WorkError::Overflow)?,
+                        |bytes, read| bytes.checked_add(object_read_retained_bytes(read)).ok_or(crate::WorkError::Overflow),
+                    )?;
+                    crate::async_storage::merge_completed_object_read(accounting, receipt.work, retained)?;
+                    (receipt.value, KernelOwnedAllocation::Standalone)
+                }
+                Err(failure) => {
+                    crate::async_storage::merge_completed_object_read(accounting, *failure.work, 0)?;
+                    return Err(failure.error.into());
+                }
+            },
         };
-        if let Some(first) = values.first_mut()
-            && let Some(altered) = altered_read_data(first, fault, accounting)? {
-            *first = altered;
-        }
-        Ok(SimulationReadBatchValue::Portable(values))
+        if let Some(first) = values.0.first_mut()
+            && let Some(altered) = altered_read_data(first, fault, accounting)? { *first = altered; }
+        Ok(values)
     }
+
 }
 
 fn reference_backends() -> (ReferenceAuthority, ReferenceObjects) {
@@ -830,7 +749,7 @@ fn select_native_authority_fault(
     let mut state = state.lock().map_err(|_| {
         AuthorityStoreError::CorruptStatic("simulation state is poisoned")
     })?;
-    let mut accounting = crate::kernel::allocation::KernelAccounting::native(
+    let mut accounting = KernelAccounting::native(
         original, original.cancellation(),
     );
     state.prepare_trace(&mut accounting).map_err(|error| match error {
@@ -1027,8 +946,8 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedAuthorityStore<A> 
         guard: &mut F,
     ) -> crate::FsResult<bool>
     where
-        F: FnMut(WorkBudget) -> Fut + StorageFuture,
-        Fut: Future<Output = crate::FsResult<()>> + StorageFuture,
+        F: FnMut(WorkBudget) -> Fut + ProviderTask,
+        Fut: Future<Output = crate::FsResult<()>> + ProviderTask,
     {
         cancellation.check().map_err(|error| crate::OperationFailure::before_work(error.into()))?;
         let fault = select_authority_fault(&self.state, SimulationOperation::AuthorityCreate)
@@ -1343,7 +1262,7 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedAuthorityStore<A> 
                 .ok_or(NativeTreeMaterializationError::Work(crate::WorkError::Overflow))?;
             let old_bytes = records.capacity().checked_mul(std::mem::size_of::<DurableCommit>())
                 .ok_or(NativeTreeMaterializationError::Work(crate::WorkError::Overflow))? as u64;
-            let (mut replacement, mut replacement_custody) = work.with_owned_allocations(
+            let (mut replacement, mut replacement_custody) = work.allocations(
                 |ledger, counters, budget, cancellation| {
                     cancellation.check().map_err(|_| AuthorityStoreError::Cancelled)?;
                     counters.checked_add(extra)
@@ -1415,28 +1334,6 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedAuthorityStore<A> 
     }
 }
 
-enum SimulationReadValue {
-    Portable(ObjectRead),
-    #[cfg(not(target_arch = "wasm32"))]
-    Native(crate::async_storage::NativeObjectRead),
-}
-
-enum SimulationReadBatchValue {
-    Portable(Vec<ObjectRead>),
-    #[cfg(not(target_arch = "wasm32"))]
-    Native(crate::async_storage::NativeObjectReadBatch),
-}
-
-struct SimulationTraceReplacement {
-    trace: Vec<SimulationTrace>,
-    allocation: crate::kernel::allocation::KernelOwnedAllocation,
-}
-
-struct SimulationAlteredBytes {
-    value: Vec<u8>,
-    allocation: crate::kernel::allocation::KernelOwnedAllocation,
-}
-
 fn object_read_retained_bytes(read: &ObjectRead) -> u64 {
     match read.retention {
         ObjectReadRetention::Shared => 0,
@@ -1447,7 +1344,7 @@ fn object_read_retained_bytes(read: &ObjectRead) -> u64 {
 fn altered_read_data(
     read: &ObjectRead,
     fault: Option<SimulationFault>,
-    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
+    accounting: &mut KernelAccounting<'_>,
 ) -> Result<Option<ObjectRead>, crate::FsError> {
     if !matches!(fault, Some(
         SimulationFault::CorruptObjectRead | SimulationFault::PartialObjectRead,
@@ -1464,22 +1361,22 @@ fn altered_read_data(
     let requested = u64::try_from(retained).map_err(|_| crate::WorkError::Overflow)?;
     accounting.admit(WorkCounters { bytes_copied: requested, ..WorkCounters::UNCHARGED })?;
     let allocation = accounting.claim_owned(requested, u64::from(requested != 0))?;
-    let mut bytes = SimulationAlteredBytes { value: Vec::new(), allocation };
-    bytes.value.try_reserve_exact(retained)
+    let mut bytes = (Vec::new(), allocation);
+    bytes.0.try_reserve_exact(retained)
         .map_err(ObjectStoreError::MemoryTableAllocationFailed)?;
-    let actual = u64::try_from(bytes.value.capacity()).map_err(|_| crate::WorkError::Overflow)?;
-    accounting.reconcile_owned(&mut bytes.allocation, requested, actual)?;
+    let actual = u64::try_from(bytes.0.capacity()).map_err(|_| crate::WorkError::Overflow)?;
+    accounting.reconcile_owned(&mut bytes.1, requested, actual)?;
     accounting.admit(WorkCounters { bytes_copied: requested, ..WorkCounters::UNCHARGED })?;
-    bytes.value.extend_from_slice(&read.bytes[..retained]);
+    bytes.0.extend_from_slice(&read.bytes[..retained]);
     accounting.record_completed(WorkCounters { bytes_copied: requested, ..WorkCounters::UNCHARGED })?;
     if matches!(fault, Some(SimulationFault::CorruptObjectRead))
-        && let Some(first) = bytes.value.first_mut() { *first ^= 0x80; }
-    let logical_bytes = u64::try_from(bytes.value.capacity()).map_err(|_| crate::WorkError::Overflow)?;
-    let SimulationAlteredBytes { value: bytes, allocation } = bytes;
+        && let Some(first) = bytes.0.first_mut() { *first ^= 0x80; }
+    let logical_bytes = u64::try_from(bytes.0.capacity()).map_err(|_| crate::WorkError::Overflow)?;
+    let (bytes, allocation) = bytes;
     let bytes = match allocation {
-        crate::kernel::allocation::KernelOwnedAllocation::Standalone => OwnedBytes::from(bytes),
+        KernelOwnedAllocation::Standalone => OwnedBytes::from(bytes),
         #[cfg(not(target_arch = "wasm32"))]
-        crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
+        KernelOwnedAllocation::NativeOriginal(allocation) => {
             let original = accounting.native_work().ok_or(ObjectStoreError::Corrupt)?;
             OwnedBytes::from_vec_with_guard(bytes, allocation, original.runtime_meter_owner())
                 .map_err(|failure| match failure.into_error() {
@@ -1524,7 +1421,9 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedObjectStore<O> {
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
         self.put_engine(SimulationWrite::Plain(object_id, bytes),
-            SimulationWriteWork::Ordinary(budget), cancellation).await
+            SimulationWriteWork::Ordinary(&budget), cancellation).await
+            .map(|work| ObjectReceipt { value: (), work })
+            .map_err(|(error, work)| ObjectFailure::new(error, work))
     }
 
     async fn put_many(
@@ -1533,7 +1432,8 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedObjectStore<O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
-        self.put_many_engine(writes, SimulationWriteWork::Ordinary(budget), cancellation).await
+        cancellation.check().map_err(|_| ObjectFailure::before_work(ObjectStoreError::Cancelled))?;
+        self.inner.put_many(writes, budget, cancellation).await
     }
 
     async fn put_hashed(
@@ -1543,7 +1443,9 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedObjectStore<O> {
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
         self.put_engine(SimulationWrite::Hashed(object),
-            SimulationWriteWork::Ordinary(budget), cancellation).await
+            SimulationWriteWork::Ordinary(&budget), cancellation).await
+            .map(|work| ObjectReceipt { value: (), work })
+            .map_err(|(error, work)| ObjectFailure::new(error, work))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1554,7 +1456,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedObjectStore<O> {
     ) -> Result<(), ObjectStoreError> {
         self.put_engine(SimulationWrite::Plain(object_id, bytes),
             SimulationWriteWork::Native(work), cancellation).await
-            .map(|receipt| receipt.value).map_err(|failure| failure.error)
+            .map(|_| ()).map_err(|(error, _)| error)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1565,7 +1467,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedObjectStore<O> {
     ) -> Result<(), ObjectStoreError> {
         self.put_engine(SimulationWrite::Hashed(object),
             SimulationWriteWork::Native(work), cancellation).await
-            .map(|receipt| receipt.value).map_err(|failure| failure.error)
+            .map(|_| ()).map_err(|(error, _)| error)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1574,8 +1476,9 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedObjectStore<O> {
         work: &crate::materializer::NativeMaterializationWork,
         cancellation: &CancellationToken,
     ) -> Result<(), ObjectStoreError> {
-        self.put_many_engine(writes, SimulationWriteWork::Native(work), cancellation).await
-            .map(|receipt| receipt.value).map_err(|failure| failure.error)
+        cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
+        work.remaining()?;
+        self.inner.put_many_with_native_work(writes, work, cancellation).await
     }
 
     async fn flush_before_publish(
@@ -1626,7 +1529,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedObjectStore<O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<ObjectRead> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
+        let mut accounting = KernelAccounting::standalone(
             budget, cancellation,
         );
         let result = self.read_engine(
@@ -1634,9 +1537,7 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedObjectStore<O> {
         ).await;
         let work = accounting.spent();
         match result {
-            Ok(SimulationReadValue::Portable(value)) => Ok(ObjectReceipt { value, work }),
-            #[cfg(not(target_arch = "wasm32"))]
-            Ok(SimulationReadValue::Native(_)) => Err(ObjectFailure::new(ObjectStoreError::Corrupt, work)),
+            Ok(value) => Ok(ObjectReceipt { value, work }),
             Err(error) => Err(ObjectFailure::new(crate::async_storage::sequential_read_error(error), work)),
         }
     }
@@ -1647,11 +1548,12 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedObjectStore<O> {
         work: &crate::materializer::NativeMaterializationWork,
         cancellation: &CancellationToken,
     ) -> Result<crate::async_storage::NativeObjectRead, ObjectStoreError> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::native(work, cancellation);
-        match self.read_engine(object_id, maximum_bytes, &mut accounting, cancellation).await
-            .map_err(crate::async_storage::sequential_read_error)? {
-            SimulationReadValue::Native(value) => Ok(value),
-            SimulationReadValue::Portable(_) => Err(ObjectStoreError::Corrupt),
+        let mut accounting = KernelAccounting::native(work, cancellation);
+        let read = self.read_engine(object_id, maximum_bytes, &mut accounting, cancellation).await
+            .map_err(crate::async_storage::sequential_read_error)?;
+        match read.retention {
+            ObjectReadRetention::Shared => crate::async_storage::NativeObjectRead::shared(read),
+            ObjectReadRetention::Owned { .. } => crate::async_storage::NativeObjectRead::intrinsic(read, work),
         }
     }
 
@@ -1661,15 +1563,13 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedObjectStore<O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<Vec<ObjectRead>> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
+        let mut accounting = KernelAccounting::standalone(
             budget, cancellation,
         );
         let result = self.read_many_engine(requests, &mut accounting, cancellation).await;
         let work = accounting.spent();
         match result {
-            Ok(SimulationReadBatchValue::Portable(value)) => Ok(ObjectReceipt { value, work }),
-            #[cfg(not(target_arch = "wasm32"))]
-            Ok(SimulationReadBatchValue::Native(_)) => Err(ObjectFailure::new(ObjectStoreError::Corrupt, work)),
+            Ok((value, _)) => Ok(ObjectReceipt { value, work }),
             Err(error) => Err(ObjectFailure::new(crate::async_storage::sequential_read_error(error), work)),
         }
     }
@@ -1680,11 +1580,12 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedObjectStore<O> {
         work: &crate::materializer::NativeMaterializationWork,
         cancellation: &CancellationToken,
     ) -> Result<crate::async_storage::NativeObjectReadBatch, ObjectStoreError> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::native(work, cancellation);
-        match self.read_many_engine(requests, &mut accounting, cancellation).await
-            .map_err(crate::async_storage::sequential_read_error)? {
-            SimulationReadBatchValue::Native(value) => Ok(value),
-            SimulationReadBatchValue::Portable(_) => Err(ObjectStoreError::Corrupt),
+        let mut accounting = KernelAccounting::native(work, cancellation);
+        let (reads, allocation) = self.read_many_engine(requests, &mut accounting, cancellation).await
+            .map_err(crate::async_storage::sequential_read_error)?;
+        match allocation {
+            KernelOwnedAllocation::NativeOriginal(allocation) => crate::async_storage::NativeObjectReadBatch::new(reads, allocation),
+            KernelOwnedAllocation::Standalone => Err(ObjectStoreError::Corrupt),
         }
     }
 

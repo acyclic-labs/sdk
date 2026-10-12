@@ -26,7 +26,7 @@ use acyclic_harness::{
     },
     interaction::{Interaction, InteractionOutcome, InteractionResponse},
     model::{
-        FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
+        FileProjectionPolicy, Model, ModelContent, ModelContentPart, ModelEvent,
         ModelMessage, ModelProvider, ModelRequest, ModelRole, PreparedModelRequest,
     },
     resources::ProviderRef,
@@ -74,7 +74,7 @@ async fn bind_conversation(
             scope: issuer.root("owner", Capabilities::new(["conversation:bind"])),
             causal_parent: None,
             action: Action::BindConversation { agent },
-        })
+        }, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     Ok(())
 }
@@ -343,9 +343,7 @@ impl ModelProvider for CapturingModel {
         })]))
     }
 
-    fn reconcile<'a>(&'a self, _: ModelAttempt) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-        Box::pin(async { Ok(None) })
-    }
+
 }
 
 impl ModelProvider for TextModel {
@@ -365,9 +363,7 @@ impl ModelProvider for TextModel {
         ]))
     }
 
-    fn reconcile<'a>(&'a self, _: ModelAttempt) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-        Box::pin(async { Ok(None) })
-    }
+
 }
 
 #[tokio::test]
@@ -570,7 +566,7 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
         .await?;
     assert!(journal_b.replay(paged, 71, 64).await?.is_empty());
     let mut cursor = acyclic_harness::executor::ExecutionReplay::new(paged);
-    while cursor.next_page(&journal_b).await?.is_some() {}
+    while cursor.next_page(&journal_b, None).await?.is_some() {}
     assert_eq!(cursor.tail(), 71);
     assert!(
         journal_a

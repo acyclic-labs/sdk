@@ -561,7 +561,7 @@ impl SnapshotWire {
             effects_archived, forks, published_merges, conversation, latest_context_checkpoint,
             interactions, bindings,
         } = self.projection;
-        let (conversation, cache_bytes) = ConversationState::from_wire_with_work(
+        let (conversation, cache_bytes) = ConversationState::from_wire(
             conversation, maximum_encoded_bytes, work)?;
         Ok((Snapshot {
             format_version: self.format_version,

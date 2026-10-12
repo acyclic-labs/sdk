@@ -6,19 +6,12 @@ use crate::storage::ObjectId;
 use std::mem::size_of;
 use thiserror::Error;
 
-/// Actual control backing of pinned bytes 1.12.1's repr(C) Owned<T>:
-/// an AtomicUsize reference count followed by the concrete owner.
 pub(crate) fn bytes_owner_control_bytes<T>() -> Result<u64, WorkError> {
     let (layout, _) = std::alloc::Layout::new::<std::sync::atomic::AtomicUsize>()
         .extend(std::alloc::Layout::new::<T>()).map_err(|_| WorkError::Overflow)?;
     Ok(usize_to_u64(layout.pad_to_align().size()))
 }
 
-/// Logical owned-buffer bytes, excluding allocator headers and stack storage.
-///
-/// Every claim is admitted before allocation. Callers retain the returned byte
-/// count and release it when that owned capacity ceases to be live. The peak is
-/// operation-wide and is mirrored into the canonical work receipt.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct AllocationLedger {
     live_bytes: u64,
@@ -27,7 +20,6 @@ pub(crate) struct AllocationLedger {
     reserved_bytes: u64,
 }
 
-/// Deterministic logical capacity for a fallibly growing operation vector.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct LogicalVecCapacity {
     elements: usize,
@@ -41,8 +33,6 @@ enum LogicalVecAllocationStep {
 }
 
 impl LogicalVecCapacity {
-    /// Tracks the actual backing only after its existing original guard has
-    /// transferred into this vector's owner. This grants no allocation bytes.
     pub(crate) fn record_owned_capacity<T>(&mut self, values: &Vec<T>) -> Result<(), WorkError> {
         let bytes = values.capacity().checked_mul(std::mem::size_of::<T>())
             .and_then(|bytes| u64::try_from(bytes).ok()).ok_or(WorkError::Overflow)?;
@@ -203,7 +193,6 @@ impl AllocationLedger {
         Ok(())
     }
 
-    /// Withholds known future capacity without claiming physical backing.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn reserve_allocation(
         &mut self, bytes: u64, work: &WorkCounters, budget: WorkBudget,
@@ -218,7 +207,6 @@ impl AllocationLedger {
         Ok(())
     }
 
-    /// Refunds only unused capacity; actual live and historical peak are untouched.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn cancel_reserved_allocation(&mut self, bytes: u64) -> Result<(), AllocationError> {
         let reserved = self.reserved_bytes.checked_sub(bytes).ok_or(AllocationError::ReleaseInvariant)?;
@@ -226,8 +214,6 @@ impl AllocationLedger {
         Ok(())
     }
 
-    /// Consumes an admitted allocator credit at its real begun-allocation boundary.
-    /// No cancellation or fresh quota admission can invalidate an accepted drain.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn record_reserved_allocation(
         &mut self, bytes: u64, work: &mut WorkCounters,
@@ -246,9 +232,6 @@ impl AllocationLedger {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) const fn reserved_bytes(&self) -> u64 { self.reserved_bytes }
 
-    /// Records already physical allocator excess without another allocation
-    /// operation or a refusal that would erase its actual peak. The caller
-    /// must verify the original budget immediately after recording it.
     pub(crate) fn record_owned_bytes(
         &mut self, bytes: u64, work: &mut WorkCounters,
     ) -> Result<(), AllocationError> {
@@ -271,8 +254,6 @@ impl AllocationLedger {
     }
 }
 
-/// A standalone payload remains on its existing context ledger. A native
-/// payload carries the physical guard of the original invocation.
 pub(crate) enum KernelOwnedAllocation {
     Standalone,
     #[cfg(not(target_arch = "wasm32"))]
@@ -280,7 +261,6 @@ pub(crate) enum KernelOwnedAllocation {
 }
 
 impl KernelOwnedAllocation {
-    /// Combines actual guards without allocating or changing either on failure.
     pub(crate) fn absorb(&mut self, other: &mut Self) -> Result<(), crate::FsError> {
         match (self, other) {
             (Self::Standalone, Self::Standalone) => Ok(()),
@@ -295,8 +275,6 @@ impl KernelOwnedAllocation {
     }
 }
 
-/// Accounting of the same kernel engine, either standalone or on an original
-/// native invocation. Native references are borrowed only for synchronous leaves.
 pub(crate) enum KernelAccounting<'a> {
     Standalone {
         allocations: AllocationLedger,
@@ -359,8 +337,6 @@ impl<'a> KernelAccounting<'a> {
         }
     }
 
-    /// Executes SDK code outside every original-root mutex. The callback sees
-    /// this opaque facade, never the native ledger or mutable root counters.
     pub(crate) fn with_allocations<T>(
         &mut self,
         operation: impl FnOnce(&mut Self) -> Result<T, crate::FsError>,
@@ -369,30 +345,6 @@ impl<'a> KernelAccounting<'a> {
         operation(self)
     }
 
-    /// Executes physical construction outside the original mutex. The producer
-    /// returns its explicit pre-funded guard; data must die before that guard.
-    pub(crate) fn with_owned_allocations<T>(
-        &mut self,
-        operation: impl FnOnce(&mut Self)
-            -> Result<(T, KernelOwnedAllocation), crate::FsError>,
-    ) -> Result<(T, KernelOwnedAllocation), crate::FsError> {
-        self.check()?;
-        operation(self)
-    }
-
-    /// The producer keeps the exact claims of an owned failure payload, rather
-    /// than inferring ownership from a global before/after ledger difference.
-    pub(crate) fn with_retained_allocations<T>(
-        &mut self,
-        operation: impl FnOnce(&mut Self)
-            -> Result<(T, KernelOwnedAllocation), (crate::FsError, Option<KernelOwnedAllocation>)>,
-    ) -> Result<(T, KernelOwnedAllocation), (crate::FsError, Option<KernelOwnedAllocation>)> {
-        self.check().map_err(|error| (error, None))?;
-        operation(self)
-    }
-
-    /// Only the legitimate standalone projection can borrow raw ledger parts.
-    /// A native caller must use this facade's original-operation primitives.
     pub(crate) fn standalone_parts(
         &mut self,
     ) -> Option<(&mut AllocationLedger, &mut WorkCounters, WorkBudget, &crate::CancellationToken)> {
@@ -408,8 +360,6 @@ impl<'a> KernelAccounting<'a> {
         }
     }
 
-    /// Admits a concrete producer's backing before the allocator is entered.
-    /// The allocator and producer execute outside every original-root loan.
     pub(crate) fn claim_owned(
         &mut self, bytes: u64, operations: u64,
     ) -> Result<KernelOwnedAllocation, crate::FsError> {
@@ -426,13 +376,11 @@ impl<'a> KernelAccounting<'a> {
                 Ok(KernelOwnedAllocation::Standalone)
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::NativeOriginal { work, .. } => work.claim_allocation(bytes, operations)
+            Self::NativeOriginal { work, .. } => work.claim_allocation(bytes, operations, crate::WorkCounters::UNCHARGED)
                 .map(KernelOwnedAllocation::NativeOriginal).map_err(Into::into),
         }
     }
 
-    /// Records already-completed excess backing without another allocation
-    /// operation. A late refusal still returns its actual physical guard.
     pub(crate) fn record_actual_owned(
         &mut self, bytes: u64,
     ) -> Result<(KernelOwnedAllocation, Result<(), crate::FsError>), crate::FsError> {
@@ -461,8 +409,6 @@ impl<'a> KernelAccounting<'a> {
         }
     }
 
-    /// Reconciles a completed buffer's capacity. The guard keeps all actual
-    /// backing even when the completion crosses a budget or cancellation bound.
     pub(crate) fn reconcile_owned(
         &mut self, allocation: &mut KernelOwnedAllocation, requested: u64, actual: u64,
     ) -> Result<(), crate::FsError> {
@@ -508,7 +454,6 @@ impl<'a> KernelAccounting<'a> {
         }
     }
 
-    /// Releases only capacity whose physical owner has already destroyed it.
     pub(crate) fn release_owned(
         &mut self, allocation: &mut KernelOwnedAllocation, bytes: u64,
     ) -> Result<(), crate::FsError> {
@@ -534,8 +479,6 @@ impl<'a> KernelAccounting<'a> {
         }
     }
 
-    /// Commits performed work before checking late budget or cancellation
-    /// changes. A preflight refusal must never erase an already-completed copy.
     pub(crate) fn record_completed(&mut self, delta: WorkCounters) -> Result<(), crate::FsError> {
         match self {
             Self::Standalone { work, budget, cancellation, .. } => {
@@ -619,7 +562,6 @@ impl<'a> KernelAccounting<'a> {
     }
 }
 
-/// Deterministic fixed-capacity cycle/alias set for authenticated object walks.
 pub(crate) struct VisitedObjectSet {
     slots: Vec<Option<ObjectId>>,
     maximum_entries: usize,
@@ -627,7 +569,6 @@ pub(crate) struct VisitedObjectSet {
     logical_bytes: u64,
 }
 
-/// Result of one deterministic visited-set probe.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct VisitedInsert {
     pub(crate) inserted: bool,
@@ -651,7 +592,6 @@ impl VisitedObjectSet {
             .map_err(|error| Self::standalone_error(error, false))
     }
 
-    /// Constructs the same fixed-capacity set outside every original AL loan.
     pub(crate) fn new_with_accounting(
         maximum_entries: usize, accounting: &mut KernelAccounting<'_>,
     ) -> Result<super::persistent_point::Owned<Self>, crate::FsError> {
@@ -676,7 +616,6 @@ impl VisitedObjectSet {
             .map_err(|error| Self::standalone_error(error, self.length == self.maximum_entries))
     }
 
-    /// Growth moves replacement slots and their physical guard together.
     pub(crate) fn insert_with_accounting(
         set: &mut super::persistent_point::Owned<Self>, object: ObjectId,
         accounting: &mut KernelAccounting<'_>,
@@ -776,7 +715,6 @@ impl VisitedObjectSet {
             .ok_or(AllocationError::Overflow)
     }
 
-
     pub(crate) fn release(self, ledger: &mut AllocationLedger) -> Result<(), AllocationError> {
         let bytes = self.logical_bytes;
         drop(self);
@@ -805,7 +743,6 @@ fn object_hash(object: ObjectId) -> usize {
     }
 }
 
-/// Stable logical-allocation failures.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub(crate) enum AllocationError {
     #[error("logical allocation arithmetic overflowed")]
@@ -823,8 +760,6 @@ pub(crate) enum AllocationError {
 }
 
 impl AllocationError {
-    /// Maps onto an operation error: budget failures and accounting overflow
-    /// stay work errors, and every failed allocation becomes `failed`.
     pub(crate) fn into_work_or<E: From<WorkError>>(self, failed: E) -> E {
         match self {
             Self::Work(error) => error.into(),

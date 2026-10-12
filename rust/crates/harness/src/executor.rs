@@ -8,7 +8,7 @@ use crate::{
     conversation::{Attachment, FileRef, Limits, VolumeClass},
     interaction::{Interaction, InteractionOutcome},
     model::{
-        Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent, ModelMessage,
+        Model, ModelContent, ModelContentPart, ModelEvent, ModelMessage,
         ModelProvider, ModelRequest, ModelRole,
     },
     projection::SelectedModelContext,
@@ -26,14 +26,16 @@ use serde_json::{Value, json};
 use std::sync::Arc;
 
 mod native_stock;
+mod headless;
+pub use headless::ModelToolsProgress;
 use native_stock::*;
 pub(crate) use native_stock::{stock_vec_push, stock_key, stock_string_push,
-    stock_string_copy, stock_file_copy, stock_model_copy, stock_messages_copy, stock_value_copy};
+    stock_string_copy, stage_json, stock_boundary};
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use native_stock::NativeStockExecutor;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use native_stock::{
-    replay_execution_with_native_work, stage_json_with_native_work, load_json_with_native_work,
+    native_boundary, replay_execution_with_native_work, stage_json_with_native_work, load_json_with_native_work,
     retained_model_step_with_native_work, completed_tool_projection_with_native_work,
 };
 
@@ -78,7 +80,7 @@ impl TurnInput {
             .ok_or_else(|| {
                 Error::Invalid("selected context must end with a user message".into())
             })?;
-        input.validate_user_input()?;
+        input.validate_user_input(&mut None)?;
         selected_context.validate_for_input(&input, None)?;
         Ok(Self {
             operation_id,
@@ -114,10 +116,17 @@ pub enum ModelPurpose {
 }
 
 impl ModelPurpose {
-    /// Stable shared-budget attempt identity. This creates no journal or task.
-    #[must_use]
-    pub fn attempt_operation(self, execution: OperationId) -> OperationId {
-        match self {
+    /// Stable shared-budget attempt identity on the optional preparation ledger.
+    pub fn attempt_operation(self, execution: OperationId, io: Option<&PreparationIo>) -> Result<OperationId> {
+        #[cfg(feature = "filesystem")]
+        let charge = acyclic_fs::WorkCounters {
+            bytes_hashed: if self == Self::Summary {
+                b"harness:summary-attempt:v1".len() as u64 + 16
+            } else { 0 }, ..Default::default()
+        };
+        #[cfg(feature = "filesystem")]
+        if let Some(io) = io { io.preflight(charge)?; }
+        let operation = match self {
             Self::Response => execution,
             Self::Summary => {
                 let mut hasher = blake3::Hasher::new();
@@ -127,19 +136,7 @@ impl ModelPurpose {
                 bytes.copy_from_slice(&hasher.finalize().as_bytes()[..16]);
                 OperationId::from_bytes(bytes)
             }
-        }
-    }
-
-    fn attempt_operation_with_io(self, execution: OperationId, io: Option<&PreparationIo>) -> Result<OperationId> {
-        #[cfg(feature = "filesystem")]
-        let charge = acyclic_fs::WorkCounters {
-            bytes_hashed: if self == Self::Summary {
-                b"harness:summary-attempt:v1".len() as u64 + 16
-            } else { 0 }, ..Default::default()
         };
-        #[cfg(feature = "filesystem")]
-        if let Some(io) = io { io.preflight(charge)?; }
-        let operation = self.attempt_operation(execution);
         #[cfg(feature = "filesystem")]
         if let Some(io) = io { io.spent(charge)?; }
         #[cfg(not(feature = "filesystem"))]
@@ -377,7 +374,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     /// Verifies data and native option bindings without granting fresh execution.
     fn verify_model_content<'a>(&'a self, content: &'a ModelContent) -> BoxFuture<'a, Result<()>> {
         Box::pin(async move {
-            if !content.native_configurations().is_empty() {
+            if content.native_configurations().next().is_some() {
                 return Err(Error::Unsupported(
                     "original native option verification is unavailable".into(),
                 ));
@@ -523,6 +520,18 @@ pub(crate) use crate::filesystem::PreparationIo;
 #[cfg(not(feature = "filesystem"))]
 pub(crate) type PreparationIo = ();
 
+pub(crate) fn with_history_io<T>(
+    io: Option<&PreparationIo>, run: impl FnOnce(&mut Option<&mut dyn crate::store::history::HistoryIo>) -> T,
+) -> T {
+    #[cfg(feature = "filesystem")]
+    {
+        let mut observer = io.map(PreparationIo::history_io);
+        run(&mut observer.as_mut().map(|work| work as &mut dyn crate::store::history::HistoryIo))
+    }
+    #[cfg(not(feature = "filesystem"))]
+    { let _ = io; run(&mut None) }
+}
+
 /// Incremental replay validation retaining only a cursor and retry digests.
 pub struct ExecutionReplay {
     operation_id: OperationId,
@@ -551,13 +560,6 @@ impl ExecutionReplay {
     pub async fn next_page(
         &mut self,
         journal: &dyn ExecutionJournal,
-    ) -> Result<Option<Vec<ExecutionRecord>>> {
-        self.next_page_with_io(journal, None).await
-    }
-
-    pub(crate) async fn next_page_with_io(
-        &mut self,
-        journal: &dyn ExecutionJournal,
         io: Option<&PreparationIo>,
     ) -> Result<Option<Vec<ExecutionRecord>>> {
         validate_execution_page(self.after, EXECUTION_REPLAY_PAGE_RECORDS)?;
@@ -578,7 +580,7 @@ impl ExecutionReplay {
                     page
                 } else {
                     let receipt = journal.replay_measured(self.operation_id, self.after,
-                        EXECUTION_REPLAY_PAGE_RECORDS, io.remaining()?, &io.cancellation).await;
+                        EXECUTION_REPLAY_PAGE_RECORDS, io.remaining()?, io.cancellation()).await;
                     let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
                     let page = io.receive_content(receipt)?;
                     io.retain_owned(held)?;
@@ -587,7 +589,7 @@ impl ExecutionReplay {
                 #[cfg(target_arch = "wasm32")]
                 {
                     let receipt = journal.replay_measured(self.operation_id, self.after,
-                        EXECUTION_REPLAY_PAGE_RECORDS, io.remaining()?, &io.cancellation).await;
+                        EXECUTION_REPLAY_PAGE_RECORDS, io.remaining()?, io.cancellation()).await;
                     let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
                     let page = io.receive_content(receipt)?;
                     io.retain_owned(held)?;
@@ -651,15 +653,6 @@ pub(crate) async fn replay_execution(
     operation_id: OperationId,
     maximum_selected: usize,
     select: impl Fn(&ExecutionEvent) -> bool,
-) -> Result<(u64, Vec<ExecutionRecord>)> {
-    replay_execution_with_io(journal, operation_id, maximum_selected, select, None).await
-}
-
-pub(crate) async fn replay_execution_with_io(
-    journal: &dyn ExecutionJournal,
-    operation_id: OperationId,
-    maximum_selected: usize,
-    select: impl Fn(&ExecutionEvent) -> bool,
     io: Option<&PreparationIo>,
 ) -> Result<(u64, Vec<ExecutionRecord>)> {
     let mut replay = ExecutionReplay::new(operation_id);
@@ -669,7 +662,7 @@ pub(crate) async fn replay_execution_with_io(
         let before = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
         #[cfg(feature = "filesystem")]
         let key_capacity_before = replay.keys.capacity();
-        let Some(page) = replay.next_page_with_io(journal, io).await? else { break };
+        let Some(page) = replay.next_page(journal, io).await? else { break };
         #[cfg(feature = "filesystem")]
         let held = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0) - before;
         #[cfg(feature = "filesystem")]
@@ -836,66 +829,6 @@ impl crate::filesystem::PreparationRecord for ContextAccounting {
     }
 }
 
-fn checked_compaction_budget(
-    policy: &crate::context::ThresholdCompaction,
-    context: &crate::context::Context,
-    count: &crate::context::ModelTokenCount,
-    capacity: crate::context::ModelContextCapacity,
-    maximum_messages: usize,
-    io: Option<&PreparationIo>,
-) -> Result<(usize, usize)> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io {
-        let work = io.original_native_work().ok_or_else(|| {
-            stock_boundary(io.into(), crate::wire::ErrorCode::Unsupported, "stock compaction planning requires original native work")
-        })?;
-        let budget = policy.projection_budget_with_message_limit_native(
-            context, count, maximum_messages, work,
-        )?;
-        let (through, maximum) = budget.0;
-        let mandatory = crate::context::mandatory_positions_native(
-            context, through, &policy.retention, work,
-        )?;
-        let mandatory_tokens = mandatory.0.iter().try_fold(
-            u64::from(count.fixed_tokens),
-            |total, position| {
-                let step = acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() };
-                io.preflight(step)?;
-                io.charge(step)?;
-                let tokens = count.message_tokens.get(*position)
-                    .ok_or_else(|| stock_boundary(io.into(), crate::wire::ErrorCode::Invalid, "mandatory token position is missing"))?;
-                total.checked_add(u64::from(*tokens))
-                    .ok_or_else(|| stock_boundary(io.into(), crate::wire::ErrorCode::Invalid, "mandatory token count overflows"))
-            },
-        )?;
-        if policy.needs_compaction(capacity, mandatory_tokens)? {
-            return Err(stock_boundary(io.into(), crate::wire::ErrorCode::Invalid, "mandatory content exceeds selected model capacity"));
-        }
-        return Ok((through, maximum));
-    }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    if io.is_some() {
-        return Err(stock_boundary(io.into(), crate::wire::ErrorCode::Unsupported, "native stock compaction planning is unavailable"));
-    }
-    let (through, maximum) =
-        policy.projection_budget_with_message_limit(context, count, maximum_messages)?;
-    let mandatory_tokens = crate::context::mandatory_positions(context, through, &policy.retention)
-        .iter()
-        .try_fold(u64::from(count.fixed_tokens), |total, position| {
-            let tokens = count
-                .message_tokens
-                .get(*position)
-                .ok_or_else(|| stock_boundary(io.into(), crate::wire::ErrorCode::Invalid, "mandatory token position is missing"))?;
-            total
-                .checked_add(u64::from(*tokens))
-                .ok_or_else(|| stock_boundary(io.into(), crate::wire::ErrorCode::Invalid, "mandatory token count overflows"))
-        })?;
-    if policy.needs_compaction(capacity, mandatory_tokens)? {
-        return Err(stock_boundary(io.into(), crate::wire::ErrorCode::Invalid, "mandatory content exceeds selected model capacity"));
-    }
-    Ok((through, maximum))
-}
-
 fn stock_context_capacity(
     provider: &dyn ModelProvider,
     model: &Model,
@@ -938,29 +871,6 @@ fn stock_count_tokens(
     provider.count_tokens(request)
 }
 
-fn stock_prepare(
-    request: ModelRequest,
-    limits: Limits,
-    io: Option<&PreparationIo>,
-) -> Result<crate::model::PreparedModelRequest> {
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        return crate::model::PreparedModelRequest::prepare(request, limits, Some(io));
-    }
-    #[cfg(not(feature = "filesystem"))]
-    let _ = io;
-    crate::model::PreparedModelRequest::prepare(request, limits, None)
-}
-
-fn stock_context_input(
-    input: &TurnInput,
-    step: u32,
-    prior_messages: &[ModelMessage],
-    io: Option<&PreparationIo>,
-) -> Result<ContextInput> {
-    ContextInput::copy_for_turn(input, step, prior_messages, io)
-}
-
 fn stock_context_prefix(
     context: &crate::context::Context,
     through: usize,
@@ -996,7 +906,7 @@ fn stock_encode_json<T: Serialize>(
 ) -> Result<acyclic_stream::OwnedBytes> {
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        return io.encode_json(value, maximum, true);
+        return io.encode(value, maximum, true);
     }
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
@@ -1019,29 +929,13 @@ fn stock_json_bound<T: Serialize>(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let _bytes_hold;
-        let bytes = io.encode_json(value, maximum, false)?;
+        let bytes = io.encode(value, maximum, false)?;
         _bytes_hold = io.guard_bytes(&bytes)?;
         return Ok(());
     }
     #[cfg(not(feature = "filesystem"))]
     let _ = io;
     crate::contract::validate_json_byte_bound(value, maximum)
-}
-
-fn stock_hash(bytes: &[u8], io: Option<&PreparationIo>) -> Result<[u8; 32]> {
-    #[cfg(feature = "filesystem")]
-    let work = acyclic_fs::WorkCounters {
-        bytes_hashed: bytes.len() as u64,
-        ..Default::default()
-    };
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io { io.preflight(work)?; }
-    #[cfg(not(feature = "filesystem"))]
-    let _ = io;
-    let digest = *blake3::hash(bytes).as_bytes();
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io { io.charge(work)?; }
-    Ok(digest)
 }
 
 fn stock_compact(
@@ -1058,7 +952,7 @@ fn stock_compact(
         })?;
         let (retention, custody) = crate::context::clone_retention_native(retention, work)?;
         io.absorb_native_custody(custody)?;
-        return crate::context::DurableContextProvider::compact_with_io(
+        return crate::context::DurableContextProvider::compact(
             context, maximum, summary, retention, Some(io),
         );
     }
@@ -1066,7 +960,7 @@ fn stock_compact(
     if io.is_some() {
         return Err(stock_boundary(io.into(), crate::wire::ErrorCode::Unsupported, "native stock compaction is unavailable"));
     }
-    crate::context::DurableContextProvider::compact_with_io(context, maximum, summary, retention.clone(), None)
+    crate::context::DurableContextProvider::compact(context, maximum, summary, retention.clone(), None)
 }
 
 impl StockExecution<'_> {
@@ -1114,16 +1008,16 @@ impl StockExecution<'_> {
         source: crate::context::Context,
         instruction: ModelContent,
     ) -> Result<crate::context::ContextSummary> {
-        crate::context::validate_projected_context_with_io(&source, self.limits, self.io())?;
-        instruction.validate_limits_with_io(self.limits, self.io())?;
-        stock_json_bound(&source, self.limits.file_bytes, self.io())?;
-        stock_json_bound(&instruction, self.limits.file_bytes, self.io())?;
+        crate::context::validate_projected_context(&source, self.stock.limits, self.io())?;
+        crate::executor::with_history_io(self.io(), |work| instruction.validate_limits(self.stock.limits, work))?;
+        stock_json_bound(&source, self.stock.limits.file_bytes, self.io())?;
+        stock_json_bound(&instruction, self.stock.limits.file_bytes, self.io())?;
         let summary_output = self.output_budget()?;
         if summary_output.is_none() {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "summary requires a caller-selected output token budget"));
         }
-        let source_bytes = stock_encode_json(&source, self.limits.file_bytes, self.io())?;
-        let source_digest = stock_hash(&source_bytes, self.io())?;
+        let source_bytes = stock_encode_json(&source, self.stock.limits.file_bytes, self.io())?;
+        let source_digest = crate::model::hash_bytes(&source_bytes, self.io())?;
         let source_messages = u32::try_from(source.messages.len())
             .map_err(|_| stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "summary source exceeds portable message count"))?;
         if source_messages == 0 {
@@ -1148,7 +1042,7 @@ impl StockExecution<'_> {
             executor.ensure_started(journal, &input).await?;
         }
         let source_key = stock_key(format_args!("summary:{step}:source"), self.io())?;
-        stage_bytes_with_io(
+        stage_bytes(
             journal,
             operation_id,
             &source_key,
@@ -1156,7 +1050,7 @@ impl StockExecution<'_> {
             self.io(),
         ).await?;
         let events = executor
-            .run_model_step(journal, &input, step, &[], ModelPurpose::Summary)
+            .run_model_step(journal, &input, step, &[], ModelPurpose::Summary)?
             .await?;
         let mut text = String::new();
         for event in events {
@@ -1164,7 +1058,7 @@ impl StockExecution<'_> {
                 ModelEvent::Content { delta } => {
                     if (text.len() as u64)
                         .checked_add(delta.len() as u64)
-                        .is_none_or(|length| length > self.limits.render_bytes)
+                        .is_none_or(|length| length > self.stock.limits.render_bytes)
                     {
                         return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "summary output exceeds caller render budget"));
                     }
@@ -1180,7 +1074,7 @@ impl StockExecution<'_> {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "summary operation returned no content"));
         }
         let output_key = stock_key(format_args!("summary:{step}:output"), self.io())?;
-        let output = stage_media_bytes_with_io(
+        let output = stage_media_bytes(
             journal,
             operation_id,
             &output_key,
@@ -1196,7 +1090,7 @@ impl StockExecution<'_> {
             output,
         };
         let provenance_key = stock_key(format_args!("summary:{step}:provenance"), self.io())?;
-        stage_json_with_io(
+        stage_json(
             journal,
             operation_id,
             &provenance_key,
@@ -1271,7 +1165,7 @@ impl StockExecution<'_> {
         match self.compaction_policy() {
             crate::context::CompactionPolicy::Disabled => Ok(None),
             crate::context::CompactionPolicy::Threshold(policy) => {
-                let capacity = stock_context_capacity(self.provider.as_ref(), &self.model, self.io())?;
+                let capacity = stock_context_capacity(self.stock.provider.as_ref(), &self.stock.model, self.io())?;
                 policy.validate(capacity, self.output_tokens())?;
                 Ok(Some(capacity))
             }
@@ -1295,11 +1189,11 @@ impl StockExecution<'_> {
     ) -> Result<StockExecution<'_>> {
         Ok(StockExecution {
             stock: self.stock,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native: self.native,
             summary_pipeline: Some(ContextPipeline::summary_source(source, revision, self.io())?),
-            summary_mode: true,
-            max_output_tokens_override: Some(output),
-            reconciliation_only: self.reconciliation_only(),
+            summary_output_tokens: output,
+            reconciliation_only: self.reconciliation_only,
         })
     }
 
@@ -1319,7 +1213,7 @@ impl StockExecution<'_> {
         {
             return Ok(());
         }
-        let capacity = stock_context_capacity(self.provider.as_ref(), &self.model, self.io())?;
+        let capacity = stock_context_capacity(self.stock.provider.as_ref(), &self.stock.model, self.io())?;
         capacity.validate()?;
         let output = executor.output_tokens().ok_or_else(|| {
             stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "summary requires a caller-selected output token budget")
@@ -1330,7 +1224,7 @@ impl StockExecution<'_> {
         let prepared = executor.prepare_request(input, step, &[]).await?;
         self.verify_model_request_content(journal, &prepared)
             .await?;
-        let count = stock_count_tokens(self.provider.as_ref(), &prepared, self.io())?.validate(&prepared)?;
+        let count = stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io())?.validate(&prepared)?;
         if count + u64::from(output) > u64::from(capacity.context_tokens) {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "summary input exceeds selected model capacity"));
         }
@@ -1362,7 +1256,7 @@ impl StockExecutor {
 
 impl StockExecution<'_> {
     async fn verify_execution_owner(&self) -> Result<()> {
-        if let Some((host, task_id, fence)) = &self.task {
+        if let Some((host, task_id, fence)) = &self.stock.task {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let Some(work) = self.native_work() {
                 return host.verify_execution_owner_with_native_work(*task_id, fence, work)?.await;
@@ -1388,7 +1282,7 @@ impl StockExecutor {
         prefix: FileRef,
         verifier: Arc<dyn crate::conversation::ContentResidencyVerifier>,
     ) -> Result<Self> {
-        prefix.validate()?;
+        prefix.validate(&mut None)?;
         if prefix.descriptor().media_type() != crate::model::ModelPrefix::MEDIA_TYPE {
             return Err(Error::Invalid(
                 "inherited model prefix has the wrong media type".into(),
@@ -1401,30 +1295,7 @@ impl StockExecutor {
 }
 
 impl StockExecution<'_> {
-    /// Freezes the exact retained model input through a completed tool exchange.
-    pub async fn completed_tool_prefix(
-        &self,
-        journal: &dyn ExecutionJournal,
-        input: &TurnInput,
-        step: u32,
-        call_id: &str,
-    ) -> Result<crate::model::PreparedModelRequest> {
-        self.completed_tool_prefix_through(journal, input, step, Some(call_id))
-            .await
-    }
-
-    /// Freezes one complete ordered tool batch from the retained model step.
-    pub async fn completed_tool_batch_prefix(
-        &self,
-        journal: &dyn ExecutionJournal,
-        input: &TurnInput,
-        step: u32,
-    ) -> Result<crate::model::PreparedModelRequest> {
-        self.completed_tool_prefix_through(journal, input, step, None)
-            .await
-    }
-
-    async fn completed_tool_prefix_through(
+    async fn completed_tool_prefix(
         &self,
         journal: &dyn ExecutionJournal,
         input: &TurnInput,
@@ -1444,17 +1315,17 @@ impl StockExecution<'_> {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Conflict,
                 "tool prefix has another execution identity"));
         };
-        if !self.matches_request_digest(input, request_digest)? {
+        if *request_digest != self.request_digest(input)? {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Conflict,
                 "tool prefix has another execution identity"));
         }
-        let retained = retained_model_step_with_io(
-            journal, &records, step, ModelPurpose::Response, self.limits, self.io(),
+        let retained = retained_model_step(
+            journal, &records, step, ModelPurpose::Response, self.stock.limits, self.io(),
         ).await?;
         let prepared = retained
             .request
             .ok_or(Error::Indeterminate(input.operation_id))?;
-        let mut request = crate::model::model_request_clone_with_io(prepared.request(), self.io())?;
+        let mut request = crate::model::clone_request(prepared.request(), self.io())?;
         let mut calls = Vec::new();
         for event in retained.events {
             if let ModelEvent::ToolCall {
@@ -1474,8 +1345,8 @@ impl StockExecution<'_> {
             return Err(Error::Indeterminate(input.operation_id));
         }
         for invocation in calls {
-            let projection = completed_tool_projection_with_io(
-                journal, &records, step, &invocation, &request.tools, Some(self.limits), self.io(),
+            let projection = completed_tool_projection(
+                journal, &records, step, &invocation, &request.tools, Some(self.stock.limits), self.io(),
             ).await?;
             stock_vec_push(&mut request.messages,
                 ModelMessage {
@@ -1499,7 +1370,7 @@ impl StockExecution<'_> {
                 break;
             }
         }
-        let prepared = stock_prepare(request, self.limits, self.io())?;
+        let prepared = crate::model::PreparedModelRequest::prepare(request, self.stock.limits, self.io())?;
         self.verify_model_request_content(journal, &prepared)
             .await?;
         Ok(prepared)
@@ -1543,22 +1414,22 @@ impl StockExecution<'_> {
         if let Some(native) = self.native {
             let context = native.context.context();
             if native.operation != operation
-                || context.durable_task_id() != self.task.as_ref().map(|(_, task, _)| *task)
-                || context.scope().run_limits() != self.tool_scope().run_limits()
-                || context.scope().extensions() != self.tool_scope().extensions()
-                || self.task.as_ref().is_some_and(|(_, task, fence)| !context.original_task_binding_matches(*task, fence)) {
+                || context.durable_task_id() != self.stock.task.as_ref().map(|(_, task, _)| *task)
+                || context.scope().run_limits() != self.stock.tool_scope.run_limits()
+                || context.scope().extensions() != self.stock.tool_scope.extensions()
+                || self.stock.task.as_ref().is_some_and(|(_, task, fence)| !context.original_task_binding_matches(*task, fence)) {
                 return Err(native_boundary(crate::wire::ErrorCode::Unauthorized,
                     "stock task context differs from execution binding"));
             }
             return Ok(());
         }
-        if let Some((context, expected_operation)) = &self.task_context
+        if let Some((context, expected_operation)) = &self.stock.task_context
             && (*expected_operation != operation
-                || context.durable_task_id() != self.task.as_ref().map(|(_, task, _)| *task)
-                || context.scope().grants() != self.tool_scope.grants()
-                || context.scope().limits() != self.limits
-                || context.scope().run_limits() != self.tool_scope.run_limits()
-                || context.scope().extensions() != self.tool_scope.extensions())
+                || context.durable_task_id() != self.stock.task.as_ref().map(|(_, task, _)| *task)
+                || context.scope().grants() != self.stock.tool_scope.grants()
+                || context.scope().limits() != self.stock.limits
+                || context.scope().run_limits() != self.stock.tool_scope.run_limits()
+                || context.scope().extensions() != self.stock.tool_scope.extensions())
         {
             return Err(Error::Unauthorized(
                 "stock task context differs from execution binding".into(),
@@ -1577,13 +1448,13 @@ impl StockExecution<'_> {
                 "native tool context has no original work"))?;
             let mut tool_context = crate::runtime::ToolContext::new_with_native_work(
                 Arc::clone(context), invocation.operation_id, &invocation.call_id, work,
-            )?.with_native_stock_scope(self.tool_scope(), self.limits, work)?;
+            )?.with_native_stock_scope(&self.stock.tool_scope, self.stock.limits, work)?;
             if let Some(interactions) = self.native.and_then(|native| native.interactions) {
                 tool_context = tool_context.with_native_interactions(Arc::clone(interactions), work)?;
             }
             return Ok(Some(tool_context));
         }
-        self.task_context
+        self.stock.task_context
             .as_ref()
             .map(|(context, _)| {
                 crate::runtime::ToolContext::new(
@@ -1596,48 +1467,64 @@ impl StockExecution<'_> {
     }
 
     fn request_digest(&self, input: &TurnInput) -> Result<[u8; 32]> {
+        #[derive(Serialize)]
+        struct IssuedContext<'a> {
+            admission_operation: OperationId,
+            execution_operation: OperationId,
+            task_id: Option<TaskId>,
+            run_limits: crate::runtime::TaskRunLimits,
+            extensions: Option<&'a crate::core::ExtensionAdmission>,
+        }
+        #[derive(Serialize)]
+        struct Request<'a> {
+            executor: &'static str,
+            input: &'a TurnInput,
+            model: &'a Model,
+            max_output_tokens: Option<u32>,
+            context: &'a [Value],
+            tools: &'a [crate::tool::ToolDefinition],
+            limits: Limits,
+            tool_scope: (&'a crate::Capabilities, Limits),
+            policy: Option<&'a ComponentIdentity>,
+            inherited_prefix: Option<&'a FileRef>,
+            compaction: &'a crate::context::CompactionPolicy,
+            model_capacity: Option<crate::context::ModelContextCapacity>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            task_id: Option<TaskId>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            task_context: Option<IssuedContext<'a>>,
+        }
+        let io = self.io();
+        let contracts = self.context_pipeline().contracts(io)?;
+        let tools = {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if let Some(io) = io && let Some(work) = io.original_native_work() {
+                let (tools, custody) = self.stock.tools.definitions_with_native_work(work)?;
+                io.absorb_native_custody(custody)?;
+                tools
+            } else { self.stock.tools.definitions()? }
+            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+            { self.stock.tools.definitions()? }
+        };
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if self.native_work().is_some() { return native_request_digest(self, input); }
-        let mut request = json!({
-            "executor": "acyclic.stock.v6",
-            "input": input,
-            "model": self.model,
-            "max_output_tokens": self.output_tokens(),
-            "context": self.context_pipeline().contracts(),
-            "tools": self.tools.definitions()?,
-            "limits": self.limits,
-            "tool_scope": (self.tool_scope().grants(), self.tool_scope().limits()),
-            "policy": self.policy_identity.as_ref(),
-            "inherited_prefix": self.inherited_prefix().map(|(reference, _)| reference),
-            "compaction": self.compaction_policy(),
-            "model_capacity": self.model_capacity()?,
-        });
-        if let Some((_, task_id, _)) = &self.task {
-            request
-                .as_object_mut()
-                .ok_or_else(|| Error::Invalid("executor request is not an object".into()))?
-                .insert("task_id".into(), json!(task_id));
-        }
-        if let Some((context, execution_operation)) = &self.task_context {
-            request
-                .as_object_mut()
-                .ok_or_else(|| Error::Invalid("executor request is not an object".into()))?
-                .insert(
-                    "task_context".into(),
-                    json!({
-                        "admission_operation": context.id(),
-                        "execution_operation": execution_operation,
-                        "task_id": context.durable_task_id(),
-                        "run_limits": context.scope().run_limits(),
-                        "extensions": context.scope().extensions(),
-                    }),
-                );
-        }
-        crate::contract::canonical_json_digest(&request)
-    }
-
-    fn matches_request_digest(&self, input: &TurnInput, existing: &[u8; 32]) -> Result<bool> {
-        Ok(existing == &self.request_digest(input)?)
+        let binding = self.native.map(|native| (native.context.context(), native.operation));
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let binding = None;
+        let task_context = binding.or_else(|| self.stock.task_context.as_ref().map(|(context, operation)| (context, *operation)))
+            .map(|(context, operation)| IssuedContext {
+                admission_operation: context.id(), execution_operation: operation,
+                task_id: context.durable_task_id(), run_limits: context.scope().run_limits(),
+                extensions: context.scope().extensions(),
+            });
+        preparation_digest(&Request {
+            executor: "acyclic.stock.v6", input, model: &self.stock.model,
+            max_output_tokens: self.output_tokens(), context: &contracts, tools: &tools,
+            limits: self.stock.limits, tool_scope: (self.stock.tool_scope.grants(), self.stock.tool_scope.limits()),
+            policy: self.stock.policy_identity.as_ref(),
+            inherited_prefix: self.inherited_prefix().map(|(reference, _)| reference),
+            compaction: self.compaction_policy(), model_capacity: self.model_capacity()?,
+            task_id: self.stock.task.as_ref().map(|(_, task, _)| *task), task_context,
+        }, io)
     }
 
     /// Replays the bound turn journal and starts it when empty.
@@ -1647,7 +1534,7 @@ impl StockExecution<'_> {
         input: &TurnInput,
     ) -> Result<()> {
         self.verify_task_context_binding(input.operation_id)?;
-        let (tail, records) = replay_execution_with_io(journal, input.operation_id, 1, |event| {
+        let (tail, records) = replay_execution(journal, input.operation_id, 1, |event| {
             matches!(event, ExecutionEvent::Started { .. })
         }, self.io())
         .await?;
@@ -1659,13 +1546,13 @@ impl StockExecution<'_> {
         match records.first().map(|record| &record.event) {
             Some(ExecutionEvent::Started {
                 request_digest: existing,
-            }) if self.matches_request_digest(input, existing)? => {}
+            }) if existing == &request_digest => {}
             Some(_) => {
                 return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Conflict,
                     "execution identity is bound to another request or configuration"));
             }
             None => {
-                if self.reconciliation_only() {
+                if self.reconciliation_only {
                     return Err(Error::Indeterminate(input.operation_id));
                 }
                 stock_append(journal, input.operation_id, "execution:started",
@@ -1690,7 +1577,7 @@ impl StockExecution<'_> {
                 "model step is outside admitted turn bounds"));
         }
         self.ensure_started(journal, input).await?;
-        self.run_model_step(journal, input, step, prior_messages, ModelPurpose::Response)
+        self.run_model_step(journal, input, step, prior_messages, ModelPurpose::Response)?
             .await
     }
 
@@ -1701,14 +1588,14 @@ impl StockExecution<'_> {
         step: u32,
         prior_messages: &'a [ModelMessage],
         purpose: ModelPurpose,
-    ) -> ModelStepFuture<'a> {
+    ) -> Result<impl Future<Output = Result<Vec<ModelEvent>>> + acyclic_stream::ProviderTask + 'a> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = self.native_work() {
-            return match crate::NativeFutureBundle::new(work, || {
+            return crate::NativeFutureBundle::new(work, || {
                 let span = obs_span!(
                     "acyclic.harness.executor.model_step",
                     step = step,
-                    model = self.model.name.as_str(),
+                    model = self.stock.model.name.as_str(),
                     phase = crate::obs::Empty,
                     items = crate::obs::Empty,
                 );
@@ -1720,22 +1607,23 @@ impl StockExecution<'_> {
                     },
                     span,
                 )
-            }) {
-                Ok(future) => ModelStepFuture::Native(future),
-                Err(error) => ModelStepFuture::Failed(Some(error)),
-            };
+            }).map(futures::future::Either::Right);
         }
         let span = obs_span!(
             "acyclic.harness.executor.model_step",
             step = step,
-            model = self.model.name.as_str(),
+            model = self.stock.model.name.as_str(),
             phase = crate::obs::Empty,
             items = crate::obs::Empty,
         );
-        ModelStepFuture::Ordinary(traced(
+        let ordinary = traced(
             span,
             self.dispatch_model_step(journal, input, step, prior_messages, purpose),
-        ))
+        );
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        { Ok(futures::future::Either::Left(ordinary)) }
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        { Ok(ordinary) }
     }
 
     async fn prepare_request(
@@ -1745,7 +1633,7 @@ impl StockExecution<'_> {
         prior_messages: &[ModelMessage],
     ) -> Result<crate::model::PreparedModelRequest> {
         let projection = self.prepare_projection(input, step, prior_messages).await?;
-        stock_prepare(self.request_from_context(&projection)?, self.limits, self.io())
+        crate::model::PreparedModelRequest::prepare(self.request_from_context(&projection)?, self.stock.limits, self.io())
     }
 
     async fn prepare_projection(
@@ -1754,8 +1642,8 @@ impl StockExecution<'_> {
         step: u32,
         prior_messages: &[ModelMessage],
     ) -> Result<crate::context::Context> {
-        let context_input = stock_context_input(input, step, prior_messages, self.io())?;
-        let base = ContextPipeline::base_context_with_io(&context_input, self.limits, self.io())?;
+        let context_input = ContextInput::copy_for_turn(input, step, prior_messages, self.io())?;
+        let base = ContextPipeline::base_context(&context_input, self.stock.limits, self.io())?;
         self.transform_projection(&context_input, base).await
     }
 
@@ -1766,17 +1654,17 @@ impl StockExecution<'_> {
         step: u32,
         prior_messages: &[ModelMessage],
     ) -> Result<crate::context::Context> {
-        let mut context_input = stock_context_input(input, step, prior_messages, self.io())?;
+        let mut context_input = ContextInput::copy_for_turn(input, step, prior_messages, self.io())?;
         let checkpoint = context_input
             .selected_context
             .as_mut()
             .and_then(|selected| selected.selection.checkpoint.take());
-        let delta = ContextPipeline::base_context_with_io(&context_input, self.limits, self.io())?;
+        let delta = ContextPipeline::base_context(&context_input, self.stock.limits, self.io())?;
         let Some(reference) = checkpoint else {
             return Ok(delta);
         };
         let (envelope, retained) =
-            load_canonical_checkpoint_scoped(journal, &reference, self.limits, self.io().map(|_| self.tool_scope()), self.io()).await?;
+            load_canonical_checkpoint(journal, &reference, self.stock.limits, self.io().map(|_| &self.stock.tool_scope), self.io()).await?;
         let selected = input
             .selected_context
             .as_ref()
@@ -1784,7 +1672,7 @@ impl StockExecution<'_> {
         if selected.selection.conversation_revision <= envelope.selection.conversation_revision {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Conflict, "checkpoint covers the new turn input"));
         }
-        ContextPipeline::continue_base_with_io(retained, delta, self.limits, self.io())
+        ContextPipeline::continue_base(retained, delta, self.stock.limits, self.io())
     }
 
     async fn transform_projection(
@@ -1794,7 +1682,7 @@ impl StockExecution<'_> {
     ) -> Result<crate::context::Context> {
         let mut context = self
             .context_pipeline()
-            .transform_bounded_with_io(input, base, self.limits, self.io())
+            .transform(input, base, self.stock.limits, self.io())
             .await?;
         let request = self.request_from_context(&context)?;
         let prepared = if let Some((prefix, verifier)) = self.inherited_prefix() {
@@ -1802,12 +1690,12 @@ impl StockExecution<'_> {
                 request,
                 prefix,
                 verifier.as_ref(),
-                self.limits,
+                self.stock.limits,
                 self.io(),
             )
             .await?
         } else {
-            stock_prepare(request, self.limits, self.io())?
+            crate::model::PreparedModelRequest::prepare(request, self.stock.limits, self.io())?
         };
         let prefix_count = prepared.request().messages.len() - context.messages.len();
         if let Some(index) = context.current_input_index {
@@ -1821,17 +1709,17 @@ impl StockExecution<'_> {
             );
         }
         if prefix_count != 0 {
-            context.messages = stock_messages_copy(&prepared.request().messages, self.io())?;
+            context.messages = crate::model::clone_messages(&prepared.request().messages, self.io())?;
         }
-        crate::context::validate_projected_context_with_io(&context, self.limits, self.io())?;
+        crate::context::validate_projected_context(&context, self.stock.limits, self.io())?;
         Ok(context)
     }
 
     fn request_from_context(&self, context: &crate::context::Context) -> Result<ModelRequest> {
         Ok(ModelRequest {
-            model: stock_model_copy(&self.model, self.io())?,
-            messages: stock_messages_copy(&context.messages, self.io())?,
-            tools: stock_tool_definitions(&self.tools, self.tool_scope(), self.io())?,
+            model: crate::model::clone_model(&self.stock.model, self.io())?,
+            messages: crate::model::clone_messages(&context.messages, self.io())?,
+            tools: stock_tool_definitions(&self.stock.tools, &self.stock.tool_scope, self.io())?,
             max_output_tokens: self.output_budget()?,
         })
     }
@@ -1848,15 +1736,15 @@ impl StockExecution<'_> {
             .canonical_base(journal, input, step, prior_messages)
             .await?;
         let canonical = if step == 0 && input.selected_context.is_some() {
-            Some(stage_json_with_io(journal, input.operation_id, "context:0:canonical", &base, self.io()).await?)
+            Some(stage_json(journal, input.operation_id, "context:0:canonical", &base, self.io()).await?)
         } else {
             None
         };
-        let context_input = stock_context_input(input, step, prior_messages, self.io())?;
+        let context_input = ContextInput::copy_for_turn(input, step, prior_messages, self.io())?;
         let projection = self.transform_projection(&context_input, base).await?;
         let accounting = if let Some(capacity) = self.model_capacity()? {
-            let prepared = stock_prepare(self.request_from_context(&projection)?, self.limits, self.io())?;
-            let count = stock_count_tokens(self.provider.as_ref(), &prepared, self.io())?;
+            let prepared = crate::model::PreparedModelRequest::prepare(self.request_from_context(&projection)?, self.stock.limits, self.io())?;
+            let count = stock_count_tokens(self.stock.provider.as_ref(), &prepared, self.io())?;
             count.validate(&prepared)?;
             Some(ContextAccounting { capacity, count })
         } else {
@@ -1868,7 +1756,7 @@ impl StockExecution<'_> {
             checkpoint: None,
         };
         let projection_key = stock_key(format_args!("context:{step}"), self.io())?;
-        let reference = stage_json_with_io(
+        let reference = stage_json(
             journal,
             input.operation_id,
             &projection_key,
@@ -1879,7 +1767,7 @@ impl StockExecution<'_> {
         let accounting_ref = if let Some(accounting) = &accounting {
             let accounting_key = stock_key(format_args!("context:{step}:accounting"), self.io())?;
             Some(
-                stage_json_with_io(
+                stage_json(
                     journal,
                     input.operation_id,
                     &accounting_key,
@@ -1935,32 +1823,32 @@ impl StockExecution<'_> {
         }
         let (projection, accounting) = match first {
             None => {
-                if self.reconciliation_only() {
+                if self.reconciliation_only {
                     return Err(Error::Indeterminate(input.operation_id));
                 }
                 self.capture_response(journal, input, step, prior_messages, tail)
                     .await?
             }
             Some((reference, accounting)) => (
-                load_json_with_io::<ResponseProjection>(journal, reference, self.io()).await?,
+                load_json::<ResponseProjection>(journal, reference, self.io()).await?.into_retained(),
                 match accounting {
                     Some(reference) => {
-                        Some(load_json_with_io::<ContextAccounting>(journal, reference, self.io()).await?)
+                        Some(load_json::<ContextAccounting>(journal, reference, self.io()).await?.into_retained())
                     }
                     None => None,
                 },
             ),
         };
-        crate::context::validate_projected_context_with_io(&projection.context, self.limits, self.io())?;
+        crate::context::validate_projected_context(&projection.context, self.stock.limits, self.io())?;
         if projection.checkpoint.is_some() {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Storage, "prepared context contains a later checkpoint"));
         }
         if projection.context.current_input_index.is_none() {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Storage, "prepared response projection differs from its request"));
         }
-        let prepared = stock_prepare(
+        let prepared = crate::model::PreparedModelRequest::prepare(
             self.request_from_context(&projection.context)?,
-            self.limits,
+            self.stock.limits,
             self.io(),
         )?;
         match (self.compaction_policy(), accounting) {
@@ -1984,9 +1872,9 @@ impl StockExecution<'_> {
                 }
                 let source = match &projection.canonical {
                     Some(reference) => {
-                        load_json_with_io::<crate::context::Context>(journal, reference, self.io()).await?
+                        load_json::<crate::context::Context>(journal, reference, self.io()).await?.into_retained()
                     }
-                    None => stock_context_copy(&projection.context, self.io())?,
+                    None => crate::context::copy_context(&projection.context, self.io())?,
                 };
                 let stage_messages = projection
                     .context
@@ -2028,24 +1916,24 @@ impl StockExecution<'_> {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Storage, "response context was compacted more than once"));
         }
         if let Some((retained, proof, final_accounting)) = first {
-            let retained = load_json_with_io::<ResponseProjection>(journal, retained, self.io()).await?;
-            let proof = load_json_with_io::<crate::context::CompactionReference>(journal, proof, self.io()).await?;
+            let retained = load_json::<ResponseProjection>(journal, retained, self.io()).await?.into_retained();
+            let proof = load_json::<crate::context::CompactionReference>(journal, proof, self.io()).await?.into_retained();
             let final_accounting =
-                load_json_with_io::<ContextAccounting>(journal, final_accounting, self.io()).await?;
-            crate::context::validate_projected_context_with_io(&retained.context, self.limits, self.io())?;
+                load_json::<ContextAccounting>(journal, final_accounting, self.io()).await?.into_retained();
+            crate::context::validate_projected_context(&retained.context, self.stock.limits, self.io())?;
             if retained.canonical != projection.canonical {
                 return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Storage, "compacted canonical source changed"));
             }
             if let Some(checkpoint) = &retained.checkpoint {
                 let envelope =
-                    load_json_with_io::<crate::context::CanonicalContextCheckpoint>(journal, checkpoint, self.io())
-                        .await?;
-                envelope.validate_with_io(self.limits, self.io())?;
+                    load_json::<crate::context::CanonicalContextCheckpoint>(journal, checkpoint, self.io())
+                        .await?.into_retained();
+                envelope.validate(self.stock.limits, self.io())?;
                 let source =
-                    load_json_with_io::<crate::context::Context>(journal, &envelope.source, self.io()).await?;
+                    load_json::<crate::context::Context>(journal, &envelope.source, self.io()).await?.into_retained();
                 let base =
-                    load_json_with_io::<crate::context::Context>(journal, &envelope.retained, self.io()).await?;
-                envelope.validate_projection_with_io(&source, &base, &proof, self.limits, self.io())?;
+                    load_json::<crate::context::Context>(journal, &envelope.retained, self.io()).await?.into_retained();
+                envelope.validate_projection(&source, &base, &proof, self.stock.limits, self.io())?;
                 if projection.canonical.as_ref() != Some(&envelope.source)
                     || envelope.operation_id != input.operation_id
                     || input
@@ -2059,7 +1947,7 @@ impl StockExecution<'_> {
                 if projection.canonical.is_some() {
                     return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Storage, "compacted canonical source has no checkpoint"));
                 }
-                crate::context::validate_compaction_with_io(
+                crate::context::validate_compaction(
                     &proof,
                     &projection.context,
                     &retained.context,
@@ -2077,9 +1965,9 @@ impl StockExecution<'_> {
             {
                 return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Storage, "compacted context differs from its admission"));
             }
-            let request = stock_prepare(
+            let request = crate::model::PreparedModelRequest::prepare(
                 self.request_from_context(&retained.context)?,
-                self.limits,
+                self.stock.limits,
                 self.io(),
             )?;
             if policy.needs_compaction(
@@ -2094,7 +1982,7 @@ impl StockExecution<'_> {
     }
 
     fn compaction_message_limit(&self, canonical: bool, stage_messages: usize) -> usize {
-        self.limits
+        self.stock.limits
             .context_messages
             .saturating_sub(if canonical { 2 } else { 0 })
             .saturating_sub(stage_messages)
@@ -2112,18 +2000,18 @@ impl StockExecution<'_> {
         let crate::context::CompactionPolicy::Threshold(policy) = self.compaction_policy() else {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "automatic compaction is disabled"));
         };
-        let canonical_request = stock_prepare(
+        let canonical_request = crate::model::PreparedModelRequest::prepare(
             self.request_from_context(&context)?,
-            self.limits,
+            self.stock.limits,
             self.io(),
         )?;
         let count = if projection.canonical.is_some() {
-            stock_count_tokens(self.provider.as_ref(), &canonical_request, self.io())?
+            stock_count_tokens(self.stock.provider.as_ref(), &canonical_request, self.io())?
         } else {
             stock_count_copy(&accounting.count, self.io())?
         };
         count.validate(&canonical_request)?;
-        let (through, maximum) = checked_compaction_budget(
+        let (through, maximum) = crate::context::checked_compaction_budget(
             policy,
             &context,
             &count,
@@ -2158,7 +2046,7 @@ impl StockExecution<'_> {
                 Box::pin(self.summarize_in_turn(journal, input, step, source, instruction)).await?
             }
         };
-        if self.reconciliation_only() {
+        if self.reconciliation_only {
             return Err(Error::Indeterminate(input.operation_id));
         }
         let (compacted, reference) = stock_compact(
@@ -2170,7 +2058,7 @@ impl StockExecution<'_> {
         )?;
         let compaction_key = stock_key(format_args!("context:{step}:compaction"), self.io())?;
         let compaction =
-            stage_json_with_io(journal, input.operation_id, &compaction_key, &reference, self.io()).await?;
+            stage_json(journal, input.operation_id, &compaction_key, &reference, self.io()).await?;
         let checkpoint = self
             .stage_canonical_checkpoint(
                 journal,
@@ -2182,7 +2070,7 @@ impl StockExecution<'_> {
             )
             .await?;
         let compacted = if checkpoint.is_some() {
-            let context_input = stock_context_input(input, step, &[], self.io())?;
+            let context_input = ContextInput::copy_for_turn(input, step, &[], self.io())?;
             self.transform_projection(&context_input, compacted).await?
         } else {
             compacted
@@ -2192,12 +2080,12 @@ impl StockExecution<'_> {
             canonical: projection.canonical,
             checkpoint,
         };
-        let request = stock_prepare(
+        let request = crate::model::PreparedModelRequest::prepare(
             self.request_from_context(&compacted.context)?,
-            self.limits,
+            self.stock.limits,
             self.io(),
         )?;
-        let count = stock_count_tokens(self.provider.as_ref(), &request, self.io())?;
+        let count = stock_count_tokens(self.stock.provider.as_ref(), &request, self.io())?;
         let final_count = count.validate(&request)?;
         if policy.needs_compaction(accounting.capacity, final_count)? {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid, "compacted mandatory content exceeds selected model capacity"));
@@ -2235,7 +2123,7 @@ impl StockExecution<'_> {
                 .selection,
             self.io(),
         )?;
-        let retained = stage_json_with_io(
+        let retained = stage_json(
             journal,
             input.operation_id,
             "context:0:canonical-retained",
@@ -2246,14 +2134,14 @@ impl StockExecution<'_> {
         let envelope = crate::context::CanonicalContextCheckpoint {
             operation_id: input.operation_id,
             selection,
-            source: stock_file_copy(source, self.io())?,
+            source: crate::model::clone_file(source, self.io())?,
             retained,
-            compaction: stock_file_copy(compaction, self.io())?,
+            compaction: crate::model::clone_file(compaction, self.io())?,
         };
-        let proof = load_json_with_io::<crate::context::CompactionReference>(journal, compaction, self.io()).await?;
-        envelope.validate_projection_with_io(context, compacted, &proof, self.limits, self.io())?;
+        let proof = load_json::<crate::context::CompactionReference>(journal, compaction, self.io()).await?.into_retained();
+        envelope.validate_projection(context, compacted, &proof, self.stock.limits, self.io())?;
         Ok(Some(
-            stage_json_with_io(
+            stage_json(
                 journal,
                 input.operation_id,
                 "context:0:checkpoint",
@@ -2274,7 +2162,7 @@ impl StockExecution<'_> {
         accounting: &ContextAccounting,
     ) -> Result<()> {
         let projection_key = stock_key(format_args!("context:{step}:compacted"), self.io())?;
-        let projection = stage_json_with_io(
+        let projection = stage_json(
             journal,
             input.operation_id,
             &projection_key,
@@ -2283,7 +2171,7 @@ impl StockExecution<'_> {
         )
         .await?;
         let accounting_key = stock_key(format_args!("context:{step}:compacted-accounting"), self.io())?;
-        let accounting = stage_json_with_io(
+        let accounting = stage_json(
             journal,
             input.operation_id,
             &accounting_key,
@@ -2317,10 +2205,7 @@ impl StockExecution<'_> {
     /// Replays or resolves one model step.
     #[allow(
         clippy::too_many_lines,
-        reason = "one exactly-once replay-or-generate operation for a single model step \
-                  (already-completed replay, in-flight reconcile, or fresh generate, each \
-                  interleaved with journal appends); splitting the branches further would \
-                  fragment one atomic step across more functions without clarifying it"
+        reason = "atomic model admission and recovery"
     )]
     async fn dispatch_model_step(
         &self,
@@ -2334,7 +2219,7 @@ impl StockExecution<'_> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let is_native = if let Some(work) = self.native_work() {
             work.remaining()?;
-            if !self.provider.supports_native_model(work)? {
+            if !self.stock.provider.supports_native_model(work)? {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unsupported,
                     reason: "model provider has no original native-ledger producer",
@@ -2352,9 +2237,9 @@ impl StockExecution<'_> {
             request: retained_request,
             mut admission,
             events: replayed_model,
-        } = retained_model_step_with_io(journal, &records, step, purpose, self.limits, io).await?;
+        } = retained_model_step(journal, &records, step, purpose, self.stock.limits, io).await?;
         let started = retained_request.is_some();
-        if self.reconciliation_only() && !started && purpose != ModelPurpose::Response {
+        if self.reconciliation_only && !started && purpose != ModelPurpose::Response {
             return Err(Error::Indeterminate(input.operation_id));
         }
         let request = if let Some(recorded) = retained_request {
@@ -2393,34 +2278,22 @@ impl StockExecution<'_> {
         let model_events = if replay_completed {
             replayed_model
         } else if started {
-            let ordinary_attempt = || -> Result<ModelAttempt> {
-                let observed = replayed_model.clone();
-                Ok(ModelAttempt {
-                    operation_id: purpose.attempt_operation_with_io(input.operation_id, self.io())?,
-                    step,
-                    request_digest,
-                    observed,
-                })
+            let dispatch = crate::model::ModelDispatch {
+                operation_id: purpose.attempt_operation(input.operation_id, self.io())?,
+                step, request_digest,
             };
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let continuation = if let Some(work) = self.native_work() {
-                let (continuation, custody) = self.provider.reconcile_with_native_work(
-                    crate::model::NativeModelAttempt {
-                        operation_id: purpose.attempt_operation_with_io(input.operation_id, self.io())?,
-                        step,
-                        request_digest,
-                        observed: &replayed_model,
-                    },
-                    work,
+                let (continuation, custody) = self.stock.provider.reconcile_with_native_work(
+                    dispatch, &replayed_model, work,
                 )?.await?;
-                io.expect("native stock session retains its original IO")
-                    .absorb_native_custody(custody)?;
+                io.expect("native stock session retains its original IO").absorb_native_custody(custody)?;
                 continuation
             } else {
-                self.provider.reconcile(ordinary_attempt()?).await?
+                self.stock.provider.reconcile(dispatch, &replayed_model).await?
             };
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let continuation = self.provider.reconcile(ordinary_attempt()?).await?;
+            let continuation = self.stock.provider.reconcile(dispatch, &replayed_model).await?;
             let Some(mut continuation) = continuation else {
                 return Err(Error::Indeterminate(input.operation_id));
             };
@@ -2432,8 +2305,8 @@ impl StockExecution<'_> {
                 let key = stock_key(format_args!("{purpose_key}:{step}:{index}"), io)?;
                 stock_vec_push(&mut observed, event, io)?;
                 let event = &observed[index];
-                admission.observe_with_io(event, self.limits, io)?;
-                let reference = stage_json_with_io(journal, input.operation_id, &key, event, io).await?;
+                admission.observe(event, self.stock.limits, io)?;
+                let reference = stage_json(journal, input.operation_id, &key, event, io).await?;
                 stock_append(
                     journal,
                     input.operation_id,
@@ -2449,7 +2322,7 @@ impl StockExecution<'_> {
             }
             observed
         } else {
-            if self.reconciliation_only() {
+            if self.reconciliation_only {
                 return Err(Error::Indeterminate(input.operation_id));
             }
             let (tail, current) = self
@@ -2474,25 +2347,25 @@ impl StockExecution<'_> {
             let claim_key = stock_key(
                 format_args!("{purpose_key}:{step}:claim:{}", OperationId::new()), io,
             )?;
-            let request_ref = stage_bytes_with_io(
+            let request_ref = stage_bytes(
                 journal, input.operation_id, &request_key, request.bytes(), io,
             ).await?;
-            if let Some((host, task_id, fence)) = &self.task {
+            if let Some((host, task_id, fence)) = &self.stock.task {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 if let Some(work) = self.native_work() {
                     host.claim_model_dispatch_with_native_work(
-                        *task_id, purpose.attempt_operation_with_io(input.operation_id, self.io())?,
+                        *task_id, purpose.attempt_operation(input.operation_id, self.io())?,
                         step, request_digest, fence, work,
                     )?.await?;
                 } else {
                     host.claim_model_dispatch(
-                        *task_id, purpose.attempt_operation_with_io(input.operation_id, self.io())?,
+                        *task_id, purpose.attempt_operation(input.operation_id, self.io())?,
                         step, request_digest, fence.clone(),
                     ).await?;
                 }
                 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
                 host.claim_model_dispatch(
-                    *task_id, purpose.attempt_operation_with_io(input.operation_id, self.io())?,
+                    *task_id, purpose.attempt_operation(input.operation_id, self.io())?,
                     step, request_digest, fence.clone(),
                 ).await?;
             }
@@ -2515,28 +2388,34 @@ impl StockExecution<'_> {
                 Err(error) => return Err(error),
             }
             let dispatch = crate::model::ModelDispatch {
-                operation_id: purpose.attempt_operation_with_io(input.operation_id, self.io())?,
+                operation_id: purpose.attempt_operation(input.operation_id, self.io())?,
                 step,
                 request_digest,
             };
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             let mut stream = if let Some(work) = self.native_work() {
-                StockModelStream::Native(
-                    self.provider.generate_with_native_work(&request, dispatch, work)?.await?,
+                futures::future::Either::Right(
+                    self.stock.provider.generate_with_native_work(&request, dispatch, work)?.await?
+                        .map(|result| {
+                            let (event, custody) = result?;
+                            io.expect("native stock session retains its original IO").absorb_native_custody(custody)?;
+                            Ok(event)
+                        }),
                 )
             } else {
-                StockModelStream::Ordinary(self.provider.generate(request, dispatch))
+                futures::future::Either::Left(self.stock.provider.generate(request, dispatch))
             };
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let mut stream = StockModelStream::Ordinary(self.provider.generate(request, dispatch));
+            let mut stream = self.stock.provider.generate(request, dispatch);
             let mut observed = Vec::new();
-            while let Some(event) = stream.next_with_io(io).await? {
+            while let Some(event) = stream.next().await {
+                let event = event?;
                 let index = observed.len();
                 let key = stock_key(format_args!("{purpose_key}:{step}:{index}"), io)?;
                 stock_vec_push(&mut observed, event, io)?;
                 let event = &observed[index];
-                admission.observe_with_io(event, self.limits, io)?;
-                let reference = stage_json_with_io(journal, input.operation_id, &key, event, io).await?;
+                admission.observe(event, self.stock.limits, io)?;
+                let reference = stage_json(journal, input.operation_id, &key, event, io).await?;
                 stock_append(
                     journal,
                     input.operation_id,
@@ -2557,12 +2436,11 @@ impl StockExecution<'_> {
         operation_id: OperationId,
         step: u32,
     ) -> Result<Vec<ExecutionRecord>> {
-        let maximum = self
-            .limits
+        let maximum = self.stock.limits
             .model_events_per_step
-            .saturating_add(self.limits.tool_calls_per_step.saturating_mul(3))
+            .saturating_add(self.stock.limits.tool_calls_per_step.saturating_mul(3))
             .saturating_add(4);
-        let (_, records) = replay_execution_with_io(journal, operation_id, maximum, |event| match event {
+        let (_, records) = replay_execution(journal, operation_id, maximum, |event| match event {
             ExecutionEvent::Started { .. } => true,
             ExecutionEvent::ModelStarted {
                 step: recorded,
@@ -2592,10 +2470,10 @@ impl StockExecution<'_> {
         step: u32,
         purpose: ModelPurpose,
     ) -> Result<(u64, Vec<ExecutionRecord>)> {
-        replay_execution_with_io(
+        replay_execution(
             journal,
             operation_id,
-            self.limits.model_events_per_step.saturating_add(3),
+            self.stock.limits.model_events_per_step.saturating_add(3),
             |event| {
                 matches!(event,
                 ExecutionEvent::ModelStarted { step: event_step, purpose: event_purpose, .. }
@@ -2617,7 +2495,7 @@ impl StockExecution<'_> {
         step: u32,
         call_id: &str,
     ) -> Result<(u64, Vec<ExecutionRecord>)> {
-        replay_execution_with_io(journal, operation_id, 3, |event| {
+        replay_execution(journal, operation_id, 3, |event| {
             matches!(event,
             ExecutionEvent::ToolStarted { step: event_step, call_id: existing, .. }
             | ExecutionEvent::ToolCompleted { step: event_step, call_id: existing, .. }
@@ -2678,10 +2556,7 @@ impl StockExecution<'_> {
     /// Replays or resolves one tool invocation and appends its message.
     #[allow(
         clippy::too_many_lines,
-        reason = "one exactly-once replay-or-execute operation for a single tool call \
-                  (already-completed replay, in-flight reconcile, or fresh execute, each \
-                  interleaved with journal appends); splitting the branches further would \
-                  fragment one atomic invocation across more functions without clarifying it"
+        reason = "atomic tool admission and recovery"
     )]
     async fn settle_tool_call(
         &self,
@@ -2693,18 +2568,18 @@ impl StockExecution<'_> {
     ) -> Result<ToolCallProgress> {
         self.verify_task_context_binding(operation_id)?;
         stock_validate_invocation(&invocation, self.io())?;
-        let tool = stock_tool_lookup(&self.tools, &invocation.name, self.io())?;
+        let tool = stock_tool_lookup(&self.stock.tools, &invocation.name, self.io())?;
         stock_tool_support(tool, self.io())?;
         let capability = stock_key(format_args!("tool:call:{}", tool.definition.name), self.io())?;
-        if !self.tool_scope().grants().contains(&capability) {
+        if !self.stock.tool_scope.grants().contains(&capability) {
             return Err(if stock_is_native(self.io()) {
                 stock_boundary(self.io(), crate::wire::ErrorCode::Unauthorized, "scope lacks the tool capability")
             } else { Error::Unauthorized(format!("scope lacks {capability}")) });
         }
-        stock_json_bound(&invocation, self.limits.file_bytes.min(self.tool_scope().limits().file_bytes), self.io())?;
+        stock_json_bound(&invocation, self.stock.limits.file_bytes.min(self.stock.tool_scope.limits().file_bytes), self.io())?;
         let mut tool_context = self.invocation_context(&invocation)?;
-        stock_authorize_tool(tool, tool_context.as_ref(), self.tool_scope(), &invocation, self.io())?;
-        stock_validate_schema(&tool.definition.input_schema, &invocation.arguments, "tool input", self.io())?;
+        stock_authorize_tool(tool, tool_context.as_ref(), &self.stock.tool_scope, &invocation, self.io())?;
+        crate::contract::validate_json_schema_value(&tool.definition.input_schema, &invocation.arguments, "tool input", self.io())?;
         let (_, records) = self.tool_records(journal, operation_id, step, &invocation.call_id).await?;
         let started = records.iter().find_map(|record| match &record.event {
             ExecutionEvent::ToolStarted {
@@ -2715,7 +2590,7 @@ impl StockExecution<'_> {
             _ => None,
         });
         if let Some(existing) = started
-            && load_json_with_io::<ToolInvocation>(journal, existing, self.io()).await? != invocation
+            && load_json::<ToolInvocation>(journal, existing, self.io()).await?.into_retained() != invocation
         {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Conflict,
                 "tool call identity is bound to another invocation"));
@@ -2745,27 +2620,27 @@ impl StockExecution<'_> {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid,
                 "completed tool has no admitted invocation"));
         }
-        if self.reconciliation_only() && started.is_none() {
+        if self.reconciliation_only && started.is_none() {
             return Err(Error::Indeterminate(operation_id));
         }
         let content = if let Some(completed) = completed_tool {
-            let result = load_json_with_io::<ToolResult>(journal, completed.0, self.io()).await?;
-            stock_validate_schema(&tool.definition.output_schema, &result.value, "tool output", self.io())?;
-            let projection = load_json_with_io::<Value>(journal, completed.1, self.io()).await?;
-            stock_projection_content(&tool.definition, &projection, self.limits, self.io())?
+            let result = load_json::<ToolResult>(journal, completed.0, self.io()).await?.into_retained();
+            crate::contract::validate_json_schema_value(&tool.definition.output_schema, &result.value, "tool output", self.io())?;
+            let projection = load_json::<Value>(journal, completed.1, self.io()).await?.into_retained();
+            stock_projection_content(&tool.definition, &projection, self.stock.limits, self.io())?
         } else {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let Some(progress) = self.settle_native_tool_policy(
                 journal, operation_id, &invocation, &tool.definition, started.is_some(),
             ).await? { return Ok(progress); }
             if !stock_is_native(self.io()) {
-                let scope = self.tool_scope();
-                if let Some(policy) = &self.policy {
-                    if self.policy_identity.as_ref() != Some(&policy.identity()) {
+                let scope = &self.stock.tool_scope;
+                if let Some(policy) = &self.stock.policy {
+                    if self.stock.policy_identity.as_ref() != Some(&policy.identity()) {
                         return Err(Error::Conflict("stock policy changed after binding".into()));
                     }
                     let decision = policy.evaluate(&invocation, scope).await?;
-                    if self.policy_identity.as_ref() != Some(&policy.identity()) {
+                    if self.stock.policy_identity.as_ref() != Some(&policy.identity()) {
                         return Err(Error::Conflict(
                             "stock policy changed during evaluation".into(),
                         ));
@@ -2781,13 +2656,13 @@ impl StockExecution<'_> {
                                     "stock tool approval requires interaction:route".into(),
                                 ));
                             }
-                            let task = self.task.as_ref().map_or(
+                            let task = self.stock.task.as_ref().map_or(
                                 TaskId::from_bytes(operation_id.into_bytes()),
                                 |(_, task, _)| *task,
                             );
                             let (approval_operation, request) = tool_approval_request(
                                 task,
-                                self.policy_identity.as_ref().ok_or_else(|| {
+                                self.stock.policy_identity.as_ref().ok_or_else(|| {
                                     Error::Conflict("stock policy identity is missing".into())
                                 })?,
                                 &tool.definition,
@@ -2821,7 +2696,7 @@ impl StockExecution<'_> {
                 false
             } else {
                 let key = stock_key(format_args!("tool:{step}:{}:invocation", invocation.call_id), self.io())?;
-                let invocation_ref = stage_json_with_io(journal, operation_id, &key, &invocation, self.io()).await?;
+                let invocation_ref = stage_json(journal, operation_id, &key, &invocation, self.io()).await?;
                 let (tail, current) =
                     self.tool_records(journal, operation_id, step, &invocation.call_id).await?;
                 if current.iter().any(|record| {
@@ -2887,7 +2762,7 @@ impl StockExecution<'_> {
                     }
                 }
             };
-            if let Err(error) = stock_validate_schema(&tool.definition.output_schema, &result.value, "tool output", self.io()) {
+            if let Err(error) = crate::contract::validate_json_schema_value(&tool.definition.output_schema, &result.value, "tool output", self.io()) {
                 if stock_native_failure(&error) { return Err(error); }
                 self.record_tool_failure(
                     journal,
@@ -2900,13 +2775,13 @@ impl StockExecution<'_> {
                 return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid,
                     ToolFailureKind::InvalidOutput.message()));
             }
-            let (projection, content) = match stock_project_tool(tool, &invocation, &result, self.limits, self.io()) {
+            let (projection, content) = match stock_project_tool(tool, &invocation, &result, self.stock.limits, self.io()) {
                 Ok(projected) => projected,
                 Err(error) => return stock_tool_rejection(self, journal, operation_id, step,
                     &invocation.call_id, ToolFailureKind::ProjectionRejected, error).await,
             };
             let key = stock_key(format_args!("tool:{step}:{}:result", invocation.call_id), self.io())?;
-            let result_ref = stage_json_with_io(journal, operation_id, &key, &result, self.io()).await;
+            let result_ref = stage_json(journal, operation_id, &key, &result, self.io()).await;
             let result_ref = match result_ref {
                 Ok(reference) => reference,
                 Err(error) if stock_native_failure(&error) => return Err(error),
@@ -2927,7 +2802,7 @@ impl StockExecution<'_> {
                 }
             };
             let key = stock_key(format_args!("tool:{step}:{}:projection", invocation.call_id), self.io())?;
-            let projection_ref = stage_json_with_io(journal, operation_id, &key, &projection, self.io()).await;
+            let projection_ref = stage_json(journal, operation_id, &key, &projection, self.io()).await;
             let projection_ref = match projection_ref {
                 Ok(reference) => reference,
                 Err(error) if stock_native_failure(&error) => return Err(error),
@@ -2979,7 +2854,7 @@ impl StockExecution<'_> {
                 content,
             }),
         };
-        message.content.validate_limits_with_io(self.limits, self.io())?;
+        crate::executor::with_history_io(self.io(), |work| message.content.validate_limits(self.stock.limits, work))?;
         stock_vec_push(prior_messages, message, self.io())?;
         Ok(ToolCallProgress::Settled)
     }
@@ -2989,8 +2864,8 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         content: &ModelContent,
     ) -> Result<()> {
-        verify_model_contents_scoped_with_io(
-            journal, std::iter::once(content), self.limits,
+        verify_model_contents_scoped(
+            journal, std::iter::once(content), self.stock.limits,
             self.original_context().map(crate::runtime::TaskContext::scope), self.io(),
         ).await
     }
@@ -3000,8 +2875,8 @@ impl StockExecution<'_> {
         journal: &dyn ExecutionJournal,
         request: &crate::model::PreparedModelRequest,
     ) -> Result<()> {
-        verify_model_contents_scoped_with_io(
-            journal, request.request().messages.iter().map(|message| &message.content), self.limits,
+        verify_model_contents_scoped(
+            journal, request.request().messages.iter().map(|message| &message.content), self.stock.limits,
             self.original_context().map(crate::runtime::TaskContext::scope), self.io(),
         ).await
     }
@@ -3009,30 +2884,23 @@ impl StockExecution<'_> {
     async fn validate_turn_input(
         &self, journal: &dyn ExecutionJournal, input: &TurnInput,
     ) -> Result<()> {
-        self.limits.validate()?;
+        self.stock.limits.validate(&mut None)?;
         self.model_capacity()?;
-        if input.max_steps == 0 || input.max_steps as usize > self.limits.model_steps {
+        if input.max_steps == 0 || input.max_steps as usize > self.stock.limits.model_steps {
             return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid,
                 "max_steps exceeds configured model step bound"));
         }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = self.native_work() {
-            input.input.validate_user_input_with_native_work(work)?;
-        } else {
-            input.input.validate_user_input()?;
-        }
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        input.input.validate_user_input()?;
+        with_history_io(self.io(), |work| input.input.validate_user_input(work))?;
         let scope = self.original_context().map(crate::runtime::TaskContext::scope);
-        validate_model_content_scope_with_io(&input.input, self.limits, scope, self.io())?;
+        validate_model_content_scope(&input.input, self.stock.limits, scope, self.io())?;
         if let Some(selected) = &input.selected_context {
             selected.validate_for_input(&input.input, self.io())?;
-            if selected.messages.len() > self.limits.context_messages {
+            if selected.messages.len() > self.stock.limits.context_messages {
                 return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid,
                     "selected context exceeds configured message limit"));
             }
             for message in &selected.messages {
-                validate_model_content_scope_with_io(&message.content, self.limits, scope, self.io())?;
+                validate_model_content_scope(&message.content, self.stock.limits, scope, self.io())?;
             }
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let Some(work) = self.native_work() {
@@ -3043,7 +2911,7 @@ impl StockExecution<'_> {
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
             journal.verify_selected_context(input.operation_id, selected).await?;
             for message in &selected.messages {
-                message.content.validate_limits_with_io(self.limits, self.io())?;
+                crate::executor::with_history_io(self.io(), |work| message.content.validate_limits(self.stock.limits, work))?;
                 self.verify_model_content(journal, &message.content).await?;
             }
         }
@@ -3053,7 +2921,7 @@ impl StockExecution<'_> {
 }
 
 impl StockExecution<'_> {
-    async fn execute_progress_engine(
+    async fn execute_progress(
         &self, input: &TurnInput, journal: &dyn ExecutionJournal,
     ) -> Result<StockTurnProgress> {
             self.verify_task_context_binding(input.operation_id)?;
@@ -3067,14 +2935,14 @@ impl StockExecution<'_> {
                 let mut completed = None;
                 let model_events = self.run_model_step(
                     journal, input, step, &prior_messages, ModelPurpose::Response,
-                ).await?;
+                )?.await?;
                 for event in model_events {
                     match event {
                         ModelEvent::Content { delta } => {
                             if text
                                 .len()
                                 .checked_add(delta.len())
-                                .is_none_or(|size| size as u64 > self.limits.file_bytes)
+                                .is_none_or(|size| size as u64 > self.stock.limits.file_bytes)
                             {
                                 return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Invalid,
                                     "assistant output exceeds file limit"));
@@ -3112,10 +2980,10 @@ impl StockExecution<'_> {
                         content: ModelContent::Part(ModelContentPart::ToolCall {
                             call_id: stock_string_copy(&invocation.call_id, self.io())?,
                             name: stock_string_copy(&invocation.name, self.io())?,
-                            arguments: stock_value_copy(&invocation.arguments, self.io())?,
+                            arguments: crate::model::clone_value(&invocation.arguments, self.io())?,
                         }),
                     };
-                    message.content.validate_limits_with_io(self.limits, self.io())?;
+                    crate::executor::with_history_io(self.io(), |work| message.content.validate_limits(self.stock.limits, work))?;
                     stock_vec_push(&mut prior_messages, message, self.io())?;
                     match self.resolve_tool_call(
                         journal, input.operation_id, step, invocation, &mut prior_messages,
@@ -3167,13 +3035,13 @@ impl Executor for StockExecutor {
         &'a self, context: &'a Arc<crate::runtime::NativeTaskContext>, input: &'a TurnInput,
         journal: &'a dyn ExecutionJournal, work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (TurnOutput, acyclic_fs::NativeAllocation)>> {
-        native_execution_supported(self, context, input.operation_id, journal, work)?;
+        native_execution_supported(self, context, journal, work)?;
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             io.absorb_native_custody(work.retain_owned(std::mem::size_of::<TurnOutput>() as u64)?)?;
             let output = {
                 let session = native_session(self, context, input.operation_id, &io, self.reconciliation_only, None);
-                session.execute_progress_engine(input, journal).await?.into_output()?
+                session.execute_progress(input, journal).await?.into_output()?
             };
             let retained = native_size_add(std::mem::size_of::<TurnOutput>() as u64,
                 native_output_payload_bytes(&output)?)?;
@@ -3184,16 +3052,6 @@ impl Executor for StockExecutor {
 }
 
 pub(crate) async fn completed_tool_projection(
-    journal: &dyn ExecutionJournal,
-    records: &[ExecutionRecord],
-    step: u32,
-    expected: &ToolInvocation,
-    tools: &[crate::tool::ToolDefinition],
-) -> Result<crate::model::ToolResultContent> {
-    completed_tool_projection_with_io(journal, records, step, expected, tools, None, None).await
-}
-
-async fn completed_tool_projection_with_io(
     journal: &dyn ExecutionJournal, records: &[ExecutionRecord], step: u32,
     expected: &ToolInvocation, tools: &[crate::tool::ToolDefinition],
     limits: Option<Limits>, io: Option<&PreparationIo>,
@@ -3213,7 +3071,7 @@ async fn completed_tool_projection_with_io(
             _ => None,
         })
         .ok_or(Error::Indeterminate(expected.operation_id))?;
-    if load_json_with_io::<ToolInvocation>(journal, invocation, io).await? != *expected {
+    if load_json::<ToolInvocation>(journal, invocation, io).await?.into_retained() != *expected {
         return Err(stock_boundary(io, crate::wire::ErrorCode::Conflict, "completed tool prefix invocation differs"));
     }
     let (result, projection) = records
@@ -3232,101 +3090,12 @@ async fn completed_tool_projection_with_io(
         .iter()
         .find(|tool| tool.name == expected.name)
         .ok_or_else(|| stock_boundary(io, crate::wire::ErrorCode::Invalid, "completed tool prefix has no pinned schema"))?;
-    let result = load_json_with_io::<ToolResult>(journal, result, io).await?;
-    let projection = load_json_with_io::<Value>(journal, projection, io).await?;
-    stock_validate_schema(&definition.output_schema, &result.value, "tool output", io)?;
+    let result = load_json::<ToolResult>(journal, result, io).await?.into_retained();
+    let projection = load_json::<Value>(journal, projection, io).await?.into_retained();
+    crate::contract::validate_json_schema_value(&definition.output_schema, &result.value, "tool output", io)?;
     match limits {
         Some(limits) => stock_projection_content(definition, &projection, limits, io),
         None => definition.validate_projection(&projection),
-    }
-}
-
-pub(crate) async fn stage_json<T: Serialize>(
-    journal: &dyn ExecutionJournal,
-    operation_id: OperationId,
-    key: &str,
-    value: &T,
-) -> Result<FileRef> {
-    stage_bytes(
-        journal,
-        operation_id,
-        key,
-        crate::contract::canonical_json_bytes(value)?,
-    )
-    .await
-}
-
-async fn stage_bytes(
-    journal: &dyn ExecutionJournal,
-    operation_id: OperationId,
-    key: &str,
-    bytes: Vec<u8>,
-) -> Result<FileRef> {
-    let expected = crate::conversation::FileDescriptor::from_bytes(&bytes, "application/json")?;
-    let payload_key = format!("{key}:{}", blake3::hash(&bytes).to_hex());
-    let reference = journal
-        .stage(operation_id, payload_key, bytes, "application/json")
-        .await?;
-    if reference.volume().class() != VolumeClass::AgentPrivate
-        || reference.descriptor().media_type() != "application/json"
-    {
-        return Err(Error::Storage(
-            "execution journal returned a non-private JSON reference".into(),
-        ));
-    }
-    if reference.descriptor() != &expected {
-        return Err(Error::Storage(
-            "execution journal staged different JSON bytes".into(),
-        ));
-    }
-    Ok(reference)
-}
-
-enum ModelStepFuture<'a> {
-    Ordinary(BoxFuture<'a, Result<Vec<ModelEvent>>>),
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    Native(crate::NativeFutureBundle<'a, Vec<ModelEvent>>),
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    Failed(Option<Error>),
-}
-
-impl Future for ModelStepFuture<'_> {
-    type Output = Result<Vec<ModelEvent>>;
-
-    fn poll(
-        self: std::pin::Pin<&mut Self>, context: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        match self.get_mut() {
-            Self::Ordinary(future) => future.as_mut().poll(context),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::Native(future) => std::pin::Pin::new(future).poll(context),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::Failed(error) => std::task::Poll::Ready(Err(
-                error.take().expect("model future polled after completion"),
-            )),
-        }
-    }
-}
-
-enum StockModelStream<'a> {
-    Ordinary(acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>>),
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    Native(crate::model::NativeModelStream<'a>),
-}
-
-impl StockModelStream<'_> {
-    async fn next_with_io(&mut self, _io: Option<&PreparationIo>) -> Result<Option<ModelEvent>> {
-        match self {
-            Self::Ordinary(stream) => stream.next().await.transpose(),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::Native(stream) => {
-                let Some(result) = stream.next().await else { return Ok(None) };
-                let (event, custody) = result?;
-                _io.expect("native stock session retains its original IO")
-                    .absorb_native_custody(custody)?;
-                Ok(Some(event))
-            }
-        }
     }
 }
 
@@ -3339,16 +3108,6 @@ pub(crate) struct RetainedModelStep {
 
 /// Reads only durable artifacts; never evaluates context, policy or providers.
 pub(crate) async fn retained_model_step(
-    journal: &dyn ExecutionJournal,
-    records: &[ExecutionRecord],
-    step: u32,
-    purpose: ModelPurpose,
-    limits: Limits,
-) -> Result<RetainedModelStep> {
-    retained_model_step_with_io(journal, records, step, purpose, limits, None).await
-}
-
-pub(crate) async fn retained_model_step_with_io(
     journal: &dyn ExecutionJournal, records: &[ExecutionRecord], step: u32,
     purpose: ModelPurpose, limits: Limits, io: Option<&PreparationIo>,
 ) -> Result<RetainedModelStep> {
@@ -3367,10 +3126,10 @@ pub(crate) async fn retained_model_step_with_io(
             && *event_step == step
             && *event_purpose == purpose
         {
-            let event = load_json_with_io::<ModelEvent>(journal, event, io).await?;
+            let event = load_json::<ModelEvent>(journal, event, io).await?.into_retained();
             let index = events.len();
             stock_vec_push(&mut events, event, io)?;
-            admission.observe_with_io(&events[index], limits, io)?;
+            admission.observe(&events[index], limits, io)?;
         }
     }
     let mut started = None;
@@ -3392,7 +3151,7 @@ pub(crate) async fn retained_model_step_with_io(
             "model observations exist without an admitted attempt"));
     }
     let request = if let Some((digest, reference)) = started {
-        let recorded = load_model_request_with_io(journal, reference, limits, io).await?;
+        let recorded = load_model_request(journal, reference, limits, io).await?;
         if recorded.manifest().request_digest != digest {
             return Err(stock_boundary(io, crate::wire::ErrorCode::Conflict,
                 "recorded model request digest differs from admission"));
@@ -3408,25 +3167,7 @@ pub(crate) async fn retained_model_step_with_io(
     })
 }
 
-async fn verify_model_content_scoped(
-    journal: &dyn ExecutionJournal,
-    content: &ModelContent,
-    limits: Limits,
-    scope: Option<&RuntimeScope>,
-) -> Result<()> {
-    verify_model_contents_scoped(journal, std::iter::once(content), limits, scope).await
-}
-
 async fn verify_model_contents_scoped<'a>(
-    journal: &dyn ExecutionJournal,
-    contents: impl Iterator<Item = &'a ModelContent> + Clone,
-    limits: Limits,
-    scope: Option<&RuntimeScope>,
-) -> Result<()> {
-    verify_model_contents_scoped_with_io(journal, contents, limits, scope, None).await
-}
-
-async fn verify_model_contents_scoped_with_io<'a>(
     journal: &dyn ExecutionJournal,
     contents: impl Iterator<Item = &'a ModelContent> + Clone,
     limits: Limits,
@@ -3434,7 +3175,7 @@ async fn verify_model_contents_scoped_with_io<'a>(
     io: Option<&PreparationIo>,
 ) -> Result<()> {
     for content in contents.clone() {
-        validate_model_content_scope_with_io(content, limits, scope, io)?;
+        validate_model_content_scope(content, limits, scope, io)?;
     }
     for content in contents {
         match io {
@@ -3446,75 +3187,38 @@ async fn verify_model_contents_scoped_with_io<'a>(
             }
             #[cfg(feature = "filesystem")]
             Some(io) => io.receive_content(journal.verify_model_content_measured(
-                content, io.remaining()?, &io.cancellation).await)?,
+                content, io.remaining()?, io.cancellation()).await)?,
             _ => journal.verify_model_content(content).await?,
         }
     }
     Ok(())
 }
 
-fn validate_model_content_scope_with_io(
+fn validate_model_content_scope(
     content: &ModelContent, limits: Limits, scope: Option<&RuntimeScope>,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
-    #[cfg(not(feature = "filesystem"))]
-    let _ = io;
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        content.validate_limits_with_io(limits, Some(io))?;
-        if let Some(scope) = scope {
-            content.validate_limits_with_io(scope.limits(), Some(io))?;
-        }
-        let schemas = scope.and_then(RuntimeScope::extension_schema_registry_ref);
-        let runtime = scope.and_then(RuntimeScope::extension_runtime);
-        content.visit_file_bindings(|file, binding| {
-            if let Some(scope) = scope
-                && !preparation_read_granted(scope.grants(), file, Some(io))? {
-                return Err(stock_boundary(Some(io), crate::wire::ErrorCode::Unauthorized, "attenuated task cannot read model content"));
-            }
-            if let Some(binding) = binding {
-                let scope = scope.ok_or_else(|| stock_boundary(Some(io), crate::wire::ErrorCode::Unsupported, "original native task scope is unavailable"))?;
-                binding.verify_original_with_io(scope.extensions(), schemas, runtime.as_deref(), io)?;
-            }
-            Ok(())
-        })?;
-        return Ok(());
-    }
-    content.validate_limits(limits)?;
+    crate::executor::with_history_io(io, |work| content.validate_limits(limits, work))?;
     if let Some(scope) = scope {
-        content.validate_limits(scope.limits())?;
-        for file in content.file_refs() {
-            if !crate::runtime::read_granted(scope.grants(), file)? {
-                return Err(Error::Unauthorized(
-                    "attenuated task cannot read model content".into(),
-                ));
-            }
-        }
+        crate::executor::with_history_io(io, |work| content.validate_limits(scope.limits(), work))?;
     }
-    let bindings = content.native_configurations();
-    if !bindings.is_empty() {
-        let scope = scope.ok_or_else(|| {
-            Error::Unsupported("original native task scope is unavailable".into())
-        })?;
-        let schemas = scope.extension_schema_registry();
-        let runtime = scope.extension_runtime();
-        for binding in bindings {
-            binding.verify_original(scope.extensions(), schemas.as_ref(), runtime.as_deref())?;
+    let schemas = scope.and_then(RuntimeScope::extension_schema_registry_ref);
+    let runtime = scope.and_then(RuntimeScope::extension_runtime);
+    content.visit_file_bindings(|file, binding| {
+        if let Some(scope) = scope
+            && !preparation_read_granted(scope.grants(), file, io)? {
+            return Err(stock_boundary(io, crate::wire::ErrorCode::Unauthorized, "attenuated task cannot read model content"));
         }
-    }
-    Ok(())
+        if let Some(binding) = binding {
+            let scope = scope.ok_or_else(|| stock_boundary(io, crate::wire::ErrorCode::Unsupported, "original native task scope is unavailable"))?;
+            binding.verify_original(scope.extensions(), schemas, runtime.as_deref(), io)?;
+        }
+        Ok(())
+    })
 }
 
 /// Finds the canonical base published by this execution's first response step.
 pub async fn canonical_checkpoint_for_operation(
-    journal: &dyn ExecutionJournal,
-    operation_id: OperationId,
-    limits: Limits,
-) -> Result<Option<FileRef>> {
-    canonical_checkpoint_for_operation_with_io(journal, operation_id, limits, None).await
-}
-
-pub(crate) async fn canonical_checkpoint_for_operation_with_io(
     journal: &dyn ExecutionJournal,
     operation_id: OperationId,
     limits: Limits,
@@ -3524,7 +3228,7 @@ pub(crate) async fn canonical_checkpoint_for_operation_with_io(
     let before = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
     #[cfg(feature = "filesystem")]
     let _records_hold;
-    let (_, records) = replay_execution_with_io(journal, operation_id, 1, |event| {
+    let (_, records) = replay_execution(journal, operation_id, 1, |event| {
         matches!(event, ExecutionEvent::ContextCompacted { step: 0, .. })
     }, io)
     .await?;
@@ -3542,8 +3246,8 @@ pub(crate) async fn canonical_checkpoint_for_operation_with_io(
         return Err(stock_boundary(io, crate::wire::ErrorCode::Storage, "canonical publication event is invalid"));
     };
     validate_checkpoint_json_reference(projection, limits, io)?;
-    let projection = load_preparation_json::<ResponseProjection>(journal, projection, io).await?;
-    crate::context::validate_projected_context_with_io(&projection.context, limits, io)?;
+    let projection = load_json::<ResponseProjection>(journal, projection, io).await?;
+    crate::context::validate_projected_context(&projection.context, limits, io)?;
     let Some(reference) = projection.checkpoint.as_ref() else {
         if projection.canonical.is_some() {
             return Err(stock_boundary(io, crate::wire::ErrorCode::Storage, "canonical publication has no checkpoint"));
@@ -3552,40 +3256,15 @@ pub(crate) async fn canonical_checkpoint_for_operation_with_io(
     };
     validate_checkpoint_json_reference(&reference, limits, io)?;
     let envelope =
-        load_preparation_json::<crate::context::CanonicalContextCheckpoint>(journal, reference, io).await?;
-    envelope.validate_with_io(limits, io)?;
+        load_json::<crate::context::CanonicalContextCheckpoint>(journal, reference, io).await?;
+    envelope.validate(limits, io)?;
     if envelope.operation_id != operation_id
         || projection.canonical.as_ref() != Some(&envelope.source)
         || &envelope.compaction != compaction
     {
         return Err(stock_boundary(io, crate::wire::ErrorCode::Storage, "checkpoint differs from its committed publication"));
     }
-    Ok(Some(crate::model::model_file_clone_with_io(reference, io)?))
-}
-
-/// Materializes only this published checkpoint, never its lifetime chain.
-pub async fn load_canonical_checkpoint(
-    journal: &dyn ExecutionJournal,
-    reference: &FileRef,
-    limits: Limits,
-) -> Result<(
-    crate::context::CanonicalContextCheckpoint,
-    crate::context::Context,
-)> {
-    load_canonical_checkpoint_scoped(journal, reference, limits, None, None).await
-}
-
-/// Loads a published checkpoint under the receiving admission's read grants and bounds.
-pub async fn load_canonical_checkpoint_for_scope(
-    journal: &dyn ExecutionJournal,
-    reference: &FileRef,
-    limits: Limits,
-    scope: &RuntimeScope,
-) -> Result<(
-    crate::context::CanonicalContextCheckpoint,
-    crate::context::Context,
-)> {
-    load_canonical_checkpoint_scoped(journal, reference, limits, Some(scope), None).await
+    Ok(Some(crate::model::clone_file(reference, io)?))
 }
 
 /// Imports a published checkpoint whose canonical selection is attested within the supplied owner's event interval.
@@ -3629,7 +3308,7 @@ async fn load_canonical_checkpoint_at_counted<P: acyclic_stream::StreamProvider>
     crate::context::Context,
     u64,
 )> {
-    let limits = crate::context::restrict_context_limits_with_io(limits, scope.limits(), io)?;
+    let limits = crate::context::restrict_context_limits(limits, scope.limits(), io)?;
     validate_checkpoint_json_reference(reference, limits, io)?;
     if maximum_history_bytes == 0 || cursor.after_revision > cursor.through_revision {
         return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid, "checkpoint history bounds are invalid"));
@@ -3655,7 +3334,7 @@ async fn load_canonical_checkpoint_at_counted<P: acyclic_stream::StreamProvider>
         }
         #[cfg(feature = "filesystem")]
         Some(io) => {
-            let receipt = history.pin_measured(0, io.remaining()?, &io.cancellation).await;
+            let receipt = history.pin_measured(0, io.remaining()?, io.cancellation()).await;
             let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
             let value = io.receive_content(receipt)?;
             io.retain_owned(held)?;
@@ -3675,7 +3354,7 @@ async fn load_canonical_checkpoint_at_counted<P: acyclic_stream::StreamProvider>
         return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid, "checkpoint history cut is not committed"));
     }
     let (envelope, retained) =
-        load_canonical_checkpoint_scoped(journal, reference, limits, Some(scope), io).await?;
+        load_canonical_checkpoint(journal, reference, limits, Some(scope), io).await?;
     #[cfg(feature = "filesystem")]
     let _selection_hold;
     let (selection, consumed) = match io {
@@ -3696,7 +3375,7 @@ async fn load_canonical_checkpoint_at_counted<P: acyclic_stream::StreamProvider>
         #[cfg(feature = "filesystem")]
         Some(io) => {
             let receipt = history.operation_event_bounded_measured(envelope.operation_id,
-                maximum_history_bytes, io.remaining()?, &io.cancellation).await;
+                maximum_history_bytes, io.remaining()?, io.cancellation()).await;
             let held = receipt.as_ref().map_or(0, |receipt| receipt.work.peak_allocation_bytes);
             let value = io.receive_content(receipt)?;
             io.retain_owned(held)?;
@@ -3738,27 +3417,9 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
     through_sequence: u64,
     history_limits: crate::store::HistoryReadLimits,
     resolver: &dyn crate::conversation::ContentResidencyVerifier,
-) -> Result<(
-    crate::context::CanonicalContextCheckpoint,
-    crate::context::Context,
-)> {
-    load_canonical_checkpoint_through_with_io(journal, reference, limits, scope, history,
-        cursor, through_sequence, history_limits, resolver, None).await
-}
-
-pub(crate) async fn load_canonical_checkpoint_through_with_io<P: acyclic_stream::StreamProvider>(
-    journal: &dyn ExecutionJournal,
-    reference: &FileRef,
-    limits: Limits,
-    scope: &RuntimeScope,
-    history: &crate::store::HistoryReader<P>,
-    cursor: &crate::store::HistoryCursor,
-    through_sequence: u64,
-    history_limits: crate::store::HistoryReadLimits,
-    resolver: &dyn crate::conversation::ContentResidencyVerifier,
     io: Option<&PreparationIo>,
 ) -> Result<(crate::context::CanonicalContextCheckpoint, crate::context::Context)> {
-    let limits = crate::context::restrict_context_limits_with_io(limits, scope.limits(), io)?;
+    let limits = crate::context::restrict_context_limits(limits, scope.limits(), io)?;
     if history_limits.maximum_events == 0 || history_limits.maximum_bytes == 0 {
         return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid, "checkpoint delta bounds are invalid"));
     }
@@ -3806,7 +3467,7 @@ pub(crate) async fn load_canonical_checkpoint_through_with_io<P: acyclic_stream:
             let records = history.conversation_range_with_work(
                 cursor, after_sequence, through_sequence, range_limits, &mut work,
             ).await?;
-            let (view, _) = crate::conversation::ConversationState::selected_view_with_work(records, &mut work)?;
+            let (view, _) = crate::conversation::ConversationState::selected_view(records, &mut work)?;
             observer.return_staged_output()?;
             io.absorb_native_custody(observer.into_custody())?;
             _records_hold = Some(io.guard_owned(io.owned_bytes()? - before)?);
@@ -3834,16 +3495,16 @@ pub(crate) async fn load_canonical_checkpoint_through_with_io<P: acyclic_stream:
             if let Some(io) = io {
                 let before = io.owned_bytes()?;
                 let mut observer = io.history_io();
-                let (view, _) = crate::conversation::ConversationState::selected_view_with_work(
+                let (view, _) = crate::conversation::ConversationState::selected_view(
                     records, &mut Some(&mut observer))?;
                 _view_workspace = Some(io.guard_owned(io.owned_bytes()? - before)?);
                 view
             } else {
                 _view_workspace = None;
-                crate::conversation::ConversationState::selected_view_with_work(records, &mut None).map(|(state, _)| state)?
+                crate::conversation::ConversationState::selected_view(records, &mut None).map(|(state, _)| state)?
             }
             #[cfg(not(feature = "filesystem"))]
-            crate::conversation::ConversationState::selected_view_with_work(records, &mut None).map(|(state, _)| state)?
+            crate::conversation::ConversationState::selected_view(records, &mut None).map(|(state, _)| state)?
         }
     };
     #[cfg(feature = "filesystem")]
@@ -3918,7 +3579,7 @@ pub(crate) async fn load_canonical_checkpoint_through_with_io<P: acyclic_stream:
         io,
     )
     .await?;
-    verify_model_contents_scoped_with_io(
+    verify_model_contents_scoped(
         journal,
         selected.messages.iter().map(|message| &message.content),
         limits,
@@ -3950,7 +3611,7 @@ struct CheckpointDeltaResolver<'a> {
 
 impl CheckpointDeltaResolver<'_> {
     fn authorize(&self, file: &FileRef) -> Result<()> {
-        validate_checkpoint_file(file, self.limits, self.io)?;
+        with_history_io(self.io, |work| self.limits.validate_file_with_work(file, work))?;
         if !preparation_read_granted(self.scope.grants(), file, self.io)? {
             return Err(stock_boundary(self.io, crate::wire::ErrorCode::Unauthorized, "attenuated task cannot read checkpoint delta"));
         }
@@ -4018,8 +3679,8 @@ impl crate::conversation::ContentResidencyVerifier for CheckpointDeltaResolver<'
             let attachments = match self.io {
                 #[cfg(feature = "filesystem")]
                 Some(io) => receive_preparation(io, self.inner.load_manifest_measured(manifest,
-                    item_count, io.remaining()?, &io.cancellation).await)?,
-                _ => self.inner.load_manifest(manifest, item_count).await?,
+                    item_count, io.remaining()?, io.cancellation()).await)?,
+                _ => crate::conversation::load_manifest(self.inner.as_ref(), manifest, item_count, None).await?.0,
             };
             if attachments.len() as u64 != u64::from(item_count) {
                 return Err(stock_boundary(self.io, crate::wire::ErrorCode::Storage, "checkpoint delta manifest count differs"));
@@ -4037,14 +3698,15 @@ impl crate::conversation::ContentResidencyVerifier for CheckpointDeltaResolver<'
             match self.io {
                 #[cfg(feature = "filesystem")]
                 Some(io) => receive_preparation(io, self.inner.read_measured(file,
-                    self.limits.render_bytes, io.remaining()?, &io.cancellation).await),
+                    self.limits.render_bytes, io.remaining()?, io.cancellation()).await),
                 _ => self.inner.read(file).await,
             }
         })
     }
 }
 
-pub(crate) async fn load_canonical_checkpoint_scoped(
+/// Loads a published checkpoint under the optional admission's grants and bounds.
+pub async fn load_canonical_checkpoint(
     journal: &dyn ExecutionJournal,
     reference: &FileRef,
     limits: Limits,
@@ -4055,18 +3717,18 @@ pub(crate) async fn load_canonical_checkpoint_scoped(
     crate::context::Context,
 )> {
     let limits = match scope {
-        Some(scope) => crate::context::restrict_context_limits_with_io(limits, scope.limits(), io)?,
+        Some(scope) => crate::context::restrict_context_limits(limits, scope.limits(), io)?,
         None => limits,
     };
     validate_checkpoint_json_reference(reference, limits, io)?;
     let envelope =
-        load_preparation_json::<crate::context::CanonicalContextCheckpoint>(journal, reference, io).await?;
-    envelope.validate_with_io(limits, io)?;
+        load_json::<crate::context::CanonicalContextCheckpoint>(journal, reference, io).await?;
+    envelope.validate(limits, io)?;
     #[cfg(feature = "filesystem")]
     let publication_before = io.map(|io| io.owned_bytes()).transpose()?.unwrap_or(0);
     #[cfg(feature = "filesystem")]
     let _publication_hold;
-    let publication = canonical_checkpoint_for_operation_with_io(journal, envelope.operation_id, limits, io).await?;
+    let publication = canonical_checkpoint_for_operation(journal, envelope.operation_id, limits, io).await?;
     #[cfg(feature = "filesystem")]
     { _publication_hold = io.map(|io| io.guard_owned(io.owned_bytes()? - publication_before)).transpose()?; }
     if publication.as_ref() != Some(reference)
@@ -4076,20 +3738,20 @@ pub(crate) async fn load_canonical_checkpoint_scoped(
     for file in [&envelope.source, &envelope.retained, &envelope.compaction] {
         validate_checkpoint_json_reference(file, limits, io)?;
     }
-    let source = load_preparation_json::<crate::context::Context>(journal, &envelope.source, io).await?;
-    let retained = load_preparation_json::<crate::context::Context>(journal, &envelope.retained, io).await?;
+    let source = load_json::<crate::context::Context>(journal, &envelope.source, io).await?;
+    let retained = load_json::<crate::context::Context>(journal, &envelope.retained, io).await?;
     let proof =
-        load_preparation_json::<crate::context::CompactionReference>(journal, &envelope.compaction, io).await?;
-    envelope.validate_projection_with_io(&source, &retained, &proof, limits, io)?;
+        load_json::<crate::context::CompactionReference>(journal, &envelope.compaction, io).await?;
+    envelope.validate_projection(&source, &retained, &proof, limits, io)?;
     for file in retained.metadata.values() {
-        validate_checkpoint_file(file, limits, io)?;
+        with_history_io(io, |work| limits.validate_file_with_work(file, work))?;
         if let Some(scope) = scope
             && !preparation_read_granted(scope.grants(), file, io)?
         {
             return Err(stock_boundary(io, crate::wire::ErrorCode::Unauthorized, "attenuated task cannot read checkpoint metadata"));
         }
     }
-    verify_model_contents_scoped_with_io(
+    verify_model_contents_scoped(
         journal,
         retained.messages.iter().map(|message| &message.content),
         limits,
@@ -4107,7 +3769,7 @@ pub(crate) async fn load_canonical_checkpoint_scoped(
             }
             #[cfg(feature = "filesystem")]
             Some(io) => io.receive_content(journal.verify_input_file_measured(file,
-                io.remaining()?, &io.cancellation).await)?,
+                io.remaining()?, io.cancellation()).await)?,
             _ => journal.verify_input_file(file).await?,
         }
     }
@@ -4121,94 +3783,52 @@ pub(crate) async fn load_canonical_checkpoint_scoped(
     Ok((envelope.into_retained(), retained.into_retained()))
 }
 
-fn validate_checkpoint_file(reference: &FileRef, limits: Limits, io: Option<&PreparationIo>) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-        return limits.validate_file_with_native_work(reference, work);
-    }
-    limits.validate_file(reference)
-}
-
 fn validate_checkpoint_json_reference(reference: &FileRef, limits: Limits, io: Option<&PreparationIo>) -> Result<()> {
-    validate_checkpoint_file(reference, limits, io)?;
+    with_history_io(io, |work| limits.validate_file_with_work(reference, work))?;
     if reference.descriptor().byte_length() > limits.render_bytes {
         return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid, "checkpoint JSON exceeds effective render limit"));
     }
     Ok(())
 }
 
-#[cfg(feature = "filesystem")]
-async fn load_preparation_bytes_with_io(
-    journal: &dyn ExecutionJournal, reference: &FileRef, io: &PreparationIo,
+async fn load_json_bytes(
+    journal: &dyn ExecutionJournal, reference: &FileRef, io: Option<&PreparationIo>,
 ) -> Result<acyclic_stream::OwnedBytes> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(work) = io.original_native_work() {
-        let bytes = journal.load_with_native_work(reference, work)?.await?;
-        reference.descriptor().verify_with_native_work(&bytes, work)?;
-        return Ok(bytes);
-    }
-    let bytes = receive_preparation(io, journal.load_measured(
-        reference, io.remaining()?, &io.cancellation,
-    ).await)?;
-    let hash = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
-    io.preflight(hash)?;
-    reference.descriptor().verify(&bytes)?;
-    io.spent(hash)?;
-    Ok(bytes)
-}
-
-pub(crate) async fn load_model_request_with_io(
-    journal: &dyn ExecutionJournal, reference: &FileRef, limits: Limits,
-    io: Option<&PreparationIo>,
-) -> Result<crate::model::PreparedModelRequest> {
-    #[cfg(not(feature = "filesystem"))]
-    let _ = io;
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        if reference.volume().class() != VolumeClass::AgentPrivate
-            || reference.descriptor().media_type() != "application/json" {
-            return Err(stock_boundary(Some(io), crate::wire::ErrorCode::Storage,
-                "execution journal references non-private JSON content"));
-        }
-        let _bytes_hold;
-        let bytes = load_preparation_bytes_with_io(journal, reference, io).await?;
-        _bytes_hold = io.guard_bytes(&bytes)?;
-        return crate::model::PreparedModelRequest::decode(&bytes, limits, Some(io));
-    }
-    crate::model::PreparedModelRequest::decode(&load_json_bytes(journal, reference).await?, limits, None)
-}
-
-async fn load_json_bytes(journal: &dyn ExecutionJournal, reference: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
     if reference.volume().class() != VolumeClass::AgentPrivate
         || reference.descriptor().media_type() != "application/json"
     {
-        return Err(Error::Storage(
-            "execution journal references non-private JSON content".into(),
-        ));
+        return Err(stock_boundary(io, crate::wire::ErrorCode::Storage,
+            "execution journal references non-private JSON content"));
     }
-    let bytes = journal.load(reference).await?;
-    reference.descriptor().verify(&bytes)?;
+    let bytes = match io {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        Some(io) if io.original_native_work().is_some() => journal.load_with_native_work(
+            reference, io.original_native_work().expect("native IO retains original work"),
+        )?.await?,
+        #[cfg(feature = "filesystem")]
+        Some(io) => receive_preparation(io, journal.load_measured(
+            reference, io.remaining()?, io.cancellation(),
+        ).await)?,
+        _ => journal.load(reference).await?,
+    };
+    with_history_io(io, |work| reference.descriptor().verify(&bytes, work))?;
     Ok(bytes)
 }
 
-pub(crate) async fn load_json<T: serde::de::DeserializeOwned>(
-    journal: &dyn ExecutionJournal,
-    reference: &FileRef,
-) -> Result<T> {
-    let bytes = load_json_bytes(journal, reference).await?;
-    decode_json(&bytes)
+pub(crate) async fn load_model_request(
+    journal: &dyn ExecutionJournal, reference: &FileRef, limits: Limits,
+    io: Option<&PreparationIo>,
+) -> Result<crate::model::PreparedModelRequest> {
+    let bytes = load_json_bytes(journal, reference, io).await?;
+    #[cfg(feature = "filesystem")]
+    let _bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?;
+    crate::model::PreparedModelRequest::decode(&bytes, limits, io)
 }
 
 fn preparation_read_granted(
     grants: &crate::Capabilities, file: &FileRef, io: Option<&PreparationIo>,
 ) -> Result<bool> {
-    #[cfg(not(feature = "filesystem"))]
-    let _ = io;
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        return crate::runtime::read_granted_with_work(grants, file, &mut Some(&mut (io).history_io()));
-    }
-    crate::runtime::read_granted(grants, file)
+    with_history_io(io, |work| crate::runtime::read_granted_with_work(grants, file, work))
 }
 
 #[cfg(feature = "filesystem")]
@@ -4256,7 +3876,7 @@ pub(crate) fn reserve_preparation_workspace<'a, T: Serialize>(
 ) -> Result<crate::filesystem::DecodeReservation<'a>> {
     let before_items = io.receipt().items_examined;
     let _encoded_hold;
-    let encoded = io.encode_json(value, io.remaining()?.bytes_encoded, false)?;
+    let encoded = io.encode(value, io.remaining()?.bytes_encoded, false)?;
     _encoded_hold = io.guard_owned(encoded.len() as u64)?;
     let items = io.receipt().items_examined.checked_sub(before_items)
         .ok_or_else(|| Error::Invalid("preparation item accounting underflow".into()))?;
@@ -4281,51 +3901,38 @@ pub(crate) fn preparation_digest<T: Serialize>(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let _bytes_hold;
-        let bytes = io.encode_json(value, io.remaining()?.bytes_encoded, true)?;
-        _bytes_hold = io.guard_owned(bytes.len() as u64)?;
-        let work = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
-        io.preflight(work)?;
-        let digest = *blake3::hash(&bytes).as_bytes();
-        io.charge(work)?;
-        return Ok(digest);
+        let bytes = io.encode(value, io.remaining()?.bytes_encoded, true)?;
+        _bytes_hold = io.guard_bytes(&bytes)?;
+        return crate::model::hash_bytes(&bytes, Some(io));
     }
     crate::contract::canonical_json_digest(value)
 }
 
-pub(crate) async fn load_preparation_json<'a, T: PreparationRecord>(
+pub(crate) async fn load_json<'a, T: PreparationRecord>(
     journal: &dyn ExecutionJournal,
     reference: &FileRef,
     io: Option<&'a PreparationIo>,
 ) -> Result<LoadedPreparation<'a, T>> {
-    #[cfg(not(feature = "filesystem"))]
-    let _ = io;
+    let bytes = load_json_bytes(journal, reference, io).await?;
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
-        if reference.volume().class() != VolumeClass::AgentPrivate
-            || reference.descriptor().media_type() != "application/json" {
-            return Err(stock_boundary(Some(io), crate::wire::ErrorCode::Storage,
-                "execution journal references non-private JSON content"));
-        }
         let _bytes_hold;
-        let bytes = load_preparation_bytes_with_io(journal, reference, io).await?;
         _bytes_hold = io.guard_bytes(&bytes)?;
         {
-            let parsed = io.decode_preparation::<Value>(&bytes)?;
+            let parsed = io.decode_preparation::<Value>(&bytes, crate::wire::ErrorCode::Storage)?;
             let _canonical_hold;
-            let canonical = io.encode_json(&parsed.value, bytes.len() as u64, true)?;
-            _canonical_hold = io.guard_owned(canonical.len() as u64)?;
+            let canonical = io.encode(&parsed.value, bytes.len() as u64, true)?;
+            _canonical_hold = io.guard_bytes(&canonical)?;
             if canonical.as_ref() != bytes.as_ref() {
                 return Err(stock_boundary(Some(io), crate::wire::ErrorCode::Storage,
                     "execution journal JSON is not canonical"));
             }
         }
-        let before = io.owned_bytes()?;
-        let value = io.decode_preparation::<T>(&bytes)?.into_retained();
-        let hold = Some(io.guard_owned(io.owned_bytes()? - before)?);
-        return Ok(LoadedPreparation { value, hold, marker: std::marker::PhantomData });
+        let (value, hold) = io.decode_preparation::<T>(&bytes, crate::wire::ErrorCode::Storage)?.into_parts();
+        return Ok(LoadedPreparation { value, hold: Some(hold), marker: std::marker::PhantomData });
     }
     Ok(LoadedPreparation {
-        value: load_json(journal, reference).await?,
+        value: decode_json(&bytes)?,
         #[cfg(feature = "filesystem")]
         hold: None,
         marker: std::marker::PhantomData,
@@ -4344,27 +3951,16 @@ pub(crate) fn decode_json<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Resul
         .map_err(|error| Error::Storage(format!("execution journal content is invalid: {error}")))
 }
 
-#[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-#[derive(Clone, Debug, Default, Deserialize, Serialize)]
-pub(crate) struct ModelEventAdmissionState {
-    #[serde(default)]
-    pub(crate) count: usize,
-    #[serde(default)]
-    pub(crate) calls: Vec<String>,
-    #[serde(default)]
-    pub(crate) completed: bool,
-}
-
 #[derive(Default)]
 pub(crate) struct ModelEventAdmission {
-    count: usize,
-    calls: Vec<String>,
-    completed: bool,
+    pub(crate) count: usize,
+    pub(crate) calls: Vec<String>,
+    pub(crate) completed: bool,
 }
 
 impl ModelEventAdmission {
     #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-    pub(crate) fn from_state(state: ModelEventAdmissionState, limits: Limits) -> Result<Self> {
+    pub(crate) fn from_state(state: Self, limits: Limits) -> Result<Self> {
         if state.count > limits.model_events_per_step {
             return Err(Error::Invalid(
                 "model event admission state exceeds its limit".into(),
@@ -4394,22 +3990,7 @@ impl ModelEventAdmission {
         })
     }
 
-    #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
-    pub(crate) fn state(&self) -> ModelEventAdmissionState {
-        ModelEventAdmissionState {
-            count: self.count,
-            calls: self.calls.iter().cloned().collect(),
-            completed: self.completed,
-        }
-    }
-
-    pub(crate) fn validate_next_with_io(
-        &self, event: &ModelEvent, limits: Limits, io: Option<&PreparationIo>,
-    ) -> Result<()> {
-        self.validate_next_engine(event, limits, io).map(|_| ())
-    }
-
-    fn validate_next_engine(
+    pub(crate) fn validate_next(
         &self, event: &ModelEvent, limits: Limits, io: Option<&PreparationIo>,
     ) -> Result<Option<usize>> {
         #[cfg(feature = "filesystem")]
@@ -4439,7 +4020,7 @@ impl ModelEventAdmission {
                         "model tool call limit exceeded or identity repeated",
                     ));
                 }
-                let (position, repeated) = self.call_position_with_io(call_id, io)?;
+                let (position, repeated) = self.call_position(call_id, io)?;
                 if repeated {
                     return Err(stock_boundary(
                         io, crate::wire::ErrorCode::Invalid,
@@ -4454,15 +4035,9 @@ impl ModelEventAdmission {
         }
     }
 
-    fn call_position_with_io(
+    fn call_position(
         &self, call_id: &str, io: Option<&PreparationIo>,
     ) -> Result<(usize, bool)> {
-        if io.is_none() {
-            return Ok(match self.calls.binary_search_by(|stored| stored.as_str().cmp(call_id)) {
-                Ok(position) => (position, true),
-                Err(position) => (position, false),
-            });
-        }
         let mut left = 0;
         let mut right = self.calls.len();
         while left < right {
@@ -4509,14 +4084,10 @@ impl ModelEventAdmission {
         Ok((left, false))
     }
 
-    pub(crate) fn observe(&mut self, event: &ModelEvent, limits: Limits) -> Result<()> {
-        self.observe_with_io(event, limits, None)
-    }
-
-    pub(crate) fn observe_with_io(
+    pub(crate) fn observe(
         &mut self, event: &ModelEvent, limits: Limits, io: Option<&PreparationIo>,
     ) -> Result<()> {
-        let position = self.validate_next_engine(event, limits, io)?;
+        let position = self.validate_next(event, limits, io)?;
         match event {
             ModelEvent::ToolCall { call_id, .. } => {
                 let position = position.expect("validated model call identity has an insertion position");
@@ -4671,10 +4242,7 @@ mod tests {
             ]))
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            attempt: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        fn reconcile<'a>(&'a self, dispatch: crate::model::ModelDispatch, observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
             Box::pin(async move {
                 if !self.interrupt_summary {
                     return Ok(None);
@@ -4683,10 +4251,10 @@ mod tests {
                     self.dispatches
                         .lock()
                         .unwrap()
-                        .contains(&attempt.dispatch())
+                        .contains(&dispatch)
                 );
                 assert_eq!(
-                    attempt.observed,
+                    observed,
                     vec![ModelEvent::Content {
                         delta: "partial-".into()
                     }]
@@ -5234,12 +4802,6 @@ mod tests {
             Box::pin(stream::iter(events))
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            _: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            async { Ok(None) }.boxed()
-        }
     }
 
     struct FakeModel {
@@ -5405,7 +4967,7 @@ mod tests {
         ));
         assert!(matches!(
             retargeted
-                .completed_tool_prefix(&journal, &input, 0, "call-1")
+                .completed_tool_prefix(&journal, &input, 0, Some("call-1"))
                 .await,
             Err(Error::Unauthorized(_))
         ));
@@ -5416,7 +4978,7 @@ mod tests {
         assert_eq!(result.text, "done");
         let reads = journal.3.load(Ordering::SeqCst);
         executor
-            .completed_tool_prefix(&journal, &input, 0, "call-1")
+            .completed_tool_prefix(&journal, &input, 0, Some("call-1"))
             .await?;
         assert!(journal.3.load(Ordering::SeqCst) > reads);
         assert_eq!(executor.execute(input, &journal).await?, result);
@@ -5488,12 +5050,6 @@ mod tests {
             Box::pin(stream::iter(events))
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            _: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            async { Ok(None) }.boxed()
-        }
     }
 
     struct RecoverableModel {
@@ -5543,19 +5099,16 @@ mod tests {
             ))
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            attempt: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+        fn reconcile<'a>(&'a self, dispatch: crate::model::ModelDispatch, observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
             assert!(
                 self.dispatches
                     .lock()
                     .unwrap()
-                    .contains(&attempt.dispatch())
+                    .contains(&dispatch)
             );
             self.reconcile_calls.fetch_add(1, Ordering::SeqCst);
             async move {
-                if attempt.observed
+                if observed
                     != vec![
                         ModelEvent::Content {
                             delta: "partial-".into(),
@@ -5886,7 +5439,7 @@ mod tests {
                 event,
                 ExecutionEvent::Started { .. } | ExecutionEvent::ModelStarted { .. }
             )
-        })
+        }, None)
         .await?;
         assert_eq!(admissions.len(), 3);
         assert!(matches!(
@@ -6062,7 +5615,7 @@ mod tests {
                 "application/json",
             )
             .await?;
-        assert!(matches!(load_json::<Value>(&journal, &reference).await,
+        assert!(matches!(load_json::<Value>(&journal, &reference, None).await,
             Err(Error::Storage(message)) if message.contains("not canonical")));
         Ok(())
     }
@@ -6071,7 +5624,7 @@ mod tests {
         fn verify_input_file<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<()>> {
             Box::pin(async move {
                 let bytes = self.load(reference).await?;
-                reference.descriptor().verify(&bytes)
+                reference.descriptor().verify(&bytes, &mut None)
             })
         }
 
@@ -6234,7 +5787,7 @@ mod tests {
         fn verify<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
             Box::pin(async move {
                 let bytes = self.0.load(file).await?;
-                file.descriptor().verify(&bytes)
+                file.descriptor().verify(&bytes, &mut None)
             })
         }
         fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
@@ -6258,12 +5811,7 @@ mod tests {
                 metadata: Value::Null,
             })]))
         }
-        fn reconcile<'a>(
-            &'a self,
-            _: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            Box::pin(async { Ok(None) })
-        }
+
     }
 
     struct OnceStage(AtomicUsize);
@@ -6371,7 +5919,7 @@ mod tests {
             .stage_source(
                 OperationId::from_bytes([66; 16]),
                 "root".into(),
-                crate::model::ModelPrefix::select(&root, None)?.canonical_bytes()?,
+                crate::model::ModelPrefix::select(&root, None)?.canonical_bytes(None)?,
                 crate::model::ModelPrefix::MEDIA_TYPE,
             )
             .await?;
@@ -6610,7 +6158,7 @@ mod tests {
                 assert_eq!(model.calls.load(Ordering::SeqCst), 1);
                 assert_eq!(tool_executor.0.load(Ordering::SeqCst), 0);
                 let reference =
-                    stage_json(&journal, input.operation_id, "tool-start", &invocation).await?;
+                    stage_json(&journal, input.operation_id, "tool-start", &invocation, None).await?;
                 journal
                     .append(
                         input.operation_id,
@@ -6656,11 +6204,8 @@ mod tests {
             ))
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            attempt: ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            self.0.reconcile(attempt)
+        fn reconcile<'a>(&'a self, dispatch: crate::model::ModelDispatch, observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            self.0.reconcile(dispatch, observed)
         }
     }
 
@@ -6710,10 +6255,10 @@ mod tests {
         let journal = Journal::default();
         executor.execute(input.clone(), &journal).await?;
         let batch = executor
-            .completed_tool_batch_prefix(&journal, &input, 0)
+            .completed_tool_prefix(&journal, &input, 0, None)
             .await?;
         let first = executor
-            .completed_tool_prefix(&journal, &input, 0, "call-1")
+            .completed_tool_prefix(&journal, &input, 0, Some("call-1"))
             .await?;
         assert_eq!(first.request().messages.len(), 3);
         assert_eq!(batch.request().messages.len(), 5);
@@ -6768,7 +6313,7 @@ mod tests {
         );
         assert_eq!(
             executor
-                .completed_tool_batch_prefix(&reopened, &input, 0)
+                .completed_tool_prefix(&reopened, &input, 0, None)
                 .await?
                 .bytes(),
             batch.bytes()
@@ -6796,14 +6341,14 @@ mod tests {
             );
             assert_eq!(
                 executor
-                    .completed_tool_prefix(&pending, &input, 0, "call-1")
+                    .completed_tool_prefix(&pending, &input, 0, Some("call-1"))
                     .await?
                     .bytes(),
                 first.bytes()
             );
             assert!(matches!(
                 executor
-                    .completed_tool_batch_prefix(&pending, &input, 0)
+                    .completed_tool_prefix(&pending, &input, 0, None)
                     .await,
                 Err(Error::Indeterminate(_))
             ));
@@ -6837,13 +6382,13 @@ mod tests {
         );
         assert!(
             executor
-                .completed_tool_batch_prefix(&unavailable, &input, 0)
+                .completed_tool_prefix(&unavailable, &input, 0, None)
                 .await
                 .is_err()
         );
         assert_eq!(
             executor
-                .completed_tool_prefix(&unavailable, &input, 0, "call-1")
+                .completed_tool_prefix(&unavailable, &input, 0, Some("call-1"))
                 .await?
                 .bytes(),
             first.bytes()
@@ -6903,14 +6448,14 @@ mod tests {
         };
         assert!(
             executor
-                .completed_tool_prefix(&journal, &input, 0, "call-1")
+                .completed_tool_prefix(&journal, &input, 0, Some("call-1"))
                 .await
                 .is_err()
         );
         assert_eq!(model.calls.load(Ordering::SeqCst), 0);
         let first = executor.execute(input.clone(), &journal).await?;
         let completed_prefix = executor
-            .completed_tool_prefix(&journal, &input, 0, "call-1")
+            .completed_tool_prefix(&journal, &input, 0, Some("call-1"))
             .await?;
         let dispatched = model
             .requests
@@ -6925,7 +6470,7 @@ mod tests {
         );
         assert!(matches!(
             executor
-                .completed_tool_prefix(&journal, &input, 0, "missing-call")
+                .completed_tool_prefix(&journal, &input, 0, Some("missing-call"))
                 .await,
             Err(Error::Indeterminate(_))
         ));
@@ -7010,7 +6555,7 @@ mod tests {
         );
         assert!(matches!(
             executor
-                .completed_tool_prefix(&incomplete, &input, 0, "call-1")
+                .completed_tool_prefix(&incomplete, &input, 0, Some("call-1"))
                 .await,
             Err(Error::Indeterminate(_))
         ));
@@ -7043,7 +6588,7 @@ mod tests {
         );
         assert!(matches!(
             executor
-                .completed_tool_prefix(&gapped, &input, 0, "call-1")
+                .completed_tool_prefix(&gapped, &input, 0, Some("call-1"))
                 .await,
             Err(Error::Conflict(_))
         ));
@@ -7383,15 +6928,10 @@ mod tests {
                 definition.name.clone(),
                 json!({}),
             );
-            let invocation_ref = stage_json(&journal, operation, "invocation", &invocation).await?;
-            let result = stage_json(
-                &journal,
-                operation,
-                "result",
-                &ToolResult { value: canonical },
-            )
+            let invocation_ref = stage_json(&journal, operation, "invocation", &invocation, None).await?;
+            let result = stage_json(&journal, operation, "result", &ToolResult { value: canonical }, None)
             .await?;
-            let projection = stage_json(&journal, operation, "projection", &projected).await?;
+            let projection = stage_json(&journal, operation, "projection", &projected, None).await?;
             journal
                 .append(
                     operation,
@@ -7416,13 +6956,7 @@ mod tests {
                 )
                 .await?;
             let records = journal.replay(operation, 0, 64).await?;
-            let retained = completed_tool_projection(
-                &journal,
-                &records,
-                0,
-                &invocation,
-                std::slice::from_ref(&definition),
-            )
+            let retained = completed_tool_projection(&journal, &records, 0, &invocation, std::slice::from_ref(&definition), None, None)
             .await;
             if accepted {
                 assert_eq!(
@@ -7688,7 +7222,7 @@ mod tests {
         }
         let (tail, selected) = replay_execution(&journal, operation, 1, |event| {
             matches!(event, ExecutionEvent::ModelStarted { step: 69, .. })
-        })
+        }, None)
         .await?;
         assert_eq!(tail, 70);
         assert_eq!(selected.len(), 1);
@@ -7698,7 +7232,7 @@ mod tests {
         assert_eq!(journal.replay(operation, 0, 65).await?.len(), 65);
         assert!(journal.replay(operation, 0, 0).await.is_err());
         assert!(
-            replay_execution(&journal, operation, 1, |_| true)
+            replay_execution(&journal, operation, 1, |_| true, None)
                 .await
                 .is_err()
         );
@@ -7712,17 +7246,17 @@ mod tests {
             original
         };
         assert!(matches!(
-            replay_execution(&journal, operation, 0, |_| false).await,
+            replay_execution(&journal, operation, 0, |_| false, None).await,
             Err(Error::Conflict(_))
         ));
         let mut cursor = ExecutionReplay::new(operation);
         assert_eq!(
-            cursor.next_page(&journal).await?.map(|page| page.len()),
+            cursor.next_page(&journal, None).await?.map(|page| page.len()),
             Some(64)
         );
         for _ in 0..2 {
             assert!(matches!(
-                cursor.next_page(&journal).await,
+                cursor.next_page(&journal, None).await,
                 Err(Error::Conflict(_))
             ));
             assert_eq!(
@@ -7740,58 +7274,9 @@ mod tests {
             records[69].sequence += 1;
         }
         assert!(matches!(
-            replay_execution(&journal, operation, 0, |_| false).await,
+            replay_execution(&journal, operation, 0, |_| false, None).await,
             Err(Error::Conflict(_))
         ));
-        Ok(())
-    }
-
-    #[cfg(feature = "filesystem")]
-    #[test]
-    fn finite_canonical_compaction_preserves_projection_and_releases_custody() -> Result<()> {
-        let source = crate::context::Context {
-            messages: vec![ModelMessage {
-                role: ModelRole::User,
-                content: ModelContent::Text("original canonical source".into()),
-            }],
-            current_input_index: Some(0),
-            ..Default::default()
-        };
-        let retention = crate::context::CompactionRetention::default();
-        let ordinary = crate::context::DurableContextProvider::compact(
-            &source, 2, None, retention.clone())?;
-        let budget = acyclic_fs::WorkBudget {
-            bytes_encoded: 1_000_000, bytes_hashed: 1_000_000,
-            bytes_copied: 1_000_000, output_bytes: 1_000_000,
-            items_examined: 100_000, items_returned: 100_000,
-            allocation_operations: 100_000, peak_allocation_bytes: 16_000_000,
-            ..Default::default()
-        };
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let io = PreparationIo::from_budget(budget, &cancellation)?;
-        let held;
-        let finite = crate::context::DurableContextProvider::compact_with_io(
-            &source, 2, None, retention.clone(), Some(&io))?;
-        held = io.guard_owned(io.owned_bytes()?)?;
-        assert_eq!(finite, ordinary);
-        assert!(io.receipt().bytes_encoded > 0);
-        assert!(io.receipt().bytes_hashed > 0);
-        assert!(io.receipt().peak_allocation_bytes > 0);
-        drop(finite);
-        drop(held);
-        assert_eq!(io.owned_bytes()?, 0);
-
-        let small = PreparationIo::from_budget(acyclic_fs::WorkBudget {
-            peak_allocation_bytes: 0, ..budget
-        }, &cancellation)?;
-        assert!(crate::context::DurableContextProvider::compact_with_io(
-            &source, 2, None, retention.clone(), Some(&small)).is_err());
-        assert_eq!(small.owned_bytes()?, 0);
-        let cancelled = PreparationIo::from_budget(budget, &cancellation)?;
-        cancellation.cancel();
-        assert!(crate::context::DurableContextProvider::compact_with_io(
-            &source, 2, None, retention, Some(&cancelled)).is_err());
-        assert_eq!(cancelled.receipt(), acyclic_fs::WorkCounters::default());
         Ok(())
     }
 
@@ -7803,7 +7288,7 @@ mod tests {
         let cancellation = acyclic_fs::CancellationToken::new();
         let io = PreparationIo::from_budget(acyclic_fs::WorkBudget::default(), &cancellation)?;
         assert!(matches!(
-            canonical_checkpoint_for_operation_with_io(&journal, operation, Limits::default(), Some(&io)).await,
+            canonical_checkpoint_for_operation(&journal, operation, Limits::default(), Some(&io)).await,
             Err(Error::Unsupported(_))
         ));
         assert_eq!(io.receipt(), acyclic_fs::WorkCounters::default());
@@ -7848,16 +7333,16 @@ mod tests {
             model_events_per_step: 1,
             ..Limits::default()
         };
-        limits.validate()?;
+        limits.validate(&mut None)?;
         let mut admission = ModelEventAdmission::default();
         let event = ModelEvent::ToolCall {
             call_id: "call-1".into(),
             name: "example.echo".into(),
             arguments: Value::Null,
         };
-        admission.observe(&event, limits)?;
+        admission.observe(&event, limits, None)?;
         assert!(matches!(
-            admission.observe(&ModelEvent::Completed { metadata: Value::Null }, limits),
+            admission.observe(&ModelEvent::Completed { metadata: Value::Null }, limits, None),
             Err(Error::Invalid(reason)) if reason == "model event limit exceeded"
         ));
         Ok(())
@@ -8074,10 +7559,7 @@ mod tests {
                     })
                 }))
             }
-            fn reconcile<'a>(
-                &'a self,
-                _: ModelAttempt,
-            ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+            fn reconcile<'a>(&'a self, _dispatch: crate::model::ModelDispatch, _observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
                 Box::pin(async { Err(Error::Unsupported("completed attempts must replay".into())) })
             }
         }
@@ -8173,7 +7655,7 @@ mod tests {
         });
         let denied = RuntimeScope::new(crate::Capabilities::default(), Limits::default())?;
         assert!(matches!(
-            verify_model_content_scoped(&journal, &content, Limits::default(), Some(&denied)).await,
+            verify_model_contents_scoped(&journal, std::iter::once(&content), Limits::default(), Some(&denied), None).await,
             Err(Error::Unauthorized(_))
         ));
         let media_only = RuntimeScope::new(
@@ -8181,7 +7663,7 @@ mod tests {
             Limits::default(),
         )?;
         assert!(matches!(
-            verify_model_content_scoped(&journal, &content, Limits::default(), Some(&media_only))
+            verify_model_contents_scoped(&journal, std::iter::once(&content), Limits::default(), Some(&media_only), None)
                 .await,
             Err(Error::Unauthorized(_))
         ));
@@ -8190,33 +7672,23 @@ mod tests {
             Limits::default(),
         )?;
         assert!(matches!(
-            verify_model_content_scoped(
-                &journal,
-                &content,
-                Limits {
+            verify_model_contents_scoped(&journal, std::iter::once(&content), Limits {
                     file_bytes: 3,
                     ..Limits::default()
-                },
-                Some(&allowed)
-            )
+                }, Some(&allowed), None)
             .await,
             Err(Error::Invalid(_))
         ));
         assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
         assert!(matches!(
-            verify_model_contents_scoped(
-                &journal,
-                [
+            verify_model_contents_scoped(&journal, [
                     ModelContent::Part(ModelContentPart::File {
                         file: file.clone(),
                         policy: crate::model::FileProjectionPolicy::Reference
                     }),
                     content
                 ]
-                .iter(),
-                Limits::default(),
-                Some(&allowed)
-            )
+                .iter(), Limits::default(), Some(&allowed), None)
             .await,
             Err(Error::Unsupported(_))
         ));
@@ -8229,7 +7701,7 @@ mod tests {
                 })
                 .to_vec(),
         );
-        verify_model_content_scoped(&journal, &references, Limits::default(), Some(&allowed))
+        verify_model_contents_scoped(&journal, std::iter::once(&references), Limits::default(), Some(&allowed), None)
             .await?;
         assert_eq!(journal.reads.load(Ordering::SeqCst), 2);
         Ok(())
@@ -8255,12 +7727,7 @@ mod tests {
             Limits::default(),
         )?;
         assert!(matches!(
-            verify_model_contents_scoped(
-                &journal,
-                contents.iter(),
-                Limits::default(),
-                Some(&first_only)
-            )
+            verify_model_contents_scoped(&journal, contents.iter(), Limits::default(), Some(&first_only), None)
             .await,
             Err(Error::Unauthorized(_))
         ));
@@ -8274,18 +7741,13 @@ mod tests {
             },
         )?;
         assert!(matches!(
-            verify_model_contents_scoped(
-                &journal,
-                contents.iter(),
-                Limits::default(),
-                Some(&narrow)
-            )
+            verify_model_contents_scoped(&journal, contents.iter(), Limits::default(), Some(&narrow), None)
             .await,
             Err(Error::Invalid(_))
         ));
         assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
         let allowed = RuntimeScope::new(grants, Limits::default())?;
-        verify_model_contents_scoped(&journal, contents.iter(), Limits::default(), Some(&allowed))
+        verify_model_contents_scoped(&journal, contents.iter(), Limits::default(), Some(&allowed), None)
             .await?;
         assert_eq!(journal.reads.load(Ordering::SeqCst), 2);
         Ok(())
@@ -8348,7 +7810,7 @@ mod tests {
         ) -> BoxFuture<'a, Result<()>> {
             Box::pin(async move {
                 for file in content.file_refs() {
-                    file.descriptor().verify(&self.load(file).await?)?;
+                    file.descriptor().verify(&self.load(file).await?, &mut None)?;
                 }
                 Ok(())
             })

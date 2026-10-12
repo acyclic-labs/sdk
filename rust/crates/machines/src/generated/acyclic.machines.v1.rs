@@ -166,12 +166,6 @@ pub struct ForkCheckpointRequest {
     pub count: u32,
 }
 /// Forks a running machine, without an intermediate checkpoint, into `count` fresh
-/// children. Admission requires CAPABILITY_LIVE_FORK or CAPABILITY_DISK_FORK in the source
-/// machine's contract; a provider or machine without either rejects with UNIMPLEMENTED so
-/// callers fall back to Checkpoint + Fork or a restart. The admitted ForkFidelity states
-/// what the children inherited. Children inherit the source's exact MachineContract and
-/// receive fresh MachineIds and endpoints; open network connections are never carried over.
-/// See the acyclic-machines crate documentation for the complete semantics.
 #[derive(Clone, PartialEq, Eq, Hash, ::prost::Message)]
 pub struct ForkMachineRequest {
     #[prost(message, optional, tag = "1")]
@@ -385,7 +379,6 @@ pub mod recovered_admission {
     }
 }
 /// Terminal simulator result. Unlike an admission, this contains the checked
-/// observations produced after the operation has completed.
 #[derive(Clone, PartialEq, ::prost::Message)]
 pub struct ForkedMachines {
     #[prost(message, repeated, tag = "1")]
@@ -518,9 +511,6 @@ pub enum ImageKind {
 }
 impl ImageKind {
     /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "IMAGE_KIND_UNSPECIFIED",
@@ -551,16 +541,10 @@ pub enum Capability {
     SuspendResume = 5,
     LiveMovement = 6,
     /// ForkMachine copies a running machine's persistent disk, but not its memory or processes,
-    /// into fresh children. Which paths are persistent is provider-defined: a provider whose
-    /// machines boot from an immutable image may copy only its declared data directory. CAPABILITY_LIVE_FORK is the memory-and-disk form and takes precedence
-    /// when both are declared.
     DiskFork = 7,
 }
 impl Capability {
     /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "CAPABILITY_UNSPECIFIED",
@@ -597,9 +581,6 @@ pub enum CompatibilityMode {
 }
 impl CompatibilityMode {
     /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "COMPATIBILITY_MODE_UNSPECIFIED",
@@ -628,9 +609,6 @@ pub enum ExpirationKind {
 }
 impl ExpirationKind {
     /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "EXPIRATION_KIND_UNSPECIFIED",
@@ -664,9 +642,6 @@ pub enum OperationStatus {
 }
 impl OperationStatus {
     /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "OPERATION_STATUS_UNSPECIFIED",
@@ -706,9 +681,6 @@ pub enum MachineStatus {
 }
 impl MachineStatus {
     /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "MACHINE_STATUS_UNSPECIFIED",
@@ -747,14 +719,10 @@ pub enum ForkFidelity {
     /// Children resume from the source's memory, processes, and disk at the fork instant.
     MemoryAndDisk = 1,
     /// Children boot fresh over a copy of the source's persistent disk (provider-defined; see
-    /// CAPABILITY_DISK_FORK) taken at one consistent instant; no process state is inherited.
     DiskOnly = 2,
 }
 impl ForkFidelity {
     /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "FORK_FIDELITY_UNSPECIFIED",
@@ -782,9 +750,6 @@ pub enum PressureKind {
 }
 impl PressureKind {
     /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "PRESSURE_KIND_UNSPECIFIED",
@@ -814,9 +779,6 @@ pub enum EventKind {
 }
 impl EventKind {
     /// String value of the enum field names used in the ProtoBuf definition.
-    ///
-    /// The values are not transformed in any way and thus are considered stable
-    /// (if the ProtoBuf definition does not change) and safe for programmatic use.
     pub fn as_str_name(&self) -> &'static str {
         match self {
             Self::Unspecified => "EVENT_KIND_UNSPECIFIED",

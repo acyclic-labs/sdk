@@ -130,11 +130,7 @@ where
         let checkpoint = if existing_selection.is_none() {
             match &checkpoint_reference {
                 Some(reference) => Some(
-                    crate::executor::load_canonical_checkpoint(
-                        self,
-                        reference,
-                        limits,
-                    )
+                    crate::executor::load_canonical_checkpoint(self, reference, limits, None, None)
                     .await?
                     .0,
                 ),
@@ -230,14 +226,14 @@ where
         let Some(reference) = crate::executor::canonical_checkpoint_for_operation(
             self,
             operation_id,
-            limits,
+            limits, None,
         )
         .await?
         else {
             return Ok(());
         };
         let (envelope, _) =
-            crate::executor::load_canonical_checkpoint(self, &reference, limits)
+            crate::executor::load_canonical_checkpoint(self, &reference, limits, None, None)
                 .await?;
         let mut selection = envelope.selection;
         selection.checkpoint = Some(reference);
@@ -433,7 +429,7 @@ where
     ) -> Result<()> {
         let mut calls = BTreeMap::new();
         let mut replay = crate::executor::ExecutionReplay::new(operation_id);
-        while let Some(page) = replay.next_page(self).await? {
+        while let Some(page) = replay.next_page(self, None).await? {
             for record in page {
                 let (kind, content, attachments, reply_to, call_id, step) = match record.event {
                     ExecutionEvent::ToolStarted {

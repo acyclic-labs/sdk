@@ -1,7 +1,6 @@
 //! Real admitted compaction captured into a child-owned fork environment.
 use super::*;
 use crate::filesystem::{PreparationIo, workspace_ref};
-use crate::filesystem::{PreparationIo, workspace_ref};
 use crate::context::{Context, ModelContextCapacity, ModelTokenCount};
 use crate::filesystem::{FilesystemForkPreparer, FilesystemForkVerifier};
 use crate::fork::{
@@ -9,7 +8,7 @@ use crate::fork::{
     ForkSelection, ResourceRevision, StreamHistoryForkVerifier, SummaryForkSelection,
     prepare_summary_fork_context,
 };
-use crate::model::{ModelAttempt, ModelDispatch, ModelEvent, PreparedModelRequest};
+use crate::model::{ModelDispatch, ModelEvent, PreparedModelRequest};
 use crate::resources::StreamRef;
 use crate::store::{HistoryReadLimits, HistoryReader};
 use std::sync::Mutex;
@@ -37,7 +36,6 @@ impl ModelProvider for SummaryModel {
                 let bytes = message
                     .content
                     .file_refs()
-                    .iter()
                     .try_fold(0_u64, |bytes, file| {
                         bytes
                             .checked_add(file.descriptor().byte_length())
@@ -71,7 +69,7 @@ impl ModelProvider for SummaryModel {
             }),
         ]))
     }
-    fn reconcile<'a>(&'a self, _: ModelAttempt) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+    fn reconcile<'a>(&'a self, _dispatch: crate::model::ModelDispatch, _observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         Box::pin(async {
             Err(Error::Unsupported(
                 "fixture attempts settle immediately".into(),
@@ -147,10 +145,8 @@ async fn sealed_summary_preparation(
         .with_run_limits(crate::runtime::TaskRunLimits {
             concurrency: Some(4), max_steps: Some(4), deadline_unix_millis: None,
         })?;
-    let payloads = Arc::new(crate::filesystem::FilesystemSchedulerPayloadStore::new(
-        storage.host.clone(), payload_volume, &issuer.verifier(), &signed, 2_097_152)?);
-    let reader = Arc::new(FilesystemContentVerifier::new(storage.host.clone(),
-        issuer.verifier(), signed.clone(), 2_097_152)?);
+    let payloads = Arc::new(crate::filesystem::FilesystemSchedulerPayloadStore::new(storage.host.clone(), &(payload_volume), &issuer.verifier(), &signed, 2_097_152, None)?);
+    let reader = Arc::new(FilesystemContentVerifier::new(storage.host.clone(), &issuer.verifier(), &signed, 2_097_152, None)?);
     let schema = serde_json::json!({"type":"object"});
     let implementation = Arc::new(SummaryLeaseMachine {
         identity: MachineIdentity { name: "test.summary-preparation".into(), version: "1".into(),
@@ -278,7 +274,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         assert_eq!(conversation.messages()[0].sequence, 4);
     }
     let reference =
-        crate::executor::canonical_checkpoint_for_operation(storage.journal.as_ref(), last, limits)
+        crate::executor::canonical_checkpoint_for_operation(storage.journal.as_ref(), last, limits, None)
             .await?
             .ok_or_else(|| Error::Invalid("missing admitted checkpoint".into()))?;
     let later = OperationId::new();
@@ -286,7 +282,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         "r".repeat(60_000).as_bytes(), "text/plain", "later-input.txt").await?;
     storage.run_conversation(&bundle, later, later_input, Vec::new(), 1).await?;
     let later_checkpoint = crate::executor::canonical_checkpoint_for_operation(
-        storage.journal.as_ref(), later, limits).await?
+        storage.journal.as_ref(), later, limits, None).await?
         .ok_or_else(|| Error::Invalid("missing later admitted checkpoint".into()))?;
     assert_ne!(later_checkpoint, reference);
     let mut aggregate = StreamAggregate::open(
@@ -397,7 +393,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         storage.content_verifier.clone(),
     )?
     .with_history_context(archived)?
-    .with_summary_history(selection.clone(), storage.journal(), original_scope, history, cursor)?;
+    .with_summary_history(selection.clone(), storage.journal(), original_scope, history, cursor, None)?;
     let child_agent = AgentId::new();
     let child_private = VolumeRef::new(
         provider.clone(),
@@ -641,12 +637,7 @@ async fn assert_summary_child_import(
         ]),
     );
     let scope = issuer.root_for_agent(seed.child_agent, "child", grants);
-    let reader = Arc::new(FilesystemContentVerifier::new(
-        storage.host.clone(),
-        issuer.verifier(),
-        scope.clone(),
-        262_144,
-    )?);
+    let reader = Arc::new(FilesystemContentVerifier::new(storage.host.clone(), &issuer.verifier(), &scope, 262_144, None)?);
     let mut child = StreamAggregate::open(
         &storage.stream,
         seed.child.clone(),
@@ -788,13 +779,15 @@ async fn assert_summary_child_import(
     )
     .with_limits(limits);
     let journal = FilesystemExecutionJournal::new(
-        storage.stream.clone(),
-        storage.host.clone(),
-        seed.child_private_volume.clone(),
-        issuer.verifier(), crate::core::SchemaRegistry::new(),
-        scope,
-        262_144,
-    )?
+                storage.stream.clone(),
+                storage.host.clone(),
+                &seed.child_private_volume,
+                &issuer.verifier(),
+                &crate::core::SchemaRegistry::new(),
+                &scope,
+                262_144,
+                None,
+            )?
     .with_input_verifier(reader);
     let input = TurnInput {
         operation_id: OperationId::new(),
@@ -1172,13 +1165,15 @@ async fn default_compaction_bounds_small_message_continuation() -> Result<()> {
         if index == TURNS - 3 {
             storage.journal = Arc::new(
                 FilesystemExecutionJournal::new(
-                    storage.stream.clone(),
-                    storage.host.clone(),
-                    storage.volume.clone(),
-                    storage.verifier(), crate::core::SchemaRegistry::new(),
-                    storage.scope.clone(),
-                    storage.maximum_file_bytes,
-                )?
+                storage.stream.clone(),
+                storage.host.clone(),
+                &storage.volume,
+                &storage.verifier(),
+                &crate::core::SchemaRegistry::new(),
+                &storage.scope,
+                storage.maximum_file_bytes,
+                None,
+            )?
                 .with_input_verifier(storage.content_verifier.clone()),
             );
             bundle = build_bundle(&storage)?;

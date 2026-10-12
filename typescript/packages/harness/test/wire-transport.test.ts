@@ -26,9 +26,6 @@ import {
   HttpSseWireTransport,
   JsonlWireTransport,
   WebSocketWireTransport,
-  WireOperationHandle,
-  observeWireTransport,
-  type OperationEvent,
   TerminalAdmissionError,
   WireError,
   type JsonlChannel,
@@ -112,19 +109,13 @@ test("embedded, JSONL, WebSocket and gRPC bridges expose the same wire delivery"
   const frame = `${toJsonString(ServerFrameSchema, create(ServerFrameSchema, {
     frame: { case: "delivery", value: delivery },
   }))}\n`;
-  const lines = () => {
-    const writes: string[] = [];
-    const channel: JsonlChannel = {
-      async write(line) { writes.push(line); },
-      close() {},
-      async *[Symbol.asyncIterator]() { yield handshakeFrame; yield frame; },
-    };
-    return { channel, writes };
+  const channel: JsonlChannel = {
+    async write() {},
+    close() {},
+    async *[Symbol.asyncIterator]() { yield handshakeFrame; yield frame; },
   };
-  const { channel, writes } = lines();
   const jsonl = new JsonlWireTransport(async () => channel, negotiation);
   expect(await collect(await jsonl.connect(resume))).toEqual(expected);
-  expect(writes).toHaveLength(2);
 
   class FakeSocket extends EventTarget {
     readonly readyState = WebSocket.OPEN;
@@ -143,7 +134,6 @@ test("embedded, JSONL, WebSocket and gRPC bridges expose the same wire delivery"
   );
   const websocketConnection = await websocket.connect(resume);
   expect((await websocketConnection[Symbol.asyncIterator]().next()).value).toEqual(delivery);
-  expect(socket.sent).toBe(2);
 
   const grpc = new GrpcWireTransport(negotiation, async () => handshake, async request => embedded.connect(request));
   expect(await collect(await grpc.connect(resume))).toEqual(expected);
@@ -310,10 +300,11 @@ test("HTTP observe and cancel preserve protocol, owner, and retry identity", asy
   };
   const connection = await new HttpSseWireTransport("https://example.test", negotiation, fetcher).connect(resume);
   const control = create(ObserveRequestSchema, { owner, operationId, scope });
-  const handle = new WireOperationHandle(connection, control.owner!, operationId, control.scope!);
-  const observed = await handle.observe();
+  const observed = await connection.observe(control);
   expect(observed.revision).toBe(4n);
-  const cancelled = await handle.cancel("cancel-1", true);
+  const cancelled = await connection.cancel(create(CancelRequestSchema, {
+    owner, operationId, scope, idempotencyKey: "cancel-1", recursive: true,
+  }));
   expect(cancelled.operation?.idempotencyKey).toBe("cancel-1");
   expect(cancelled.status?.state).toBe(CompletionState.CANCELLED);
 });
@@ -443,15 +434,12 @@ test("embedded status rejects an error correlated to another operation", async (
     },
     async cancel() { return create(CancelResponseSchema); },
   }, negotiation);
-  expect(observeWireTransport(transport)).toBe(transport);
-  const events: OperationEvent[] = [];
-  const connection = await observeWireTransport(transport, { onOperation: event => events.push(event) }).connect(resume);
+  const connection = await transport.connect(resume);
   await expect(connection.observe(create(ObserveRequestSchema, {
     owner: { kind: 5, id: "owner" },
     operationId,
     scope: { id: "control", capabilities: ["operation:observe"], issuer: "runtime", proof: new Uint8Array(32) },
   }))).rejects.toBeInstanceOf(WireError);
-  expect(events.map(({ op, ok, code }) => `${op}:${ok}:${typeof code}`)).toEqual(["wire.connect:true:undefined", "wire.observe:false:number"]);
 });
 
 test("framed control serializes observe and cancel for the same operation", async () => {

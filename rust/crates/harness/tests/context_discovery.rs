@@ -85,13 +85,7 @@ impl acyclic_harness::model::ModelProvider for CapturingModel {
         )]))
     }
 
-    fn reconcile<'a>(
-        &'a self,
-        _: acyclic_harness::model::ModelAttempt,
-    ) -> futures::future::BoxFuture<'a, Result<Option<Vec<acyclic_harness::model::ModelEvent>>>>
-    {
-        Box::pin(async { Ok(None) })
-    }
+
 }
 
 struct Fixture {
@@ -295,22 +289,22 @@ async fn metadata_is_lazy_scopes_are_ordered_and_reload_is_immutable() -> Result
         Arc::new(live.stage(ContextPlacement::Prepend)?)
             as Arc<dyn acyclic_harness::context::ContextStage>,
     ]))?;
-    assert_ne!(old.contracts(), new.contracts());
+    assert_ne!(old.contracts(None)?, new.contracts(None)?);
     let input = ContextInput {
         input: ModelContent::Text("inspect".into()),
         selected_context: None,
         step: 0,
         prior_messages: Vec::new(),
     };
-    let old_context = old.run(&input).await?;
+    let old_context = old.run(&input, Limits::default(), None).await?;
     let recovered: acyclic_harness::context::DiscoveredContext = serde_json::from_slice(
         &serde_json::to_vec(&captured).map_err(|e| Error::Invalid(e.to_string()))?,
     )
     .map_err(|e| Error::Invalid(e.to_string()))?;
     let restarted = ContextPipeline::new([Arc::new(recovered.stage(ContextPlacement::Prepend)?)
         as Arc<dyn acyclic_harness::context::ContextStage>]);
-    assert_eq!(old_context, restarted.run(&input).await?);
-    assert_ne!(old_context, new.run(&input).await?);
+    assert_eq!(old_context, restarted.run(&input, Limits::default(), None).await?);
+    assert_ne!(old_context, new.run(&input, Limits::default(), None).await?);
     fixture
         .put(
             "skills/inspect/SKILL.md",
@@ -319,7 +313,7 @@ async fn metadata_is_lazy_scopes_are_ordered_and_reload_is_immutable() -> Result
         )
         .await?;
     assert!(declaration.capture(fixture.reader.as_ref()).await.is_err());
-    assert_eq!(old_context, old.run(&input).await?);
+    assert_eq!(old_context, old.run(&input, Limits::default(), None).await?);
     Ok(())
 }
 

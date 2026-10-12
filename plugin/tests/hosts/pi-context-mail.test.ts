@@ -4,7 +4,7 @@ import { test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
-import { installedNativeFixture, type InstalledNativeFixture } from "./pi-native-fixture.ts";
+import { installedNativeFixture } from "./pi-native-fixture.ts";
 const provider = `
 import { VERSION } from "@earendil-works/pi-coding-agent";
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
@@ -71,7 +71,7 @@ function nativeMailDetails(entry: SessionEntry) {
 
 test("installed root and child consume original mailbox messages through native SDK queues and persisted entries", async () => {
   const directory = mkdtempSync(fileURLToPath(new URL(".pi-context-mail-", import.meta.url)));
-  let fixture: InstalledNativeFixture | undefined;
+  let fixture: Awaited<ReturnType<typeof installedNativeFixture>> | undefined;
   try {
     fixture = await installedNativeFixture(directory, provider, {});
     await fixture.start();

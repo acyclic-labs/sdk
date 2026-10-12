@@ -158,7 +158,7 @@ async fn verified_with_work<P: StreamProvider>(
         if location.effect_id != effect || location.location.effect_position != Some(record.sequence) {
             return Err(Error::Storage("effect locator identity differs".into()));
         }
-        operations::verify_operation_locator_with_retained_quota(
+        operations::verify_operation_locator(
             client,
             authority,
             verifier,
@@ -220,7 +220,7 @@ pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
                         "effect transition requires its original atomic index".into(),
                     ));
                 }
-                let record = operations::one_record_with_work(client, source_path, count - 1, work)
+                let record = operations::one_record(client, source_path, count - 1, work)
                     .await?
                     .ok_or_else(|| Error::Storage("effect transition head is missing".into()))?;
                 let prior = verified_with_work(
@@ -284,19 +284,8 @@ pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
     }
 }
 
-pub(super) async fn read_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
-    verifier: &AuthorityVerifier,
-    cursor: &HistoryCursor,
-    effect: EffectId,
-    limits: HistoryReadLimits,
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<Vec<Event>> {
-    read_with_retained_quota(client, verifier, cursor, effect, limits, work)
-        .await.map(|(events, _)| events)
-}
-
-pub(super) async fn read_with_retained_quota<P: StreamProvider>(
+/// Reads authenticated effect events at a bounded committed cut.
+pub async fn effect_events<P: StreamProvider>(
     client: &StreamClient<P>,
     verifier: &AuthorityVerifier,
     cursor: &HistoryCursor,
@@ -360,7 +349,7 @@ pub(super) async fn read_with_retained_quota<P: StreamProvider>(
                 .checked_sub(used)
                 .filter(|bytes| *bytes > 0)
                 .ok_or_else(|| Error::Invalid("effect history exceeds byte bound".into()))?;
-            let record = operations::one_record_with_work(client, &path, position, work)
+            let record = operations::one_record(client, &path, position, work)
                 .await?
                 .ok_or_else(|| Error::Storage("effect transition index is incomplete".into()))?;
             let result = async {
@@ -443,7 +432,7 @@ pub(super) async fn retirement_proof_with_work<P: StreamProvider>(
             authority, "harness/v2/aggregate-operations/", Some((&event.operation_id, 36)), work)?
     };
     let result = async {
-        let Some(operation) = operations::one_record_with_work(client, &operation_path, 0, work).await? else {
+        let Some(operation) = operations::one_record(client, &operation_path, 0, work).await? else {
             return if tail_with_work(client, &operation_path, work).await? == 0 {
                 Ok((false, 0))
             } else {
@@ -468,7 +457,7 @@ pub(super) async fn retirement_proof_with_work<P: StreamProvider>(
                     return Err(Error::Invalid("effect retirement exceeds byte allowance".into()));
                 }
                 let (path, path_capacity) = path_with_work(authority, observation.effect_id, work)?;
-                let record = operations::one_record_with_work(client, &path, position, work).await;
+                let record = operations::one_record(client, &path, position, work).await;
                 drop(path);
                 let record = operations::release_owned_after_drop(record, path_capacity, work)?
                     .ok_or_else(|| Error::Storage("terminal effect transition index is missing".into()))?;
@@ -525,7 +514,7 @@ pub(super) async fn retirement_proof_for_event_with_work<P: StreamProvider>(
         .checked_sub(1)
         .ok_or_else(|| Error::Invalid("effect revision must be positive".into()))?;
     let (path, path_capacity) = canonical_path_with_work(authority, work)?;
-    let record = operations::one_record_with_work(client, &path, position, work).await;
+    let record = operations::one_record(client, &path, position, work).await;
     drop(path);
     let record = operations::release_owned_after_drop(record, path_capacity, work)?
         .ok_or_else(|| Error::Storage("terminal canonical event is missing".into()))?;
@@ -721,7 +710,7 @@ mod native_effect_paid_point_tests {
         }, &cancellation).expect("same original finite effect point ledger");
         let mut io = native_work_io(&native).expect("original point decoder source custody");
         let cursor = HistoryCursor { authority, after_revision: 0, through_revision: 1 };
-        let (events, paid) = read_with_retained_quota(
+        let (events, paid) = read(
             &client, &issuer.verifier(), &cursor, effect,
             HistoryReadLimits { maximum_events: 8, maximum_bytes: 1_048_576 },
             &mut Some(&mut io),

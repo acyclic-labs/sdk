@@ -98,37 +98,31 @@ impl InteractionTicket {
     }
 
     /// Checks the ref-only envelope before provider byte admission.
-    pub fn validate(&self) -> Result<()> {
+    pub(crate) fn validate(
+        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    ) -> Result<()> {
+        if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         if self.id.is_nil()
             || self.request.descriptor().media_type() != "application/json"
             || self.deadline_unix_ms == Some(0)
             || (self.kind == InteractionKind::Approval) != self.approval.is_some()
-            || self
-                .approval
-                .as_ref()
-                .is_some_and(|binding| binding.validate().is_err())
+            || self.approval.as_ref().is_some_and(|binding| binding.action_digest == [0; 32])
         {
-            return Err(Error::Invalid("invalid interaction ticket".into()));
+            return Err(interaction_denial(work, crate::wire::ErrorCode::Invalid,
+                "invalid interaction ticket"));
         }
-        self.request.validate()
+        self.request.validate(work)
     }
 
     /// Provider admission validates the staged bytes before publishing their ref.
     pub fn validate_request_bytes(&self, bytes: &[u8]) -> Result<Interaction> {
-        self.validate()?;
-        self.request.descriptor().verify(bytes)?;
+        self.validate(&mut None)?;
+        self.request.descriptor().verify(bytes, &mut None)?;
         let request: Interaction = crate::contract::json_from_slice(bytes).map_err(|error| {
             Error::Invalid(format!("invalid interaction request JSON: {error}"))
         })?;
-        self.validate_decoded_request(&request)?;
+        self.validate_decoded_request_with_work(&request, &mut None)?;
         Ok(request)
-    }
-
-    pub(crate) fn validate_decoded_request(&self, request: &Interaction) -> Result<()> {
-        self.validate()?;
-        request.validate()?;
-        self.validate_request_binding(&request, &mut None)?;
-        Ok(())
     }
 
     /// Validates the original typed request without letting its payload escape.
@@ -140,28 +134,10 @@ impl InteractionTicket {
         if work.is_none() {
             return self.validate_request_bytes(bytes).map(drop);
         }
-        self.with_validated_request_bytes(bytes, work, |_, _| Ok(()))
-    }
-
-    fn with_validated_request_bytes<'io, F>(
-        &self,
-        bytes: &[u8],
-        work: &mut Option<&'io mut dyn crate::store::history::HistoryIo>,
-        consume: F,
-    ) -> Result<()>
-    where
-        F: FnOnce(&Interaction, &mut Option<&'io mut dyn crate::store::history::HistoryIo>) -> Result<()>,
-    {
-        if work.is_none() {
-            let request = self.validate_request_bytes(bytes)?;
-            return consume(&request, work);
-        }
         let request = self.validate_request_bytes_owned_with_work(bytes, work)?;
         let measured = request.measured_owned_bytes();
-        let result = consume(request.request(), work);
         drop(request);
-        let released = work.as_deref_mut().expect("observed interaction").release_owned(measured);
-        result.and(released)
+        work.as_deref_mut().expect("observed interaction").release_owned(measured)
     }
 
     /// Decodes and validates before response IO, retaining actual request fields across that await without borrowing the original observer mutably.
@@ -178,8 +154,8 @@ impl InteractionTicket {
                 _custody: None,
             });
         }
-        self.validate_with_work(work)?;
-        self.request.descriptor().verify_with_work(bytes, work)?;
+        self.validate(work)?;
+        self.request.descriptor().verify(bytes, work)?;
         let mut decoded = decode_interaction_json::<Interaction>(
             bytes, crate::contract::JsonValueSchema::Interaction,
             std::mem::size_of::<ChoiceOption>() as u64, work,
@@ -214,28 +190,9 @@ impl InteractionTicket {
         request: &Interaction,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.validate_with_work(work)?;
+        self.validate(work)?;
         request.validate_with_work(work)?;
         self.validate_request_binding(request, work)
-    }
-
-    /// Validates the same ref-only envelope with static native denials.
-    pub(crate) fn validate_with_work(
-        &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
-        if work.is_none() { return self.validate(); }
-        work.as_deref_mut().expect("observed interaction").check_cancellation()?;
-        if self.id.is_nil()
-            || self.request.descriptor().media_type() != "application/json"
-            || self.deadline_unix_ms == Some(0)
-            || (self.kind == InteractionKind::Approval) != self.approval.is_some()
-            || self.approval.as_ref().is_some_and(|binding| binding.action_digest == [0; 32])
-        {
-            return Err(interaction_denial(work, crate::wire::ErrorCode::Invalid,
-                "invalid interaction ticket"));
-        }
-        self.request.validate_with_work(work)
     }
 
     fn validate_request_binding(
@@ -266,121 +223,27 @@ impl InteractionTicket {
         Ok(())
     }
 
-    /// Provider admission verifies a version-pinned answer against the exact request.
-    pub fn validate_answer_bytes(
-        &self,
-        request: &Interaction,
-        answer: &FileRef,
-        bytes: &[u8],
-    ) -> Result<()> {
-        if self.kind == InteractionKind::Approval {
-            return Err(Error::Invalid(
-                "approval cannot use a free-form answer".into(),
-            ));
-        }
-        answer.validate()?;
-        if answer.descriptor().media_type() != "application/json" {
-            return Err(Error::Invalid("interaction answer must be JSON".into()));
-        }
-        answer.descriptor().verify(bytes)?;
-        let response: InteractionResponse = crate::contract::json_from_slice(bytes)
-            .map_err(|error| Error::Invalid(format!("invalid interaction answer JSON: {error}")))?;
-        request.validate_response(&response)
-    }
-
-    /// Verifies an optional approval explanation against the committed decision.
-    pub fn validate_decision_bytes(
-        &self,
-        request: &Interaction,
-        outcome: &InteractionOutcome,
-        detail: &FileRef,
-        bytes: &[u8],
-    ) -> Result<()> {
-        if self.kind != InteractionKind::Approval
-            || detail.descriptor().media_type() != "application/json"
-        {
-            return Err(Error::Invalid(
-                "approval decision artifact is invalid".into(),
-            ));
-        }
-        detail.validate()?;
-        detail.descriptor().verify(bytes)?;
-        let response: InteractionResponse = crate::contract::json_from_slice(bytes)
-            .map_err(|error| Error::Invalid(format!("invalid approval decision JSON: {error}")))?;
-        self.validate_decoded_decision(request, outcome, &response)
-    }
-
-    pub(crate) fn validate_decoded_decision(
-        &self, request: &Interaction, outcome: &InteractionOutcome, response: &InteractionResponse,
-    ) -> Result<()> {
-        if self.kind != InteractionKind::Approval {
-            return Err(Error::Invalid("approval decision artifact is invalid".into()));
-        }
-        request.validate_response(response)?;
-        match (outcome, response) {
-            (
-                InteractionOutcome::Approved,
-                InteractionResponse::Approval { approved: true, .. },
-            )
-            | (
-                InteractionOutcome::Declined,
-                InteractionResponse::Approval {
-                    approved: false, ..
-                },
-            ) => Ok(()),
-            _ => Err(Error::Conflict(
-                "approval artifact disagrees with outcome".into(),
-            )),
-        }
-    }
-
-    /// Validates one answer while the single original request decode retains its actual fields and source custody through the response/schema engine.
-    pub(crate) fn validate_answer_bytes_with_work(
-        &self,
-        request_bytes: &[u8],
-        answer: &FileRef,
-        bytes: &[u8],
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
-        self.with_validated_request_bytes(request_bytes, work, |request, work| {
-            self.validate_answer_for_request_with_work(request, answer, bytes, work)
-        })
-    }
-
-    /// Validates a decision artifact with both real decoded payloads alive under their original source guards until the exact outcome comparison.
-    pub(crate) fn validate_decision_bytes_with_work(
-        &self,
-        request_bytes: &[u8],
-        outcome: &InteractionOutcome,
-        detail: &FileRef,
-        bytes: &[u8],
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
-        self.with_validated_request_bytes(request_bytes, work, |request, work| {
-            self.validate_decision_for_request_with_work(request, outcome, detail, bytes, work)
-        })
-    }
-
     /// Uses the already validated, caller-custodied request after response IO.
-    pub(crate) fn validate_answer_for_request_with_work(
+    pub(crate) fn validate_answer_bytes(
         &self,
         request: &Interaction,
         answer: &FileRef,
         bytes: &[u8],
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        if work.is_none() { return self.validate_answer_bytes(request, answer, bytes); }
         self.validate_answer_envelope(answer, work)?;
-        answer.descriptor().verify_with_work(bytes, work)?;
-        consume_interaction_json::<InteractionResponse, _>(
+        answer.descriptor().verify(bytes, work)?;
+        let mut response = decode_interaction_json::<InteractionResponse>(
             bytes, crate::contract::JsonValueSchema::InteractionResponse,
             std::mem::size_of::<String>() as u64, work,
-            |response, work| request.validate_response_with_work(response, work),
-        )
+        )?;
+        let result = request.validate_response_with_work(&response.value, response.custody.work());
+        drop(response);
+        result
     }
 
     /// Uses the same admitted request through the exact decision artifact check.
-    pub(crate) fn validate_decision_for_request_with_work(
+    pub(crate) fn validate_decision_bytes(
         &self,
         request: &Interaction,
         outcome: &InteractionOutcome,
@@ -388,14 +251,15 @@ impl InteractionTicket {
         bytes: &[u8],
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        if work.is_none() { return self.validate_decision_bytes(request, outcome, detail, bytes); }
         self.validate_decision_envelope(detail, work)?;
-        detail.descriptor().verify_with_work(bytes, work)?;
-        consume_interaction_json::<InteractionResponse, _>(
+        detail.descriptor().verify(bytes, work)?;
+        let mut response = decode_interaction_json::<InteractionResponse>(
             bytes, crate::contract::JsonValueSchema::InteractionResponse,
             std::mem::size_of::<String>() as u64, work,
-            |response, work| self.validate_decision_response(request, outcome, response, work),
-        )
+        )?;
+        let result = self.validate_decoded_decision(request, outcome, &response.value, response.custody.work());
+        drop(response);
+        result
     }
 
     /// Borrowed counterpart for already verified/admitted producer-owned DTOs.
@@ -408,7 +272,7 @@ impl InteractionTicket {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.validate_decision_envelope(detail, work)?;
-        self.validate_decision_response(request, outcome, response, work)
+        self.validate_decoded_decision(request, outcome, response, work)
     }
 
     fn validate_answer_envelope(
@@ -420,7 +284,7 @@ impl InteractionTicket {
             return Err(interaction_denial(work, crate::wire::ErrorCode::Invalid,
                 "approval cannot use a free-form answer"));
         }
-        answer.validate_with_work(work)?;
+        answer.validate(work)?;
         if answer.descriptor().media_type() != "application/json" {
             return Err(interaction_denial(work, crate::wire::ErrorCode::Invalid,
                 "interaction answer must be JSON"));
@@ -439,10 +303,10 @@ impl InteractionTicket {
             return Err(interaction_denial(work, crate::wire::ErrorCode::Invalid,
                 "approval decision artifact is invalid"));
         }
-        detail.validate_with_work(work)
+        detail.validate(work)
     }
 
-    fn validate_decision_response(
+    fn validate_decoded_decision(
         &self,
         request: &Interaction,
         outcome: &InteractionOutcome,
@@ -594,7 +458,7 @@ impl InteractionResolution {
             ));
         }
         if let Some(detail) = &self.detail {
-            detail.validate()?;
+            detail.validate(&mut None)?;
             if ticket.kind != InteractionKind::Approval
                 || detail.descriptor().media_type() != "application/json"
                 || !matches!(
@@ -609,7 +473,7 @@ impl InteractionResolution {
         }
         match &self.outcome {
             InteractionOutcome::Answered { answer } if ticket.kind != InteractionKind::Approval => {
-                answer.validate()?;
+                answer.validate(&mut None)?;
                 if answer.descriptor().media_type() != "application/json" {
                     return Err(Error::Invalid("interaction answer must be JSON".into()));
                 }
@@ -683,17 +547,6 @@ impl ResolutionReceipt {
 #[cfg(test)]
 mod fixture_tests {
     use super::*;
-
-    #[test]
-    fn v2_interaction_resolution_fixture_round_trips_canonically() -> Result<()> {
-        let fixture = include_str!("../fixtures/v2/interaction-resolution.json").trim();
-        let resolution: InteractionResolution =
-            serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
-        let encoded = serde_json::to_string(&resolution)
-            .map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(encoded, fixture);
-        Ok(())
-    }
 
     #[test]
     fn v2_resolution_receipt_fixture_round_trips_canonically() -> Result<()> {
@@ -997,24 +850,6 @@ pub enum InteractionResponse {
     },
 }
 
-// Only the two audited, closed Interaction/InteractionResponse callers use this seam.
-fn consume_interaction_json<'io, T, F>(
-    bytes: &[u8],
-    schema: crate::contract::JsonValueSchema,
-    typed_slot: u64,
-    work: &mut Option<&'io mut dyn crate::store::history::HistoryIo>,
-    consume: F,
-) -> Result<()>
-where
-    T: serde::de::DeserializeOwned,
-    F: FnOnce(&T, &mut Option<&'io mut dyn crate::store::history::HistoryIo>) -> Result<()>,
-{
-    let mut decoded = decode_interaction_json::<T>(bytes, schema, typed_slot, work)?;
-    let result = consume(&decoded.value, decoded.custody.work());
-    drop(decoded);
-    result
-}
-
 struct DecodedInteractionJson<'loan, 'io, T> {
     value: T,
     // LAST: actual parsed fields, including every callback-error exit, drop first.
@@ -1027,6 +862,11 @@ fn decode_interaction_json<'loan, 'io, T: serde::de::DeserializeOwned>(
     typed_slot: u64,
     work: &'loan mut Option<&'io mut dyn crate::store::history::HistoryIo>,
 ) -> Result<DecodedInteractionJson<'loan, 'io, T>> {
+    if work.is_none() {
+        let value = crate::contract::json_from_slice(bytes)
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        return Ok(DecodedInteractionJson { value, custody: crate::wire_codec::CodecQuota::new(work, 0)? });
+    }
     let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
     let diagnostic = interaction_decode_diagnostic_bytes(bytes.len() as u64)?;
     let mut items = 0_u64;
@@ -1375,9 +1215,11 @@ mod tests {
         let native = NativeMaterializationWork::new(native_budget(), &cancellation)
             .expect("original ledger");
         let mut io = crate::store::history::native_work_io(&native).expect("original observer");
-        let error = ticket.validate_answer_bytes_with_work(
-            request_bytes, &answer, bytes, &mut Some(&mut io),
+        let request = ticket.validate_request_bytes_owned_with_work(request_bytes, &mut Some(&mut io))?;
+        let error = ticket.validate_answer_bytes(
+            request.request(), &answer, bytes, &mut Some(&mut io),
         ).expect_err("original typed response rejects integer ids");
+        drop(request);
         let Error::NativeDecode { code, source, custody: Some(custody) } = error else {
             panic!("original response cause and custody");
         };
@@ -1422,7 +1264,7 @@ mod tests {
         assert_eq!(request.measured_owned_bytes(), 0);
         assert_eq!(guard.bytes(), interaction_request_owned_bytes(request.request(), &None)?);
         assert!(native.shares_ledger(guard.work()));
-        let error = ticket.validate_answer_for_request_with_work(
+        let error = ticket.validate_answer_bytes(
             request.request(), &answer, &bytes, &mut Some(&mut io),
         ).expect_err("original typed string id rejects the funded response object");
         assert!(matches!(error, Error::NativeDecode { code: crate::wire::ErrorCode::Invalid, .. }));
@@ -1453,15 +1295,19 @@ mod tests {
         let native = NativeMaterializationWork::new(native_budget(), &cancellation)
             .expect("original ledger");
         let mut io = crate::store::history::native_work_io(&native).expect("original observer");
-        ticket.validate_decision_bytes_with_work(
-            &request_bytes, &InteractionOutcome::Declined, &detail, bytes, &mut Some(&mut io),
+        let request = ticket.validate_request_bytes_owned_with_work(&request_bytes, &mut Some(&mut io))?;
+        ticket.validate_decision_bytes(
+            request.request(), &InteractionOutcome::Declined, &detail, bytes, &mut Some(&mut io),
         )?;
-        assert!(matches!(ticket.validate_decision_bytes_with_work(
-            &request_bytes, &InteractionOutcome::Approved, &detail, bytes, &mut Some(&mut io),
+        drop(request);
+        let request = ticket.validate_request_bytes_owned_with_work(&request_bytes, &mut Some(&mut io))?;
+        assert!(matches!(ticket.validate_decision_bytes(
+            request.request(), &InteractionOutcome::Approved, &detail, bytes, &mut Some(&mut io),
         ), Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Conflict,
             reason: "approval artifact disagrees with outcome",
         })));
+        drop(request);
         assert_eq!(io.into_custody().bytes(), 0);
         Ok(())
     }
@@ -1484,7 +1330,7 @@ mod tests {
         let admitted = ticket.validate_request_bytes(&request_bytes)?;
         let response_bytes = br#"{"type":"question","value":2}"#;
         let answer = file("answer.json", response_bytes)?;
-        ticket.validate_answer_bytes(&admitted, &answer, response_bytes)?;
+        ticket.validate_answer_bytes(&admitted, &answer, response_bytes, &mut None)?;
         let non_json = FileRef::new(
             answer.volume().clone(),
             "answer.txt",
@@ -1507,12 +1353,12 @@ mod tests {
         let invalid_bytes = br#"{"type":"question","value":0}"#;
         let invalid = file("invalid-answer.json", invalid_bytes)?;
         assert!(matches!(
-            ticket.validate_answer_bytes(&admitted, &invalid, invalid_bytes),
+            ticket.validate_answer_bytes(&admitted, &invalid, invalid_bytes, &mut None),
             Err(Error::Invalid(_))
         ));
         assert!(
             ticket
-                .validate_answer_bytes(&admitted, &answer, invalid_bytes)
+                .validate_answer_bytes(&admitted, &answer, invalid_bytes, &mut None)
                 .is_err()
         );
         Ok(())

@@ -171,8 +171,8 @@ fn prepare_turn_inherited(
     user_id_override: Option<Uuid>,
     checkpoint: Option<(&crate::context::CanonicalContextCheckpoint, FileRef)>,
 ) -> Result<TurnPreparation> {
-    limits.validate_file(&content)?;
-    attachments.validate()?;
+    limits.validate_file(&content, &mut None)?;
+    attachments.validate(&mut None)?;
     if let ReferencedAttachments::Inline { items } = &attachments {
         if items.len() > limits.attachments {
             return Err(Error::Invalid(
@@ -180,8 +180,8 @@ fn prepare_turn_inherited(
             ));
         }
         for attachment in items {
-            attachment.validate()?;
-            limits.validate_file(&attachment.file)?;
+            attachment.validate(&mut None)?;
+            limits.validate_file(&attachment.file, &mut None)?;
         }
     } else if let ReferencedAttachments::Manifest {
         manifest,
@@ -193,7 +193,7 @@ fn prepare_turn_inherited(
                 "turn attachments exceed harness limits".into(),
             ));
         }
-        limits.validate_file(manifest)?;
+        limits.validate_file(manifest, &mut None)?;
     }
 
     let user_id = user_id_override.unwrap_or_else(|| canonical_user_message_id(operation_id));
@@ -243,7 +243,7 @@ fn prepare_turn_inherited(
 
     let append_user = current.is_none();
     if append_user {
-        conversation.validate_append(&user_message)?;
+        conversation.validate_append(&user_message, &mut None)?;
     }
     let selection_is_new = existing_selection.is_none();
     let selection = match existing_selection {
@@ -256,11 +256,7 @@ fn prepare_turn_inherited(
                     "model context selection has a stale conversation revision".into(),
                 ));
             }
-            validate_model_context_selection_at_revision(
-                conversation,
-                &selection,
-                selection.conversation_revision,
-            )?;
+            validate_model_context_selection_at_revision(conversation, &selection, selection.conversation_revision, None)?;
             if selection.message_ids.last() != Some(&user_id) {
                 return Err(Error::Conflict(
                     "turn identity is bound to another context selection".into(),
@@ -392,7 +388,7 @@ mod tests {
             first
                 .user_message
                 .ok_or_else(|| Error::Invalid("planner omitted user message".into()))?,
-        )?;
+         &mut None)?;
         let retry = prepare_turn_with_user_id(
             &state,
             operation,
@@ -456,7 +452,7 @@ mod tests {
             first
                 .user_message
                 .ok_or_else(|| Error::Invalid("planner omitted user message".into()))?,
-        )?;
+         &mut None)?;
         let Err(error) = prepare_turn(
             &state,
             operation,
@@ -490,7 +486,7 @@ mod tests {
             first
                 .user_message
                 .ok_or_else(|| Error::Invalid("planner omitted user message".into()))?,
-        )?;
+         &mut None)?;
         let Err(error) = prepare_turn(
             &state,
             OperationId::new(),
@@ -535,7 +531,7 @@ mod tests {
             first
                 .user_message
                 .ok_or_else(|| Error::Invalid("planner omitted user message".into()))?,
-        )?;
+         &mut None)?;
         let mut stale = first.selection;
         stale.conversation_revision = 0;
         let Err(error) = prepare_turn(
@@ -566,7 +562,7 @@ mod tests {
             reply_to: None,
             tool_call_id: None,
             extensions: Default::default(),
-        })?;
+        }, &mut None)?;
         state.append(ConversationMessage {
             id: Uuid::new_v4(),
             sequence: 2,
@@ -576,7 +572,7 @@ mod tests {
             reply_to: Some(historical_user),
             tool_call_id: None,
             extensions: Default::default(),
-        })?;
+        }, &mut None)?;
         let operation = OperationId::new();
         let mut bounded = limits();
         bounded.context_messages = 2;

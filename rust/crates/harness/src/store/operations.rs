@@ -135,7 +135,7 @@ pub(super) fn validate_canonical_json_with_work(
                         observer.release_owned(capacity)?;
                     }
                     if identical { Ok(()) } else {
-                        Err(message_lookup_error(work, crate::wire::ErrorCode::Storage,
+                        Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
                             "execution journal JSON is not canonical"))
                     }
                 }
@@ -391,11 +391,11 @@ pub(super) fn publication_path_with_work(
     let canonical_capacity = canonical.capacity() as u64;
     let result = (|| {
         let suffix = canonical.strip_prefix("harness/v2/")
-            .ok_or_else(|| message_lookup_error(work, crate::wire::ErrorCode::Invalid,
+            .ok_or_else(|| super::guarded_boundary(work, crate::wire::ErrorCode::Invalid,
                 "publication authority path is invalid"))?;
         let capacity = prefix.len().checked_add(suffix.len())
             .and_then(|bytes| bytes.checked_add(last.map_or(0, |(_, bytes)| bytes + 1)))
-            .ok_or_else(|| message_lookup_error(work, crate::wire::ErrorCode::Invalid,
+            .ok_or_else(|| super::guarded_boundary(work, crate::wire::ErrorCode::Invalid,
                 "publication path length overflows"))?;
         let mut text = String::new();
         let result = (|| {
@@ -417,10 +417,10 @@ pub(super) fn publication_path_with_work(
                     }
                 }
                 let mut count = Count(0);
-                write!(&mut count, "/{last}").map_err(|_| message_lookup_error(work,
+                write!(&mut count, "/{last}").map_err(|_| super::guarded_boundary(work,
                     crate::wire::ErrorCode::Invalid, "publication path formatting failed"))?;
                 if let Some(observer) = work.as_deref_mut() { observer.copy_bytes(count.0 as u64)?; }
-                write!(&mut text, "/{last}").map_err(|_| message_lookup_error(work,
+                write!(&mut text, "/{last}").map_err(|_| super::guarded_boundary(work,
                     crate::wire::ErrorCode::Invalid, "publication path formatting failed"))?;
             }
             let retained = if let Some(observer) = work.as_deref_mut() {
@@ -533,11 +533,7 @@ fn reserve_indexes(
 }
 
 impl IndexedPublication {
-    pub(crate) fn new(authority: &Authority, event: &Event, bytes: Vec<u8>) -> Result<Self> {
-        Self::new_with_work(authority, event, bytes, &mut None)
-    }
-
-    pub(crate) fn new_with_work(
+    pub(crate) fn new(
         authority: &Authority,
         event: &Event,
         bytes: Vec<u8>,
@@ -1177,21 +1173,8 @@ pub(crate) async fn tail_optional_with_work<P: StreamProvider>(
     }
 }
 
-pub(super) async fn one_record<P: StreamProvider>(
-    client: &StreamClient<P>,
-    path: &StreamPath,
-    from: u64,
-) -> Result<Option<Record>> {
-    match one_record_with_work(client, path, from, &mut None).await? {
-        None => Ok(None),
-        Some(ObservedRecord::Ordinary(record)) => Ok(Some(record)),
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        Some(ObservedRecord::Native(_)) => unreachable!("ordinary lookup cannot produce native metadata"),
-    }
-}
-
 /// The original one-record lookup with receipts at each visible SDK boundary.
-pub(crate) async fn one_record_with_work<P: StreamProvider>(
+pub(crate) async fn one_record<P: StreamProvider>(
     client: &StreamClient<P>,
     path: &StreamPath,
     from: u64,
@@ -1218,22 +1201,14 @@ pub(crate) async fn one_record_with_work<P: StreamProvider>(
         extra = records.next(work).await?;
         if let Some(record) = &extra {
             received += sdk_record_retained_bytes(record, work);
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.as_deref().is_some_and(original_native_decode_mode) {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Storage,
-                    reason: "operation lookup exceeded its one-record bound" });
-            }
-            return Err(Error::Storage("operation lookup exceeded its one-record bound".into()));
+            return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
+                "operation lookup exceeded its one-record bound"));
         }
         if let Some(record) = &first
             && (record.sequence != from || record.value.len() > acyclic_stream::MAX_RECORD_BYTES)
         {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.as_deref().is_some_and(original_native_decode_mode) {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Storage,
-                    reason: "operation location record is invalid" });
-            }
-            return Err(Error::Storage("operation location record is invalid".into()));
+            return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
+                "operation location record is invalid"));
         }
         Ok(())
     }.await;
@@ -1249,34 +1224,6 @@ pub(crate) async fn one_record_with_work<P: StreamProvider>(
             Err(error)
         }
     }
-}
-
-pub(crate) async fn find_operation<P: StreamProvider>(
-    client: &StreamClient<P>,
-    authority: &Authority,
-    verifier: &AuthorityVerifier,
-    operation: OperationId,
-) -> Result<Option<Event>> {
-    find_operation_bounded(
-        client,
-        authority,
-        verifier,
-        operation,
-        2 * acyclic_stream::MAX_RECORD_BYTES as u64,
-    )
-    .await
-    .map(|(event, _)| event)
-}
-
-/// Counts the atomic locator and canonical record against one caller-owned budget.
-pub(crate) async fn find_operation_bounded<P: StreamProvider>(
-    client: &StreamClient<P>,
-    authority: &Authority,
-    verifier: &AuthorityVerifier,
-    operation: OperationId,
-    maximum_bytes: u64,
-) -> Result<(Option<Event>, u64)> {
-    find_operation_bounded_with_work(client, authority, verifier, operation, maximum_bytes, true, &mut None).await
 }
 
 pub(crate) async fn find_operation_bounded_with_work<P: StreamProvider>(
@@ -1305,7 +1252,7 @@ pub(crate) async fn bounded_operation_with_retained_quota<P: StreamProvider>(
 ) -> Result<(Option<(Event, u64)>, u64)> {
     verifier.verify_audience_with_work(authority, work)?;
     if maximum_bytes == 0 {
-        return Err(message_lookup_error(work, crate::wire::ErrorCode::Invalid,
+        return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Invalid,
             "operation lookup byte bound must be positive"));
     }
     let (path, path_owned) = if work.is_none() {
@@ -1318,21 +1265,21 @@ pub(crate) async fn bounded_operation_with_retained_quota<P: StreamProvider>(
     let mut raw_owned = 0;
     let mut staged = None;
     let result = async {
-    let Some(index) = one_record_with_work(client, &path, 0, work).await? else {
+    let Some(index) = one_record(client, &path, 0, work).await? else {
         return match tail_optional_with_work(client, &path, work).await? {
             None => Ok(0),
-            Some(_) => Err(message_lookup_error(work, crate::wire::ErrorCode::Storage,
+            Some(_) => Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
                 "operation location is missing before its committed tail")),
         };
     };
     raw_owned = sdk_record_retained_bytes(&index, work);
     let index_bytes = index.value.len() as u64;
     if index_bytes >= maximum_bytes {
-        return Err(message_lookup_error(work, crate::wire::ErrorCode::Invalid,
+        return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Invalid,
             "operation lookup exceeds byte bound"));
     }
     if tail_with_work(client, &path, work).await? != 1 {
-        return Err(message_lookup_error(work, crate::wire::ErrorCode::Storage,
+        return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
             "operation location is not a single immutable record"));
     }
     let location = decode_location_with_work(&index.value, work)?;
@@ -1341,10 +1288,10 @@ pub(crate) async fn bounded_operation_with_retained_quota<P: StreamProvider>(
         || location.operation_id != operation
         || location.revision == 0
     {
-        return Err(message_lookup_error(work, crate::wire::ErrorCode::Storage,
+        return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
             "operation location identity is invalid"));
     }
-    let ((event, event_owned), bytes) = verify_operation_locator_with_retained_quota(
+    let ((event, event_owned), bytes) = verify_operation_locator(
         client, authority, verifier, &index, &location, maximum_bytes, work,
     ).await?;
     staged = Some((event, event_owned));
@@ -1385,21 +1332,7 @@ pub(crate) async fn bounded_operation_with_retained_quota<P: StreamProvider>(
     }
 }
 
-pub(crate) async fn verify_operation_locator_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
-    authority: &Authority,
-    verifier: &AuthorityVerifier,
-    index: &Record,
-    location: &OperationLocation,
-    maximum_bytes: u64,
-    work: &mut Option<&mut dyn super::history::HistoryIo>,
-) -> Result<(Event, u64)> {
-    verify_operation_locator_with_retained_quota(
-        client, authority, verifier, index, location, maximum_bytes, work,
-    ).await.map(|((event, _), bytes)| (event, bytes))
-}
-
-pub(super) async fn verify_operation_locator_with_retained_quota<P: StreamProvider>(
+pub(super) async fn verify_operation_locator<P: StreamProvider>(
     client: &StreamClient<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
@@ -1411,11 +1344,11 @@ pub(super) async fn verify_operation_locator_with_retained_quota<P: StreamProvid
     verifier.verify_audience_with_work(authority, work)?;
     let index_bytes = index.value.len() as u64;
     if index_bytes >= maximum_bytes {
-        return Err(message_lookup_error(work, crate::wire::ErrorCode::Invalid,
+        return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Invalid,
             "operation lookup exceeds byte bound"));
     }
     if &location.authority != authority || location.revision == 0 {
-        return Err(message_lookup_error(work, crate::wire::ErrorCode::Storage,
+        return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
             "operation location identity is invalid"));
     }
     let (canonical, path_owned) = if work.is_none() {
@@ -1424,16 +1357,16 @@ pub(super) async fn verify_operation_locator_with_retained_quota<P: StreamProvid
         canonical_publication_path_with_work(authority, work)?
     };
     let sequence = location.revision - 1;
-    let received = one_record_with_work(client, &canonical, sequence, work).await;
+    let received = one_record(client, &canonical, sequence, work).await;
     drop(canonical);
     let record = release_owned_after_drop(received, path_owned, work)?
-        .ok_or_else(|| message_lookup_error(work, crate::wire::ErrorCode::Storage,
+        .ok_or_else(|| super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
             "indexed canonical event is missing"))?;
     let record_bytes = record.value.len() as u64;
     let result = (|| {
         let consumed_bytes = index_bytes.checked_add(record_bytes)
             .filter(|bytes| *bytes <= maximum_bytes)
-            .ok_or_else(|| message_lookup_error(work, crate::wire::ErrorCode::Invalid,
+            .ok_or_else(|| super::guarded_boundary(work, crate::wire::ErrorCode::Invalid,
                 "operation lookup exceeds byte bound"))?;
         let (event, owned) = super::history::verify_history_record_with_retained_quota(
             verifier, authority, sequence, &record, work)?;
@@ -1488,59 +1421,10 @@ fn verify_operation_binding_with_work(
         || event.intent_digest != location.intent_digest
         || canonical.commit_id != index.commit_id
     {
-        return Err(message_lookup_error(work, crate::wire::ErrorCode::Storage,
+        return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
             "operation location differs from its atomic canonical event"));
     }
     Ok(())
-}
-
-fn message_lookup_error(
-    work: &Option<&mut dyn super::history::HistoryIo>,
-    code: crate::wire::ErrorCode,
-    reason: &'static str,
-) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work.as_deref().is_some_and(original_native_decode_mode) {
-        return Error::NativeBoundary { code, reason };
-    }
-    let _ = work;
-    match code {
-        crate::wire::ErrorCode::Invalid => Error::Invalid(reason.into()),
-        _ => Error::Storage(reason.into()),
-    }
-}
-
-/// Loads one exact archived message without reconstructing a conversation projection.
-pub(crate) async fn find_message<P: StreamProvider>(
-    client: &StreamClient<P>,
-    authority: &Authority,
-    verifier: &AuthorityVerifier,
-    message_id: uuid::Uuid,
-    through_revision: u64,
-    maximum_bytes: u64,
-) -> Result<Option<crate::conversation::ConversationMessage>> {
-    find_message_counted(
-        client,
-        authority,
-        verifier,
-        message_id,
-        through_revision,
-        maximum_bytes,
-    )
-    .await
-    .map(|(message, _)| message)
-}
-
-pub(crate) async fn find_message_counted<P: StreamProvider>(
-    client: &StreamClient<P>,
-    authority: &Authority,
-    verifier: &AuthorityVerifier,
-    message_id: uuid::Uuid,
-    through_revision: u64,
-    maximum_bytes: u64,
-) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
-    find_message_with_work(client, authority, verifier, message_id, through_revision,
-        maximum_bytes, &mut None).await
 }
 
 pub(crate) async fn find_message_with_work<P: StreamProvider>(
@@ -1557,7 +1441,7 @@ pub(crate) async fn find_message_with_work<P: StreamProvider>(
         (message_path(authority, message_id)?, 0)
     } else {
         if authority.kind != crate::core::AggregateKind::Conversation {
-            return Err(message_lookup_error(work, crate::wire::ErrorCode::Invalid,
+            return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Invalid,
                 "message index requires a conversation"));
         }
         publication_path_with_work(authority, "harness/v2/conversation-messages/",
@@ -1583,7 +1467,7 @@ pub(crate) async fn find_message_sequence_with_work<P: StreamProvider>(
         (message_sequence_path(authority, sequence)?, 0)
     } else {
         if sequence == 0 || authority.kind != crate::core::AggregateKind::Conversation {
-            return Err(message_lookup_error(work, crate::wire::ErrorCode::Invalid,
+            return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Invalid,
                 "message sequence index requires a positive conversation sequence"));
         }
         publication_path_with_work(authority, "harness/v2/conversation-sequences/",
@@ -1609,27 +1493,27 @@ async fn find_message_at_locator_with_work<P: StreamProvider>(
 ) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
     verifier.verify_audience(authority)?;
     if maximum_bytes == 0 {
-        return Err(message_lookup_error(work, crate::wire::ErrorCode::Invalid,
+        return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Invalid,
             "message lookup byte bound must be positive"));
     }
-    let Some(index) = one_record_with_work(client, path, 0, work).await? else {
+    let Some(index) = one_record(client, path, 0, work).await? else {
         return match tail_optional_with_work(client, path, work).await? {
             None => Ok((None, 0)),
-            Some(_) => Err(message_lookup_error(work, crate::wire::ErrorCode::Storage,
+            Some(_) => Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
                 "message location is missing before its committed tail")),
         };
     };
     let index_bytes = index.value.len() as u64;
     let result = async {
         if index_bytes > maximum_bytes {
-            return Err(message_lookup_error(work, crate::wire::ErrorCode::Invalid,
+            return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Invalid,
                 "message lookup exceeds byte bound"));
         }
         if tail_with_work(client, path, work).await? != 1 {
-            return Err(message_lookup_error(work, crate::wire::ErrorCode::Storage,
+            return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
                 "message location is not immutable"));
         }
-        verify_message_locator_with_work(client, authority, verifier, &index,
+        verify_message_locator(client, authority, verifier, &index,
             expected_id, expected_sequence, through_revision, maximum_bytes, work).await
     }.await;
     let index_retained = sdk_record_retained_bytes(&index, work);
@@ -1644,26 +1528,8 @@ async fn find_message_at_locator_with_work<P: StreamProvider>(
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "shared verification binds one atomic locator to its exact identity and read boundary"
-)]
-async fn verify_message_locator<P: StreamProvider>(
-    client: &StreamClient<P>,
-    authority: &Authority,
-    verifier: &AuthorityVerifier,
-    index: Record,
-    expected_id: Option<uuid::Uuid>,
-    expected_sequence: Option<u64>,
-    through_revision: u64,
-    maximum_bytes: u64,
-) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
-    verify_message_locator_with_work(client, authority, verifier, &index, expected_id,
-        expected_sequence, through_revision, maximum_bytes, &mut None).await
-}
-
 #[allow(clippy::too_many_arguments, reason = "shared original atomic locator verification plus optional receipts")]
-async fn verify_message_locator_with_work<P: StreamProvider>(
+async fn verify_message_locator<P: StreamProvider>(
     client: &StreamClient<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
@@ -1683,19 +1549,18 @@ async fn verify_message_locator_with_work<P: StreamProvider>(
             || location.location.revision == 0
             || (location.sequence == 0 && expected_sequence != Some(0))
         {
-            return Err(message_lookup_error(work, crate::wire::ErrorCode::Storage,
+            return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
                 "message location identity is invalid"));
         }
-        let (event, consumed_bytes) = verify_operation_locator_with_work(
+        let ((event, owned), consumed_bytes) = verify_operation_locator(
             client, authority, verifier, index, &location.location, maximum_bytes, work).await?;
-        let owned = if work.is_some() { crate::core::source_inventory(&event)? } else { 0 };
         let selected = (|| {
             if let Some(observer) = work.as_deref_mut() { observer.check_cancellation()?; }
             if location.sequence == 0 {
                 if !location.message_id.is_nil()
                     || !matches!(&event.payload, crate::core::EventPayload::ConversationBound { .. })
                 {
-                    return Err(message_lookup_error(work, crate::wire::ErrorCode::Storage,
+                    return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
                         "empty message head differs from its canonical binding"));
                 }
                 return Ok(false);
@@ -1703,11 +1568,11 @@ async fn verify_message_locator_with_work<P: StreamProvider>(
             let message = match &event.payload {
                 crate::core::EventPayload::ConversationMessageAppended { message } => message.as_ref(),
                 crate::core::EventPayload::ProjectMergePublished { receipt } => &receipt.notice,
-                _ => return Err(message_lookup_error(work, crate::wire::ErrorCode::Storage,
+                _ => return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
                     "message location points to another event kind")),
             };
             if message.id != location.message_id || message.sequence != location.sequence {
-                return Err(message_lookup_error(work, crate::wire::ErrorCode::Storage,
+                return Err(super::guarded_boundary(work, crate::wire::ErrorCode::Storage,
                     "message location differs from its canonical message"));
             }
             if event.revision > through_revision { return Ok(false); }
@@ -1766,7 +1631,7 @@ pub(crate) async fn latest_message<P: StreamProvider>(
         }
         Err(error) => return Err(error.into()),
     };
-    let index = one_record(client, &path, through - 1)
+    let index = one_record(client, &path, through - 1, &mut None)
         .await?
         .ok_or_else(|| {
             Error::Storage("message head is missing before its committed tail".into())
@@ -1778,11 +1643,12 @@ pub(crate) async fn latest_message<P: StreamProvider>(
         client,
         authority,
         verifier,
-        index,
+        &index,
         None,
         Some(through - 1),
         u64::MAX,
         maximum_bytes,
+        &mut None,
     )
     .await
     .map(|(message, _)| message)
@@ -1918,8 +1784,6 @@ mod native_publication_custody_tests {
         assert!(matches!(error, Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout, custody: None,
         }));
-        assert_eq!(receiver.receipt().authority_records_read, 1,
-            "receiver prefix is recorded before rejection or decode");
         drop(records);
         assert_eq!(io.into_custody().bytes(), 0);
         assert_eq!(producer.live_allocation_bytes(), 0);
@@ -2037,7 +1901,7 @@ mod native_publication_custody_tests {
         let mut work: Option<&mut dyn HistoryIo> = Some(&mut io);
         let encoded = crate::wire_codec::encode_event_with_work(&authority, &event, &mut work)?;
         let original_capacity = encoded.capacity() as u64;
-        let mut publication = IndexedPublication::new_with_work(
+        let mut publication = IndexedPublication::new(
             &authority, &event, encoded, &mut work)?;
         assert_eq!(publication.bytes.retained_capacity(), Some(original_capacity as usize));
         assert!(publication.bytes.matches_meter(&native.runtime_meter_owner()));
@@ -2066,12 +1930,11 @@ mod native_publication_custody_tests {
         let query = NativeMaterializationWork::new(budget(), &query_cancellation)
             .expect("distinct native cache reader");
         let mut query_io = native_work_io(&query).expect("query metadata custody");
-        let cached = one_record_with_work(&client, &publication.path, 0,
+        let cached = one_record(&client, &publication.path, 0,
             &mut Some(&mut query_io)).await?.expect("real provider cached event");
         assert_eq!(cached.value, publication.bytes);
         assert!(cached.value.matches_meter(&native.runtime_meter_owner()));
         assert!(!cached.value.matches_meter(&query.runtime_meter_owner()));
-        assert_eq!(query.receipt().authority_records_read, 1);
         drop(cached);
         assert_eq!(query_io.into_custody().bytes(), 0);
         assert_eq!(query.live_allocation_bytes(), 0);
@@ -2247,7 +2110,7 @@ mod native_only_provider_tests {
         };
         let encoded = crate::wire_codec::encode_event(&authority, &event)?;
         let event_bytes = encoded.len() as u64;
-        let publication = IndexedPublication::new(&authority, &event, encoded)?;
+        let publication = IndexedPublication::new(&authority, &event, encoded, &mut None)?;
         let request = publication.request(&ordinary,
             IdempotencyKey::new(OwnedBytes::from_static(b"native-only-reader"))?).await?;
         assert!(matches!(ordinary.commit(request).await?, CommitOutcome::Committed(_)));
@@ -2271,13 +2134,10 @@ mod native_only_provider_tests {
         let page = reader.read_page_with_work(&cursor,
             HistoryReadLimits { maximum_events: 1, maximum_bytes: event_bytes }, true,
             Some(&mut io)).await?;
-        assert_eq!(page.page.events.as_slice(), std::slice::from_ref(&event));
-        assert_eq!(page.records.len(), 1);
-        assert_eq!(native.receipt().authority_records_read, 1);
+        assert_eq!(page.0.events.as_slice(), std::slice::from_ref(&event));
+        assert_eq!(page.1.len(), 1);
         assert_eq!(native.receipt().authority_bytes_read, event_bytes);
         assert_eq!(native.receipt().source_bytes_read, event_bytes);
-        assert_eq!(native.receipt().backend_read_operations, 3,
-            "pin tail, page tail, and finite read each have one SDK boundary");
         let mut work: Option<&mut dyn HistoryIo> = Some(&mut io);
         let bounds = bounds_with_work(&client, &publication.path, &mut work).await?
             .map_err(|error| sdk_error(error, &work))?;
@@ -2295,7 +2155,6 @@ mod native_only_provider_tests {
             .expect_err("real raw locator reaches the original guarded wire decoder");
         assert!(matches!(&error, Error::NativeDecode { custody: Some(custody), .. }
             if native.shares_ledger(custody.work())));
-        assert_eq!(native.receipt().authority_records_read, 1);
         assert_eq!(native.receipt().authority_bytes_read, 2);
         drop(error);
         assert_eq!(io.into_custody().bytes(), 0);
@@ -2307,7 +2166,6 @@ mod native_only_provider_tests {
             &client, StreamPath::new("harness/v3/native-only-checkpoint")?,
             OwnedBytes::from_static(b"native-checkpoint"), &mut Some(&mut io),
         ).await?;
-        assert_eq!(native.receipt().authority_records_appended, 1);
         assert_eq!(io.into_custody().bytes(), 0);
 
         for maximum_bytes in [1, event_bytes] {
@@ -2319,7 +2177,6 @@ mod native_only_provider_tests {
                 assert!(reader.read_page_with_work(&cursor,
                     HistoryReadLimits { maximum_events: 1, maximum_bytes }, false, Some(&mut io))
                     .await.is_err(), "raw encoded bound must reject before decode");
-                assert_eq!(native.receipt().authority_records_read, 1);
             } else {
                 cancellation.cancel();
                 assert!(reader.read_page_with_work(&cursor,

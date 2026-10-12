@@ -114,7 +114,7 @@ where
     ) -> BoxFuture<'a, Result<Option<(InteractionTicket, Option<InteractionResolution>)>>> {
         Box::pin(async move {
             self.verifier.verify(&scope)?;
-            let result = self.read(id).await?;
+            let result = self.read(id, None).await?;
             if let Some((ticket, _)) = &result
                 && !scope.capabilities().contains(&ticket.viewer_grant())
                 && !scope.capabilities().contains(&ticket.responder_grant())
@@ -172,111 +172,50 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    /// Binds the exact conversation authority and an agent-private content owner.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "binds each conversation, volume, and signed authority boundary"
-    )]
-    pub fn new(
-        stream: StreamClient<P>,
-        host: Arc<FilesystemHost<A, O>>,
-        authority: Authority,
-        verifier: AuthorityVerifier,
-        schemas: SchemaRegistry,
-        owner_scope: Scope,
-        private_volume: VolumeRef,
-        maximum_bytes: u64,
-    ) -> Result<Self> {
-        Self::new_with_io(
-            stream, host, authority, verifier, schemas, owner_scope,
-            private_volume, maximum_bytes, None,
-        )
-    }
-
+    /// Authenticates and copies the conversation owner with optional accounting.
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn new_with_io(
-        stream: StreamClient<P>,
-        host: Arc<FilesystemHost<A, O>>,
-        authority: Authority,
-        verifier: AuthorityVerifier,
-        schemas: SchemaRegistry,
-        owner_scope: Scope,
-        private_volume: VolumeRef,
-        maximum_bytes: u64,
-        io: Option<&PreparationIo>,
-    ) -> Result<Self> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            verifier.verify_audience_with_native_work(&authority, work)?;
-        } else {
-            verifier.verify_audience(&authority)?;
-        }
-        #[cfg(target_arch = "wasm32")]
-        verifier.verify_audience(&authority)?;
-        if authority.kind != crate::core::AggregateKind::Conversation
-            || private_volume.class() != VolumeClass::AgentPrivate
-            || private_volume.provider() != &host.provider
-            || maximum_bytes == 0
-        {
-            return Err(super::fork_preparer_io::invalid(
-                io,
-                "interaction host requires a conversation, private volume, and positive limit",
-            ));
-        }
-        if let Some(io) = io {
-            ContentGrant::verify_original_volume_with_io(
-                &verifier, &owner_scope, &private_volume, VolumeOperation::Read, io,
-            )?;
-            ContentGrant::verify_original_volume_with_io(
-                &verifier, &owner_scope, &private_volume, VolumeOperation::Write, io,
-            )?;
-        } else {
-            ContentGrant::verify(
-                &verifier, &owner_scope, &private_volume, VolumeOperation::Read,
-            )?;
-            ContentGrant::verify(
-                &verifier, &owner_scope, &private_volume, VolumeOperation::Write,
-            )?;
-        }
-        Ok(Self {
-            stream,
-            host,
-            authority,
-            verifier,
-            schemas,
-            owner_scope,
-            private_volume,
-            maximum_bytes,
-            #[cfg(not(target_arch = "wasm32"))]
-            _native_metadata: None,
-        })
-    }
-
-    /// Binds the same conversation owner on the caller's original native ledger.
-    #[cfg(not(target_arch = "wasm32"))]
-    #[allow(clippy::too_many_arguments, reason = "the existing interaction host owner contract")]
-    pub fn new_with_native_work(
+    pub fn new(
         stream: StreamClient<P>, host: Arc<FilesystemHost<A, O>>,
         authority: &Authority, verifier: &AuthorityVerifier, schemas: &SchemaRegistry,
         owner_scope: &Scope, private_volume: &VolumeRef, maximum_bytes: u64,
-        work: &acyclic_fs::NativeMaterializationWork,
+        io: Option<&PreparationIo>,
     ) -> Result<Self> {
-        let io = PreparationIo::from_native_work(work)?;
-        let mut borrowed = io.history_io();
-        let authority = crate::store::history::HistoryIo::clone_authority(&mut borrowed, authority)?;
-        let (verifier, custody) = verifier.clone_with_native_work(work)?;
-        io.absorb_native_custody(custody)?;
-        let (scope, custody) = owner_scope.clone_with_native_work(work)?;
-        io.absorb_native_custody(custody)?;
-        let volume = private_volume.clone_with_io(&io)?;
-        io.claim(std::mem::size_of::<Self>() as u64)?;
-        let mut interaction_host = Self::new_with_io(
-            stream, host, authority, verifier, schemas.clone(), scope,
-            volume, maximum_bytes, Some(&io),
-        )?;
-        let retained = io.owned_bytes()?;
-        interaction_host._native_metadata = Some(io.into_native_custody(retained)?);
-        Ok(interaction_host)
+        let mut history = io.map(PreparationIo::history_io);
+        let mut work = history.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
+        verifier.verify_audience_with_work(authority, &mut work)?;
+        if authority.kind != crate::core::AggregateKind::Conversation
+            || private_volume.class() != VolumeClass::AgentPrivate
+            || private_volume.provider() != &host.provider || maximum_bytes == 0
+        {
+            return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid,
+                "interaction host requires a conversation, private volume, and positive limit"));
+        }
+        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+            ContentGrant::authorize_volume(verifier, owner_scope, private_volume,
+                operation, u64::MAX, &mut work)?;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+        let authority = match work.as_deref_mut() {
+            Some(work) => work.clone_authority(authority)?,
+            None => authority.clone(),
+        };
+        let verifier = verifier.clone_with_work(&mut work)?;
+        let owner_scope = owner_scope.clone_with_work(&mut work)?;
+        let private_volume = private_volume.copy(&mut work)?;
+        let schemas = schemas.clone_with_work(&mut work)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let _native_metadata = match io.filter(|io| io.original_native_work().is_some()) {
+            Some(io) => {
+                io.claim(std::mem::size_of::<Self>() as u64)?;
+                Some(io.take_native_custody(io.owned_bytes()?.checked_sub(before)
+                    .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
+                        "interaction host custody underflows"))?)?)
+            }
+            None => None,
+        };
+        Ok(Self { stream, host, authority, verifier, schemas, owner_scope, private_volume,
+            maximum_bytes, #[cfg(not(target_arch = "wasm32"))] _native_metadata })
     }
 
     pub(crate) async fn stage_request_with_io(
@@ -303,7 +242,7 @@ where
         };
         let reference = self.stage(id, "request", request, io).await?;
         let ticket = InteractionTicket {
-            id: interaction_uuid(id)?,
+            id: Uuid::from_bytes(id.into_bytes()),
             kind: request.kind(),
             request: reference,
             deadline_unix_ms,
@@ -314,18 +253,8 @@ where
         Ok(ticket)
     }
 
-    /// Stages a proposed answer; admission revalidates it against the pinned request.
+    /// Stages an answer for validation against the pinned request.
     pub async fn stage_answer(
-        &self,
-        id: InteractionId,
-        expected_version: u64,
-        operation_id: OperationId,
-        response: &crate::interaction::InteractionResponse,
-    ) -> Result<FileRef> {
-        self.stage_answer_with_io(id, expected_version, operation_id, response, None).await
-    }
-
-    pub(crate) async fn stage_answer_with_io(
         &self, id: InteractionId, expected_version: u64, operation_id: OperationId,
         response: &InteractionResponse, io: Option<&PreparationIo>,
     ) -> Result<FileRef> {
@@ -354,28 +283,12 @@ where
         result
     }
 
-    /// Replays the exact conversation and admits one typed open event.
+    /// Replays the conversation and admits one typed open event.
     pub async fn open(
-        &self,
-        operation_id: OperationId,
-        scope: Scope,
-        ticket: InteractionTicket,
-    ) -> Result<ApplyResult> {
-        self.execute_open_with_io(operation_id, &scope, &ticket, None, None).await
-    }
-
-    pub(crate) async fn open_request_with_io(
-        &self, operation_id: OperationId, ticket: &InteractionTicket,
-        owner: Option<&crate::durable_host::TaskJournalOwner<P>>, io: Option<&PreparationIo>,
-    ) -> Result<()> {
-        self.execute_open_with_io(operation_id, &self.owner_scope, ticket, owner, io)
-            .await.map(|_| ())
-    }
-
-    async fn execute_open_with_io(
-        &self, operation_id: OperationId, scope: &Scope, ticket: &InteractionTicket,
+        &self, operation_id: OperationId, scope: Option<&Scope>, ticket: &InteractionTicket,
         owner: Option<&crate::durable_host::TaskJournalOwner<P>>, io: Option<&PreparationIo>,
     ) -> Result<ApplyResult> {
+        let scope = scope.unwrap_or(&self.owner_scope);
         loop {
             let attempt_hold;
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
@@ -396,7 +309,7 @@ where
                     io, crate::wire::ErrorCode::Invalid, "committed interaction revision is zero"))?,
                 None => aggregate.reducer().revision(),
             };
-            let scope = self.clone_scope_with_io(scope, io)?;
+            let scope = scope.clone_with_work(&mut work)?;
             let command_ticket = ticket.clone_with_work(&mut work)?;
             let idempotency_key = IdempotencyKey::new(interaction_text(
                 "interaction:", Some(operation_id.into_bytes()), "", "", "", io)?)?;
@@ -415,7 +328,7 @@ where
                 Err(error) if error.code() == crate::wire::ErrorCode::Conflict => {
                     let request_hold;
                     let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-                    let original = self.read_request_with_io(
+                    let original = self.read_request(
                         InteractionId::from_bytes(ticket.id.into_bytes()), io).await?;
                     request_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
                         .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
@@ -430,37 +343,48 @@ where
         }
     }
 
-    fn clone_scope_with_io(&self, scope: &Scope, io: Option<&PreparationIo>) -> Result<Scope> {
+    /// Resolves with the exact responder grant and current version.
+    pub async fn resolve(
+        &self, operation_id: OperationId, scope: &Scope,
+        resolution: InteractionResolution, io: Option<&PreparationIo>,
+    ) -> Result<ApplyResult> {
+        let aggregate_hold;
+        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+        let mut aggregate = self.aggregate(io).await?;
+        aggregate_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
+            .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
+                "interaction aggregate custody underflows"))?)).transpose()?;
+        let command_hold;
+        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let mut borrowed = io.map(PreparationIo::history_io);
         let mut work = borrowed.as_mut().map(
             |work| work as &mut dyn crate::store::history::HistoryIo);
-        scope.clone_with_work(&mut work)
+        let scope = scope.clone_with_work(&mut work)?;
+        let (committed, _) = crate::store::operations::find_operation_bounded_with_work(
+            &self.stream, &self.authority, &self.verifier, operation_id,
+            2 * acyclic_stream::MAX_RECORD_BYTES as u64, true, &mut work,
+        ).await?;
+        let expected_revision = match committed {
+            Some(event) => event.revision.checked_sub(1).ok_or_else(|| interaction_boundary(
+                io, crate::wire::ErrorCode::Invalid, "committed interaction revision is zero"))?,
+            None => aggregate.reducer().revision(),
+        };
+        let idempotency_key = IdempotencyKey::new(interaction_text(
+            "interaction:", Some(operation_id.into_bytes()), "", "", "", io)?)?;
+        command_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
+            .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
+                "interaction command custody underflows"))?)).transpose()?;
+        let command = Command {
+            operation_id, idempotency_key, expected_revision, scope, causal_parent: None, action: Action::ResolveInteraction { resolution },
+        };
+        let result = aggregate.execute_with_work(command, &mut work).await;
+        drop(aggregate);
+        drop(aggregate_hold);
+        drop(command_hold);
+        result
     }
 
-    /// Resolves only with the exact interaction responder grant and current version.
-    pub async fn resolve(
-        &self,
-        operation_id: OperationId,
-        scope: Scope,
-        resolution: InteractionResolution,
-    ) -> Result<ApplyResult> {
-        self.execute(
-            operation_id,
-            scope,
-            Action::ResolveInteraction { resolution }, None)
-        .await
-    }
-
-    pub(crate) async fn resolve_with_io(
-        &self, operation_id: OperationId, scope: &Scope,
-        resolution: InteractionResolution, io: Option<&PreparationIo>,
-    ) -> Result<()> {
-        let scope = self.clone_scope_with_io(scope, io)?;
-        self.execute(operation_id, scope, Action::ResolveInteraction { resolution }, io)
-            .await.map(|_| ())
-    }
-
-    /// Authenticates a responder, validates one typed answer against the admitted request, stages its bytes, then CAS-resolves the conversation.
+    /// Validates and stages a response, then resolves the conversation.
     pub async fn resolve_answer(
         &self,
         operation_id: OperationId,
@@ -474,12 +398,12 @@ where
             return Err(Error::Invalid("approval requires a decision".into()));
         }
         let request = self
-            .read_request(id)
+            .read_request(id, None)
             .await?
             .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?;
         request.validate_response(&response)?;
         let answer = self
-            .stage_answer(id, expected_version, operation_id, &response)
+            .stage_answer(id, expected_version, operation_id, &response, None)
             .await?;
         let resolution = InteractionResolution {
             id: ticket.id,
@@ -490,7 +414,7 @@ where
             detail: None,
         };
         resolution.validate(&ticket)?;
-        ResolutionReceipt::from_apply_result(self.resolve(operation_id, scope, resolution).await?)
+        ResolutionReceipt::from_apply_result(self.resolve(operation_id, &scope, resolution, None).await?)
     }
 
     /// Resolves an approval of the ticket's exact operation and argument digest.
@@ -514,7 +438,7 @@ where
         };
         let response = InteractionResponse::Approval { approved, reason };
         let detail = Some(
-            self.stage_answer(id, expected_version, operation_id, &response)
+            self.stage_answer(id, expected_version, operation_id, &response, None)
                 .await?,
         );
         let resolution = InteractionResolution {
@@ -524,7 +448,7 @@ where
             detail,
         };
         resolution.validate(&ticket)?;
-        ResolutionReceipt::from_apply_result(self.resolve(operation_id, scope, resolution).await?)
+        ResolutionReceipt::from_apply_result(self.resolve(operation_id, &scope, resolution, None).await?)
     }
 
     async fn open_resolution(
@@ -543,7 +467,7 @@ where
             ));
         }
         let (ticket, prior) = self
-            .read(id)
+            .read(id, None)
             .await?
             .ok_or_else(|| Error::NotFound(format!("interaction {id}")))?;
         if !scope.capabilities().contains(&ticket.responder_grant()) {
@@ -564,31 +488,8 @@ where
         Ok(ticket)
     }
 
-    /// Reads the authoritative ticket and latest resolution from its conversation.
+    /// Reads the authoritative ticket and latest resolution.
     pub async fn read(
-        &self,
-        id: InteractionId,
-    ) -> Result<Option<(InteractionTicket, Option<InteractionResolution>)>> {
-        self.read_with_io(id, None).await
-    }
-
-    /// Inspects the same authoritative DTO while retaining its original native custody.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn read_with_native_work<'a>(
-        &'a self, id: InteractionId, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (
-        Option<(InteractionTicket, Option<InteractionResolution>)>, acyclic_fs::NativeAllocation,
-    )>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            let inspection = self.read_with_io(id, Some(&io)).await?;
-            let retained = io.owned_bytes()?;
-            let custody = io.into_native_custody(retained)?;
-            Ok((inspection, custody))
-        })
-    }
-
-    pub(crate) async fn read_with_io(
         &self, id: InteractionId, io: Option<&PreparationIo>,
     ) -> Result<Option<(InteractionTicket, Option<InteractionResolution>)>> {
         let aggregate_hold;
@@ -599,7 +500,7 @@ where
                 "interaction aggregate custody underflows"))?)).transpose()?;
         let mut observer = io.map(PreparationIo::history_io);
         let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-        let value = aggregate.reducer().interaction(&interaction_uuid(id)?)
+        let value = aggregate.reducer().interaction(&Uuid::from_bytes(id.into_bytes()))
             .map(|(ticket, resolution)| -> Result<_> {
                 let ticket = crate::core::native_interaction_ticket_clone_with_custody(ticket, &mut work)?.0;
                 let resolution = resolution.as_ref().map(|value|
@@ -623,7 +524,7 @@ where
                 "interaction aggregate custody underflows"))?)).transpose()?;
         let mut observer = io.map(PreparationIo::history_io);
         let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-        let outcome = aggregate.reducer().interaction(&interaction_uuid(id)?)
+        let outcome = aggregate.reducer().interaction(&Uuid::from_bytes(id.into_bytes()))
             .and_then(|(_, resolution)| resolution.as_ref())
             .map(|resolution| resolution.outcome.clone_with_work(&mut work))
             .transpose()?;
@@ -632,26 +533,8 @@ where
         Ok(outcome)
     }
 
-    /// Loads and validates the request under the owner's explicit read grant.
-    pub async fn read_request(&self, id: InteractionId) -> Result<Option<Interaction>> {
-        self.read_request_with_io(id, None).await
-    }
-
-    /// Reads and validates the exact pinned request on the caller's original native ledger.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn read_request_with_native_work<'a>(
-        &'a self, id: InteractionId, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<Interaction>, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            let request = self.read_request_with_io(id, Some(&io)).await?;
-            let retained = io.owned_bytes()?;
-            let custody = io.into_native_custody(retained)?;
-            Ok((request, custody))
-        })
-    }
-
-    pub(crate) async fn read_request_with_io(
+    /// Loads and validates the pinned request under the owner read grant.
+    pub async fn read_request(
         &self, id: InteractionId, io: Option<&PreparationIo>,
     ) -> Result<Option<Interaction>> {
         let aggregate_hold;
@@ -660,7 +543,7 @@ where
         aggregate_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "interaction aggregate custody underflows"))?)).transpose()?;
-        let Some((ticket, _)) = aggregate.reducer().interaction(&interaction_uuid(id)?) else {
+        let Some((ticket, _)) = aggregate.reducer().interaction(&Uuid::from_bytes(id.into_bytes())) else {
             return Ok(None);
         };
         let request = match io {
@@ -670,7 +553,7 @@ where
                 let bytes_hold;
                 let bytes = self.host.read_pinned_io(&ticket.request, self.maximum_bytes, Some(io)).await?;
                 bytes_hold = io.guard_bytes(&bytes)?;
-                let request = io.decode_preparation::<Interaction>(&bytes)?;
+                let request = io.decode_preparation::<Interaction>(&bytes, crate::wire::ErrorCode::Storage)?;
                 let mut borrowed = io.history_io();
                 ticket.validate_decoded_request_with_work(&request, &mut Some(&mut borrowed))?;
                 let request = request.into_retained();
@@ -690,8 +573,8 @@ where
         Ok(Some(request))
     }
 
-    pub(crate) async fn read_answer_with_io(
-        &self, id: InteractionId, io: Option<&PreparationIo>,
+    pub(crate) async fn read_resolution_file(
+        &self, id: InteractionId, detail: bool, io: Option<&PreparationIo>,
     ) -> Result<Option<acyclic_stream::OwnedBytes>> {
         let aggregate_hold;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
@@ -699,36 +582,20 @@ where
         aggregate_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "interaction aggregate custody underflows"))?)).transpose()?;
-        let Some((_, Some(resolution))) = aggregate.reducer().interaction(&interaction_uuid(id)?) else {
+        let Some((_, Some(resolution))) = aggregate.reducer().interaction(&Uuid::from_bytes(id.into_bytes())) else {
             return Ok(None);
         };
-        let InteractionOutcome::Answered { answer } = &resolution.outcome else { return Ok(None); };
-        let bytes = self.read_resolution_content_with_io(answer, io).await?;
+        let reference = if detail { resolution.detail.as_ref() } else {
+            match &resolution.outcome { InteractionOutcome::Answered { answer } => Some(answer.as_ref()), _ => None }
+        };
+        let Some(reference) = reference else { return Ok(None); };
+        let bytes = self.read_file(reference, io).await?;
         drop(aggregate);
         drop(aggregate_hold);
         Ok(Some(bytes))
     }
 
-    pub(crate) async fn read_decision_detail_with_io(
-        &self, id: InteractionId, io: Option<&PreparationIo>,
-    ) -> Result<Option<acyclic_stream::OwnedBytes>> {
-        let aggregate_hold;
-        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let aggregate = self.aggregate(io).await?;
-        aggregate_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
-            .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
-                "interaction aggregate custody underflows"))?)).transpose()?;
-        let Some((_, Some(resolution))) = aggregate.reducer().interaction(&interaction_uuid(id)?) else {
-            return Ok(None);
-        };
-        let Some(detail) = &resolution.detail else { return Ok(None); };
-        let bytes = self.read_resolution_content_with_io(detail, io).await?;
-        drop(aggregate);
-        drop(aggregate_hold);
-        Ok(Some(bytes))
-    }
-
-    async fn read_resolution_content_with_io(
+    async fn read_file(
         &self, reference: &FileRef, io: Option<&PreparationIo>,
     ) -> Result<acyclic_stream::OwnedBytes> {
         match io {
@@ -746,44 +613,6 @@ where
     }
 
 
-    async fn execute(
-        &self, operation_id: OperationId, scope: Scope, action: Action, io: Option<&PreparationIo>,
-    ) -> Result<ApplyResult> {
-        let aggregate_hold;
-        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let mut aggregate = self.aggregate(io).await?;
-        aggregate_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
-            .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
-                "interaction aggregate custody underflows"))?)).transpose()?;
-        let command_hold;
-        let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let mut borrowed = io.map(PreparationIo::history_io);
-        let mut work = borrowed.as_mut().map(
-            |work| work as &mut dyn crate::store::history::HistoryIo);
-        let (committed, _) = crate::store::operations::find_operation_bounded_with_work(
-            &self.stream, &self.authority, &self.verifier, operation_id,
-            2 * acyclic_stream::MAX_RECORD_BYTES as u64, true, &mut work,
-        ).await?;
-        let expected_revision = match committed {
-            Some(event) => event.revision.checked_sub(1).ok_or_else(|| interaction_boundary(
-                io, crate::wire::ErrorCode::Invalid, "committed interaction revision is zero"))?,
-            None => aggregate.reducer().revision(),
-        };
-        let idempotency_key = IdempotencyKey::new(interaction_text(
-            "interaction:", Some(operation_id.into_bytes()), "", "", "", io)?)?;
-        command_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
-            .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
-                "interaction command custody underflows"))?)).transpose()?;
-        let command = Command {
-            operation_id, idempotency_key, expected_revision, scope, causal_parent: None, action,
-        };
-        let result = aggregate.execute_with_work(command, &mut work).await;
-        drop(aggregate);
-        drop(aggregate_hold);
-        drop(command_hold);
-        result
-    }
-
     pub(super) async fn verify_approval_with_io(
         &self, id: InteractionId, operation: OperationId, digest: [u8; 32],
         io: Option<&PreparationIo>,
@@ -794,7 +623,7 @@ where
         replay_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "approval replay custody underflows"))?)).transpose()?;
-        let Some((ticket, Some(resolution))) = aggregate.reducer().interaction(&interaction_uuid(id)?) else {
+        let Some((ticket, Some(resolution))) = aggregate.reducer().interaction(&Uuid::from_bytes(id.into_bytes())) else {
             return Err(interaction_boundary(io, crate::wire::ErrorCode::Unauthorized,
                 "tool installation lacks a resolved approval"));
         };
@@ -809,7 +638,7 @@ where
             |work| work as &mut dyn crate::store::history::HistoryIo);
         let bytes_hold;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let bytes = self.read_resolution_content_with_io(&ticket.request, io).await?;
+        let bytes = self.read_file(&ticket.request, io).await?;
         bytes_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
             .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                 "approval request bytes custody underflows"))?)).transpose()?;
@@ -817,7 +646,7 @@ where
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let request = match io {
             Some(io) => {
-                let request = io.decode_preparation::<Interaction>(&bytes)?;
+                let request = io.decode_preparation::<Interaction>(&bytes, crate::wire::ErrorCode::Storage)?;
                 ticket.validate_decoded_request_with_work(&request, &mut work)?;
                 request.into_retained()
             }
@@ -835,13 +664,13 @@ where
             }
             let detail_bytes_hold;
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-            let bytes = self.read_resolution_content_with_io(detail, io).await?;
+            let bytes = self.read_file(detail, io).await?;
             detail_bytes_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
                 .ok_or_else(|| interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid,
                     "approval decision bytes custody underflows"))?)).transpose()?;
             match io {
                 Some(io) => {
-                    let response = io.decode_preparation::<InteractionResponse>(&bytes)?;
+                    let response = io.decode_preparation::<InteractionResponse>(&bytes, crate::wire::ErrorCode::Storage)?;
                     ticket.validate_decoded_decision_with_work(
                         &request, &resolution.outcome, detail, &response, &mut work)?;
                 }
@@ -868,14 +697,11 @@ where
             None => self.authority.clone(),
         };
         let aggregate_verifier = self.verifier.clone_with_work(&mut work)?;
-        let content_authority = self.verifier.clone_with_work(&mut work)?;
-        let scope = self.owner_scope.clone_with_work(&mut work)?;
         if let Some(io) = io {
             io.claim(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;
             io.allocation_attempt(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;
         }
-        let content_verifier = FilesystemContentVerifier::new_with_io(
-            Arc::clone(&self.host), content_authority, scope, self.maximum_bytes, io)?;
+        let content_verifier = FilesystemContentVerifier::new(Arc::clone(&self.host), &self.verifier, &self.owner_scope, self.maximum_bytes, io)?;
         let content_verifier = Arc::new(content_verifier);
         let aggregate = StreamAggregate::open_with_read_limits_with_work(
             &self.stream, authority, aggregate_verifier, self.schemas.clone(), crate::store::default_projection_read_limits(), &mut work).await?.with_content_verifier(content_verifier);
@@ -899,7 +725,7 @@ where
         let bytes_hold;
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let bytes = match io {
-            Some(io) => io.encode_json(value, self.maximum_bytes, false)?,
+            Some(io) => io.encode(value, self.maximum_bytes, false)?,
             None => serde_json::to_vec(value).map_err(|error| Error::Invalid(error.to_string()))?.into(),
         };
         bytes_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
@@ -938,10 +764,6 @@ where
         drop(bytes_hold);
         result
     }
-}
-
-fn interaction_uuid(id: InteractionId) -> Result<Uuid> {
-    Ok(Uuid::from_bytes(id.into_bytes()))
 }
 
 pub(super) fn interaction_boundary(

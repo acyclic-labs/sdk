@@ -733,7 +733,7 @@ fn namespace_hint_names_with_work<'a, W: crate::demand::SourceDemandReadWork>(
     };
     // The tuple's field order frees every physical name before retiring custody.
     let mut owned = if let Some(original) = &original {
-        let (components, allocation) = original.with_owned_allocations(reserve)?;
+        let (components, allocation) = original.allocations(reserve)?;
         (components, Some(allocation))
     } else {
         (work.with_original_leaf(|actual| {
@@ -1331,7 +1331,7 @@ impl NativeWatch {
     ) -> Result<(PathBuf, Option<crate::NativeAllocation>), NativeWatchError> {
         work.check().map_err(demand_watch_error)?;
         if let Some(original) = original {
-            let (path, allocation) = original.copy_path(path)?;
+            let (path, allocation) = original.path(path, None)?;
             Ok((path, Some(allocation)))
         } else {
             let (path, _) = crate::native_host::clone_path_with_work(path, work)
@@ -1385,12 +1385,12 @@ impl NativeWatch {
             &ordinary_root
         };
         let cleanup = original.map(|work| work.allocation_work().reserve_cleanup_write()).transpose()?;
-        let held = crate::native_host::HostRoot::open_with_work(root_path, work)
+        let held = crate::native_host::HostRoot::open(root_path, work)
             .map_err(demand_watch_error)?;
         let held_root = NativeWatchHeldRoot {
             root: Some(held), cleanup, original: original.map(crate::NativeMaterializationWork::allocation_work),
         };
-        let metadata = held_root.stat_with_work(Path::new(""), work).map_err(demand_watch_error)?;
+        let metadata = held_root.stat(Path::new(""), work).map_err(demand_watch_error)?;
         if !metadata.is_dir() { return Err(NativeWatchError::RootIsNotDirectory); }
         let root_identity = held_root.identity();
         if metadata.identity().map_err(demand_watch_error)? != root_identity {
@@ -1668,15 +1668,6 @@ impl NativeWatch {
         work: &mut crate::demand::DemandWork,
     ) -> Result<(), crate::demand::DemandError> {
         self.watch_directory_with_work(directory, work)
-    }
-
-    #[cfg(feature = "native-mount")]
-    pub(crate) fn watch_directory_with_native_work(
-        &mut self, directory: &NamespacePath, work: &crate::materializer::NativeMaterializationWork,
-    ) -> Result<(), crate::demand::DemandError> {
-        self.watch_directory_with_work(
-            directory, &mut crate::demand::NativeSourceWork::from_native_materialization_work(work),
-        )
     }
 
     pub(crate) fn watch_directory_with_work<W: crate::demand::SourceDemandReadWork>(
@@ -2208,14 +2199,6 @@ impl NativeWatch {
             .map_err(|error| OperationFailure::new(error, work.work))
     }
 
-    /// Starts the original scan without deriving a second work budget.
-    pub fn begin_rescan_with_native_work(
-        &mut self, work: &crate::NativeMaterializationWork,
-    ) -> Result<WatchEpoch, NativeWatchError> {
-        let mut source = crate::demand::NativeSourceWork::from_native_materialization_work(work);
-        self.begin_rescan_with_work(&mut source)
-    }
-
     fn begin_rescan_with_work<W: crate::demand::SourceDemandReadWork>(
         &mut self, work: &mut W,
     ) -> Result<WatchEpoch, NativeWatchError> {
@@ -2367,14 +2350,6 @@ impl NativeWatch {
         )
     }
 
-    /// Completes the same original scan on the caller's native work.
-    pub fn finish_rescan_with_native_work(
-        &mut self, work: &crate::NativeMaterializationWork,
-    ) -> Result<WatchBatch, NativeWatchError> {
-        let mut source = crate::demand::NativeSourceWork::from_native_materialization_work(work);
-        self.finish_rescan_with_work(&mut source)
-    }
-
     fn finish_rescan_with_work<W: crate::demand::SourceDemandReadWork>(
         &mut self, work: &mut W,
     ) -> Result<WatchBatch, NativeWatchError> {
@@ -2490,7 +2465,7 @@ impl NativeWatch {
             }
             let relative = convert(subtree, work)?;
             let mut host = if let Some(original) = original {
-                original.join_path(&self.root, &relative.0)
+                original.path(&self.root, Some(&relative.0))
                     .map(|(path, allocation)| (path, Some(allocation)))?
             } else {
                 let copied = self.root.as_os_str().len().checked_add(relative.0.as_os_str().len())
@@ -2516,7 +2491,7 @@ impl NativeWatch {
                 allocation.resize_retained(host.0.capacity() as u64)?;
             }
             let mut shared = if let Some(original) = original {
-                original.copy_path(&host.0)
+                original.path(&host.0, None)
                     .map(|(path, allocation)| (path, Some(allocation)))?
             } else {
                 crate::native_host::clone_path_with_work(&host.0, work)
@@ -2575,7 +2550,7 @@ impl NativeWatch {
                 .map_err(crate::demand::DemandError::from).map_err(demand_watch_error)
         };
         if let Some(original) = original {
-            original.with_owned_allocations(copy)
+            original.allocations(copy)
                 .map(|(path, allocation)| (path, Some(allocation)))
         } else {
             work.with_original_leaf(|actual| {
@@ -2723,20 +2698,12 @@ impl NativeWatch {
         Ok(())
     }
 
-    /// Observes the held and current physical root without adopting its graph.
-    pub fn root_unchanged_with_native_work(
-        &self, work: &crate::NativeMaterializationWork,
-    ) -> Result<bool, NativeWatchError> {
-        let mut source = crate::demand::NativeSourceWork::from_native_materialization_work(work);
-        self.root_unchanged_with_work(&mut source).map_err(demand_watch_error)
-    }
-
     fn root_unchanged_with_work<W: crate::demand::SourceDemandReadWork>(
         &self, work: &mut W,
     ) -> Result<bool, crate::demand::DemandError> {
         work.check()?;
         let Some(root) = self.held_root.root.as_ref() else { return Ok(false); };
-        let held = root.stat_with_work(Path::new(""), work)?.identity()?;
+        let held = root.stat(Path::new(""), work)?.identity()?;
         match crate::native_host::root_path_identity_with_work(&self.root, work) {
             Ok(identity) => Ok(held == self.root_identity && identity == self.root_identity),
             Err(crate::demand::DemandError::Io(error))
@@ -2884,20 +2851,6 @@ impl NativeWatch {
             Ok((value, _)) => Ok(OperationReceipt { value, work: work.work }),
             Err(error) => Err(OperationFailure::new(error, work.work)),
         }
-    }
-
-    /// Polls on the caller's original ledger, retaining the actual output buffer.
-    ///
-    /// Keep the returned allocation until the batch's change vector is freed.
-    /// Queued path allocations remain on their original producer ledger.
-    ///
-    /// # Errors
-    ///
-    /// Returns native-root, admission, cancellation, queue, and sequence errors.
-    pub fn poll_with_native_work(
-        &mut self, maximum_changes: u32, original: &crate::NativeMaterializationWork,
-    ) -> Result<(WatchBatch, crate::NativeAllocation), NativeWatchError> {
-        self.poll_with_native_work_guarded(maximum_changes, original, |_| Ok(()))
     }
 
     /// Runs the consumer's guarded publication before committing watch progress.

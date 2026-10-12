@@ -349,7 +349,7 @@ pub fn trace() {
     let branch = client
         .begin(Begin {
             key: 1,
-            basis: absent.basis,
+            basis: absent.basis.clone(),
             operation: Some(op(2)),
             assumption: Assumption::MessageAbsent,
             predicted: Arc::new(Projection::Message(Some(Arc::new(predicted.clone())))),
@@ -368,6 +368,62 @@ pub fn trace() {
             .message(predicted.id)
             .is_none()
     );
+    let exported = serde_json::to_vec(client.hypothesis(branch).unwrap()).unwrap();
+    for outcome in [OperationOutcome::Rejected, OperationOutcome::Completed] {
+        let mut replica = Client::new(
+            HarnessViews { recovery: None },
+            900,
+            client.sequence(),
+            limits,
+        )
+        .unwrap();
+        replica.observe(1, &absent).unwrap();
+        replica
+            .restore(serde_json::from_slice::<ClientHypothesis<HarnessViews>>(&exported).unwrap())
+            .unwrap();
+        assert!(matches!(replica.view(&1, &[branch]).unwrap().provenance,
+            Provenance::Hypothesis { id, adapter: 0x4841524e4553530001, .. } if id == branch));
+        assert_eq!(
+            replica.hypothesis(branch).unwrap().outcome,
+            OperationOutcome::Unknown
+        );
+        replica
+            .observe(
+                1,
+                &snapshot(
+                    1,
+                    authority.clone(),
+                    1,
+                    Projection::Message(Some(Arc::new(message(
+                        1,
+                        1,
+                        MessageKind::User,
+                        b"changed",
+                        None,
+                        None,
+                    )))),
+                    Some((op(2), outcome)),
+                ),
+            )
+            .unwrap();
+        assert_eq!(
+            replica.hypothesis(branch).unwrap().prediction,
+            if outcome == OperationOutcome::Rejected {
+                PredictionOutcome::Removed
+            } else {
+                PredictionOutcome::Replaced
+            }
+        );
+        assert!(matches!(
+            replica.view(&1, &[branch]).unwrap().provenance,
+            Provenance::Authoritative(_)
+        ));
+        assert_eq!(
+            client.hypothesis(branch).unwrap().outcome,
+            OperationOutcome::Unknown
+        );
+        assert_eq!(reducer.operation_revision(op(2)), None);
+    }
     reducer
         .apply(command(
             2,
@@ -418,9 +474,7 @@ pub fn trace() {
         PredictionOutcome::Confirmed
     );
     let checkpoint = serde_json::to_vec(client.hypothesis(branch).unwrap()).unwrap();
-    let decode = || {
-        serde_json::from_slice::<ClientHypothesis<HarnessViews>>(&checkpoint).unwrap()
-    };
+    let decode = || serde_json::from_slice::<ClientHypothesis<HarnessViews>>(&checkpoint).unwrap();
     let mut recovered = Client::new(
         HarnessViews {
             recovery: Some(committed.clone()),
@@ -481,7 +535,7 @@ pub fn trace() {
         orchestration: Orchestration::Leaf,
         state: file("state.json", b"{}"),
     };
-    scheduler.apply(scheduler.declare(spec).unwrap()).unwrap();
+    scheduler.apply(&(scheduler.declare(spec).unwrap()), &mut None).unwrap();
     let queue = snapshot(
         20,
         task_authority.clone(),
@@ -516,10 +570,10 @@ pub fn trace() {
         admitted: ResourceRequest::default(),
     };
     scheduler
-        .apply(SchedulerEvent::Admitted {
+        .apply(&(SchedulerEvent::Admitted {
             operation_id: op(20),
             reservation,
-        })
+        }), &mut None)
         .unwrap();
     let state = scheduler.operation(op(20)).unwrap();
     assert_eq!(state.phase, OperationPhase::Admitted);
@@ -665,4 +719,221 @@ pub fn trace() {
 fn main() {
     trace();
     println!("message/claim/tool continuation trace passed");
+}
+
+/// Reconcile predictions against authorized Filesystem edits and their original retries.
+#[cfg(feature = "filesystem")]
+pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
+    use acyclic_harness::{
+        conversation::{ContentGrant, VolumeOperation},
+        filesystem::{ExactTextReplacement, FilesystemHost, workspace_ref},
+    };
+    let call = Uuid::from_bytes([60; 16]);
+    let projection = |file| Projection::Continuation {
+        call,
+        result: Arc::new(file),
+    };
+    let predict = |source: &FileRef, bytes: &[u8]| {
+        FileRef::new(
+            source.volume().clone(),
+            source.path(),
+            "predicted",
+            FileDescriptor::from_bytes(bytes, "text/plain")?,
+            source.display_name(),
+        )
+    };
+    let filesystem = acyclic_fs::Fs::memory();
+    let provider = ProviderRef::new("client-edit", "filesystem", "2")?;
+    let host = FilesystemHost::new(filesystem.clone(), provider.clone())?;
+    let owner = AgentId::from_bytes([3; 16]);
+    let volume = VolumeRef::new(
+        provider.clone(),
+        "project",
+        VolumeClass::Project,
+        VolumeOwner::Agent(owner),
+    )?;
+    host.create_volume(&volume).await?;
+    let authority = Authority {
+        kind: AggregateKind::Conversation,
+        id: "client-edit".into(),
+    };
+    let issuer = AuthorityIssuer::new("client-edit", [4; 32], authority.clone());
+    let scope = issuer.root_for_agent(
+        owner,
+        "owner",
+        Capabilities::new([
+            volume.capability(VolumeOperation::Read)?,
+            volume.capability(VolumeOperation::Write)?,
+        ]),
+    );
+    let read = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Read)?;
+    let write = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
+    let source = host
+        .put_content(
+            &volume,
+            &write,
+            "test.txt",
+            b"one two",
+            "text/plain",
+            "test.txt",
+            64,
+            &IdempotencyKey::new("source")?,
+        )
+        .await?;
+    let workspace = workspace_ref(provider.clone(), &volume.storage_name()?)?;
+    let before = host.resolve(&workspace).await?.generation;
+    let mut client = Client::new(
+        HarnessViews { recovery: None },
+        901,
+        0,
+        Limits {
+            records: 1,
+            branches: 2,
+            edges: 2,
+            bytes: 262_144,
+            work: 128,
+            retention: 100,
+            visible: 2,
+        },
+    )
+    .unwrap();
+    let base = snapshot(1, authority.clone(), 0, projection(source.clone()), None);
+    client.observe(1, &base).unwrap();
+    let branch = client
+        .begin(Begin {
+            key: 1,
+            basis: base.basis,
+            operation: Some(op(60)),
+            assumption: Assumption::Continuation { call },
+            predicted: Arc::new(projection(predict(&source, b"one three")?)),
+            dependencies: vec![],
+            expires: 50,
+        })
+        .unwrap();
+    assert!(matches!(
+        client.view(&1, &[branch]).unwrap().provenance,
+        Provenance::Hypothesis { .. }
+    ));
+    assert_eq!(host.resolve(&workspace).await?.generation, before);
+    assert_eq!(
+        host.read_content(&source, &read, 64).await?.as_ref(),
+        b"one two"
+    );
+    client
+        .observe(
+            1,
+            &snapshot(
+                1,
+                authority.clone(),
+                0,
+                projection(source.clone()),
+                Some((op(60), OperationOutcome::Admitted)),
+            ),
+        )
+        .unwrap();
+    let replacement = ExactTextReplacement {
+        old_text: "two".into(),
+        new_text: "three".into(),
+    };
+    let key = IdempotencyKey::new(op(60).to_string())?;
+    let edited = host
+        .edit_text(&source, &read, &write, &replacement, 64, &key)
+        .await?;
+    let completed = snapshot(
+        1,
+        authority.clone(),
+        1,
+        projection(edited.clone()),
+        Some((op(60), OperationOutcome::Completed)),
+    );
+    client.observe(1, &completed).unwrap();
+    assert_eq!(
+        client.hypothesis(branch).unwrap().prediction,
+        PredictionOutcome::Replaced
+    );
+    assert!(matches!(
+        client.view(&1, &[branch]).unwrap().provenance,
+        Provenance::Authoritative(_)
+    ));
+    assert_eq!(
+        host.read_content(&edited, &read, 64).await?.as_ref(),
+        b"one three"
+    );
+    let stale = client
+        .begin(Begin {
+            key: 1,
+            basis: completed.basis,
+            operation: Some(op(61)),
+            assumption: Assumption::Continuation { call },
+            predicted: Arc::new(projection(predict(&edited, b"one four")?)),
+            dependencies: vec![],
+            expires: 50,
+        })
+        .unwrap();
+    let user = host
+        .put_content(
+            &volume,
+            &write,
+            "test.txt",
+            b"user edit",
+            "text/plain",
+            "test.txt",
+            64,
+            &IdempotencyKey::new("user")?,
+        )
+        .await?;
+    let head = host.resolve(&workspace).await?.generation;
+    let host = FilesystemHost::new(filesystem, provider)?;
+    assert_eq!(
+        host.edit_text(&source, &read, &write, &replacement, 64, &key)
+            .await?,
+        edited
+    );
+    assert_eq!(host.resolve(&workspace).await?.generation, head);
+    let stale_edit = ExactTextReplacement {
+        old_text: "three".into(),
+        new_text: "four".into(),
+    };
+    assert!(matches!(
+        host.edit_text(
+            &edited,
+            &read,
+            &write,
+            &stale_edit,
+            64,
+            &IdempotencyKey::new(op(61).to_string())?
+        )
+        .await,
+        Err(acyclic_harness::Error::Conflict(_))
+    ));
+    client
+        .observe(
+            1,
+            &snapshot(
+                1,
+                authority,
+                2,
+                projection(user.clone()),
+                Some((op(61), OperationOutcome::Rejected)),
+            ),
+        )
+        .unwrap();
+    assert_eq!(
+        client.hypothesis(stale).unwrap().prediction,
+        PredictionOutcome::Removed
+    );
+    assert_eq!(
+        client.hypothesis(stale).unwrap().outcome,
+        OperationOutcome::Rejected
+    );
+    assert_eq!(
+        *client.view(&1, &[stale]).unwrap().value,
+        projection(user.clone())
+    );
+    assert_eq!(host.resolve(&workspace).await?.generation, head);
+    assert_eq!(
+        host.read_content(&user, &read, 64).await?.as_ref(),
+        b"user edit"
+    );
+    Ok(())
 }

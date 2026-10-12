@@ -3,18 +3,10 @@
 use crate::{
     Error, Result,
     core::{ExtensionAdmission, ExtensionDependency, Reducer, validate_extension_name},
-    durable_tool::ResumableToolRegistry,
-    runtime::{
-        ArtifactBindings, Bindings, ContentBindings, DurableTaskHost, ExecutionProvider,
-        InteractionResolver, InteractionRouter, TaskRegistry, TaskSpawner, TaskStateProvider,
-        ToolPolicy,
-    },
-    tool::ToolRegistry,
 };
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    ops::Deref,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -55,14 +47,6 @@ impl ExtensionIdentity {
         Ok(())
     }
 
-    /// Returns the event-sourced dependency identity for this implementation.
-    #[must_use]
-    pub fn dependency(&self) -> ExtensionDependency {
-        ExtensionDependency {
-            name: self.name.clone(),
-            version: self.version,
-        }
-    }
 }
 
 /// One process-local native extension implementation.
@@ -75,130 +59,12 @@ pub trait NativeExtension: Send + Sync {
         Vec::new()
     }
 
-    /// Adds native tasks/tools to a composition.
-    fn link(&self, _linker: &mut ExtensionLinker<'_>) -> Result<()> {
-        Ok(())
-    }
-
     /// Called once after an implementation has been removed and no admission lease can still observe it.
     fn dispose(&self) {}
 }
 
-/// Mutable registration view provided while a native extension is linked.
-pub struct ExtensionLinker<'a> {
-    bindings: &'a mut Bindings,
-}
-
-impl ExtensionLinker<'_> {
-    /// Returns the composition's task registry.
-    pub fn tasks(&mut self) -> &mut TaskRegistry {
-        &mut self.bindings.tasks
-    }
-
-    /// Returns the composition's live tool registry.
-    pub fn tools(&mut self) -> &mut ToolRegistry {
-        &mut self.bindings.tools
-    }
-
-    /// Returns the composition's resumable tool registry.
-    pub fn resumable_tools(&mut self) -> &mut ResumableToolRegistry {
-        &mut self.bindings.resumable_tools
-    }
-
-    /// Adds a durable host only when the composition has no host yet.
-    pub fn durable_host(&mut self, host: Arc<dyn DurableTaskHost>) -> Result<()> {
-        bind_once(&mut self.bindings.durable_host, host, "durable host")
-    }
-
-    /// Adds retained-state observation only when the composition has no state provider yet.
-    pub fn state(&mut self, state: Arc<dyn TaskStateProvider>) -> Result<()> {
-        bind_once(&mut self.bindings.state, state, "task state provider")
-    }
-
-    /// Adds durable admission only when the composition has no spawner yet.
-    pub fn spawner(&mut self, spawner: Arc<dyn TaskSpawner>) -> Result<()> {
-        bind_once(&mut self.bindings.spawner, spawner, "task spawner")
-    }
-
-    /// Adds qualified execution only when the composition has no route yet.
-    pub fn execution(&mut self, execution: Arc<dyn ExecutionProvider>) -> Result<()> {
-        bind_once(
-            &mut self.bindings.execution,
-            execution,
-            "execution provider",
-        )
-    }
-
-    /// Adds local interactions only when the composition has no router yet.
-    pub fn interactions(&mut self, router: Arc<dyn InteractionRouter>) -> Result<()> {
-        bind_once(
-            &mut self.bindings.interactions,
-            router,
-            "interaction router",
-        )
-    }
-
-    /// Adds owner-mediated interaction resolution only when absent.
-    pub fn interaction_resolver(&mut self, resolver: Arc<dyn InteractionResolver>) -> Result<()> {
-        bind_once(
-            &mut self.bindings.interaction_resolver,
-            resolver,
-            "interaction resolver",
-        )
-    }
-
-    /// Adds content access only when the composition has no content binding.
-    pub fn content(&mut self, content: ContentBindings) -> Result<()> {
-        bind_once(&mut self.bindings.content, content, "content binding")
-    }
-
-    /// Adds artifact access only when the composition has no artifact binding.
-    pub fn artifacts(&mut self, artifacts: ArtifactBindings) -> Result<()> {
-        bind_once(&mut self.bindings.artifacts, artifacts, "artifact binding")
-    }
-
-    /// Adds an invocation policy only when the composition has no policy yet.
-    pub fn policy(&mut self, policy: Arc<dyn ToolPolicy>) -> Result<()> {
-        bind_once(&mut self.bindings.policy, policy, "tool policy")
-    }
-
-    /// Adds parent-bound fork capture only when absent.
-    pub fn fork_preparer(&mut self, preparer: Arc<dyn crate::fork::ForkPreparer>) -> Result<()> {
-        bind_once(&mut self.bindings.fork_preparer, preparer, "fork preparer")
-    }
-
-    /// Adds a project workspace provider only when absent.
-    pub fn workspaces(
-        &mut self,
-        workspaces: Arc<dyn crate::merge::ProjectWorkspaceProvider>,
-    ) -> Result<()> {
-        bind_once(
-            &mut self.bindings.workspaces,
-            workspaces,
-            "workspace provider",
-        )
-    }
-
-    /// Returns the current scope without allowing an extension to retarget it.
-    #[must_use]
-    pub fn scope(&self) -> &crate::runtime::RuntimeScope {
-        &self.bindings.scope
-    }
-}
-
-fn bind_once<T>(slot: &mut Option<T>, value: T, description: &str) -> Result<()> {
-    if slot.is_some() {
-        return Err(Error::Conflict(format!(
-            "extension cannot replace existing {description}"
-        )));
-    }
-    *slot = Some(value);
-    Ok(())
-}
-
 struct Installed {
     implementation: Arc<dyn NativeExtension>,
-    identity: ExtensionIdentity,
     dependencies: Vec<ExtensionDependency>,
     accepting: bool,
     active: usize,
@@ -263,10 +129,9 @@ impl ExtensionRegistry {
             .current
             .insert(identity.name.clone(), identity.clone());
         state.versions.insert(
-            identity.clone(),
+            identity,
             Installed {
                 implementation,
-                identity,
                 dependencies,
                 accepting: true,
                 active: 0,
@@ -275,62 +140,19 @@ impl ExtensionRegistry {
         Ok(())
     }
 
-    /// Natural registration spelling for composition builders.
-    pub fn register(&self, implementation: Arc<dyn NativeExtension>) -> Result<()> {
-        self.install(implementation)
-    }
-
     /// Disables all new admissions for a logical extension name.
     pub fn disable(&self, name: &str) -> Result<()> {
         validate_extension_name(name)?;
         let mut state = self.lock()?;
         state.current.remove(name);
-        for entry in state
-            .versions
-            .values_mut()
-            .filter(|entry| entry.identity.name == name)
-        {
-            entry.accepting = false;
+        for (identity, entry) in &mut state.versions {
+            if identity.name == name { entry.accepting = false; }
         }
         Ok(())
     }
 
-    /// Pins the current accepting implementation for a new invocation.
-    pub fn pin(&self, name: &str) -> Result<ExtensionLease> {
-        let mut state = self.lock()?;
-        let identity = state.current.get(name).cloned().ok_or_else(|| {
-            Error::Unsupported(format!("extension {name} is not accepting admissions"))
-        })?;
-        let entry = state
-            .versions
-            .get_mut(&identity)
-            .ok_or_else(|| Error::Storage("current extension version is missing".into()))?;
-        if !entry.accepting {
-            return Err(Error::Unsupported(format!(
-                "extension {name} is not accepting admissions"
-            )));
-        }
-        entry.active = entry
-            .active
-            .checked_add(1)
-            .ok_or_else(|| Error::Invalid("extension active count exhausted".into()))?;
-        Ok(ExtensionLease {
-            registry: self.clone(),
-            identity,
-            implementation: Arc::clone(&entry.implementation),
-        })
-    }
-
     /// Pins a specific installed version and digest.
-    pub fn pin_exact(&self, identity: &ExtensionIdentity) -> Result<ExtensionLease> {
-        self.pin_exact_checked(identity, false)
-    }
-
-    fn pin_exact_accepting(&self, identity: &ExtensionIdentity) -> Result<ExtensionLease> {
-        self.pin_exact_checked(identity, true)
-    }
-
-    fn pin_exact_checked(
+    pub fn pin_exact(
         &self,
         identity: &ExtensionIdentity,
         accepting_only: bool,
@@ -353,7 +175,6 @@ impl ExtensionRegistry {
         Ok(ExtensionLease {
             registry: self.clone(),
             identity: identity.clone(),
-            implementation: Arc::clone(&entry.implementation),
         })
     }
 
@@ -460,12 +281,6 @@ impl ExtensionRegistry {
                             dependency.name, dependency.version
                         ))
                     })?;
-                if dependency_identity.version != dependency.version {
-                    return Err(Error::Conflict(format!(
-                        "extension dependency {} is not installed at the required version",
-                        dependency.name
-                    )));
-                }
                 pending.push(dependency_identity);
             }
         }
@@ -521,7 +336,6 @@ impl ExtensionRegistry {
 pub struct ExtensionLease {
     registry: ExtensionRegistry,
     identity: ExtensionIdentity,
-    implementation: Arc<dyn NativeExtension>,
 }
 
 impl ExtensionLease {
@@ -529,13 +343,6 @@ impl ExtensionLease {
     #[must_use]
     pub const fn identity(&self) -> &ExtensionIdentity {
         &self.identity
-    }
-}
-
-impl Deref for ExtensionLease {
-    type Target = dyn NativeExtension;
-    fn deref(&self) -> &Self::Target {
-        self.implementation.as_ref()
     }
 }
 
@@ -549,26 +356,9 @@ impl Drop for ExtensionLease {
     }
 }
 
-/// Retained implementation set held by one admitted task.
-pub struct ExtensionLeases(Vec<ExtensionLease>);
-
-impl ExtensionLeases {
-    /// Creates an empty retained set for tasks without extension requirements.
-    #[must_use]
-    pub(crate) const fn empty() -> Self {
-        Self(Vec::new())
-    }
-
-    /// Returns all exact executable identities retained by the task.
-    pub fn identities(&self) -> impl Iterator<Item = &ExtensionIdentity> {
-        self.0.iter().map(ExtensionLease::identity)
-    }
-}
-
 /// Linked extension composition attached to a harness scope.
 pub struct ExtensionRuntime {
     registry: ExtensionRegistry,
-    selected: Vec<ExtensionIdentity>,
     retained: Vec<ExtensionLease>,
     accepting: AtomicBool,
     admission_gate: Mutex<()>,
@@ -584,23 +374,14 @@ impl ExtensionRuntime {
         let selected = registry.resolve(&roots, true)?;
         let retained = selected
             .iter()
-            .map(|identity| registry.pin_exact_accepting(identity))
+            .map(|identity| registry.pin_exact(identity, true))
             .collect::<Result<Vec<_>>>()?;
         Ok(Arc::new(Self {
             registry,
-            selected,
             retained,
             accepting: AtomicBool::new(true),
             admission_gate: Mutex::new(()),
         }))
-    }
-
-    /// Activates the exact implementations selected by an agent admission.
-    pub fn from_admission(
-        registry: ExtensionRegistry,
-        admission: &ExtensionAdmission,
-    ) -> Result<Arc<Self>> {
-        Self::from_admission_with_digests(registry, admission, |_, _| Ok(None))
     }
 
     /// Activates a committed agent selection and checks every native digest against the reducer's exact schema binding.
@@ -608,22 +389,6 @@ impl ExtensionRuntime {
         let admission = reducer
             .extension_admission()?
             .ok_or_else(|| Error::Unsupported("agent has no committed extensions".into()))?;
-        Self::from_admission_with_digests(registry, &admission, |name, version| {
-            reducer
-                .extension_implementation_digest(name, version)
-                .map(Some)
-        })
-    }
-
-    /// Activates an admission while independently checking each exact linked digest against the owner's registered implementation digest.
-    pub fn from_admission_with_digests<F>(
-        registry: ExtensionRegistry,
-        admission: &ExtensionAdmission,
-        expected_digest: F,
-    ) -> Result<Arc<Self>>
-    where
-        F: Fn(&str, u32) -> Result<Option<[u8; 32]>>,
-    {
         admission.validate()?;
         let mut roots = Vec::with_capacity(admission.selected().len());
         for dependency in admission.selected() {
@@ -632,9 +397,7 @@ impl ExtensionRuntime {
                 .ok_or_else(|| {
                     Error::Unsupported(format!("extension {} is not installed", dependency.name))
                 })?;
-            if let Some(expected) = expected_digest(&dependency.name, dependency.version)?
-                && expected != identity.digest
-            {
+            if reducer.extension_implementation_digest(&dependency.name, dependency.version)? != identity.digest {
                 return Err(Error::Conflict(format!(
                     "extension {}@{} implementation digest differs from admission",
                     dependency.name, dependency.version
@@ -645,11 +408,10 @@ impl ExtensionRuntime {
         let selected = registry.resolve(&roots, false)?;
         let retained = selected
             .iter()
-            .map(|identity| registry.pin_exact(identity))
+            .map(|identity| registry.pin_exact(identity, false))
             .collect::<Result<Vec<_>>>()?;
         Ok(Arc::new(Self {
             registry,
-            selected,
             retained,
             accepting: AtomicBool::new(true),
             admission_gate: Mutex::new(()),
@@ -672,62 +434,18 @@ impl ExtensionRuntime {
         self.accepting.load(Ordering::Acquire)
     }
 
-    /// Returns all dependency-ordered exact implementations linked here.
+    /// Iterates dependency-ordered exact versions retained by this composition.
     #[must_use]
-    pub fn selected(&self) -> &[ExtensionIdentity] {
-        &self.selected
+    pub fn selected(&self) -> impl ExactSizeIterator<Item = &ExtensionIdentity> {
+        self.retained.iter().map(ExtensionLease::identity)
     }
 
-    /// Links each selected implementation into one native task/tool registry.
-    pub fn link_into(&self, tasks: &mut TaskRegistry, tools: &mut ToolRegistry) -> Result<()> {
-        let mut bindings = Bindings {
-            tasks: std::mem::take(tasks),
-            tools: std::mem::take(tools),
-            ..Bindings::local()
-        };
-        {
-            let mut linker = ExtensionLinker {
-                bindings: &mut bindings,
-            };
-            for extension in &self.retained {
-                extension.link(&mut linker)?;
-            }
-        }
-        *tasks = std::mem::take(&mut bindings.tasks);
-        *tools = std::mem::take(&mut bindings.tools);
-        Ok(())
-    }
-
-    /// Links each selected implementation into the complete composition.
-    pub fn link_into_bindings(&self, bindings: &mut Bindings) -> Result<()> {
-        let mut linker = ExtensionLinker { bindings };
-        for extension in &self.retained {
-            extension.link(&mut linker)?;
-        }
-        Ok(())
-    }
-
-    /// Retains exact extension versions required by a task admission.
-    pub fn retain_for_task(
-        &self,
-        requirements: impl IntoIterator<Item = String>,
-    ) -> Result<ExtensionLeases> {
-        self.retain(requirements, false)
-    }
-
-    /// Retains versions for an operation already committed by an owner.
-    pub fn retain_for_existing(
-        &self,
-        requirements: impl IntoIterator<Item = String>,
-    ) -> Result<ExtensionLeases> {
-        self.retain(requirements, true)
-    }
-
-    fn retain(
+    /// Retains required versions, admitting disabled versions only for committed operations.
+    pub fn retain(
         &self,
         requirements: impl IntoIterator<Item = String>,
         existing: bool,
-    ) -> Result<ExtensionLeases> {
+    ) -> Result<Vec<ExtensionLease>> {
         let _gate = self
             .admission_gate
             .lock()
@@ -742,75 +460,48 @@ impl ExtensionRuntime {
             .into_iter()
             .flatten()
             .collect::<Vec<_>>();
-        let selected = self
-            .selected
-            .iter()
-            .map(ExtensionIdentity::dependency)
-            .collect::<BTreeSet<_>>();
         let mut leases = Vec::new();
         for dependency in required {
-            if !selected.contains(&dependency) {
-                return Err(Error::Unsupported(format!(
-                    "extension {}@{} is not active",
-                    dependency.name, dependency.version
-                )));
-            }
             let identity = self
-                .selected
-                .iter()
+                .selected()
                 .find(|identity| {
                     identity.name == dependency.name && identity.version == dependency.version
                 })
                 .ok_or_else(|| {
-                    Error::Storage("selected extension disappeared during retention".into())
+                    Error::Unsupported(format!(
+                        "extension {}@{} is not active",
+                        dependency.name, dependency.version
+                    ))
                 })?;
-            let lease = if existing {
-                self.registry.pin_exact(identity)?
-            } else {
-                self.registry.pin_exact_accepting(identity)?
-            };
+            let lease = self.registry.pin_exact(identity, !existing)?;
             leases.push(lease);
         }
-        Ok(ExtensionLeases(leases))
+        Ok(leases)
     }
 
     /// Checks that a committed metadata selection agrees with linked code.
-    pub fn validate_admission(&self, admission: Option<&ExtensionAdmission>) -> Result<()> {
-        self.validate_admission_with_work(admission, &mut None)
-    }
-
-    pub(crate) fn validate_admission_with_work(
+    pub(crate) fn validate_admission(
         &self, admission: Option<&ExtensionAdmission>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         if let Some(admission) = admission {
             admission.validate_with_work(work)?;
-            let matches = |selected: &ExtensionDependency, linked: &ExtensionIdentity| {
-                selected.name == linked.name && selected.version == linked.version
-            };
+            if admission.selected().len() != self.retained.len() {
+                return Err(crate::runtime::scope_metadata_boundary(
+                    work, crate::wire::ErrorCode::Conflict,
+                    "extension admission differs from linked composition",
+                ));
+            }
             for selected in admission.selected() {
                 let mut found = false;
-                for linked in &self.selected {
+                for linked in self.selected() {
                     if let Some(io) = work.as_deref_mut() {
                         io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
                     }
-                    if matches(selected, linked) { found = true; break; }
-                }
-                if !found {
-                    return Err(crate::runtime::scope_metadata_boundary(
-                        work, crate::wire::ErrorCode::Conflict,
-                        "extension admission differs from linked composition",
-                    ));
-                }
-            }
-            for linked in &self.selected {
-                let mut found = false;
-                for selected in admission.selected() {
-                    if let Some(io) = work.as_deref_mut() {
-                        io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                    if selected.name == linked.name && selected.version == linked.version {
+                        found = true; break;
                     }
-                    if matches(selected, linked) { found = true; break; }
                 }
                 if !found {
                     return Err(crate::runtime::scope_metadata_boundary(
@@ -821,43 +512,6 @@ impl ExtensionRuntime {
             }
         }
         Ok(())
-    }
-}
-
-/// Builder-friendly owned link bundle.
-pub struct NativeExtensionBundle(Arc<ExtensionRuntime>);
-
-impl NativeExtensionBundle {
-    /// Activates exact roots from a registry and retains their linked code.
-    pub fn new(
-        registry: ExtensionRegistry,
-        roots: impl IntoIterator<Item = ExtensionIdentity>,
-    ) -> Result<Self> {
-        Self::activate(registry, roots)
-    }
-
-    /// Activates exact extension roots from a registry.
-    pub fn activate(
-        registry: ExtensionRegistry,
-        roots: impl IntoIterator<Item = ExtensionIdentity>,
-    ) -> Result<Self> {
-        Ok(Self(ExtensionRuntime::activate(registry, roots)?))
-    }
-
-    /// Returns the runtime view used for task admission gating.
-    #[must_use]
-    pub fn runtime(&self) -> Arc<ExtensionRuntime> {
-        Arc::clone(&self.0)
-    }
-
-    /// Consumes the bundle and returns its linked runtime.
-    pub(crate) fn into_runtime(self) -> Arc<ExtensionRuntime> {
-        self.0
-    }
-
-    /// Links the bundle into the complete mutable composition.
-    pub fn link_into(&self, bindings: &mut Bindings) -> Result<()> {
-        self.0.link_into_bindings(bindings)
     }
 }
 
@@ -944,7 +598,7 @@ mod tests {
         runtime.disable()?;
         assert!(registry.accepting("example.extension")?);
         assert!(matches!(
-            runtime.retain_for_task(["extension:example.extension@1".into()]),
+            runtime.retain(["extension:example.extension@1".into()], false),
             Err(Error::Conflict(_))
         ));
         Ok(())
@@ -963,8 +617,8 @@ mod tests {
             ExtensionRuntime::activate(registry, [identity]),
             Err(Error::Conflict(_))
         ));
-        let retained = runtime.retain_for_existing(["extension:example.extension@1".into()])?;
-        assert_eq!(retained.identities().count(), 1);
+        let retained = runtime.retain(["extension:example.extension@1".into()], true)?;
+        assert_eq!(retained.len(), 1);
         Ok(())
     }
 }

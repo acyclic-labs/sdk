@@ -15,21 +15,6 @@ use serde::de::DeserializeOwned;
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
-/// Default maximum bytes read when resolving a file for the provider-neutral projection helper.
-pub const DEFAULT_PROJECTION_MAX_RESOLVED_BYTES: u64 = crate::conversation::MAX_LIMIT_FILE_BYTES;
-/// Default maximum bytes read for an attachment manifest in the projection helper.
-pub const DEFAULT_PROJECTION_MAX_MANIFEST_BYTES: u64 = crate::conversation::MAX_LIMIT_FILE_BYTES;
-/// Default maximum number of attachments resolved from one selected message.
-pub const DEFAULT_PROJECTION_MAX_ATTACHMENTS: usize = u32::MAX as usize;
-/// Default maximum number of selected messages in one provider request.
-pub const DEFAULT_PROJECTION_MAX_MESSAGES: usize = u32::MAX as usize;
-/// Default maximum bytes rendered into one provider request.
-pub const DEFAULT_PROJECTION_MAX_RENDER_BYTES: u64 = crate::conversation::MAX_LIMIT_RENDER_BYTES;
-/// Protocol ceiling for attachments materialized into one model projection.
-pub const MAX_PROJECTION_PROJECTED_ATTACHMENTS: usize = crate::conversation::MAX_PORTABLE_COUNT;
-/// Largest JSON byte allowance representable by the JavaScript contract.
-pub const MAX_PROJECTION_JSON_BYTES: u64 = crate::conversation::MAX_EXACT_JS_INTEGER;
-
 #[derive(Debug, Deserialize, Serialize)]
 struct ProjectedToolInvocation {
     call_id: String,
@@ -87,8 +72,8 @@ pub fn select_turn_delta(
     checkpoint: Option<(&crate::context::CanonicalContextCheckpoint, FileRef)>,
     limits: crate::conversation::Limits,
 ) -> Result<ModelContextSelection> {
-    limits.validate()?;
-    current.validate()?;
+    limits.validate(&mut None)?;
+    current.validate(&mut None)?;
     if current.kind != MessageKind::User || limits.context_messages == 0 {
         return Err(Error::Invalid(
             "canonical turn delta requires a bounded user input".into(),
@@ -108,19 +93,15 @@ pub fn select_turn_delta(
         ));
     }
     let (after, checkpoint) = if let Some((envelope, reference)) = checkpoint {
-        envelope.validate(limits)?;
-        limits.validate_file(&reference)?;
+        envelope.validate(limits, None)?;
+        limits.validate_file(&reference, &mut None)?;
         reference
             .descriptor()
-            .verify(&crate::contract::canonical_json_bytes(envelope)?)?;
+            .verify(&crate::contract::canonical_json_bytes(envelope)?, &mut None)?;
         if !conversation
             .checkpoint_covers_archived_prefix(&reference, envelope.selection.conversation_revision)
         {
-            validate_model_context_selection_at_revision(
-                conversation,
-                &envelope.selection,
-                envelope.selection.conversation_revision,
-            )?;
+            validate_model_context_selection_at_revision(conversation, &envelope.selection, envelope.selection.conversation_revision, None)?;
         }
         if envelope.selection.conversation_revision >= current.sequence {
             return Err(Error::Conflict(
@@ -227,9 +208,9 @@ fn validate_selected_tool_pairs(
 impl SelectedModelContext {
     /// Admits a provider-proven context before dispatch without needing the owning conversation or reimplementing model bounds in a host adapter.
     pub fn validate_for_dispatch(&self, limits: Limits) -> Result<()> {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         if let Some(checkpoint) = &self.selection.checkpoint {
-            limits.validate_file(checkpoint)?;
+            limits.validate_file(checkpoint, &mut None)?;
         }
         let last = self.messages.last().ok_or_else(|| {
             Error::Invalid("selected context must end with the current user message".into())
@@ -243,19 +224,19 @@ impl SelectedModelContext {
                 "selected context must end with the current user message".into(),
             ));
         }
-        last.content.validate_user_input()?;
+        last.content.validate_user_input(&mut None)?;
         for message in &self.messages {
-            message.content.validate_limits(limits)?;
+            message.content.validate_limits(limits, &mut None)?;
         }
         Ok(())
     }
 
     /// Checks selection provenance and its final current user input.
     pub(crate) fn validate_for_input(
-        &self, input: &ModelContent, io: Option<&crate::context::ContextPreparationIo>,
+        &self, input: &ModelContent, io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let native = io.and_then(crate::context::ContextPreparationIo::original_native_work);
+        let native = io.and_then(crate::executor::PreparationIo::original_native_work);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = native {
             work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
@@ -298,8 +279,13 @@ impl SelectedModelContext {
     }
 }
 
-async fn select_model_context_with_projection_limit_and_io<R: ContentResidencyVerifier + ?Sized>(
+
+/// Projects a selection from the explicitly pinned conversation revision.
+#[allow(clippy::too_many_arguments,
+    reason = "the original revision selection ABI adds only its original optional preparation IO")]
+pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
     conversation: &ConversationState,
+    conversation_revision: u64,
     selection: ModelContextSelection,
     resolver: &R,
     maximum_messages: usize,
@@ -308,11 +294,11 @@ async fn select_model_context_with_projection_limit_and_io<R: ContentResidencyVe
     maximum_projected_attachments: usize,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<SelectedModelContext> {
-    validate_loaded_selection(conversation, &selection, io)?;
+    validate_model_context_selection_at_revision(conversation, &selection, conversation_revision, io)?;
     if maximum_messages == 0
         || maximum_render_bytes == 0
-        || maximum_render_bytes > MAX_PROJECTION_JSON_BYTES
-        || maximum_projected_attachments as u64 > MAX_PROJECTION_PROJECTED_ATTACHMENTS as u64
+        || maximum_render_bytes > crate::conversation::MAX_EXACT_JS_INTEGER
+        || maximum_projected_attachments as u64 > crate::conversation::MAX_PORTABLE_COUNT as u64
         || selection.message_ids.len() > maximum_messages
     {
         return Err(projection_invalid(io, "selected message count exceeds projection limit"));
@@ -324,7 +310,6 @@ async fn select_model_context_with_projection_limit_and_io<R: ContentResidencyVe
         let message = conversation
             .message(*id)
             .ok_or_else(|| projection_invalid(io, "selected conversation message is missing"))?;
-        validate_projection_message(message, io)?;
         if message.kind == MessageKind::ToolCall {
             let invocation: ProjectedToolInvocation =
                 read_projected_invocation(resolver, &message.content, maximum_render_bytes, io).await?;
@@ -366,8 +351,8 @@ async fn select_model_context_with_projection_limit_and_io<R: ContentResidencyVe
             let projection = projection_result_attachment(attachments.as_slice(), io)?;
             let value =
                 read_projected_tool_result(resolver, &projection.file, maximum_render_bytes, io).await?;
-            let call_id = projection_string(call_id, io)?;
-            let name = projection_string(name, io)?;
+            let call_id = crate::executor::stock_string_copy(call_id, io)?;
+            let name = crate::executor::stock_string_copy(name, io)?;
             messages.push(ModelMessage {
                 role: ModelRole::Tool,
                 content: ModelContent::Part(ModelContentPart::ToolResult {
@@ -394,20 +379,8 @@ async fn select_model_context_with_projection_limit_and_io<R: ContentResidencyVe
                 )));
             }
         };
-        // This projection explicitly selects native image intent without conversion.
-        let native_image = || -> Result<FileProjectionPolicy> {
-            projection_allocation(std::mem::size_of::<crate::model::NativeMediaPolicy>() as u64, io)?;
-            Ok(FileProjectionPolicy::Native(Box::new(crate::model::NativeMediaPolicy {
-                intent: crate::model::NativeMediaIntent::Image {
-                    detail: crate::model::ImageDetail::Auto,
-                },
-                maximum_bytes: DEFAULT_PROJECTION_MAX_RESOLVED_BYTES,
-                maximum_work: maximum_render_bytes,
-                configuration: None,
-            })))
-        };
         let primary_policy = match message.content.descriptor().media_type() {
-            "image/png" | "image/jpeg" | "image/gif" | "image/webp" => native_image()?,
+            "image/png" | "image/jpeg" | "image/gif" | "image/webp" => projection_native_image(maximum_render_bytes, io)?,
             kind if kind.starts_with("text/")
                 && message.content.descriptor().byte_length() <= maximum_render_bytes =>
             {
@@ -415,31 +388,16 @@ async fn select_model_context_with_projection_limit_and_io<R: ContentResidencyVe
             }
             _ => FileProjectionPolicy::Reference,
         };
-        if let ReferencedAttachments::Manifest { item_count, .. } = &message.attachments
-            && (*item_count as usize) > maximum_attachments
-        {
-            return Err(projection_invalid(io, "selected message exceeds attachment projection limit"));
-        }
         let attachments = resolve_projection_attachments(message, resolver, maximum_attachments, io).await?;
         let projected_count = attachments.as_slice().len().min(maximum_projected_attachments);
         let omitted_count = attachments.as_slice().len() - projected_count;
         let capacity = 1 + projected_count + usize::from(omitted_count != 0);
         let mut parts = projection_vec::<ModelContentPart>(capacity, io)?;
         parts.push(ModelContentPart::File {
-            file: projection_file(&message.content, io)?,
+            file: crate::model::clone_file(&message.content, io)?,
             policy: primary_policy,
         });
-        for file in attachments.into_projected(projected_count, io)? {
-            let file = file?;
-            let policy = match file.descriptor().media_type() {
-                "image/png" | "image/jpeg" | "image/gif" | "image/webp" => native_image()?,
-                _ => FileProjectionPolicy::Reference,
-            };
-            parts.push(ModelContentPart::File {
-                file,
-                policy,
-            });
-        }
+        attachments.append_projected(projected_count, &mut parts, maximum_render_bytes, io)?;
         if omitted_count > 0 {
             let text = projection_omission_text(omitted_count, io)?;
             parts.push(ModelContentPart::Text { text });
@@ -457,55 +415,6 @@ async fn select_model_context_with_projection_limit_and_io<R: ContentResidencyVe
     })
 }
 
-/// Projects a selection from the explicitly pinned conversation revision.
-#[allow(clippy::too_many_arguments,
-    reason = "the original revision selection ABI adds only its original optional preparation IO")]
-pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
-    conversation: &ConversationState,
-    conversation_revision: u64,
-    selection: ModelContextSelection,
-    resolver: &R,
-    maximum_messages: usize,
-    maximum_attachments: usize,
-    maximum_render_bytes: u64,
-    maximum_projected_attachments: usize,
-    io: Option<&crate::executor::PreparationIo>,
-) -> Result<SelectedModelContext> {
-    validate_model_context_selection_at_revision_with_io(
-        conversation,
-        &selection,
-        conversation_revision,
-        io,
-    )?;
-    let original_revision = selection.conversation_revision;
-    let mut loaded_selection = selection;
-    loaded_selection.conversation_revision = conversation.logical_revision();
-    let mut selected = select_model_context_with_projection_limit_and_io(
-        conversation,
-        loaded_selection,
-        resolver,
-        maximum_messages,
-        maximum_attachments,
-        maximum_render_bytes,
-        maximum_projected_attachments,
-        io,
-    )
-    .await?;
-    selected.selection.conversation_revision = original_revision;
-    Ok(selected)
-}
-
-/// Validates selection order and role/linkage semantics without resolving any owner bytes.
-pub fn validate_model_context_selection_at_revision(
-    conversation: &ConversationState,
-    selection: &ModelContextSelection,
-    conversation_revision: u64,
-) -> Result<()> {
-    validate_model_context_selection_at_revision_with_io(
-        conversation, selection, conversation_revision, None,
-    )
-}
-
 /// Reuses the canonical validation engine for an already admitted history observer; the native facade borrows its original ledger and creates no budget.
 pub(crate) fn validate_model_context_selection_at_revision_with_work(
     conversation: &ConversationState,
@@ -518,19 +427,20 @@ pub(crate) fn validate_model_context_selection_at_revision_with_work(
         .and_then(crate::store::history::HistoryIo::original_native_work)
     {
         let io = crate::executor::PreparationIo::from_native_work(native)?;
-        return validate_model_context_selection_at_revision_with_io(
+        return validate_model_context_selection_at_revision(
             conversation, selection, conversation_revision, Some(&io),
         );
     }
     if let Some(io) = work.as_deref_mut() {
         io.check_cancellation()?;
     }
-    validate_model_context_selection_at_revision_with_io(
+    validate_model_context_selection_at_revision(
         conversation, selection, conversation_revision, None,
     )
 }
 
-fn validate_model_context_selection_at_revision_with_io(
+/// Validates ordered source identities and tool linkage at the pinned revision.
+pub fn validate_model_context_selection_at_revision(
     conversation: &ConversationState,
     selection: &ModelContextSelection,
     conversation_revision: u64,
@@ -538,6 +448,13 @@ fn validate_model_context_selection_at_revision_with_io(
 ) -> Result<()> {
     if selection.conversation_revision != conversation_revision {
         return Err(projection_conflict(io, "model context selection has a stale conversation revision"));
+    }
+    if let Some(checkpoint) = &selection.checkpoint {
+        match io {
+            #[cfg(feature = "filesystem")]
+            Some(io) => checkpoint.validate_with_work(&mut Some(&mut io.history_io()))?,
+            _ => checkpoint.validate()?,
+        }
     }
     let mut previous_sequence = 0;
     let mut tool_calls = ProjectionIndex::<&ConversationMessage>::new(io);
@@ -657,14 +574,6 @@ fn projection_vec<T>(capacity: usize, io: Option<&crate::executor::PreparationIo
     Ok(Vec::with_capacity(capacity))
 }
 
-fn projection_string(text: &str, io: Option<&crate::executor::PreparationIo>) -> Result<String> {
-    crate::model::model_string_clone_with_io(text, io)
-}
-
-fn projection_file(file: &FileRef, io: Option<&crate::executor::PreparationIo>) -> Result<FileRef> {
-    crate::model::model_file_clone_with_io(file, io)
-}
-
 fn projection_omission_text(count: usize, io: Option<&crate::executor::PreparationIo>) -> Result<String> {
     struct Omission(usize);
     impl std::fmt::Display for Omission {
@@ -697,36 +606,6 @@ fn projection_omission_text(count: usize, io: Option<&crate::executor::Preparati
     Ok(format!("{}", Omission(count)))
 }
 
-fn validate_loaded_selection(
-    conversation: &ConversationState, selection: &ModelContextSelection,
-    io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-        io.check_cancellation()?;
-        if selection.conversation_revision != conversation.logical_revision() {
-            return Err(projection_conflict(Some(io), "model context selection has a stale conversation revision"));
-        }
-        if let Some(checkpoint) = &selection.checkpoint {
-            let mut history = io.history_io();
-            checkpoint.validate_with_work(&mut Some(&mut history))?;
-        }
-        let mut previous_sequence = 0;
-        for id in &selection.message_ids {
-            projection_step(Some(io), 1)?;
-            let sequence = conversation.message(*id)
-                .map(|message| message.sequence)
-                .ok_or_else(|| projection_invalid(Some(io), "selected conversation message is missing"))?;
-            if sequence <= previous_sequence {
-                return Err(projection_invalid(Some(io), "model context selection is not ordered and unique"));
-            }
-            previous_sequence = sequence;
-        }
-        return Ok(());
-    }
-    let _ = io;
-    selection.validate(conversation)
-}
 
 fn validate_projection_message(
     message: &ConversationMessage, io: Option<&crate::executor::PreparationIo>,
@@ -734,10 +613,10 @@ fn validate_projection_message(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let mut history = io.history_io();
-        return message.validate_with_work(&mut Some(&mut history));
+        return message.validate(&mut Some(&mut history));
     }
     let _ = io;
-    message.validate()
+    message.validate(&mut None)
 }
 
 fn validate_projection_attachment(
@@ -746,10 +625,10 @@ fn validate_projection_attachment(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let mut history = io.history_io();
-        return attachment.validate_with_work(&mut Some(&mut history));
+        return attachment.validate(&mut Some(&mut history));
     }
     let _ = io;
-    attachment.validate()
+    attachment.validate(&mut None)
 }
 
 fn projection_result_attachment<'a>(
@@ -851,87 +730,76 @@ impl ProjectionAttachments<'_> {
     }
 }
 
-enum ProjectionFileSource<'a> {
-    Borrowed(std::iter::Take<std::slice::Iter<'a, Attachment>>),
-    Owned(std::iter::Take<std::vec::IntoIter<Attachment>>),
-}
-
-struct ProjectionFiles<'a> {
-    source: ProjectionFileSource<'a>,
-    io: Option<&'a crate::executor::PreparationIo>,
-    move_files: bool,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    _retired: Option<acyclic_fs::NativeAllocation>,
-}
-
-impl<'a> ProjectionAttachments<'a> {
-    fn into_projected(
-        self, count: usize, io: Option<&'a crate::executor::PreparationIo>,
-    ) -> Result<ProjectionFiles<'a>> {
-        match self {
-            Self::Borrowed(items) => Ok(ProjectionFiles {
-                source: ProjectionFileSource::Borrowed(items.iter().take(count)),
-                io, move_files: false,
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                _retired: None,
-            }),
-            Self::Owned(items) => Ok(ProjectionFiles {
-                source: ProjectionFileSource::Owned(items.into_iter().take(count)),
-                io, move_files: io.is_none(),
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                _retired: None,
-            }),
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::Native(value, guard) => {
-                let mut custody = guard;
-                let items = value;
-                let same_ledger = io.and_then(crate::executor::PreparationIo::original_native_work)
-                    .is_some_and(|work| work.shares_ledger(custody.work()));
-                if same_ledger {
-                    let io = io.expect("same-ledger output owner");
-                    let mut retained = 0_u64;
-                    for attachment in items.iter().take(count) {
-                        projection_step(Some(io), 1)?;
-                        retained = retained.checked_add(attachment.file.logical_owned_bytes()?)
-                            .ok_or_else(|| projection_invalid(Some(io), "projected file ownership overflows"))?;
-                    }
-                    let output = custody.split_off(retained)
-                        .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                    io.absorb_native_custody(output)?;
+impl ProjectionAttachments<'_> {
+    fn append_projected(
+        self, count: usize, parts: &mut Vec<ModelContentPart>, maximum_render_bytes: u64,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        let mut append = |file: FileRef| -> Result<()> {
+            let policy = match file.descriptor().media_type() {
+                "image/png" | "image/jpeg" | "image/gif" | "image/webp" =>
+                    projection_native_image(maximum_render_bytes, io)?,
+                _ => FileProjectionPolicy::Reference,
+            };
+            parts.push(ModelContentPart::File { file, policy });
+            Ok(())
+        };
+        // Declare custody first so attachment storage drops before its guard.
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut custody = None;
+        let items = match self {
+            Self::Borrowed(items) => {
+                for attachment in items.iter().take(count) {
+                    projection_step(io, 1)?;
+                    validate_projection_attachment(attachment, io)?;
+                    append(crate::model::clone_file(&attachment.file, io)?)?;
                 }
-                Ok(ProjectionFiles {
-                    source: ProjectionFileSource::Owned(items.into_iter().take(count)),
-                    io, move_files: same_ledger, _retired: Some(custody),
-                })
+                return Ok(());
+            }
+            Self::Owned(items) => items,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            Self::Native(items, guard) => { custody = Some(guard); items }
+        };
+        #[allow(unused_mut)]
+        let mut move_files = io.is_none();
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(custody) = custody.as_mut() {
+            move_files = io.and_then(crate::executor::PreparationIo::original_native_work)
+                .is_some_and(|work| work.shares_ledger(custody.work()));
+            if move_files {
+                let io = io.expect("same-ledger output owner");
+                let mut retained = 0_u64;
+                for attachment in items.iter().take(count) {
+                    projection_step(Some(io), 1)?;
+                    retained = retained.checked_add(attachment.file.logical_owned_bytes()?)
+                        .ok_or_else(|| projection_invalid(Some(io), "projected file ownership overflows"))?;
+                }
+                let output = custody.split_off(retained)
+                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+                io.absorb_native_custody(output)?;
             }
         }
+        for attachment in items.into_iter().take(count) {
+            projection_step(io, 1)?;
+            validate_projection_attachment(&attachment, io)?;
+            let file = if move_files { attachment.file }
+                else { crate::model::clone_file(&attachment.file, io)? };
+            append(file)?;
+        }
+        Ok(())
     }
 }
 
-impl Iterator for ProjectionFiles<'_> {
-    type Item = Result<FileRef>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match &mut self.source {
-            ProjectionFileSource::Borrowed(items) => {
-                let attachment = items.next()?;
-                Some((|| {
-                    projection_step(self.io, 1)?;
-                    validate_projection_attachment(attachment, self.io)?;
-                    projection_file(&attachment.file, self.io)
-                })())
-            }
-            ProjectionFileSource::Owned(items) => {
-                let attachment = items.next()?;
-                Some((|| {
-                    projection_step(self.io, 1)?;
-                    validate_projection_attachment(&attachment, self.io)?;
-                    if self.move_files { Ok(attachment.file) }
-                    else { projection_file(&attachment.file, self.io) }
-                })())
-            }
-        }
-    }
+fn projection_native_image(
+    maximum_work: u64, io: Option<&crate::executor::PreparationIo>,
+) -> Result<FileProjectionPolicy> {
+    projection_allocation(std::mem::size_of::<crate::model::NativeMediaPolicy>() as u64, io)?;
+    Ok(FileProjectionPolicy::Native(Box::new(crate::model::NativeMediaPolicy {
+        intent: crate::model::NativeMediaIntent::Image { detail: crate::model::ImageDetail::Auto },
+        maximum_bytes: crate::conversation::MAX_LIMIT_FILE_BYTES,
+        maximum_work,
+        configuration: None,
+    })))
 }
 
 async fn resolve_projection_attachments<'a, R: ContentResidencyVerifier + ?Sized>(
@@ -953,10 +821,10 @@ async fn resolve_projection_attachments<'a, R: ContentResidencyVerifier + ?Sized
                 let (value, custody) = resolver.load_manifest_with_native_work(manifest, *item_count, work)?.await?;
                 ProjectionAttachments::Native(value, custody)
             } else {
-                ProjectionAttachments::Owned(resolver.load_manifest(manifest, *item_count).await?)
+                ProjectionAttachments::Owned(crate::conversation::load_manifest(resolver, manifest, *item_count, None).await?.0)
             };
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let loaded = ProjectionAttachments::Owned(resolver.load_manifest(manifest, *item_count).await?);
+            let loaded = ProjectionAttachments::Owned(crate::conversation::load_manifest(resolver, manifest, *item_count, None).await?.0);
             if loaded.as_slice().len() != *item_count as usize {
                 return Err(projection_invalid(io, "attachment manifest count does not match its declared count"));
             }
@@ -1003,26 +871,19 @@ async fn read_projected_tool_result<R: ContentResidencyVerifier + ?Sized>(
 
 // Private, closed source DTOs only. This is not a DeserializeOwned theorem.
 #[cfg(feature = "filesystem")]
-trait NativeProjectionArtifact: DeserializeOwned {
-    fn value_schema() -> crate::contract::JsonValueSchema;
+trait ProjectionArtifact: crate::filesystem::PreparationRecord {
     fn heap_owned_bytes(&self, io: &crate::executor::PreparationIo) -> Result<u64>;
 }
 
 #[cfg(feature = "filesystem")]
-impl NativeProjectionArtifact for serde_json::Value {
-    fn value_schema() -> crate::contract::JsonValueSchema {
-        crate::contract::JsonValueSchema::Root
-    }
+impl ProjectionArtifact for serde_json::Value {
     fn heap_owned_bytes(&self, _io: &crate::executor::PreparationIo) -> Result<u64> {
         crate::contract::json_value_logical_owned_bytes(self)
     }
 }
 
 #[cfg(feature = "filesystem")]
-impl NativeProjectionArtifact for ProjectedToolInvocation {
-    fn value_schema() -> crate::contract::JsonValueSchema {
-        crate::contract::JsonValueSchema::ProjectedToolInvocation
-    }
+impl ProjectionArtifact for ProjectedToolInvocation {
     fn heap_owned_bytes(&self, io: &crate::executor::PreparationIo) -> Result<u64> {
         let arguments = crate::contract::json_value_logical_owned_bytes(&self.arguments)?;
         (self.call_id.capacity() as u64).checked_add(self.name.capacity() as u64)
@@ -1032,10 +893,7 @@ impl NativeProjectionArtifact for ProjectedToolInvocation {
 }
 
 #[cfg(feature = "filesystem")]
-impl NativeProjectionArtifact for crate::model::ToolResultContent {
-    fn value_schema() -> crate::contract::JsonValueSchema {
-        crate::contract::JsonValueSchema::ToolResultContent
-    }
+impl ProjectionArtifact for crate::model::ToolResultContent {
     fn heap_owned_bytes(&self, io: &crate::executor::PreparationIo) -> Result<u64> {
         self.logical_owned_bytes()?.checked_sub(std::mem::size_of::<Self>() as u64)
             .ok_or_else(|| projection_invalid(Some(io), "projected tool result ownership overflows"))
@@ -1043,7 +901,7 @@ impl NativeProjectionArtifact for crate::model::ToolResultContent {
 }
 
 #[cfg(feature = "filesystem")]
-fn projection_conversion_allowance<T: NativeProjectionArtifact>(
+fn projection_conversion_allowance<T: ProjectionArtifact>(
     shape: crate::contract::JsonValueShape,
     io: &crate::executor::PreparationIo,
 ) -> Result<u64> {
@@ -1052,7 +910,7 @@ fn projection_conversion_allowance<T: NativeProjectionArtifact>(
     let overflow = || projection_invalid(Some(io), "tool projection conversion allowance overflows");
     let nodes = shape.lexical_items().checked_add(shape.virtual_items()).ok_or_else(overflow)?;
     let slots = nodes.checked_mul(10).ok_or_else(overflow)?;
-    let typed_result = T::value_schema() == crate::contract::JsonValueSchema::ToolResultContent;
+    let typed_result = T::json_value_schema() == crate::contract::JsonValueSchema::ToolResultContent;
     let content_slot = size_of::<Content<'static>>()
         .max(size_of::<(Content<'static>, Content<'static>)>()) as u64;
     let typed_slot = [
@@ -1092,7 +950,7 @@ fn projection_conversion_allowance<T: NativeProjectionArtifact>(
 }
 
 #[cfg(feature = "filesystem")]
-fn convert_projection_value<'a, T: NativeProjectionArtifact>(
+fn convert_projection_value<'a, T: ProjectionArtifact>(
     source: (serde_json::Value, crate::filesystem::DecodeReservation<'a>), maximum_bytes: u64,
     io: &'a crate::executor::PreparationIo,
 ) -> Result<(T, crate::filesystem::DecodeReservation<'a>)> {
@@ -1104,7 +962,7 @@ fn convert_projection_value<'a, T: NativeProjectionArtifact>(
         &input,
         crate::contract::JsonBounds { maximum_bytes, maximum_items: io.remaining()?.items_examined,
             maximum_depth: 128 },
-        T::value_schema(),
+        T::json_value_schema(),
         &mut |next| match next {
             crate::contract::JsonCodecCharge::Inspect { items } => projection_step(Some(io), items),
             _ => Err(projection_invalid(Some(io), "owned projection inspection reported nonresident work")),
@@ -1176,8 +1034,8 @@ async fn read_projection_value<'io, R: ContentResidencyVerifier + ?Sized>(
     if bytes.len() as u64 > maximum_bytes {
         return Err(projection_invalid(Some(io), "resolved tool artifact exceeds rendering limit"));
     }
-    file.descriptor().verify_with_io(&bytes, Some(io))?;
-    let parsed = io.decode_preparation_with_code::<serde_json::Value>(
+    crate::executor::with_history_io(Some(io), |work| file.descriptor().verify(&bytes, work))?;
+    let parsed = io.decode_preparation::<serde_json::Value>(
         &bytes, crate::wire::ErrorCode::Invalid,
     )?;
     validate_model_json_numbers(&parsed.value, Some(io))?;
@@ -1202,7 +1060,7 @@ async fn read_json_artifact<T: DeserializeOwned, R: ContentResidencyVerifier + ?
             "resolved tool artifact exceeds rendering limit".into(),
         ));
     }
-    file.descriptor().verify(&bytes)?;
+    file.descriptor().verify(&bytes, &mut None)?;
     let value: serde_json::Value = crate::contract::json_from_slice(&bytes)
         .map_err(|error| Error::Invalid(format!("tool artifact is invalid: {error}")))?;
     validate_model_json_numbers(&value, None)?;
@@ -1325,7 +1183,7 @@ mod tests {
             reply_to,
             tool_call_id: None,
             extensions: BTreeMap::new(),
-        })?;
+        }, &mut None)?;
         Ok(id)
     }
 
@@ -1426,7 +1284,7 @@ mod tests {
             )
             .is_err()
         );
-        conversation.append(current.clone())?;
+        conversation.append(current.clone(), &mut None)?;
         assert_eq!(
             select_turn_delta(
                 &conversation,
@@ -1463,7 +1321,7 @@ mod tests {
             reply_to: None,
             tool_call_id: None,
             extensions: BTreeMap::new(),
-        })?;
+        }, &mut None)?;
         let selection = ModelContextSelection {
             checkpoint: None,
             conversation_revision: 1,

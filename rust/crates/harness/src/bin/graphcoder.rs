@@ -51,6 +51,9 @@ const HELP: &str = "graphcoder --session CONFIG.json [--headless]\n\
     TEXT        Queue a stock root/selected-parent task, without starting it\n\
     /parent TASK|root  Select an actual retained task as parent, or root\n\
     /queue FILE Queue a typed WorkflowCommand JSON with fresh admission identity\n\
+    /command FILE Run/reconcile an explicitly configured approved native effect\n\
+    /context FILE Capture discovery and replace typed attributes for later requests\n\
+    /fork-selection FILE Select full/fresh/summary from an authenticated original cut\n\
     /prepare FILE Admit exact typed fork ResourcePreparationRequest JSON under its caller\n\
     /publish-fork FILE Publish actual report/admit exact child: caller,lease,preparation\n\
     /inspect FILE Inspect authorized source allocations: caller,lease,source\n\
@@ -69,7 +72,7 @@ const HELP: &str = "graphcoder --session CONFIG.json [--headless]\n\
     /write FILE Stage bounded content in an explicit caller-owned volume\n\
     /read FILE  Read exact pinned content: caller,lease,file (max 64 KiB)\n\
     /read-path FILE Read granted head/explicit cut: caller,lease,volume,path,generation? (max 64 KiB)\n\
-    /publication-open FILE Prepare original SDK plan: operation_id,caller,caller_lease\n\
+    /publication-open FILE Prepare original SDK plan: operation_id,caller_lease\n\
     /publication-observe FILE Observe retained publication/approval journal\n\
     /publication-apply FILE Publish only the actual approved original plan\n\
     /publication-reconcile FILE Reconcile the original publication, never replan\n\
@@ -87,7 +90,7 @@ const HELP: &str = "graphcoder --session CONFIG.json [--headless]\n\
     /reset      Reset fixture display only (unavailable for native sessions)\n\
     /help       Display these commands\n\
     /quit       Exit without claiming pending work completed or cancelled\n\
-    Live-model, native-process and optional remote capabilities require explicit adapters.\n";
+    Live models and optional remote capabilities require explicit adapters.\n";
 
 #[cfg(not(target_arch = "wasm32"))]
 enum Selection { Fixture, Native(std::path::PathBuf), Scenario(std::path::PathBuf) }
@@ -238,7 +241,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     writeln!(output, "{}", if fixture_mode {
         "GraphCoder — fixture wire; UI playback only, no durable effects"
     } else {
-        "GraphCoder — actual local Harness runtime; deterministic request-digest provider; live-model/native-process adapters unavailable"
+        "GraphCoder — actual local Harness runtime; deterministic request-digest provider; native commands require explicit approved bindings"
     })?;
     loop {
         if interactive { write!(output, "{}> ", if fixture_mode { "fixture" } else { "graphcoder" })?; }
@@ -330,6 +333,34 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             drop(backend.take());
             *backend = Some(Backend::Native(std::sync::Arc::new(native::NativeSession::open(config).await?)));
             return Ok("native providers reopened; no admission or effect resent\n".into());
+        }
+        #[cfg(feature = "native-execution")]
+        if let Some(path) = command.strip_prefix("/command ") {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct NativeCommand {
+                caller: acyclic_harness::TaskId,
+                lease: acyclic_harness::distributed::WorkLease,
+                operation: acyclic_harness::OperationId,
+                decision: Option<bool>,
+            }
+            let request: NativeCommand = read_json(std::path::Path::new(path))?;
+            return api.native()?.command(request.caller, &request.lease, request.operation, request.decision).await;
+        }
+        if let Some(path) = command.strip_prefix("/context ") {
+            return api.native()?.configure_context(read_json(std::path::Path::new(path))?).await;
+        }
+        if let Some(path) = command.strip_prefix("/fork-selection ") {
+            #[derive(serde::Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Selection {
+                caller: acyclic_harness::TaskId,
+                lease: acyclic_harness::distributed::WorkLease,
+                operation: acyclic_harness::OperationId,
+                history: acyclic_harness::fork::ForkHistoryPolicy,
+            }
+            let request: Selection = read_json(std::path::Path::new(path))?;
+            return api.native()?.select_fork(request.caller, &request.lease, request.operation, request.history).await;
         }
         if let Some(task) = command.strip_prefix("/parent ") {
             let native = api.native()?;

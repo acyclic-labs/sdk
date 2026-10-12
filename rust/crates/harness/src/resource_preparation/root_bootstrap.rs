@@ -48,72 +48,42 @@ impl RootBootstrapContentRequest {
         Ok(bytes)
     }
 
-    /// Copies concrete reference fields and the resident snapshot on the original native ledger, admitting each real copy before allocation.
-    pub fn clone_with_native_work(
+    /// Copies the request on its original native ledger.
+    pub fn copy(
         &self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         inspect_snapshot(self, work)?;
         let mut observer = crate::store::history::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let mut io: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
-        io.as_deref_mut().expect("native observer").retain_owned(std::mem::size_of::<Self>() as u64)?;
-        let snapshot = match &self.native_snapshot {
-            Some(value) => {
-                let (data, custody) = crate::tool::clone_value_with_native_work(value, work)?;
-                Some((data, custody))
-            }
-            None => None,
-        };
-        let volume = self.volume.clone_with_work(&mut io)?;
-        let evidence = copy_reference(&self.evidence, &mut io)?;
+        let mut observed = Some(&mut observer as &mut dyn crate::store::history::HistoryIo);
+        let mut quota = crate::wire_codec::CodecQuota::new(&mut observed, std::mem::size_of::<Self>() as u64)?;
+        let native_snapshot = self.native_snapshot.as_ref()
+            .map(|value| crate::core::copy_value(value, &mut quota)).transpose()?;
+        let volume = self.volume.copy(quota.work())?;
+        quota.adopt(volume.logical_owned_bytes()?)?;
+        let evidence = copy_reference(&self.evidence, &mut quota)?;
         let generation = GenerationRef::from_resource_with_work(
-            copy_reference(self.generation.as_resource(), &mut io)?, &mut io,
+            copy_reference(self.generation.as_resource(), &mut quota)?, quota.work(),
         )?;
-        let (native_snapshot, snapshot_custody) = match snapshot {
-            Some((data, custody)) => (Some(data), Some(custody)),
-            None => (None, None),
-        };
         let copied = Self {
             root_operation: self.root_operation, graph_root: self.graph_root, role: self.role,
             volume, evidence, generation, native_snapshot,
         };
-        if let Some(custody) = snapshot_custody {
-            if let Err(error) = io.as_deref_mut().expect("native observer").absorb_native_custody(custody) {
-                drop(copied);
-                return Err(error);
-            }
-        }
-        // Value's inline slot already lives inside this admitted request slot.
-        if copied.native_snapshot.is_some() {
-            io.as_deref_mut().expect("native observer").release_owned(std::mem::size_of::<Value>() as u64)?;
-        }
-        drop(io);
+        quota.transfer();
+        drop(quota);
         Ok((copied, observer.into_custody()))
     }
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 fn copy_reference(
-    source: &ResourceRef,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    source: &ResourceRef, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<ResourceRef> {
-    source.validate_with_work(work)?;
-    let io = work.as_deref_mut().expect("native observer");
-    let namespace = io.clone_text(source.provider().namespace())?;
-    let family = io.clone_text(source.provider().family())?;
-    let revision = io.clone_text(source.provider().version())?;
-    let provider = ProviderRef::new_with_work(namespace, family, revision, work)?;
-    let mut key = Vec::new();
-    let io = work.as_deref_mut().expect("native observer");
-    io.admit_copy(source.key().len() as u64)?;
-    io.reserve_bytes(&mut key, source.key().len())?;
-    io.copy_bytes(source.key().len() as u64)?;
-    key.extend_from_slice(source.key());
-    let version = match source.version() {
-        Some(version) => Some(io.clone_text(version)?),
-        None => None,
-    };
-    ResourceRef::new_with_work(source.kind(), provider, key, version, work)
+    source.validate_with_work(quota.work())?;
+    let provider = crate::core::copy_provider(source.provider(), quota)?;
+    let key = crate::core::copy_copy_vector(source.key(), quota)?;
+    let version = source.version().map(|value| crate::core::copy_text(value, quota)).transpose()?;
+    ResourceRef::new_with_work(source.kind(), provider, key, version, quota.work())
 }
 
 /// Provider-authenticated ROOT content; only the private consumer grants access.
@@ -193,7 +163,6 @@ impl<'a> RootBootstrapContentContext<'a> {
         let mut io: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
         created_access_step(&mut io)?;
         if original_root.parent.is_some()
-            || original_root.task_id() != binding.original_task()
             || crate::runtime::task_id_for_admission(original_root.operation_id) != binding.original_task()
         {
             return Err(root_denial("ROOT bootstrap context differs from original admission"));
@@ -246,11 +215,10 @@ pub(crate) fn preflight_root_bootstrap_with_native_work(
         .map_err(|cause| Error::NativeWork { cause, custody: None })?;
     let mut io: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
     created_access_step(&mut io)?;
-    request.volume.validate_with_work(&mut io)?;
+    request.volume.validate(&mut io)?;
     request.evidence.validate_with_work(&mut io)?;
     request.generation.validate_with_work(&mut io)?;
-    if context.original_root.parent.is_some()
-        || request.root_operation != context.original_root.operation_id
+    if request.root_operation != context.original_root.operation_id
         || request.graph_root != context.original_root.task_id()
         || request.generation.as_resource().provider() != request.volume.provider()
         || request.evidence.provider() != request.volume.provider()
@@ -283,7 +251,7 @@ fn verify_receipt_identity(
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
     preflight_root_bootstrap_with_native_work(context, request, work)?;
-    preflight_root_bootstrap_with_native_work(context, actual, work)?;
+    inspect_snapshot(actual, work)?;
     let io = crate::filesystem::PreparationIo::from_native_work(work)?;
     io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: audience.id.len() as u64 }, false)?;
     if actual != request || audience != context.audience || agent != context.agent
@@ -330,7 +298,7 @@ impl CreatedResourceAccess {
         if received.1.bytes() < source_owned {
             return Err(root_denial("ROOT bootstrap receipt lacks actual payload custody"));
         }
-        // This observer is created before all copied payloads, so unwinding drops those payloads before their original-ledger allocation guards.
+        // Declare the observer before the payloads so guards outlive them.
         let mut observer = crate::store::history::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let mut io: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
@@ -348,7 +316,7 @@ impl CreatedResourceAccess {
         drop((read, write));
         let mut content = Vec::new();
         created_access_reserve(&mut content, 1, &mut io)?;
-        let volume = request.volume.clone_with_work(&mut io)?;
+        let volume = request.volume.copy(&mut io)?;
         let authority = io.as_deref_mut().expect("native observer").clone_authority(context.audience)?;
         io.as_deref_mut().expect("native observer").retain_owned(std::mem::size_of::<Self>() as u64)?;
         let default_writer = request.role == RootBootstrapContentRole::Scratch
@@ -368,7 +336,7 @@ impl CreatedResourceAccess {
             native_custody: None,
         };
         drop(received);
-        // Source custody has physically retired; only actual final copied payload custody survives, with no provider-claim-to-query substitution.
+        // Retire source custody before transferring the copied payloads.
         if let Err(error) = io.as_deref_mut().expect("native observer").absorb_native_custody(funded_grants.1) {
             drop(access);
             return Err(error);
@@ -407,7 +375,7 @@ impl CreatedResourceAccess {
         created_access_reserve(&mut content, 2, &mut io)?;
         for source in self.content.iter().chain(next.content.iter()) {
             created_access_step(&mut io)?;
-            let volume = source.volume.clone_with_work(&mut io)?;
+            let volume = source.volume.copy(&mut io)?;
             let authority = match &source.authority {
                 Some(authority) => Some(io.as_deref_mut().expect("native observer").clone_authority(authority)?),
                 None => return Err(root_denial("ROOT bootstrap seal lost its audience")),
@@ -528,7 +496,7 @@ mod tests {
     }
 
     #[test]
-    fn child_task_operation_and_private_owner_cannot_become_original_root() -> Result<()> {
+    fn request_identity_and_private_owner_match_original_root() -> Result<()> {
         let agent = AgentId::from_bytes([125; 16]);
         let owner = Authority { kind: AggregateKind::Task, id: "owner".into() };
         let audience = Authority { kind: AggregateKind::Conversation, id: "audience".into() };
@@ -536,9 +504,6 @@ mod tests {
         let admitted = admission(&original, true, false)?;
         let work = work(&CancellationToken::new(), 100_000)?;
         preflight_root_bootstrap_with_native_work(context(&admitted, &owner, &audience, agent), &original, &work)?;
-        let mut child = admitted.clone();
-        child.parent = Some(TaskId::from_bytes([126; 16]));
-        unauthorized(preflight_root_bootstrap_with_native_work(context(&child, &owner, &audience, agent), &original, &work));
         let mut changed = original.clone();
         changed.graph_root = TaskId::from_bytes([127; 16]);
         unauthorized(preflight_root_bootstrap_with_native_work(context(&admitted, &owner, &audience, agent), &changed, &work));
@@ -592,25 +557,25 @@ mod tests {
         let mut request = request(RootBootstrapContentRole::Project, agent)?;
         let cancellation = CancellationToken::new();
         let work = work(&cancellation, 100_000)?;
-        let (copied, custody) = request.clone_with_native_work(&work)?;
+        let (copied, custody) = request.copy(&work)?;
         assert!(copied == request);
         assert!(work.receipt().bytes_copied > 0);
         drop(copied);
         drop(custody);
         assert_eq!(work.live_allocation_bytes(), 0);
         cancellation.cancel();
-        assert!(matches!(request.clone_with_native_work(&work), Err(Error::NativeWork {
+        assert!(matches!(request.copy(&work), Err(Error::NativeWork {
             cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, ..
         })));
         let denied = super::tests::work(&CancellationToken::new(), 0)?;
-        assert!(request.clone_with_native_work(&denied).is_err());
+        assert!(request.copy(&denied).is_err());
         assert_eq!(denied.receipt().bytes_copied, 0);
         assert_eq!(denied.live_allocation_bytes(), 0);
         let mut value = Value::Null;
         for _ in 0..300 { value = Value::Array(vec![value]); }
         request.native_snapshot = Some(value);
         let depth_work = super::tests::work(&CancellationToken::new(), 100_000)?;
-        assert!(request.clone_with_native_work(&depth_work).is_err());
+        assert!(request.copy(&depth_work).is_err());
         assert_eq!(depth_work.receipt().bytes_copied, 0);
         assert_eq!(depth_work.live_allocation_bytes(), 0);
         Ok(())

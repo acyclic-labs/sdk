@@ -6,9 +6,9 @@ use crate::{
     context::ContextPipeline,
     conversation::Limits,
     core::{ExtensionAdmission, OriginalExtensionBinding, Reducer},
-    durable_tool::{ResumableTool, ResumableToolRegistry},
+    durable_tool::ResumableToolRegistry,
     executor::{ExecutionJournal, Executor, StockExecutor, TurnInput, TurnOutput},
-    extension::{ExtensionRuntime, NativeExtensionBundle},
+    extension::ExtensionRuntime,
     model::{Model, ModelProvider},
     runtime::{
         AgentHarness, Bindings, DurableTaskHost, ExecutionProvider, InteractionResolver,
@@ -127,14 +127,6 @@ impl HarnessBuilder {
         self
     }
 
-    /// Binds already captured declared instructions and skill metadata through the ordinary context pipeline.
-    pub fn declared_context(mut self, snapshot: crate::context::DiscoveredContext) -> Result<Self> {
-        self.context = self.context.with(Arc::new(
-            snapshot.stage(crate::context::ContextPlacement::Prepend)?,
-        ));
-        Ok(self)
-    }
-
     /// Selects the versioned tool registry.
     #[must_use]
     pub fn tools(mut self, value: ToolRegistry) -> Self {
@@ -153,12 +145,6 @@ impl HarnessBuilder {
     pub fn resumable_tools(mut self, value: ResumableToolRegistry) -> Self {
         self.bindings.resumable_tools = value;
         self
-    }
-
-    /// Registers one pinned resumable tool without adding a live fallback.
-    pub fn resumable_tool(mut self, value: ResumableTool) -> Result<Self> {
-        self.bindings.resumable_tools.register(value)?;
-        Ok(self)
     }
 
     /// Selects pinned typed task definitions for the same composition.
@@ -298,24 +284,9 @@ impl HarnessBuilder {
         self
     }
 
-    /// Links a native bundle into this composition's complete binding surface.
-    pub fn extension_bundle(mut self, bundle: NativeExtensionBundle) -> Result<Self> {
-        let runtime = bundle.into_runtime();
-        if let Some(existing) = &self.extension_runtime
-            && !Arc::ptr_eq(existing, &runtime)
-        {
-            return Err(Error::Conflict(
-                "composition already has another extension runtime".into(),
-            ));
-        }
-        runtime.link_into_bindings(&mut self.bindings)?;
-        self.extension_runtime = Some(runtime);
-        Ok(self)
-    }
-
     /// Validates dependency exclusivity and constructs the immutable runtime binding.
     pub fn build(self) -> Result<HarnessBundle> {
-        self.limits.validate()?;
+        self.limits.validate(&mut None)?;
         let journal = self.journal;
         let name = self.name.unwrap_or_else(|| "harness".into());
         if name.trim().is_empty() {
@@ -513,7 +484,7 @@ impl HarnessBundle {
                     "stock turn requires ordinary local task admission".into(),
                 ));
             };
-            return match handle.result_owned().await {
+            return match handle.result().await {
                 crate::Outcome::Succeeded(result) => result,
                 crate::Outcome::Failed { message } => Err(Error::Conflict(message)),
                 crate::Outcome::Cancelled => Err(Error::InteractionRejected(
@@ -549,8 +520,8 @@ impl HarnessBundle {
             return Err(Error::Invalid("agent attachments exceed limit".into()));
         }
         for attachment in &input.attachments {
-            attachment.validate()?;
-            self.limits.validate_file(&attachment.file)?;
+            attachment.validate(&mut None)?;
+            self.limits.validate_file(&attachment.file, &mut None)?;
             self.runtime.verify_readable_file(&attachment.file).await?;
         }
         let definition = self
@@ -568,8 +539,8 @@ impl HarnessBundle {
                 return Err(Error::Invalid("agent output exceeds limits".into()));
             }
             for attachment in &output.attachments {
-                attachment.validate()?;
-                self.limits.validate_file(&attachment.file)?;
+                attachment.validate(&mut None)?;
+                self.limits.validate_file(&attachment.file, &mut None)?;
                 self.runtime.verify_readable_file(&attachment.file).await?;
             }
         }
@@ -933,10 +904,7 @@ mod tests {
             }))
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            _: crate::model::ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
+        fn reconcile<'a>(&'a self, _dispatch: crate::model::ModelDispatch, _observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             async {
                 Err(Error::Unsupported(
@@ -1105,12 +1073,7 @@ mod tests {
             {
                 Box::pin(futures::stream::empty())
             }
-            fn reconcile<'a>(
-                &'a self,
-                _: crate::model::ModelAttempt,
-            ) -> BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
-                async { Ok(None) }.boxed()
-            }
+
         }
         let bundle = HarnessBuilder::new()
             .name("test")
@@ -1321,9 +1284,9 @@ mod tests {
         registry.register(example_tool())?;
         assert_eq!(registry.definitions()?.len(), 1);
         let tool = registry
-            .get("example.echo")
+            .get("example.echo", None)?
             .ok_or_else(|| Error::NotFound("example.echo".into()))?;
-        assert!(registry.get("acyclic.shell").is_none());
+        assert!(registry.get("acyclic.shell", None)?.is_none());
         let invocation = ToolInvocation {
             operation_id: crate::OperationId::new(),
             call_id: "echo".into(),

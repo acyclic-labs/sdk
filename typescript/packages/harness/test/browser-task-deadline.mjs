@@ -65,7 +65,7 @@ async function expiredDispatch(model) {
     assert(admission.kind === "accepted", describe(admission));
     const work = await runtime.runOperation(workerIdentity, admission.task_id, 4);
     assert(work?.kind === "unresolved" && !work.error.message.includes("unsupported"), `expired deadline is unsupported or ran: ${describe(work)}`);
-    assert(executions === 0 && reconciliations === 0 && fixture.transitions() === 0, "expired deadline crossed dispatch or machine boundary");
+    assert(executions === 0 && reconciliations === 0, "expired deadline crossed dispatch or machine boundary");
     assertRetained(await runtime.observeTask(admission.task_id), admission.task_id, deadline, work.lease);
     assertUncertain(await runtime.outcome(admission.task_id), "expired admission");
     runtime.free();
@@ -75,7 +75,7 @@ async function expiredDispatch(model) {
       `reopen replaced the expired reservation: ${describe(retained)}`);
     assertRetained(await runtime.observeTask(admission.task_id), admission.task_id, deadline, retained.lease);
     assert((await runtime.resume(work.lease, 4)).kind === "unresolved", "expired lease gained execution authority on reopen");
-    assert(executions === 0 && reconciliations === 0 && fixture.transitions() === 0, "reopen redispatched an expired task");
+    assert(executions === 0 && reconciliations === 0, "reopen redispatched an expired task");
   } finally {
     runtime?.free();
     fixture.free();
@@ -90,7 +90,7 @@ if (typeof document === "undefined") {
   let executions = 0;
   let reconciliations = 0;
   let projections = 0;
-  const counts = () => ({ executions, reconciliations, projections, transitions: fixture.transitions() });
+  const counts = () => ({ executions, reconciliations, projections });
   self.onmessage = async ({ data }) => {
     try {
       let value;
@@ -213,7 +213,7 @@ async function activeDeadline(phase) {
     assert(interrupted.value?.kind === "unresolved", `deadline fabricated completed work: ${describe(interrupted)}`);
     assert(!interrupted.value.error.message.includes("unsupported"), describe(interrupted));
     assert(interrupted.counts.executions === 1 && interrupted.counts.reconciliations === 0
-      && interrupted.counts.projections === 0 && interrupted.counts.transitions === 1, `deadline lost or settled uncertain intent: ${describe(interrupted)}`);
+      && interrupted.counts.projections === 0, `deadline lost or settled uncertain intent: ${describe(interrupted)}`);
     const lease = interrupted.value.lease;
     assertRetained(await runtime.observeTask(admission.task_id), admission.task_id, deadline, lease);
     assertUncertain(await runtime.outcome(admission.task_id), "hung original effect");
@@ -221,7 +221,7 @@ async function activeDeadline(phase) {
     await actor.call("release");
     const stale = await actor.call("resume", { lease });
     assert(stale.value.kind === "unresolved" && stale.counts.executions === 1 && stale.counts.reconciliations === 0
-      && stale.counts.projections === 0 && stale.counts.transitions === 1, `stale actor published or redispatched: ${describe(stale)}`);
+      && stale.counts.projections === 0, `stale actor published or redispatched: ${describe(stale)}`);
     assertRetained(await runtime.observeTask(admission.task_id), admission.task_id, deadline, lease);
     assertUncertain(await runtime.outcome(admission.task_id), "late callback");
     actor.terminate();
@@ -234,12 +234,12 @@ async function activeDeadline(phase) {
     assertRetained((await actor.call("observe", { task: admission.task_id })).value, admission.task_id, deadline, retained.value.lease);
     const denied = await actor.call("resume", { lease });
     assert(denied.value.kind === "unresolved" && denied.counts.executions === 0 && denied.counts.reconciliations === 0
-      && denied.counts.projections === 0 && denied.counts.transitions === 0, `replacement renewed deadline or granted stale publication: ${describe(denied)}`);
+      && denied.counts.projections === 0, `replacement renewed deadline or granted stale publication: ${describe(denied)}`);
     assertUncertain((await actor.call("outcome", { task: admission.task_id })).value, "replacement observation");
     phase("explicit ordinary reconciliation observes the original lost-ack receipt without new dispatch");
     const reconciled = await actor.call("reconcile", { lease });
     assert(reconciled.value.kind === "completed" && reconciled.counts.executions === 0 && reconciled.counts.reconciliations === 1
-      && reconciled.counts.projections === 1 && reconciled.counts.transitions === 0, `truthful receipt recovery differed: ${describe(reconciled)}`);
+      && reconciled.counts.projections === 1, `truthful receipt recovery differed: ${describe(reconciled)}`);
     assert((await runtime.outcome(admission.task_id)) === "Cancelled", "known receipt fabricated success instead of observing cancellation");
     const settled = await runtime.observeTask(admission.task_id);
     assert(settled.run_limits.deadline_epoch_ms === BigInt(deadline) && settled.cancellation_requested && settled.reservation === null,

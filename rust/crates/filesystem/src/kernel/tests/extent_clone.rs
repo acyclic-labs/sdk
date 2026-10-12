@@ -15,7 +15,7 @@ fn put(
     let root = extent_page_id(&page, 16)?;
     store.put(
         root,
-        OwnedBytes::from(encode_extent_page(&page, 16)?),
+        OwnedBytes::from(encode_extent_page(&page, 16, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(root)
@@ -26,7 +26,7 @@ fn extents(
     root: ObjectId,
 ) -> Result<Vec<Extent>, Box<dyn std::error::Error>> {
     let bytes = store.read(root, u64::MAX, WorkBudget::UNBOUNDED)?.value;
-    let ExtentPage::Leaf(extents) = decode_extent_page(&bytes, DecodeLimits::default())? else {
+    let ExtentPage::Leaf(extents) = decode_extent_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? else {
         return Err("clone result is not a leaf".into());
     };
     Ok(extents)

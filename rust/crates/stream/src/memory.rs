@@ -15,7 +15,7 @@ use tokio::sync::{RwLock, watch};
 #[cfg(not(target_arch = "wasm32"))]
 use acyclic_native_runtime::{
     NativeByteReservation, NativeOperationKind, NativeOperationReservation, NativeReadMeter,
-    OwnedNativeByteReservation, OwnedNativeOperationReservation, ReadAllocation,
+    ReadAllocation,
 };
 #[cfg(not(target_arch = "wasm32"))]
 use crate::{
@@ -82,9 +82,15 @@ pub(crate) struct MemoryOutput<T> {
     pub(crate) allocation: MemoryAllocation,
 }
 
+impl<T> MemoryOutput<T> {
+    pub(crate) fn map<U>(self, convert: impl FnOnce(T) -> U) -> MemoryOutput<U> {
+        MemoryOutput { value: convert(self.value), allocation: self.allocation }
+    }
+}
+
 struct MemoryByteReservation<'a> {
     #[cfg(not(target_arch = "wasm32"))]
-    reservation: Option<NativeByteReservation<'a>>,
+    reservation: Option<NativeByteReservation<&'a dyn NativeReadMeter>>,
     #[cfg(target_arch = "wasm32")]
     _observer: &'a MemoryObserver,
 }
@@ -456,9 +462,7 @@ impl MemoryStream {
             let mut attempt = self.prepare_commit_attempt(
                 &mut state, request, deadline_unix_millis, digest, observer,
             )?;
-            let new_commit = attempt.publication.is_some()
-                && matches!(&attempt.outcome.value, CommitOutcome::Committed(_));
-            if before.is_some() && new_commit {
+            if before.is_some() && attempt.decision.is_some() {
                 let mut slots = 0_u64;
                 let CommitOutcome::Committed(envelope) = &attempt.outcome.value else {
                     unreachable!("a new canonical decision has a committed envelope")
@@ -499,12 +503,12 @@ impl MemoryStream {
             } else {
                 None
             };
-            if continuation.is_some() && new_commit {
+            if continuation.is_some() && attempt.decision.is_some() {
                 let committed_at = state.last_committed_at_micros
                     .max(self.commit_clock.now_unix_millis().saturating_mul(1_000));
                 attempt.bind_timestamp(committed_at, observer)?;
             }
-            let MemoryCommitAttempt { outcome, publication, committed_at_micros } = attempt;
+            let MemoryCommitAttempt { outcome, publication, decision, committed_at_micros } = attempt;
             let error = if let Some(prepared) = publication {
                 observer.check()?;
                 if deadline_unix_millis.is_some_and(|deadline| self.clock.now_unix_millis() >= deadline) {
@@ -512,7 +516,7 @@ impl MemoryStream {
                 }
                 // Publish without awaiting after the guard and state recheck.
                 publish(&mut state, prepared, digest);
-                state.decision += u64::from(new_commit);
+                if let Some(decision) = decision { state.decision = decision; }
                 state.last_committed_at_micros = committed_at_micros;
                 write.record(bytes).err()
             } else {
@@ -540,7 +544,7 @@ impl MemoryStream {
             };
             return Ok(MemoryCommitAttempt {
                 outcome: clone_commit_outcome(outcome, observer, false)?,
-                publication: None,
+                publication: None, decision: None,
                 committed_at_micros: state.last_committed_at_micros,
             });
         }
@@ -553,7 +557,7 @@ impl MemoryStream {
         }, observer)?;
         let entry = std::mem::size_of::<(OwnedBytes, Arc<Replay>)>();
         let mut resident = observer.adopt(entry)?;
-        let (outcome, paths, mutations, committed_at_micros) = if conflicts.value.is_empty() {
+        let (outcome, paths, mutations, decision, committed_at_micros) = if conflicts.value.is_empty() {
             drop(conflicts);
             crate::preparation::authority(request, |path| {
                 state.paths.get(path).map(|stream| stream.tail)
@@ -576,20 +580,15 @@ impl MemoryStream {
             let facts = crate::preparation::mutations(&request.mutations, |path| {
                 state.paths.get(path).map(|stream| stream.tail)
             }, commit_id, committed_at_micros, observer)?;
-            let envelope = MemoryOutput {
-                value: CommittedEnvelope { commit_id, mutations: facts.value }, allocation: facts.allocation,
-            };
+            let envelope = facts.map(|mutations| CommittedEnvelope { commit_id, mutations });
             let mutations = prepare_mutations(state, &envelope.value, observer)?;
             let paths = prepare_paths(&missing.value, &envelope.value, observer)?;
             resident.absorb(observer.adopt(std::mem::size_of::<(CommitId, Arc<Replay>)>())?)?;
-            let outcome = MemoryOutput {
-                value: CommitOutcome::Committed(envelope.value),
-                allocation: envelope.allocation,
-            };
-            (outcome, paths, mutations, committed_at_micros)
+            let outcome = envelope.map(CommitOutcome::Committed);
+            (outcome, paths, mutations, Some(decision), committed_at_micros)
         } else {
-            let outcome = MemoryOutput { value: CommitOutcome::Conflict(conflicts.value), allocation: conflicts.allocation };
-            (outcome, observer.vec(0)?, observer.vec(0)?, state.last_committed_at_micros)
+            let outcome = conflicts.map(CommitOutcome::Conflict);
+            (outcome, observer.vec(0)?, observer.vec(0)?, None, state.last_committed_at_micros)
         };
         let replay = clone_commit_outcome(&outcome.value, observer, false)?;
         let cached = observer.cached(None, IdempotencyOutcome::Commit(replay.value), replay.allocation)?;
@@ -599,7 +598,7 @@ impl MemoryStream {
             cached, key: Some(key),
             paths, mutations, resident,
         };
-        Ok(MemoryCommitAttempt { outcome, publication: Some(publication), committed_at_micros })
+        Ok(MemoryCommitAttempt { outcome, publication: Some(publication), decision, committed_at_micros })
     }
 
     pub(crate) async fn apply_append(
@@ -755,10 +754,7 @@ impl MemoryStream {
             let facts = crate::preparation::mutations(
                 &request.mutations, |_| Some(start), CommitId::default(), 0, &observer,
             )?;
-            let output = MemoryOutput {
-                value: CommittedEnvelope { commit_id: CommitId::default(), mutations: facts.value },
-                allocation: facts.allocation,
-            };
+            let output = facts.map(|mutations| CommittedEnvelope { commit_id: CommitId::default(), mutations });
             let mutations = prepare_mutations(&state, &output.value, &observer)?;
             let replay = clone_envelope(&output.value, &observer, false)?;
             let cached = observer.cached(None, IdempotencyOutcome::Commit(CommitOutcome::Committed(replay.value)), replay.allocation)?;
@@ -769,10 +765,10 @@ impl MemoryStream {
             let key = request.idempotency_key.0.clone();
             let replay_entry = observer.adopt(std::mem::size_of::<(OwnedBytes, Arc<Replay>)>())?;
             let commit_entry = observer.adopt(std::mem::size_of::<(CommitId, Arc<Replay>)>())?;
-            let write_operation = OwnedNativeOperationReservation::new(
+            let write_operation = NativeOperationReservation::new(
                 Arc::clone(&meter), NativeOperationKind::Write, 1,
             )?;
-            let write_bytes = OwnedNativeByteReservation::new(
+            let write_bytes = NativeByteReservation::new(
                 Arc::clone(&meter), NativeOperationKind::Write, maximum,
             )?;
             // Bound request, state, and preallocated output visits.
@@ -805,10 +801,10 @@ impl MemoryStream {
         };
         let target = append.path.clone();
         let start = append.start;
-        let read_operation = OwnedNativeOperationReservation::new(
+        let read_operation = NativeOperationReservation::new(
             Arc::clone(&meter), NativeOperationKind::Read, 1,
         )?;
-        let read_bytes = OwnedNativeByteReservation::new(
+        let read_bytes = NativeByteReservation::new(
             Arc::clone(&meter), NativeOperationKind::Read, prepared.maximum,
         )?;
         // Bound lookup, output slots, and comparisons against two held conditions.
@@ -877,10 +873,7 @@ impl MemoryStream {
                     record_prepared_work(&meter, &mut late, 1, 0);
                 }).expect("the protected recovery output has one preallocated record");
                 retain_prepared_error(&mut late, prepared.read_bytes.record(record.value.len()));
-                MemoryOutput {
-                    value: CommitOutcome::Committed(prepared.output.value),
-                    allocation: prepared.output.allocation,
-                }
+                prepared.output.map(CommitOutcome::Committed)
             }
             CommitOutcome::Conflict(conflicts) => {
                 if conflicts.len() > 2 {
@@ -902,10 +895,7 @@ impl MemoryStream {
                     if !matched { return prepared_failure(late, StreamError::IdempotencyMismatch); }
                     prepared.conflicts.value.push(conflict.clone());
                 }
-                MemoryOutput {
-                    value: CommitOutcome::Conflict(prepared.conflicts.value),
-                    allocation: prepared.conflicts.allocation,
-                }
+                prepared.conflicts.map(CommitOutcome::Conflict)
             }
         };
         drop(state);
@@ -972,10 +962,7 @@ impl MemoryStream {
                     crate::preparation::fill_single_append(&mut prepared.output.value, record, || {
                         record_prepared_work(&meter, &mut late, 1, 0);
                     }).expect("the original canonical replay has one preallocated record");
-                    MemoryOutput {
-                        value: CommitOutcome::Committed(prepared.output.value),
-                        allocation: prepared.output.allocation,
-                    }
+                    prepared.output.map(CommitOutcome::Committed)
                 }
                 CommitOutcome::Conflict(conflicts) => {
                     if conflicts.len() > prepared.conflicts.value.capacity() {
@@ -985,10 +972,7 @@ impl MemoryStream {
                         prepared.conflicts.value.push(conflict.clone());
                         record_prepared_work(&meter, &mut late, 1, 0);
                     }
-                    MemoryOutput {
-                        value: CommitOutcome::Conflict(prepared.conflicts.value),
-                        allocation: prepared.conflicts.allocation,
-                    }
+                    prepared.conflicts.map(CommitOutcome::Conflict)
                 }
             };
             return Ok(Ok((outcome, late)));
@@ -1023,11 +1007,7 @@ impl MemoryStream {
             };
             drop(prepared.reservation.take());
             publish(&mut state, publication, digest);
-            let outcome = MemoryOutput {
-                value: CommitOutcome::Conflict(prepared.conflicts.value),
-                allocation: prepared.conflicts.allocation,
-            };
-            return Ok(Ok((outcome, late)));
+            return Ok(Ok((prepared.conflicts.map(CommitOutcome::Conflict), late)));
         }
         for observed in &prepared.observations {
             let stream = state.paths.get(&observed.path).expect("the tails were rechecked above");
@@ -1083,11 +1063,7 @@ impl MemoryStream {
         state.decision = decision;
         state.last_committed_at_micros = committed_at_micros;
         retain_prepared_error(&mut late, prepared.write_bytes.record(body.len()));
-        let outcome = MemoryOutput {
-            value: CommitOutcome::Committed(prepared.output.value),
-            allocation: prepared.output.allocation,
-        };
-        Ok(Ok((outcome, late)))
+        Ok(Ok((prepared.output.map(CommitOutcome::Committed), late)))
     }
 }
 
@@ -1114,6 +1090,7 @@ fn prepared_failure<T>(
 struct MemoryCommitAttempt {
     outcome: MemoryOutput<CommitOutcome>,
     publication: Option<PreparedPublication>,
+    decision: Option<u64>,
     committed_at_micros: u64,
 }
 
@@ -1356,8 +1333,8 @@ pub(crate) struct NativeMemoryPreparedCommit {
     observations: [PreparedPathObservation; 2],
     key: OwnedBytes,
     reservation: Option<PreparedCapacityReservation>,
-    write_operation: OwnedNativeOperationReservation,
-    write_bytes: OwnedNativeByteReservation,
+    write_operation: NativeOperationReservation<Arc<dyn NativeReadMeter>>,
+    write_bytes: NativeByteReservation<Arc<dyn NativeReadMeter>>,
     meter: Arc<dyn NativeReadMeter>,
     maximum: usize,
     replay_entry: MemoryAllocation,
@@ -1373,8 +1350,8 @@ struct NativeMemoryPreparedRecovery {
     target: StreamPath,
     start: u64,
     maximum: usize,
-    read_operation: OwnedNativeOperationReservation,
-    read_bytes: OwnedNativeByteReservation,
+    read_operation: NativeOperationReservation<Arc<dyn NativeReadMeter>>,
+    read_bytes: NativeByteReservation<Arc<dyn NativeReadMeter>>,
     meter: Arc<dyn NativeReadMeter>,
 }
 
@@ -1451,10 +1428,7 @@ fn clone_envelope(
         output.value.push(cloned);
         observer.record_item()?;
     }
-    Ok(MemoryOutput {
-        value: CommittedEnvelope { commit_id: envelope.commit_id, mutations: output.value },
-        allocation: output.allocation,
-    })
+    Ok(output.map(|mutations| CommittedEnvelope { commit_id: envelope.commit_id, mutations }))
 }
 
 fn clone_commit_outcome(
@@ -1465,10 +1439,7 @@ fn clone_commit_outcome(
     match outcome {
         CommitOutcome::Committed(envelope) => {
             let output = clone_envelope(envelope, observer, output_read)?;
-            Ok(MemoryOutput {
-                value: CommitOutcome::Committed(output.value),
-                allocation: output.allocation,
-            })
+            Ok(output.map(CommitOutcome::Committed))
         }
         CommitOutcome::Conflict(conflicts) => {
             let mut output = observer.vec(conflicts.len())?;
@@ -1477,10 +1448,7 @@ fn clone_commit_outcome(
                 output.value.push(conflict.clone());
                 observer.record_item()?;
             }
-            Ok(MemoryOutput {
-                value: CommitOutcome::Conflict(output.value),
-                allocation: output.allocation,
-            })
+            Ok(output.map(CommitOutcome::Conflict))
         }
     }
 }
@@ -1492,10 +1460,7 @@ fn clone_idempotency_outcome(
     match outcome {
         IdempotencyOutcome::Commit(outcome) => {
             let output = clone_commit_outcome(outcome, observer, true)?;
-            Ok(MemoryOutput {
-                value: IdempotencyOutcome::Commit(output.value),
-                allocation: output.allocation,
-            })
+            Ok(output.map(IdempotencyOutcome::Commit))
         }
         IdempotencyOutcome::Append(outcome) => Ok(MemoryOutput {
             value: IdempotencyOutcome::Append(outcome.clone()),
@@ -1776,10 +1741,7 @@ impl StreamProvider for MemoryStream {
         let observer = MemoryObserver { meter: Some(Arc::clone(&meter)) };
         let original = Arc::clone(&meter);
         NativeProviderFuture::new(&original, async move {
-            native(self.bounds_inner(path, &observer).await.map(|output| MemoryOutput {
-                value: output.value.tail,
-                allocation: output.allocation,
-            }), &meter)
+            native(self.bounds_inner(path, &observer).await.map(|output| output.map(|bounds| bounds.tail)), &meter)
         })
     }
 
