@@ -28,10 +28,8 @@ impl NativeTreeMaterializationBackend {
         hash_native_metadata_edit(&actual, None, &mut hasher, &self.work())?;
         if actual
             .identity()
-            .map_err(native_materialization_work_error)?
             != metadata
                 .identity()
-                .map_err(native_materialization_work_error)?
             || Some(*hasher.finalize().as_bytes()) != expected
         {
             return Err(NativeTreeMaterializationError::ExternalMutation);
@@ -51,8 +49,7 @@ impl NativeTreeMaterializationBackend {
                 attributes,
                 Some(
                     actual
-                        .identity()
-                        .map_err(native_materialization_work_error)?,
+                        .identity(),
                 ),
                 &self.work(),
             )?;
