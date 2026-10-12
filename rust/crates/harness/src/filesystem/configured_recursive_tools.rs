@@ -390,9 +390,10 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             Arc::new(FilesystemForkVerifier::new(self.filesystem.clone(), self.limits.file_bytes)?),
             Arc::new(StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut None)?),
         ], &mut None)?);
-        aggregate.with_content_verifier(content).with_fork_verifier(forks)
-            .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(self.filesystem.clone())))
-            .with_limits(self.limits)
+        let mut aggregate = aggregate.with_content_verifier(content).with_fork_verifier(forks)
+            .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(self.filesystem.clone())));
+        aggregate.set_limits(self.limits)?;
+        Ok(aggregate)
     }
 
     async fn aggregate(
@@ -1256,7 +1257,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             child_operation_id: claims.0.0.operation_id, allocation_digest, request: source.0.request,
         }, io.into_native_custody(retained)?))
     }
-
 
 
     async fn native_merge_binding(
