@@ -174,7 +174,7 @@ impl PiLazyCapture {
             maximum,
             work,
         )?;
-        crate::pi_root_provider::guarded_pi_decode::<Capture>(
+        crate::pi_root_provider::guarded_pi_decode::<ForkSelection>(
             &bytes.0,
             maximum,
             maximum,

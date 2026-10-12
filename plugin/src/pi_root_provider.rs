@@ -2945,7 +2945,10 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
                 &cursor.0,
                 effect,
                 HistoryReadLimits {
-                    maximum_events: self.owner.policy().limits.context_messages,
+                    maximum_events: u32::try_from(self.owner.policy().limits.context_messages)
+                        .map_err(|_| {
+                            Error::Invalid("effect history event limit overflows".into())
+                        })?,
                     maximum_bytes: self.maximum(),
                 },
                 work,

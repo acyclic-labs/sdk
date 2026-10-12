@@ -170,7 +170,7 @@ pub(crate) fn verify<'a>(
     let identity = pi_root_provider::guarded_pi_bytes(
         &PiCallerClaims {
             version: 1,
-            root_session: &state.root_session_id,
+            root_session: state.root_session_id.as_str(),
             native_session,
             task: binding.task_id,
         },

@@ -258,7 +258,9 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             )
             .await?
         } else {
-            shared.with_output_volume_with_native_work(&input.binding.scratch.volume, work)?
+            shared
+                .with_output_volume_with_native_work(&input.binding.scratch.volume, work)
+                .await?
         };
         Ok(((shared, caller.0, caller.1), caller.2))
     }

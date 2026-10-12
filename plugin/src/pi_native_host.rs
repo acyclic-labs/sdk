@@ -657,7 +657,7 @@ impl PiNativeCommandHost {
             .maximum_payload_bytes
             .min(prepared.admission.limits.file_bytes);
         let bytes = crate::pi_root_provider::canonical_pi_value(&prepared.binding, maximum, work)?;
-        crate::pi_root_provider::guarded_pi_decode::<TaskEffectPlan>(
+        crate::pi_root_provider::guarded_pi_decode::<PiTaskBinding>(
             &bytes.0,
             maximum,
             self.protected.policy().maximum_payload_bytes,
@@ -1387,8 +1387,8 @@ impl PiNativeCommandHost {
                 drained,
                 ..
             } = &mut *handles;
-            match view
-                .cleanup_mounts_with_native_work(
+            *drained = Some(
+                view.cleanup_mounts_with_native_work(
                     &effect.owner,
                     process_drained,
                     drained,
@@ -1396,14 +1396,8 @@ impl PiNativeCommandHost {
                     meter,
                     cancellation,
                 )?
-                .await?
-            {
-                Ok(receipt) => *drained = Some(receipt),
-                Err(failure) => {
-                    *drained = Some(failure.partial_receipt);
-                    return Err(failure.cause);
-                }
-            }
+                .await?,
+            );
             handles.mounts_drained = true;
             handles.project = None;
             handles.project_allocation = None;
@@ -2386,7 +2380,8 @@ impl PiNativeCommandHost {
                     None
                 };
                 let scratch_context = Arc::clone(&shared)
-                    .with_output_volume_with_native_work(&prepared.binding.scratch.volume, work)?;
+                    .with_output_volume_with_native_work(&prepared.binding.scratch.volume, work)
+                    .await?;
                 if handles.session.is_none() {
                     handles.session = Some(
                         intent
@@ -2547,7 +2542,7 @@ impl PiNativeCommandHost {
                     .ok_or_else(|| unauthorized("Pi actual fork has no selected project"))?;
                 let project_generation = GenerationRef::new_with_native_work(
                     project.provider(),
-                    prepared
+                    &prepared
                         .native_lazy
                         .authored_generation
                         .digest()
@@ -2694,8 +2689,9 @@ impl PiNativeCommandHost {
             .as_ref()
             .ok_or_else(|| unauthorized("Pi result selection vanished"))?
             .volume;
-        let result_context =
-            Arc::clone(&shared).with_output_volume_with_native_work(result_volume, work)?;
+        let result_context = Arc::clone(&shared)
+            .with_output_volume_with_native_work(result_volume, work)
+            .await?;
         let request = intent.request_with_work(&prepared.binding, view.manifest(), work)?;
         let staged = pi_native::stage_command(
             result_context.context(),
@@ -2784,7 +2780,9 @@ impl PiNativeCommandHost {
             return Ok(TaskCommandProgress::Indeterminate);
         }
         let task = bound.owner.task_id();
-        let work = self.preparation_work(&self.registered_entry(task)?).await?;
+        let work = self
+            .preparation_work(self.registered_entry(task)?.as_ref())
+            .await?;
         let receipt = bound
             .provider
             .receipt(bound.provider.original_attempt(), &work, None)
@@ -3099,7 +3097,8 @@ fn generation(file: &acyclic_harness::conversation::FileRef) -> Result<Generatio
 
 fn history_limits(context: &TaskContext) -> Result<HistoryReadLimits> {
     let limits = HistoryReadLimits {
-        maximum_events: context.scope().limits().context_messages,
+        maximum_events: u32::try_from(context.scope().limits().context_messages)
+            .map_err(|_| Error::Invalid("effect history event limit overflows".into()))?,
         maximum_bytes: context
             .scope()
             .limits()

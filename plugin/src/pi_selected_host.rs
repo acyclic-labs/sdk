@@ -1443,7 +1443,7 @@ impl PiControlHost<'_> {
                 intent.paths,
                 import_operation,
                 publication,
-                acyclic_harness::conversation::MAX_PRIVATE_DIRECTORY_PAGE,
+                acyclic_harness::conversation::MAX_PRIVATE_DIRECTORY_PAGE as u32,
                 self.protected.policy().limits.file_bytes,
                 cancellation,
                 &publication_work,
@@ -1686,7 +1686,7 @@ impl PiControlHost<'_> {
             &input.paths,
             operation,
             publication,
-            acyclic_harness::conversation::MAX_PRIVATE_DIRECTORY_PAGE,
+            acyclic_harness::conversation::MAX_PRIVATE_DIRECTORY_PAGE as u32,
             cancellation,
             work,
             publication_guard,
@@ -1755,7 +1755,7 @@ impl PiControlHost<'_> {
                     &self.filesystem,
                     &self.stream,
                     &self.protected,
-                    &approved,
+                    approved,
                     work,
                 )
                 .await?;
@@ -1792,7 +1792,7 @@ impl PiControlHost<'_> {
             scope,
             &generations,
             &self.resources.store,
-            acyclic_harness::conversation::MAX_PRIVATE_DIRECTORY_PAGE,
+            acyclic_harness::conversation::MAX_PRIVATE_DIRECTORY_PAGE as u32,
             &options,
             &[".git"],
             cancellation,
@@ -1812,19 +1812,21 @@ impl PiControlHost<'_> {
             .transpose()?;
         let descriptor = crate::pi_operator::PiPreparedApproval {
             version: 1,
-            session: &root_binding.native_session_id,
+            session: root_binding.native_session_id.as_str(),
             command: PiSelectedCommand::normalized(input, key),
             operation,
-            approval_digest: &prepared.approval_digest,
+            approval_digest: prepared.approval_digest.as_str(),
             private_volume: &root_binding.scratch.volume,
             source_snapshot: prepared.generations.original_snapshot,
             selected_snapshot: import_receipt.selected_snapshot,
             imported: prepared.generations.imported,
             import_receipt,
             journal: &prepared.journal,
-            canonical_digest_input: &prepared.canonical_digest_input,
-            root_path: &root_display.0,
-            source_path: source_display.as_ref().map_or("", |(value, _)| value),
+            canonical_digest_input: prepared.canonical_digest_input.as_str(),
+            root_path: root_display.0.as_str(),
+            source_path: source_display
+                .as_ref()
+                .map_or("", |(value, _)| value.as_str()),
         };
         crate::pi_operator_host::open_prepared_approval(
             &self.runtime,
@@ -1845,7 +1847,7 @@ impl PiControlHost<'_> {
                     root: key,
                     operation: &input.sdk_operation,
                     original_operation: operation,
-                    approval_digest: &prepared.approval_digest,
+                    approval_digest: prepared.approval_digest.as_str(),
                     paths: &input.paths,
                     source_snapshot: Some(descriptor.source_snapshot),
                     selected_snapshot: Some(descriptor.selected_snapshot),

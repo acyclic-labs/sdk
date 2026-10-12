@@ -117,7 +117,12 @@ impl PiSession {
                 )
             })?;
             if &live.binding != self.binding(caller)?
-                || !live.context.scope().grants().contains("operation:cancel")
+                || !live
+                    .context
+                    .context()
+                    .scope()
+                    .grants()
+                    .contains("operation:cancel")
             {
                 return Err(Error::Invalid(
                     "Pi cancellation caller differs from its current native authority".to_owned(),
@@ -757,7 +762,8 @@ async fn original_native_first_dispatch_pending(
         return Ok(false);
     }
     let limits = acyclic_harness::store::HistoryReadLimits {
-        maximum_events: admission.limits.context_messages,
+        maximum_events: u32::try_from(admission.limits.context_messages)
+            .map_err(|_| Error::Invalid("effect history event limit overflows".into()))?,
         maximum_bytes: admission.limits.file_bytes.min(MAXIMUM_ADAPTER_STATE_BYTES),
     };
     if limits.maximum_events == 0 || limits.maximum_bytes == 0 {

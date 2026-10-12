@@ -240,7 +240,12 @@ impl PiSession {
                     "Pi recursive native source cut is outside its actual caller view".to_owned(),
                 ));
             }
-            live.owner.verify_dispatch().await?;
+            live.owner
+                .verify(
+                    false,
+                    &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
+                )
+                .await?;
             Some(live)
         };
         let root_key = commit
@@ -1491,7 +1496,10 @@ impl PiSession {
             (None, None)
         };
         let outcome = outcome;
-        let state = if outcome.as_ref().is_some_and(Outcome::is_terminal) {
+        let state = if outcome
+            .as_ref()
+            .is_some_and(|outcome| !matches!(outcome, Outcome::Indeterminate { .. }))
+        {
             "completed"
         } else if created {
             "pending"

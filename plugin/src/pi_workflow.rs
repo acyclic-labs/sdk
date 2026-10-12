@@ -398,7 +398,8 @@ impl<'a> PiWorkflowHost<'a> {
             .runtime
             .task_host()
             .journal_owner_with_native_work(preparation.request.binding.task_id, fence, work)
-            .await?;
+            .await?
+            .into_native_shared(work)?;
         owner
             .verify(
                 false,
@@ -458,7 +459,8 @@ impl<'a> PiWorkflowHost<'a> {
             .runtime
             .task_host()
             .journal_owner_with_native_work(preparation.request.binding.task_id, fence, work)
-            .await?;
+            .await?
+            .into_native_shared(work)?;
         journal_owner
             .verify(
                 false,
@@ -480,8 +482,12 @@ impl<'a> PiWorkflowHost<'a> {
             });
         }
         let journal_owner = journal_owner.into_native_shared(work)?;
-        let content = context
-            .content_residency_verifier_with_native_work(Arc::clone(&journal_owner), work)?;
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+        let content = acyclic_harness::runtime::content_residency_verifier(
+            context,
+            Arc::clone(&journal_owner),
+            Some(&io),
+        )?;
         let effect_custody;
         let effect_authority;
         (effect_authority, effect_custody) = owner.effect_authority_with_native_work(work)?;

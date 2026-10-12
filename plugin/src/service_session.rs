@@ -595,8 +595,8 @@ impl PiSession {
                 let physical = self.resources.shared_roots.acquire_with_native_work(
                     &root.path, SharedRootAdmission::Resume(expected), original_native_work,
                     || async move {
-                        let preparation = pi_root_inputs::PiRootPreparation::load(&proof_resources.private_state_root, proof_directory, proof_runtime, proof_filesystem, &match &proof_state.task_binding {
-                                PluginTaskBinding::Pi(binding) => binding,
+                        let preparation = pi_root_inputs::PiRootPreparation::load(&proof_resources.private_state_root, proof_directory, proof_runtime, proof_filesystem, match &proof_state.task_binding {
+                                PluginTaskBinding::Pi(binding) => binding.as_ref(),
                                 _ => return Err(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid,
                                     reason: "Pi root preparation requires a Pi state binding" }),
                             }, pi_recovery::PiTaskOrigin::RootState(proof_state), Some(Arc::clone(read_context)), original_native_work).await?;
@@ -639,7 +639,7 @@ impl PiSession {
                         original_native_work.cancellation(),
                     )
                     .await
-                    .map_err(|(source, custody)| RootError::NativeFilesystem { source, custody })?;
+                    .map_err(|(source, custody)| RootError::NativeWorkspace { source, custody })?;
                 drop(workspace_name.0);
                 drop(workspace_name.1);
                 if workspace.id().into_bytes() != creation.repository_workspace_id {

@@ -773,6 +773,7 @@ pub(crate) async fn prepare_writeback<'a>(
         crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
         native_work,
     )?;
+    drop(digest_value);
     digest.1.absorb(&mut encoded.1)?;
     let canonical_digest_input = String::from_utf8(encoded.0).map_err(|error| {
         drop(error);

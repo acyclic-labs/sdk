@@ -540,12 +540,12 @@ where
         (PiTaskExecution::Host { root: original, .. }, PiTaskOrigin::Root(retained))
             if original == retained =>
         {
-            original.validate(binding).map_err(Error::Invalid)?
+            original.validate(binding, work)?
         }
         (PiTaskExecution::Host { root: original, .. }, PiTaskOrigin::RootState(retained))
             if root_matches_state(original, retained) =>
         {
-            original.validate(binding).map_err(Error::Invalid)?
+            original.validate(binding, work)?
         }
         (PiTaskExecution::Child { .. }, PiTaskOrigin::Child(_)) => {}
         _ => {

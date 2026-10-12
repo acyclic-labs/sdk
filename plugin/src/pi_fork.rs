@@ -762,7 +762,10 @@ impl PiForkCoordinator {
                 reason: "Pi fork requires the actual bound caller conversation",
             });
         }
-        verifier.0.verify_audience(parent.reducer().authority())?;
+        verifier.0.verify_audience(
+            parent.reducer().authority(),
+            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
+        )?;
         self.selected_graph(context, owner, commit.source_task)
             .await?;
         let source_admission = self
@@ -935,7 +938,11 @@ impl PiForkCoordinator {
             inherited_references: limits.resources,
             history_limits,
         };
-        let checkpoint_snapshot = parent.reducer().snapshot_native(usize::MAX, work)?;
+        let mut checkpoint_io = acyclic_harness::store::native_work_io(work)?;
+        let (checkpoint_snapshot, _) = parent
+            .reducer()
+            .snapshot(usize::MAX, &mut Some(&mut checkpoint_io))?;
+        let _checkpoint_custody = checkpoint_io.into_custody();
         let checkpoint_bytes = crate::pi_root_provider::guarded_pi_bytes(
             &checkpoint_snapshot,
             self.owner.policy().maximum_payload_bytes,
@@ -1743,10 +1750,10 @@ impl PiForkCoordinator {
                 &mut Some(&mut acyclic_harness::store::native_work_io(&self.work)?),
             )
             .await?;
-        let snapshot = Snapshot::decode_with_native_work(
+        let snapshot = Snapshot::decode(
             checkpoint.as_ref(),
             plan.request.maximum_bytes,
-            work,
+            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
         )?;
         if snapshot.authority != request.0.parent || snapshot.revision != request.0.parent_revision
         {
