@@ -27,38 +27,21 @@ use prost::Message as _;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, sync::Arc};
 
-/// Original SDK disposition and its producer-funded diagnostic custody.
-#[derive(Debug)]
-pub(crate) struct SdkCallError {
-    source: StreamError,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    custody: Option<acyclic_fs::NativeAllocation>,
+pub(crate) type SdkCallError = std::result::Result<StreamError, Error>;
+
+pub(crate) fn sdk_source(error: &SdkCallError) -> &StreamError {
+    match error {
+        Ok(source) => source,
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        Err(Error::NativeStream { source, .. }) => source,
+        Err(_) => unreachable!("non-SDK failures use the outer result"),
+    }
 }
 
-impl SdkCallError {
-    pub(crate) fn ordinary(source: StreamError) -> Self {
-        Self {
-            source,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            custody: None,
-        }
-    }
-
-    pub(crate) fn source(&self) -> &StreamError { &self.source }
-
-    pub(crate) fn into_error(
-        self, work: &Option<&mut dyn HistoryIo>,
-    ) -> Error {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if self.custody.is_some()
-            || work.as_deref().is_some_and(operations::original_native_decode_mode)
-        {
-            let code = if self.source == StreamError::IdempotencyMismatch {
-                wire::ErrorCode::Conflict
-            } else { wire::ErrorCode::Storage };
-            return Error::NativeStream { code, source: self.source, custody: self.custody };
-        }
-        operations::stream_error_with_work(self.source, work)
+pub(crate) fn sdk_error(error: SdkCallError, work: &Option<&mut dyn HistoryIo>) -> Error {
+    match error {
+        Ok(source) => operations::stream_error_with_work(source, work),
+        Err(error) => error,
     }
 }
 
@@ -69,7 +52,7 @@ pub(crate) fn native_call_result<T>(
 ) -> Result<std::result::Result<acyclic_stream::NativeStreamOutput<T>, SdkCallError>> {
     match crate::store::history::native_sdk_result(original, result) {
         Ok(output) => Ok(Ok(output)),
-        Err(Error::NativeStream { source, custody, .. }) => Ok(Err(SdkCallError { source, custody })),
+        Err(error @ Error::NativeStream { .. }) => Ok(Err(Err(error))),
         Err(error) => Err(error),
     }
 }
@@ -623,8 +606,8 @@ async fn read_records_with_work<P: StreamProvider>(
         client, stream, from, maximum, custody.work(),
     ).await? {
         Ok(source) => source,
-        Err(error) if *error.source() == StreamError::NotFound && from == 0 => return Ok(None),
-        Err(error) => return Err(error.into_error(custody.work())),
+        Err(error) if *sdk_source(&error) == StreamError::NotFound && from == 0 => return Ok(None),
+        Err(error) => return Err(sdk_error(error, custody.work())),
     };
     let mut records = Vec::new();
     loop {
@@ -1032,11 +1015,11 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             }
             Ok(AppendOutcome::TailConflict { .. }) =>
                 self.confirm_intent_location_with_work(location, custody.work()).await,
-            Err(error) if *error.source() == StreamError::Unavailable =>
+            Err(error) if *sdk_source(&error) == StreamError::Unavailable =>
                 self.confirm_intent_location_with_work(location, custody.work()).await,
             Ok(AppendOutcome::Committed(_)) => Err(coordinator_boundary(custody.work(), wire::ErrorCode::Storage,
                 "intent location receipt differs")),
-            Err(error) => Err(error.into_error(custody.work())),
+            Err(error) => Err(sdk_error(error, custody.work())),
         }
     }
 
@@ -1722,7 +1705,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         drop(key_custody);
         let outcome = match appended {
             Ok(outcome) => outcome,
-            Err(error) if matches!(error.source(), StreamError::IdempotencyMismatch) => {
+            Err(error) if matches!(sdk_source(&error), StreamError::IdempotencyMismatch) => {
                 self.refresh_with_work(request.work()).await?;
                 if self.session_intent_with_work(&keys, &events, request.work()).await? {
                     return Ok(CoordinatorApply::Replayed);
@@ -2949,7 +2932,7 @@ async fn append_once_with_work<P: StreamProvider>(
     }
     let _ = client;
     if let Some(observer) = work.as_deref_mut() { observer.begin_write()?; }
-    Ok(stream.append_batch(records, if_tail, Some(key)).await.map_err(SdkCallError::ordinary))
+    Ok(stream.append_batch(records, if_tail, Some(key)).await.map_err(SdkCallError::Ok))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2990,7 +2973,7 @@ async fn append_records_keyed_with_work<P: StreamProvider>(
             if let Some(work) = custody.work().as_deref_mut() { work.check_cancellation()?; }
             Ok(Ok(outcome))
         }
-        Err(error) if *error.source() == StreamError::Unavailable => {
+        Err(error) if *sdk_source(&error) == StreamError::Unavailable => {
             let mut received = CodecQuota::from_retained(custody.work(), 0);
             match inspect_idempotency_once(client, key, 0, received.work(), None, None).await? {
                 Ok(Some((observation, retained))) => {
@@ -3024,12 +3007,12 @@ fn append_error_with_work(
 ) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if _work.as_deref().is_some_and(operations::original_native_decode_mode) {
-        return error.into_error(_work);
+        return sdk_error(error, _work);
     }
-    if *error.source() == StreamError::IdempotencyMismatch {
+    if *sdk_source(&error) == StreamError::IdempotencyMismatch {
         Error::Conflict(format!("{identity} was reused"))
     } else {
-        Error::Storage(error.source().to_string())
+        Error::Storage(sdk_source(&error).to_string())
     }
 }
 
@@ -3236,7 +3219,7 @@ impl PreparedMaterializationCommit {
             client.native_prepare_commit(request, maximum, original.runtime_meter_owner()).await,
         ) {
             Ok(Ok(prepared)) => prepared,
-            Ok(Err(error)) => return Err(completion.into_error(error.into_error(&None))),
+            Ok(Err(error)) => return Err(completion.into_error(sdk_error(error, &None))),
             Err(error) => return Err(completion.into_error(error)),
         };
         let (prepared, incoming) = prepared.into_parts();
@@ -3529,7 +3512,7 @@ pub(crate) async fn inspect_idempotency_once<P: StreamProvider>(
     if let Some(work) = custody.work().as_deref_mut() { work.begin_call()?; }
     let inspected = client.inspect_idempotency(key).await;
     match inspected {
-        Err(source) => Ok(Err(SdkCallError::ordinary(source))),
+        Err(source) => Ok(Err(SdkCallError::Ok(source))),
         Ok(None) => Ok(Ok(None)),
         Ok(Some(observation)) => {
             if let (Some(phase), IdempotencyOutcome::Commit(outcome)) = (phase, &observation.outcome) {
@@ -3728,7 +3711,7 @@ impl<'a, 'b> PreparedCommitRequest<'a, 'b> {
         self.vectors = 0;
         let mut received = CodecQuota::from_retained(self.custody.work(), 0);
         match committed {
-            Err(source) => Ok(Err(SdkCallError::ordinary(source))),
+            Err(source) => Ok(Err(SdkCallError::Ok(source))),
             Ok(outcome) => {
                 observe_commit_with_work(&outcome, true, &mut received)?;
                 if let Some(work) = received.work().as_deref_mut() { work.check_cancellation()?; }
@@ -3772,7 +3755,7 @@ pub(crate) async fn commit_prepared<P: StreamProvider>(
             received.adopt(retained)?;
             outcome
         }
-        Err(error) if *error.source() == StreamError::Unavailable => {
+        Err(error) if *sdk_source(&error) == StreamError::Unavailable => {
             match inspect_idempotency_once(
                 client, key, 0, received.work(), phase.as_deref_mut(), recovery,
             ).await? {
@@ -3793,7 +3776,7 @@ pub(crate) async fn commit_prepared<P: StreamProvider>(
                 Ok(None) | Err(_) => return Err(Error::Indeterminate(operation)),
             }
         }
-        Err(error) => return Err(error.into_error(received.work())),
+        Err(error) => return Err(sdk_error(error, received.work())),
     };
     if let Some(work) = received.work().as_deref_mut() { work.check_cancellation()?; }
     let retained = received.retained();
@@ -3844,15 +3827,15 @@ async fn append_if_execution_idle_with_work<P: StreamProvider>(
             source_custody.adopt(path.as_str().len() as u64)?;
         }
         if let Some(work) = source_custody.work().as_deref_mut() { work.begin_call()?; }
-        source.stream.bounds().await.map_err(SdkCallError::ordinary)
+        source.stream.bounds().await.map_err(SdkCallError::Ok)
     };
     let guard = match bounds {
         Ok(bounds) if bounds.tail == expected_tail => CommitCondition::Tail { path, expected: expected_tail },
         Ok(_) => return Err(coordinator_boundary(custody.work(), wire::ErrorCode::Conflict,
             "execution changed before suspension")),
-        Err(error) if *error.source() == StreamError::NotFound && expected_tail == 0 =>
+        Err(error) if *sdk_source(&error) == StreamError::NotFound && expected_tail == 0 =>
             CommitCondition::Absent { path },
-        Err(error) => return Err(error.into_error(custody.work())),
+        Err(error) => return Err(sdk_error(error, custody.work())),
     };
     if let Some(work) = custody.work().as_deref_mut() {
         work.hashed_bytes((b"harness/v2/idle-execution\0".len() + key.as_bytes().len() + 1) as u64)?;
