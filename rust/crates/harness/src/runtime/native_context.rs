@@ -414,6 +414,14 @@ impl ToolContext {
         Ok((context, view.as_ref()))
     }
 
+    /// Borrows only the actual protected mount metadata before normalization.
+    #[cfg(feature = "native-execution")]
+    pub fn native_working_manifest_with_native_work(
+        &self, work: &NativeMaterializationWork,
+    ) -> Result<&crate::filesystem::NativeViewManifest> {
+        self.accepted_native_working_view(work).map(|(_, view)| view.manifest())
+    }
+
     #[cfg(feature = "native-execution")]
     fn check_native_working_permission(
         &self, view: &crate::filesystem::NativeTaskWorkingView,
@@ -445,6 +453,48 @@ impl ToolContext {
         Ok(view)
     }
 
+    /// Checks the accepted action's path and effective permission.
+    #[cfg(feature = "native-execution")]
+    pub async fn authorize_working_file_with_native_work(
+        &self, relative: &std::path::Path,
+        operation: crate::conversation::VolumeOperation,
+        work: &NativeMaterializationWork,
+    ) -> Result<()> {
+        self.native_working_view_with_native_work(relative, operation, work).await?;
+        Ok(())
+    }
+
+    /// Reads the held selection under this invocation's effective scope.
+    #[cfg(feature = "native-execution")]
+    pub async fn read_working_file_with_native_work(
+        &self, relative: &std::path::Path, maximum: usize,
+        work: &NativeMaterializationWork,
+    ) -> Result<acyclic_stream::OwnedBytes> {
+        let view = self.native_working_view_with_native_work(
+            relative, crate::conversation::VolumeOperation::Read, work,
+        ).await?;
+        view.read_builtin_file(self.operation_id, relative, maximum, work)?.await
+    }
+
+    /// Mutates only the same selected held path after effective WRITE checks.
+    #[cfg(feature = "native-execution")]
+    pub async fn write_working_file_with_native_work(
+        &self, relative: &std::path::Path, content: &str, create_parents: bool,
+        expected_sha256: Option<[u8; 32]>, work: &NativeMaterializationWork,
+    ) -> Result<()> {
+        if expected_sha256.is_some() {
+            let (_, view) = self.accepted_native_working_view(work)?;
+            self.check_native_working_permission(
+                view, relative, crate::conversation::VolumeOperation::Read, work,
+            )?;
+        }
+        let view = self.native_working_view_with_native_work(
+            relative, crate::conversation::VolumeOperation::Write, work,
+        ).await?;
+        view.write_builtin_file(
+            self.operation_id, relative, content, create_parents, expected_sha256, work,
+        )?.await
+    }
     /// Binds native tool metadata to the same SDK-issued shared task context.
     pub fn new_with_native_work(
         task: Arc<NativeTaskContext>,
