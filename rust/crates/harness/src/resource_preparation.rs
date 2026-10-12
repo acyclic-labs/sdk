@@ -199,7 +199,7 @@ impl ResourcePreparationRequest {
                 "retained preparation input changes its canonical identity on decode",
             ));
         }
-        let extent = crate::core::resource_preparation_owned_bytes(&request, quota.work())?;
+        let extent = request.logical_owned_bytes()?;
         if extent > reserved {
             return Err(crate::scheduler::diagnostic(
                 quota.work(),

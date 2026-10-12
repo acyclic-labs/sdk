@@ -66,4 +66,5 @@ pub use selection::{
     ForkSelection, ResourceRevision,
 };
 pub use verification::CompositeForkVerifier;
-pub(in crate::fork) use verification::admit_native_verifier_share;
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(in crate::fork) use verification::admit_verifier_allocation;
