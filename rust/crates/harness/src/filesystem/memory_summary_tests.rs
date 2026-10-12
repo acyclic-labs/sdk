@@ -46,7 +46,7 @@ impl ModelProvider for SummaryModel {
             })
             .collect::<Result<Vec<_>>>()?;
         Ok(ModelTokenCount {
-            request_digest: request.manifest().request_digest,
+            request_digest: request.request_digest(),
             fixed_tokens: 512,
             message_tokens,
         })
@@ -56,7 +56,7 @@ impl ModelProvider for SummaryModel {
         request: PreparedModelRequest,
         dispatch: ModelDispatch,
     ) -> acyclic_stream::BoxProviderStream<'a, Result<ModelEvent>> {
-        assert_eq!(dispatch.request_digest, request.manifest().request_digest);
+        assert_eq!(dispatch.request_digest, request.request_digest());
         self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)

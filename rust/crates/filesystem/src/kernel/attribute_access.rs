@@ -40,28 +40,7 @@ pub struct AttributeBatchLookup {
 }
 
 /// Looks up named attributes while reading each distinct frontier once.
-pub fn lookup_attributes<S: crate::ImmediateObjectStore>(
-    store: &S,
-    root: ObjectId,
-    names: &[AttributeName],
-    maximum_queries: u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<AttributeBatchLookup, AttributeLookupFailure> {
-    persistent_batch::lookup::<S, AttributeFormat>(
-        store,
-        root,
-        names,
-        maximum_queries,
-        limits,
-        budget,
-    )
-    .map(to_batch)
-    .map_err(map_batch_failure)
-}
-
-/// Asynchronously executes the same batch as [`lookup_attributes`].
-pub async fn lookup_attributes_async<S: AsyncObjectStore>(
+pub async fn lookup_attributes<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     names: &[AttributeName],
@@ -120,25 +99,7 @@ fn map_batch_error(error: persistent_batch::Error) -> AttributeLookupError {
 pub type AttributeLookupFailure = OperationFailure<AttributeLookupError>;
 
 /// Looks up one exact named attribute through one authenticated frontier.
-pub fn lookup_attribute<S: crate::ImmediateObjectStore>(
-    store: &S,
-    root: ObjectId,
-    name: &AttributeName,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<AttributeLookup, AttributeLookupFailure> {
-    crate::async_storage::poll_immediate(lookup_attribute_async(
-        store,
-        root,
-        name,
-        limits,
-        budget,
-        &CancellationToken::new(),
-    ))
-}
-
-/// Asynchronously executes the same attribute frontier as [`lookup_attribute`].
-pub async fn lookup_attribute_async<S: AsyncObjectStore>(
+pub async fn lookup_attribute<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     name: &AttributeName,

@@ -345,7 +345,7 @@ impl ModelProvider for MockAdapter {
             request_digest: if self.wrong_count_digest.load(Ordering::SeqCst) {
                 [99; 32]
             } else {
-                request.manifest().request_digest
+                request.request_digest()
             },
             fixed_tokens: u32::try_from(fixed)
                 .map_err(|_| Error::Invalid("fixture framing count overflow".into()))?,
@@ -360,7 +360,7 @@ impl ModelProvider for MockAdapter {
         self.generates.fetch_add(1, Ordering::SeqCst);
         Box::pin(stream::once(async move {
             Self::selection(&request.request().model)?;
-            if dispatch.request_digest != request.manifest().request_digest {
+            if dispatch.request_digest != request.request_digest() {
                 return Err(Error::Conflict("fixture dispatch digest changed".into()));
             }
             let mut parts = Vec::new();

@@ -296,7 +296,7 @@ impl PreparationIo {
         request: &crate::resource_preparation::ResourcePreparationRequest,
         cancellation: &CancellationToken,
     ) -> Result<Self> {
-        request.validate()?;
+        request.validate(&mut None)?;
         Self::from_budget(acyclic_fs::performance::work_budget(request.maximum_work, request.maximum_bytes), cancellation)
     }
 
@@ -766,13 +766,10 @@ impl PreparationIo {
                 }
                 next => self.codec_charge(next, false),
             };
-        #[cfg(not(target_arch = "wasm32"))]
-        let result: Result<T> = if self.original_native_work().is_some() {
-            crate::contract::json_from_slice_bounded_native_trusted(bytes, bounds, owned,
-                crate::wire::ErrorCode::Storage, T::json_value_schema(), &mut charge)
-        } else { crate::contract::json_from_slice_bounded_trusted(bytes, bounds, owned, &mut charge) };
-        #[cfg(target_arch = "wasm32")]
-        let result: Result<T> = crate::contract::json_from_slice_bounded_trusted(bytes, bounds, owned, &mut charge);
+        let result: Result<T> = crate::contract::json_from_slice_bounded(
+            std::marker::PhantomData::<T>, bytes, bounds, owned, native_code,
+            Some(T::json_value_schema()), &mut charge,
+        );
         let mut decoded = finish_decode(self, result, reservation, diagnostic_bytes)?;
         decoded._reservation.substitute(decoded.value.logical_owned_bytes()?)?;
         Ok(decoded.into_retained())
@@ -926,7 +923,7 @@ impl PreparationIo {
         let mut reservation = None;
         let mut diagnostic_bytes = 0;
         let result = crate::contract::json_from_value_bounded(
-            std::borrow::Cow::Borrowed(source), bounds, 0, Some(code), Some(schema), &mut |next| match next {
+            std::borrow::Cow::Borrowed(source), bounds, 0, code, schema, &mut |next| match next {
                 crate::contract::JsonCodecCharge::Admission { value_shape, .. } => {
                     let allowance = match profile {
                         Some(profile) => profile(value_shape, 0, value_shape.input_bytes(), Some(code))?,
@@ -1264,8 +1261,8 @@ pub(in crate::filesystem) async fn read<A: AsyncAuthorityStore, O: AsyncObjectSt
     if let Some(original) = io.original_native_work() {
         let generation = workspace.head_with_native_work(original, io.cancellation())
             .await.map_err(native_workspace_error)?;
-        return generation.read_with_native_work(path, maximum_bytes, original, io.cancellation())
-            .await.map_err(native_workspace_error);
+        return generation.read(path, maximum_bytes, original, io.cancellation())
+            .await.map_err(|error| native_workspace_error((error, None)));
     }
     let bytes = io.receive(workspace.read(path, maximum_bytes, io.remaining()?, io.cancellation()).await)?;
     io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
@@ -1421,7 +1418,7 @@ where A: AsyncAuthorityStore, O: AsyncObjectStore,
     for mutation in mutations {
         match mutation {
             WorkspaceMutation::CreateDirectory { path } => {
-                let result = transaction.create_dir_all_measured(path, io.remaining()?, io.cancellation()).await;
+                let result = transaction.create_dir_all(path, io.remaining()?, io.cancellation()).await.map(|receipt| receipt.work);
                 match result {
                     Ok(work) => io.charge(work)?,
                     Err(failure) => { io.spent(*failure.work)?; return Err(Error::from(failure.error)); }
@@ -1550,9 +1547,9 @@ where
             before_publication(original).await?;
             match mutation {
                 WorkspaceMutation::CreateDirectory { path } => {
-                    transaction.create_directories_with_native_work(
+                    transaction.create_dir_all(
                         path, original, io.cancellation(),
-                    ).await.map_err(native_workspace_error)?;
+                    ).await.map_err(|error| native_workspace_error((error, None)))?;
                 }
                 WorkspaceMutation::PutFile { path, bytes } => {
                     transaction.write_with_native_work(

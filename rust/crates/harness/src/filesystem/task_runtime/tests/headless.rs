@@ -134,7 +134,7 @@ impl ModelProvider for ModelFixture {
     }
     fn count_tokens(&self, request: &crate::model::PreparedModelRequest) -> Result<crate::context::ModelTokenCount> {
         Ok(crate::context::ModelTokenCount {
-            request_digest: request.manifest().request_digest,
+            request_digest: request.request_digest(),
             fixed_tokens: u32::try_from(request.bytes().len()).map_err(|_| Error::Invalid("fixture request size".into()))?,
             message_tokens: vec![0; request.request().messages.len()],
         })

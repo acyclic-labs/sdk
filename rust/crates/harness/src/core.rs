@@ -1672,7 +1672,7 @@ impl SchemaRegistry {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
         extension.validate()?;
-        content.validate()?;
+        crate::executor::with_history_io(io, |work| content.validate(work))?;
         if content.descriptor().media_type() != "application/json" {
             return Err(Error::Invalid("extension configuration is invalid".into()));
         }

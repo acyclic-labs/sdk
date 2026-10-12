@@ -168,13 +168,13 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         DurableWorkflowHost::open(registry.clone(), initial.clone(), journal.clone()).await?;
     let operation = OperationId::from_bytes([8; 16]);
     let retry = IdempotencyKey::new("counter-step-1")?;
-    let transition = workflow.step(operation, retry.clone(), json!(3)).await?;
+    let transition = workflow.step(operation, retry.clone(), json!(3), |_| Ok(())).await?;
     assert_eq!(transition.state, json!(3));
-    assert_eq!(workflow.step(operation, retry, json!(3)).await?, transition);
+    assert_eq!(workflow.step(operation, retry, json!(3), |_| Ok(())).await?, transition);
     let second = OperationId::from_bytes([11; 16]);
     assert_eq!(
         workflow
-            .step(second, IdempotencyKey::new("counter-step-2")?, json!(1))
+            .step(second, IdempotencyKey::new("counter-step-2")?, json!(1), |_| Ok(()))
             .await?
             .state,
         json!(4)
@@ -260,14 +260,14 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
     let first_paged = OperationId::new();
     let first_key = IdempotencyKey::new("paged-first")?;
     let first_transition = paged_host
-        .step(first_paged, first_key.clone(), json!(1))
+        .step(first_paged, first_key.clone(), json!(1), |_| Ok(()))
         .await?;
     for index in 1..=64 {
         paged_host
             .step(
                 OperationId::new(),
                 IdempotencyKey::new(format!("paged-{index}"))?,
-                json!(1),
+                json!(1), |_| Ok(())
             )
             .await?;
     }
@@ -287,7 +287,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
     assert_eq!(fresh_host.checkpoint().revision, 65);
     assert_eq!(
         fresh_host
-            .step(first_paged, first_key.clone(), json!(1))
+            .step(first_paged, first_key.clone(), json!(1), |_| Ok(()))
             .await?,
         first_transition
     );
@@ -300,7 +300,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         .step(
             OperationId::new(),
             IdempotencyKey::new("paged-next")?,
-            json!(1),
+            json!(1), |_| Ok(())
         )
         .await?;
     assert_eq!(fresh_host.checkpoint().revision, 66);
