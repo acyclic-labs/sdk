@@ -946,7 +946,7 @@ where
                     let item = self.committed_mail_input(task, fence, turn, receive, &context, None).await?;
                     let copy_operation = crate::durable_host::received_copy_operation(task, receive, None)?;
                     let copy_path = format!("mailbox/{receive}/parcel");
-                    let copy = match context.observe_staged_file_once(copy_operation).await? {
+                    let copy = match context.observe_staged_file_once(copy_operation, None).await? {
                         Some(file) => file,
                         None if reconciliation_only => return Err(boundary(io, ErrorCode::Storage,
                             "started steered model has no retained receiver parcel")),

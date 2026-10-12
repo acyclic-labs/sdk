@@ -607,8 +607,8 @@ impl EventStream {
         self.original_cleanup && work.native_source_work().is_some_and(|work| {
             let current = work.original_demand_work();
             self.birth.as_ref().is_some_and(|birth| {
-                Arc::ptr_eq(birth.meter(), current.meter())
-                    && match (birth.resource_allowance(), current.resource_allowance()) {
+                Arc::ptr_eq(&birth.state, &current.state)
+                    && match (birth.resource.as_ref(), current.resource.as_ref()) {
                         (None, None) => true,
                         (Some(birth), Some(current)) => Arc::ptr_eq(birth, current),
                         _ => false,
