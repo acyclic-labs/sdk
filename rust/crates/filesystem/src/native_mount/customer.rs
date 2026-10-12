@@ -1751,7 +1751,7 @@ fn prepare_root_identity_with_work(
     work: &super::NativeMountMeterWork, expected_identity: Option<NativeRootIdentity>,
 ) -> Result<NativeRootIdentity, MountLifecycleError> {
     let original = work.native_materialization_work();
-    let root = crate::native_host::HostRoot::open_materialization_measured(source_root, &original)?;
+    let root = crate::native_host::HostRoot::open_with_work(source_root, &mut &original)?;
     if expected_identity.is_some_and(|expected| expected != root.identity()) {
         return Err(MountLifecycleError::Source(MountSourceError::Stale));
     }

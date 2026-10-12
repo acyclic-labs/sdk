@@ -9,9 +9,7 @@ import { invokePi, nodeExecutable, pinnedPiCli, piEnvironment } from "./pi-fixtu
 const execute = promisify(execFile);
 
 export interface InstalledNativeFixture {
-  binary: string;
   project: string;
-  directory: string;
   environment: NodeJS.ProcessEnv;
   extension: string;
   provider: string;
@@ -26,10 +24,10 @@ export interface InstalledNativeFixture {
   runJson(prompt: string, onJsonLine: (line: string) => void, model?: string): Promise<{stdout: string; stderr: string}>;
 }
 
-/** A real owned service/root CLI fixture. Only service startup uses spawn;
- * recursive Pi children must be launched by the production native provider. */
+/** Install Pi and own its service process. */
 export async function installedNativeFixture(
   directory: string, providerSource: string, nativeConfiguration: Readonly<Record<string, string>>,
+  commandTimeout = 60_000,
 ): Promise<InstalledNativeFixture> {
   assert.equal(VERSION, "1.1.0");
   const requested = process.env.ACYCLIC_BINARY;
@@ -43,7 +41,7 @@ export async function installedNativeFixture(
   const environment = { ...piEnvironment(directory), ...nativeConfiguration };
   const command = (args: string[], input = "") => {
     const invocation = execute(binary, args, { cwd: project, env: environment, windowsHide: true,
-      timeout: 60_000, maxBuffer: 4 * 1024 * 1024, encoding: "utf8" });
+      timeout: commandTimeout, maxBuffer: 4 * 1024 * 1024, encoding: "utf8" });
     invocation.child.stdin?.end(input);
     return invocation;
   };
@@ -78,6 +76,8 @@ export async function installedNativeFixture(
       await promise;
     } finally { clearTimeout(timeout); watcher?.close(); }
     const status = JSON.parse((await command(["__service-status"])).stdout);
+    assert.equal(typeof status.reachableIdentity, "string");
+    assert.ok(status.reachableIdentity.length > 0);
     assert.equal(status.reachableIdentity, status.markerIdentity);
     assert.equal(status.lockAcquirable, false);
   };
@@ -155,7 +155,7 @@ export async function installedNativeFixture(
       invocation.child.stdout?.off("data", consume);
     }
   };
-  return { binary, project, directory, environment, extension, provider, session, manager, command, start, kill, close, servicePid, run, runJson };
+  return { project, environment, extension, provider, session, manager, command, start, kill, close, servicePid, run, runJson };
 }
 
 function waitForNativeServiceExit(service: ChildProcess): Promise<void> {

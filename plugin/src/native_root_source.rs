@@ -1,13 +1,4 @@
 //! One physical-root acquisition transaction for ordinary and native callers.
-//! Native instrumentation borrows the original invocation and verifies the
-//! caller's original sealed creator/source authority before native IO. A
-//! SourceReference is immutable source identity, not a root-read permission.
-//! BTreeMap nodes, opaque Arc control headers, and allocator bookkeeping are
-//! excluded from logical ownership; known paths, adapter bodies, and SDK
-//! producer backing are not. Native callers receive only an Arc handle: its
-//! clone does not invent a heap allocation or a zero-work source receipt.
-//! Failed cold admissions retain raw/watch/source owners in the same strong
-//! registration until original-work SDK shutdown reports actual completion.
 
 use super::*;
 use acyclic_fs::{MeasuredResult, NativeAllocation, NativeMaterializationWork,
@@ -89,8 +80,7 @@ async fn authenticate<I: RootInstrumentation>(
     instrumentation.check()
 }
 
-/// The single registration/watch/demand transaction. Native instrumentation
-/// never delegates to the ordinary numeric-measured instrumentation below.
+/// The single registration/watch/demand transaction.
 async fn acquire_engine<I: RootInstrumentation>(
     registry: &SharedRootRegistry, root: &Path, admission: SharedRootAdmission,
     instrumentation: &mut I,
@@ -358,8 +348,7 @@ pub(super) fn native_watch_error(source: acyclic_fs::NativeWatchError) -> RootEr
     }
 }
 
-/// Constructs the same private subtree selection without a formatted portable
-/// path or a second demand meter. The SDK filter takes this original custody.
+/// Constructs the same private subtree selection without a formatted portable path or a second demand meter.
 fn native_reserved_paths(work: &NativeMaterializationWork)
     -> RootResult<(Vec<NamespacePath>, NativeAllocation)> {
     use acyclic_fs::kernel::{LogicalName, NameEncoding};

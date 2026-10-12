@@ -100,7 +100,7 @@ async fn ntfs_exactification_preserves_source_hard_links() -> Result<(), Box<dyn
     )
     .await?;
     let exact = tokio::spawn(async move {
-        lazy.exactify_subtree("/hot", WorkBudget::UNBOUNDED, &CancellationToken::new())
+        lazy.exactify("/hot", WorkBudget::UNBOUNDED, &CancellationToken::new(), acyclic_fs::PublicationPermit::Unrestricted)
             .await
     })
     .await??;
@@ -431,7 +431,7 @@ async fn report_ntfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
     let started = Instant::now();
     let phase_exact = tokio::spawn(async move {
         phase_lazy
-            .exactify_subtree("/hot", WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .exactify("/hot", WorkBudget::UNBOUNDED, &CancellationToken::new(), acyclic_fs::PublicationPermit::Unrestricted)
             .await
     })
     .await??;

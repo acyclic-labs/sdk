@@ -1,4 +1,4 @@
-import type { AggregateKind, Authority, OperationId } from "./index.js";
+import type { Authority, OperationId } from "./index.js";
 import type { FileRef, ReferencedAttachments } from "./conversation.js";
 import { NativeContracts } from "./native-contracts.js";
 import { isSafeAuthorityId } from "./rust-policy.js";
@@ -45,7 +45,6 @@ interface ClientCommandBase {
 export type ClientCommand<Payload = unknown> =
   | (ClientCommandBase & Readonly<{ payload: OfflinePayload; offlineSafe: true }>)
   | (ClientCommandBase & Readonly<{ payload: Payload; offlineSafe?: false }>);
-type OmitAuthority<Command> = Command extends unknown ? Omit<Command, "authority"> : never;
 
 export interface Connection<Event = unknown> extends AsyncIterable<Delivery<Event>> {
   send(command: ClientCommand): Promise<void>;
@@ -278,8 +277,8 @@ export class IndexedDbClientStore implements AtomicClientStateStore {
     retainedDataBytes(command, this.#maximumResidentBytes);
     const storedCommand = await assertOutboxSafe(command);
     const residentBytes = retainedDataBytes(storedCommand, this.#maximumResidentBytes);
-    const bytes = await structuredSize(storedCommand);
     const contracts = await NativeContracts.create();
+    const bytes = contracts.encodeCanonicalJson(cloneStructuredValue(storedCommand, new Set(), false, true)).byteLength;
     const database = await this.#open();
     const transaction = database.transaction(["outbox", "cursors"], "readwrite");
     const store = transaction.objectStore("outbox");
@@ -300,7 +299,7 @@ export class IndexedDbClientStore implements AtomicClientStateStore {
       count += 1;
       maximum = record.sequence;
       const size = retainedDataBytes(record.command, this.#maximumResidentBytes);
-      const encodedSize = contracts.encodeCanonicalJson(canonicalStructuredValue(record.command, new Set())).byteLength;
+      const encodedSize = contracts.encodeCanonicalJson(cloneStructuredValue(record.command, new Set(), false, true)).byteLength;
       if (record.bytes !== encodedSize) throw new Error("invalid outbox byte accounting");
       if (record.operationId === storedCommand.operationId) existing = record;
       else { retained += size; encoded += encodedSize; }
@@ -506,10 +505,6 @@ export class HarnessClient<Event = unknown> {
     this.#mutations = new RequestScheduler({ concurrent: 1, requests: admission.requests, bytes: admission.bytes });
   }
 
-  async handle(kind: AggregateKind, id: string): Promise<AggregateHandle<Event>> {
-    if (!(await isSafeAuthorityId(id))) throw new TypeError("aggregate identity is not a safe path segment");
-    return new AggregateHandle(this, { kind, id });
-  }
 
   /** Registers at-least-once projection delivery; callbacks must be idempotent. */
   subscribe(listener: ClientListener<Event>): () => void {
@@ -858,17 +853,6 @@ function validateCursor(cursor: ReplayCursor): void {
   }
 }
 
-export class AggregateHandle<Event = unknown> {
-  constructor(
-    readonly client: HarnessClient<Event>,
-    readonly authority: Authority,
-  ) {}
-
-  submit<Payload>(command: OmitAuthority<ClientCommand<Payload>>): Promise<void> {
-    return this.client.submit({ ...command, authority: this.authority } as ClientCommand<Payload>);
-  }
-}
-
 export class ReplayError extends Error {
   constructor(
     readonly authority: Authority,
@@ -964,17 +948,12 @@ async function assertOutboxSafe(command: ClientCommand): Promise<ClientCommand> 
   return admitted;
 }
 
-async function structuredSize(value: unknown): Promise<number> {
-  const transportSafe = canonicalStructuredValue(value, new Set());
-  return (await NativeContracts.create()).encodeCanonicalJson(transportSafe).byteLength;
-}
-
-function cloneStructuredValue(value: unknown, ancestors: Set<object>, allowUndefined = false): unknown {
+function cloneStructuredValue(value: unknown, ancestors: Set<object>, allowUndefined = false, canonical = false): unknown {
   if (value === undefined && allowUndefined) return value;
   if (
-    value === null || typeof value === "string" || typeof value === "boolean" ||
-    typeof value === "bigint"
+    value === null || typeof value === "string" || typeof value === "boolean"
   ) return value;
+  if (typeof value === "bigint") return canonical ? { $bigint: value.toString() } : value;
   if (typeof value === "number") {
     if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) {
       throw new TypeError("command contains a non-finite number or inexact integer");
@@ -983,8 +962,8 @@ function cloneStructuredValue(value: unknown, ancestors: Set<object>, allowUndef
   }
   if (typeof value !== "object") throw new TypeError("command contains a non-data value");
   if (ancestors.has(value)) throw new TypeError("command contains a cycle");
-  if (value instanceof ArrayBuffer) return value.slice(0);
-  if (value instanceof Uint8Array) return value.slice();
+  if (value instanceof ArrayBuffer) return canonical ? { $bytes: [...new Uint8Array(value)] } : value.slice(0);
+  if (value instanceof Uint8Array) return canonical ? { $bytes: [...value] } : value.slice();
   if (ArrayBuffer.isView(value)) {
     throw new TypeError("command contains an unsupported binary view");
   }
@@ -1010,7 +989,7 @@ function cloneStructuredValue(value: unknown, ancestors: Set<object>, allowUndef
         if (descriptor === undefined || !("value" in descriptor)) {
           throw new TypeError("command contains an accessor");
         }
-        cloned[index] = cloneStructuredValue(descriptor.value, ancestors, allowUndefined);
+        cloned[index] = cloneStructuredValue(descriptor.value, ancestors, allowUndefined, canonical);
       }
       return cloned;
     }
@@ -1019,40 +998,10 @@ function cloneStructuredValue(value: unknown, ancestors: Set<object>, allowUndef
       const descriptor = descriptors[key];
       if (descriptor?.enumerable !== true) continue;
       if (!("value" in descriptor)) throw new TypeError("command contains an accessor");
-      Object.defineProperty(cloned, key, { value: cloneStructuredValue(descriptor.value, ancestors, allowUndefined),
+      Object.defineProperty(cloned, key, { value: cloneStructuredValue(descriptor.value, ancestors, allowUndefined, canonical),
         enumerable: true, configurable: true, writable: true });
     }
     return cloned;
-  } finally {
-    ancestors.delete(value);
-  }
-}
-
-function canonicalStructuredValue(value: unknown, ancestors: Set<object>): unknown {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
-  if (typeof value === "number") {
-    if (!Number.isFinite(value) || (Number.isInteger(value) && !Number.isSafeInteger(value))) {
-      throw new TypeError("command contains a non-finite number or inexact integer");
-    }
-    return value;
-  }
-  if (typeof value === "bigint") return { $bigint: value.toString() };
-  if (typeof value !== "object") throw new TypeError("command contains a non-data value");
-  if (ancestors.has(value)) throw new TypeError("command contains a cycle");
-  if (value instanceof ArrayBuffer) return { $bytes: [...new Uint8Array(value)] };
-  if (ArrayBuffer.isView(value)) {
-    return { $bytes: [...new Uint8Array(value.buffer, value.byteOffset, value.byteLength)] };
-  }
-  if (!Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null) {
-    throw new TypeError("command contains a non-canonical structured value");
-  }
-  ancestors.add(value);
-  try {
-    if (Array.isArray(value)) return value.map(child => canonicalStructuredValue(child, ancestors));
-    return Object.fromEntries(Object.entries(value).map(([key, child]) => [
-      key,
-      canonicalStructuredValue(child, ancestors),
-    ]));
   } finally {
     ancestors.delete(value);
   }

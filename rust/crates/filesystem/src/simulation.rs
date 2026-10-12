@@ -1,8 +1,4 @@
 //! Deterministic bounded fault simulator for authority and immutable-object backends.
-//!
-//! The simulator is qualification infrastructure over the two canonical storage
-//! primitives. It never becomes filesystem truth: healing or dropping it leaves
-//! only the wrapped memory authority log and immutable objects.
 
 use crate::async_storage::{AsyncAuthorityStore, AsyncObjectStore, GenerationForkSource, StorageFuture};
 use crate::cancellation::CancellationToken;
@@ -280,10 +276,6 @@ pub struct Simulation<
 
 impl Simulation<ReferenceAuthority, ReferenceObjects> {
     /// Creates a bounded simulator over fresh deterministic memory primitives.
-    ///
-    /// # Errors
-    ///
-    /// Rejects any zero hard bound before allocating simulator state.
     pub fn new(options: SimulationOptions) -> Result<Self, SimulationError> {
         let (authority, objects) = reference_backends();
         Self::wrap(authority, objects, options)
@@ -292,13 +284,6 @@ impl Simulation<ReferenceAuthority, ReferenceObjects> {
 
 impl<A, O> Simulation<A, O> {
     /// Wraps explicit backends with one bounded deterministic schedule.
-    ///
-    /// This is the black-box qualification seam for future infrastructure
-    /// adapters. The simulator does not inspect or replace backend state.
-    ///
-    /// # Errors
-    ///
-    /// Rejects any zero hard bound before retaining the supplied backends.
     pub fn wrap(
         authority: A,
         objects: O,
@@ -343,11 +328,6 @@ impl<A, O> Simulation<A, O> {
     }
 
     /// Schedules one exact one-based interception point.
-    ///
-    /// # Errors
-    ///
-    /// Rejects zero occurrences, incompatible behavior, duplicate identities,
-    /// poisoned state, or a full bounded schedule.
     pub fn schedule(&self, scheduled: ScheduledSimulationFault) -> Result<(), SimulationError> {
         if scheduled.occurrence == 0 {
             return Err(SimulationError::ZeroOccurrence);
@@ -360,15 +340,6 @@ impl<A, O> Simulation<A, O> {
     }
 
     /// Atomically schedules the next occurrence of one operation family.
-    ///
-    /// This is useful for deterministic black-box runners after setup traffic.
-    /// Concurrent runners should retain the returned absolute occurrence in
-    /// their evidence rather than assume which request consumes it.
-    ///
-    /// # Errors
-    ///
-    /// Rejects incompatible behavior, occurrence exhaustion, poisoned state,
-    /// or a full bounded schedule.
     pub fn schedule_next(
         &self,
         operation: SimulationOperation,
@@ -391,10 +362,6 @@ impl<A, O> Simulation<A, O> {
     }
 
     /// Returns the complete bounded trace collected so far.
-    ///
-    /// # Errors
-    ///
-    /// Returns a poisoned-state failure instead of silently discarding evidence.
     pub fn trace(&self) -> Result<Vec<SimulationTrace>, SimulationError> {
         Ok(self.lock_state()?.trace.clone())
     }
@@ -428,16 +395,6 @@ fn schedule_locked(
 
 impl<A, O: AsyncObjectStore> Simulation<A, O> {
     /// Publishes delayed immutable objects in canonical identity order.
-    ///
-    /// Only one pending entry is retained outside the simulator lock at a time,
-    /// so flushing does not allocate or copy the delayed object set. `OwnedBytes`
-    /// cloning retains the same immutable allocation until backend admission.
-    ///
-    /// # Errors
-    ///
-    /// Returns exact immutable-store, cancellation, budget, or poisoned-state
-    /// failures. Successfully published entries are removed; the first failed
-    /// entry and every later entry remain pending for an idempotent retry.
     pub async fn flush_object_visibility(
         &self,
         budget: WorkBudget,
@@ -447,7 +404,6 @@ impl<A, O: AsyncObjectStore> Simulation<A, O> {
     }
 
     /// Publishes delayed aliases under the caller's original native ledger.
-    /// Pending buffers retain their intrinsic custody until the last alias drops.
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn flush_object_visibility_with_native_work(
         &self,
@@ -690,8 +646,6 @@ impl<O: AsyncObjectStore> SimulatedObjectStore<O> {
                 return Err(ObjectFailure::new(accounting.simulation_error(
                     "simulation delayed-object bound exhausted"), work));
             }
-            // The map node is opaque simulator storage. Moving OwnedBytes preserves
-            // its physical owner's intrinsic guard, including all later aliases.
             let (_, bytes) = object.into_parts();
             state.pending_objects.insert(object_id, bytes);
             state.pending_object_bytes = next_bytes;
@@ -1248,8 +1202,6 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedAuthorityStore<A> 
                 request.authority_id, request.expected, original, cancellation,
             ).await.map_err(E::from)?;
         }
-        // Only the canonical inner producer knows when its request is planned
-        // and its locks are released. It invokes this exact owner at each CAS.
         let result = self.inner.compare_and_append_guarded_with_native_owner(
             request, original, cancellation, guard,
         ).await?;
@@ -1391,8 +1343,6 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedAuthorityStore<A> 
                 .ok_or(NativeTreeMaterializationError::Work(crate::WorkError::Overflow))?;
             let old_bytes = records.capacity().checked_mul(std::mem::size_of::<DurableCommit>())
                 .ok_or(NativeTreeMaterializationError::Work(crate::WorkError::Overflow))? as u64;
-            // Both metadata buffers are live during this copy. Payload OwnedBytes
-            // keep their existing owners; no payload allocation or copy occurs.
             let (mut replacement, mut replacement_custody) = work.with_owned_allocations(
                 |ledger, counters, budget, cancellation| {
                     cancellation.check().map_err(|_| AuthorityStoreError::Cancelled)?;
@@ -1424,8 +1374,6 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedAuthorityStore<A> 
             }
             records = replacement;
         }
-        // The clone copies only fixed metadata and increments the payload's
-        // reference count. All possible Vec growth was admitted above.
         let last = records.last().expect("nonempty replay page").clone();
         records.push(last);
         work.record_admitted(WorkCounters {
@@ -1553,7 +1501,6 @@ impl<O: AsyncObjectStore> AsyncObjectStore for SimulatedObjectStore<O> {
     fn collection_sweeps(&self) -> u64 {
         self.inner.collection_sweeps()
     }
-
 
     async fn historical_generation_evidence(
         &self,

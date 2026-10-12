@@ -3153,7 +3153,7 @@ mod tests {
                     private.capability(crate::conversation::VolumeOperation::Write)?,
                 ]),
             );
-            let journal = crate::filesystem::FilesystemExecutionJournal::new_with_schemas(
+            let journal = crate::filesystem::FilesystemExecutionJournal::new(
                 client.clone(),
                 host,
                 private,

@@ -117,7 +117,7 @@ async fn original_creator_catalog_barriers_and_duplicate_observation_do_not_disp
     let source_owned = source_work.live_allocation_bytes();
     assert!(source_owned > source_baseline);
     let catalog_work = NativeMaterializationWork::new(pi_root_provider::allocation_budget(), &CancellationToken::new()).unwrap();
-    let coordinator = pi_fork::PiForkCoordinator::new_with_native_work(fixture.runtime.clone(),
+    let coordinator = pi_fork::PiForkCoordinator::new(fixture.runtime.clone(),
         fixture.filesystem.clone(), fixture.stream.clone(), &fixture.resources, fixture.owner.clone(), &catalog_work).unwrap();
     coordinator.admit_preparation(&fixture.context, &fixture.journal, &fixture.fence, &plan).await.unwrap();
     let native = session.native_host_with_native_work(&catalog_work).unwrap();
