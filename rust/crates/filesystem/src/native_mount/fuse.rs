@@ -2954,7 +2954,7 @@ impl FusePhysicalSession {
             None => {
                 let loan = loan.as_ref().ok_or(NativeMountError::ControlPending)?;
                 loan.check_wait()?;
-                loan.original_work().clone()
+                loan.original_work()
             }
         };
         // Callbacks retain their original grants and cancellation.
