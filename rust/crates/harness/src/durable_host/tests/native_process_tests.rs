@@ -1,3 +1,4 @@
+use crate::runtime::TaskSpawner as _;
 use super::*;
 use crate::runtime::TaskStateProvider;
 use crate::filesystem::NativeProcessStopKind;
@@ -721,7 +722,7 @@ async fn issued_mixed_working_view_retains_actual_lazy_project_and_materialized_
     let foreign = test_work(acyclic_fs::performance::work_budget(100_000_000, 100_000_000), &cancellation)?;
     assert!(issued.read_builtin_file(operation, Path::new("src/cold.txt"), 64, &foreign).is_err());
     assert_eq!(foreign.receipt().source_bytes_read, 0);
-    fixture.owner.verify_with_native_work(false, &work).await?;
+    fixture.owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(&work)?)).await?;
     fixture.lazy_mount.as_ref().expect("actual fixture lazy mount")
         .abandon_with_work(&fixture.lazy_work.as_ref().expect("original seeded volume work").clone())?;
     Ok(())
@@ -810,8 +811,8 @@ async fn issued_working_view_denies_legacy_foreign_work_full_fence_and_stale_own
         fixture.owner.task_binding().0, fixture.owner.task_binding().1, &work,
     ).await?;
     let guard = context.volume_callback_guard_with_native_work(&fixture.owner, &work).await?;
-    let callback = guard.for_volume(&fixture.owner, &fixture.source, false, &work)?;
-    let writable_callback = guard.for_volume(&fixture.owner, &fixture.destination, true, &work)?;
+    let callback = guard.for_volume(&fixture.owner, &fixture.source, false, &work)?.0;
+    let writable_callback = guard.for_volume(&fixture.owner, &fixture.destination, true, &work)?.0;
     let mount_work = work.clone();
     assert!(callback.check(&mount_work).expect("original callback admission").await.is_ok());
     assert!(writable_callback.check(&mount_work).expect("original writable callback admission").await.is_ok());
@@ -1264,7 +1265,7 @@ where
                     acyclic_fs::MemoryLazyWorkspaceStore::default()).await
                     .map_err(|error| Error::Storage(error.to_string()))?;
                 let lazy = lazy.into_arc_with_native_work(work)?;
-                let callback = guards.0[0].for_volume(&owner, &source, false, &volume_work)?;
+                let callback = guards.0[0].for_volume(&owner, &source, false, &volume_work)?.0;
                 let (path, _path_custody) = volume_work.path(&options.root, Some(std::path::Path::new("src")))?;
                 volume_work.create_owned_directory(&options.root, preparation_root.expected_identity,
                     std::path::Path::new("src"), true)?;
@@ -1776,7 +1777,7 @@ async fn native_builtin_current_volume_grants_and_unmounted_results_deny_before_
         fixture.options.budget_for_volume_count(fixture.bindings.len())?, &cancellation,
     )?;
     assert!(fixture.owner
-        .require_volume_grant_with_native_work(&seed.source, VolumeOperation::Write, &work).is_err());
+        .require_volume_grant(&seed.source, VolumeOperation::Write, &mut Some(&mut crate::store::history::native_work_io(&work)?)).is_err());
     for path in ["a-source/input.txt", "results/unmounted.txt", "../results/escape.txt"] {
         assert!(view.write_builtin_file(&fixture.owner, OperationId::from_bytes([212; 16]),
             Path::new(path), "forbidden", true, None, &work).await.is_err());

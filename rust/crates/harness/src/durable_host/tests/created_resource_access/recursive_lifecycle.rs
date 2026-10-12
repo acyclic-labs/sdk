@@ -80,8 +80,8 @@ async fn fork_preparation_outbox_replay_binds_actual_report_and_original_request
         return Err(Error::NotFound("original preparation lease".into()));
     };
     let owner = Arc::new(fixture.host.journal_owner(preparation_task, (&lease.reservation).into()).await?);
-    assert!(owner.resource_preparation(input).await.is_err());
-    assert!(owner.resource_preparation(created.request).await.is_ok());
+    assert!(owner.resource_preparation(input, &mut None).await.is_err());
+    assert!(owner.resource_preparation(created.request, &mut None).await.is_ok());
     Ok(())
 }
 

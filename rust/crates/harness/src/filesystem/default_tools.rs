@@ -1476,8 +1476,13 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 break 'publication None;
             }
             let budget = acyclic_fs::performance::work_budget(fork.request.maximum_work, fork.request.maximum_bytes);
-            let published = binding.parent.publish_fork_report_measured(report_copy, binding.parent_scope,
-                owner.journal_owner.as_ref(), budget, cancellation).await.map_err(|failure| failure.error)?;
+            let mut publication_work = crate::store::HistoryWork::new(budget, cancellation);
+            let published = async {
+                publication_work.preflight()?;
+                binding.parent.publish_fork_report(report_copy, binding.parent_scope,
+                    Some(owner.journal_owner.as_ref()), &mut Some(&mut publication_work)).await
+            }.await;
+            let published = publication_work.finish(published).map_err(|failure| failure.error)?;
             break 'publication Some(published.work.remaining(budget).map_err(|error| Error::Invalid(error.to_string()))?);
         };
         let seed = binding.parent.reducer().fork(&report.request.child).ok_or_else(|| recursive_reject(io,
@@ -1493,9 +1498,14 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     Some(owner.journal_owner.as_ref()), &mut Some(&mut io.history_io())).await?;
                 break 'child;
             }
-            binding.child_conversation.bind_published_child_measured(&binding.parent, seed, binding.child_scope,
-                owner.journal_owner.as_ref(), remaining.expect("measured publication preserves its remaining allowance"),
-                cancellation).await.map_err(|failure| failure.error)?;
+            let mut child_work = crate::store::HistoryWork::new(
+                remaining.expect("measured publication preserves its remaining allowance"), cancellation);
+            let bound = async {
+                child_work.preflight()?;
+                binding.child_conversation.bind_published_child(&binding.parent, seed, binding.child_scope,
+                    Some(owner.journal_owner.as_ref()), &mut Some(&mut child_work)).await
+            }.await;
+            child_work.finish(bound).map_err(|failure| failure.error)?;
         }
         encode(seed, output_io)
     }
