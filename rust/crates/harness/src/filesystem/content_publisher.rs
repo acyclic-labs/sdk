@@ -32,13 +32,12 @@ impl<A, O> FilesystemContentPublisher<A, O> {
         let grant = match io {
             #[cfg(not(target_arch = "wasm32"))]
             Some(io) if io.original_native_work().is_some() =>
-                ContentGrant::verify_with_io(verifier, scope, volume, VolumeOperation::Write, io)?,
-            Some(io) => ContentGrant::verify_with_work(verifier, scope, volume, VolumeOperation::Write,
-                maximum_bytes, &mut Some(&mut io.history_io()))?,
-            None => ContentGrant::verify(verifier, scope, volume, VolumeOperation::Write)?,
+                ContentGrant::verify(verifier, scope, volume, VolumeOperation::Write, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io()))?,
+            Some(io) => ContentGrant::verify(verifier, scope, volume, VolumeOperation::Write, maximum_bytes, &mut Some(&mut io.history_io()))?,
+            None => ContentGrant::verify(verifier, scope, volume, VolumeOperation::Write, u64::MAX, &mut None)?,
         };
         let mut history = io.map(PreparationIo::history_io);
-        let volume = volume.clone_with_work(&mut history.as_mut().map(
+        let volume = volume.copy(&mut history.as_mut().map(
             |observer| observer as &mut dyn crate::store::history::HistoryIo))?;
         #[cfg(not(target_arch = "wasm32"))]
         let _native_metadata = match io.filter(|io| io.original_native_work().is_some()) {

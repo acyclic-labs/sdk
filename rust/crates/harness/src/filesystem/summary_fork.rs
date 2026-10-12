@@ -287,7 +287,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         let planned_capture = SummaryForkCapture {
             selection: clone_selection(prepared.selection(), io)?,
             context: crate::conversation::FileRef::new_with_io(child_private, ".system/inherited-conversation/summary-context.json",
-                ZERO_VERSION, &FileDescriptor::from_bytes_with_io(&planned_bytes, "application/json", io)?, "summary-context.json", io)?,
+                ZERO_VERSION, &FileDescriptor::from_bytes(&planned_bytes, "application/json", &mut (io).map(PreparationIo::history_io).as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo))?, "summary-context.json", io)?,
             payloads: into_files(planned, io)?,
             references: cloned_files(&references, io)?,
         };
@@ -382,7 +382,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         let context_version = fork_preparer_io::hex_key(generation.as_resource().key(), io)?;
         let context = crate::conversation::FileRef::new_with_io(child_private,
             ".system/inherited-conversation/summary-context.json",
-            &context_version, &FileDescriptor::from_bytes_with_io(&bytes, "application/json", io)?,
+            &context_version, &FileDescriptor::from_bytes(&bytes, "application/json", &mut (io).map(PreparationIo::history_io).as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo))?,
             "summary-context.json", io)?;
         let committed = self.host.read_pinned_io(&context, maximum_bytes, io).await?;
         if committed.as_ref() != bytes.as_ref() {

@@ -328,7 +328,7 @@ fn require_volume_grant(
 ) -> Result<()> {
     let scope =
         scope.ok_or_else(|| Error::Unauthorized("file tool requires a scoped caller".into()))?;
-    let capability = volume.capability(operation)?;
+    let capability = volume.capability(operation, &mut None)?;
     if !scope.grants().contains(&capability) {
         return Err(Error::Unauthorized(format!("scope lacks {capability}")));
     }
@@ -686,8 +686,8 @@ impl MemoryHarnessStorage {
         };
         let key = *blake3::hash(&OperationId::new().into_bytes()).as_bytes();
         let issuer = AuthorityIssuer::new("local-harness", key, conversation.clone());
-        let read_capability = volume.capability(VolumeOperation::Read)?;
-        let write_capability = volume.capability(VolumeOperation::Write)?;
+        let read_capability = volume.capability(VolumeOperation::Read, &mut None)?;
+        let write_capability = volume.capability(VolumeOperation::Write, &mut None)?;
         let scope = issuer.root_for_agent(
             agent,
             "owner",
@@ -2025,12 +2025,7 @@ mod tests {
             b"private attachment body"
         );
         assert!(
-            ContentGrant::verify(
-                &storage.verifier(),
-                &delegated,
-                storage.volume(),
-                VolumeOperation::Write
-            )
+            ContentGrant::verify(&storage.verifier(), &delegated, storage.volume(), VolumeOperation::Write, u64::MAX, &mut None)
             .is_err()
         );
         let directory = storage.delegate_directory_read(reader, "attached-directory", "input")?;
@@ -2070,12 +2065,7 @@ mod tests {
                 .is_ok()
         );
         assert!(
-            ContentGrant::verify(
-                &storage.verifier(),
-                &directory,
-                storage.volume(),
-                VolumeOperation::Write
-            )
+            ContentGrant::verify(&storage.verifier(), &directory, storage.volume(), VolumeOperation::Write, u64::MAX, &mut None)
             .is_err()
         );
         let output = storage

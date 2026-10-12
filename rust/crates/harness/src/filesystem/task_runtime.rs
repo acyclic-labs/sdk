@@ -453,7 +453,7 @@ where
                 Some(ContentBindings { reader, writer: None }), None, policy.clone(), work,
             )?;
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;
-            let volume = volume.clone_with_io(&io)?;
+            let volume = volume.copy(&mut Some(&mut io.history_io()))?;
             let verifier = verifier.clone_with_native_work(work)?;
             io.absorb_native_custody(verifier.1)?;
             let signed = signed.clone_with_native_work(work)?;

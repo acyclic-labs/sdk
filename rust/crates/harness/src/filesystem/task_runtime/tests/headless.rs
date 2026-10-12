@@ -20,7 +20,7 @@ async fn admit(runtime: &Runtime, fixture: &Fixture, id: u8, grants: Capabilitie
 }
 
 async fn put(fixture: &Fixture, volume: &VolumeRef, path: &str, bytes: &[u8], key: &str) -> Result<FileRef> {
-    let grant = ContentGrant::verify(&fixture.issuer.verifier(), &fixture.signed, volume, VolumeOperation::Write)?;
+    let grant = ContentGrant::verify(&fixture.issuer.verifier(), &fixture.signed, volume, VolumeOperation::Write, u64::MAX, &mut None)?;
     fixture.filesystem.put_content(volume, &grant, path, bytes, "text/plain", path.rsplit('/').next().unwrap_or(path),
         65_536, &IdempotencyKey::new(key)?).await
 }
@@ -34,7 +34,7 @@ async fn selected_source_never_adopts_its_grants_and_pins_project_and_scratch() 
     let agent = fixture.signed.agent().ok_or_else(|| Error::Invalid("fixture agent".into()))?;
     fixture.signed = fixture.issuer.root_for_agent(agent, "owner", Capabilities::new(
         fixture.signed.capabilities().iter().chain([
-            project.capability(VolumeOperation::Read)?, project.capability(VolumeOperation::Write)?,
+            project.capability(VolumeOperation::Read, &mut None)?, project.capability(VolumeOperation::Write, &mut None)?,
         ].iter().map(String::as_str)),
     ));
     fixture.scope = RuntimeScope::new(fixture.signed.capabilities().clone(), Limits::default())?;
@@ -162,7 +162,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     let agent = fixture.signed.agent().ok_or_else(|| Error::Invalid("fixture agent".into()))?;
     fixture.signed = fixture.issuer.root_for_agent(agent, "owner", Capabilities::new(
         fixture.signed.capabilities().iter().chain([
-            project.capability(VolumeOperation::Read)?, project.capability(VolumeOperation::Write)?,
+            project.capability(VolumeOperation::Read, &mut None)?, project.capability(VolumeOperation::Write, &mut None)?,
         ].iter().map(String::as_str)),
     ));
     fixture.scope = RuntimeScope::new(fixture.signed.capabilities().clone(), Limits::default())?;
@@ -221,9 +221,9 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     let original_history = history.reducer().conversation().map(|state| state.messages().to_vec());
     let original_revision = history.reducer().revision();
     let workspace = fs.open_workspace(project.storage_name()?).await.map_err(|e| Error::Storage(e.to_string()))?;
-    ContentGrant::verify(&fixture.issuer.verifier(), &fixture.signed, &project, VolumeOperation::Write)?;
-    let restricted = fixture.issuer.root_for_agent(agent, "read-only", Capabilities::new([project.capability(VolumeOperation::Read)?]));
-    assert!(ContentGrant::verify(&fixture.issuer.verifier(), &restricted, &project, VolumeOperation::Write).is_err());
+    ContentGrant::verify(&fixture.issuer.verifier(), &fixture.signed, &project, VolumeOperation::Write, u64::MAX, &mut None)?;
+    let restricted = fixture.issuer.root_for_agent(agent, "read-only", Capabilities::new([project.capability(VolumeOperation::Read, &mut None)?]));
+    assert!(ContentGrant::verify(&fixture.issuer.verifier(), &restricted, &project, VolumeOperation::Write, u64::MAX, &mut None).is_err());
     put(&fixture, &project, "src/a.txt", b"old", "restore-old").await?;
     let selected = workspace.head().await.map_err(|e| Error::Storage(e.to_string()))?;
     put(&fixture, &project, "src/a.txt", b"new", "restore-new").await?;
@@ -275,8 +275,8 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     let report = history.prepare_fork(&preparer, request).await?;
     let child_issuer = AuthorityIssuer::new("restore", [132; 32], child_authority.clone());
     let child_scope = child_issuer.root_for_agent(child_agent, "child", Capabilities::new([
-        "conversation:bind".into(), child_private.capability(VolumeOperation::Read)?, child_private.capability(VolumeOperation::Write)?,
-        child_project.capability(VolumeOperation::Read)?, child_project.capability(VolumeOperation::Write)?,
+        "conversation:bind".into(), child_private.capability(VolumeOperation::Read, &mut None)?, child_private.capability(VolumeOperation::Write, &mut None)?,
+        child_project.capability(VolumeOperation::Read, &mut None)?, child_project.capability(VolumeOperation::Write, &mut None)?,
     ]));
     let mut child = StreamAggregate::open(&fixture.stream, child_authority, child_issuer.verifier(), SchemaRegistry::new()).await?
         .with_fork_verifier(forks);

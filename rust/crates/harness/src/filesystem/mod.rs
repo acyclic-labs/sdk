@@ -247,8 +247,7 @@ impl<A, O> FilesystemSchedulerPayloadStore<A, O> {
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let mut observer = io.map(PreparationIo::history_io);
         let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-        let grant = ContentGrant::verify(verifier, scope, volume, VolumeOperation::Write,
-            u64::MAX, &mut work)?;
+        let grant = ContentGrant::verify(verifier, scope, volume, VolumeOperation::Write, u64::MAX, &mut work)?;
         let volume = volume.copy(&mut work)?;
         #[cfg(not(target_arch = "wasm32"))]
         let _native_metadata = match io.filter(|io| io.original_native_work().is_some()) {
@@ -747,12 +746,7 @@ where
         if reference.path().starts_with(".system/")
             && !crate::conversation::is_inherited_context_path(reference.path())
         {
-            ContentGrant::verify(
-                &self.verifier,
-                &self.scope,
-                reference.volume(),
-                VolumeOperation::Read,
-            )
+            ContentGrant::verify(&self.verifier, &self.scope, reference.volume(), VolumeOperation::Read, u64::MAX, &mut None)
         } else {
             ContentGrant::verify_read(&self.verifier, &self.scope, reference)
         }
@@ -2103,7 +2097,7 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
         };
         let verifier = verifier.clone_with_work(&mut work)?;
         let scope = scope.clone_with_work(&mut work)?;
-        let project = project.clone_with_work(&mut work)?;
+        let project = project.copy(&mut work)?;
         #[cfg(not(target_arch = "wasm32"))]
         let native_custody = io.filter(|io| io.original_native_work().is_some()).map(|io| {
             io.take_native_custody(io.owned_bytes()?.checked_sub(before)
@@ -2114,7 +2108,7 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
     }
 
     fn require(&self, capability: &str, operation: VolumeOperation) -> Result<()> {
-        ContentGrant::verify(&self.verifier, &self.scope, &self.project, operation)?;
+        ContentGrant::verify(&self.verifier, &self.scope, &self.project, operation, u64::MAX, &mut None)?;
         if !self.scope.capabilities().contains(capability) {
             return Err(Error::Unauthorized(
                 "parent project operation is not granted".into(),
@@ -2194,7 +2188,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             ));
         }
         let grant =
-            ContentGrant::verify(&self.verifier, &self.scope, private, VolumeOperation::Write)?;
+            ContentGrant::verify(&self.verifier, &self.scope, private, VolumeOperation::Write, u64::MAX, &mut None)?;
         let bytes = prefix.canonical_bytes(None)?;
         let digest = blake3::hash(&bytes).to_hex();
         self.host
@@ -2601,11 +2595,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "inherited context exceeds byte limit"));
         }
         let path = ".system/inherited-conversation/prefix.json";
-        let descriptor = FileDescriptor::from_bytes(
-            &bytes,
-            "application/vnd.acyclic.harness.inherited-conversation+json",
-            io,
-        )?;
+        let descriptor = FileDescriptor::from_bytes(&bytes, "application/vnd.acyclic.harness.inherited-conversation+json", io)?;
         let workspace = fork_preparer_io::content_workspace(&self.host.provider, child_private, io)?;
         let committed = if let Some(prior) = fork_preparer_io::operation_generation(self.host, &workspace, idempotency_key, io).await? {
             let original = fork_preparer_io::generation_ref(self.host, &prior, io)?;
@@ -2737,7 +2727,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
     where F: FnMut() -> Fut, Fut: Future<Output = Result<()>> {
         self.require(capability::PROJECT_MERGE, VolumeOperation::Write)?;
         if !selected {
-            ContentGrant::verify(&self.verifier, &self.scope, source, VolumeOperation::Read)?;
+            ContentGrant::verify(&self.verifier, &self.scope, source, VolumeOperation::Read, u64::MAX, &mut None)?;
         }
         guard().await?;
         source.validate(&mut None)?;
@@ -3467,8 +3457,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         key: &IdempotencyKey, path: &str, maximum_bytes: u64,
         class: InternalContentClass, io: &PreparationIo,
     ) -> Result<Option<FileRef>> {
-        ContentGrant::verify_original_volume_with_io(
-            verifier, scope, volume, VolumeOperation::Read, io)?;
+        ContentGrant::authorize_volume(verifier, scope, volume, VolumeOperation::Read, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io()))?;
         self.content_for_operation_record_io(
             volume, key, Some(path), maximum_bytes, Some(class), Some(io)).await
     }
@@ -3641,9 +3630,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         class: InternalContentClass, io: &PreparationIo,
     ) -> Result<FileRef> {
         let grant_hold;
-        let grant = ContentGrant::verify_with_io(
-            verifier, scope, volume, VolumeOperation::Write, io,
-        )?;
+        let grant = ContentGrant::verify(verifier, scope, volume, VolumeOperation::Write, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io()))?;
         grant_hold = io.guard_owned(grant.logical_owned_bytes()?)?;
         let result = self.put_content_impl(volume, &grant, path, bytes, media_type, display_name,
         maximum_bytes, idempotency_key, Some(class), None, Some(io), None, None).await;
@@ -4171,7 +4158,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             volume.clone(),
             path,
             "pending",
-            FileDescriptor::from_bytes(&[], "application/octet-stream")?,
+            FileDescriptor::from_bytes(&[], "application/octet-stream", &mut None)?,
             name,
         )?;
         let workspace = workspace_ref(self.provider.clone(), &volume.storage_name()?)?;
@@ -4213,7 +4200,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 )
             }
             Err(Error::NotFound(_)) => (
-                FileDescriptor::from_bytes(&bytes, "application/octet-stream")?,
+                FileDescriptor::from_bytes(&bytes, "application/octet-stream", &mut None)?,
                 name.to_owned(),
             ),
             Err(error) => return Err(error),
@@ -4863,13 +4850,13 @@ mod tests {
             owner,
             "owner",
             Capabilities::new([
-                volume.capability(VolumeOperation::Read)?,
-                volume.capability(VolumeOperation::Write)?,
+                volume.capability(VolumeOperation::Read, &mut None)?,
+                volume.capability(VolumeOperation::Write, &mut None)?,
             ]),
         );
         let verifier = issuer.verifier();
-        let read = ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Read)?;
-        let write = ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Write)?;
+        let read = ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Read, u64::MAX, &mut None)?;
+        let write = ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Write, u64::MAX, &mut None)?;
         let first = host
             .put_content(
                 &volume,
@@ -5144,7 +5131,7 @@ mod tests {
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([5; 16])),
         )?;
-        assert!(ContentGrant::verify(&verifier, &scope, &other, VolumeOperation::Read).is_err());
+        assert!(ContentGrant::verify(&verifier, &scope, &other, VolumeOperation::Read, u64::MAX, &mut None).is_err());
         Ok(())
     }
 
@@ -5179,14 +5166,14 @@ mod tests {
             Capabilities::new([
                 "conversation:bind".to_owned(),
                 "conversation:append".to_owned(),
-                volume.capability(VolumeOperation::Read)?,
-                volume.capability(VolumeOperation::Write)?,
+                volume.capability(VolumeOperation::Read, &mut None)?,
+                volume.capability(VolumeOperation::Write, &mut None)?,
             ]),
         );
         let read =
-            ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Read)?;
+            ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Read, u64::MAX, &mut None)?;
         let write =
-            ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
+            ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write, u64::MAX, &mut None)?;
         let file = host
             .put_content(
                 &volume,

@@ -345,11 +345,11 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let verifier = verifier(&caller.owner)?;
         for volume in [&caller.project, &caller.private_volume] {
             if volume == &caller.project && !require_project_read { continue; }
-            let read = volume.capability(VolumeOperation::Read)?;
+            let read = volume.capability(VolumeOperation::Read, &mut None)?;
             if !context.scope().grants().contains(&read) {
                 return Err(Error::Unauthorized("configured caller lacks its exact selected source read".into()));
             }
-            ContentGrant::verify(&verifier, &caller.owner.scope, volume, VolumeOperation::Read)?;
+            ContentGrant::verify(&verifier, &caller.owner.scope, volume, VolumeOperation::Read, u64::MAX, &mut None)?;
         }
         Ok(caller)
     }
@@ -403,7 +403,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let mut scoped = allocation.child.scope.capabilities().iter().map(str::to_owned).collect::<Vec<_>>();
         for volume in [&allocation.project, &allocation.private_volume].into_iter().chain(allocation.result_volume.as_ref()) {
             for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-                let grant = volume.capability(operation)?;
+                let grant = volume.capability(operation, &mut None)?;
                 grants.push(grant.clone());
                 scoped.push(grant);
             }
@@ -602,7 +602,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             handle.require_selection(context.operation_id(), arguments.source, &project, &generation, source_owner.native_snapshot.as_ref(), None)?;
             Some(handle)
         } else if original.is_none() && arguments.source != caller.task
-            && !context.scope().grants().contains(&project.capability(VolumeOperation::Read)?) {
+            && !context.scope().grants().contains(&project.capability(VolumeOperation::Read, &mut None)?) {
             let BoundProjectSourcePolicy { issuer, provider, .. } = self.project_policy.get().ok_or_else(||
                 Error::Unauthorized("foreign merge lacks an explicit RootService Project policy".into()))?;
             let owner = Arc::new(runtime.task_host().journal_owner(caller.task, context.task().owned_task_fence()?).await?

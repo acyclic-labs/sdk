@@ -173,11 +173,11 @@ where
         return Err(Error::Unauthorized("fork source is not the actual current caller agent".into()));
     }
     for volume in [&source.project, &source.private_volume] {
-        let read = volume.capability(VolumeOperation::Read)?;
+        let read = volume.capability(VolumeOperation::Read, &mut None)?;
         if !context.scope().grants().contains(&read) {
             return Err(Error::Unauthorized("caller task lacks selected source read authority".into()));
         }
-        crate::conversation::ContentGrant::verify(&verifier, &signed, volume, VolumeOperation::Read)?;
+        crate::conversation::ContentGrant::verify(&verifier, &signed, volume, VolumeOperation::Read, u64::MAX, &mut None)?;
     }
     config.limits.validate(&mut None)?;
     let selected = arguments.source_task(caller, config.limits, &mut None)?;
@@ -410,8 +410,7 @@ where P: acyclic_stream::StreamProvider + 'static, A: AsyncAuthorityStore + 'sta
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native caller lacks selected source read authority" });
         }
-        crate::conversation::ContentGrant::verify_original_volume_with_io(
-            verifier, signed, volume, VolumeOperation::Read, &io)?;
+        crate::conversation::ContentGrant::authorize_volume(verifier, signed, volume, VolumeOperation::Read, (&io).remaining()?.bytes_encoded, &mut Some(&mut (&io).history_io()))?;
     }
     let request = recursive_fork_request_with_native_work(&parent, RecursiveForkSourceView {
         caller: source.task, scope: signed, project: &source.project,
@@ -600,8 +599,8 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     } else {
         let mut grants = child.grants.iter().map(str::to_owned).collect::<Vec<_>>();
         for volume in volumes {
-            grants.push(volume.capability(VolumeOperation::Read)?);
-            grants.push(volume.capability(VolumeOperation::Write)?);
+            grants.push(volume.capability(VolumeOperation::Read, &mut None)?);
+            grants.push(volume.capability(VolumeOperation::Write, &mut None)?);
         }
         for file in &input_files {
             file.validate()?;

@@ -189,8 +189,8 @@ where
         owner.validate_storage(verifier, maximum_payload_bytes, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
         let stream = owner.stream();
         let io = PreparationIo::from_native_work(work)?;
-        ContentGrant::verify_original_volume_with_io(verifier, scope, volume, VolumeOperation::Read, &io)?;
-        ContentGrant::verify_original_volume_with_io(verifier, scope, volume, VolumeOperation::Write, &io)?;
+        ContentGrant::authorize_volume(verifier, scope, volume, VolumeOperation::Read, (&io).remaining()?.bytes_encoded, &mut Some(&mut (&io).history_io()))?;
+        ContentGrant::authorize_volume(verifier, scope, volume, VolumeOperation::Write, (&io).remaining()?.bytes_encoded, &mut Some(&mut (&io).history_io()))?;
         let (verifier, verifier_custody) = verifier.clone_with_native_work(work)?;
         io.absorb_native_custody(verifier_custody)?;
         let (scope, scope_custody) = scope.clone_with_native_work(work)?;
@@ -250,11 +250,11 @@ where
             return Err(Error::Invalid("workflow journal binding is invalid".into()));
         }
         if let Some(io) = io {
-            ContentGrant::verify_original_volume_with_io(&verifier, &scope, &volume, VolumeOperation::Read, io)?;
-            ContentGrant::verify_original_volume_with_io(&verifier, &scope, &volume, VolumeOperation::Write, io)?;
+            ContentGrant::authorize_volume(&verifier, &scope, &volume, VolumeOperation::Read, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io()))?;
+            ContentGrant::authorize_volume(&verifier, &scope, &volume, VolumeOperation::Write, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io()))?;
         } else {
-            ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Read)?;
-            ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Write)?;
+            ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Read, u64::MAX, &mut None)?;
+            ContentGrant::verify(&verifier, &scope, &volume, VolumeOperation::Write, u64::MAX, &mut None)?;
         }
         let path_hold;
         let path = crate::contract::preparation_format(
@@ -585,15 +585,11 @@ where
                     return Err(observation_boundary(Some(io), crate::wire::ErrorCode::Unauthorized,
                         "workflow content belongs to another private volume"));
                 }
-                ContentGrant::verify_original_volume_with_io(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io,
-                )?;
+                ContentGrant::authorize_volume(&self.verifier, &self.scope, &self.volume, VolumeOperation::Read, (io).remaining()?.bytes_encoded, &mut Some(&mut (io).history_io()))?;
                 self.host.read_pinned_io(reference, self.maximum_payload_bytes, Some(io)).await
             }
             None => {
-                let read = ContentGrant::verify(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read,
-                )?;
+                let read = ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Read, u64::MAX, &mut None)?;
                 self.host.read_content(reference, &read, self.maximum_payload_bytes).await
             }
         }
@@ -880,12 +876,9 @@ where
         let grant = match io {
             Some(io) => {
                 let mut borrowed = io.history_io();
-                ContentGrant::verify_with_work(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Write,
-                    io.remaining()?.bytes_encoded, &mut Some(&mut borrowed),
-                )?
+                ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Write, io.remaining()?.bytes_encoded, &mut Some(&mut borrowed))?
             }
-            None => ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Write)?,
+            None => ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Write, u64::MAX, &mut None)?,
         };
         _grant = io.map(|io| io.guard_owned(grant.logical_owned_bytes()?)).transpose()?;
         self.host.put_content_impl(&self.volume, &grant, &path, &bytes, "application/json",

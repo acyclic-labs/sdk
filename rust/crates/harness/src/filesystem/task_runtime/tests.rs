@@ -200,8 +200,8 @@ impl Fixture {
             "operation:cancel".to_owned(), "task:spawn:test.deadline@1".to_owned(),
             "tool:call:test.deadline".to_owned(), "model:generate".to_owned(),
             "mail:send".to_owned(), "mail:read".to_owned(),
-            volume.capability(VolumeOperation::Read)?,
-            volume.capability(VolumeOperation::Write)?,
+            volume.capability(VolumeOperation::Read, &mut None)?,
+            volume.capability(VolumeOperation::Write, &mut None)?,
         ]));
         let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?
             .with_run_limits(TaskRunLimits { deadline_epoch_ms: Some(20), ..TaskRunLimits::default() })?;

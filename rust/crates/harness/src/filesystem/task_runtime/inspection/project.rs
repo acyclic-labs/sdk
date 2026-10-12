@@ -247,7 +247,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             self.io.claim(MEDIA_TYPE.len() as u64)?;
             self.io.allocation_attempt(MEDIA_TYPE.len() as u64)?;
             _descriptor_hold = Some(self.io.guard_owned(MEDIA_TYPE.len() as u64)?);
-            raw_descriptor = FileDescriptor::from_bytes(&bytes, MEDIA_TYPE)?;
+            raw_descriptor = FileDescriptor::from_bytes(&bytes, MEDIA_TYPE, &mut None)?;
             (&raw_descriptor, display_name)
         };
         self.io.claim(64)?;
