@@ -65,7 +65,7 @@ impl ResumableMachine for Counter {
 async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_retry() -> Result<()> {
     let stream = Arc::new(MemoryStream::default());
     let provider = ProviderRef::new("workflow-e2e".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+    let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
     let volume = VolumeRef::new(
         provider,
         "counter-private".into(),

@@ -22,16 +22,14 @@ async fn owned_task_journal_native_release_requires_original_settlement_and_bind
         "2".into(),
         &mut None,
     )?;
-    let filesystem = Arc::new(FilesystemHost::new(
-        acyclic_fs::Fs::memory(),
-        filesystem_provider.clone(),
-    )?);
+    let filesystem = FilesystemHost::new(acyclic_fs::Fs::memory(), &filesystem_provider, None)?;
     let agent = AgentId::from_bytes([1; 16]);
     let volume = VolumeRef::new(
         filesystem_provider.clone(),
         "native-owned".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
+        &mut None,
     )?;
     filesystem.create_volume(&volume).await?;
     let authority = Authority {
@@ -41,7 +39,7 @@ async fn owned_task_journal_native_release_requires_original_settlement_and_bind
     let issuer = AuthorityIssuer::new("effect-task", [51; 32], authority);
     let volume_grants = vec![
         volume.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
-        volume.capability(crate::conversation::VolumeOperation::Write)?,
+        volume.capability(crate::conversation::VolumeOperation::Write, &mut None)?,
     ];
     let content_scope = issuer
         .issue(
@@ -442,14 +440,15 @@ async fn owned_task_journal_native_release_requires_original_settlement_and_bind
         "other-native-owned".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
+        &mut None,
     )?;
     filesystem.create_volume(&other_volume).await?;
     let other_scope = issuer
         .issue(
             "other-native-content",
             &Capabilities::new(vec![
-                other_volume.capability(crate::conversation::VolumeOperation::Read)?,
-                other_volume.capability(crate::conversation::VolumeOperation::Write)?,
+                other_volume.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
+                other_volume.capability(crate::conversation::VolumeOperation::Write, &mut None)?,
             ]),
             Some(agent),
             None,

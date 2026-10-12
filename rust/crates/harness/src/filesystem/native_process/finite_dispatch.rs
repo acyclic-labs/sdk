@@ -74,7 +74,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
         if !examine(work, || view.manifest() == &request.view)? {
             return Err(boundary(crate::wire::ErrorCode::Storage, "native dispatch view changed"));
         }
-        view.operation_cancellation().check()
+        view.original_native_work().cancellation().check()
             .map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled)?;
         {
                 self.authority.approvals.verify_with_native_work(

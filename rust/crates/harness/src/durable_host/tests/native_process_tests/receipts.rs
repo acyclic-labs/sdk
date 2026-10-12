@@ -252,7 +252,7 @@ async fn cold_native_drain_proof_authenticates_terminal_result_without_relaunch(
         })
     ));
     assert_eq!(cleanup.receipt(), command_check_prefix);
-    assert!(fixture.view.operation_cancellation().is_cancelled());
+    assert!(fixture.view.work().cancellation().is_cancelled());
     assert_eq!(original.receipt(), original_prefix);
     assert_eq!(cleanup.receipt().backend_write_operations, 0);
     assert_eq!(cleanup.receipt().materializations, 0);
@@ -334,7 +334,7 @@ async fn warm_native_drain_keeps_original_tree_and_accepts_authorized_cleanup_sp
         )?
         .await?;
     proof.require_view_binding(fixture.view.as_ref(), fixture.owner.as_ref(), &original)?;
-    assert!(fixture.view.operation_cancellation().is_cancelled());
+    assert!(fixture.view.work().cancellation().is_cancelled());
     let _actual_completion = dispatch
         .await
         .map_err(|error| Error::Storage(error.to_string()))?;
@@ -360,9 +360,9 @@ async fn original_native_cancel_at_observed_commit_keeps_launch_uncertain_withou
     assert!(fixture.effects(process.clone())?.run_task_effect_with_native_work(
         &fixture.owner, fixture.command, &fixture.plan, &work,
     ).await.is_err());
-    assert!(fixture.view.operation_cancellation().is_cancelled());
+    assert!(fixture.view.work().cancellation().is_cancelled());
     let attempt = crate::EffectAttemptId::from_bytes(
-        task_effect_id(fixture.owner.task_binding().0, fixture.command)?.into_bytes(),
+        task_effect_id(fixture.owner.task_binding().0, fixture.command, &mut None)?.into_bytes(),
     );
     let prefix = work.receipt();
     assert!(process.reconcile_with_native_work(attempt, &work).is_err());
@@ -394,7 +394,7 @@ async fn original_native_cancel_at_observed_commit_keeps_launch_uncertain_withou
         .unwrap();
     assert_eq!(again.effect, effect);
     assert!(!output.exists());
-    assert!(fixture.view.operation_cancellation().is_cancelled());
+    assert!(fixture.view.work().cancellation().is_cancelled());
     drop(effect);
     drop(custody);
     Ok(())
@@ -415,7 +415,7 @@ async fn native_precapture_identity_failure_retains_work_and_never_replays() -> 
         .run_task_effect(&fixture.owner, fixture.command, fixture.plan.clone())
         .await?;
     assert_eq!(status, EffectStatus::Indeterminate);
-    let effect = task_effect_id(fixture.owner.task_binding().0, fixture.command)?;
+    let effect = task_effect_id(fixture.owner.task_binding().0, fixture.command, &mut None)?;
     let attempt = crate::EffectAttemptId::from_bytes(effect.into_bytes());
     let receipt = process
         .receipt(attempt)
@@ -493,7 +493,7 @@ async fn receipt_commit_faults_never_replay_an_unknown_native_attempt() -> Resul
             stream.fault.lock().await.is_none(),
             "fault was not exercised"
         );
-        let effect = task_effect_id(fixture.owner.task_binding().0, fixture.command)?;
+        let effect = task_effect_id(fixture.owner.task_binding().0, fixture.command, &mut None)?;
         let attempt = crate::EffectAttemptId::from_bytes(effect.into_bytes());
         let receipt = process.receipt(attempt).await?;
         if let Some(receipt) = &receipt {
@@ -567,7 +567,7 @@ async fn receipt_commit_faults_never_replay_an_unknown_native_attempt() -> Resul
         assert_eq!(recovered.receipt(attempt).await?, receipt);
         let destination = workspace_ref(
             fixture.destination.provider().clone(),
-            &fixture.destination.storage_name()?,
+            &fixture.destination.storage_name(&mut None)?,
         )?;
         assert_eq!(
             fixture
@@ -617,8 +617,9 @@ async fn receipt_reconciliation_reopens_all_local_stores_after_provider_objects_
         .run_task_effect(&fixture.owner, fixture.command, fixture.plan.clone())
         .await?;
     assert!(matches!(status, EffectStatus::Succeeded { .. }));
-    let attempt =
-        crate::EffectAttemptId::from_bytes(task_effect_id(seed.task, seed.command)?.into_bytes());
+    let attempt = crate::EffectAttemptId::from_bytes(
+        task_effect_id(seed.task, seed.command, &mut None)?.into_bytes(),
+    );
     let receipt = process
         .receipt(attempt)
         .await?
@@ -682,7 +683,7 @@ async fn receipt_reconciliation_reopens_all_local_stores_after_provider_objects_
     assert_eq!(process.receipt(attempt).await?, Some(receipt));
     let destination = workspace_ref(
         seed.destination.provider().clone(),
-        &seed.destination.storage_name()?,
+        &seed.destination.storage_name(&mut None)?,
     )?;
     assert_eq!(
         files
@@ -697,11 +698,12 @@ async fn receipt_reconciliation_reopens_all_local_stores_after_provider_objects_
         ))
         .await
         .map_err(|error| Error::Storage(error.to_string()))?,
-        auxiliary.volume.provider().clone(),
+        auxiliary.volume.provider(),
+        None,
     )?;
     let auxiliary_ref = workspace_ref(
         auxiliary.volume.provider().clone(),
-        &auxiliary.volume.storage_name()?,
+        &auxiliary.volume.storage_name(&mut None)?,
     )?;
     assert_eq!(
         auxiliary_files
@@ -739,7 +741,7 @@ async fn original_supervisor_stop_is_attempt_fenced_and_does_not_cancel_the_nati
     .await
     .map_err(|error| Error::Storage(error.to_string()))?;
     let attempt = crate::EffectAttemptId::from_bytes(
-        task_effect_id(fixture.owner.task_binding().0, fixture.command)?.into_bytes(),
+        task_effect_id(fixture.owner.task_binding().0, fixture.command, &mut None)?.into_bytes(),
     );
     let cleanup_cancellation = acyclic_fs::CancellationToken::new();
     let budget = fixture.view.manifest().validation_budget()?;
@@ -823,7 +825,7 @@ async fn original_supervisor_stop_is_attempt_fenced_and_does_not_cancel_the_nati
             .read(
                 &workspace_ref(
                     fixture.destination.provider().clone(),
-                    &fixture.destination.storage_name()?,
+                    &fixture.destination.storage_name(&mut None)?,
                 )?,
                 None,
                 "/output.txt",
@@ -857,7 +859,7 @@ async fn original_warm_supervisor_stop_settles_after_real_task_cancellation() ->
     .await
     .map_err(|error| Error::Storage(error.to_string()))?;
     let attempt = crate::EffectAttemptId::from_bytes(
-        task_effect_id(fixture.owner.task_binding().0, fixture.command)?.into_bytes(),
+        task_effect_id(fixture.owner.task_binding().0, fixture.command, &mut None)?.into_bytes(),
     );
     fixture
         .task

@@ -15,7 +15,8 @@ async fn timeout_and_output_overflow_retain_cleanup_failure_without_publication(
             )));
         };
         let attempt = crate::EffectAttemptId::from_bytes(
-            task_effect_id(fixture.owner.task_binding().0, fixture.command)?.into_bytes(),
+            task_effect_id(fixture.owner.task_binding().0, fixture.command, &mut None)?
+                .into_bytes(),
         );
         let receipt = process
             .receipt(attempt)
@@ -57,7 +58,7 @@ async fn timeout_and_output_overflow_retain_cleanup_failure_without_publication(
         }
         let destination = workspace_ref(
             fixture.destination.provider().clone(),
-            &fixture.destination.storage_name()?,
+            &fixture.destination.storage_name(&mut None)?,
         )?;
         assert!(
             fixture
@@ -146,7 +147,7 @@ async fn approved_bash_preserves_ordered_arguments_and_selected_environment() ->
     assert_eq!(output.stderr, b"approved-env");
     let destination = workspace_ref(
         fixture.destination.provider().clone(),
-        &fixture.destination.storage_name()?,
+        &fixture.destination.storage_name(&mut None)?,
     )?;
     assert_eq!(
         fixture
@@ -178,7 +179,7 @@ async fn bash_source_mutation_preserves_sdk_sources_and_rejects_all_publication(
     .await?;
     let source = workspace_ref(
         fixture.source.provider().clone(),
-        &fixture.source.storage_name()?,
+        &fixture.source.storage_name(&mut None)?,
     )?;
     let before = fixture.files.resolve(&source).await?.generation;
     let process = fixture.provider(fixture.view.work()).await?;
@@ -203,7 +204,7 @@ async fn bash_source_mutation_preserves_sdk_sources_and_rejects_all_publication(
     );
     let destination = workspace_ref(
         fixture.destination.provider().clone(),
-        &fixture.destination.storage_name()?,
+        &fixture.destination.storage_name(&mut None)?,
     )?;
     assert!(
         fixture
@@ -213,7 +214,7 @@ async fn bash_source_mutation_preserves_sdk_sources_and_rejects_all_publication(
             .is_err()
     );
     let attempt = crate::EffectAttemptId::from_bytes(
-        task_effect_id(fixture.owner.task_binding().0, fixture.command)?.into_bytes(),
+        task_effect_id(fixture.owner.task_binding().0, fixture.command, &mut None)?.into_bytes(),
     );
     assert!(process.output(attempt).await?.is_none());
     let receipt = process
@@ -262,7 +263,7 @@ async fn approved_bash_uses_nineteen_independently_selected_volumes() -> Result<
     assert!(matches!(status, EffectStatus::Succeeded { .. }));
     let destination = workspace_ref(
         fixture.destination.provider().clone(),
-        &fixture.destination.storage_name()?,
+        &fixture.destination.storage_name(&mut None)?,
     )?;
     assert_eq!(
         fixture
@@ -433,7 +434,7 @@ async fn real_process_requires_approval_and_durable_dispatch_then_reconciles_rec
         process_fixture(Arc::new(MemoryStream::default()), "review-test", true, None).await?;
     let source = workspace_ref(
         fixture.source.provider().clone(),
-        &fixture.source.storage_name()?,
+        &fixture.source.storage_name(&mut None)?,
     )?;
     let source_head = fixture.files.resolve(&source).await?.generation;
     assert!(
@@ -458,7 +459,7 @@ async fn real_process_requires_approval_and_durable_dispatch_then_reconciles_rec
         b"pinned input"
     );
     let process = fixture.provider(fixture.view.work()).await?;
-    let effect_id = task_effect_id(fixture.owner.task_binding().0, fixture.command)?;
+    let effect_id = task_effect_id(fixture.owner.task_binding().0, fixture.command, &mut None)?;
     let attempt = crate::EffectAttemptId::from_bytes(effect_id.into_bytes());
     assert_eq!(process.receipt(attempt).await?, None);
     let unadmitted = EffectDispatch {
@@ -492,7 +493,7 @@ async fn real_process_requires_approval_and_durable_dispatch_then_reconciles_rec
     assert!(String::from_utf8_lossy(&output.stderr).contains("approved stderr"));
     let destination = workspace_ref(
         fixture.destination.provider().clone(),
-        &fixture.destination.storage_name()?,
+        &fixture.destination.storage_name(&mut None)?,
     )?;
     assert_eq!(
         fixture
@@ -587,7 +588,7 @@ async fn real_process_requires_approval_and_durable_dispatch_then_reconciles_rec
     );
     let caller = workspace_ref(
         fixture.second_destination.provider().clone(),
-        &fixture.second_destination.storage_name()?,
+        &fixture.second_destination.storage_name(&mut None)?,
     )?;
     let caller_write = ContentGrant::verify(
         &fixture.issuer.verifier(&mut None).expect("verifier copy"),
@@ -732,7 +733,7 @@ async fn cancellation_after_actual_provider_drop_keeps_receipt_and_cleans_descen
         fixture.authority(),
     )
     .await?;
-    let effect = task_effect_id(fixture.owner.task_binding().0, fixture.command)?;
+    let effect = task_effect_id(fixture.owner.task_binding().0, fixture.command, &mut None)?;
     let attempt = crate::EffectAttemptId::from_bytes(effect.into_bytes());
     let path = format!("harness/v2/native-process/{attempt}");
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
@@ -849,7 +850,7 @@ async fn approved_literal_stdin_reaches_eof_without_terminating_the_process() ->
         assert!(String::from_utf8_lossy(&output.stdout).contains("approved stdout"));
         let destination = workspace_ref(
             fixture.destination.provider().clone(),
-            &fixture.destination.storage_name()?,
+            &fixture.destination.storage_name(&mut None)?,
         )?;
         assert_eq!(
             fixture

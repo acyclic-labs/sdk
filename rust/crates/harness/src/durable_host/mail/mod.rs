@@ -10,7 +10,6 @@ use crate::store::{
     operations,
 };
 use crate::wire::ErrorCode;
-use crate::wire::ErrorCode;
 use acyclic_stream::{CommitCondition, CommitOutcome};
 #[cfg(not(feature = "filesystem"))]
 use serde::de::DeserializeOwned as MailRecord;

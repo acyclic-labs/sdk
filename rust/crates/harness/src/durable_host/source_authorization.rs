@@ -2,7 +2,6 @@ use super::resources::Verification;
 use super::*;
 use crate::source_authorization::{ProjectSourceAuthorization, ProjectSourceReadHandle};
 use crate::wire::ErrorCode;
-use crate::wire::ErrorCode;
 
 impl<P: StreamProvider> TaskJournalOwner<P> {
     /// Restores an authorization retained by the original caller.

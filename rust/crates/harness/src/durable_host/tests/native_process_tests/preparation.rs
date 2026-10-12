@@ -41,7 +41,6 @@ async fn native_builtin_current_volume_grants_and_unmounted_results_deny_before_
         assert!(
             view.write_builtin_file(
                 &fixture.owner,
-                OperationId::from_bytes([212; 16]),
                 Path::new(path),
                 "forbidden",
                 true,
@@ -94,15 +93,9 @@ async fn native_builtin_rejects_same_uuid_foreign_original_owner_and_cancelled_c
     )?;
     let operation = OperationId::from_bytes([213; 16]);
     assert!(
-        view.read_builtin_file(
-            &foreign.owner,
-            operation,
-            Path::new("a-source/input.txt"),
-            32,
-            &work
-        )
-        .await
-        .is_err()
+        view.read_builtin_file(&foreign.owner, Path::new("a-source/input.txt"), 32, &work)
+            .await
+            .is_err()
     );
     assert_eq!(work.receipt().source_bytes_read, 0);
     fixture
@@ -113,7 +106,6 @@ async fn native_builtin_rejects_same_uuid_foreign_original_owner_and_cancelled_c
     assert!(
         view.write_builtin_file(
             &fixture.owner,
-            operation,
             Path::new("b-destination/after-cancel"),
             "forbidden",
             true,

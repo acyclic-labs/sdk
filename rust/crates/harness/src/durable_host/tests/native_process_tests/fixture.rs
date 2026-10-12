@@ -47,7 +47,7 @@ where
         "1".into(),
         &mut None,
     )?;
-    let files = Arc::new(FilesystemHost::new(filesystem.clone(), provider.clone())?);
+    let files = FilesystemHost::new(filesystem.clone(), &provider, None)?;
     let agent = AgentId::from_bytes([61; 16]);
     let auxiliary_provider = ProviderRef::new(
         "native-test-aux".into(),
@@ -55,15 +55,13 @@ where
         "1".into(),
         &mut None,
     )?;
-    let auxiliary_host = Arc::new(FilesystemHost::new(
-        auxiliary_filesystem,
-        auxiliary_provider.clone(),
-    )?);
+    let auxiliary_host = FilesystemHost::new(auxiliary_filesystem, &auxiliary_provider, None)?;
     let auxiliary = VolumeRef::new(
         auxiliary_provider,
         "auxiliary",
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
+        &mut None,
     )?;
     let source = VolumeRef::new(
         provider.clone(),
@@ -78,6 +76,7 @@ where
         } else {
             VolumeOwner::Agent(agent)
         },
+        &mut None,
     )?;
     let destination = VolumeRef::new(
         provider.clone(),
@@ -92,6 +91,7 @@ where
         } else {
             VolumeOwner::Agent(agent)
         },
+        &mut None,
     )?;
     let second_destination = VolumeRef::new(
         provider.clone(),
@@ -106,12 +106,14 @@ where
         } else {
             VolumeOwner::Agent(agent)
         },
+        &mut None,
     )?;
     let result_volume = VolumeRef::new(
         provider,
         "results",
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
+        &mut None,
     )?;
     let extra_sources = (0..if mode == "many-bash" { 16 } else { 0 })
         .map(|index| {
@@ -120,6 +122,7 @@ where
                 format!("extra-{index}"),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(agent),
+                &mut None,
             )
         })
         .collect::<Result<Vec<_>>>()?;
@@ -136,14 +139,14 @@ where
             "operation:observe".into(),
             "operation:cancel".into(),
             "task:spawn:test.effect@1".into(),
-            source.capability(VolumeOperation::Read)?,
-            auxiliary.capability(VolumeOperation::Read)?,
-            destination.capability(VolumeOperation::Read)?,
-            destination.capability(VolumeOperation::Write)?,
-            second_destination.capability(VolumeOperation::Read)?,
-            second_destination.capability(VolumeOperation::Write)?,
-            result_volume.capability(VolumeOperation::Read)?,
-            result_volume.capability(VolumeOperation::Write)?,
+            source.capability(VolumeOperation::Read, &mut None)?,
+            auxiliary.capability(VolumeOperation::Read, &mut None)?,
+            destination.capability(VolumeOperation::Read, &mut None)?,
+            destination.capability(VolumeOperation::Write, &mut None)?,
+            second_destination.capability(VolumeOperation::Read, &mut None)?,
+            second_destination.capability(VolumeOperation::Write, &mut None)?,
+            result_volume.capability(VolumeOperation::Read, &mut None)?,
+            result_volume.capability(VolumeOperation::Write, &mut None)?,
             "effect:plan".into(),
             "effect:run".into(),
             "effect:provider:test.native".into(),
@@ -157,7 +160,7 @@ where
         .chain(
             extra_sources
                 .iter()
-                .map(|volume| volume.capability(VolumeOperation::Read))
+                .map(|volume| volume.capability(VolumeOperation::Read, &mut None))
                 .collect::<Result<Vec<_>>>()?,
         ),
     );
@@ -317,14 +320,14 @@ where
             "setup",
             &Capabilities::new(
                 [
-                    source.capability(VolumeOperation::Write)?,
-                    auxiliary.capability(VolumeOperation::Write)?,
+                    source.capability(VolumeOperation::Write, &mut None)?,
+                    auxiliary.capability(VolumeOperation::Write, &mut None)?,
                 ]
                 .into_iter()
                 .chain(
                     extra_sources
                         .iter()
-                        .map(|volume| volume.capability(VolumeOperation::Write))
+                        .map(|volume| volume.capability(VolumeOperation::Write, &mut None))
                         .collect::<Result<Vec<_>>>()?,
                 ),
             ),
@@ -376,14 +379,14 @@ where
     let auxiliary_generation = auxiliary_host
         .resolve(&workspace_ref(
             auxiliary.provider().clone(),
-            &auxiliary.storage_name()?,
+            &auxiliary.storage_name(&mut None)?,
         )?)
         .await?
         .generation;
     let source_generation = files
         .resolve(&workspace_ref(
             source.provider().clone(),
-            &source.storage_name()?,
+            &source.storage_name(&mut None)?,
         )?)
         .await?
         .generation;
@@ -420,14 +423,14 @@ where
     let destination_generation = files
         .resolve(&workspace_ref(
             destination.provider().clone(),
-            &destination.storage_name()?,
+            &destination.storage_name(&mut None)?,
         )?)
         .await?
         .generation;
     let second_generation = files
         .resolve(&workspace_ref(
             second_destination.provider().clone(),
-            &second_destination.storage_name()?,
+            &second_destination.storage_name(&mut None)?,
         )?)
         .await?
         .generation;
@@ -510,7 +513,7 @@ where
         let generation = files
             .resolve(&workspace_ref(
                 volume.provider().clone(),
-                &volume.storage_name()?,
+                &volume.storage_name(&mut None)?,
             )?)
             .await?
             .generation;
@@ -718,7 +721,7 @@ where
             )?
             .await?
         };
-        view.into_arc_with_native_work(work)?
+        view
     };
     let mut request = NativeProcessRequest {
         executable: std::env::current_exe().map_err(|error| Error::Storage(error.to_string()))?,
@@ -830,7 +833,7 @@ where
             Interaction::approval(
                 "Run the exact admitted process".into(),
                 command,
-                request.approval_digest(owner.task_binding().0, command)?,
+                request.approval_digest(owner.task_binding().0, command, None)?,
             )?,
         )
         .await?;
@@ -1020,7 +1023,7 @@ pub(super) async fn preparation_fixture_on<P: StreamProvider + 'static>(
         .files
         .resolve(&workspace_ref(
             seed.second_destination.provider().clone(),
-            &seed.second_destination.storage_name()?,
+            &seed.second_destination.storage_name(&mut None)?,
         )?)
         .await?
         .generation;
@@ -1082,17 +1085,18 @@ pub(super) async fn reopen_native(
             id: "native-test-conversation".into(),
         },
     );
-    let files = Arc::new(FilesystemHost::new(
+    let files = FilesystemHost::new(
         Fs::local(acyclic_fs::LocalOptions::new(storage.join("filesystem")))
             .await
             .map_err(|error| Error::Storage(error.to_string()))?,
-        ProviderRef::new(
+        &ProviderRef::new(
             "native-test".into(),
             "filesystem".into(),
             "1".into(),
             &mut None,
         )?,
-    )?);
+        None,
+    )?;
     let content = FilesystemContentVerifier::new(
         files.clone(),
         &issuer.verifier(&mut None).expect("verifier copy"),

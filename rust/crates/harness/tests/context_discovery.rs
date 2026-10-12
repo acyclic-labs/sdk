@@ -151,7 +151,7 @@ impl Fixture {
             "2".into(),
             &mut None,
         )?;
-        let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
+        let host = FilesystemHost::new(Fs::memory(), &provider, None)?;
         let agent = AgentId::from_bytes([1; 16]);
         let volume = VolumeRef::new(
             provider,

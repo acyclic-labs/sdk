@@ -19,7 +19,7 @@ pub(super) const REMOTE_FILESYSTEMS: [u64; 13] = [
 ];
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(super) fn filesystem_is_local<W: NativeHostWork>(
+pub(crate) fn filesystem_is_local<W: NativeHostWork>(
     directory: &Dir,
     work: &mut W,
 ) -> Result<bool, W::Error> {
@@ -42,7 +42,7 @@ pub(super) fn filesystem_is_local<W: NativeHostWork>(
 }
 
 #[cfg(windows)]
-pub(super) fn filesystem_is_local<W: NativeHostWork>(
+pub(crate) fn filesystem_is_local<W: NativeHostWork>(
     directory: &Dir,
     work: &mut W,
 ) -> Result<bool, W::Error> {
@@ -72,7 +72,7 @@ pub(super) fn filesystem_is_local<W: NativeHostWork>(
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
-pub(super) fn filesystem_is_local<W: NativeHostWork>(
+pub(crate) fn filesystem_is_local<W: NativeHostWork>(
     _directory: &Dir,
     work: &mut W,
 ) -> Result<bool, W::Error> {

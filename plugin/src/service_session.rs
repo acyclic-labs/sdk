@@ -311,10 +311,10 @@ impl PiSession {
                 "Pi original task provider is missing".to_owned(),
             ));
         }
-        let filesystem = Arc::new(FilesystemHost::new(
+        let filesystem = FilesystemHost::new(
             resources.fs.clone(),
-            owner.policy().journal.provider().clone(),
-        )?);
+            owner.policy().journal.provider(), None,
+        )?;
         let stream = Arc::new(
             LocalStream::open(stream_path, LocalStreamLimits::default())
                 .await

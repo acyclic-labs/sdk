@@ -73,7 +73,7 @@ impl ProjFsSession {
             + size_of::<HostRoot>()
             + size_of::<Projector>()
             + size_of::<Mutex<HashMap<u128, OpenMetadataState>>>()
-            + size_of::<Mutex<ProjectionCache>>()
+            + size_of::<Mutex<HashMap<MountPath, ReadOnlyBinding>>>()
             + size_of::<Mutex<HashMap<MountPath, usize>>>()
             + size_of::<FileLocks>()
             + size_of::<Mutex<PostOperationFailures>>()
@@ -100,7 +100,7 @@ impl ProjFsSession {
             staging: Mutex::new(None),
             writable: request.writable,
             metadata_baselines: Arc::new(Mutex::new(HashMap::new())),
-            projection: Arc::new(Mutex::new(ProjectionCache::default())),
+            projection: Arc::new(Mutex::new(HashMap::new())),
             projector: Arc::new(Projector::new()),
             metadata_probes: Arc::new(Mutex::new(HashMap::new())),
             metadata_edits: Arc::new(FileLocks::default()),
@@ -153,7 +153,7 @@ impl ProjFsSession {
             options.NotificationMappingsCount = 1;
         }
         if warm.is_none() {
-            native_call(work, true, || {
+            (&mut &*work).attempt_io(WriteOperations.delta(1), || {
                 // SAFETY: the authenticated empty root and GUID remain resident.
                 unsafe {
                     PrjMarkDirectoryAsPlaceholder(&root_name, PCWSTR::null(), None, &raw const guid)
@@ -162,7 +162,7 @@ impl ProjFsSession {
             })?;
         }
         let callbacks = callbacks();
-        let context = native_call(work, true, || {
+        let context = (&mut &*work).attempt_io(WriteOperations.delta(1), || {
             // SAFETY: this Arc allocation is stable until SDK stop drains callbacks.
             unsafe {
                 PrjStartVirtualizing(
@@ -178,7 +178,7 @@ impl ProjFsSession {
         let mut instance =
             windows::Win32::Storage::ProjectedFileSystem::PRJ_VIRTUALIZATION_INSTANCE_INFO::default(
             );
-        native_call(work, false, || {
+        (&mut &*work).attempt_io(ReadOperations.delta(1), || {
             // SAFETY: the newly started context and output slot remain resident.
             unsafe {
                 windows::Win32::Storage::ProjectedFileSystem::PrjGetVirtualizationInstanceInfo(

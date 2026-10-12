@@ -35,7 +35,7 @@ mod metadata_sync;
 #[cfg(windows)]
 pub(crate) use metadata_sync::*;
 mod metadata;
-pub(crate) use metadata::*;
+use metadata::*;
 #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]
 mod macos_metadata;
 #[cfg(all(target_os = "macos", any(feature = "native-mount", test)))]

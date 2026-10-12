@@ -42,7 +42,7 @@ async fn result_storage_cannot_mutate_a_pinned_native_view() -> Result<()> {
     );
     let destination = workspace_ref(
         fixture.destination.provider().clone(),
-        &fixture.destination.storage_name()?,
+        &fixture.destination.storage_name(&mut None)?,
     )?;
     assert!(
         fixture
@@ -62,7 +62,9 @@ async fn readonly_schema_storage_does_not_require_result_write_authority() -> Re
         .issuer
         .issue(
             "schema-setup",
-            &Capabilities::new([fixture.source.capability(VolumeOperation::Write)?]),
+            &Capabilities::new([fixture
+                .source
+                .capability(VolumeOperation::Write, &mut None)?]),
             Some(AgentId::from_bytes([61; 16])),
             None,
             &mut None,
@@ -97,7 +99,7 @@ async fn readonly_schema_storage_does_not_require_result_write_authority() -> Re
     );
     let source = workspace_ref(
         fixture.source.provider().clone(),
-        &fixture.source.storage_name()?,
+        &fixture.source.storage_name(&mut None)?,
     )?;
     let before = fixture.files.resolve(&source).await?.generation;
     let status = fixture
@@ -157,15 +159,15 @@ async fn original_native_prepared_binding_preserves_approval_and_cancellation_be
     assert_eq!(work.receipt(), original_prefix);
     let request = fixture.request().await?;
     assert_eq!(
-        request.approval_digest_with_native_work(
+        request.approval_digest(
             fixture.owner.task_binding().0,
             fixture.command,
-            &work
+            Some(&crate::filesystem::PreparationIo::from_native_work(&work)?)
         )?,
-        request.approval_digest(fixture.owner.task_binding().0, fixture.command)?,
+        request.approval_digest(fixture.owner.task_binding().0, fixture.command, None)?,
     );
     let process = fixture.provider(&work).await?;
-    let effect = task_effect_id(fixture.owner.task_binding().0, fixture.command)?;
+    let effect = task_effect_id(fixture.owner.task_binding().0, fixture.command, &mut None)?;
     let attempt = crate::EffectAttemptId::from_bytes(effect.into_bytes());
     let dispatch = EffectDispatch {
         provider: fixture.plan.provider.clone(),
@@ -183,7 +185,7 @@ async fn original_native_prepared_binding_preserves_approval_and_cancellation_be
         Err(Error::NativeWork { .. })
     ));
     assert_eq!(work.receipt(), before);
-    assert!(fixture.view.operation_cancellation().is_cancelled());
+    assert!(fixture.view.work().cancellation().is_cancelled());
     assert!(
         !fixture
             .view
@@ -291,8 +293,8 @@ async fn changed_invocations_cannot_use_the_original_approval() -> Result<()> {
         }
         let original = fixture.request().await?;
         assert_ne!(
-            original.approval_digest(fixture.owner.task_binding().0, fixture.command)?,
-            request.approval_digest(fixture.owner.task_binding().0, fixture.command)?
+            original.approval_digest(fixture.owner.task_binding().0, fixture.command, None)?,
+            request.approval_digest(fixture.owner.task_binding().0, fixture.command, None)?
         );
         fixture.replace_request(&request).await?;
         assert!(

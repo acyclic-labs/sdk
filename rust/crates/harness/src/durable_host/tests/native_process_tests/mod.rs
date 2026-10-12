@@ -39,7 +39,7 @@ fn assert_native_receipt_binding<P: StreamProvider>(
     observed: bool,
 ) -> Result<()> {
     let (task, fence) = owner.task_binding();
-    let effect_id = task_effect_id(task, command)?;
+    let effect_id = task_effect_id(task, command, &mut None)?;
     assert_eq!(receipt.task, task);
     assert_eq!(receipt.command, command);
     assert_eq!(&receipt.original_fence, fence);

@@ -13,7 +13,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant.require_file_read(reference, io)?;
         let bytes = self.read_pinned_io(reference, maximum_bytes, io).await?;
         if io.is_none() {
-            let generation = self.file_generation(reference)?;
+            let generation = self.file_generation(reference, None)?;
             let workspace = workspace_ref(
                 self.provider.clone(),
                 &reference.volume().storage_name(&mut None)?,
@@ -360,22 +360,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         grant.require_directory_path(volume, path, io)
     }
 
-    pub(in crate::filesystem) async fn read_pinned(
-        &self,
-        reference: &FileRef,
-        maximum_bytes: u64,
-    ) -> Result<acyclic_stream::OwnedBytes> {
-        self.read_pinned_io(reference, maximum_bytes, None).await
-    }
-
-    pub(in crate::filesystem) fn file_generation(
-        &self,
-        reference: &FileRef,
-    ) -> Result<GenerationRef> {
-        self.file_generation_with_io(reference, None)
-    }
-
-    pub(crate) fn file_generation_with_io(
+    pub(crate) fn file_generation(
         &self,
         reference: &FileRef,
         io: Option<&PreparationIo>,
@@ -388,37 +373,35 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         GenerationRef::new(self.provider.clone(), raw.into(), None)
     }
 }
-pub(in crate::filesystem) async fn read_generation_with_io<
+pub(in crate::filesystem) async fn read_generation<
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
 >(
     generation: &acyclic_fs::Generation<A, O>,
     path: &str,
     maximum: u64,
-    io: &PreparationIo,
+    io: Option<&PreparationIo>,
 ) -> Result<acyclic_stream::OwnedBytes> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(original) = io.original_native_work() {
-        return generation
-            .read(path, maximum, original, io.cancellation())
-            .await
-            .map_err(|source| Error::NativeWorkspace {
-                source,
-                custody: None,
-            });
-    }
-    let bytes = io.receive(
+    let unmeasured;
+    let io = match io {
+        Some(io) => io,
+        None => {
+            unmeasured = PreparationIo::for_unmeasured(&acyclic_fs::CancellationToken::new())?;
+            &unmeasured
+        }
+    };
+    io.remaining()?;
+    let bytes = io.sdk(
         generation
-            .read(path, maximum, io.remaining()?, io.cancellation())
+            .read(path, maximum, io, io.cancellation())
             .await,
     )?;
-    let capacity = bytes.retained_capacity().ok_or_else(|| {
-        fork_preparer_io::failure(
-            Some(io),
-            crate::wire::ErrorCode::Unsupported,
-            "content producer does not expose its owned capacity",
-        )
-    })?;
-    io.retain_owned(capacity as u64)?;
+    if io.original_native_work().is_none() {
+        let capacity = bytes.retained_capacity().ok_or_else(|| {
+            fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Unsupported,
+                "content producer does not expose its owned capacity")
+        })?;
+        io.retain_owned(capacity as u64)?;
+    }
     Ok(bytes)
 }

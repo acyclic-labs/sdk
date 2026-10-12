@@ -270,7 +270,6 @@ pub(super) fn windows_name_packet<W: NativeHostWork>(
     replace: bool,
     work: &mut W,
 ) -> Result<(Vec<u64>, W::Allocation, u32), W::Error> {
-    use std::os::windows::io::AsRawHandle as _;
     use windows::Wdk::Storage::FileSystem::FILE_RENAME_INFORMATION;
     let name_bytes = units.checked_mul(2).ok_or(crate::WorkError::Overflow)?;
     let offset = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName);

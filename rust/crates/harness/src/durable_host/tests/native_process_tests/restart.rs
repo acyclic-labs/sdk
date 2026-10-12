@@ -48,8 +48,9 @@ async fn actual_host_termination_reopens_launch_only_receipt_without_replay_or_s
         process,
         effects,
     } = reopen_native(storage.path(), &seed).await?;
-    let attempt =
-        crate::EffectAttemptId::from_bytes(task_effect_id(seed.task, seed.command)?.into_bytes());
+    let attempt = crate::EffectAttemptId::from_bytes(
+        task_effect_id(seed.task, seed.command, &mut None)?.into_bytes(),
+    );
     let path = acyclic_stream::StreamPath::new(format!("harness/v2/native-process/{attempt}"))
         .map_err(|error| Error::Invalid(error.to_string()))?;
     assert_eq!(
@@ -94,7 +95,7 @@ async fn actual_host_termination_reopens_launch_only_receipt_without_replay_or_s
     assert!(!output.exists());
     let destination = workspace_ref(
         seed.destination.provider().clone(),
-        &seed.destination.storage_name()?,
+        &seed.destination.storage_name(&mut None)?,
     )?;
     assert!(
         files
