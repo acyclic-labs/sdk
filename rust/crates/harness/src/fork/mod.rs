@@ -1,8 +1,7 @@
 //! Typed capture and publication of a child environment.
 
 use crate::conversation::{
-    FileRef, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,
-    decode_attachment_manifest,
+    FileRef, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef, decode_attachment_manifest,
 };
 use crate::core::Authority;
 use crate::resources::{
@@ -28,36 +27,43 @@ pub const MAX_FORK_REFERENCE_BYTES: u64 = u64::MAX;
 /// Largest sequence representable by the contract.
 pub const MAX_FORK_INHERITED_MESSAGES: u64 = u64::MAX;
 
-mod summary;
+mod capture;
+mod content;
+mod grants;
 mod history;
 mod provider;
-mod verification;
-mod grants;
-mod content;
-mod selection;
-mod request;
-mod capture;
-mod report;
-mod seed;
 mod quota;
+mod report;
+mod request;
+mod seed;
+mod selection;
+mod summary;
 #[cfg(test)]
 mod tests;
+mod verification;
 pub use summary::*;
 
-use crate::store::history::{HistoryIo, HistoryContentFuture};
-pub use history::{InheritedConversationPrefix, PreparedForkHistory};
-pub use provider::{ForkSeedVerifier, ForkPublicationGuard};
-pub use verification::{CompositeForkVerifier};
+use crate::store::history::{HistoryContentFuture, HistoryIo};
+pub use capture::{Capture, CapturedResource, ForkOmission, ReferenceGrant, SharedGrant};
 pub use content::StreamHistoryForkVerifier;
-pub use selection::{ResourceRevision, ForkSelection, AttestedBoundary, ForkHistoryPolicy, ForkPreparation, ForkPreparer, ForkCaptureProvider};
-pub use request::{ForkRequest};
-pub use capture::{Capture, CapturedResource, ForkOmission, SharedGrant, ReferenceGrant};
-pub use report::{ForkReport};
-pub use seed::{ForkSeed};
-pub(in crate::fork) use grants::{reserve_reference_bytes, decode_fork_manifest};
-pub(in crate::fork) use provider::{frame_bytes, release_frame, acquire_fork_fence, read_fork_manifest};
-pub(in crate::fork) use verification::{admit_native_verifier_share};
-pub(in crate::fork) use selection::{validate_child_result_volume, validate_child_result_generation};
-pub(crate) use seed::copy_seed;
-pub(crate) use provider::{admit_fork_future, release_fork_guard_with_work, boundary_error, ObservedForkPublicationGuard};
+pub(in crate::fork) use grants::{decode_fork_manifest, reserve_reference_bytes};
+pub use history::{InheritedConversationPrefix, PreparedForkHistory};
+pub use provider::{ForkPublicationGuard, ForkSeedVerifier};
+pub(crate) use provider::{
+    ObservedForkPublicationGuard, admit_fork_future, boundary_error, release_fork_guard_with_work,
+};
+pub(in crate::fork) use provider::{
+    acquire_fork_fence, frame_bytes, read_fork_manifest, release_frame,
+};
 pub(crate) use quota::CodecQuota;
+pub use report::ForkReport;
+pub use request::ForkRequest;
+pub use seed::ForkSeed;
+pub(crate) use seed::copy_seed;
+pub(in crate::fork) use selection::validate_child_result_generation;
+pub use selection::{
+    AttestedBoundary, ForkCaptureProvider, ForkHistoryPolicy, ForkPreparation, ForkPreparer,
+    ForkSelection, ResourceRevision,
+};
+pub use verification::CompositeForkVerifier;
+pub(in crate::fork) use verification::admit_native_verifier_share;

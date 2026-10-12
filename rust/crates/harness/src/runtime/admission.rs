@@ -203,8 +203,8 @@ impl TaskAdmissionRecord {
         quota.adopt(grant_bytes)?;
         let policy = self.policy.as_ref().map(|policy| task_copy_component(policy, &mut quota)).transpose()?;
         let extensions = self.extensions.as_ref().map(|source| -> Result<_> {
-            let copied = source.copy(quota.work())?;
-            quota.adopt(copied.logical_owned_bytes()?)?;
+            let (copied, retained) = source.copy(quota.work())?;
+            quota.adopt(retained)?;
             Ok(copied)
         }).transpose()?;
         let execution = self.execution.as_ref().map(|source| -> Result<_> {

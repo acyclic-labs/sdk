@@ -578,8 +578,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         ] {
             add(text.capacity() as u64)?;
         }
-        add(crate::core::value_owned_bytes(&self.workflow.initial.state)?)?;
-        add(crate::core::value_owned_bytes(&self.output_schema)?)?;
+        add(crate::contract::json_value_logical_owned_bytes(&self.workflow.initial.state)?)?;
+        add(crate::contract::json_value_logical_owned_bytes(&self.output_schema)?)?;
         add(self.input_grants.logical_owned_bytes()?)?;
         if let Some(extensions) = &self.extensions { add(extensions.logical_owned_bytes()?)?; }
         if self.root_binding.is_some() { add(std::mem::size_of::<RootBootstrapBindingWitness>() as u64)?; }

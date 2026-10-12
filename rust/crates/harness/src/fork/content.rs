@@ -13,36 +13,55 @@ impl StreamHistoryForkVerifier {
         let mut owned = CodecQuota::observed(work)?;
         provider.validate(owned.work())?;
         if provider.family() != "stream" {
-            return Err(boundary_error(owned.work(), crate::wire::ErrorCode::Invalid,
-                "history verifier requires a Stream provider"));
+            return Err(boundary_error(
+                owned.work(),
+                crate::wire::ErrorCode::Invalid,
+                "history verifier requires a Stream provider",
+            ));
         }
         let provider = crate::core::copy_provider(provider, &mut owned)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let _native_metadata = {
             let bytes = owned.retained();
-            owned.work().as_deref_mut().filter(|io| io.original_native_work().is_some())
-                .map(|io| io.take_native_custody(bytes)).transpose()?
+            owned
+                .work()
+                .as_deref_mut()
+                .filter(|io| io.original_native_work().is_some())
+                .map(|io| io.take_native_custody(bytes))
+                .transpose()?
         };
         owned.transfer();
-        Ok(Self { provider,
+        Ok(Self {
+            provider,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            _native_metadata })
+            _native_metadata,
+        })
     }
 
     /// Shares the same funded provider identity; Arc's private backing is opaque.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn into_native_shared(
-        self, work: &acyclic_fs::NativeMaterializationWork,
+        self,
+        work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<std::sync::Arc<Self>> {
-        admit_native_verifier_share(self._native_metadata.as_ref(), work, std::mem::size_of::<Self>())?;
+        admit_native_verifier_share(
+            self._native_metadata.as_ref(),
+            work,
+            std::mem::size_of::<Self>(),
+        )?;
         Ok(std::sync::Arc::new(self))
     }
 }
 
 impl ForkSeedVerifier for StreamHistoryForkVerifier {
-    fn provider(&self) -> &ProviderRef { &self.provider }
-    fn verify<'a, 'w: 'a>(&'a self, seed: &'a ForkSeed,
-        work: &'a mut Option<&'w mut dyn HistoryIo>) -> Result<HistoryContentFuture<'a, ()>> {
+    fn provider(&self) -> &ProviderRef {
+        &self.provider
+    }
+    fn verify<'a, 'w: 'a>(
+        &'a self,
+        seed: &'a ForkSeed,
+        work: &'a mut Option<&'w mut dyn HistoryIo>,
+    ) -> Result<HistoryContentFuture<'a, ()>> {
         admit_fork_future(work, |work| async move {
             seed.validate(work)?;
             for capture in &seed.resources {
@@ -50,8 +69,11 @@ impl ForkSeedVerifier for StreamHistoryForkVerifier {
                     if revision.provider() == &self.provider
                         && !matches!(revision, ResourceRevision::History(_))
                     {
-                        return Err(boundary_error(work, crate::wire::ErrorCode::Unsupported,
-                            "Stream history verifier cannot prove this resource"));
+                        return Err(boundary_error(
+                            work,
+                            crate::wire::ErrorCode::Unsupported,
+                            "Stream history verifier cannot prove this resource",
+                        ));
                     }
                 }
             }

@@ -52,7 +52,6 @@ pub enum ResourceRevision {
 }
 
 impl ResourceRevision {
-
     /// Exact provider contract owning this revision.
     #[must_use]
     pub fn provider(&self) -> &ProviderRef {
@@ -70,7 +69,8 @@ impl ResourceRevision {
 
     /// Checks provider families and the semantic resource class.
     pub fn validate(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if let Some(observer) = work.as_deref_mut() {
             observer.check_cancellation()?;
@@ -88,18 +88,27 @@ impl ResourceRevision {
                 volume.validate(work)?;
                 generation.validate(work)?;
                 if paths.len() as u64 > MAX_FORK_RESOURCES as u64 {
-                    return Err(boundary_error(work, crate::wire::ErrorCode::Invalid,
-                        "too many scratch paths"));
+                    return Err(boundary_error(
+                        work,
+                        crate::wire::ErrorCode::Invalid,
+                        "too many scratch paths",
+                    ));
                 }
                 for path in paths {
-                    let relative = path
-                        .strip_prefix('/')
-                        .ok_or_else(|| boundary_error(work, crate::wire::ErrorCode::Invalid,
-                            "scratch path must be absolute"))?;
+                    let relative = path.strip_prefix('/').ok_or_else(|| {
+                        boundary_error(
+                            work,
+                            crate::wire::ErrorCode::Invalid,
+                            "scratch path must be absolute",
+                        )
+                    })?;
                     crate::conversation::validate_content_path(relative, work)?;
                     if relative.split('/').any(|segment| segment == ".system") {
-                        return Err(boundary_error(work, crate::wire::ErrorCode::Unauthorized,
-                            "scratch selection includes reserved runtime state"));
+                        return Err(boundary_error(
+                            work,
+                            crate::wire::ErrorCode::Unauthorized,
+                            "scratch selection includes reserved runtime state",
+                        ));
                     }
                 }
                 Ok(())
@@ -134,18 +143,22 @@ impl ResourceRevision {
             {
                 reference.validate(work)
             }
-            _ => Err(boundary_error(work, crate::wire::ErrorCode::Invalid,
-                "fork resource has an invalid kind or provider")),
+            _ => Err(boundary_error(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "fork resource has an invalid kind or provider",
+            )),
         }
     }
 
     pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(Self, u64)> {
-        CodecQuota::produce(work, |quota| crate::core::copy_owned(self, quota, |source, work| {
-            source.validate(work)?;
-            crate::core::owned_revision(source)
-        }))
+        CodecQuota::produce(work, |quota| {
+            crate::core::copy_owned(self, quota, |source, work| {
+                source.validate(work)?;
+                crate::core::owned_revision(source)
+            })
+        })
     }
-
 }
 
 /// Required or optional exact resource selection.
@@ -175,12 +188,16 @@ pub struct AttestedBoundary {
 impl AttestedBoundary {
     /// Validates an attestation envelope without claiming to verify its proof.
     pub(crate) fn validate(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.provider.validate(work)?;
         if self.evidence.is_empty() {
-            return Err(boundary_error(work, crate::wire::ErrorCode::Invalid,
-                "fork boundary evidence is invalid"));
+            return Err(boundary_error(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "fork boundary evidence is invalid",
+            ));
         }
         Ok(())
     }
@@ -232,14 +249,18 @@ pub struct ForkPreparation {
 
 impl ForkPreparation {
     pub(in crate::fork) fn validate(
-        &self, child_agent: AgentId,
+        &self,
+        child_agent: AgentId,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if let Some(selection) = &self.summary {
             selection.validate_with_work(work)?;
             if self.inherited_through_sequence == 0 {
-                return Err(boundary_error(work, crate::wire::ErrorCode::Invalid,
-                    "summary fork requires a nonempty logical parent cut"));
+                return Err(boundary_error(
+                    work,
+                    crate::wire::ErrorCode::Invalid,
+                    "summary fork requires a nonempty logical parent cut",
+                ));
             }
         }
         self.child_project_volume.validate(work)?;
@@ -254,14 +275,20 @@ impl ForkPreparation {
             || self.maximum_inherited_bytes == 0
             || self.maximum_inherited_references == 0
         {
-            return Err(boundary_error(work, crate::wire::ErrorCode::Invalid,
-                "fork preparation is invalid"));
+            return Err(boundary_error(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "fork preparation is invalid",
+            ));
         }
         if let Some(result) = &self.child_result_volume {
             validate_child_result_volume(result, &self.child_private_volume, child_agent, work)?;
             if result == &self.child_project_volume {
-                return Err(boundary_error(work, crate::wire::ErrorCode::Invalid,
-                    "child result volume cannot alias the project volume"));
+                return Err(boundary_error(
+                    work,
+                    crate::wire::ErrorCode::Invalid,
+                    "child result volume cannot alias the project volume",
+                ));
             }
         }
         Ok(())
@@ -269,7 +296,9 @@ impl ForkPreparation {
 }
 
 pub(in crate::fork) fn validate_child_result_volume(
-    result: &VolumeRef, scratch: &VolumeRef, child: AgentId,
+    result: &VolumeRef,
+    scratch: &VolumeRef,
+    child: AgentId,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
     result.validate(work)?;
@@ -278,15 +307,20 @@ pub(in crate::fork) fn validate_child_result_volume(
         || result.provider() != scratch.provider()
         || result == scratch
     {
-        return Err(boundary_error(work, crate::wire::ErrorCode::Invalid,
-            "child result volume must be child-owned and distinct from scratch"));
+        return Err(boundary_error(
+            work,
+            crate::wire::ErrorCode::Invalid,
+            "child result volume must be child-owned and distinct from scratch",
+        ));
     }
     Ok(())
 }
 
 pub(in crate::fork) fn validate_child_result_generation(
-    result: Option<&VolumeRef>, generation: Option<&GenerationRef>,
-    scratch: &VolumeRef, child: AgentId,
+    result: Option<&VolumeRef>,
+    generation: Option<&GenerationRef>,
+    scratch: &VolumeRef,
+    child: AgentId,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
     match (result, generation) {
@@ -295,13 +329,19 @@ pub(in crate::fork) fn validate_child_result_generation(
             validate_child_result_volume(result, scratch, child, work)?;
             generation.validate(work)?;
             if generation.as_resource().provider() != result.provider() {
-                return Err(boundary_error(work, crate::wire::ErrorCode::Invalid,
-                    "child result generation belongs to another provider"));
+                return Err(boundary_error(
+                    work,
+                    crate::wire::ErrorCode::Invalid,
+                    "child result generation belongs to another provider",
+                ));
             }
             Ok(())
         }
-        _ => Err(boundary_error(work, crate::wire::ErrorCode::Invalid,
-            "child result volume and generation must be captured together")),
+        _ => Err(boundary_error(
+            work,
+            crate::wire::ErrorCode::Invalid,
+            "child result volume and generation must be captured together",
+        )),
     }
 }
 
@@ -339,20 +379,29 @@ pub trait ForkCaptureProvider: acyclic_stream::ProviderPlatform {
     /// Captures the same immutable selection on the supplied original native ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn capture_with_native_work<'a>(
-        &'a self, _request: &'a ForkRequest, _selection: &'a ForkSelection,
+        &'a self,
+        _request: &'a ForkRequest,
+        _selection: &'a ForkSelection,
         _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Capture, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "fork capture provider has no original native callback" })
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "fork capture provider has no original native callback",
+        })
     }
 
     /// Reconciles the original capture operation without repeating uncertain effects or replacing its pinned selection.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn reconcile_with_native_work<'a>(
-        &'a self, _request: &'a ForkRequest, _selection: &'a ForkSelection,
+        &'a self,
+        _request: &'a ForkRequest,
+        _selection: &'a ForkSelection,
         _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<Capture>, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "fork capture provider has no original native reconciliation callback" })
+    ) -> Result<crate::NativeFutureBundle<'a, (Option<Capture>, acyclic_fs::NativeAllocation)>>
+    {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "fork capture provider has no original native reconciliation callback",
+        })
     }
 }

@@ -36,23 +36,30 @@ pub struct Authority {
 
 impl Authority {
     pub(crate) fn validate_with_work(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
+        if let Some(io) = work.as_deref_mut() {
+            io.check_cancellation()?;
+        }
         if self.id.is_empty()
             || AUTHORITY_ID_FORBIDDEN_EXACT.contains(&self.id.as_str())
             || self.id.contains(AUTHORITY_ID_FORBIDDEN_SEPARATORS)
             || self.id.chars().any(char::is_control)
         {
-            return Err(crate::fork::boundary_error(work, crate::wire::ErrorCode::Invalid,
-                "aggregate identity is not a safe path segment"));
+            return Err(crate::fork::boundary_error(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "aggregate identity is not a safe path segment",
+            ));
         }
         Ok(())
     }
 
     /// Returns the Stream path for this aggregate.
     pub fn stream_path(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<String> {
         self.validate_with_work(work)?;
         let segment = match self.kind {
@@ -62,7 +69,9 @@ impl Authority {
             AggregateKind::Turn => "turns",
             AggregateKind::Task => "tasks",
         };
-        let bytes = "harness/v2/".len().checked_add(segment.len())
+        let bytes = "harness/v2/"
+            .len()
+            .checked_add(segment.len())
             .and_then(|bytes| bytes.checked_add(1))
             .and_then(|bytes| bytes.checked_add(self.id.len()))
             .ok_or_else(|| Error::Invalid("aggregate path length overflows".into()))?;
@@ -148,13 +157,20 @@ impl Scope {
         let issuer = copying::copy_text(&self.issuer, &mut custody)?;
         let capabilities = copying::copy_capabilities(&self.capabilities, &mut custody)?;
         custody.transfer();
-        Ok(Self { id, capabilities, agent: self.agent, issuer,
-            parent_proof: self.parent_proof, proof: self.proof })
+        Ok(Self {
+            id,
+            capabilities,
+            agent: self.agent,
+            issuer,
+            parent_proof: self.parent_proof,
+            proof: self.proof,
+        })
     }
 
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         let capabilities = self.capabilities.logical_owned_bytes()?;
-        (self.id.capacity() as u64).checked_add(self.issuer.capacity() as u64)
+        (self.id.capacity() as u64)
+            .checked_add(self.issuer.capacity() as u64)
             .and_then(|bytes| bytes.checked_add(capabilities))
             .ok_or_else(|| Error::Invalid("scope owned byte count overflows".into()))
     }
@@ -199,12 +215,16 @@ impl AuthorityIssuer {
 
     /// Copies the original issuer metadata under the caller's original ledger.
     pub fn copy(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
-        if work.is_none() { return Ok(self.clone()); }
+        if work.is_none() {
+            return Ok(self.clone());
+        }
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let cloned = Self {
-            id: copying::copy_text(&self.id, &mut quota)?, key: self.key,
+            id: copying::copy_text(&self.id, &mut quota)?,
+            key: self.key,
             audience: copying::copy_authority(&self.audience, &mut quota)?,
         };
         quota.transfer();
@@ -212,10 +232,14 @@ impl AuthorityIssuer {
     }
     /// Borrows the original configured issuer identity without exposing its key.
     #[must_use]
-    pub fn id(&self) -> &str { &self.id }
+    pub fn id(&self) -> &str {
+        &self.id
+    }
 
     #[cfg(feature = "filesystem")]
-    pub(crate) const fn audience(&self) -> &Authority { &self.audience }
+    pub(crate) const fn audience(&self) -> &Authority {
+        &self.audience
+    }
 
     /// Copies the configured verifier using the caller's ledger.
     pub fn verifier(
@@ -228,7 +252,10 @@ impl AuthorityIssuer {
 
     /// Signs one grant using the caller's optional ledger.
     pub fn issue(
-        &self, id: &str, capabilities: &Capabilities, agent: Option<AgentId>,
+        &self,
+        id: &str,
+        capabilities: &Capabilities,
+        agent: Option<AgentId>,
         parent_proof: Option<[u8; 32]>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Scope> {
@@ -236,7 +263,14 @@ impl AuthorityIssuer {
         let id = copying::copy_text(id, &mut quota)?;
         let capabilities = copying::copy_capabilities(capabilities, &mut quota)?;
         let issuer = copying::copy_text(&self.id, &mut quota)?;
-        let mut scope = Scope { id, capabilities, issuer, agent, parent_proof, proof: [0; 32] };
+        let mut scope = Scope {
+            id,
+            capabilities,
+            issuer,
+            agent,
+            parent_proof,
+            proof: [0; 32],
+        };
         scope.proof = scope_proof(&self.key, &self.audience, &scope, quota.work())?;
         quota.transfer();
         Ok(scope)
@@ -249,13 +283,21 @@ impl AuthorityIssuer {
         id: impl Into<String>,
         capabilities: Capabilities,
     ) -> Result<Scope> {
-        self.verifier(&mut None).expect("verifier copy").verify(parent, &mut None)?;
+        self.verifier(&mut None)
+            .expect("verifier copy")
+            .verify(parent, &mut None)?;
         if !capabilities.is_subset_of(&parent.capabilities) {
             return Err(Error::Unauthorized(
                 "child scope cannot widen ancestor capabilities".into(),
             ));
         }
-        self.issue(&id.into(), &capabilities, parent.agent, Some(parent.proof), &mut None)
+        self.issue(
+            &id.into(),
+            &capabilities,
+            parent.agent,
+            Some(parent.proof),
+            &mut None,
+        )
     }
 
     /// Delegates one pinned private file to another agent without a fork or directory-wide grant.
@@ -275,8 +317,11 @@ impl AuthorityIssuer {
         let volume = file.volume();
         self.require_private_owner_read(owner_scope, volume)?;
         self.issue(
-            &id.into(), &Capabilities::new([file.read_capability()?]),
-            Some(reader), Some(owner_scope.proof), &mut None,
+            &id.into(),
+            &Capabilities::new([file.read_capability()?]),
+            Some(reader),
+            Some(owner_scope.proof),
+            &mut None,
         )
     }
 
@@ -291,8 +336,11 @@ impl AuthorityIssuer {
     ) -> Result<Scope> {
         self.require_private_owner_read(owner_scope, volume)?;
         self.issue(
-            &id.into(), &Capabilities::new([volume.directory_read_capability(prefix, &mut None)?]),
-            Some(reader), Some(owner_scope.proof), &mut None,
+            &id.into(),
+            &Capabilities::new([volume.directory_read_capability(prefix, &mut None)?]),
+            Some(reader),
+            Some(owner_scope.proof),
+            &mut None,
         )
     }
 
@@ -301,7 +349,9 @@ impl AuthorityIssuer {
         owner_scope: &Scope,
         volume: &crate::conversation::VolumeRef,
     ) -> Result<()> {
-        self.verifier(&mut None).expect("verifier copy").verify(owner_scope, &mut None)?;
+        self.verifier(&mut None)
+            .expect("verifier copy")
+            .verify(owner_scope, &mut None)?;
         volume.validate(&mut None)?;
         if !matches!(volume.owner(), VolumeOwner::Agent(owner) if Some(*owner) == owner_scope.agent)
             || !owner_scope
@@ -327,12 +377,16 @@ impl AuthorityIssuer {
         let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut observation = EffectAttestation {
             provider: copying::copy_text(&effect.provider, &mut custody)?,
-            effect_id, attempt_id, request_digest: effect.request_digest,
-            guarantee: effect.guarantee, result_schema_digest: effect.result_schema_digest,
-            status, proof: [0; 32],
+            effect_id,
+            attempt_id,
+            request_digest: effect.request_digest,
+            guarantee: effect.guarantee,
+            result_schema_digest: effect.result_schema_digest,
+            status,
+            proof: [0; 32],
         };
-        observation.proof = effect_attestation_proof(
-            &self.key, &self.audience, &observation, custody.work())?;
+        observation.proof =
+            effect_attestation_proof(&self.key, &self.audience, &observation, custody.work())?;
         custody.transfer();
         Ok(observation)
     }
@@ -365,13 +419,15 @@ impl AuthorityVerifier {
     }
 
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        (self.id.capacity() as u64).checked_add(self.audience.id.capacity() as u64)
+        (self.id.capacity() as u64)
+            .checked_add(self.audience.id.capacity() as u64)
             .ok_or_else(|| Error::Invalid("verifier owned byte count overflows".into()))
     }
 
     /// Copies the verifier using the caller's ledger.
     pub fn copy(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &self,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
         match work.as_deref_mut() {
             Some(work) => Ok(Self {
@@ -385,7 +441,8 @@ impl AuthorityVerifier {
 
     /// Verifies issuer identity and the complete immutable grant.
     pub fn verify(
-        &self, scope: &Scope,
+        &self,
+        scope: &Scope,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         self.verify_scope_for_with_work(&self.audience, scope, work)
@@ -393,7 +450,9 @@ impl AuthorityVerifier {
 
     /// Rebinds only the authenticated audience, retaining this original key.
     pub(crate) fn verify_scope_for_with_work(
-        &self, audience: &Authority, scope: &Scope,
+        &self,
+        audience: &Authority,
+        scope: &Scope,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         let expected = scope_proof(&self.key, audience, scope, work)?;
@@ -404,12 +463,17 @@ impl AuthorityVerifier {
     }
 
     pub(in crate::core) fn canonical_proof<T: Serialize>(
-        &self, domain: &[u8], value: &T,
+        &self,
+        domain: &[u8],
+        value: &T,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<[u8; 32]> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let bytes = crate::store::history::canonical_bytes_with_work(
-            value, crate::store::default_projection_read_limits().maximum_bytes, quota.work())?;
+            value,
+            crate::store::default_projection_read_limits().maximum_bytes,
+            quota.work(),
+        )?;
         quota.adopt(bytes.capacity() as u64)?;
         if let Some(io) = quota.work().as_deref_mut() {
             io.hashed_bytes(domain.len() as u64 + 8 + bytes.len() as u64)?;
@@ -429,10 +493,19 @@ impl AuthorityVerifier {
         event: &Event,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<[u8; 32]> {
-        self.canonical_proof(b"harness/v2/committed-event\0", &(
-            &self.audience, event.revision, event.operation_id, event.intent_digest,
-            &event.scope, &event.causal_parent, &event.payload,
-        ), work)
+        self.canonical_proof(
+            b"harness/v2/committed-event\0",
+            &(
+                &self.audience,
+                event.revision,
+                event.operation_id,
+                event.intent_digest,
+                &event.scope,
+                &event.causal_parent,
+                &event.payload,
+            ),
+            work,
+        )
     }
 
     pub(crate) fn verify_event(
@@ -449,57 +522,112 @@ impl AuthorityVerifier {
     }
 
     pub(crate) fn effect_history_root_proof_with_work(
-        &self, revision: u64, canonical_digest: [u8; 32], root: Option<[u8; 32]>,
+        &self,
+        revision: u64,
+        canonical_digest: [u8; 32],
+        root: Option<[u8; 32]>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<[u8; 32]> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let path = self.audience.stream_path(quota.work())?;
         quota.adopt(path.capacity() as u64)?;
-        let proof = self.canonical_proof(b"harness/v1/effect-history-root\0", &(
-            &self.id, &self.audience, &path, revision, canonical_digest, root,
-        ), quota.work());
+        let proof = self.canonical_proof(
+            b"harness/v1/effect-history-root\0",
+            &(
+                &self.id,
+                &self.audience,
+                &path,
+                revision,
+                canonical_digest,
+                root,
+            ),
+            quota.work(),
+        );
         drop(path);
         proof
     }
 
     pub(crate) fn fork_history_proof(
-        &self, seed: &ForkSeed,
+        &self,
+        seed: &ForkSeed,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<[u8; 32]> {
         self.verify_audience(&seed.parent, work)?;
-        self.canonical_proof(b"harness/v1/fork-history-witness\0", &(
-            (&self.id, &seed.operation_id, &seed.parent, seed.parent_revision,
-             &seed.child, seed.child_agent, &seed.attached_agents, &seed.resources,
-             &seed.omissions, &seed.child_private_volume),
-            (&seed.child_private_generation, &seed.inherited_context, &seed.summary,
-             seed.inherited_through_sequence, &seed.shared_grants,
-             &seed.reference_grants, &seed.attachment_manifests, &seed.boundary),
-        ), work)
+        self.canonical_proof(
+            b"harness/v1/fork-history-witness\0",
+            &(
+                (
+                    &self.id,
+                    &seed.operation_id,
+                    &seed.parent,
+                    seed.parent_revision,
+                    &seed.child,
+                    seed.child_agent,
+                    &seed.attached_agents,
+                    &seed.resources,
+                    &seed.omissions,
+                    &seed.child_private_volume,
+                ),
+                (
+                    &seed.child_private_generation,
+                    &seed.inherited_context,
+                    &seed.summary,
+                    seed.inherited_through_sequence,
+                    &seed.shared_grants,
+                    &seed.reference_grants,
+                    &seed.attachment_manifests,
+                    &seed.boundary,
+                ),
+            ),
+            work,
+        )
     }
 
     #[cfg(feature = "filesystem")]
     pub(crate) fn fork_history_selection_proof_with_work(
-        &self, revision: u64, through_sequence: u64, agent: Option<AgentId>,
-        history_digest: [u8; 32], work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        &self,
+        revision: u64,
+        through_sequence: u64,
+        agent: Option<AgentId>,
+        history_digest: [u8; 32],
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<[u8; 32]> {
-        self.canonical_proof(b"harness/v1/fork-history-selection\0", &(
-            &self.id, &self.audience, revision, through_sequence, agent, history_digest,
-        ), work)
+        self.canonical_proof(
+            b"harness/v1/fork-history-selection\0",
+            &(
+                &self.id,
+                &self.audience,
+                revision,
+                through_sequence,
+                agent,
+                history_digest,
+            ),
+            work,
+        )
     }
 
     /// Verifies the configured aggregate audience.
     pub fn verify_audience(
-        &self, authority: &Authority,
+        &self,
+        authority: &Authority,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        if let Some(io) = work.as_deref() { io.check_cancellation()?; }
-        if &self.audience == authority { return Ok(()); }
-        Err(crate::fork::boundary_error(work, crate::wire::ErrorCode::Unauthorized,
-            "authority verifier belongs to another aggregate"))
+        if let Some(io) = work.as_deref() {
+            io.check_cancellation()?;
+        }
+        if &self.audience == authority {
+            return Ok(());
+        }
+        Err(crate::fork::boundary_error(
+            work,
+            crate::wire::ErrorCode::Unauthorized,
+            "authority verifier belongs to another aggregate",
+        ))
     }
 
     pub(in crate::core) fn verify_effect(
-        &self, observation: &EffectAttestation,
+        &self,
+        observation: &EffectAttestation,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         let expected = effect_attestation_proof(&self.key, &self.audience, observation, work)?;
@@ -513,16 +641,30 @@ impl AuthorityVerifier {
 }
 
 fn scope_proof(
-    key: &[u8; 32], audience: &Authority, scope: &Scope,
+    key: &[u8; 32],
+    audience: &Authority,
+    scope: &Scope,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<[u8; 32]> {
-    let Scope { id, capabilities, issuer, agent, parent_proof, .. } = scope;
-    let strings = || [audience.id.as_str(), issuer.as_str(), id.as_str()]
-        .into_iter().chain(capabilities.iter());
+    let Scope {
+        id,
+        capabilities,
+        issuer,
+        agent,
+        parent_proof,
+        ..
+    } = scope;
+    let strings = || {
+        [audience.id.as_str(), issuer.as_str(), id.as_str()]
+            .into_iter()
+            .chain(capabilities.iter())
+    };
     if let Some(work) = work.as_deref_mut() {
         let fixed = 3 + u64::from(agent.is_some()) * 16 + u64::from(parent_proof.is_some()) * 32;
         let bytes = strings().try_fold(fixed, |total, text| {
-            total.checked_add(8).and_then(|total| total.checked_add(text.len() as u64))
+            total
+                .checked_add(8)
+                .and_then(|total| total.checked_add(text.len() as u64))
                 .ok_or_else(|| Error::Invalid("scope hash byte count overflows".into()))
         })?;
         work.hashed_bytes(bytes)?;
@@ -540,22 +682,37 @@ fn scope_proof(
         hasher.update(value.as_bytes());
     }
     hasher.update(&[u8::from(agent.is_some())]);
-    if let Some(agent) = agent { hasher.update(&agent.into_bytes()); }
+    if let Some(agent) = agent {
+        hasher.update(&agent.into_bytes());
+    }
     hasher.update(&[u8::from(parent_proof.is_some())]);
-    if let Some(parent) = parent_proof { hasher.update(parent); }
+    if let Some(parent) = parent_proof {
+        hasher.update(parent);
+    }
     Ok(*hasher.finalize().as_bytes())
 }
 
 fn effect_attestation_proof(
-    key: &[u8; 32], audience: &Authority, observation: &EffectAttestation,
+    key: &[u8; 32],
+    audience: &Authority,
+    observation: &EffectAttestation,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<[u8; 32]> {
     let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
-    let bytes = crate::store::history::canonical_bytes_with_work(&(
-        audience, &observation.provider, observation.effect_id, observation.attempt_id,
-        observation.request_digest, observation.guarantee, observation.result_schema_digest,
-        &observation.status,
-    ), crate::store::default_projection_read_limits().maximum_bytes, custody.work())?;
+    let bytes = crate::store::history::canonical_bytes_with_work(
+        &(
+            audience,
+            &observation.provider,
+            observation.effect_id,
+            observation.attempt_id,
+            observation.request_digest,
+            observation.guarantee,
+            observation.result_schema_digest,
+            &observation.status,
+        ),
+        crate::store::default_projection_read_limits().maximum_bytes,
+        custody.work(),
+    )?;
     custody.adopt(bytes.capacity() as u64)?;
     if let Some(work) = custody.work().as_deref_mut() {
         work.hashed_bytes(bytes.len() as u64)?;
