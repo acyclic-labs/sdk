@@ -10,9 +10,8 @@ use crate::kernel::{FileKind as EngineFileKind, FilePayloadKind, NameEncoding};
 use crate::model::FilesystemProfile as EngineProfile;
 use crate::performance::WorkCounters;
 use crate::wire::filesystem::v2 as wire;
-use crate::workspace::{
-    JoinHistory, DependencyUse, ExtentSeekTarget, WorkspaceExtentKind,
-};
+use crate::kernel::{DependencyUse, ExtentSeekTarget};
+use crate::workspace::{JoinHistory, WorkspaceExtentKind};
 use serde_json::{Value, json};
 use strum::IntoEnumIterator;
 
