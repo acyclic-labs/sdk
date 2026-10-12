@@ -46,16 +46,6 @@ impl<T> Future for HistoryContentFuture<'_, T> {
     }
 }
 
-impl<T> HistoryContentFuture<'_, T> {
-    fn ordinary_frame_bytes(&self) -> u64 {
-        match self {
-            Self::Ordinary { frame_bytes, .. } => *frame_bytes,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Self::Native(_) => 0,
-        }
-    }
-}
-
 pub(crate) async fn verify_content_with_work(
     observer: &mut dyn HistoryIo,
     verifier: &dyn crate::conversation::ContentResidencyVerifier,
