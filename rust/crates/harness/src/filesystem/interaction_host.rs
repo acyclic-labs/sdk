@@ -191,11 +191,8 @@ where
                 "interaction host requires a conversation, private volume, and positive limit"));
         }
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-            match io {
-                Some(io) => ContentGrant::verify_original_volume_with_io(
-                    verifier, owner_scope, private_volume, operation, io)?,
-                None => { ContentGrant::verify(verifier, owner_scope, private_volume, operation)?; }
-            }
+            ContentGrant::authorize_volume(verifier, owner_scope, private_volume,
+                operation, u64::MAX, &mut work)?;
         }
         #[cfg(not(target_arch = "wasm32"))]
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
@@ -205,7 +202,7 @@ where
         };
         let verifier = verifier.clone_with_work(&mut work)?;
         let owner_scope = owner_scope.clone_with_work(&mut work)?;
-        let private_volume = private_volume.clone_with_work(&mut work)?;
+        let private_volume = private_volume.copy(&mut work)?;
         let schemas = schemas.clone_with_work(&mut work)?;
         #[cfg(not(target_arch = "wasm32"))]
         let _native_metadata = match io.filter(|io| io.original_native_work().is_some()) {
@@ -556,7 +553,7 @@ where
                 let bytes_hold;
                 let bytes = self.host.read_pinned_io(&ticket.request, self.maximum_bytes, Some(io)).await?;
                 bytes_hold = io.guard_bytes(&bytes)?;
-                let request = io.decode_preparation::<Interaction>(&bytes)?;
+                let request = io.decode_preparation::<Interaction>(&bytes, crate::wire::ErrorCode::Storage)?;
                 let mut borrowed = io.history_io();
                 ticket.validate_decoded_request_with_work(&request, &mut Some(&mut borrowed))?;
                 let request = request.into_retained();
@@ -649,7 +646,7 @@ where
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let request = match io {
             Some(io) => {
-                let request = io.decode_preparation::<Interaction>(&bytes)?;
+                let request = io.decode_preparation::<Interaction>(&bytes, crate::wire::ErrorCode::Storage)?;
                 ticket.validate_decoded_request_with_work(&request, &mut work)?;
                 request.into_retained()
             }
@@ -673,7 +670,7 @@ where
                     "approval decision bytes custody underflows"))?)).transpose()?;
             match io {
                 Some(io) => {
-                    let response = io.decode_preparation::<InteractionResponse>(&bytes)?;
+                    let response = io.decode_preparation::<InteractionResponse>(&bytes, crate::wire::ErrorCode::Storage)?;
                     ticket.validate_decoded_decision_with_work(
                         &request, &resolution.outcome, detail, &response, &mut work)?;
                 }

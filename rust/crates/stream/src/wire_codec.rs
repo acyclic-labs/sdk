@@ -12,11 +12,7 @@ pub(crate) type WireMeter<'a> = Option<&'a Arc<dyn NativeReadMeter>>;
 #[cfg(target_arch = "wasm32")]
 pub(crate) type WireMeter<'a> = Option<&'a ()>;
 
-pub(crate) struct ObservedWire<T> {
-    pub(crate) value: T,
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) allocation: Option<ReadAllocation>,
-}
+use crate::memory::{MemoryAllocation, MemoryOutput};
 
 /// Custody of the actual SDK-owned generated DTO fields.
 pub(crate) struct WireFunding<'a> {
@@ -24,8 +20,7 @@ pub(crate) struct WireFunding<'a> {
     meter: WireMeter<'a>,
     #[cfg(target_arch = "wasm32")]
     _meter: WireMeter<'a>,
-    #[cfg(not(target_arch = "wasm32"))]
-    allocation: Option<ReadAllocation>,
+    allocation: MemoryAllocation,
 }
 
 impl<'a> WireFunding<'a> {
@@ -35,8 +30,10 @@ impl<'a> WireFunding<'a> {
             meter,
             #[cfg(target_arch = "wasm32")]
             _meter: meter,
-            #[cfg(not(target_arch = "wasm32"))]
-            allocation: meter.map(ReadAllocation::empty),
+            allocation: MemoryAllocation {
+                #[cfg(not(target_arch = "wasm32"))]
+                allocation: meter.map(ReadAllocation::empty),
+            },
         }
     }
 
@@ -94,7 +91,7 @@ impl<'a> WireFunding<'a> {
         #[cfg(target_arch = "wasm32")]
         let _ = bytes;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(allocation) = &mut self.allocation { allocation.release(bytes)?; }
+        if let Some(allocation) = &mut self.allocation.allocation { allocation.release(bytes)?; }
         Ok(())
     }
 
@@ -117,7 +114,7 @@ impl<'a> WireFunding<'a> {
 
     pub(crate) fn capacity(&self) -> usize {
         #[cfg(not(target_arch = "wasm32"))]
-        { self.allocation.as_ref().map_or(0, |allocation| allocation.bytes() as usize) }
+        { self.allocation.allocation.as_ref().map_or(0, |allocation| allocation.bytes() as usize) }
         #[cfg(target_arch = "wasm32")]
         { 0 }
     }
@@ -127,7 +124,7 @@ impl<'a> WireFunding<'a> {
         let _ = bytes;
         #[cfg(not(target_arch = "wasm32"))]
         if bytes != 0
-            && let Some(allocation) = &mut self.allocation
+            && let Some(allocation) = &mut self.allocation.allocation
         {
             allocation.grow(bytes)?;
         }
@@ -138,7 +135,7 @@ impl<'a> WireFunding<'a> {
         #[cfg(target_arch = "wasm32")]
         let _ = (previous, actual);
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(allocation) = &mut self.allocation {
+        if let Some(allocation) = &mut self.allocation.allocation {
             let total = previous.checked_add(actual)
                 .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
             allocation.reconcile_capacity(total)?;
@@ -167,12 +164,8 @@ impl<'a> WireFunding<'a> {
         Ok(())
     }
 
-    pub(crate) fn finish<T>(self, value: T) -> ObservedWire<T> {
-        ObservedWire {
-            value,
-            #[cfg(not(target_arch = "wasm32"))]
-            allocation: self.allocation,
-        }
+    pub(crate) fn finish<T>(self, value: T) -> MemoryOutput<T> {
+        MemoryOutput { value, allocation: self.allocation }
     }
 }
 

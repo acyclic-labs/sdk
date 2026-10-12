@@ -26,7 +26,7 @@ fn put_page(
     ObjectStore::put(
         store,
         id,
-        OwnedBytes::from(encode_tree_page(page, 16)?),
+        OwnedBytes::from(encode_tree_page(page, 16, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)

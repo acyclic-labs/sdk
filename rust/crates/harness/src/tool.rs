@@ -37,27 +37,9 @@ pub(crate) fn decode_with_native_work<T: crate::filesystem::UploadRecord>(
     Ok((value, custody))
 }
 
-/// Copies the actual Value graph, including literal serde-private map keys.
+/// Copies a Value under the original ledger and optional wire-size bound.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn clone_value_with_native_work(
-    value: &Value,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-    clone_value_with_native_bound(value, None, work)
-}
-
-/// Checks the same resident Value's wire-size bound before any owned copy.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn clone_value_with_native_work_bounded(
-    value: &Value,
-    maximum_bytes: u64,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-    clone_value_with_native_bound(value, Some(maximum_bytes), work)
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-fn clone_value_with_native_bound(
+pub(crate) fn clone_value(
     value: &Value,
     maximum_bytes: Option<u64>,
     work: &acyclic_fs::NativeMaterializationWork,
@@ -92,15 +74,7 @@ fn clone_definition_with_native_work(
 
 /// Builds the canonical result tree through the existing bounded SDK codec.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn value_with_native_work<T: Serialize>(
-    value: &T,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(Value, acyclic_fs::NativeAllocation)> {
-    value_with_native_work_bounded(value, work.remaining()?.bytes_encoded, work)
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn value_with_native_work_bounded<T: Serialize>(
+pub(crate) fn value<T: Serialize>(
     value: &T,
     maximum_bytes: u64,
     work: &acyclic_fs::NativeMaterializationWork,
@@ -281,11 +255,11 @@ impl ToolDefinition {
             name: crate::executor::stock_string_copy(name, Some(&io))?,
             revision: crate::executor::stock_string_copy(revision, Some(&io))?,
             description: crate::executor::stock_string_copy(description, Some(&io))?,
-            input_schema: io.decode_preparation_with_code::<Value>(
+            input_schema: io.decode_preparation::<Value>(
                 input_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?.into_retained(),
-            output_schema: io.decode_preparation_with_code::<Value>(
+            output_schema: io.decode_preparation::<Value>(
                 output_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?.into_retained(),
-            projection_schema: io.decode_preparation_with_code::<Value>(
+            projection_schema: io.decode_preparation::<Value>(
                 projection_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?.into_retained(),
         };
         definition.validate_schemas_with_io(Some(&io))?;

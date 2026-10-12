@@ -4,7 +4,7 @@ use acyclic_harness::{
     Error, Result,
     context::ContextPipeline,
     executor::{ExecutionJournal, Executor, StockExecutor, TurnInput, TurnOutput},
-    model::{Model, ModelAttempt, ModelEvent, ModelProvider, PreparedModelRequest},
+    model::{Model, ModelEvent, ModelProvider, PreparedModelRequest},
     tool::ToolRegistry,
 };
 use futures::{
@@ -57,9 +57,7 @@ impl ModelProvider for MockModel {
         })]))
     }
 
-    fn reconcile<'a>(&'a self, _: ModelAttempt) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-        Box::pin(async { Ok(None) })
-    }
+
 }
 
 fn main() -> Result<()> {

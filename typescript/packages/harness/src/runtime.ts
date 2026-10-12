@@ -4,7 +4,7 @@ import { approvalBinding, interactionId, type InteractionId, type InteractionRes
 import { NativeContracts, type BatchAdmissionProjectionInput, type DiscoveredContext, type DurableBatchWire, type ExecutionPlacementWire, type MachineIdentityWire, type ModelEventAdmissionState, type NativeJsonValue, type NativeLimitsWire, type TaskAdmissionProjectionInput, type TaskAdmissionWire, type TaskRunLimitsWire } from "./native-contracts.js";
 import { HARNESS_CHILD_PAGE_DEFAULT } from "./child-page-contract.js";
 import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_MAXIMUM } from "./private-directory-page-contract.js";
-import { validateModelContent as validateModelContentWasm, prepareModelRequest as prepareModelRequestWasm, validateSelectedModelContext as validateSelectedModelContextWasm, validateUserInput as validateUserInputWasm } from "../generated/wasm/acyclic_harness_wasm.js";
+import { validateModelContent, prepareModelRequest as prepareModelRequestWasm, validateSelectedModelContext as validateSelectedModelContextWasm, validateUserInput as validateUserInputWasm } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { WasmModelRequestWire, WasmReducer } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { EffectId, OperationId, Scope, TaskId } from "./index.js";
 import { publicModelContent, type SelectedModelContext } from "./projection.js";
@@ -299,11 +299,6 @@ function snapshotDirectUserContent(input: AgentInput<UserContentPart>): ModelCon
   return typeof content === "string" ? content : structuredClone(content);
 }
 
-function validateModelContent(content: ModelContent, limits: Limits): void {
-  validateModelContentWasm(content, limits);
-}
-
-export interface AgentHarnessHost { connect(): Promise<AgentHarness> }
 /** Exact ref-valued Rust effect status; recovered values never acquire a caller-chosen type. */
 export type EffectStatus =
   | Readonly<{ state: "planned" | "dispatched" | "indeterminate" }>
@@ -519,9 +514,7 @@ export class ExecutionScope {
 
 export const GroupPolicies = groupPolicies;
 
-export class Batch<Input> {
-  constructor(readonly id: BatchId, readonly inputs: readonly Input[]) { if (!id) throw new TypeError("batch id is required"); }
-}
+export interface Batch<Input> { readonly id: BatchId; readonly inputs: readonly Input[] }
 export class ExecutionQualificationError extends Error {}
 export interface GroupEntry<Output> { readonly key: InputKey; readonly admission: Admission<Output>; readonly outcome?: Outcome<Output> }
 /** A cancellation request is not a terminal task outcome. */
@@ -643,6 +636,7 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
     this.#authorizeTask = authorizeTask;
   }
   async spawnMany<Input>(selected: GroupTask<Authority, Input, Output>, batch: Batch<Input>): Promise<readonly GroupEntry<Output>[]> {
+    if (!batch.id) throw new TypeError("batch id is required");
     if (this.#closed) return batch.inputs.map((_input, index) => ({ key: { batchId: batch.id, index }, admission: { kind: "rejected", reason: { code: "group_closed", message: "group is closed" } } }));
     let definition: TaskDefinition<Input, Output>;
     try {
@@ -746,6 +740,7 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
     return entries;
   }
   async reconcileBatch<Input>(selected: GroupTask<Authority, Input, Output>, batch: Batch<Input>): Promise<readonly GroupEntry<Output>[]> {
+    if (!batch.id) throw new TypeError("batch id is required");
     const definition = registeredTaskDefinition(selected as TaskDefinition<Input, Output> | TaskRef<Input, Output>);
     this.#authorizeTask?.(definition);
     this.#harness.task(definition);
@@ -793,7 +788,7 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
     if (retained.batch_id !== batchId || retained.group_id !== this.id) {
       throw new Error("retained batch differs from its pinned group bindings");
     }
-    const batch = new Batch<Input>(batchId, retained.inputs as readonly Input[]);
+    const batch = { id: batchId, inputs: retained.inputs as readonly Input[] };
     const expected = await this.#batchRequest(definition, batch, retained.execution);
     if (!this.#harness.contracts.canonicalEqual(retained, expected.canonical)) {
       throw new Error("retained batch differs from its pinned task, inputs, or scope");
@@ -1005,7 +1000,7 @@ export class TaskGroup<Output, Authority extends "owner" | "scoped" = "owner"> {
   async map<Input>(definition: GroupTask<Authority, Input, Output>, inputs: readonly Input[]): Promise<readonly Output[]> {
     if (!inputs.length) return [];
     if (registeredTaskDefinition(definition as TaskDefinition<Input, Output> | TaskRef<Input, Output>).implementation.kind === "resumable") throw new Error("durable map requires a stable Batch ID; use spawnMany and join");
-    const entries = await this.spawnMany(definition, new Batch(identity<BatchId>(), inputs));
+    const entries = await this.spawnMany(definition, { id: identity<BatchId>(), inputs: inputs });
     const outcomes = await Promise.all(entries.map(entry => entry.admission.kind === "accepted" ? entry.admission.task.result().then(async outcome => { if (outcome.kind !== "succeeded" && this.policy.kind === "cancel-on-failure") await this.cancel(); return outcome; }) : undefined));
     const values: Output[] = [];
     for (const outcome of outcomes) {

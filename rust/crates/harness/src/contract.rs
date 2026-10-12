@@ -1355,7 +1355,6 @@ pub(crate) fn native_work_error_code(cause: &acyclic_fs::NativeTreeMaterializati
         Native::InvalidLayout
         | Native::InvalidPreimage
         | Native::InvalidPath(..)
-        | Native::OverlappingPaths
         | Native::PayloadTooLarge { .. } => ErrorCode::Invalid,
         Native::MissingTarget(..) | Native::MissingPreimage(..) => ErrorCode::NotFound,
         Native::ExternalMutation(..)
@@ -1368,7 +1367,6 @@ pub(crate) fn native_work_error_code(cause: &acyclic_fs::NativeTreeMaterializati
         | Native::OriginalWorkPoisoned
         | Native::MissingCustody
         | Native::Work(_)
-        | Native::Allocation(..)
         | Native::AllocationFailed(_)
         | Native::IndeterminatePreparation => ErrorCode::Storage,
     }

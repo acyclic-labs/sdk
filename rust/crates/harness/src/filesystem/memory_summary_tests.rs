@@ -8,7 +8,7 @@ use crate::fork::{
     ForkSelection, ResourceRevision, StreamHistoryForkVerifier, SummaryForkSelection,
     prepare_summary_fork_context,
 };
-use crate::model::{ModelAttempt, ModelDispatch, ModelEvent, PreparedModelRequest};
+use crate::model::{ModelDispatch, ModelEvent, PreparedModelRequest};
 use crate::resources::StreamRef;
 use crate::store::{HistoryReadLimits, HistoryReader};
 use std::sync::Mutex;
@@ -69,7 +69,7 @@ impl ModelProvider for SummaryModel {
             }),
         ]))
     }
-    fn reconcile<'a>(&'a self, _: ModelAttempt) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+    fn reconcile<'a>(&'a self, _dispatch: crate::model::ModelDispatch, _observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         Box::pin(async {
             Err(Error::Unsupported(
                 "fixture attempts settle immediately".into(),
@@ -393,7 +393,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         storage.content_verifier.clone(),
     )?
     .with_history_context(archived)?
-    .with_summary_history(selection.clone(), storage.journal(), original_scope, history, cursor)?;
+    .with_summary_history(selection.clone(), storage.journal(), original_scope, history, cursor, None)?;
     let child_agent = AgentId::new();
     let child_private = VolumeRef::new(
         provider.clone(),
@@ -779,13 +779,15 @@ async fn assert_summary_child_import(
     )
     .with_limits(limits);
     let journal = FilesystemExecutionJournal::new(
-        storage.stream.clone(),
-        storage.host.clone(),
-        seed.child_private_volume.clone(),
-        issuer.verifier(), crate::core::SchemaRegistry::new(),
-        scope,
-        262_144,
-    )?
+                storage.stream.clone(),
+                storage.host.clone(),
+                &seed.child_private_volume,
+                &issuer.verifier(),
+                &crate::core::SchemaRegistry::new(),
+                &scope,
+                262_144,
+                None,
+            )?
     .with_input_verifier(reader);
     let input = TurnInput {
         operation_id: OperationId::new(),
@@ -1163,13 +1165,15 @@ async fn default_compaction_bounds_small_message_continuation() -> Result<()> {
         if index == TURNS - 3 {
             storage.journal = Arc::new(
                 FilesystemExecutionJournal::new(
-                    storage.stream.clone(),
-                    storage.host.clone(),
-                    storage.volume.clone(),
-                    storage.verifier(), crate::core::SchemaRegistry::new(),
-                    storage.scope.clone(),
-                    storage.maximum_file_bytes,
-                )?
+                storage.stream.clone(),
+                storage.host.clone(),
+                &storage.volume,
+                &storage.verifier(),
+                &crate::core::SchemaRegistry::new(),
+                &storage.scope,
+                storage.maximum_file_bytes,
+                None,
+            )?
                 .with_input_verifier(storage.content_verifier.clone()),
             );
             bundle = build_bundle(&storage)?;

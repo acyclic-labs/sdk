@@ -548,7 +548,7 @@ async fn accounting_uses_protected_original_archive_after_old_closure_is_absent(
     let original_records = records(&authority, authority_id).await?;
     let initial = &original_records[0];
     let original = &original_records[1];
-    let created = crate::kernel::decode_volume_created(&initial.payload, 4096)?;
+    let created = crate::kernel::decode_volume_created(&initial.payload, 4096, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(()))?;
     let original_root = root(workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id());
     // Capture the actual original root and complete proof before advancing head.
     let proof = prove_original(&objects, original_root, created.config).await?;
@@ -639,7 +639,7 @@ async fn original_initial_and_retention_evidence_bind_actual_stream_records_and_
     let workspace = fs.create_workspace("initial-retention-original", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let authority_id = volume_authority_id(workspace.id().volume_id());
     let initial = records(&authority, authority_id).await?.remove(0);
-    let created = crate::kernel::decode_volume_created(&initial.payload, 4096)?;
+    let created = crate::kernel::decode_volume_created(&initial.payload, 4096, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(()))?;
     let initial_proof = prove_original(&objects, created.initial_generation_root, created.config).await?;
     let initial_append = original_append(authority_id, &initial);
     let initial_evidence = crate::kernel::encode_original_generation_evidence(

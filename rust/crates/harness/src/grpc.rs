@@ -35,11 +35,6 @@ impl HarnessGrpcService {
         Self { api }
     }
 
-    /// Wraps this implementation as a tonic server service.
-    #[must_use]
-    pub fn into_server(self) -> transport::harness_service_server::HarnessServiceServer<Self> {
-        transport::harness_service_server::HarnessServiceServer::new(self)
-    }
 }
 
 #[tonic::async_trait]
