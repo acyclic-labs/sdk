@@ -929,7 +929,6 @@ fn callback_failure_slot<E>(
     Ok((Box::new(std::mem::MaybeUninit::uninit()), allocation))
 }
 
-#[allow(unsafe_code, reason = "transfers fully initialized preallocated callback failure storage")]
 fn callback_failure<E: std::error::Error + Send + Sync + 'static>(
     (source, custody): (Box<std::mem::MaybeUninit<E>>, crate::NativeAllocation), error: E,
 ) -> NativeMountError {
