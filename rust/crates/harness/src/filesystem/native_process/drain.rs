@@ -34,9 +34,9 @@ impl NativeProcessDrainProof {
         original: &NativeMaterializationWork,
     ) -> Result<()>
     where
-        P: StreamProvider + 'static,
-        A: AsyncAuthorityStore + Send + Sync + 'static,
-        O: AsyncObjectStore + Send + Sync + 'static,
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
     {
         let held = self.view.as_ref().downcast_ref::<NativeVolumeView<A, O>>()
             .ok_or(boundary(crate::wire::ErrorCode::Conflict, "process drain proof belongs to another physical view type"))?;
@@ -63,7 +63,7 @@ impl NativeProcessDrainProof {
     }
 }
 
-impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
+impl<P: StreamProvider> NativeProcessProvider<P> {
     /// Drains the same owned process engine, or authenticates a physically quiet retained result.
     pub fn drain_with_native_work<'a, A, O>(
         &'a self, attempt: crate::EffectAttemptId,
@@ -72,8 +72,8 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         cleanup_cancellation: &'a acyclic_fs::CancellationToken,
     ) -> Result<crate::NativeFutureBundle<'a, NativeProcessDrainProof>>
     where
-        A: AsyncAuthorityStore + Send + Sync + 'static,
-        O: AsyncObjectStore + Send + Sync + 'static,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
     {
         finite_dispatch::require_finite(work)?;
         let original = view.work();

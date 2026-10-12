@@ -6,7 +6,7 @@ use crate::{
         Attachment, ConversationMessage, ConversationState, FileRef, Limits, MessageKind,
         ModelContextSelection, ReferencedAttachments,
     },
-    projection::{select_turn_delta, validate_model_context_selection_at_revision},
+    projection::{select_turn_delta, validate_model_context_selection},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -256,7 +256,7 @@ fn prepare_turn_inherited(
                     "model context selection has a stale conversation revision".into(),
                 ));
             }
-            validate_model_context_selection_at_revision(conversation, &selection, selection.conversation_revision, None)?;
+            validate_model_context_selection(conversation, &selection, selection.conversation_revision, &mut None)?;
             if selection.message_ids.last() != Some(&user_id) {
                 return Err(Error::Conflict(
                     "turn identity is bound to another context selection".into(),

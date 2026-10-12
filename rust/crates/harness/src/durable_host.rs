@@ -308,7 +308,7 @@ impl RootBootstrapBindingWitness {
 
 /// Canonical admission reader for protected preparation bootstrap.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) struct TaskAdmissionReadonlyWitness<P> {
+pub struct TaskAdmissionReadonlyWitness<P> {
     host: Arc<CoordinatorTaskHost<P>>,
     admission: TaskAdmissionRecord,
     scratch: Option<crate::resource_preparation::ChildScratchCreationProof>,
@@ -3255,7 +3255,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) async fn task_admission_readonly_witness_with_native_work(
+    /// Authenticates an original task admission for bounded read-only preparation queries.
+    pub async fn task_admission_readonly_witness_with_native_work(
         self: &Arc<Self>, task: TaskId, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<TaskAdmissionReadonlyWitness<P>> {
         use crate::store::history::HistoryIo;
@@ -3579,8 +3580,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self: &Arc<Self>, task: TaskId, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<TaskJournalOwner<P>> {
         let witness = self.task_admission_readonly_witness_with_native_work(task, work).await?;
-        let observation = crate::filesystem::observe_native_preparation_admission(&witness, work)?.await?;
-        let crate::filesystem::NativePreparationJournalObservation::Recorded(recorded) = observation else {
+        let observation = crate::filesystem::observe_preparation(&witness, work)?.await?;
+        let Some(recorded) = observation else {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::NotFound,
                 reason: "protected original native preparation journal is unavailable" });
         };

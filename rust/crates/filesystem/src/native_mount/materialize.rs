@@ -296,11 +296,11 @@ fn materialize_demand_error(error: DemandError) -> MaterializeError {
         DemandError::Cancelled => MaterializeError::Cancelled(crate::CancellationError),
         DemandError::Io(error) => MaterializeError::Io(error),
         #[cfg(target_os = "linux")]
-        DemandError::LinuxMetadata(error) => linux_metadata_error(error),
+        DemandError::LinuxMetadata(error) => MaterializeError::UnsupportedMetadata(error.0),
         #[cfg(target_os = "macos")]
-        DemandError::MacMetadata(error) => mac_metadata_error(error),
+        DemandError::MacMetadata(error) => MaterializeError::UnsupportedMetadata(error.0),
         #[cfg(windows)]
-        DemandError::WindowsMetadata(error) => windows_metadata_error(error),
+        DemandError::WindowsMetadata(error) => MaterializeError::UnsupportedMetadata(error.0),
         error => MaterializeError::Demand(error),
     }
 }
@@ -1056,7 +1056,7 @@ where
     }
     for (directory, host_directory) in deferred_directory_metadata.into_iter().rev() {
         apply_metadata(
-            &reader, &host_root, &directory.0, &host_directory, cancellation, &mut receipt,
+            &reader, &host_root, &directory.0, &host_directory, None, cancellation, &mut receipt,
             &mut before_effect,
         ).await?;
     }
@@ -1949,11 +1949,7 @@ where
         }
         (unsupported, _) => return Err(GenerationFailure::new(MaterializeError::UnsupportedKind(unsupported), receipt.work()).into()),
     }
-    if let Some(metadata) = authenticated_metadata {
-        apply_record_metadata(reader, host_root, host_path, metadata, cancellation, receipt, before_effect).await?;
-    } else {
-        apply_metadata(reader, host_root, path, host_path, cancellation, receipt, before_effect).await?;
-    }
+    apply_metadata(reader, host_root, path, host_path, authenticated_metadata, cancellation, receipt, before_effect).await?;
     receipt.run(|work| work.check())?;
     Ok(())
 }
@@ -2140,9 +2136,6 @@ fn queue_zero_writes(
 ) -> Result<(), GenerationFailure> {
     static ZERO_BYTES: [u8; 65_536] = [0; 65_536];
     let chunk_bytes = transfer_bytes.min(ZERO_BYTES.len() as u64);
-    if chunk_bytes == 0 {
-        return Err(GenerationFailure::new(MaterializeError::InvalidOptions, receipt.work()));
-    }
     let mut remaining = length;
     let mut position = offset;
     while remaining != 0 {
@@ -2178,6 +2171,7 @@ async fn apply_metadata<A, O, E, F, Fut>(
     host_root: &Arc<(HostRoot, crate::NativeAllocation)>,
     path: &NamespacePath,
     host_path: &Arc<(GenerationHostPath, crate::NativeAllocation)>,
+    metadata: Option<FileMetadata>,
     cancellation: &CancellationToken,
     receipt: &mut GenerationReceipt,
     before_effect: &mut Option<&mut F>,
@@ -2186,36 +2180,13 @@ where
     A: AsyncAuthorityStore, O: AsyncObjectStore, E: From<MaterializeError>,
     F: FnMut(NativeMaterializationActionPhase) -> Fut, Fut: Future<Output = Result<(), E>>,
 {
-    let metadata = read_source!(receipt, remaining, value,
-        reader.read_metadata_with_native_work(path, receipt.custody.work(), cancellation) => value,
-        reader.read_metadata(path, remaining, cancellation) => value,
-    );
-    apply_record_metadata(
-        reader,
-        host_root,
-        host_path,
-        metadata,
-        cancellation,
-        receipt,
-        before_effect,
-    )
-    .await
-}
-
-/// Applies one record's complete metadata to its materialized host path: its named attributes, then the directly settable fields.
-async fn apply_record_metadata<A, O, E, F, Fut>(
-    reader: &PinnedReader<A, O>,
-    host_root: &Arc<(HostRoot, crate::NativeAllocation)>,
-    host_path: &Arc<(GenerationHostPath, crate::NativeAllocation)>,
-    metadata: FileMetadata,
-    cancellation: &CancellationToken,
-    receipt: &mut GenerationReceipt,
-    before_effect: &mut Option<&mut F>,
-) -> Result<(), (E, WorkCounters)>
-where
-    A: AsyncAuthorityStore, O: AsyncObjectStore, E: From<MaterializeError>,
-    F: FnMut(NativeMaterializationActionPhase) -> Fut, Fut: Future<Output = Result<(), E>>,
-{
+    let metadata = match metadata {
+        Some(metadata) => metadata,
+        None => read_source!(receipt, remaining, value,
+            reader.read_metadata_with_native_work(path, receipt.custody.work(), cancellation) => value,
+            reader.read_metadata(path, remaining, cancellation) => value,
+        ),
+    };
     let (metadata, named_attributes) = host_metadata(metadata);
     if let Some(root) = named_attributes {
         let read = read_source!(receipt, remaining, value,
@@ -2347,11 +2318,6 @@ async fn apply_host_metadata_offloaded(
     }).await
 }
 
-#[cfg(windows)]
-fn windows_metadata_error(error: crate::native_host::NativeMetadataError) -> MaterializeError {
-    MaterializeError::UnsupportedMetadata(error.0)
-}
-
 #[cfg(unix)]
 fn reject_unbaselined_unix_metadata(metadata: FileMetadata) -> Result<(), MaterializeError> {
     use crate::kernel::MetadataField;
@@ -2367,16 +2333,6 @@ fn reject_unbaselined_unix_metadata(metadata: FileMetadata) -> Result<(), Materi
         ));
     }
     Ok(())
-}
-
-#[cfg(target_os = "linux")]
-fn linux_metadata_error(error: crate::native_host::NativeMetadataError) -> MaterializeError {
-    MaterializeError::UnsupportedMetadata(error.0)
-}
-
-#[cfg(target_os = "macos")]
-fn mac_metadata_error(error: crate::native_host::NativeMetadataError) -> MaterializeError {
-    MaterializeError::UnsupportedMetadata(error.0)
 }
 
 fn validate_options(
@@ -2434,24 +2390,16 @@ fn create_file(
     let file = receipt.run(|work| host_root.create_overlapped_file_wide_measured(&path.units, work))?;
     #[cfg(unix)]
     let file = receipt.run(|work| host_root.create_file(path.path(), work))?;
-    let meter = receipt.custody.work().runtime_meter_owner();
+    let meter = Some(acyclic_native_runtime::NativeFileMeter::Owned(receipt.custody.work().runtime_meter_owner()));
     #[cfg(windows)]
-    {
-        #[allow(unsafe_code, reason = "the newly created held handle is overlapped and exclusively transferred")]
-        // SAFETY: the measured host constructor opens this new, held-root-relative
-        // handle overlapped, without a completion-port association or other I/O.
-        let native = unsafe {
-            acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file, Some(acyclic_native_runtime::NativeFileMeter::Owned(meter)))
-        };
-        receipt.runtime_result(native.map_err(|(error, file)| { drop(file); error }))
-    }
+    #[allow(unsafe_code, reason = "the newly created held handle is overlapped and exclusively transferred")]
+    // SAFETY: the held-root-relative constructor provides a fresh, unassociated overlapped handle.
+    let native = unsafe {
+        acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file, meter)
+    };
     #[cfg(unix)]
-    {
-        receipt.runtime_result(
-            acyclic_native_runtime::NativeFile::from_file(file, Some(acyclic_native_runtime::NativeFileMeter::Owned(meter)))
-                .map_err(|(error, file)| { drop(file); error }),
-        )
-    }
+    let native = acyclic_native_runtime::NativeFile::from_file(file, meter);
+    receipt.runtime_result(native.map_err(|(error, file)| { drop(file); error }))
 }
 
 fn account_written(

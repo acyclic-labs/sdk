@@ -2955,6 +2955,39 @@ impl Fs<LocalAuthorityBackend, LocalObjectBackend> {
             error.kind = crate::obs::Empty
         );
         let result = crate::obs::in_span(&span, async move {
+            if let Some(core_state) = core_state {
+                let store_error = |error: crate::LocalCoreStateStoreError| {
+                    crate::FsError::Object(crate::ObjectStoreError::Rejected(error.to_string()))
+                };
+                let records = core_state.workspace_records().await.map_err(store_error)?;
+                let mut deleted = std::collections::BTreeSet::new();
+                for workspace in records.keys() {
+                    cancellation.check()?;
+                    if self
+                        .local_volume_deleted(workspace.volume_id(), cancellation)
+                        .await?
+                    {
+                        deleted.insert(*workspace);
+                    }
+                }
+                // Live descendants retain their deleted ancestors' lineage.
+                let mut ancestors = std::collections::BTreeSet::new();
+                for workspace in records.keys().filter(|id| !deleted.contains(id)) {
+                    let mut pending = records.get(workspace).cloned().unwrap_or_default();
+                    while let Some(parent) = pending.pop() {
+                        if ancestors.insert(parent) {
+                            pending.extend(records.get(&parent).cloned().unwrap_or_default());
+                        }
+                    }
+                }
+                for workspace in deleted.difference(&ancestors) {
+                    core_state
+                        .forget_workspace(*workspace)
+                        .await
+                        .map_err(store_error)?;
+                }
+                core_state.collect_lazy_nodes().await.map_err(store_error)?;
+            }
             let collection = Arc::clone(self.inner.objects.collection().ok_or(FsError::Object(
                 ObjectStoreError::Rejected("the local object store does not collect".to_owned()),
             ))?);
