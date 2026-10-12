@@ -14,8 +14,9 @@ where
         io: Option<&PreparationIo>,
     ) -> Result<()> {
         with_history_io(io, |work| self.verifier.verify(scope, work))?;
-        let grant =
-            crate::contract::preparation_format(format_args!("interaction:respond:{id}"), io)?;
+        let grant = crate::executor::with_history_io(io, |work| {
+            crate::contract::preparation_format(format_args!("interaction:respond:{id}"), work)
+        })?;
         let hold = io
             .map(|io| io.guard_owned(grant.capacity() as u64))
             .transpose()?;
@@ -201,6 +202,7 @@ where
         }
         let bytes = self.read_file(&ticket.request, io).await?;
         let hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
+        super::content::admit_interaction(&bytes, io)?;
         let (request, retained, custody) =
             with_history_io(io, |work| ticket.validate_request_bytes(&bytes, work))?;
         let request_hold = io.map(|io| io.guard_owned(retained)).transpose()?;
@@ -209,6 +211,7 @@ where
         if let Some(detail) = &resolution.detail {
             let bytes = self.read_file(detail, io).await?;
             let _bytes = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
+            super::content::admit_interaction(&bytes, io)?;
             with_history_io(io, |work| {
                 ticket.validate_decision_bytes(
                     &request.0,

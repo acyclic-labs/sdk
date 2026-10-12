@@ -63,12 +63,7 @@ where
             #[cfg(not(target_arch = "wasm32"))]
             WorkerContext::Native(context) => {
                 let work = work.expect("native dispatch work");
-                let context = ToolContext::new_with_native_work(
-                    context,
-                    operation,
-                    &invocation.call_id,
-                    work,
-                )?;
+                let context = ToolContext::new(context, operation, &invocation.call_id, io)?;
                 self.runtime.bind_native_tool_interactions(
                     context,
                     task,
@@ -79,10 +74,14 @@ where
                 )?
             }
             WorkerContext::Ordinary(context) => ToolContext::new(
-                self.runtime
-                    .bind_context_interactions(context, task, Arc::clone(&journal))?,
+                Arc::new(self.runtime.bind_context_interactions(
+                    context,
+                    task,
+                    Arc::clone(&journal),
+                )?),
                 operation,
-                invocation.call_id.clone(),
+                &invocation.call_id,
+                None,
             )?,
         };
         if !reconciliation_only || io.is_none() {

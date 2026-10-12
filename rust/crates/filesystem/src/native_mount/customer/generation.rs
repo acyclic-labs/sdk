@@ -5,20 +5,6 @@ where
     A: AsyncAuthorityStore + Send + Sync + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
-    /// Materializes this exact generation on the original native allowance.
-    pub async fn materialize_with_native_work(
-        &self,
-        options: &crate::MaterializeOptions,
-        work: &NativeMaterializationWork,
-        cancellation: &crate::CancellationToken,
-    ) -> Result<crate::OperationReceipt<crate::MaterializationReceipt>, MountLifecycleError> {
-        let workspace = self.workspace();
-        let reader = workspace.reader(self.id(), work, cancellation).await?;
-        super::super::materialize_checkout_with_work(&reader, options, work)
-            .await
-            .map_err(Into::into)
-    }
-
     /// Materializes this exact generation and binds its native capture owner.
     pub async fn prepare_native_working_set(
         &self,

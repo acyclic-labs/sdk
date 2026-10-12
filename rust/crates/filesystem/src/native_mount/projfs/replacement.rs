@@ -97,7 +97,6 @@ pub(super) fn rewrite(
         Placed::Nothing => Replaced::Released,
         Placed::Retry => Replaced::Busy,
         placed => Replaced::Rewritten(WrittenEntry {
-            file_id: lookup.node.file_id,
             owned: placed.owned(),
             facts: Some(entry.facts),
             basis,

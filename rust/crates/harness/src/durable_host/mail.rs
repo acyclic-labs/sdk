@@ -77,7 +77,7 @@ pub(super) fn encode<T: Serialize + ?Sized>(
 ) -> Result<OwnedBytes> {
     require_original(io)?;
     if io.is_none() {
-        crate::contract::validate_json_byte_bound(value, maximum)?;
+        crate::contract::json_byte_length(value, maximum, &mut None).map(|_| ())?;
     }
     #[cfg(feature = "filesystem")]
     let mut observer = io.map(PreparationIo::history_io);

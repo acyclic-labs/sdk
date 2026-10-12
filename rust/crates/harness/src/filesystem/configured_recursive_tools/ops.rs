@@ -150,7 +150,7 @@ where
                 Some(work) => work.clone_authority(binding.authority())?,
                 None => binding.authority().clone(),
             };
-            Ok((authority, verifier))
+            Ok::<_, Error>((authority, verifier))
         })?;
         let mut history = io.map(PreparationIo::history_io);
         StreamAggregate::open(

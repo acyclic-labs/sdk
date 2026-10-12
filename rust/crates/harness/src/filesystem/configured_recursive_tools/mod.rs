@@ -91,7 +91,8 @@ where
                 Error::Unauthorized("configured caller has no signed agent".into())
             })?;
             if let Some(native) = &caller.native_snapshot {
-                crate::contract::validate_json_byte_bound(native, limits.file_bytes)?;
+                crate::contract::json_byte_length(native, limits.file_bytes, &mut None)
+                    .map(|_| ())?;
             }
             if let Some(result) = &caller.result_volume {
                 validate_result_volume(result, &caller.private_volume, agent, provider)?;
@@ -363,7 +364,7 @@ where
     #[cfg(not(target_arch = "wasm32"))]
     fn preparation_with_native_work<'a>(
         &'a self,
-        context: &'a Arc<crate::runtime::NativeTaskContext>,
+        context: &'a Arc<crate::runtime::TaskContext>,
         token: &'a TaskResourcePreparation,
         cancellation: &'a CancellationToken,
         work: &'a acyclic_fs::NativeMaterializationWork,
@@ -388,7 +389,7 @@ where
     #[cfg(not(target_arch = "wasm32"))]
     fn preparation_for_reconciliation_with_native_work<'a>(
         &'a self,
-        context: &'a Arc<crate::runtime::NativeTaskContext>,
+        context: &'a Arc<crate::runtime::TaskContext>,
         token: &'a TaskResourcePreparation,
         cancellation: &'a CancellationToken,
         work: &'a acyclic_fs::NativeMaterializationWork,

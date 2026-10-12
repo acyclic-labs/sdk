@@ -131,13 +131,15 @@ where
                     false,
                 )?;
                 let bytes_hold = observer.guard_bytes(&bytes)?;
-                let path = crate::contract::preparation_format(
-                    format_args!(
-                        "recursive-tools/{}/source-checkpoint.json",
-                        context.operation_id()
-                    ),
-                    io,
-                )?;
+                let path = crate::executor::with_history_io(io, |work| {
+                    crate::contract::preparation_format(
+                        format_args!(
+                            "recursive-tools/{}/source-checkpoint.json",
+                            context.operation_id()
+                        ),
+                        work,
+                    )
+                })?;
                 let path_hold = io
                     .map(|io| io.guard_owned(path.capacity() as u64))
                     .transpose()?;
@@ -157,7 +159,7 @@ where
                         observer.absorb_native_custody(custody)?;
                         break 'staged file;
                     }
-                    observer.receive(
+                    observer.receive_content(
                         context
                             .stage_file_once_measured(
                                 operation,

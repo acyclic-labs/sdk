@@ -43,7 +43,9 @@ where
             owner.require_mail_scope_with_native_work(context.scope(), work)?;
             if owner.task_binding() != binding
                 || owner.authenticated_binding_agent(&mut Some(
-                    &mut crate::store::history::native_work_io(work)?,
+                    &mut crate::store::HistoryWork::new(
+                        crate::filesystem::PreparationIo::from_native_work(work)?,
+                    ),
                 ))? != caller.owner.scope.agent()
             {
                 return Err(failure(
@@ -55,10 +57,12 @@ where
         }
         if self.check_caller_allocation(caller, io).await?
             && !crate::executor::with_history_io(io, |work| {
-                Ok(context.scope().current_created_authority(work)?
-                    == Some(caller.owner.authority())
-                    && context.scope().current_created_private_volume(work)?
-                        == Some(&caller.private_volume))
+                Ok::<_, Error>(context.scope().current_created_content(work)?.is_some_and(
+                    |binding| {
+                        binding.authority.as_ref() == Some(caller.owner.authority())
+                            && binding.volume == caller.private_volume
+                    },
+                ))
             })?
         {
             return Err(failure(
@@ -74,7 +78,7 @@ where
                 &caller.owner.scope,
                 work,
             )?;
-            Ok(verifier)
+            Ok::<_, Error>(verifier)
         })?;
         for volume in
             std::iter::once(&caller.private_volume).chain(project_read.then_some(&caller.project))
@@ -141,7 +145,7 @@ where
                     .task_host()
                     .observe_volume_snapshots_with_native_work(caller.task, work)
                     .await?;
-                break 'volumes &native.0;
+                break 'volumes native.0.as_slice();
             }
             ordinary = runtime.inspect_source(caller.task, caller.task).await?;
             if ordinary.project()?.volume != caller.project {

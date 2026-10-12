@@ -245,7 +245,9 @@ pub(in crate::filesystem) fn fork_request(
         Some(io) => stream_provider.clone_with_io(io)?,
         None => stream_provider.clone(),
     };
-    let version = crate::contract::preparation_format(format_args!("{}", parent.revision()), io)?;
+    let version = crate::executor::with_history_io(io, |work| {
+        crate::contract::preparation_format(format_args!("{}", parent.revision()), work)
+    })?;
     let reference = crate::executor::with_history_io(io, |work| {
         StreamRef::from_resource_with_work(
             ResourceRef::new(ResourceKind::Stream, provider, path, Some(version), work)?,

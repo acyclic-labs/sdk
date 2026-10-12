@@ -118,27 +118,16 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.original_native_work() {
             return crate::NativeFutureBundle::new(work, || async move {
-                let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(
-                    work,
-                    work.cancellation(),
-                )?;
                 self.lazy
-                    .validate_snapshot(snapshot, &accounting)
-                    .await
+                    .validate_snapshot(snapshot, &mut root_accounting(io)?)
                     .map_err(Error::from)
             })
             .map(crate::store::history::HistoryContentFuture::Native);
         }
         io.history_future(|| async move {
-            let accounting =
-                acyclic_fs::lazy_workspace::LazyTreapWork::new(io.remaining()?, io.cancellation());
-            let result = self.lazy.validate_snapshot(snapshot, &accounting).await;
-            io.receive_content(accounting.measured(result, |error, work| {
-                error
-                    .with_prior_work(work)
-                    .into_measured_failure()
-                    .map_error(root_source_error)
-            }))
+            let mut accounting = root_accounting(io)?;
+            let result = self.lazy.validate_snapshot(snapshot, &mut accounting);
+            receive_root(result, accounting, io)
         })
     }
     fn read<'a>(
@@ -152,25 +141,21 @@ where
         if let Some(work) = io.original_native_work() {
             return crate::NativeFutureBundle::new(work, || async move {
                 self.lazy
-                    .read_at_snapshot_with_work(snapshot, path, maximum, work, work.cancellation())
+                    .read_at_snapshot(snapshot, path, None, maximum, &mut root_accounting(io)?)
                     .await
-                    .map_err(|(source, custody)| Error::NativeSource { source, custody })
+                    .map(|(chunk, _)| chunk.bytes)
+                    .map_err(Error::from)
             })
             .map(crate::store::history::HistoryContentFuture::Native);
         }
         io.history_future(|| async move {
-            io.receive_content(
-                self.lazy
-                    .read_at_snapshot_measured(
-                        snapshot,
-                        path,
-                        maximum,
-                        io.remaining()?,
-                        io.cancellation(),
-                    )
-                    .await
-                    .map_err(|failure| failure.map_error(root_source_error)),
-            )
+            let mut accounting = root_accounting(io)?;
+            let result = self
+                .lazy
+                .read_at_snapshot(snapshot, path, None, maximum, &mut accounting)
+                .await
+                .map(|(chunk, _)| chunk.bytes);
+            receive_root(result, accounting, io)
         })
     }
     fn list<'a>(
@@ -347,4 +332,36 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootNati
             }),
         })
     }
+}
+
+fn root_accounting(
+    io: &crate::filesystem::PreparationIo,
+) -> Result<acyclic_fs::kernel::KernelAccounting<'_>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    if let Some(work) = io.original_native_work() {
+        return Ok(acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+            work,
+            cancellation: io.cancellation(),
+        });
+    }
+    Ok(acyclic_fs::kernel::KernelAccounting::Standalone {
+        allocations: Default::default(),
+        work: WorkCounters::UNCHARGED,
+        budget: io.remaining()?,
+        cancellation: io.cancellation(),
+    })
+}
+fn receive_root<T>(
+    result: std::result::Result<T, acyclic_fs::LazyWorkspaceError>,
+    accounting: acyclic_fs::kernel::KernelAccounting<'_>,
+    io: &crate::filesystem::PreparationIo,
+) -> Result<T> {
+    if let acyclic_fs::kernel::KernelAccounting::Standalone { work, .. } = accounting {
+        return io.receive_content(
+            result
+                .map(|value| acyclic_fs::OperationReceipt { value, work })
+                .map_err(|error| acyclic_fs::OperationFailure::new(root_source_error(error), work)),
+        );
+    }
+    result.map_err(root_source_error)
 }

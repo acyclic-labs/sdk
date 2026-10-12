@@ -353,7 +353,7 @@ where
     #[cfg(not(target_arch = "wasm32"))]
     fn execute_with_native_work<'a>(
         &'a self,
-        context: Arc<crate::runtime::NativeTaskContext>,
+        context: Arc<crate::runtime::TaskContext>,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,
@@ -377,7 +377,7 @@ where
     #[cfg(not(target_arch = "wasm32"))]
     fn reconcile_with_native_work<'a>(
         &'a self,
-        context: Arc<crate::runtime::NativeTaskContext>,
+        context: Arc<crate::runtime::TaskContext>,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,
@@ -425,8 +425,9 @@ fn tool_invocation(
     io: Option<&super::PreparationIo>,
 ) -> Result<ToolInvocation> {
     let grant_hold;
-    let grant =
-        crate::contract::preparation_format(format_args!("tool:call:{}", definition.name), io)?;
+    let grant = crate::executor::with_history_io(io, |work| {
+        crate::contract::preparation_format(format_args!("tool:call:{}", definition.name), work)
+    })?;
     grant_hold = io
         .map(|io| io.guard_owned(grant.capacity() as u64))
         .transpose()?;
@@ -439,18 +440,22 @@ fn tool_invocation(
     }
     drop(grant);
     drop(grant_hold);
-    crate::contract::validate_json_schema_value(
-        &definition.input_schema,
-        &arguments,
-        "tool input",
-        io,
-    )?;
+    crate::executor::with_history_io(io, |work| {
+        crate::contract::validate_json_schema_value(
+            &definition.input_schema,
+            &arguments,
+            "tool input",
+            work,
+        )
+    })?;
     if let Some(io) = io {
         io.retain_owned(std::mem::size_of::<ToolInvocation>() as u64)?;
     }
     let invocation = ToolInvocation {
         operation_id: operation,
-        call_id: crate::contract::preparation_format(format_args!("{operation}"), io)?,
+        call_id: crate::executor::with_history_io(io, |work| {
+            crate::contract::preparation_format(format_args!("{operation}"), work)
+        })?,
         name: super::fork_preparer_io::clone_text(&definition.name, io)?,
         arguments,
     };

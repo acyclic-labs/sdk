@@ -140,7 +140,7 @@ pub(crate) fn validate_projected_context(
         for file in context.metadata.values() {
             limits.validate_file(file, work)?;
         }
-        crate::contract::validate_trusted_json_byte_bound(context, limits.render_bytes, work)
+        crate::contract::json_byte_length(context, limits.render_bytes, work).map(|_| ())
     })
 }
 pub(crate) async fn verify_file(

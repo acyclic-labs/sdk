@@ -403,10 +403,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 .await?;
             let indexed = match io {
                 Some(io) => {
-                    let indexed_path = crate::contract::preparation_format(
-                        format_args!("/{metadata_path}"),
-                        Some(io),
-                    )?;
+                    let indexed_path = crate::executor::with_history_io(Some(io), |work| crate::contract::preparation_format(format_args!("/{metadata_path}"), work))?;
                     read_generation(&prior, &indexed_path, metadata_bytes.len() as u64, Some(io))
                         .await?
                 }
@@ -459,7 +456,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             return Ok(reference);
         }
         let absolute =
-            crate::contract::preparation_format(format_args!("/{}", provisional.path()), io)?;
+            crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("/{}", provisional.path()), work))?;
         let mut mutations = fork_preparer_io::vector(6, io)?;
         if let Some((parent, _)) = absolute.rsplit_once('/')
             && !parent.is_empty()
@@ -480,11 +477,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             path: fork_preparer_io::clone_text("/.system/harness-file-metadata", io)?,
         });
         mutations.push(WorkspaceMutation::PutFile {
-            path: crate::contract::preparation_format(format_args!("/{metadata_path}"), io)?,
+            path: crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("/{metadata_path}"), work))?,
             bytes: metadata_bytes,
         });
         mutations.push(WorkspaceMutation::PutFile {
-            path: crate::contract::preparation_format(format_args!("/{receipt_path}"), io)?,
+            path: crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("/{receipt_path}"), work))?,
             bytes: receipt_bytes,
         });
         let publication = async {

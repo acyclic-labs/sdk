@@ -72,7 +72,7 @@ where
                     .task_host()
                     .observe_volume_snapshots_with_native_work(arguments.source, work)
                     .await?;
-                break 'snapshots &native.0;
+                break 'snapshots native.0.as_slice();
             }
             ordinary = runtime
                 .inspect_source(caller.task, arguments.source)

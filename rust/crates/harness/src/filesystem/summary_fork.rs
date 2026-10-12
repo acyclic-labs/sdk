@@ -25,14 +25,18 @@ pub(super) fn summary_keys(
     io: Option<&PreparationIo>,
 ) -> Result<[IdempotencyKey; 2]> {
     Ok([
-        IdempotencyKey::new(crate::contract::preparation_format(
-            format_args!("{}:summary-payloads", key.as_str()),
-            io,
-        )?)?,
-        IdempotencyKey::new(crate::contract::preparation_format(
-            format_args!("{}:summary-context", key.as_str()),
-            io,
-        )?)?,
+        IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
+            crate::contract::preparation_format(
+                format_args!("{}:summary-payloads", key.as_str()),
+                work,
+            )
+        })?)?,
+        IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
+            crate::contract::preparation_format(
+                format_args!("{}:summary-context", key.as_str()),
+                work,
+            )
+        })?)?,
     ])
 }
 
@@ -158,10 +162,12 @@ fn copy_references(
     for (key, source) in payloads {
         fork_preparer_io::item(io, std::mem::size_of::<([u8; 32], FileRef)>() as u64)?;
         let encoded = fork_preparer_io::hex_key(key, io)?;
-        let path = crate::contract::preparation_format(
-            format_args!(".system/inherited-conversation/summary-payloads/{encoded}"),
-            io,
-        )?;
+        let path = crate::executor::with_history_io(io, |work| {
+            crate::contract::preparation_format(
+                format_args!(".system/inherited-conversation/summary-payloads/{encoded}"),
+                work,
+            )
+        })?;
         copies.insert(
             *key,
             crate::executor::with_history_io(io, |work| {
@@ -513,10 +519,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
                 })?;
                 let encoded = fork_preparer_io::hex_key(key, io)?;
                 writes.push(WorkspaceMutation::PutFile {
-                    path: crate::contract::preparation_format(
-                        format_args!("/.system/inherited-conversation/summary-payloads/{encoded}"),
-                        io,
-                    )?,
+                    path: crate::executor::with_history_io(io, |work| {
+                        crate::contract::preparation_format(
+                            format_args!(
+                                "/.system/inherited-conversation/summary-payloads/{encoded}"
+                            ),
+                            work,
+                        )
+                    })?,
                     bytes,
                 });
             }

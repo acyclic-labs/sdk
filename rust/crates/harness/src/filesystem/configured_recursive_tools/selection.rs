@@ -223,10 +223,12 @@ where
             }
             let chosen = self.caller(selected, io)?;
             if let Some(value) = &chosen.native_snapshot {
-                crate::contract::validate_json_byte_bound(
+                crate::contract::json_byte_length(
                     value,
                     context.scope().limits().file_bytes,
-                )?;
+                    &mut None,
+                )
+                .map(|_| ())?;
             }
             let generation = self.project_generation(&chosen.project, io).await?;
             cancellation
@@ -300,7 +302,7 @@ where
             )?;
         }
         let config = crate::executor::with_history_io(io, |work| {
-            Ok(RecursiveForkConfig {
+            Ok::<_, Error>(RecursiveForkConfig {
                 child: match work.as_deref_mut() {
                     Some(work) => work.clone_authority(allocation.child.authority())?,
                     None => allocation.child.authority().clone(),

@@ -292,7 +292,7 @@ where
                 &ordinary
             }
             #[cfg(not(target_arch = "wasm32"))]
-            WorkerContext::Native(context) => context.context(),
+            WorkerContext::Native(context) => context.as_ref(),
         };
         // The durable reader authenticates the committed receive, cursor and original parcel.
         let bytes = reader
@@ -306,8 +306,9 @@ where
             )
             .await?;
         let operation = crate::durable_host::received_copy_operation(task, receive, io)?;
-        let path =
-            crate::contract::preparation_format(format_args!("mailbox/{receive}/parcel"), io)?;
+        let path = crate::executor::with_history_io(io, |work| {
+            crate::contract::preparation_format(format_args!("mailbox/{receive}/parcel"), work)
+        })?;
         let _path = io
             .map(|io| io.guard_owned(path.capacity() as u64))
             .transpose()?;
@@ -317,12 +318,8 @@ where
                 let io = io.expect("native observer");
                 let work = io.original_native_work().expect("native work");
                 let (call_id, _call_id) = work.display(&operation)?;
-                let publisher = ToolContext::new_with_native_work(
-                    Arc::clone(context),
-                    operation,
-                    &call_id,
-                    work,
-                )?;
+                let publisher =
+                    ToolContext::new(Arc::clone(context), operation, &call_id, Some(io))?;
                 let (file, custody) = publisher
                     .observe_staged_file_once_with_native_work(operation, work)
                     .await?;

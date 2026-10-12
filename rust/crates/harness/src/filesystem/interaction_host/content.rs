@@ -61,10 +61,12 @@ where
                 "interaction version must be positive",
             ));
         }
-        let kind = crate::contract::preparation_format(
-            format_args!("answer-{expected_version}-{operation_id}"),
-            io,
-        )?;
+        let kind = crate::executor::with_history_io(io, |work| {
+            crate::contract::preparation_format(
+                format_args!("answer-{expected_version}-{operation_id}"),
+                work,
+            )
+        })?;
         let hold = io
             .map(|io| io.guard_owned(kind.capacity() as u64))
             .transpose()?;
@@ -139,6 +141,7 @@ where
         };
         let bytes = self.read_file(&ticket.request, io).await?;
         let _bytes = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
+        admit_interaction(&bytes, io)?;
         let (request, _, custody) =
             with_history_io(io, |work| ticket.validate_request_bytes(&bytes, work))?;
         #[cfg(not(target_arch = "wasm32"))]
@@ -231,15 +234,18 @@ where
             ));
         }
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
-        let path = crate::contract::preparation_format(
-            format_args!(".system/interactions/{id}/{kind}.json"),
-            io,
-        )?;
-        let name = crate::contract::preparation_format(format_args!("{kind}.json"), io)?;
-        let key = IdempotencyKey::new(crate::contract::preparation_format(
-            format_args!("interaction:{id}:{kind}"),
-            io,
-        )?)?;
+        let path = crate::executor::with_history_io(io, |work| {
+            crate::contract::preparation_format(
+                format_args!(".system/interactions/{id}/{kind}.json"),
+                work,
+            )
+        })?;
+        let name = crate::executor::with_history_io(io, |work| {
+            crate::contract::preparation_format(format_args!("{kind}.json"), work)
+        })?;
+        let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| {
+            crate::contract::preparation_format(format_args!("interaction:{id}:{kind}"), work)
+        })?)?;
         let names_hold = io
             .map(|io| {
                 io.guard_owned(
@@ -283,5 +289,25 @@ where
             grant, grant_hold, key, name, path, names_hold, bytes, bytes_hold,
         ));
         result
+    }
+}
+
+pub(super) fn admit_interaction(bytes: &[u8], io: Option<&PreparationIo>) -> Result<()> {
+    let Some(io) = io else {
+        return Ok(());
+    };
+    let _diagnostic = io.reserve_decode(crate::contract::lexical_json_diagnostic_bytes())?;
+    let bounds = crate::contract::JsonBounds {
+        maximum_bytes: bytes.len() as u64,
+        maximum_items: io.remaining()?.items_examined,
+        maximum_depth: 128,
+    };
+    match crate::contract::admit_json(bytes, bounds, &mut |charge| io.codec_charge(charge, false)) {
+        Err(Error::Invalid(_)) => Err(interaction_boundary(
+            Some(io),
+            ErrorCode::Storage,
+            "interaction JSON exceeds bounds",
+        )),
+        result => result,
     }
 }

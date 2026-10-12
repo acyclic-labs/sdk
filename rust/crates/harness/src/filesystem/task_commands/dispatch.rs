@@ -41,7 +41,7 @@ where
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let WorkerContext::Native(shared) = &context {
-            if !shared.context().original_task_binding_matches(task, &fence) {
+            if !shared.as_ref().original_task_binding_matches(task, &fence) {
                 return Err(boundary(
                     io,
                     ErrorCode::Unauthorized,
