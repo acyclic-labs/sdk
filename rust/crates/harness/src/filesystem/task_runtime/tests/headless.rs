@@ -202,7 +202,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
     let signed = issuer.root_for_agent(agent, "owner", Capabilities::new(
         fixture.signed.capabilities().iter().chain(["conversation:bind", "conversation:append", "fork:publish"]),
     ));
-    let reader = Arc::new(FilesystemContentVerifier::new(fixture.filesystem.clone(), issuer.verifier(), signed.clone(), 65_536)?);
+    let reader = Arc::new(FilesystemContentVerifier::new(fixture.filesystem.clone(), &issuer.verifier(), &signed, 65_536, None)?);
     let stream_provider = ProviderRef::new("restore", "stream", "2")?;
     let forks = Arc::new(CompositeForkVerifier::new(vec![
         Arc::new(FilesystemForkVerifier::new(fixture.filesystem.clone(), 65_536)?),

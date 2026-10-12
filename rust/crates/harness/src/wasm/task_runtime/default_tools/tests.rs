@@ -73,7 +73,7 @@ async fn append(runtime: &WasmTaskRuntime, authority: &Authority, agent: AgentId
     let file = runtime.filesystem.put_content(volume, &writer, "transcript/own.txt", marker.as_bytes(), "text/plain", "own.txt",
         65536, &IdempotencyKey::new(format!("transcript-{agent}")).map_err(js_error)?).await.map_err(js_error)?;
     let mut aggregate = StreamAggregate::open(&runtime.stream, authority.clone(), issuer.verifier(), SchemaRegistry::default()).await.map_err(js_error)?
-        .with_content_verifier(Arc::new(crate::filesystem::FilesystemContentVerifier::new(runtime.filesystem.clone(), issuer.verifier(), scope.clone(), 65536).map_err(js_error)?));
+        .with_content_verifier(Arc::new(crate::filesystem::FilesystemContentVerifier::new(runtime.filesystem.clone(), &issuer.verifier(), &scope, 65536, None).map_err(js_error)?));
     let sequence = aggregate.reducer().conversation().unwrap().logical_revision() + 1;
     aggregate.execute(Command { operation_id:OperationId::new(), idempotency_key:IdempotencyKey::new(format!("append-{agent}")).map_err(js_error)?,
         expected_revision:aggregate.reducer().revision(), scope, causal_parent:None,

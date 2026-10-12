@@ -216,7 +216,7 @@ impl WasmTaskRuntime {
         let lease = from_js(lease)?;
         self.validate_recursive_lease(source, &lease).await?;
         let commands = self.commands().with_fork_preparer(source.binding.preparer.clone());
-        work_to_js(&work_value(self.runtime.resume_task(lease, &commands, maximum_transitions).await))
+        work_to_js(&work_value(self.runtime.resume_task(lease, &commands, maximum_transitions, None).await))
     }
 
     #[wasm_bindgen(js_name = reconcileForkPreparation, unchecked_return_type = "WasmBrowserWork")]

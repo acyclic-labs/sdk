@@ -576,10 +576,10 @@ async fn exercise_live_native_boundary() -> Result<()> {
     );
     let writer = FilesystemContentPublisher::new(
         host.clone(),
-        volume.clone(),
+        &volume,
         &issuer.verifier(),
         &owner,
-        65_536,
+        65_536, None,
     )?;
     let options_bytes = br#"{"mode":"strict","scale":2}"#;
     let options_file = writer
@@ -702,9 +702,9 @@ async fn exercise_live_native_boundary() -> Result<()> {
     let reader = Arc::new(ReaderSpy {
         inner: Arc::new(FilesystemContentVerifier::new(
             host.clone(),
-            issuer.verifier(),
-            owner.clone(),
-            65_536,
+            &issuer.verifier(),
+            &owner,
+            65_536, None,
         )?),
         reads: AtomicUsize::new(0),
         corrupt: AtomicBool::new(false),
@@ -1115,10 +1115,10 @@ async fn exercise_live_native_boundary() -> Result<()> {
     let journal = Arc::new(FilesystemExecutionJournal::new(
         StreamClient::new(Arc::new(MemoryStream::default())),
         host.clone(),
-        volume.clone(),
-        journal_issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
-        journal_scope,
-        65_536,
+        &volume,
+        &journal_issuer.verifier(), &acyclic_harness::core::SchemaRegistry::new(),
+        &journal_scope,
+        65_536, None,
     )?);
     let bundle = HarnessBuilder::new()
         .journal(journal.clone())
@@ -1393,10 +1393,10 @@ where
     let conversion_journal = Arc::new(FilesystemExecutionJournal::new(
         stream.clone(),
         host.clone(),
-        volume.clone(),
-        issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
-        signed.clone(),
-        65_536,
+        &volume,
+        &issuer.verifier(), &acyclic_harness::core::SchemaRegistry::new(),
+        &signed,
+        65_536, None,
     )?);
     let converter = DurableToolRunner::new(conversion_tools.clone(), conversion_journal);
     let conversion_operation = OperationId::from_bytes([117; 16]);
@@ -1471,10 +1471,10 @@ where
                 reader: adapter.reader.clone(),
                 writer: Some(Arc::new(FilesystemContentPublisher::new(
                     host.clone(),
-                    volume.clone(),
+                    &volume,
                     &issuer.verifier(),
                     &signed,
-                    65_536,
+                    65_536, None,
                 )?)),
             }),
             None,
@@ -1579,7 +1579,7 @@ where
                 turn,
                 Model::new("fixture-native", "all", "mock-native-1", Value::Null)?,
                 adapter.clone(),
-                ContextPipeline::default(),
+                ContextPipeline::default(), None,
             )
             .await?
             .with_max_output_tokens(16)?;
@@ -1735,11 +1735,11 @@ where
     let journal = FilesystemExecutionJournal::new(
         stream.clone(),
         host.clone(),
-        volume.clone(),
-        issuer.verifier(),
-        SchemaRegistry::new(),
-        scope.clone(),
-        65_536,
+        &volume,
+        &issuer.verifier(),
+        &SchemaRegistry::new(),
+        &scope,
+        65_536, None,
     )?
     .with_input_verifier(reader.clone());
     let adapter = Arc::new(MockAdapter::new(reader.clone()));
@@ -2026,9 +2026,9 @@ where
     );
     let child_reader = Arc::new(FilesystemContentVerifier::new(
         host.clone(),
-        child_issuer.verifier(),
-        child_scope.clone(),
-        65_536,
+        &child_issuer.verifier(),
+        &child_scope,
+        65_536, None,
     )?);
     let mut child_aggregate = StreamAggregate::open(
         &stream,
@@ -2063,11 +2063,11 @@ where
         FilesystemExecutionJournal::new(
             stream.clone(),
             host.clone(),
-            child_private.clone(),
-            child_issuer.verifier(),
-            SchemaRegistry::new(),
-            child_scope.clone(),
-            65_536,
+            &child_private,
+            &child_issuer.verifier(),
+            &SchemaRegistry::new(),
+            &child_scope,
+            65_536, None,
         )
         .map(|journal| journal.with_input_verifier(child_reader.clone()))
     };

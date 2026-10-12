@@ -422,27 +422,19 @@ where
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
 {
-    fn read_private_prefix<'a>(
-        &'a self,
-        volume: &'a VolumeRef,
-        granted_prefix: &'a str,
-        path: &'a str,
-        generation: &'a GenerationRef,
-        maximum_bytes: u64,
-    ) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        Box::pin(async move {
+    fn read_private_prefix<'a>(&'a self, volume: &'a VolumeRef, granted_prefix: &'a str,
+        path: &'a str, generation: &'a GenerationRef, maximum_bytes: u64,
+        io: Option<&'a PreparationIo>)
+        -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        if io.is_some() {
+            return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Unsupported, "finite private prefix reads are unavailable"));
+        }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
             if maximum_bytes == 0 || maximum_bytes > self.maximum_bytes {
                 return Err(Error::Invalid("prefix read exceeds provider limit".into()));
             }
-            let grant = ContentGrant::verify_directory_read(
-                &self.verifier,
-                &self.scope,
-                volume,
-                granted_prefix,
-            )?;
-            self.host
-                .read_private_prefix(volume, &grant, path, generation, maximum_bytes)
-                .await
+            let grant = ContentGrant::verify_directory_read(&self.verifier, &self.scope, volume, granted_prefix, &mut None)?;
+            self.host.read_private_prefix(volume, &grant, path, generation, maximum_bytes).await
         })
     }
 
@@ -453,9 +445,12 @@ where
         path: &'a str,
         expected_generation: Option<&'a GenerationRef>,
         after: Option<&'a str>,
-        maximum_entries: u32,
-    ) -> BoxFuture<'a, Result<PrivateDirectoryPage>> {
-        Box::pin(async move {
+        maximum_entries: u32, io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, PrivateDirectoryPage>> {
+        if io.is_some() {
+            return Err(fork_preparer_io::failure(io, crate::wire::ErrorCode::Unsupported, "finite private directory discovery is unavailable"));
+        }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
             let after = after
                 .map(|name| {
                     LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), u32::MAX)
@@ -503,139 +498,43 @@ where
         })
     }
 
-    fn read_private_path<'a>(
-        &'a self,
-        volume: &'a VolumeRef,
-        granted_prefix: &'a str,
-        path: &'a str,
-        expected_generation: Option<&'a GenerationRef>,
-    ) -> BoxFuture<'a, Result<(FileRef, acyclic_stream::OwnedBytes)>> {
-        Box::pin(async move {
-            FilesystemContentVerifier::read_private_path(
-                self,
-                volume,
-                granted_prefix,
-                path,
-                expected_generation,
-            )
-            .await
+    fn read_private_path<'a, 'io>(&'a self, volume: &'a VolumeRef, granted_prefix: &'a str,
+        path: &'a str, expected_generation: Option<&'a GenerationRef>, maximum_bytes: u64,
+        io: Option<&'io PreparationIo>)
+        -> Result<crate::conversation::BoundedContentFuture<'a, (FileRef, acyclic_stream::OwnedBytes, Option<crate::conversation::ContentHold<'io>>)>> where 'io: 'a {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let mut history = io.map(PreparationIo::history_io);
+            let grant = ContentGrant::verify_directory_read(&self.verifier, &self.scope, volume, granted_prefix,
+                &mut history.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo))?;
+            let grant_hold = io.map(|io| io.guard_owned(grant.logical_owned_bytes()?)).transpose()?;
+            let (reference, bytes) = self.host.read_private_path_with_io(volume, &grant, path,
+                expected_generation, maximum_bytes.min(self.maximum_bytes), io).await?;
+            let hold = io.map(|io| io.guard_owned(reference.logical_owned_bytes()?)).transpose()?;
+            drop(grant);
+            drop(grant_hold);
+            Ok((reference, bytes, hold))
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn read_private_path_with_native_work<'a>(
-        &'a self, volume: &'a VolumeRef, granted_prefix: &'a str, path: &'a str,
-        expected_generation: Option<&'a GenerationRef>, maximum_bytes: u64,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_stream::OwnedBytes, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            let authorization = ContentGrant::verify_directory_read_with_native_work(
-                &self.verifier, &self.scope, volume, granted_prefix, work,
-            )?;
-            let (reference, source) = self.host.read_private_path_with_io(
-                volume, &authorization.0, path, expected_generation,
-                maximum_bytes.min(self.maximum_bytes), Some(&io),
-            ).await?;
-            let retained = reference.logical_owned_bytes()?;
-            let custody = io.into_native_custody(retained)?;
-            Ok((reference, source, custody))
-        })
-    }
-    fn verify<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { drop(self.read_file(reference, self.maximum_bytes, None).await?); Ok(()) })
-    }
-
-    fn read<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        Box::pin(self.read_file(reference, self.maximum_bytes, None))
-    }
-
-    fn supports_measured_read(
-        &self, volume: &VolumeRef, budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<bool>, Error> {
-        let io = PreparationIo::from_budget(budget, cancellation)
-            .map_err(acyclic_fs::OperationFailure::before_work)?;
-        let result = (|| {
-            let work = acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() };
-            io.preflight(work)?;
-            let result = volume.validate(&mut None).map(|()| volume.provider() == &self.host.provider);
-            io.charge(work)?;
-            result
-        })();
-        match result {
-            Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
-            Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
-        }
-    }
-
-    fn read_measured<'a>(
-        &'a self, reference: &'a FileRef, maximum_bytes: u64,
-        budget: acyclic_fs::WorkBudget, cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<acyclic_stream::OwnedBytes>, Error>> {
-        Box::pin(async move {
-            let io = PreparationIo::from_budget(budget, cancellation)
-                .map_err(acyclic_fs::OperationFailure::before_work)?;
-            let result = self.read_file(reference, maximum_bytes, Some(&io)).await;
-            match result {
-                Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
-                Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
-            }
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn read_with_native_work<'a>(
-        &'a self, reference: &'a FileRef, maximum_bytes: u64,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            self.read_file(reference, maximum_bytes, Some(&io)).await
-        })
-    }
-
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn verify_with_native_work<'a>(
-        &'a self, reference: &'a FileRef, maximum_bytes: u64,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            drop(self.read_file(reference, maximum_bytes, Some(&io)).await?);
-            io.remaining()?;
-            Ok(())
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn supports_native_read(&self, volume: &VolumeRef, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
-        let io = PreparationIo::from_native_work(work)?;
-        fork_preparer_io::item(Some(&io), 0)?;
-        volume.validate(&mut Some(&mut io.history_io()))?;
+    fn supports_read(&self, volume: &VolumeRef, io: Option<&PreparationIo>) -> Result<bool> {
+        fork_preparer_io::item(io, 0)?;
+        let mut history = io.map(PreparationIo::history_io);
+        volume.validate(&mut history.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo))?;
         Ok(volume.provider() == &self.host.provider)
     }
 
-    fn verify_manifest<'a>(
-        &'a self,
-        reference: &'a FileRef,
-        item_count: u32,
-        limits: &'a Limits,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            crate::conversation::verified_attachment_manifest(self, reference, item_count, limits)
-                .await?;
-            Ok(())
-        })
+    fn read<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64, io: Option<&'a PreparationIo>)
+        -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        crate::conversation::BoundedContentFuture::new(io, || self.read_file(reference, maximum_bytes, io))
     }
 
-    fn load_manifest<'a>(
-        &'a self,
-        reference: &'a FileRef,
-        item_count: u32,
-    ) -> BoxFuture<'a, Result<Vec<Attachment>>> {
-        Box::pin(FilesystemContentVerifier::load_manifest(self, reference, item_count))
+    fn verify<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64, io: Option<&'a PreparationIo>)
+        -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            drop(self.read_file(reference, maximum_bytes, io).await?);
+            if let Some(io) = io { io.remaining()?; }
+            Ok(())
+        })
     }
 }
 
@@ -799,14 +698,7 @@ where
     }
 
     fn require_read(&self, reference: &FileRef, io: &PreparationIo) -> Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
-            reference.validate_with_native_work(work)?;
-        } else {
-            reference.validate(&mut None)?;
-        }
-        #[cfg(target_arch = "wasm32")]
-        reference.validate()?;
+        reference.validate(&mut Some(&mut io.history_io()))?;
         let internal = crate::conversation::is_internal_path(reference.path());
         let inherited = crate::conversation::is_inherited_context_path(reference.path());
         let internal_owner = reference.path().starts_with(".system/") && !inherited;
@@ -836,17 +728,14 @@ where
                 &self.verifier,
                 &self.scope,
                 reference.volume(),
-                VolumeOperation::Read,
+                VolumeOperation::Read, self.maximum_bytes, &mut None,
             )
         } else {
             ContentGrant::verify_read(&self.verifier, &self.scope, reference)
         }
     }
 
-    async fn load_manifest(&self, reference: &FileRef, item_count: u32) -> Result<Vec<Attachment>> {
-        let bytes = self.read_file(reference, self.maximum_bytes, None).await?;
-        crate::conversation::decode_attachment_manifest(reference, &bytes, Some(item_count), None)
-    }
+
 }
 
 /// Filesystem portion of the fork-publication admission barrier.
@@ -2524,16 +2413,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         }
         if let Some(io) = io {
             for file in direct.values().chain(member.values().map(|(_, file)| file)) {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(work) = io.original_native_work() {
-                    resolver.verify_with_native_work(file, maximum_bytes, work)?.await?;
-                } else {
-                    io.receive_content(resolver.verify_measured(file, maximum_bytes,
-                        io.remaining()?, io.cancellation()).await)?;
-                }
-                #[cfg(target_arch = "wasm32")]
-                io.receive_content(resolver.verify_measured(file, maximum_bytes,
-                    io.remaining()?, io.cancellation()).await)?;
+                resolver.verify(file, maximum_bytes, Some(io))?.await?;
             }
             io.claim(((attached_agents.len() + 1) * std::mem::size_of::<AgentId>()) as u64)?;
         }

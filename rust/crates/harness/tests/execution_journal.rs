@@ -398,13 +398,13 @@ async fn two_hosts_cannot_both_claim_one_tool_dispatch() -> Result<()> {
     let journal_a = FilesystemExecutionJournal::new(
         stream.clone(),
         host.clone(),
-        private.clone(),
-        issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
-        scope.clone(),
-        4_096,
+        &private,
+        &issuer.verifier(), &acyclic_harness::core::SchemaRegistry::new(),
+        &scope,
+        4_096, None,
     )?;
     let journal_b =
-        FilesystemExecutionJournal::new(stream, host, private, issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(), scope, 4_096)?;
+        FilesystemExecutionJournal::new(stream, host, &private, &issuer.verifier(), &acyclic_harness::core::SchemaRegistry::new(), &scope, 4_096, None)?;
     let operation = OperationId::from_bytes([56; 16]);
     journal_a
         .append(
@@ -618,10 +618,10 @@ async fn durable_tool_replay_is_bound_to_its_admitting_task() -> Result<()> {
     let journal = Arc::new(FilesystemExecutionJournal::new(
         StreamClient::new(Arc::new(MemoryStream::default())),
         host,
-        private,
-        issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
-        scope,
-        4_096,
+        &private,
+        &issuer.verifier(), &acyclic_harness::core::SchemaRegistry::new(),
+        &scope,
+        4_096, None,
     )?);
     let definition = ToolDefinition {
         name: "example.noop".into(),
@@ -1006,10 +1006,10 @@ async fn stream_journal_keeps_model_body_in_pinned_private_files() -> Result<()>
     let journal = FilesystemExecutionJournal::new(
         stream.clone(),
         host,
-        private,
-        issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
-        scope,
-        4_096,
+        &private,
+        &issuer.verifier(), &acyclic_harness::core::SchemaRegistry::new(),
+        &scope,
+        4_096, None,
     )?;
     let model = Arc::new(TextModel(AtomicUsize::new(0)));
     let executor = StockExecutor::new(
@@ -1157,10 +1157,10 @@ async fn interactions_are_ref_only_authenticated_and_single_resolution() -> Resu
     let journal = FilesystemExecutionJournal::new(
         stream.clone(),
         host,
-        private,
-        issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
-        scope,
-        4_096,
+        &private,
+        &issuer.verifier(), &acyclic_harness::core::SchemaRegistry::new(),
+        &scope,
+        4_096, None,
     )?;
     let request = Interaction::question("The private prompt", json!({"type":"string"}))?;
     journal.open_interaction(id, request.clone()).await?;
@@ -1297,10 +1297,10 @@ async fn scoped_tool_install_reads_the_durable_approval_not_a_caller_claim() -> 
     let journal = FilesystemExecutionJournal::new(
         stream,
         host,
-        private,
-        issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
-        scope.clone(),
-        4_096,
+        &private,
+        &issuer.verifier(), &acyclic_harness::core::SchemaRegistry::new(),
+        &scope,
+        4_096, None,
     )?;
     let definition = ToolDefinition {
         name: "example.echo".into(),
@@ -1500,7 +1500,7 @@ async fn typed_file_input_requires_resident_authorized_bytes_before_journaling()
         .await?;
     let stream = StreamClient::new(Arc::new(MemoryStream::default()));
     let journal =
-        FilesystemExecutionJournal::new(stream, host, private, issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(), scope, 4_096)?;
+        FilesystemExecutionJournal::new(stream, host, &private, &issuer.verifier(), &acyclic_harness::core::SchemaRegistry::new(), &scope, 4_096, None)?;
     let model = Arc::new(CapturingModel::default());
     let executor = StockExecutor::new(
         Model::new("test", "capture", "1", Value::Null)?,

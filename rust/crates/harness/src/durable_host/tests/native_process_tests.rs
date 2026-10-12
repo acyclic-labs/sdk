@@ -28,10 +28,10 @@ async fn result_storage_cannot_mutate_a_pinned_native_view() -> Result<()> {
     let mut authority = fixture.authority();
     authority.results = Arc::new(FilesystemContentPublisher::new(
         fixture.files.clone(),
-        fixture.destination.clone(),
+        &fixture.destination,
         &fixture.issuer.verifier(),
         &fixture.scope,
-        65_536,
+        65_536, None,
     )?);
     assert!(matches!(
         Process::new(
@@ -1391,7 +1391,7 @@ where
                 let mount = Arc::new(mount);
                 let snapshot = mount.snapshot_with_work(&volume_work, volume_work.cancellation())
                     .await?;
-                let native_source = crate::filesystem::FsRootNativeSource::from_lazy_with_native_work(
+                let native_source = crate::filesystem::FsRootNativeSource::from_lazy(
                     Arc::clone(&lazy), work,
                 )?;
                 let creator = crate::filesystem::FilesystemResourceCreationProvider::new_with_native_work(
@@ -1404,8 +1404,8 @@ where
                     operation, config, initial_generation, snapshot.authored_generation,
                     Some((&native_source, snapshot)), work,
                 )?.await?.into_native_shared(work)?;
-                project_policy = Some(crate::filesystem::FsRootProjectSourceProvider::new_with_native_work(
-                    Arc::clone(&files), issuer.audience(), task_id, work,
+                project_policy = Some(crate::filesystem::FsRootProjectSourceProvider::new(
+                    Arc::clone(&files), issuer.audience(), task_id, Some(&crate::filesystem::PreparationIo::from_native_work(work)?),
                 )?.with_bootstrap_source_with_native_work(protected, work)?);
                 project_generation = Some(crate::resources::GenerationRef::new_with_native_work(
             borrowed[0].generation.as_resource().provider(), borrowed[0].generation.as_resource().key(),
@@ -1489,16 +1489,16 @@ where
     }
     let content = Arc::new(FilesystemContentVerifier::new(
         files.clone(),
-        issuer.verifier(),
-        scope.clone(),
-        1_000_000,
+        &issuer.verifier(),
+        &scope,
+        1_000_000, None,
     )?);
     let results = Arc::new(FilesystemContentPublisher::new(
         files.clone(),
-        result_volume.clone(),
+        &result_volume,
         &issuer.verifier(),
         &scope,
-        1_000_000,
+        1_000_000, None,
     )?);
     let request_ref = results
         .stage(
@@ -1528,10 +1528,10 @@ where
     let approvals = Arc::new(FilesystemExecutionJournal::new(
         owner.stream(),
         files.clone(),
-        result_volume,
-        issuer.verifier(), crate::core::SchemaRegistry::new(),
-        scope.clone(),
-        1_000_000,
+        &result_volume,
+        &issuer.verifier(), &crate::core::SchemaRegistry::new(),
+        &scope,
+        1_000_000, None,
     )?);
     approvals
         .open_interaction(
@@ -2477,16 +2477,16 @@ async fn reopen_native(
     )?);
     let content = Arc::new(FilesystemContentVerifier::new(
         files.clone(),
-        issuer.verifier(),
-        seed.scope.clone(),
-        1_000_000,
+        &issuer.verifier(),
+        &seed.scope,
+        1_000_000, None,
     )?);
     let results = Arc::new(FilesystemContentPublisher::new(
         files.clone(),
-        seed.result_volume.clone(),
+        &seed.result_volume,
         &issuer.verifier(),
         &seed.scope,
-        1_000_000,
+        1_000_000, None,
     )?);
     let reopened = Arc::new(
         acyclic_stream::LocalStream::open(storage.join("coordinator"), Default::default())
@@ -2510,10 +2510,10 @@ async fn reopen_native(
     let approvals = Arc::new(FilesystemExecutionJournal::new(
         owner.stream(),
         files.clone(),
-        seed.result_volume.clone(),
-        issuer.verifier(), crate::core::SchemaRegistry::new(),
-        seed.scope.clone(),
-        1_000_000,
+        &seed.result_volume,
+        &issuer.verifier(), &crate::core::SchemaRegistry::new(),
+        &seed.scope,
+        1_000_000, None,
     )?);
     let process = Arc::new(
         LocalNativeProcess::recover(

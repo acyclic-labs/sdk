@@ -84,12 +84,12 @@ async fn open(root: &std::path::Path, agent: AgentId, model: Arc<CountedModel>, 
             action: Action::BindConversation { agent },
         }).await?;
     }
-    let reader = Arc::new(FilesystemContentVerifier::new(host.clone(), issuer.verifier(),
-        scope.clone(), 262_144)?);
-    let writer = Arc::new(FilesystemContentPublisher::new(host.clone(), volume.clone(),
-        &issuer.verifier(), &scope, 262_144)?);
-    let journal = Arc::new(FilesystemExecutionJournal::new(stream, host, volume,
-        issuer.verifier(), crate::core::SchemaRegistry::new(), scope, 262_144)?.with_input_verifier(reader.clone()));
+    let reader = Arc::new(FilesystemContentVerifier::new(host.clone(), &issuer.verifier(),
+        &scope, 262_144, None)?);
+    let writer = Arc::new(FilesystemContentPublisher::new(host.clone(), &volume,
+        &issuer.verifier(), &scope, 262_144, None)?);
+    let journal = Arc::new(FilesystemExecutionJournal::new(stream, host, &volume,
+        &issuer.verifier(), &crate::core::SchemaRegistry::new(), &scope, 262_144, None)?.with_input_verifier(reader.clone()));
     let instructions = Context {
         messages: ["Keep the user's constraints.", "Preserve original references."].into_iter()
             .map(|text| crate::model::ModelMessage { role: crate::model::ModelRole::System,

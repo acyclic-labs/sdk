@@ -9,7 +9,7 @@ use crate::{
     AgentId, Capabilities, ConversationId, Error, IdempotencyKey, InteractionId, OperationId,
     Result,
     conversation::{
-        Attachment, ContentPublisher, ContentResidencyVerifier, FileRef, Limits, VolumeClass,
+        Attachment, BoundedContentFuture, ContentHold, ContentPublisher, ContentResidencyVerifier, FileRef, Limits, VolumeClass,
         VolumeOperation, VolumeOwner, VolumeRef,
     },
     core::{Action, AggregateKind, Authority, AuthorityIssuer, Command, SchemaRegistry, Scope},
@@ -536,154 +536,58 @@ struct MemoryContentPublisher {
 }
 
 impl ContentPublisher for MemoryContentPublisher {
-    fn volume(&self) -> &VolumeRef {
-        self.files.volume()
+    fn volume(&self) -> &VolumeRef { self.files.volume() }
+
+    fn supports_stage(&self, io: Option<&super::PreparationIo>) -> Result<()> {
+        self.files.supports_stage(io)
     }
 
-    fn stage_once<'a>(
-        &'a self,
-        operation_id: OperationId,
-        path: &'a str,
-        bytes: &'a [u8],
-        media_type: &'a str,
-        display_name: &'a str,
-    ) -> BoxFuture<'a, Result<FileRef>> {
-        Box::pin(async move {
-            let persisted = self
-                .files
-                .stage_once(operation_id, path, bytes, media_type, display_name)
-                .await?;
-            self.retain(persisted, bytes)
+    fn stage_once<'a>(&'a self, operation_id: OperationId, path: &'a str, bytes: &'a [u8],
+        media_type: &'a str, display_name: &'a str, io: Option<&'a super::PreparationIo>)
+        -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+        BoundedContentFuture::new(io, || async move {
+            let persisted = self.files.publish_once(operation_id, path, bytes, media_type, display_name, io, None, None).await?;
+            let hold = io.map(|io| io.guard_owned(persisted.logical_owned_bytes()?)).transpose()?;
+            self.retain(&persisted, bytes, io)?;
+            Ok((persisted, hold))
         })
     }
 
-    fn observe_staged_once<'a>(
-        &'a self, operation_id: OperationId, maximum_bytes: u64,
-    ) -> BoxFuture<'a, Result<Option<FileRef>>> {
-        self.files.observe_staged_once(operation_id, maximum_bytes)
+    fn observe_staged_once<'a>(&'a self, operation_id: OperationId, maximum_bytes: u64,
+        io: Option<&'a super::PreparationIo>)
+        -> Result<BoundedContentFuture<'a, (Option<FileRef>, Option<ContentHold<'a>>)>> {
+        self.files.observe_staged_once(operation_id, maximum_bytes, io)
     }
 
-    fn observe_staged_once_measured<'a>(
-        &'a self, operation_id: OperationId, maximum_bytes: u64,
-        budget: acyclic_fs::WorkBudget, cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Option<FileRef>>, Error>> {
-        self.files.observe_staged_once_measured(operation_id, maximum_bytes, budget, cancellation)
-    }
-
-    #[allow(clippy::too_many_arguments, reason = "same immutable upload identity")]
-    fn stage_once_measured<'a>(
-        &'a self, operation_id: OperationId, path: &'a str, bytes: &'a [u8],
-        media_type: &'a str, display_name: &'a str, budget: acyclic_fs::WorkBudget,
-        cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<FileRef>, Error>> {
-        Box::pin(async move {
-            let io = super::PreparationIo::from_budget(budget, cancellation)
-                .map_err(acyclic_fs::OperationFailure::before_work)?;
-            let result = async {
-                let persisted = self.files.publish_once(
-                    operation_id, path, bytes, media_type, display_name, Some(&io), None, None).await?;
-                self.retain_with_io(&persisted, bytes, &io)?;
-                Ok(persisted)
-            }.await;
-            match result {
-                Ok(value) => Ok(acyclic_fs::OperationReceipt { value, work: io.receipt() }),
-                Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
-            }
+    fn stage_at<'a>(&'a self, operation_id: OperationId, source: &'a FileRef, bytes: &'a [u8],
+        io: Option<&'a super::PreparationIo>)
+        -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+        BoundedContentFuture::new(io, || async move {
+            let persisted = self.files.replace(operation_id, source, bytes, io, None, None).await?;
+            let hold = io.map(|io| io.guard_owned(persisted.logical_owned_bytes()?)).transpose()?;
+            self.retain(&persisted, bytes, io)?;
+            Ok((persisted, hold))
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn supports_native_stage(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        self.files.supports_native_stage(work)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn stage_once_with_native_work<'a>(
-        &'a self, operation_id: OperationId, path: &'a str, bytes: &'a [u8],
-        media_type: &'a str, display_name: &'a str, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = super::PreparationIo::from_native_work(work)?;
-            let result: Result<FileRef> = async {
-                let persisted = self.files.publish_once(
-                    operation_id, path, bytes, media_type, display_name, Some(&io), None, None).await?;
-                self.retain_with_io(&persisted, bytes, &io)?;
-                Ok(persisted)
-            }.await;
-            let persisted = result?;
-            let custody = io.into_native_custody(super::UploadRecord::logical_owned_bytes(&persisted)?)?;
-            Ok((persisted, custody))
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn stage_at_with_native_work<'a>(
-        &'a self, operation_id: OperationId, source: &'a FileRef, bytes: &'a [u8],
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = super::PreparationIo::from_native_work(work)?;
-            let persisted = self.files.replace(operation_id, source, bytes, Some(&io), None, None).await?;
-            self.retain_with_io(&persisted, bytes, &io)?;
-            let custody = io.into_native_custody(super::UploadRecord::logical_owned_bytes(&persisted)?)?;
-            Ok((persisted, custody))
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn observe_staged_once_with_native_work<'a>(
-        &'a self, operation_id: OperationId, maximum_bytes: u64,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<FileRef>, acyclic_fs::NativeAllocation)>> {
-        self.files.observe_staged_once_with_native_work(operation_id, maximum_bytes, work)
-    }
-
-    fn stage_at<'a>(
-        &'a self,
-        operation_id: OperationId,
-        source: &'a FileRef,
-        bytes: &'a [u8],
-    ) -> BoxFuture<'a, Result<FileRef>> {
-        Box::pin(async move {
-            let persisted = self.files.stage_at(operation_id, source, bytes).await?;
-            self.retain(persisted, bytes)
-        })
-    }
-
-    fn stage<'a>(
-        &'a self,
-        operation_id: OperationId,
-        path: &'a str,
-        bytes: &'a [u8],
-        media_type: &'a str,
-        display_name: &'a str,
-    ) -> BoxFuture<'a, Result<FileRef>> {
-        Box::pin(async move {
-            let persisted = self
-                .files
-                .stage(operation_id, path, bytes, media_type, display_name)
-                .await?;
-            self.retain(persisted, bytes)
+    fn stage<'a>(&'a self, operation_id: OperationId, path: &'a str, bytes: &'a [u8],
+        media_type: &'a str, display_name: &'a str, io: Option<&'a super::PreparationIo>)
+        -> Result<BoundedContentFuture<'a, (FileRef, Option<ContentHold<'a>>)>> {
+        BoundedContentFuture::new(io, || async move {
+            let (persisted, hold) = self.files.stage(operation_id, path, bytes, media_type, display_name, io)?.await?;
+            self.retain(&persisted, bytes, io)?;
+            Ok((persisted, hold))
         })
     }
 }
 
 impl MemoryContentPublisher {
-    fn retain_with_io(
-        &self, persisted: &FileRef, bytes: &[u8], io: &super::PreparationIo,
-    ) -> Result<()> {
+    fn retain(&self, persisted: &FileRef, bytes: &[u8], io: Option<&super::PreparationIo>) -> Result<()> {
         self.memory_store.lock()
             .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
-            .retain_reference_with_io(persisted, bytes, true, io)?;
-        io.remaining()?;
+            .retain_reference(persisted, bytes, true, io)?;
+        if let Some(io) = io { io.remaining()?; }
         Ok(())
-    }
-
-    fn retain(&self, persisted: FileRef, bytes: &[u8]) -> Result<FileRef> {
-        self.memory_store.lock()
-            .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
-            .retain_reference(&persisted, bytes, true)?;
-        Ok(persisted)
     }
 }
 
@@ -932,9 +836,8 @@ impl MemoryHarnessStorage {
         media_type: &str,
         display_name: &str,
     ) -> Result<FileRef> {
-        self.publisher
-            .stage(operation_id, path, bytes, media_type, display_name)
-            .await
+        let (file, _hold) = self.publisher.stage(operation_id, path, bytes, media_type, display_name, None)?.await?;
+        Ok(file)
     }
 
     /// Reads a pinned owner-private version after verifying its descriptor.
@@ -947,7 +850,7 @@ impl MemoryHarnessStorage {
         {
             return Ok(bytes.into());
         }
-        self.content_verifier.read(file).await
+        self.content_verifier.read(file, self.maximum_file_bytes, None)?.await
     }
 
     /// Lazily discovers this agent's private files under its existing signed volume-read grant.
@@ -1118,7 +1021,6 @@ impl MemoryHarnessStorage {
 mod tests {
     use super::*;
     use crate::conversation::ContentGrant;
-    use crate::conversation::ContentGrant;
     use crate::{
         Outcome,
         model::{Model, ModelEvent, ModelProvider, ModelRequest},
@@ -1153,136 +1055,84 @@ mod tests {
         let storage = MemoryHarnessStorage::new(AgentId::new(), 1024).await?;
         let operation = OperationId::new();
         let cancellation = acyclic_fs::CancellationToken::new();
-        let committed = storage.publisher.stage_once_measured(
-            operation, "once.json", b"original", "application/json", "original.json",
-            finite_content_budget(), &cancellation,
-        ).await.map_err(|failure| failure.error)?;
-        assert!(committed.work.backend_write_operations > 0);
+        let committed_io = super::super::PreparationIo::from_budget(finite_content_budget(), &cancellation)?;
+        let (committed, _committed_hold) = storage.publisher.stage_once(
+            operation, "once.json", b"original", "application/json", "original.json", Some(&committed_io),
+        )?.await?;
+        assert!(committed_io.receipt().backend_write_operations > 0);
         assert!(storage.memory_store.lock()
-            .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?
-            .has(&committed.value)?);
-        storage.publisher.stage_once(
-            OperationId::new(), "once.json", b"later", "text/plain", "later.txt",
-        ).await?;
-        let recovered = storage.publisher.observe_staged_once_measured(
-            operation, 1024, finite_content_budget(), &cancellation,
-        ).await.map_err(|failure| failure.error)?;
-        assert_eq!(recovered.value.as_ref(), Some(&committed.value));
-        assert_eq!(storage.content_verifier.read_measured(
-            &committed.value, 1024, finite_content_budget(), &cancellation,
-        ).await.map_err(|failure| failure.error)?.value, b"original");
-        assert!(storage.publisher.stage_once_measured(
-            operation, "once.json", b"original", "text/plain", "changed.txt",
-            finite_content_budget(), &cancellation,
-        ).await.is_err());
+            .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?.has(&committed)?);
+        storage.publisher.stage_once(OperationId::new(), "once.json", b"later", "text/plain", "later.txt", None)?.await?;
+        let observed_io = super::super::PreparationIo::from_budget(finite_content_budget(), &cancellation)?;
+        let (recovered, _recovered_hold) = storage.publisher.observe_staged_once(operation, 1024, Some(&observed_io))?.await?;
+        assert_eq!(recovered.as_ref(), Some(&committed));
+        let read_io = super::super::PreparationIo::from_budget(finite_content_budget(), &cancellation)?;
+        assert_eq!(storage.content_verifier.read(&committed, 1024, Some(&read_io))?.await?, b"original");
+        assert!(storage.publisher.stage_once(operation, "once.json", b"original", "text/plain", "changed.txt",
+            Some(&committed_io))?.await.is_err());
         let cancelled = acyclic_fs::CancellationToken::new();
+        let cancelled_io = super::super::PreparationIo::from_budget(finite_content_budget(), &cancelled)?;
         cancelled.cancel();
-        let failure = storage.publisher.stage_once_measured(
-            OperationId::new(), "cancelled", b"never", "text/plain", "never",
-            finite_content_budget(), &cancelled,
-        ).await.unwrap_err();
-        assert_eq!(*failure.work, acyclic_fs::WorkCounters::default());
+        assert!(storage.publisher.stage_once(OperationId::new(), "cancelled", b"never", "text/plain", "never",
+            Some(&cancelled_io)).is_err());
+        assert_eq!(cancelled_io.receipt().backend_write_operations, 0);
         let denied_operation = OperationId::new();
         let mut denied = finite_content_budget();
         denied.peak_allocation_bytes = 0;
-        assert!(storage.publisher.stage_once_measured(
-            denied_operation, "denied", b"never", "text/plain", "never", denied, &cancellation,
-        ).await.is_err());
-        assert!(storage.publisher.observe_staged_once_measured(
-            denied_operation, 1024, finite_content_budget(), &cancellation,
-        ).await.map_err(|failure| failure.error)?.value.is_none());
+        let denied_io = super::super::PreparationIo::from_budget(denied, &cancellation)?;
+        assert!(storage.publisher.stage_once(denied_operation, "denied", b"never", "text/plain", "never",
+            Some(&denied_io)).is_err());
+        assert!(storage.publisher.observe_staged_once(denied_operation, 1024, Some(&observed_io))?.await?.0.is_none());
         Ok(())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     #[tokio::test]
-    async fn stock_native_content_keeps_original_ledger_and_output_custody()
-        -> Result<()>
-    {
+    async fn stock_native_content_keeps_original_ledger_and_output_custody() -> Result<()> {
         let storage = MemoryHarnessStorage::new(AgentId::new(), 1024).await?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(
-            finite_content_budget(), &cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let constructor_allocations = work.receipt().allocation_operations;
-        let baseline = work.remaining().map_err(Error::from)?.peak_allocation_bytes;
-        storage.publisher.supports_native_stage(&work)?;
+        let work = acyclic_fs::NativeMaterializationWork::new(finite_content_budget(), &cancellation)
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let io = super::super::PreparationIo::from_native_work(&work)?;
+        storage.publisher.supports_stage(Some(&io))?;
         assert_eq!(work.receipt().backend_write_operations, 0);
-        assert_eq!(work.receipt().backend_read_operations, 0);
-        assert_eq!(work.remaining().map_err(Error::from)?
-            .peak_allocation_bytes, baseline);
-        struct OrdinaryOnlyPublisher {
-            volume: VolumeRef,
-            effects: Arc<AtomicUsize>,
-        }
+        struct OrdinaryOnlyPublisher { volume: VolumeRef }
         impl ContentPublisher for OrdinaryOnlyPublisher {
             fn volume(&self) -> &VolumeRef { &self.volume }
-            fn stage<'a>(
-                &'a self, _: OperationId, _: &'a str, _: &'a [u8],
-                _: &'a str, _: &'a str,
-            ) -> BoxFuture<'a, Result<FileRef>> {
-                self.effects.fetch_add(1, Ordering::SeqCst);
-                Box::pin(async { Err(Error::Unsupported("ordinary publisher was invoked".into())) })
-            }
         }
-        let ordinary = OrdinaryOnlyPublisher {
-            volume: storage.volume.clone(), effects: Arc::new(AtomicUsize::new(0)),
-        };
-        assert!(matches!(ordinary.supports_native_stage(&work),
+        let ordinary = OrdinaryOnlyPublisher { volume: storage.volume.clone() };
+        assert!(matches!(ordinary.supports_stage(Some(&io)),
             Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, .. })));
-        assert_eq!(ordinary.effects.load(Ordering::SeqCst), 0);
-        assert_eq!(work.receipt().backend_write_operations, 0);
-        assert!(matches!(ordinary.stage_once_with_native_work(
-            OperationId::new(), "unsupported", b"never", "text/plain", "never", &work,
-        ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, .. })));
-        assert_eq!(ordinary.effects.load(Ordering::SeqCst), 0);
+        assert!(matches!(ordinary.stage_once(OperationId::new(), "unsupported", b"never", "text/plain", "never", Some(&io)),
+            Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, .. })));
         let mut frame_budget = finite_content_budget();
-        frame_budget.allocation_operations = constructor_allocations;
-        let frame_work = acyclic_fs::NativeMaterializationWork::new(
-            frame_budget, &acyclic_fs::CancellationToken::new(),
-        ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        assert!(matches!(storage.publisher.stage_once_with_native_work(
-            OperationId::new(), "frame-denied", b"never", "text/plain", "never", &frame_work,
-        ), Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Work(_), custody: None })));
-        assert_eq!(frame_work.receipt().allocation_operations, constructor_allocations);
-        assert_eq!(frame_work.receipt().bytes_copied, 0);
-        assert_eq!(frame_work.receipt().backend_read_operations, 0);
+        frame_budget.allocation_operations = work.receipt().allocation_operations;
+        let frame_work = acyclic_fs::NativeMaterializationWork::new(frame_budget, &acyclic_fs::CancellationToken::new())
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let frame_io = super::super::PreparationIo::from_native_work(&frame_work)?;
+        assert!(storage.publisher.stage_once(OperationId::new(), "frame-denied", b"never", "text/plain", "never", Some(&frame_io)).is_err());
         assert_eq!(frame_work.receipt().backend_write_operations, 0);
         let operation = OperationId::new();
-        let (file, file_hold) = storage.publisher.stage_once_with_native_work(
-            operation, "native.json", b"original", "application/json", "original.json", &work,
-        )?.await?;
-        assert_eq!(file_hold.bytes(), file.logical_owned_bytes()?);
-        assert_eq!(work.remaining().map_err(Error::from)?.peak_allocation_bytes, baseline - file_hold.bytes());
+        let (file, file_hold) = storage.publisher.stage_once(operation, "native.json", b"original", "application/json", "original.json", Some(&io))?.await?;
+        assert!(file_hold.as_ref().is_some_and(|hold| hold.bytes() > 0));
         assert!(work.receipt().backend_write_operations > 0);
-        let staged_allowance = work.remaining().map_err(Error::from)?.peak_allocation_bytes;
-        let (bytes, bytes_hold) = storage.content_verifier.read_with_native_work(&file, 1024, &work)?.await?;
+        let before_read = work.live_allocation_bytes();
+        let bytes = storage.content_verifier.read(&file, 1024, Some(&io))?.await?;
         assert_eq!(bytes, b"original");
-        assert_eq!(bytes_hold.bytes(), bytes.capacity() as u64);
-        assert_eq!(work.remaining().map_err(Error::from)?.peak_allocation_bytes, staged_allowance - bytes_hold.bytes());
-        assert!(work.receipt().backend_read_operations > 0);
+        assert!(work.live_allocation_bytes() > before_read);
         drop(bytes);
-        drop(bytes_hold);
-        assert_eq!(work.remaining().map_err(Error::from)?.peak_allocation_bytes, staged_allowance);
-        assert!(storage.publisher.stage_once_with_native_work(
-            operation, "native.json", b"original", "text/plain", "changed", &work,
-        )?.await.is_err());
+        assert_eq!(work.live_allocation_bytes(), before_read);
+        assert!(storage.publisher.stage_once(operation, "native.json", b"original", "text/plain", "changed", Some(&io))?.await.is_err());
         drop(file);
         drop(file_hold);
-        assert_eq!(work.remaining().map_err(Error::from)?.peak_allocation_bytes, baseline);
-
         cancellation.cancel();
-        assert!(matches!(storage.publisher.stage_once_with_native_work(
-            OperationId::new(), "cancelled", b"never", "text/plain", "never", &work,
-        ), Err(Error::NativeWork {
-            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody: None })));
+        assert!(storage.publisher.stage_once(OperationId::new(), "cancelled", b"never", "text/plain", "never", Some(&io)).is_err());
         let mut denied = finite_content_budget();
         denied.backend_write_operations = 0;
-        let denied_work = acyclic_fs::NativeMaterializationWork::new(
-            denied, &acyclic_fs::CancellationToken::new()).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        assert!(matches!(storage.publisher.stage_once_with_native_work(
-            OperationId::new(), "denied", b"never", "text/plain", "never", &denied_work,
-        )?.await, Err(Error::NativeWork {
-            cause: acyclic_fs::NativeTreeMaterializationError::Work(_), custody: None })));
+        let denied_work = acyclic_fs::NativeMaterializationWork::new(denied, &acyclic_fs::CancellationToken::new())
+            .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
+        let denied_io = super::super::PreparationIo::from_native_work(&denied_work)?;
+        assert!(storage.publisher.stage_once(OperationId::new(), "denied", b"never", "text/plain", "never", Some(&denied_io))?.await.is_err());
         assert_eq!(denied_work.receipt().backend_write_operations, 0);
         Ok(())
     }
@@ -1361,8 +1211,9 @@ mod tests {
         ).await?.ok_or_else(|| Error::NotFound("original native operation receipt".into()))?;
         assert_eq!(recovered.0, staged.0);
         assert_eq!(recovered.1.bytes(), recovered.0.logical_owned_bytes()?);
-        let content = storage.content_verifier.read_with_native_work(&recovered.0, 1024, &work)?.await?;
-        assert_eq!(content.0, b"original");
+        let read_io = super::super::PreparationIo::from_native_work(&work)?;
+        let content = storage.content_verifier.read(&recovered.0, 1024, Some(&read_io))?.await?;
+        assert_eq!(content, b"original");
         drop(content);
         let writes = work.receipt().backend_write_operations;
         assert!(storage.host.put_content_with_native_work(

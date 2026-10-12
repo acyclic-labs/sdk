@@ -814,8 +814,8 @@ mod native_metadata_controls {
             crate::resources::ProviderRef::new("effect-metadata-control", "filesystem", "2")?,
         )?);
         let content = Arc::new(crate::filesystem::FilesystemContentVerifier::new(
-            files, issuer.verifier(), scope.clone(),
-        ));
+            files, &issuer.verifier(), &scope, crate::conversation::Limits::default().file_bytes, None,
+        )?);
         ConversationEffectHost::new(
             StreamClient::new(Arc::new(MemoryStream::default())),
             authority, issuer, scope, SchemaRegistry::new(), content, EffectRegistry::new(),

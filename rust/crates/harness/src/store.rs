@@ -3035,11 +3035,11 @@ mod tests {
             let journal = crate::filesystem::FilesystemExecutionJournal::new(
                 client.clone(),
                 host,
-                private,
-                issuer().verifier(),
-                schemas(),
-                journal_scope,
-                65_536,
+                &private,
+                &issuer().verifier(),
+                &schemas(),
+                &journal_scope,
+                65_536, None,
             )?
             .with_input_verifier(Arc::new(TestContent));
             let sparse = crate::conversation::ConversationState::selected_view(
@@ -3935,9 +3935,9 @@ mod tests {
             volume.capability(VolumeOperation::Write)?,
         ]));
         let publisher = FilesystemContentPublisher::new(
-            host.clone(), volume.clone(), &issuer.verifier(), &scope, 65_536)?;
+            host.clone(), &volume, &issuer.verifier(), &scope, 65_536, None)?;
         let reader = Arc::new(FilesystemContentVerifier::new(
-            host, issuer.verifier(), scope, 65_536)?);
+            host, &issuer.verifier(), &scope, 65_536, None)?);
         let request = Interaction::question("original published prompt", json!({"type": "string"}))?;
         let published = crate::contract::canonical_json_bytes(&request)?;
         let reference = publisher.stage_once(OperationId::from_bytes([95; 16]),

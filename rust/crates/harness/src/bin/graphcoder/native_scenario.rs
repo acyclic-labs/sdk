@@ -517,7 +517,7 @@ impl Producer {
             let graph_root = self.config.project_source_root.ok_or_else(|| Error::Unsupported(
                 "actual coordinator graph root source policy is not configured".into()))?;
             let policy = acyclic_harness::filesystem::FsRootProjectSourceProvider::new(
-                self.files.clone(), self.config.owner.authority.clone(), graph_root,
+                self.files.clone(), &self.config.owner.authority, graph_root, None,
             )?;
             let service_issuer = AuthorityIssuer::new(
                 &self.config.owner.issuer, self.config.owner.key, self.config.owner.authority.clone(),
@@ -630,7 +630,7 @@ impl Producer {
         let preparation_lease = claim(&self.runtime, preparation_task, &self.worker).await?;
         persist(&preparation_lease_path, &preparation_lease).await?;
         let commands = self.runtime.commands().with_fork_preparer(binding.preparer);
-        let attempt = self.runtime.resume_task(preparation_lease.clone(), &commands, 16).await;
+        let attempt = self.runtime.resume_task(preparation_lease.clone(), &commands, 16, None).await;
         if let acyclic_harness::filesystem::TaskWorkerAttempt::Unresolved { error, .. } = attempt {
             return Err(error);
         }

@@ -242,7 +242,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
                 "fork preparer requires a Stream history provider".into(),
             ));
         }
-        ParentProjectController::new(&host, &parent, &verifier, &scope, project.clone())?;
+        ParentProjectController::new(&host, &parent, &verifier, &scope, &project, None)?;
         Ok(Self {
             host,
             parent,
@@ -443,13 +443,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemForkPreparer<A, O> {
     fn controller(&self, io: Option<&PreparationIo>) -> Result<ParentProjectController<'_, A, O>> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            return ParentProjectController::new_with_native_work(&self.host, &self.parent,
-                &self.verifier, &self.scope, &self.project, work);
-        }
-        let _ = io;
-        ParentProjectController::new(&self.host, &self.parent, &self.verifier, &self.scope, self.project.clone())
+        ParentProjectController::new(&self.host, &self.parent, &self.verifier, &self.scope, &self.project, io)
     }
 
     /// Projects the exact foreign reader grants for child admission.
@@ -1589,7 +1583,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             })
             .ok_or_else(|| Error::Invalid("fork has no source project".into()))?;
         let controller =
-            ParentProjectController::new(self, parent, verifier, scope, source_project.clone())?;
+            ParentProjectController::new(self, parent, verifier, scope, &source_project, None)?;
         controller.require(capability::FORK_PUBLISH, VolumeOperation::Read)?;
         let parent_agent = scope
             .agent()

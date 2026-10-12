@@ -126,10 +126,11 @@ impl Fixture {
         Ok(TestJournal::new(
             stream,
             self.host.clone(),
-            private,
-            self.issuer.verifier(),
-            scope,
-            32_768,
+            &private,
+            &self.issuer.verifier(),
+            &acyclic_harness::core::SchemaRegistry::new(),
+            &scope,
+            32_768, None,
         )?
         .with_input_verifier(self.reader.clone()))
     }
@@ -165,9 +166,9 @@ impl Fixture {
             ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
         let reader = Arc::new(FilesystemContentVerifier::new(
             host.clone(),
-            issuer.verifier(),
-            scope,
-            32_768,
+            &issuer.verifier(),
+            &scope,
+            32_768, None,
         )?);
         Ok(Self {
             host,
@@ -355,9 +356,9 @@ async fn discovery_denies_authority_and_bounds_work_without_partial_success() ->
     );
     let denied = FilesystemContentVerifier::new(
         fixture.host.clone(),
-        fixture.issuer.verifier(),
-        scope,
-        32_768,
+        &fixture.issuer.verifier(),
+        &scope,
+        32_768, None,
     )?;
     assert!(matches!(
         declaration.capture(&denied).await,

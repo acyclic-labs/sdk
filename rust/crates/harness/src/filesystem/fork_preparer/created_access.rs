@@ -196,7 +196,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         {
             return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root bootstrap differs from its configured original creator or namespace"));
         }
-        if native_import.is_some_and(|(source, _)| !source.matches_native_work(work)) {
+        if native_import.is_some_and(|(source, _)| !source.backing.matches_native_work(work)) {
             return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root lazy source belongs to another original native ledger"));
         }
         crate::NativeFutureBundle::new(work, || async move {
@@ -251,13 +251,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 selected_generation, work, io.cancellation(),
             ).await.map_err(native_workspace_error)?;
             let native_snapshot = if let Some((lazy, frozen)) = native_import {
-                if lazy.workspace_id() != birth.workspace_id() {
+                if lazy.backing.workspace_id() != birth.workspace_id() {
                     return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root bootstrap import names another original workspace"));
                 }
                 if frozen.authored_generation != selected.id() || frozen.workspace_id != birth.workspace_id() {
                     return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root bootstrap selected generation differs from its original import"));
                 }
-                lazy.validate_snapshot_with_native_work(frozen, work)?.await?;
+                lazy.backing.validate(frozen, &io)?.await?;
                 Some(frozen)
             } else { None };
             drop(selected);
@@ -412,7 +412,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     ) -> Result<Option<&GenerationRef>> {
         let Some(source) = self.native_source.as_ref() else { return Ok(None); };
         let snapshot = self.native_snapshot.ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "Root lazy content has no authenticated original frozen snapshot"))?;
-        if snapshot.workspace_id != source.workspace_id()
+        if snapshot.workspace_id != source.backing.workspace_id()
             || snapshot.authored_generation != self.selected_generation
             || self.request.generation.as_resource().key() != snapshot.authored_generation.digest().into_bytes().as_slice()
         {
@@ -421,7 +421,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         if let Some(io) = io {
             io.check_cancellation()?;
             if io.original_native_work().is_some_and(|work|
-                !self.matches_native_work(work) || !source.matches_native_work(work))
+                !self.matches_native_work(work) || !source.backing.matches_native_work(work))
             {
                 return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root lazy publication basis belongs to another original ledger"));
             }
@@ -462,7 +462,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let source = self.native_source.as_ref().expect("authenticated original lazy source");
         let snapshot = self.native_snapshot.expect("authenticated original lazy snapshot");
         let operation = bounded_io::operation_key(key, Some(io))?;
-        let future = source.publish_with_io(snapshot, mutations, operation, permit, io, lease)?;
+        let future = source.backing.publish(snapshot, mutations, operation, permit, io, lease)?;
         let frame = match &future {
             crate::store::history::HistoryContentFuture::Ordinary { frame_bytes, .. } => *frame_bytes,
             crate::store::history::HistoryContentFuture::Native(_) => 0,
@@ -560,12 +560,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         let absolute = crate::contract::preparation_format(format_args!("/{path}"), Some(io))?;
         let hold = io.guard_owned(absolute.capacity() as u64)?;
         let absolute = (absolute, hold);
-        let result = if let Some(work) = io.original_native_work() {
-            source.read_with_native_work(snapshot, &absolute.0, maximum, work)?.await
-        } else {
-            io.receive_content(source.read_measured(snapshot, &absolute.0, maximum,
-                io.remaining()?, io.cancellation()).await)
+        let future = source.backing.read(snapshot, &absolute.0, maximum, io)?;
+        let frame = match &future {
+            crate::store::history::HistoryContentFuture::Ordinary { frame_bytes, .. } => Some(io.guard_owned(*frame_bytes)?),
+            crate::store::history::HistoryContentFuture::Native(_) => None,
         };
+        let result = future.await;
+        drop(frame);
         drop(absolute);
         result
     }
@@ -628,7 +629,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         let mut entries: Vec<crate::conversation::PrivateDirectoryEntry> = Vec::new();
         let mut cursor = None;
         loop {
-            let page = io.receive_content(source.list_measured(snapshot, &absolute, cursor, 128,
+            let page = io.receive_content(source.backing.list(snapshot, &absolute, cursor, 128,
                 io.remaining()?, io.cancellation()).await)?;
             for entry in page.entries {
                 let kind = match entry.kind {
@@ -1737,8 +1738,8 @@ mod tests {
         drop(output);
         drop(staged);
         drop(staged_custody);
-        let policy = super::super::super::root_source::FsRootProjectSourceProvider::new_with_native_work(
-            fixture.filesystem.clone(), project.owner(), fixture.root, &work,
+        let policy = super::super::super::root_source::FsRootProjectSourceProvider::new(
+            fixture.filesystem.clone(), project.owner(), fixture.root, Some(&crate::filesystem::PreparationIo::from_native_work(&work)?),
         )?.with_bootstrap_source_with_native_work(Arc::clone(project), &work)?;
         let selection = ProjectSourceSnapshot { project: project.request.volume.clone(),
             generation: project.request.generation.clone(), native_snapshot: None };
@@ -1832,8 +1833,8 @@ mod tests {
         let admission_custody;
         let (admission, custody) = owner.original_root_admission_with_native_work(&work).await?;
         admission_custody = custody;
-        let bare = super::super::super::root_source::FsRootProjectSourceProvider::new_with_native_work(
-            fixture.filesystem.clone(), creator.issuer.audience(), fixture.root, &work,
+        let bare = super::super::super::root_source::FsRootProjectSourceProvider::new(
+            fixture.filesystem.clone(), creator.issuer.audience(), fixture.root, Some(&crate::filesystem::PreparationIo::from_native_work(&work)?),
         )?;
         let selection = ProjectSourceSnapshot { project: birth.volume.clone(),
             generation: GenerationRef::new(fixture.filesystem_provider.clone(),

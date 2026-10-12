@@ -115,8 +115,8 @@ async fn prompt_reference_retains_exact_publication_across_reopen_and_rejects_re
     let owner = session.runtime.task_host().journal_owner(task,
         LeaseFence::from(&lease.reservation)).await?;
     let journal = acyclic_harness::filesystem::FilesystemExecutionJournal::for_task(owner,
-        execution, command_operation, session.files.clone(), session.config.private_volume.clone(),
-        session.config.owner.verifier()?, session.config.owner.scope.clone(), MAX_FRAME_BYTES as u64)?;
+        execution, command_operation, session.files.clone(), &session.config.private_volume,
+        &session.config.owner.verifier()?, &session.config.owner.scope, MAX_FRAME_BYTES as u64, None)?;
     let records = journal.replay(execution, 0, 16).await?;
     let request = records.into_iter().find_map(|record| match record.event {
         ExecutionEvent::ModelStarted { request, .. } => Some(request), _ => None,
