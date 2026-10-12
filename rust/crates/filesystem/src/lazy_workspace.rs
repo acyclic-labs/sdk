@@ -4964,7 +4964,7 @@ where
     {
         let reference = source.reference();
         let created = fs
-            .create_workspace_with_operation(name, config, operation_id, budget, cancellation)
+            .create_workspace_with_operation::<_, (), WorkspaceError>(name, config, operation_id, budget, cancellation, None)
             .await
             .map_err(|failure| {
                 failure.map_with_prior_work(WorkCounters::default(), workspace_error)
@@ -5008,17 +5008,16 @@ where
             .map_err(|error| (LazyWorkspaceError::NativeWork(error), None))?;
         let reference = source.reference();
         let generation = fs
-            .create_workspace_with_operation_with_native_work(
+            .create_workspace_with_operation::<_, (), WorkspaceError>(
                 name,
                 config,
                 operation_id,
                 original,
                 cancellation,
+                None,
             )
             .await
-            .map_err(|(error, allocation)| {
-                (LazyWorkspaceError::WorkspaceCause(error), allocation)
-            })?;
+            .map_err(|error| (LazyWorkspaceError::WorkspaceCause(error), None))?;
         let meter = LazyTreapWork::native_with_work(original, cancellation)
             .map_err(LazyWorkspaceError::into_native_failure)?;
         Self::attach_created_with_accounting(
@@ -5522,7 +5521,7 @@ where
             meter.adopt_input(generation_bytes)?;
             // The owned destination transfers into the filesystem producer's ledger.
             meter.release(name_bytes)?;
-            let workspace = meter.accept(self.workspace.volume.fs.fork_workspace::<_, fn(WorkBudget) -> std::future::Ready<crate::FsResult<()>>, _>(
+            let workspace = meter.accept(self.workspace.volume.fs.fork_workspace::<_, (), WorkspaceError>(
                 name, &generation, idempotency_key, None, crate::PublicationPermit::Unrestricted, meter.remaining()?, cancellation, None,
             ).await.map_err(measured_workspace_error))?;
             drop(generation);
@@ -5569,9 +5568,9 @@ where
                 meter.adopt(named.0.retained_bytes())?;
                 named
             },
-            |original| self.workspace.volume.fs.workspace_name_identity_with_native_work(
+            |original| self.workspace.volume.fs.workspace_name_identity(
                 destination, original, meter.cancellation,
-            ).map_err(native_workspace_error_pair)?
+            ).map_err(native_workspace_error)?
         };
         let origin = self
             .prepare_fork_origin_at(id, original_operation_id, Some(frozen), meter)
@@ -5627,10 +5626,10 @@ where
                 created_child.name.as_str(), created_child.volume.config, original_operation_id,
                 meter.remaining()?, meter.cancellation,
             ).await.map_err(measured_workspace_error))?,
-            |original| self.workspace.volume.fs.workspace_for_creation_operation_with_native_work(
+            |original| self.workspace.volume.fs.workspace_for_creation_operation(
                 created_child.name.as_str(), created_child.volume.config, original_operation_id,
                 original, meter.cancellation,
-            ).await.map_err(native_workspace_error_pair)?
+            ).await.map_err(native_workspace_error)?
         }.ok_or(LazyWorkspaceError::Concurrent)?;
         let observed_bytes = observed.publication_retained_bytes();
         if matches!(meter.meter, LazyTreapMeter::Standalone { .. }) {
@@ -5796,9 +5795,9 @@ where
             let hold = lazy_dispatch! {meter, meter.accept(self.workspace.volume.fs.make_generation_durable(
                     &self.workspace.volume, snapshot.authored_generation, meter.remaining()?, meter.cancellation,
                 ).await.map_err(measured_workspace_error))?,
-                |original| self.workspace.volume.fs.make_generation_durable_with_native_work(
+                |original| self.workspace.volume.fs.make_generation_durable(
                     &self.workspace.volume, snapshot.authored_generation, original, meter.cancellation,
-                ).await.map_err(native_workspace_error_pair)?
+                ).await.map_err(native_workspace_error)?
             };
             let swapped = self
                 .swap_binding_at(destination, 0, state, meter, meter.cancellation)
@@ -10517,7 +10516,7 @@ where
         if let Some(original) = projection.native_original() {
             let (entries, has_more, mut allocation) = if let Some(checkout) = mounted {
                 let (page, allocation) = checkout
-                    .list_directory_with_native_work(
+                    .list_directory(
                         directory,
                         after,
                         maximum_entries,
@@ -10534,7 +10533,7 @@ where
             } else {
                 let reader = reader.ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
                 let (page, allocation) = reader
-                    .list_directory_records_with_native_work(
+                    .list_directory_records(
                         directory,
                         after,
                         maximum_entries,
@@ -13758,7 +13757,7 @@ where
                         self.workspace.volume.config, std::slice::from_ref(record), work.remaining()?, cancellation,
                     ).await.map_err(|failure| lazy_operation_failure(failure, |error| workspace_error(WorkspaceError::engine(error)))))?,
                     |original| {
-                        self.workspace.volume.fs.make_records_durable_with_native_work(
+                        self.workspace.volume.fs.make_records_durable(
                             self.workspace.volume.config, std::slice::from_ref(record), original, cancellation,
                         ).await.map_err(|error| native_workspace_error(error.into()))?
                     }
@@ -15721,7 +15720,7 @@ where
             if !retained.prepared {
                 let (rebase, allocation) = retained
                     .checkout
-                    .rebase_head_with_native_work(
+                    .rebase_head(
                         self.workspace.limits().maximum_checkout_dependencies,
                         original,
                         cancellation,
