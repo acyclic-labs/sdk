@@ -7055,10 +7055,10 @@ pub(crate) mod tests {
         let fence = fence.clone();
         let operation = OperationId::from_bytes(task.into_bytes());
         let attempt = OperationId::from_bytes([54; 16]);
-        let workflow = Arc::new(FilesystemWorkflowJournal::for_task(
+        let workflow = FilesystemWorkflowJournal::for_task(
             owner.clone(), filesystem.clone(), &volume,
             &issuer.verifier(&mut None).expect("verifier copy"), &content_scope, 65_536, None,
-        )?);
+        )?;
         let journal = FilesystemExecutionJournal::for_task(
             owner.clone(), attempt, attempt, filesystem.clone(), &volume,
             &issuer.verifier(&mut None).expect("verifier copy"), &content_scope, 65_536, None,
@@ -7447,14 +7447,14 @@ pub(crate) mod tests {
             );
             let binding = host.journal_owner(task_id, fence.clone()).await?;
             let admission = binding.workflow_admission().clone();
-            let journal = Arc::new(crate::filesystem::FilesystemWorkflowJournal::for_task(
+            let journal = crate::filesystem::FilesystemWorkflowJournal::for_task(
                 binding,
                 filesystem.clone(),
                 &volume,
                 &issuer.verifier(&mut None).expect("verifier copy"),
                 &content_scope,
                 65_536, None,
-            )?);
+            )?;
             let release_budget = acyclic_fs::performance::work_budget(100_000, 100_000_000);
             let release_cancellation = acyclic_fs::CancellationToken::new();
             let before_admission = crate::filesystem::PreparationIo::from_budget(

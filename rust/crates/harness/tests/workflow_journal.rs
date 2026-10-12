@@ -98,7 +98,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
             &IdempotencyKey::new("command-payload")?,
         )
         .await?;
-    let journal = Arc::new(FilesystemWorkflowJournal::new(
+    let journal = FilesystemWorkflowJournal::new(
         stream.clone(),
         host.clone(),
         "counter",
@@ -106,7 +106,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
         65_536, None,
-    )?);
+    )?;
     let machine = Arc::new(Counter {
         identity: MachineIdentity {
             name: "test.counter".into(),
@@ -245,7 +245,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
     let reference: FileRef = serde_json::from_slice(&records[0].value)
         .map_err(|error| acyclic_harness::Error::Storage(error.to_string()))?;
     assert_eq!(reference.descriptor().media_type(), "application/json");
-    let paged = Arc::new(FilesystemWorkflowJournal::new(
+    let paged = FilesystemWorkflowJournal::new(
         stream.clone(),
         host.clone(),
         "paged-counter",
@@ -253,7 +253,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
         65_536, None,
-    )?);
+    )?;
     paged.admit(admission.clone()).await?;
     let mut paged_host =
         DurableWorkflowHost::open(registry.clone(), initial.clone(), paged.clone()).await?;
@@ -274,7 +274,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
     assert_eq!(paged.replay(0, 64).await?.len(), 64);
     assert_eq!(paged.replay(64, 64).await?.len(), 1);
     assert_eq!(paged.replay(0, 65).await?.len(), 64);
-    let fresh_paged = Arc::new(FilesystemWorkflowJournal::new(
+    let fresh_paged = FilesystemWorkflowJournal::new(
         stream.clone(),
         host.clone(),
         "paged-counter",
@@ -282,7 +282,7 @@ async fn workflow_reopens_from_ref_only_stream_with_pinned_machine_and_exact_ret
         &issuer.verifier(&mut None).expect("verifier copy"),
         &scope,
         65_536, None,
-    )?);
+    )?;
     let mut fresh_host = DurableWorkflowHost::open(registry, initial, fresh_paged.clone()).await?;
     assert_eq!(fresh_host.checkpoint().revision, 65);
     assert_eq!(
