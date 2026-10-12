@@ -9,7 +9,7 @@ import {
 } from "../generated/wasm/acyclic_harness_wasm.js";
 import * as harnessWasm from "../generated/wasm/acyclic_harness_wasm.js";
 import { publicModelContent } from "../src/projection.js";
-import type { NativeModelContent } from "../src/native-contracts.js";
+import type { ModelContent as NativeModelContent } from "../generated/wasm/acyclic_harness_wasm.js";
 import type { ModelRequest as ModelRequestWire } from "../generated/wasm/acyclic_harness_wasm.js";
 import initWasm from "../generated/wasm/acyclic_harness_wasm.js";
 import { assertHarnessWasmExports, ensureHarnessWasm } from "../src/wasm-runtime.js";
