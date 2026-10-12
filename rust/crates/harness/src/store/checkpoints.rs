@@ -430,7 +430,7 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
     event: &Event,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<operations::IndexedPublication> {
-    let mut publication = operations::IndexedPublication::new_with_work(
+    let mut publication = operations::IndexedPublication::new(
         reducer.authority(),
         event,
         crate::wire_codec::encode_event_with_work(reducer.authority(), event, work)?,

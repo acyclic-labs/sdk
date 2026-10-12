@@ -46,7 +46,7 @@ type Host = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
 pub(crate) struct PiRootHandle {
     pub(crate) workspace: Arc<LocalLazyWorkspace>,
     pub(crate) physical: Arc<SharedPhysicalRoot>,
-    _custody: Option<NativeAllocation>,
+    _custody: NativeAllocation,
 }
 
 impl PiRootHandle {
@@ -66,44 +66,7 @@ impl PiRootHandle {
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         key.1.absorb(&mut entry)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok((key.0, Self { workspace, physical, _custody: Some(key.1) }))
-    }
-}
-
-/// Producer-authenticated original FS allocation evidence, NOT a native deletion permit.
-pub(crate) struct PiRootScratchAllocationProof {
-    task: TaskId,
-    agent: acyclic_harness::AgentId,
-    volume: VolumeRef,
-    operation: acyclic_fs::OperationId,
-    workspace: [u8; 16],
-    generation: GenerationRef,
-    output: FileRef,
-    _custody: NativeAllocation,
-}
-impl PiRootScratchAllocationProof {
-    pub(crate) fn task(&self) -> TaskId { self.task }
-    pub(crate) fn agent(&self) -> acyclic_harness::AgentId { self.agent }
-    pub(crate) fn volume(&self) -> &VolumeRef { &self.volume }
-    pub(crate) fn operation(&self) -> acyclic_fs::OperationId { self.operation }
-    pub(crate) fn workspace_id(&self) -> [u8; 16] { self.workspace }
-    pub(crate) fn generation(&self) -> &GenerationRef { &self.generation }
-    pub(crate) fn output(&self) -> &FileRef { &self.output }
-
-    /// Rechecks original cached WRITE and the fresh current fence BEFORE the task's terminal publication.
-
-    pub(crate) async fn authorize_settlement_with_native_work<P: StreamProvider + 'static>(
-        &self, owner: &TaskJournalOwner<P>, work: &NativeMaterializationWork,
-    ) -> Result<()> {
-        if owner.task_id() != self.task
-            || owner.authenticated_binding_agent_with_native_work(work)? != Some(self.agent)
-            || self.volume.class() != acyclic_harness::conversation::VolumeClass::AgentPrivate
-            || self.volume.owner() != &acyclic_harness::conversation::VolumeOwner::Agent(self.agent) {
-            return Err(Error::NativeBoundary { code: ErrorCode::Unauthorized,
-                reason: "scratch release differs from its original task and bound private agent" });
-        }
-        owner.require_volume_grant_with_native_work(&self.volume, VolumeOperation::Write, work)?;
-        owner.verify_with_native_work(false, work).await
+        Ok((key.0, Self { workspace, physical, _custody: key.1 }))
     }
 }
 
@@ -197,7 +160,6 @@ pub(crate) struct PiRootProvider<P> {
     stream: std::sync::Arc<P>,
     preparation: PiRootPreparation,
     journal_owner: Option<Arc<TaskJournalOwner<P>>>,
-    context: Arc<acyclic_harness::NativeTaskContext>,
     original: NativeMaterializationWork,
     state: Mutex<ProviderState>,
     creation_cancelled: std::sync::atomic::AtomicBool,
@@ -213,17 +175,17 @@ pub(crate) async fn guard_root_preparation_source_with_native_work<P: StreamProv
     preparation: &PiRootPreparation, root_key: &str,
     expected: Option<acyclic_fs::NativeRootIdentity>, work: &NativeMaterializationWork,
 ) -> Result<acyclic_fs::NativeRootIdentity> {
-    let request = preparation.request();
+    let request = &preparation.request;
     let project = request.binding.project_volumes.get(root_key).ok_or(Error::NativeBoundary {
         code: ErrorCode::Unauthorized, reason: "root source is not selected by its original admission",
     })?;
     current_owner.require_volume_grant_with_native_work(project, VolumeOperation::Read, work)?;
     context.verify_original_volume_read_with_native_work(current_owner, project, work).await?;
     if current_owner.task_id() != request.binding.task_id
-        || preparation.command().operation_id != super::pi_root_inputs::preparation_operation_with_native_work(request.binding.task_id, work)?
-        || preparation.plan().provider != ROOT_ALLOCATION_PROVIDER
-        || preparation.plan().effect_kind != ROOT_ALLOCATION_EFFECT
-        || preparation.plan().guarantee != EffectGuarantee::AtMostOnce {
+        || preparation.command.operation_id != super::pi_root_inputs::preparation_operation_with_native_work(request.binding.task_id, work)?
+        || preparation.plan.provider != ROOT_ALLOCATION_PROVIDER
+        || preparation.plan.effect_kind != ROOT_ALLOCATION_EFFECT
+        || preparation.plan.guarantee != EffectGuarantee::AtMostOnce {
         return Err(Error::NativeBoundary { code: ErrorCode::Unauthorized,
             reason: "root source differs from its original admitted creator operation" });
     }
@@ -258,8 +220,8 @@ pub(crate) async fn guard_created_root_source_with_native_work<P: StreamProvider
 ) -> Result<acyclic_fs::NativeRootIdentity> {
     work.admit(WorkCounters::UNCHARGED)
         .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    let context = Arc::clone(preparation.native_context());
-    let request = preparation.request();
+    let context = Arc::clone(&preparation.context);
+    let request = &preparation.request;
     if current_read_owner.task_id() != request.binding.task_id
         || context.context().durable_task_id() != Some(request.binding.task_id)
     {
@@ -276,7 +238,7 @@ pub(crate) async fn guard_created_root_source_with_native_work<P: StreamProvider
     }
     expected_allocation.validate(&request.binding)?;
     let observer = root_provider(owner, resources, filesystem, stream,
-        preparation, None, Arc::clone(&context), work.clone())?;
+        preparation, None, work.clone())?;
     let effect = observer.effect_id_with_native_work(work)?;
     let attempt = EffectAttemptId::from_bytes(effect.into_bytes());
     let observed = observer.observe_allocation_with_native_work(attempt, work).await?
@@ -284,7 +246,7 @@ pub(crate) async fn guard_created_root_source_with_native_work<P: StreamProvider
     if !same_allocation(expected_allocation, &observed.0.1) {
         return Err(PiRootProvider::<P>::native_failure("created root substitutes original allocation evidence"));
     }
-    let PiRootIntent::Project { paths, .. } = &observer.preparation.request().root else {
+    let PiRootIntent::Project { paths, .. } = &observer.preparation.request.root else {
         return Err(PiRootProvider::<P>::native_failure("scratch-only allocation has no created native source"));
     };
     let path = paths.get(key).ok_or_else(|| PiRootProvider::<P>::native_failure(
@@ -297,7 +259,7 @@ pub(crate) async fn guard_created_root_source_with_native_work<P: StreamProvider
             expected, actual: identity }, custody: None });
     }
     context.context().verify_original_volume_read_with_native_work(current_read_owner,
-        &observer.preparation.request().binding.project_volumes[key], work).await?;
+        &observer.preparation.request.binding.project_volumes[key], work).await?;
     Ok(identity)
 }
 
@@ -323,7 +285,7 @@ pub(crate) fn root_provider<P: StreamProvider + 'static>(
     owner: Arc<PiOwnerConfig>, resources: &ServiceResources, filesystem: Arc<Host>,
     stream: std::sync::Arc<P>, preparation: PiRootPreparation,
     journal_owner: Option<Arc<TaskJournalOwner<P>>>,
-    context: Arc<acyclic_harness::NativeTaskContext>, original: NativeMaterializationWork,
+    original: NativeMaterializationWork,
 ) -> Result<Arc<PiRootProvider<P>>> {
     let native = |cause| Error::NativeWork { cause, custody: None };
     original.admit(WorkCounters::UNCHARGED).map_err(native)?;
@@ -331,15 +293,15 @@ pub(crate) fn root_provider<P: StreamProvider + 'static>(
         return Err(Error::NativeBoundary { code: ErrorCode::Invalid,
             reason: "root allocation requires finite original work allowances" });
     }
-    let request = preparation.request();
+    let request = &preparation.request;
     if request.binding.task_id != owner.policy().root_task || request.binding.agent_id != owner.policy().agent
         || journal_owner.as_ref().is_some_and(|current|
             current.task_id() != request.binding.task_id
-                || context.context().durable_task_id() != Some(request.binding.task_id))
+                || preparation.context.context().durable_task_id() != Some(request.binding.task_id))
         || !matches!(request.binding.scratch.allocation, super::PiScratchAllocation::Preparing)
-        || preparation.plan().provider != ROOT_ALLOCATION_PROVIDER
-        || preparation.plan().effect_kind != ROOT_ALLOCATION_EFFECT
-        || preparation.plan().guarantee != EffectGuarantee::AtMostOnce {
+        || preparation.plan.provider != ROOT_ALLOCATION_PROVIDER
+        || preparation.plan.effect_kind != ROOT_ALLOCATION_EFFECT
+        || preparation.plan.guarantee != EffectGuarantee::AtMostOnce {
         return Err(Error::NativeBoundary { code: ErrorCode::Unauthorized,
             reason: "root allocator differs from its original admission and issued context" });
     }
@@ -376,7 +338,7 @@ pub(crate) fn root_provider<P: StreamProvider + 'static>(
     custody.absorb(&mut resources.1).map_err(native)?;
     original.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::UNCHARGED }).map_err(native)?;
     Ok(Arc::new(PiRootProvider {
-        owner, resources: resources.0, filesystem, stream, preparation, journal_owner, context, original,
+        owner, resources: resources.0, filesystem, stream, preparation, journal_owner, original,
         state: Mutex::new(ProviderState { dispatched: false, handles: BTreeMap::new() }),
         creation_cancelled: std::sync::atomic::AtomicBool::new(false),
         #[cfg(test)]
@@ -392,31 +354,19 @@ pub(crate) async fn observe_root_allocation<P: StreamProvider + 'static>(
     stream: std::sync::Arc<P>, preparation: PiRootPreparation,
     work: &NativeMaterializationWork,
 ) -> Result<Option<((FileRef, PiRootAllocation), NativeAllocation)>> {
-    let context = Arc::clone(preparation.native_context());
     let observer = root_provider(owner, resources, filesystem, stream, preparation,
-        None, context, work.clone())?;
+        None, work.clone())?;
     let attempt = EffectAttemptId::from_bytes(observer.effect_id_with_native_work(work)?.into_bytes());
     observer.observe_allocation_with_native_work(attempt, work).await
 }
 
-#[allow(clippy::too_many_arguments, reason = "original immutable root creation observation, not disposal authority")]
-pub(crate) async fn prove_root_scratch_allocation_with_native_work<P: StreamProvider + 'static>(
-    owner: Arc<PiOwnerConfig>, resources: &ServiceResources, filesystem: Arc<Host>,
-    stream: std::sync::Arc<P>, preparation: PiRootPreparation, work: &NativeMaterializationWork,
-) -> Result<Option<PiRootScratchAllocationProof>> {
-    let context = Arc::clone(preparation.native_context());
-    let observer = root_provider(owner, resources, filesystem, stream, preparation,
-        None, context, work.clone())?;
-    let effect = observer.effect_id_with_native_work(work)?;
-    observer.prove_scratch_allocation_with_native_work(EffectAttemptId::from_bytes(effect.into_bytes()), work).await
-}
 
 /// Root output is its genuinely created private scratch, never the protected bootstrap journal.
 #[allow(clippy::too_many_arguments, reason = "actual caller, original protected creator and bounded producers")]
 pub(crate) async fn bind_root_output_context_with_native_work<P: StreamProvider + 'static>(
     context: Arc<acyclic_harness::NativeTaskContext>, current_owner: &Arc<TaskJournalOwner<P>>,
     owner: Arc<PiOwnerConfig>, resources: &ServiceResources, filesystem: Arc<Host>,
-    stream: std::sync::Arc<P>, request: &PiRootRequest, work: &NativeMaterializationWork,
+    stream: std::sync::Arc<P>, binding: &super::PiTaskBinding, root: &PiRootIntent, work: &NativeMaterializationWork,
 ) -> Result<Arc<acyclic_harness::NativeTaskContext>> {
     work.admit(WorkCounters::UNCHARGED).map_err(|cause| Error::NativeWork { cause, custody: None })?;
     let invalid = || Error::NativeBoundary { code: ErrorCode::Unauthorized,
@@ -424,39 +374,40 @@ pub(crate) async fn bind_root_output_context_with_native_work<P: StreamProvider 
     if context.context().durable_task_id() != Some(current_owner.task_id())
         || current_owner.task_id() != owner.policy().root_task
         || context.context().scope().grants() != &owner.policy().grants
-        || request.binding.task_id != owner.policy().root_task {
+        || binding.task_id != owner.policy().root_task {
         return Err(invalid());
     }
-    current_owner.require_volume_grant_with_native_work(&request.binding.scratch.volume,
+    current_owner.require_volume_grant_with_native_work(&binding.scratch.volume,
         VolumeOperation::Write, work)?;
     current_owner.verify_with_native_work(false, work).await?;
-    let preparation = load_original_preparation_with_native_work(&owner, &filesystem, request,
+    let preparation = load_original_preparation_with_native_work(&owner, &filesystem, binding, root,
         Arc::clone(&context), work).await?;
     let observer = root_provider(owner, resources, Arc::clone(&filesystem), stream,
-        preparation, None, Arc::clone(&context), work.clone())?;
+        preparation, None, work.clone())?;
     let effect = observer.effect_id_with_native_work(work)?;
     let attempt = EffectAttemptId::from_bytes(effect.into_bytes());
-    let proof = observer.prove_scratch_allocation_with_native_work(attempt, work).await?
+    let (scratch, operation, _scratch_custody) = observer.prove_scratch_allocation_with_native_work(attempt, work).await?
         .ok_or_else(invalid)?;
+    let binding = &observer.preparation.request.binding;
     let (authority, custody) = observer.owner.conversation_authority_with_native_work(
-        proof.task, proof.agent, &observer.owner.policy().grants, work)?;
+        binding.task_id, binding.agent_id, &observer.owner.policy().grants, work)?;
     super::pi_conversation::bind_task_conversation(
         &observer.stream, authority, custody, current_owner,
-        &proof.volume, proof.operation, observer.owner.policy().limits, work).await?;
-    if current_owner.authenticated_binding_agent_with_native_work(work)? != Some(proof.agent) {
+        &binding.scratch.volume, operation, observer.owner.policy().limits, work).await?;
+    if current_owner.authenticated_binding_agent_with_native_work(work)? != Some(binding.agent_id) {
         return Err(invalid());
     }
     let generation = observer.creation_with_native_work(effect, attempt, "scratch",
-        &proof.volume, VolumeConfig::portable(Lifecycle::Durable), work).await?.ok_or_else(invalid)?;
+        &binding.scratch.volume, VolumeConfig::portable(Lifecycle::Durable), work).await?.ok_or_else(invalid)?;
     let actual = observer.scratch_creation_with_native_work(&generation, work)?;
-    if actual.0.workspace_id != proof.workspace || actual.0.generation != proof.generation {
+    if actual.0.workspace_id != scratch.workspace_id || actual.0.generation != scratch.generation {
         return Err(invalid());
     }
     let authority = observer.owner.conversation_authority_with_native_work(
-        proof.task, proof.agent, &observer.owner.policy().grants, work)?;
+        binding.task_id, binding.agent_id, &observer.owner.policy().grants, work)?;
     let verifier = authority.0.1.verifier_with_native_work(work)?;
     let source = filesystem.native_root_output_source_with_native_work(current_owner,
-        &proof.volume, proof.operation, &generation, &verifier.0, &authority.0.2, work).await?;
+        &binding.scratch.volume, operation, &generation, &verifier.0, &authority.0.2, work).await?;
     context.bind_root_output_context_with_native_work(source, work).await?;
     Ok(context)
 }
@@ -471,10 +422,10 @@ pub(crate) async fn prove_root_project_source_with_native_work<P: StreamProvider
 ) -> Result<()> {
     current_owner.require_volume_grant_with_native_work(project, VolumeOperation::Read, work)?;
     context.context().verify_original_volume_read_with_native_work(current_owner, project, work).await?;
-    let preparation = load_original_preparation_with_native_work(&owner, &filesystem, request,
+    let preparation = load_original_preparation_with_native_work(&owner, &filesystem, &request.binding, &request.root,
         Arc::clone(&context), work).await?;
     let provider = root_provider(owner, resources, filesystem, stream,
-        preparation, None, context, work.clone())?;
+        preparation, None, work.clone())?;
     let effect = provider.effect_id_with_native_work(work)?;
     let attempt = EffectAttemptId::from_bytes(effect.into_bytes());
     let original = provider.authenticate_with_native_work(attempt, true, work).await?;
@@ -521,16 +472,10 @@ pub(crate) async fn prove_root_project_source_with_native_work<P: StreamProvider
         || !provider.observe_conversation_with_native_work(effect, attempt, work).await? {
         return Err(PiRootProvider::<P>::native_failure("root source native identity or canonical binding differs"));
     }
-    provider.context.context().verify_original_volume_read_with_native_work(current_owner, project, work).await?;
+    provider.preparation.context.context().verify_original_volume_read_with_native_work(current_owner, project, work).await?;
     Ok(())
 }
 
-fn pi_input_grants(owner: &PiOwnerConfig) -> Result<(ContentGrant, ContentGrant)> {
-    let authority = owner.authority()?;
-    Ok((ContentGrant::verify_directory_read(&authority.verifier, &authority.signed,
-            &owner.policy().journal, ROOT_INPUT_DIRECTORY)?,
-        ContentGrant::verify(&authority.verifier, &authority.signed, &owner.policy().journal, VolumeOperation::Write)?))
-}
 
 fn pi_input_write_grant_with_native_work(
     owner: &PiOwnerConfig, work: &NativeMaterializationWork,
@@ -737,7 +682,7 @@ async fn read_root_artifact_with_native_work<T: DeserializeOwned + Serialize>(
 }
 
 pub(crate) async fn load_original_preparation_with_native_work(
-    owner: &PiOwnerConfig, filesystem: &Host, expected: &PiRootRequest,
+    owner: &PiOwnerConfig, filesystem: &Host, expected_binding: &super::PiTaskBinding, expected_root: &PiRootIntent,
     context: Arc<acyclic_harness::NativeTaskContext>, work: &NativeMaterializationWork,
 ) -> Result<PiRootPreparation> {
     let missing = || Error::NativeBoundary { code: ErrorCode::Unauthorized,
@@ -757,13 +702,13 @@ pub(crate) async fn load_original_preparation_with_native_work(
             reason: "original root plan differs from canonical input operations" });
     }
     let request = read_root_artifact_with_native_work::<PiRootRequest>(owner, context.context(), &root.0, work).await?;
-    if &request.0 != expected {
+    if &request.0.binding != expected_binding || &request.0.root != expected_root {
         return Err(Error::NativeBoundary { code: ErrorCode::Unauthorized,
             reason: "root request differs from original canonical input" });
     }
     let schema = read_root_artifact_with_native_work::<serde_json::Value>(
         owner, context.context(), &schema_reference.0, work).await?;
-    let expected_schema = PiRootAllocation::schema_with_native_work(&request.0.binding, work)?;
+    let expected_schema = PiRootAllocation::schema(&request.0.binding, work)?;
     if schema.0 != expected_schema.0 {
         return Err(Error::NativeBoundary { code: ErrorCode::Unauthorized,
             reason: "original root allocation schema differs" });
@@ -771,11 +716,15 @@ pub(crate) async fn load_original_preparation_with_native_work(
     let mut kind = work.display(acyclic_harness::filesystem::EFFECT_TASK_COMMAND_KIND)
         .map_err(|cause| Error::NativeWork { cause, custody: None })?;
     payload.1.absorb(&mut kind.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-    Ok(PiRootPreparation::from_original_parts(acyclic_harness::workflow::WorkflowCommand {
+    let mut plan_custody = plan.1;
+    let mut request_custody = request.1;
+    let mut preparation = PiRootPreparation { command: acyclic_harness::workflow::WorkflowCommand {
         operation_id: super::pi_root_inputs::preparation_operation_with_native_work(owner.policy().root_task, work)?,
         kind: kind.0, payload: payload.0,
-    }, plan.0, request.0,
-        [Some(payload.1), Some(plan.1), Some(request.1), None], context))
+    }, plan: plan.0, request: request.0, context, custody: payload.1 };
+    preparation.custody.absorb(&mut plan_custody).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    preparation.custody.absorb(&mut request_custody).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+    Ok(preparation)
 }
 
 struct NativeInputCoordinates {
@@ -1050,15 +999,15 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
     }
 
     pub(crate) async fn prove_scratch_allocation_with_native_work(&self, attempt: EffectAttemptId,
-        work: &NativeMaterializationWork) -> Result<Option<PiRootScratchAllocationProof>> {
+        work: &NativeMaterializationWork) -> Result<Option<(PiScratchCreation, acyclic_fs::OperationId, NativeAllocation)>> {
         self.check_native_ledger(work)?;
         let _state = self.state.lock().await;
         self.authenticate_with_native_work(attempt, true, work).await?;
         let effect = self.effect_id_with_native_work(work)?;
-        let Some(mut output) = self.original_artifact_with_native_work(effect, attempt, "result", work).await?
+        let Some(output) = self.original_artifact_with_native_work(effect, attempt, "result", work).await?
             else { return Ok(None); };
         let recorded = self.read_with_native_work::<PiRootAllocation>(&output.0, work).await?;
-        let binding = &self.preparation.request().binding;
+        let binding = &self.preparation.request.binding;
         recorded.0.validate(binding)?;
         if binding.scratch.volume.class() != acyclic_harness::conversation::VolumeClass::AgentPrivate
             || binding.scratch.volume.owner() != &acyclic_harness::conversation::VolumeOwner::Agent(binding.agent_id) {
@@ -1066,20 +1015,13 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         }
         let Some(generation) = self.creation_with_native_work(effect, attempt, "scratch", &binding.scratch.volume,
             VolumeConfig::portable(Lifecycle::Durable), work).await? else { return Ok(None); };
-        let mut scratch = self.scratch_creation_with_native_work(&generation, work)?;
+        let scratch = self.scratch_creation_with_native_work(&generation, work)?;
         if recorded.0.scratch != scratch.0
             || !self.observe_conversation_with_native_work(effect, attempt, work).await? {
             return Err(Self::native_failure("root scratch output differs from original creation or binding"));
         }
         let operation = self.creation_operation_with_native_work(effect, attempt, "scratch", work)?;
-        let mut volume = binding.scratch.volume.clone_with_native_work(work)?;
-        output.1.absorb(&mut scratch.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        output.1.absorb(&mut volume.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(Some(PiRootScratchAllocationProof {
-            task: binding.task_id, agent: binding.agent_id, volume: volume.0, operation,
-            workspace: scratch.0.workspace_id, generation: scratch.0.generation,
-            output: output.0, _custody: output.1,
-        }))
+        Ok(Some((scratch.0, operation, scratch.1)))
     }
 
     async fn acquire_original_source_with_native_work(&self, key: &str, path: &str,
@@ -1091,7 +1033,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
             let pinned = &pinned;
             async move {
                 let previous = *pinned.lock().map_err(|_| Self::native_failure("root source identity guard is poisoned"))?;
-                let identity = guard_root_preparation_source_with_native_work(self.context.context(),
+                let identity = guard_root_preparation_source_with_native_work(self.preparation.context.context(),
                     owner, &self.preparation, key, previous, work).await?;
                 let mut original = pinned.lock().map_err(|_| Self::native_failure("root source identity guard is poisoned"))?;
                 if original.is_some_and(|previous| previous != identity) {
@@ -1107,12 +1049,12 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         digest: [u8; 32], work: &NativeMaterializationWork)
         -> Result<(BTreeMap<String, AttachmentInput>, NativeAllocation)> {
         let mut inputs = (BTreeMap::new(), work.retain_owned(0).map_err(|cause| Error::NativeWork { cause, custody: None })?);
-        let PiRootIntent::Project { paths, .. } = &self.preparation.request().root else { return Ok(inputs); };
+        let PiRootIntent::Project { paths, .. } = &self.preparation.request.root else { return Ok(inputs); };
         for key in paths.keys().map(String::as_str).chain(std::iter::once("scratch")) {
             let (volume, config) = if key == "scratch" {
-                (&self.preparation.request().binding.scratch.volume, VolumeConfig::portable(Lifecycle::Durable))
+                (&self.preparation.request.binding.scratch.volume, VolumeConfig::portable(Lifecycle::Durable))
             } else {
-                (&self.preparation.request().binding.project_volumes[key], VolumeConfig::native(Lifecycle::Durable))
+                (&self.preparation.request.binding.project_volumes[key], VolumeConfig::native(Lifecycle::Durable))
             };
             if self.creation_with_native_work(effect, attempt, key, volume, config, work).await?.is_some() {
                 return Err(Self::native_failure("original creation exists without immutable root attachment input"));
@@ -1128,13 +1070,13 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
             let mut kind = work.display(ROOT_ALLOCATION_EFFECT).map_err(native)?;
             let mut root = work.display(key).map_err(native)?;
             let mut native_path = work.display(path).map_err(native)?;
-            let mut volume = self.preparation.request().binding.project_volumes[key].clone_with_native_work(work)?;
+            let mut volume = self.preparation.request.binding.project_volumes[key].clone_with_native_work(work)?;
             volume.1.absorb(&mut provider.1).map_err(native)?;
             volume.1.absorb(&mut kind.1).map_err(native)?;
             volume.1.absorb(&mut root.1).map_err(native)?;
             volume.1.absorb(&mut native_path.1).map_err(native)?;
             let mut record = (AttachmentInput {
-                task: self.owner.policy().root_task, command: self.preparation.command().operation_id,
+                task: self.owner.policy().root_task, command: self.preparation.command.operation_id,
                 effect, attempt, request_digest: digest, provider: provider.0,
                 effect_kind: kind.0, root: root.0, volume: volume.0, native_path: native_path.0,
                 source: physical.source.reference(),
@@ -1166,7 +1108,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         #[cfg(test)]
         self.test_fault_native("after-conversation-bind")?;
         let distributed = DistributedFs::new(self.resources.fs.clone(), self.resources.store.clone());
-        if let PiRootIntent::Project { paths, .. } = &self.preparation.request().root {
+        if let PiRootIntent::Project { paths, .. } = &self.preparation.request.root {
             let inputs = match self.original_artifact_with_native_work(effect, attempt, "attachments", work).await? {
                 Some(reference) => self.read_with_native_work::<BTreeMap<String, AttachmentInput>>(&reference.0, work).await?,
                 None => self.capture_inputs_with_native_work(effect, attempt, original.request_digest, work).await?,
@@ -1175,13 +1117,13 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
                 return Err(Self::native_failure("root attachment selection differs from original creator"));
             }
             for (key, path) in paths {
-                let volume = &self.preparation.request().binding.project_volumes[key];
+                let volume = &self.preparation.request.binding.project_volumes[key];
                 let input = &inputs.0[key];
                 self.validate_attachment_with_native_work(input, effect, attempt, original.request_digest,
                     key, volume, path)?;
                 owner.verify_with_native_work(false, work).await?;
                 self.require_native_creation()?;
-                let identity = guard_root_preparation_source_with_native_work(self.context.context(),
+                let identity = guard_root_preparation_source_with_native_work(self.preparation.context.context(),
                     owner, &self.preparation, key, None, work).await?;
                 if identity.to_bytes() != input.native_identity {
                     return Err(Self::native_failure("original root native identity was replaced"));
@@ -1228,13 +1170,13 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
                 slot.absorb(&mut owned_key.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
                 let workspace = workspace.into_arc_with_native_work(work)
                     .map_err(|source| Error::NativeSource { source, custody: None })?;
-                state.handles.insert(owned_key.0, PiRootHandle { workspace, physical, _custody: Some(slot) });
+                state.handles.insert(owned_key.0, PiRootHandle { workspace, physical, _custody: slot });
                 #[cfg(test)]
                 self.test_fault_native("after-root-creation")?;
             }
         }
         owner.verify_with_native_work(false, work).await?;
-        let volume = &self.preparation.request().binding.scratch.volume;
+        let volume = &self.preparation.request.binding.scratch.volume;
         owner.require_volume_grant_with_native_work(volume, VolumeOperation::Write, work)?;
         if self.creation_with_native_work(effect, attempt, "scratch", volume,
             VolumeConfig::portable(Lifecycle::Durable), work).await?.is_none() {
@@ -1330,7 +1272,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         effect: EffectId, attempt: EffectAttemptId, digest: [u8; 32],
         key: &str, volume: &VolumeRef, path: &str) -> Result<()> {
         if input.task != self.owner.policy().root_task
-            || input.command != self.preparation.command().operation_id
+            || input.command != self.preparation.command.operation_id
             || input.effect != effect || input.attempt != attempt || input.request_digest != digest
             || input.provider != ROOT_ALLOCATION_PROVIDER || input.effect_kind != ROOT_ALLOCATION_EFFECT
             || input.root != key || &input.volume != volume || input.native_path != path
@@ -1354,7 +1296,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
     fn scratch_creation_with_native_work(&self, generation: &LocalGeneration,
         work: &NativeMaterializationWork) -> Result<(PiScratchCreation, NativeAllocation)> {
         let digest = generation.id().digest().into_bytes();
-        let volume = &self.preparation.request().binding.scratch.volume;
+        let volume = &self.preparation.request.binding.scratch.volume;
         let (reference, custody) = GenerationRef::new_with_native_work(
             volume.provider(), &digest, None, work)?;
         let scratch = (PiScratchCreation {
@@ -1368,7 +1310,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         digest: [u8; 32], work: &NativeMaterializationWork)
         -> Result<Option<(PiRootAllocation, NativeAllocation)>> {
         let mut roots = (BTreeMap::new(), work.retain_owned(0).map_err(|cause| Error::NativeWork { cause, custody: None })?);
-        if let PiRootIntent::Project { paths, .. } = &self.preparation.request().root {
+        if let PiRootIntent::Project { paths, .. } = &self.preparation.request.root {
             let Some(reference) = self.original_artifact_with_native_work(effect, attempt, "attachments", work).await?
                 else { return Ok(None); };
             let inputs = self.read_with_native_work::<BTreeMap<String, AttachmentInput>>(&reference.0, work).await?;
@@ -1376,7 +1318,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
                 return Err(Self::native_failure("root attachment selection differs from original admission"));
             }
             for (key, path) in paths {
-                let volume = &self.preparation.request().binding.project_volumes[key];
+                let volume = &self.preparation.request.binding.project_volumes[key];
                 let input = &inputs.0[key];
                 self.validate_attachment_with_native_work(input, effect, attempt, digest, key, volume, path)?;
                 let Some(generation) = self.creation_with_native_work(effect, attempt, key,
@@ -1407,13 +1349,13 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
             }
         }
         let Some(generation) = self.creation_with_native_work(effect, attempt, "scratch",
-            &self.preparation.request().binding.scratch.volume,
+            &self.preparation.request.binding.scratch.volume,
             VolumeConfig::portable(Lifecycle::Durable), work).await? else { return Ok(None); };
         let scratch = self.scratch_creation_with_native_work(&generation, work)?;
         let (scratch, mut _custody) = scratch;
         roots.1.absorb(&mut _custody).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let allocation = (PiRootAllocation { roots: roots.0, scratch }, roots.1);
-        allocation.0.validate(&self.preparation.request().binding)?;
+        allocation.0.validate(&self.preparation.request.binding)?;
         Ok(Some(allocation))
     }
 
@@ -1464,7 +1406,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         }
         let (value, custody) = work.display(&format_args!(
             "acyclic.pi/root-allocation/{}/{}/{effect}/{attempt}/{name}",
-            self.owner.policy().root_task, self.preparation.command().operation_id)).map_err(native)?;
+            self.owner.policy().root_task, self.preparation.command.operation_id)).map_err(native)?;
         let key = (IdempotencyKey::new(value)?, custody);
         Ok(NativeInputCoordinates { path, display_name, key })
     }
@@ -1499,7 +1441,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
 
     async fn read_with_native_work<T: DeserializeOwned + Serialize>(&self, reference: &FileRef,
         work: &NativeMaterializationWork) -> Result<(T, NativeAllocation)> {
-        read_root_artifact_with_native_work(&self.owner, self.context.context(), reference, work).await
+        read_root_artifact_with_native_work(&self.owner, self.preparation.context.context(), reference, work).await
     }
 
     async fn authenticate_with_native_work(&self, attempt: EffectAttemptId,
@@ -1515,7 +1457,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
                 maximum_bytes: self.maximum() }, work).await?;
         let state = (value.ok_or(Error::NativeBoundary {
             code: ErrorCode::Unauthorized, reason: "original root effect is absent" })?, custody);
-        let plan = self.preparation.plan();
+        let plan = &self.preparation.plan;
         if state.0.provider != ROOT_ALLOCATION_PROVIDER
             || state.0.effect_kind != ROOT_ALLOCATION_EFFECT
             || state.0.guarantee != EffectGuarantee::AtMostOnce
@@ -1527,11 +1469,11 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
                 reason: "root effect differs from its original request, schema, provider or attempt" });
         }
         let retained_plan = self.read_with_native_work::<acyclic_harness::effect_host::TaskEffectPlan>(
-            &self.preparation.command().payload, work).await?;
+            &self.preparation.command.payload, work).await?;
         let request = self.read_with_native_work::<PiRootRequest>(&plan.request, work).await?;
         let schema = self.read_with_native_work::<serde_json::Value>(&plan.result_schema, work).await?;
-        let expected_schema = PiRootAllocation::schema_with_native_work(&request.0.binding, work)?;
-        if retained_plan.0 != *plan || request.0 != *self.preparation.request()
+        let expected_schema = PiRootAllocation::schema(&request.0.binding, work)?;
+        if retained_plan.0 != *plan || request.0 != self.preparation.request
             || schema.0 != expected_schema.0 {
             return Err(Error::NativeBoundary { code: ErrorCode::Unauthorized,
                 reason: "original immutable root preparation differs" });
@@ -1559,7 +1501,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
 
     fn effect_id_with_native_work(&self, work: &NativeMaterializationWork) -> Result<EffectId> {
         acyclic_harness::effect_host::task_effect_id_with_native_work(
-            self.owner.policy().root_task, self.preparation.command().operation_id, work)
+            self.owner.policy().root_task, self.preparation.command.operation_id, work)
     }
 
     fn maximum(&self) -> u64 { self.owner.policy().maximum_payload_bytes.min(super::MAXIMUM_ADAPTER_STATE_BYTES) }
@@ -1567,7 +1509,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
     fn creation_operation_with_native_work(&self, effect: EffectId, attempt: EffectAttemptId,
         resource: &str, original: &NativeMaterializationWork) -> Result<acyclic_fs::OperationId> {
         let (bytes, custody) = guarded_pi_bytes(&("acyclic.pi/root-resource/v1",
-            self.owner.policy().root_task, self.preparation.command().operation_id,
+            self.owner.policy().root_task, self.preparation.command.operation_id,
             effect, attempt, resource), self.maximum(), original)?;
         let bytes = (bytes, custody);
         original.charge(WorkCounters { bytes_hashed: bytes.0.len() as u64, ..WorkCounters::default() })
@@ -1582,12 +1524,12 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         &self, effect: EffectId, attempt: EffectAttemptId, original: &NativeMaterializationWork,
     ) -> Result<()> {
         let authority = self.owner.conversation_authority_with_native_work(
-            self.preparation.request().binding.task_id,
-            self.preparation.request().binding.agent_id, &self.owner.policy().grants, original)?;
+            self.preparation.request.binding.task_id,
+            self.preparation.request.binding.agent_id, &self.owner.policy().grants, original)?;
         let original_creation = self.creation_operation_with_native_work(effect, attempt, "scratch", original)?;
         super::pi_conversation::bind_task_conversation(
             &self.stream, authority.0, authority.1, self.execution_owner()?,
-            &self.preparation.request().binding.scratch.volume, original_creation,
+            &self.preparation.request.binding.scratch.volume, original_creation,
             self.owner.policy().limits, original).await
     }
 
@@ -1595,12 +1537,12 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         &self, effect: EffectId, attempt: EffectAttemptId, original: &NativeMaterializationWork,
     ) -> Result<bool> {
         let authority = self.owner.conversation_authority_with_native_work(
-            self.preparation.request().binding.task_id,
-            self.preparation.request().binding.agent_id, &self.owner.policy().grants, original)?;
+            self.preparation.request.binding.task_id,
+            self.preparation.request.binding.agent_id, &self.owner.policy().grants, original)?;
         let original_creation = self.creation_operation_with_native_work(effect, attempt, "scratch", original)?;
         super::pi_conversation::observe_task_conversation(
             &self.stream, authority.0, authority.1,
-            &self.preparation.request().binding.scratch.volume, original_creation, self.maximum(), original).await
+            &self.preparation.request.binding.scratch.volume, original_creation, self.maximum(), original).await
     }
 
 }

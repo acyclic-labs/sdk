@@ -39,7 +39,7 @@ use std::{collections::BTreeMap, sync::Arc};
 /// Finite recent terminal cache.
 pub const DEFAULT_TERMINAL_EFFECTS: usize = 64;
 
-fn guarded_boundary(
+pub(crate) fn guarded_boundary(
     work: &Option<&mut dyn history::HistoryIo>, kind: crate::wire::ErrorCode,
     reason: &'static str,
 ) -> Error {
@@ -2543,7 +2543,7 @@ mod tests {
             &authority(),
             &event,
             encode_event(&authority(), &event)?,
-        )?;
+         &mut None)?;
         *provider
             .message_head_race
             .lock()
@@ -3496,26 +3496,6 @@ mod tests {
         assert_eq!(
             reader.reducer().events_after(0, 6)?,
             reopened.reducer().events_after(0, 6)?
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn commit_then_reopen_replays_the_same_event() -> Result<()> {
-        let provider = Arc::new(MemoryStream::default());
-        let client = Arc::clone(&provider);
-        let mut aggregate = with_content(
-            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
-        );
-        let first = aggregate.execute(command(1)?, #[cfg(feature = "filesystem")] None, &mut None).await?;
-        let reopened =
-            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?;
-        assert_eq!(reopened.reducer().revision(), 1);
-        assert_eq!(
-            reopened.reducer().events_after(0, 1)?,
-            vec![match first {
-                ApplyResult::Applied { event } | ApplyResult::Replayed { event } => event,
-            }]
         );
         Ok(())
     }

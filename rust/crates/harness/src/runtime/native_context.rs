@@ -14,10 +14,6 @@ fn boundary(code: crate::wire::ErrorCode, reason: &'static str) -> Error {
     Error::NativeBoundary { code, reason }
 }
 
-fn same_work(left: &NativeMaterializationWork, right: &NativeMaterializationWork) -> bool {
-    left.shares_allocation_context(right)
-}
-
 fn validate_scope_attenuation(
     original: &RuntimeScope, requested: &RuntimeScope, limits: Limits,
     work: &NativeMaterializationWork,
@@ -131,7 +127,7 @@ impl TaskContext {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "task context has no original native metadata source"));
         };
-        if !same_work(&source.work, work) || !same_work(payload.custody.work(), work)
+        if !source.work.shares_allocation_context(work) || !payload.custody.work().shares_allocation_context(work)
             || payload.custody.bytes() < source.bytes
         {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
@@ -255,7 +251,7 @@ impl NativeTaskContext {
         self.context.require_original_native_dispatch(work)?;
         let (task, fence) = self.context.owned_task_binding_with_native_work(work)?;
         if view.original_task() != task || view.original_fence() != fence
-            || !same_work(view.original_native_work(), work)
+            || !view.original_native_work().shares_allocation_context(work)
         {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "working view differs from its original issued task"));
@@ -291,20 +287,18 @@ impl NativeTaskContext {
     ) -> Result<()> {
         self.context.require_original_native_dispatch(work)?;
         let installed = self.context.native_root_output.get();
-        if installed.is_some_and(|installed| !installed.source.same_identity(&source)) {
+        if installed.is_some_and(|installed| !installed.0.same_identity(&source)) {
             return Err(boundary(crate::wire::ErrorCode::Conflict,
                 "root result destination differs from its original binding"));
         }
         source.verify_context_with_native_work(&self.context, work).await?;
         if installed.is_some() { return Ok(()); }
         let source = source.into_native_shared(work)?;
-        let binding = super::NativeRootOutputBinding {
-            content: source.retained_content_binding(),
-            source,
-        };
+        let content = source.retained_content_binding();
+        let binding = (source, content);
         if let Err(binding) = self.context.native_root_output.set(binding) {
             if self.context.native_root_output.get()
-                .is_some_and(|installed| installed.source.same_identity(&binding.source))
+                .is_some_and(|installed| installed.0.same_identity(&binding.0))
             {
                 return Ok(());
             }
@@ -321,7 +315,7 @@ impl NativeTaskContext {
 
     /// Pure membership check for the original metadata ledger, not authority.
     pub(crate) fn native_metadata_matches(&self, work: &NativeMaterializationWork) -> bool {
-        same_work(self.custody.work(), work)
+        self.custody.work().shares_allocation_context(work)
     }
 
     /// Builds an original-owner READ facade over this same shared context.
@@ -335,7 +329,7 @@ impl NativeTaskContext {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "content READ owner differs from the issued task context"));
         }
-        if !same_work(self.custody.work(), work) || !owner.native_shared_work_matches(work) {
+        if !self.custody.work().shares_allocation_context(work) || !owner.native_shared_work_matches(work) {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "content READ facade lacks original shared metadata custody"));
         }
@@ -400,7 +394,7 @@ impl ToolContext {
             crate::wire::ErrorCode::NotFound, "issued task has no prepared working view",
         ))?;
         if !context.original_task_binding_matches(view.original_task(), view.original_fence())
-            || !same_work(view.original_native_work(), work)
+            || !view.original_native_work().shares_allocation_context(work)
         {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "working metadata differs from the original issued task"));
@@ -590,12 +584,12 @@ impl ToolContext {
     pub(crate) fn native_metadata_matches(&self, work: &NativeMaterializationWork) -> bool {
         let ToolTaskContext::Native(task) = &self.task else { return false; };
         let Some(custody) = &self.native_custody else { return false; };
-        task.native_metadata_matches(work) && same_work(custody.work(), work)
+        task.native_metadata_matches(work) && custody.work().shares_allocation_context(work)
             && (std::mem::size_of::<Self>() as u64)
                 .checked_add(self.call_id.capacity() as u64)
                 .is_some_and(|bytes| custody.bytes() >= bytes)
             && self.effective_scope.as_ref().is_none_or(|(_, guard)| {
-                guard.as_ref().is_some_and(|guard| same_work(guard.work(), work))
+                guard.as_ref().is_some_and(|guard| guard.work().shares_allocation_context(work))
             })
     }
 
@@ -747,7 +741,7 @@ impl<P: acyclic_stream::StreamProvider> NativeContextVerifier<P> {
         work.charge(WorkCounters::default())
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         self.original_binding()?;
-        if !same_work(self.custody.work(), work) {
+        if !self.custody.work().shares_allocation_context(work) {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "content READ callback differs from its original native ledger"));
         }
@@ -963,7 +957,7 @@ mod tests {
                 custody: Some(custody),
             }) => {
                 assert_eq!(custody.bytes(), bytes);
-                assert!(same_work(custody.work(), &original));
+                assert!(custody.work().shares_allocation_context(&original));
                 drop(custody);
             }
             _ => panic!("cancelled shared allocation must preserve the original cause and custody"),
@@ -1115,7 +1109,7 @@ mod tests {
             fixture.root, fixture.root_lease.operation.operation_id, &original,
         ).await?;
         let shared = context.into_native_shared(custody, &original)?;
-        assert!(same_work(shared.native_work(), &original));
+        assert!(shared.native_work().shares_allocation_context(&original));
         shared.context().require_original_native_work(&original)?;
         let operation = crate::OperationId::from_bytes([119; 16]);
         let call_id = operation.to_string();

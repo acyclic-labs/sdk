@@ -36,7 +36,7 @@ async fn indexed_publication_cancellation_precedes_codec_and_sdk() -> Result<()>
     let cancellation = CancellationToken::new();
     cancellation.cancel();
     let mut work = history::HistoryWork::new(publication_budget(), &cancellation);
-    assert!(operations::IndexedPublication::new_with_work(
+    assert!(operations::IndexedPublication::new(
         reducer.authority(), &event, bytes, &mut Some(&mut work),
     ).is_err());
     Ok(())

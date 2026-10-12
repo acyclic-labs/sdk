@@ -464,13 +464,8 @@ impl PiForkCoordinator {
         let mut launch_reference = crate::pi_root_provider::stage_pi_input(&self.owner, &self.filesystem, derived(original, "native-input", &self.work)?, "native-input", &commit.launch, &self.work).await?;
         #[derive(Serialize)]
         struct Command<'a> { operation_id: OperationId, kind: &'a str, payload: &'a FileRef }
-        #[derive(Serialize)]
-        #[serde(tag = "kind", rename_all = "snake_case")]
-        enum Execution<'a> { Child { launch: Command<'a> } }
-        #[derive(Serialize)]
-        struct Input<'a> { binding: &'a PiTaskBinding, execution: Execution<'a> }
-        let input = crate::pi_root_provider::guarded_pi_value(&Input { binding: &commit.child,
-            execution: Execution::Child { launch: Command { operation_id: operations.native,
+        let input = crate::pi_root_provider::guarded_pi_value(&PiTaskInput::<_, crate::pi_root::PiRootIntent, _> { binding: &commit.child,
+            execution: PiTaskExecution::Child { launch: Command { operation_id: operations.native,
                 kind: NATIVE_LAUNCH_TASK_COMMAND_KIND, payload: &launch_reference.0 } } },
             self.owner.policy().maximum_payload_bytes, work)?;
         let mut child = self.runtime.runtime.harness().registered_child_admission_with_native_work(operations.child,

@@ -436,8 +436,8 @@ impl PiSession {
         let PluginTaskBinding::Pi(binding) = &self.state.task_binding else {
             return Err(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi root has no original task binding" });
         };
-        let preparation = pi_root_inputs::PiRootPreparation::load_native_from_state(
-            &self.resources.private_state_root, &self.relative_directory, self.runtime.as_ref(), &self.filesystem, &self.state,
+        let preparation = pi_root_inputs::PiRootPreparation::load(
+            &self.resources.private_state_root, &self.relative_directory, self.runtime.as_ref(), &self.state,
             None, original_native_work,
         ).await?;
         // Restore the original completed creator before running any Root
@@ -479,8 +479,8 @@ impl PiSession {
                 if let Some(allocation) = driver.root_output().await? {
                     allocation
                 } else {
-                let preparation = pi_root_inputs::PiRootPreparation::load_native_from_state(
-                    &self.resources.private_state_root, &self.relative_directory, self.runtime.as_ref(), &self.filesystem, &self.state,
+                let preparation = pi_root_inputs::PiRootPreparation::load(
+                    &self.resources.private_state_root, &self.relative_directory, self.runtime.as_ref(), &self.state,
                     None, original_native_work,
                 ).await?;
                 let Some(allocation) = pi_root_provider::observe_root_allocation(
@@ -528,8 +528,8 @@ impl PiSession {
                 let physical = self.resources.shared_roots.acquire_with_native_work(
                     &root.path, SharedRootAdmission::Resume(expected), original_native_work,
                     || async move {
-                        let preparation = pi_root_inputs::PiRootPreparation::load_native_from_state(
-                            &proof_resources.private_state_root, proof_directory, proof_runtime, proof_filesystem, proof_state,
+                        let preparation = pi_root_inputs::PiRootPreparation::load(
+                            &proof_resources.private_state_root, proof_directory, proof_runtime, proof_state,
                             Some(Arc::clone(read_context)), original_native_work,
                         ).await?;
                         let owner = pi_owner::PiOwnerConfig::load_readonly_with_native_work(
