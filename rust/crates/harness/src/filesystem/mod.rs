@@ -108,7 +108,7 @@ mod task_commands;
 mod task_runtime;
 pub use configured_recursive_tools::{
     ConfiguredRecursiveAuthorityBinding, ConfiguredRecursiveCaller, ConfiguredRecursiveFork,
-    ConfiguredRecursiveMerge, ConfiguredRecursiveSourceCheckpoint, ConfiguredRecursiveToolSource,
+    ConfiguredRecursiveMerge, ConfiguredRecursiveToolSource,
     ConfiguredRecursiveToolsConfig,
 };
 pub(crate) use default_tools::InvocationCancellation;
@@ -670,9 +670,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             io.and_then(|io| io.original_native_work().map(|original| (io, original)))
         {
             use sha2::Digest as _;
-            reference.validate(&mut Some(&mut crate::store::history::native_work_io(
+            reference.validate(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(
                 original,
-            )?))?;
+            ).map(crate::store::HistoryWork::new)?))?;
             if reference.volume().provider() != &self.provider
                 || reference.descriptor().byte_length() > maximum_bytes
             {

@@ -479,7 +479,7 @@ where
         )
         .await?,
     );
-    let mut registry = EffectRegistry::default().with_result_resolver(content.clone());
+    let mut registry = EffectRegistry::new(None, Some(content.clone()))?;
     registry.register(process.clone())?;
     let effects = Arc::new(ConversationEffectHost::new(
         stream.clone(),
@@ -701,7 +701,7 @@ where
         )
         .await?,
     );
-    let mut registry = EffectRegistry::default().with_result_resolver(content.clone());
+    let mut registry = EffectRegistry::new(None, Some(content.clone()))?;
     registry.register(recovered)?;
     let effects = Arc::new(ConversationEffectHost::new(
         stream,

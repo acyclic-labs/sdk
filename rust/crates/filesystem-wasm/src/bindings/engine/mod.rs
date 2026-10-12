@@ -131,8 +131,8 @@ impl BrowserFs {
     #[wasm_bindgen(js_name = createWorkspace)]
     pub async fn create_workspace(&self, name: String) -> Result<BrowserWorkspace, JsValue> {
         let engine = sdk_value!(unbounded_future!(
-            self.engine,
-            as_ref().ok_or_else(closed_error)?.create_workspace(name)
+            self.engine.as_ref().ok_or_else(closed_error)?,
+            create_workspace(name)
         ))?;
         Ok(BrowserWorkspace { engine })
     }
@@ -141,8 +141,8 @@ impl BrowserFs {
     #[wasm_bindgen(js_name = openWorkspace)]
     pub async fn open_workspace(&self, name: String) -> Result<BrowserWorkspace, JsValue> {
         let engine = sdk_value!(unbounded_future!(
-            self.engine,
-            as_ref().ok_or_else(closed_error)?.open_workspace(name)
+            self.engine.as_ref().ok_or_else(closed_error)?,
+            open_workspace(name)
         ))?;
         Ok(BrowserWorkspace { engine })
     }

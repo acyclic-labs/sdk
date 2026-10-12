@@ -62,16 +62,11 @@ impl NativeCheckout {
             .map(|value| native_name(value, self.config))
             .transpose()?;
         let mut checkout = Box::pin(self.inner.lock()).await;
-        let receipt = checkout
-            .list_directory(
-                &path,
-                after.as_ref(),
-                maximum_entries,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
-            )
-            .await
-            .map_err(napi_error)?;
+        let receipt = checkout_call!(
+            self,
+            checkout,
+            list_directory(&path, after.as_ref(), maximum_entries,)
+        )?;
         let entries = receipt
             .value
             .entries

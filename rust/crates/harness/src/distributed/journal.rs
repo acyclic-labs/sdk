@@ -38,7 +38,7 @@ pub(super) async fn read_records<P: StreamProvider>(
     maximum: u32,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Option<operations::ObservedRecords>> {
-    match operations::read_records_with_work(client, stream, from, maximum, work).await? {
+    match operations::read_records(client, stream.path(), from, maximum, work).await? {
         Ok(source) => Ok(Some(source)),
         Err(error) if *sdk_source(&error) == StreamError::NotFound && from == 0 => Ok(None),
         Err(error) => Err(sdk_error(error, work)),
@@ -156,31 +156,27 @@ pub(super) async fn read_intent<P: StreamProvider>(
         {
             let raw_bytes = operations::sdk_record_retained_bytes(&record, quota.work());
             if inspect_envelope(&record.value, false, quota.work())?.2 == Some(key) {
-                let mut event_quota = CodecQuota::new(quota.work(), 0)?;
-                let (revision, source_key, digest, _, event) = decode(&record, event_quota.work())?;
-                let owned = if event_quota.work().is_some() {
+                let (revision, source_key, digest, _, event) = decode(&record, quota.work())?;
+                let owned = if quota.work().is_some() {
                     event.logical_owned_bytes()?
                 } else {
                     0
                 };
-                let key_bytes = if event_quota.work().is_some() {
+                let key_bytes = if quota.work().is_some() {
                     source_key.capacity() as u64
                 } else {
                     0
                 };
-                event_quota.adopt(owned + key_bytes)?;
+                quota.adopt(owned + key_bytes)?;
                 drop(source_key);
-                event_quota.relinquish(key_bytes)?;
+                quota.relinquish(key_bytes)?;
                 if intent.is_some() {
                     return Err(coordinator_boundary(
-                        event_quota.work(),
+                        quota.work(),
                         wire::ErrorCode::Conflict,
                         "coordinator history repeats an idempotency key",
                     ));
                 }
-                event_quota.transfer();
-                drop(event_quota);
-                quota.adopt(owned)?;
                 intent = Some((digest, event, revision, record.commit_id));
             }
             drop(record);

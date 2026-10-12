@@ -72,10 +72,10 @@ export class MemoryConversation {
         provider: { namespace: "local", family: "memory", version: "2" },
         id: crypto.randomUUID(), class: "agent_private", owner: { kind: "agent", id: options.agent },
       };
-      const scope = core.issueScopeForAgent(options.agent, "conversation-owner", [
+      const scope = core.issueScope("conversation-owner", [
         "conversation:bind", "conversation:append", "conversation:select_context",
         core.volumeCapability(volume, "read"), core.volumeCapability(volume, "write"),
-      ]);
+      ], options.agent);
       const content = memoryContentStore(volume, limits.file_bytes, limits.path_bytes,
         maxResidentBytes, maxResidentFiles);
       const host = new MemoryConversation(core, scope, volume, maxResidentFiles, content);

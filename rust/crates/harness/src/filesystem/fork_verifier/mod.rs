@@ -32,15 +32,15 @@ impl NativeFilesystemVerificationBinding {
     ) -> Result<Self> {
         verifier.verify(
             scope,
-            &mut Some(&mut crate::store::history::native_work_io(work)?),
+            &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
         )?;
-        let mut observer = crate::store::history::native_work_io(work).map_err(Error::from)?;
+        let mut observer = crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new).map_err(Error::from)?;
         let verifier = verifier.copy(&mut Some(&mut observer))?;
         let scope = scope.copy(&mut Some(&mut observer))?;
         Ok(Self {
             verifier,
             scope,
-            custody: observer.into_custody(),
+            custody: observer.into_custody()?,
         })
     }
 
@@ -56,7 +56,7 @@ impl NativeFilesystemVerificationBinding {
         }
         self.verifier.verify(
             &self.scope,
-            &mut Some(&mut crate::store::history::native_work_io(work)?),
+            &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
         )
     }
 
@@ -470,7 +470,7 @@ where
                 Ok(reservation) => reservation,
                 Err((source, custody)) => {
                     let primary = Error::NativeWorkspace { source, custody };
-                    if let Ok(Some(reservation)) = guard.workspace.publication_reservation_with_native_work(
+                    if let Ok(Some(reservation)) = guard.workspace.publication_reservation(
                         operation, work, work.cancellation()).await
                     {
                         guard.reservation = Some(reservation);

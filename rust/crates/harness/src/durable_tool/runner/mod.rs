@@ -71,9 +71,8 @@ impl DurableToolRunner {
         context: &'a ToolContext,
         work: crate::NativeWork<'a>,
         reconcile_only: bool,
-    ) -> Result<
-        crate::store::history::HistoryContentFuture<'a, (Outcome<Value>, crate::NativeCustody)>,
-    > {
+    ) -> Result<crate::store::HistoryContentFuture<'a, (Outcome<Value>, crate::NativeCustody)>>
+    {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let io = work
             .map(crate::executor::PreparationIo::from_native_work)
@@ -184,9 +183,9 @@ impl DurableToolRunner {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
             return crate::NativeFutureBundle::new(work, future)
-                .map(crate::store::history::HistoryContentFuture::Native);
+                .map(crate::store::HistoryContentFuture::Native);
         }
-        Ok(crate::store::history::HistoryContentFuture::Ordinary {
+        Ok(crate::store::HistoryContentFuture::Ordinary {
             future: Box::pin(future()),
             frame_bytes: 0,
         })

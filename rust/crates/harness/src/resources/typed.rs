@@ -82,7 +82,7 @@ typed_reference!(
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let Some(work) = work {
                 let mut io = crate::filesystem::PreparationIo::from_native_work(work)
-                    .map(crate::store::history::HistoryWork::new)?;
+                    .map(crate::store::HistoryWork::new)?;
                 let mut observed = Some(&mut io as &mut dyn HistoryIo);
                 provider.validate(&mut observed)?;
                 if key.is_empty() {

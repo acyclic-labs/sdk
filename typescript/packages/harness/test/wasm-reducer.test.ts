@@ -156,10 +156,10 @@ test("native Rust semantics execute through WASM", async () => {
   });
   const owner = "08080808-0808-0808-0808-080808080808" as AgentId;
   const reader = "09090909-0909-0909-0909-090909090909" as AgentId;
-  const ownerScope = harness.issueScopeForAgent(owner, "private-owner", [
+  const ownerScope = harness.issueScope("private-owner", [
     harness.volumeCapability(content.volume, "read"),
     harness.volumeCapability(content.volume, "write"),
-  ]);
+  ], owner);
   const delegated = harness.delegatePrivateFileRead(ownerScope, reader, "attached-reader", content);
   expect(delegated.agent).toBe(reader);
   expect(delegated.capabilities).toEqual([harness.fileReadCapability(content)]);
@@ -171,7 +171,7 @@ test("native Rust semantics execute through WASM", async () => {
   expect(() => harness.directoryReadCapability(content.volume, "../extension")).toThrow();
   expect(() => harness.directoryReadCapability(content.volume, ".system")).toThrow();
   expect(() => harness.delegatePrivateFileRead(
-    harness.issueScopeForAgent(reader, "foreign", [harness.volumeCapability(content.volume, "read")]),
+    harness.issueScope("foreign", [harness.volumeCapability(content.volume, "read")], reader),
     reader, "invalid", content,
   )).toThrow();
   const first = harness.apply({

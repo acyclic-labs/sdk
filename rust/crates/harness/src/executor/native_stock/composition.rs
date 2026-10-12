@@ -4,7 +4,7 @@ use super::*;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub struct NativeStockExecutor {
     pub(in crate::executor) stock: StockExecutor,
-    context: Option<(Arc<crate::runtime::NativeTaskContext>, OperationId)>,
+    context: Option<(Arc<crate::runtime::TaskContext>, OperationId)>,
     pub(in crate::executor) interactions: Option<Arc<dyn crate::runtime::InteractionRouter>>,
     custody: acyclic_fs::NativeAllocation,
 }
@@ -79,7 +79,7 @@ impl NativeStockExecutor {
     /// Binds the same issued context, durable owner and fence without scope cloning.
     pub fn with_task_context_with_native_work(
         mut self,
-        context: Arc<crate::runtime::NativeTaskContext>,
+        context: Arc<crate::runtime::TaskContext>,
         operation: OperationId,
         host: Arc<dyn DurableTaskHost>,
         task: TaskId,
@@ -88,7 +88,7 @@ impl NativeStockExecutor {
     ) -> Result<Self> {
         self.require_original_work(work)?;
         if !context.native_metadata_matches(work)
-            || !context.context().original_task_binding_matches(task, fence)
+            || !context.original_task_binding_matches(task, fence)
         {
             return Err(crate::Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
@@ -127,10 +127,9 @@ impl NativeStockExecutor {
             });
         };
         context
-            .context()
             .validate_stock_scope_with_native_work(scope, self.stock.limits, work)?;
         if let Some(policy) = &policy {
-            let Some((_, original)) = context.context().stock_tool_policy_binding() else {
+            let Some((_, original)) = context.stock_tool_policy_binding() else {
                 return Err(crate::Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Unauthorized,
                     reason: "stock policy is not issued by this context",
@@ -203,7 +202,7 @@ impl NativeStockExecutor {
 
     pub(in crate::executor) fn admit_execution(
         &self,
-        context: &Arc<crate::runtime::NativeTaskContext>,
+        context: &Arc<crate::runtime::TaskContext>,
         input: &TurnInput,
         journal: &dyn ExecutionJournal,
         work: &acyclic_fs::NativeMaterializationWork,
@@ -224,7 +223,7 @@ impl NativeStockExecutor {
     /// Runs the complete ordinary/native stock loop using borrowed issued inputs.
     pub(crate) fn execute_progress_with_native_context<'a>(
         &'a self,
-        context: &'a Arc<crate::runtime::NativeTaskContext>,
+        context: &'a Arc<crate::runtime::TaskContext>,
         input: &'a TurnInput,
         journal: &'a dyn ExecutionJournal,
         work: &'a acyclic_fs::NativeMaterializationWork,
@@ -245,7 +244,7 @@ impl NativeStockExecutor {
     /// Reconciles the same journal without admitting a replacement effect.
     pub(crate) fn execute_reconcile_progress_with_native_context<'a>(
         &'a self,
-        context: &'a Arc<crate::runtime::NativeTaskContext>,
+        context: &'a Arc<crate::runtime::TaskContext>,
         input: &'a TurnInput,
         journal: &'a dyn ExecutionJournal,
         work: &'a acyclic_fs::NativeMaterializationWork,

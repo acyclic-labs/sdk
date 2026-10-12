@@ -253,11 +253,7 @@ impl NativeMaterializationWork {
             guard().await?;
             self.validate_builtin(root, expected, relative, held.1, held.2)
                 .map_err(E::from)?;
-            let attempted = crate::native_host::read_builtin_file(
-                &held.0,
-                &mut bytes.writable()[filled..before.len() as usize],
-                self,
-            );
+            let attempted = crate::native_host::builtin_io(acyclic_native_runtime::NativeOperationKind::Read, (&mut bytes.writable()[filled..before.len() as usize]).len(), self, || std::io::Read::read(&mut &*(&held.0), &mut bytes.writable()[filled..before.len() as usize]));
             let checked = guard().await;
             let count = match attempted {
                 Err(NativeTreeMaterializationError::Io(error))
@@ -387,11 +383,7 @@ impl NativeMaterializationWork {
             if written == content.len() {
                 break;
             }
-            let attempted = crate::native_host::write_builtin_file(
-                &held.0,
-                &content.as_bytes()[written..],
-                self,
-            );
+            let attempted = crate::native_host::builtin_io(acyclic_native_runtime::NativeOperationKind::Write, (&content.as_bytes()[written..]).len(), self, || std::io::Write::write(&mut &*(&held.0), &content.as_bytes()[written..]));
             let checked = guard().await;
             let count = match attempted {
                 Err(NativeTreeMaterializationError::Io(error))

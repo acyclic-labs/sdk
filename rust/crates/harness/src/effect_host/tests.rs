@@ -55,7 +55,7 @@ fn ordinary_host() -> Result<ConversationEffectHost<MemoryStream>> {
         scope,
         SchemaRegistry::new(),
         content,
-        EffectRegistry::new(None)?,
+        EffectRegistry::new(None, None)?,
         None,
         None,
     )
@@ -119,7 +119,7 @@ fn native_catalog_denies_metadata_before_allocation() {
         .expect("only meter backing is admitted");
     let before = work.receipt().allocation_operations;
     assert!(matches!(
-        EffectRegistry::new(Some(&work)),
+        EffectRegistry::new(Some(&work), None),
         Err(Error::NativeWork { .. })
     ));
     assert_eq!(work.receipt().allocation_operations, before);
@@ -129,7 +129,7 @@ fn native_catalog_denies_metadata_before_allocation() {
     cancellation.cancel();
     let before = work.receipt().allocation_operations;
     assert!(matches!(
-        EffectRegistry::new(Some(&work)),
+        EffectRegistry::new(Some(&work), None),
         Err(Error::NativeWork { .. })
     ));
     assert_eq!(work.receipt().allocation_operations, before);

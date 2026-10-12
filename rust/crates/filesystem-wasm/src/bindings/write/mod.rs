@@ -10,11 +10,7 @@ impl BrowserCheckout {
         offset: u64,
         bytes: Vec<u8>,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let bytes = bytes::Bytes::from(bytes);
         let receipt = browser_call!(
             self,
@@ -61,11 +57,7 @@ impl BrowserCheckout {
         path: String,
         logical_bytes: u64,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let receipt = browser_call!(
             self,
             change_content(
@@ -110,11 +102,7 @@ impl BrowserCheckout {
         allocated: bool,
         extend: bool,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let receipt = browser_call!(
             self,
             change_content(
@@ -165,11 +153,7 @@ impl BrowserCheckout {
         length: u64,
         keep_size: bool,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let receipt = browser_call!(
             self,
             change_content(
@@ -219,17 +203,9 @@ impl BrowserCheckout {
         length: u64,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
         let request = FileCloneRequest {
-            source: browser_path(
-                &source,
-                self.engine.volume_config().profile,
-                self.engine.volume_config().limits,
-            )?,
+            source: browser_path(&source, self.engine.volume_config())?,
             source_offset,
-            destination: browser_path(
-                &destination,
-                self.engine.volume_config().profile,
-                self.engine.volume_config().limits,
-            )?,
+            destination: browser_path(&destination, self.engine.volume_config())?,
             destination_offset,
             length,
         };

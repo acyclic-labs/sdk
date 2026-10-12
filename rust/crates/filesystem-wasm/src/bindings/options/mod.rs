@@ -5,11 +5,11 @@ use super::*;
 #[tsify(large_number_types_as_bigints)]
 pub struct BrowserVolumeOptions {
     #[tsify(type = "\"portable\" | \"posix\" | \"windows\" | \"browser\"")]
-    pub(in crate::bindings) profile: Profile,
+    pub(in crate::bindings) profile: FilesystemProfile,
     #[tsify(type = "\"exclusive-writer\" | \"optimistic\" | \"serialized-authority\"")]
     pub(in crate::bindings) concurrency: Concurrency,
     #[tsify(type = "\"ephemeral\" | \"durable\"")]
-    pub(in crate::bindings) lifecycle: VolumeLifecycle,
+    pub(in crate::bindings) lifecycle: Lifecycle,
     #[tsify(type = "\"sensitive\" | \"profile-folded\"")]
     pub(in crate::bindings) case_sensitivity: NameCase,
     #[tsify(type = "\"preserve\" | \"require-nfc\"")]
@@ -22,26 +22,10 @@ pub struct BrowserVolumeOptions {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub(in crate::bindings) enum Profile {
-    Portable,
-    Posix,
-    Windows,
-    Browser,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "kebab-case")]
 pub(in crate::bindings) enum Concurrency {
     ExclusiveWriter,
     Optimistic,
     SerializedAuthority,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "kebab-case")]
-pub(in crate::bindings) enum VolumeLifecycle {
-    Ephemeral,
-    Durable,
 }
 
 #[derive(Deserialize)]
@@ -121,21 +105,13 @@ pub(in crate::bindings) fn browser_volume_config(
 ) -> Result<VolumeConfig, VolumeConfigError> {
     let limits = options.limits;
     VolumeConfig {
-        profile: match options.profile {
-            Profile::Portable => FilesystemProfile::Portable,
-            Profile::Posix => FilesystemProfile::Posix,
-            Profile::Windows => FilesystemProfile::Windows,
-            Profile::Browser => FilesystemProfile::Browser,
-        },
+        profile: options.profile,
         concurrency: match options.concurrency {
             Concurrency::ExclusiveWriter => ConcurrencyMode::ExclusiveWriter,
             Concurrency::Optimistic => ConcurrencyMode::Optimistic,
             Concurrency::SerializedAuthority => ConcurrencyMode::SerializedAuthority,
         },
-        lifecycle: match options.lifecycle {
-            VolumeLifecycle::Ephemeral => Lifecycle::Ephemeral,
-            VolumeLifecycle::Durable => Lifecycle::Durable,
-        },
+        lifecycle: options.lifecycle,
         case_sensitivity: match options.case_sensitivity {
             NameCase::Sensitive => CaseSensitivity::Sensitive,
             NameCase::ProfileFolded => CaseSensitivity::ProfileFolded,

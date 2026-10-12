@@ -21,8 +21,8 @@ pub(super) fn context_contract_native<T: Serialize>(
         })?;
     let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(0, private_labels)?;
     let diagnostic = work.claim(diagnostic_bytes, 0, acyclic_fs::WorkCounters::default())?;
-    let mut io = crate::filesystem::PreparationIo::from_native_work(work)
-        .map(crate::store::history::HistoryWork::new)?;
+    let mut io =
+        crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
     let encoded = (|| {
         crate::contract::validate_json_byte_bound_native_trusted(
             value,

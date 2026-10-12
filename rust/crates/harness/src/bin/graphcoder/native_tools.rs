@@ -7,7 +7,7 @@ use acyclic_harness::{
     Error, Result, TaskId,
     conversation::{ConversationMessage, VolumeRef},
     filesystem::{ConfiguredRecursiveAuthorityBinding, ConfiguredRecursiveCaller,
-        ConfiguredRecursiveFork, ConfiguredRecursiveMerge, ConfiguredRecursiveSourceCheckpoint,
+        ConfiguredRecursiveFork, ConfiguredRecursiveMerge,
         ConfiguredRecursiveToolSource, ConfiguredRecursiveToolsConfig, ForkPreparationLimits},
     runtime::TaskAdmissionRecord,
     store::HistoryReadLimits,
@@ -117,13 +117,6 @@ pub fn source(config: &Config, stream: std::sync::Arc<LocalStream>, files: Arc<F
         inherited_references: 64,
         content_budget: config.tools.content_budget,
         project_policy_graph_root: None,
-        original_sources: config.fork_sources.iter()
-            .filter(|source| config.tools.callers.iter().any(|caller| caller.task == source.caller))
-            .map(|source| ConfiguredRecursiveSourceCheckpoint {
-                caller: source.caller,
-                request: source.request.clone(),
-                snapshot: source.snapshot.clone(),
-            }).collect(),
     };
     Source::new(configured, stream, files, &config.filesystem_provider, config.limits)
 }
@@ -228,7 +221,7 @@ impl super::native::NativeSession {
         };
         let provider = NativeProcessProvider::new(owner.clone(), operation, &configured.plan,
             view, configured.approval, authority, &work)?.await?.into_arc_with_native_work(&work)?;
-        let mut registry = EffectRegistry::new(Some(&work))?;
+        let mut registry = EffectRegistry::new(Some(&work), None)?;
         registry.register(provider, Some(&work))?;
         let mut authority_io = native_work_io(&work).map_err(Error::from)?;
         let authority = authority_io.clone_authority(&binding.authority)?;

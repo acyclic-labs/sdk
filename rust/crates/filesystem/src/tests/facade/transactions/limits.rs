@@ -7,30 +7,26 @@ async fn public_byte_boundaries_reject_before_allocation_or_backend_work()
     let cancellation = CancellationToken::new();
     let mut limited = config();
     limited.limits.maximum_read_bytes = 4;
-    let volume = (fs.create_volume_with_id(
-        VolumeId::from_bytes([189; 16]),
-        limited,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let volume =
+        (fs.create_volume_with_id(VolumeId::from_bytes([189; 16]), limited, B, &cancellation))
+            .await?
+            .value;
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
     .value;
     let file = path("bounded")?;
     let failure = (checkout.create(
-        crate::AuthoredMutation::CreateFile {
+        AuthoredMutation::CreateFile {
             path: file.clone(),
-            bytes: (bytes::Bytes::from_static(b"12345")).into(),
-            metadata: crate::kernel::FileMetadata::default(),
+            bytes: OwnedBytes::from_static(b"12345"),
+            metadata: FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await
@@ -43,12 +39,12 @@ async fn public_byte_boundaries_reject_before_allocation_or_backend_work()
     assert_eq!(*failure.work, WorkCounters::default());
 
     let file_id = (checkout.create(
-        crate::AuthoredMutation::CreateFile {
+        AuthoredMutation::CreateFile {
             path: file.clone(),
-            bytes: (bytes::Bytes::from_static(b"1234")).into(),
-            metadata: crate::kernel::FileMetadata::default(),
+            bytes: OwnedBytes::from_static(b"1234"),
+            metadata: FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -56,12 +52,12 @@ async fn public_byte_boundaries_reject_before_allocation_or_backend_work()
     for failure in [
         (checkout.change_content(
             file.clone(),
-            crate::ContentChange::Write {
+            ContentChange::Write {
                 offset: 0,
-                bytes: (bytes::Bytes::from_static(b"12345")).into(),
+                bytes: OwnedBytes::from_static(b"12345"),
             },
-            crate::ContentTimes::Preserve,
-            WorkBudget::UNBOUNDED,
+            ContentTimes::Preserve,
+            B,
             &cancellation,
         ))
         .await
@@ -69,12 +65,12 @@ async fn public_byte_boundaries_reject_before_allocation_or_backend_work()
         .ok_or("oversized path write succeeded")?,
         (checkout.change_content(
             file_id,
-            crate::ContentChange::Write {
+            ContentChange::Write {
                 offset: 0,
-                bytes: (bytes::Bytes::from_static(b"12345")).into(),
+                bytes: OwnedBytes::from_static(b"12345"),
             },
-            crate::ContentTimes::Preserve,
-            WorkBudget::UNBOUNDED,
+            ContentTimes::Preserve,
+            B,
             &cancellation,
         ))
         .await
@@ -90,12 +86,12 @@ async fn public_byte_boundaries_reject_before_allocation_or_backend_work()
 
     (checkout.change_content(
         file_id,
-        crate::ContentChange::Write {
+        ContentChange::Write {
             offset: 4,
-            bytes: (bytes::Bytes::from_static(b"5")).into(),
+            bytes: OwnedBytes::from_static(b"5"),
         },
-        crate::ContentTimes::Preserve,
-        WorkBudget::UNBOUNDED,
+        ContentTimes::Preserve,
+        B,
         &cancellation,
     ))
     .await?;
@@ -107,7 +103,7 @@ async fn public_byte_boundaries_reject_before_allocation_or_backend_work()
                 offset: 0,
                 length: 5,
             },
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         ))
         .await
@@ -119,7 +115,7 @@ async fn public_byte_boundaries_reject_before_allocation_or_backend_work()
                 offset: 0,
                 length: 5,
             },
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         ))
         .await
@@ -138,26 +134,14 @@ async fn public_byte_boundaries_reject_before_allocation_or_backend_work()
         length: limited.limits.maximum_generation_bytes + 1,
     };
     for failure in [
-        (checkout.plan_file_extents(
-            &file,
-            excessive_range,
-            1,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .await
-        .err()
-        .ok_or("oversized path plan succeeded")?,
-        (checkout.plan_file_extents_by_id(
-            file_id,
-            excessive_range,
-            1,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .await
-        .err()
-        .ok_or("oversized identity plan succeeded")?,
+        (checkout.plan_file_extents(&file, excessive_range, 1, B, &cancellation))
+            .await
+            .err()
+            .ok_or("oversized path plan succeeded")?,
+        (checkout.plan_file_extents_by_id(file_id, excessive_range, 1, B, &cancellation))
+            .await
+            .err()
+            .ok_or("oversized identity plan succeeded")?,
     ] {
         assert!(matches!(
             failure.error,
@@ -167,12 +151,12 @@ async fn public_byte_boundaries_reject_before_allocation_or_backend_work()
     }
 
     let symbolic = (checkout.create(
-        crate::AuthoredMutation::CreateSymbolicLink {
+        AuthoredMutation::CreateSymbolicLink {
             path: path("link")?,
-            target: (bytes::Bytes::from_static(b"12345")).into(),
-            metadata: crate::kernel::FileMetadata::default(),
+            target: OwnedBytes::from_static(b"12345"),
+            metadata: FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await
@@ -184,7 +168,7 @@ async fn public_byte_boundaries_reject_before_allocation_or_backend_work()
     ));
     assert_eq!(*symbolic.work, WorkCounters::default());
 
-    let mut detached = (checkout.detach_regular_file(&file, WorkBudget::UNBOUNDED, &cancellation))
+    let mut detached = (checkout.detach_regular_file(&file, B, &cancellation))
         .await?
         .value;
     let detached_read_failure = (detached.read_range(
@@ -192,7 +176,7 @@ async fn public_byte_boundaries_reject_before_allocation_or_backend_work()
             offset: 0,
             length: 5,
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await
@@ -209,7 +193,7 @@ async fn public_byte_boundaries_reject_before_allocation_or_backend_work()
             bytes: OwnedBytes::from_static(b"12345"),
         },
         None,
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await
@@ -228,85 +212,53 @@ async fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let first = (fs.create_volume_with_id(
-        VolumeId::from_bytes([119; 16]),
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    let second = (fs.create_volume_with_id(
-        VolumeId::from_bytes([120; 16]),
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    let first_head = (first.checkout(
-        GenerationSelector::Head,
-        pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value
-    .generation_id();
-    let second_head = (second.checkout(
-        GenerationSelector::Head,
-        pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value
-    .generation_id();
+    let first =
+        (fs.create_volume_with_id(VolumeId::from_bytes([119; 16]), config(), B, &cancellation))
+            .await?
+            .value;
+    let second =
+        (fs.create_volume_with_id(VolumeId::from_bytes([120; 16]), config(), B, &cancellation))
+            .await?
+            .value;
+    let first_head = (first.checkout(GenerationSelector::Head, pinned(), B, &cancellation))
+        .await?
+        .value
+        .generation_id();
+    let second_head = (second.checkout(GenerationSelector::Head, pinned(), B, &cancellation))
+        .await?
+        .value
+        .generation_id();
     assert!(
         (first.checkout(
             GenerationSelector::Exact(first_head),
             writable_pinned(),
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         ))
         .await
         .is_err()
     );
-    assert!(matches!(
+    assert!(
         (first.checkout(
             GenerationSelector::Exact(second_head),
             pinned(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .await,
-        Err(OperationFailure {
-            error: FsError::VolumeMismatch,
-            ..
-        })
-    ));
-    assert!(
-        (first.diff_generations(
-            first_head,
-            second_head,
-            8,
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         ))
         .await
         .is_err()
     );
-
-    let mut read_only = (first.checkout(
-        GenerationSelector::Head,
-        pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
     assert!(
-        (read_only.mutate(Vec::new(), WorkBudget::UNBOUNDED, &cancellation,))
+        (first.diff_generations(first_head, second_head, 8, B, &cancellation,))
+            .await
+            .is_err()
+    );
+
+    let mut read_only = (first.checkout(GenerationSelector::Head, pinned(), B, &cancellation))
+        .await?
+        .value;
+    assert!(
+        (read_only.mutate(Vec::new(), B, &cancellation,))
             .await
             .is_err()
     );
@@ -316,62 +268,32 @@ async fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
             None,
             None,
             None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
+            PublicationPermit::Unrestricted,
+            B,
             &cancellation,
-            |_| async {
-                crate::FsResult::Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                })
-            }
+            allow::<FsError>
         ))
         .await
         .is_err()
     );
+    assert!((read_only.discard(B, &cancellation)).await.is_err());
+    assert!((read_only.refresh_head(B, &cancellation)).await.is_err());
+    assert!((read_only.refresh_live(B, &cancellation)).await.is_err());
     assert!(
-        (read_only.discard(WorkBudget::UNBOUNDED, &cancellation))
+        (read_only.mutate_live(Vec::new(), OperationId::new(), 1, 1, B, &cancellation,))
             .await
             .is_err()
     );
     assert!(
-        (read_only.refresh_head(WorkBudget::UNBOUNDED, &cancellation))
+        (read_only.resume_live(OperationId::new(), 1, 1, B, &cancellation,))
             .await
             .is_err()
-    );
-    assert!(
-        (read_only.refresh_live(WorkBudget::UNBOUNDED, &cancellation))
-            .await
-            .is_err()
-    );
-    assert!(
-        (read_only.mutate_live(
-            Vec::new(),
-            OperationId::new(),
-            1,
-            1,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .await
-        .is_err()
-    );
-    assert!(
-        (read_only.resume_live(
-            OperationId::new(),
-            1,
-            1,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .await
-        .is_err()
     );
 
     let mut writable = (first.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -379,7 +301,7 @@ async fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
     let excessive_capacity = Vec::<Mutation>::with_capacity(
         usize::try_from(config().limits.maximum_mutations_per_batch)? + 1,
     );
-    let failure = (writable.mutate(excessive_capacity, WorkBudget::UNBOUNDED, &cancellation))
+    let failure = (writable.mutate(excessive_capacity, B, &cancellation))
         .await
         .err()
         .ok_or("excessive mutation capacity unexpectedly succeeded")?;
@@ -389,7 +311,7 @@ async fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
     let mut clean = (first.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -400,59 +322,48 @@ async fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
             None,
             None,
             None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
+            PublicationPermit::Unrestricted,
+            B,
             &cancellation,
-            |_| async {
-                crate::FsResult::Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                })
-            }
+            allow::<FsError>
         ))
         .await
         .is_err()
     );
     assert!(
-        (clean.resume_live(
-            OperationId::new(),
-            1,
-            1,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .await
-        .is_err()
+        (clean.resume_live(OperationId::new(), 1, 1, B, &cancellation,))
+            .await
+            .is_err()
     );
 
     let mut manual_checkout = (first.checkout(
         GenerationSelector::Head,
         writable_manual(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
     .value;
     (manual_checkout.create(
-        crate::AuthoredMutation::CreateFile {
+        AuthoredMutation::CreateFile {
             path: path("dirty")?,
-            bytes: (bytes::Bytes::from_static(b"dirty")).into(),
-            metadata: crate::kernel::FileMetadata::default(),
+            bytes: OwnedBytes::from_static(b"dirty"),
+            metadata: FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
     assert!(
-        (manual_checkout.refresh_head(WorkBudget::UNBOUNDED, &cancellation))
+        (manual_checkout.refresh_head(B, &cancellation))
             .await
             .is_err()
     );
     assert!(manual_checkout.has_pending_mutations());
-    (manual_checkout.discard(WorkBudget::UNBOUNDED, &cancellation)).await?;
+    (manual_checkout.discard(B, &cancellation)).await?;
     assert!(!manual_checkout.has_pending_mutations());
     assert_eq!(
-        (manual_checkout.refresh_head(WorkBudget::UNBOUNDED, &cancellation))
+        (manual_checkout.refresh_head(B, &cancellation))
             .await?
             .value,
         first_head

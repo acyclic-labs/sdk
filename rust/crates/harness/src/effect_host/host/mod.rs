@@ -1,7 +1,7 @@
 use super::*;
 
 pub(crate) fn effect_error(
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+    work: &Option<&mut dyn crate::store::history::HistoryIo>,
     code: crate::wire::ErrorCode,
     reason: &'static str,
 ) -> Error {
@@ -43,10 +43,9 @@ fn validate_task_plan<P: StreamProvider>(
         owner.require_effect_grants(
             &plan.provider,
             planning,
-            &mut Some(
-                &mut crate::filesystem::PreparationIo::from_native_work(native)
-                    .map(crate::store::history::HistoryWork::new)?,
-            ),
+            &mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(native)?,
+            )),
         )?;
         owner.validate_input_file(
             &plan.request,
@@ -73,10 +72,9 @@ async fn verify_owner<P: StreamProvider>(
         return owner
             .verify(
                 settlement,
-                &mut Some(
-                    &mut crate::filesystem::PreparationIo::from_native_work(native)
-                        .map(crate::store::history::HistoryWork::new)?,
-                ),
+                &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(native)?,
+                )),
             )
             .await;
     }
@@ -316,8 +314,9 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                     cause,
                     custody: None,
                 })?;
-            let mut io = crate::filesystem::PreparationIo::from_native_work(work)
-                .map(crate::store::history::HistoryWork::new)?;
+            let mut io = crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(work)?,
+            );
             host.validate_binding(&mut Some(&mut io))?;
             return Ok(host);
         }
@@ -407,13 +406,14 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
         use crate::store::history::HistoryIo as _;
-        let mut io = crate::filesystem::PreparationIo::from_native_work(work)
-            .map(crate::store::history::HistoryWork::new)?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let authority = io.clone_authority(&self.authority)?;
         let issuer = self.issuer.copy(&mut Some(&mut io))?;
         let scope = self.scope.copy(&mut Some(&mut io))?;
         let schemas = self.schemas.copy(&mut Some(&mut io))?;
-        let providers = self.providers.clone_with_native_work(work)?;
+        let providers = self.providers.copy(work)?;
         let mut host = Self::new(
             self.stream.clone(),
             authority,
@@ -438,8 +438,9 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     ) -> Result<Arc<Self>> {
         use crate::store::history::HistoryIo as _;
         self.require_native_metadata(work)?;
-        let mut io = crate::filesystem::PreparationIo::from_native_work(work)
-            .map(crate::store::history::HistoryWork::new)?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let bytes = std::mem::size_of::<Self>() as u64;
         io.admit_allocation(bytes)?;
         io.retain_owned(bytes)?;
@@ -466,7 +467,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             .and_then(|io| io.original_native_work())
             .map(crate::filesystem::PreparationIo::from_native_work)
             .transpose()?
-            .map(crate::store::history::HistoryWork::new);
+            .map(crate::store::HistoryWork::new);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut observed = match native_io.as_mut() {
             Some(io) => Some(io as &mut dyn crate::store::history::HistoryIo),

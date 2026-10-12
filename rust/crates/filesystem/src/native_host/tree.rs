@@ -141,9 +141,7 @@ impl HostRoot {
                 & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT.0
                 == 0;
         if real_directory {
-            let directory = root
-                .open_dir_held_wide(name, work)
-                .map(|(directory, _)| directory)?;
+            let directory = root.open_dir_held_wide(name, work)?;
             let identity = directory_identity(&directory, work)?;
             let child = HostRoot {
                 directory,
@@ -155,7 +153,7 @@ impl HostRoot {
             }
             let (mut reader, bytes) = child_root.read_dir_stats_wide(&[], work)?;
             let result: Result<(), DemandError> = (|| {
-                while let Some((entry, bytes)) = reader.next_wide(work)? {
+                while let Some((entry, bytes)) = reader.next(work)? {
                     let result = (|| {
                         let stat = child_root.stat_wide(&entry.name, work)?;
                         child.remove_identity_wide(&entry.name, stat.identity(), work)

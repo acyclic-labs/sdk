@@ -145,10 +145,11 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_readlink(
                 return Err(driver_errno(libc::ENAMETOOLONG));
             }
             // SAFETY: target and its terminator fit the bridge output buffer.
-            copying(work, copy_work((target.len() + 1) as u64), || unsafe {
+            work.charge(copy_work((target.len() + 1) as u64))?;
+            unsafe {
                 ptr::copy_nonoverlapping(target.as_ptr(), buffer.cast(), target.len());
                 buffer.add(target.len()).write(0);
-            })?;
+            };
             Ok(0)
         })
     })

@@ -19,6 +19,11 @@ pub(super) fn clone_fatal_source_error(error: &MountSourceError) -> Option<Mount
         MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled) => {
             MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled)
         }
+        MountSourceError::NativeWork(crate::NativeTreeMaterializationError::AllocationFailed(
+            error,
+        )) => MountSourceError::NativeWork(
+            crate::NativeTreeMaterializationError::AllocationFailed(error.clone()),
+        ),
         MountSourceError::OriginalSnapshotUnavailable => {
             MountSourceError::OriginalSnapshotUnavailable
         }
@@ -33,6 +38,9 @@ pub(super) fn clone_fatal_source_error(error: &MountSourceError) -> Option<Mount
         }
         MountSourceError::Filesystem(crate::FsError::Cancelled(error)) => {
             MountSourceError::Filesystem(crate::FsError::Cancelled(*error))
+        }
+        MountSourceError::Filesystem(crate::FsError::HandleAllocationFailed) => {
+            MountSourceError::Filesystem(crate::FsError::HandleAllocationFailed)
         }
         MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Work(error)) => {
             MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Work(error.clone()))
@@ -66,6 +74,11 @@ pub(super) fn clone_fatal_handler_error(error: &NativeMountError) -> Option<Nati
                 crate::NativeTreeMaterializationError::Cancelled,
             ))
         }
+        NativeMountError::Materialization(
+            crate::NativeTreeMaterializationError::AllocationFailed(error),
+        ) => Some(NativeMountError::Materialization(
+            crate::NativeTreeMaterializationError::AllocationFailed(error.clone()),
+        )),
         NativeMountError::Demand(crate::DemandError::Mount(error)) => {
             clone_fatal_source_error(error)
                 .map(|error| NativeMountError::Demand(crate::DemandError::Mount(error)))
@@ -129,7 +142,9 @@ pub(super) fn fatal_handler_error(error: &NativeMountError) -> bool {
                 | MountSourceError::OriginalSnapshotUnavailable
                 | MountSourceError::Indeterminate
                 | MountSourceError::Filesystem(
-                    crate::FsError::Work(_) | crate::FsError::Cancelled(_),
+                    crate::FsError::Work(_)
+                    | crate::FsError::Cancelled(_)
+                    | crate::FsError::HandleAllocationFailed,
                 )
                 | MountSourceError::NamespacePath(
                     crate::kernel::NamespacePathError::Work(_)
@@ -167,6 +182,7 @@ pub(super) fn native_callback_errno(error: &NativeMountError) -> i32 {
                 }
                 MountSourceError::Io(error, _) => error.raw_os_error().unwrap_or(libc::EIO),
                 MountSourceError::Allocation(_)
+                | MountSourceError::Filesystem(crate::FsError::HandleAllocationFailed)
                 | MountSourceError::NamespacePath(
                     crate::kernel::NamespacePathError::AllocationFailed,
                 ) => libc::ENOMEM,

@@ -71,8 +71,9 @@ impl SourceStage {
                 reason: "context source has no native capability",
             });
         }
-        let mut io = crate::filesystem::PreparationIo::from_native_work(work)
-            .map(crate::store::history::HistoryWork::new)?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let mut observed: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut io);
         let mut quota = crate::wire_codec::CodecQuota::new(&mut observed, 0)?;
         let name = crate::core::copy_text(name, &mut quota)?;

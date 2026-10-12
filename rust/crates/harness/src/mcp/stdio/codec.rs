@@ -233,11 +233,9 @@ pub(super) fn encode_line<T: Serialize>(
                         diagnostic
                             .bytes()
                             .checked_sub(message.capacity() as u64)
-                            .ok_or_else(|| {
-                                acyclic_fs::NativeTreeMaterializationError::from(
-                                    acyclic_fs::WorkError::Overflow,
-                                )
-                            })?,
+                            .ok_or(acyclic_fs::NativeTreeMaterializationError::Work(
+                                acyclic_fs::WorkError::Overflow,
+                            ))?,
                     )
                     .map_err(native_error)?;
                 return Err(Error::NativeDiagnostic {
@@ -321,11 +319,9 @@ pub(super) fn frame_admission(
                         diagnostic
                             .bytes()
                             .checked_sub(message.capacity() as u64)
-                            .ok_or_else(|| {
-                                acyclic_fs::NativeTreeMaterializationError::from(
-                                    acyclic_fs::WorkError::Overflow,
-                                )
-                            })?,
+                            .ok_or(acyclic_fs::NativeTreeMaterializationError::Work(
+                                acyclic_fs::WorkError::Overflow,
+                            ))?,
                     )
                     .map_err(native_error)?;
                 return Err(Error::NativeDiagnostic {

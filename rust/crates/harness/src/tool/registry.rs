@@ -212,22 +212,22 @@ impl ToolRegistry {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if work.is_some() {
                 // Replaced selection storage is gone before its refund.
-                let guard = custody.as_mut().expect("checked registry custody");
-                guard.release(guard.bytes().checked_sub(retained).ok_or_else(|| {
-                    acyclic_fs::NativeTreeMaterializationError::from(
+                let custody = custody.as_mut().expect("checked registry custody");
+                custody.release(custody.bytes().checked_sub(retained).ok_or(
+                    acyclic_fs::NativeTreeMaterializationError::Work(
                         acyclic_fs::WorkError::Overflow,
-                    )
-                })?)?;
+                    ),
+                )?)?;
             }
             Ok(())
         })();
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if result.is_err() && !published && work.is_some() {
             // The closure's input and prepared buffers have dropped before refund.
-            let guard = custody.as_mut().expect("checked registry custody");
-            guard.release(guard.bytes().checked_sub(original_quota).ok_or_else(|| {
-                acyclic_fs::NativeTreeMaterializationError::from(acyclic_fs::WorkError::Overflow)
-            })?)?;
+            let custody = custody.as_mut().expect("checked registry custody");
+            custody.release(custody.bytes().checked_sub(original_quota).ok_or(
+                acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow),
+            )?)?;
         }
         let _ = (published, custody, work);
         result
