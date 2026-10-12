@@ -1,27 +1,6 @@
 use super::*;
 use crate::native_host::HostStatReader;
 
-#[cfg(windows)]
-pub(super) fn wide_name(
-    path: &Path,
-    work: &NativeMaterializationWork,
-) -> Result<(Vec<u16>, NativeAllocation), NativeTreeMaterializationError> {
-    use std::os::windows::ffi::OsStrExt as _;
-    let count = path.as_os_str().encode_wide().count();
-    let mut allocation = work.claim(
-        owned_size(count, 2)?,
-        u64::from(count != 0),
-        crate::WorkCounters::UNCHARGED,
-    )?;
-    let mut name = Vec::new();
-    name.try_reserve_exact(count)
-        .map_err(NativeTreeMaterializationError::AllocationFailed)?;
-    allocation.reconcile_capacity(owned_size(name.capacity(), 2)?)?;
-    work.charge(NativeResourceCredit::Copy.delta(owned_size(count, 2)?))?;
-    name.extend(path.as_os_str().encode_wide());
-    Ok((name, allocation))
-}
-
 pub(super) fn native_utf16_name_bytes(
     units: impl Iterator<Item = u16>,
 ) -> impl Iterator<Item = u8> {
@@ -64,7 +43,7 @@ pub(super) fn next_name(
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStringExt as _;
-        let Some((entry, mut allocation)) = reader.next(&mut &*work)? else {
+        let Some((entry, allocation)) = reader.next(&mut &*work)? else {
             return Ok(None);
         };
         let mut owned = work.claim(
@@ -74,8 +53,9 @@ pub(super) fn next_name(
         )?;
         let name = std::ffi::OsString::from_wide(&entry.name);
         owned.reconcile_capacity(name.capacity() as u64)?;
-        allocation.absorb(&mut owned)?;
-        Ok(Some((name, allocation)))
+        drop(entry);
+        drop(allocation);
+        Ok(Some((name, owned)))
     }
 }
 
@@ -220,7 +200,7 @@ impl NativeTreeMaterializationBackend {
                         )
                     })
                     .map_err(native_materialization_work_error)?;
-                if native_entry_exists(&(&backend.held_target, path), &backend.work)? {
+                if host_stat(&backend.held_target, path, &backend.work)?.is_some() {
                     remove_native_entry_durable(&(&backend.held_target, path), &backend.work)?;
                 }
                 let leaf = Path::new(
