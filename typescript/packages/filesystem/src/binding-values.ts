@@ -1,5 +1,6 @@
-// `new Uint8Array(view)` is one memcpy; Bun's `Uint8Array.from` iterates a
-// native `Buffer` element by element (~100x slower for file-sized values).
+import type { WorkspaceName } from "./contracts.js";
+
+/** Copies a binding buffer. */
 export function copyBytes(value: Uint8Array): Uint8Array {
   return new Uint8Array(value);
 }
@@ -15,6 +16,16 @@ export function ownBytes(value: Uint8Array): Uint8Array {
 
 export function copyOptionalBytes(value: Uint8Array | undefined): Uint8Array | undefined {
   return value === undefined ? undefined : copyBytes(value);
+}
+
+export function copyName(value: WorkspaceName): WorkspaceName {
+  return { encoding: value.encoding, bytes: copyBytes(value.bytes) };
+}
+
+export function copyFixedBytes(value: unknown, length: number, label: string): Uint8Array | undefined {
+  if (value === undefined) return undefined;
+  if (value instanceof Uint8Array && value.byteLength === length) return copyBytes(value);
+  throw new TypeError(`${label} must be ${length} bytes`);
 }
 
 export function requireWorkspaceName(name: string): void {

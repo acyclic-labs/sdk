@@ -1048,12 +1048,6 @@ struct DemandWatchCustody {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) enum PreparedWatchCustody {
-    Inline(usize),
-    Overflow(usize),
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 impl DemandWatchCustody {
     fn current_bytes(&self) -> u64 {
         self.token.upgrade().map_or(0, |token| {
@@ -1232,19 +1226,20 @@ impl DemandCancellationRoots {
     fn prepare_watch(
         &mut self, allocations: &mut crate::kernel::allocation::AllocationLedger,
         work: &mut WorkCounters, budget: WorkBudget,
-    ) -> Result<PreparedWatchCustody, DemandError> {
+    ) -> Result<usize, DemandError> {
         for (index, custody) in self.watches.iter_mut().enumerate() {
             work.charge(&WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }, &budget)?;
             if custody.as_ref().is_none_or(|custody| !custody.pending && custody.adopted_bytes == 0 && custody.token.strong_count() == 0) {
                 *custody = Some(DemandWatchCustody { token: std::sync::Weak::new(), adopted_bytes: 0, pending: true });
-                return Ok(PreparedWatchCustody::Inline(index));
+                return Ok(index);
             }
         }
         for (index, custody) in self.watch_overflow.iter_mut().enumerate() {
             work.charge(&WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }, &budget)?;
             if !custody.pending && custody.adopted_bytes == 0 && custody.token.strong_count() == 0 {
+                let index = self.watches.len().checked_add(index).ok_or(crate::WorkError::Overflow)?;
                 *custody = DemandWatchCustody { token: std::sync::Weak::new(), adopted_bytes: 0, pending: true };
-                return Ok(PreparedWatchCustody::Overflow(index));
+                return Ok(index);
             }
         }
         if let Err(error) = self.watch_capacity.ensure_for_push::<DemandWatchCustody>(
@@ -1252,20 +1247,19 @@ impl DemandCancellationRoots {
         ) {
             return Err(error.into_work_or(DemandError::WorkerUnavailable));
         }
-        let index = self.watch_overflow.len();
+        let index = self.watches.len().checked_add(self.watch_overflow.len()).ok_or(crate::WorkError::Overflow)?;
         self.watch_overflow.push(DemandWatchCustody { token: std::sync::Weak::new(), adopted_bytes: 0, pending: true });
-        Ok(PreparedWatchCustody::Overflow(index))
+        Ok(index)
     }
 
     fn retain_prepared_watch(
-        &mut self, prepared: PreparedWatchCustody, token: &std::sync::Arc<SourceWatchAllocationCustody>,
+        &mut self, prepared: usize, token: &std::sync::Arc<SourceWatchAllocationCustody>,
         allocations: &mut crate::kernel::allocation::AllocationLedger,
         work: &mut WorkCounters, budget: WorkBudget,
     ) -> Result<(), DemandError> {
-        let custody = match prepared {
-            PreparedWatchCustody::Inline(index) => self.watches[index].as_mut().expect("prepared original watch slot"),
-            PreparedWatchCustody::Overflow(index) => &mut self.watch_overflow[index],
-        };
+        let custody = if prepared < self.watches.len() {
+            self.watches[prepared].as_mut().expect("prepared original watch slot")
+        } else { &mut self.watch_overflow[prepared - self.watches.len()] };
         custody.token = std::sync::Arc::downgrade(token);
         let bytes = custody.current_bytes();
         let recorded = record_completed_retention(allocations, work, budget, bytes);
@@ -1274,11 +1268,10 @@ impl DemandCancellationRoots {
         recorded.map_err(DemandError::from)
     }
 
-    fn abandon_prepared_watch(&mut self, prepared: PreparedWatchCustody) {
-        let custody = match prepared {
-            PreparedWatchCustody::Inline(index) => self.watches[index].as_mut().expect("prepared original watch slot"),
-            PreparedWatchCustody::Overflow(index) => &mut self.watch_overflow[index],
-        };
+    fn abandon_prepared_watch(&mut self, prepared: usize) {
+        let custody = if prepared < self.watches.len() {
+            self.watches[prepared].as_mut().expect("prepared original watch slot")
+        } else { &mut self.watch_overflow[prepared - self.watches.len()] };
         custody.pending = false;
     }
 
@@ -2411,21 +2404,21 @@ impl DemandWork {
         metadata.and(payload)
     }
 
-    pub(crate) fn prepare_watch_custody(&mut self) -> Result<PreparedWatchCustody, DemandError> {
+    pub(crate) fn prepare_watch_custody(&mut self) -> Result<usize, DemandError> {
         self.reconcile_cancellation_registry()?;
         self.check()?;
         self.cancellation_wait.prepare_watch(&mut self.allocations, &mut self.work, self.budget)
     }
 
     pub(crate) fn retain_prepared_watch_custody(
-        &mut self, prepared: PreparedWatchCustody, token: &std::sync::Arc<SourceWatchAllocationCustody>,
+        &mut self, prepared: usize, token: &std::sync::Arc<SourceWatchAllocationCustody>,
     ) -> Result<(), DemandError> {
         self.cancellation_wait.retain_prepared_watch(
             prepared, token, &mut self.allocations, &mut self.work, self.budget,
         )
     }
 
-    pub(crate) fn abandon_prepared_watch_custody(&mut self, prepared: PreparedWatchCustody) {
+    pub(crate) fn abandon_prepared_watch_custody(&mut self, prepared: usize) {
         self.cancellation_wait.abandon_prepared_watch(prepared);
     }
 
@@ -4184,23 +4177,9 @@ pub mod native {
     }
 
     #[cfg(any(target_os = "linux", windows))]
-    #[derive(Clone)]
-    enum NativeSourceWatchSlot {
-        Pending,
-        Watch(std::sync::Weak<NativeSourceWatchBacking>),
-    }
-
-    #[cfg(any(target_os = "linux", windows))]
-    impl NativeSourceWatchSlot {
-        fn upgrade(&self) -> Option<Arc<NativeSourceWatchBacking>> { match self { Self::Pending => None, Self::Watch(watch) => watch.upgrade() } }
-        fn strong_count(&self) -> usize { match self { Self::Pending => 0, Self::Watch(watch) => watch.strong_count() } }
-        fn available(&self) -> bool { matches!(self, Self::Watch(watch) if watch.strong_count() == 0) }
-    }
-
-    #[cfg(any(target_os = "linux", windows))]
     #[derive(Default)]
     struct NativeSourceWatches {
-        entries: Vec<NativeSourceWatchSlot>,
+        entries: Vec<Option<std::sync::Weak<NativeSourceWatchBacking>>>,
         backing: Option<Arc<SourceWatchAllocationCustody>>,
         ownership: SourcePayloadOwnership,
     }
@@ -4230,21 +4209,21 @@ pub mod native {
             let mut visited = 0;
             let available = watches.entries.iter().position(|slot| {
                 visited += 1;
-                slot.available()
+                slot.as_ref().is_some_and(|watch| watch.strong_count() == 0)
             });
             work.record(WorkCounters { items_examined: visited, ..WorkCounters::UNCHARGED })?;
             if let Some(index) = available {
-                watches.entries[index] = NativeSourceWatchSlot::Pending;
+                watches.entries[index] = None;
                 return Ok(Self { inner: Arc::clone(inner), index: Some(index), backing: watches.backing.clone() });
             }
             let index = watches.entries.len();
             if index < watches.entries.capacity() {
-                watches.entries.push(NativeSourceWatchSlot::Pending);
+                watches.entries.push(None);
                 return Ok(Self { inner: Arc::clone(inner), index: Some(index), backing: watches.backing.clone() });
             }
             let count = watches.entries.capacity().checked_add(1).ok_or(WorkError::Overflow)?;
             let copied = WorkCounters {
-                bytes_copied: (index as u64).checked_mul(std::mem::size_of::<NativeSourceWatchSlot>() as u64).ok_or(WorkError::Overflow)?,
+                bytes_copied: (index as u64).checked_mul(std::mem::size_of::<Option<std::sync::Weak<NativeSourceWatchBacking>>>() as u64).ok_or(WorkError::Overflow)?,
                 ..WorkCounters::UNCHARGED
             };
             work.admit(copied)?;
@@ -4258,7 +4237,7 @@ pub mod native {
             ownership.retain(bytes, work)?;
             backing.publish(bytes);
             entries.extend(watches.entries.iter().cloned());
-            entries.push(NativeSourceWatchSlot::Pending);
+            entries.push(None);
             let retired = std::mem::replace(&mut *watches, NativeSourceWatches { entries, backing: Some(Arc::clone(&backing)), ownership });
             drop(watches);
             drop(retired);
@@ -4270,7 +4249,7 @@ pub mod native {
         fn publish(mut self, watch: &Arc<NativeSourceWatchBacking>) -> Option<Arc<SourceWatchAllocationCustody>> {
             let retired = {
                 let mut watches = self.inner.watches.write().unwrap_or_else(std::sync::PoisonError::into_inner);
-                std::mem::replace(&mut watches.entries[self.index.take().expect("unpublished source registration")], NativeSourceWatchSlot::Watch(Arc::downgrade(watch)))
+                std::mem::replace(&mut watches.entries[self.index.take().expect("unpublished source registration")], Some(Arc::downgrade(watch)))
             };
             drop(retired);
             self.backing.take()
@@ -4282,7 +4261,7 @@ pub mod native {
         fn drop(&mut self) {
             if let Some(index) = self.index {
                 self.inner.watches.write().unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .entries[index] = NativeSourceWatchSlot::Watch(std::sync::Weak::new());
+                    .entries[index] = Some(std::sync::Weak::new());
             }
         }
     }
@@ -4604,7 +4583,7 @@ pub mod native {
             let mut count = 0usize;
             for watch in watches.entries.iter() {
                 work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-                count += usize::from(watch.upgrade().is_some_and(|watch| !watch.watch.is_stopped()));
+                count += usize::from(watch.as_ref().and_then(std::sync::Weak::upgrade).is_some_and(|watch| !watch.watch.is_stopped()));
             }
             if count == 0 { return Ok(false); }
             let bytes = count * std::mem::size_of::<Arc<NativeSourceWatchBacking>>();
@@ -4612,7 +4591,7 @@ pub mod native {
             let mut live = Vec::with_capacity(count);
             for watch in watches.entries.iter() {
                 work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-                if let Some(watch) = watch.upgrade() {
+                if let Some(watch) = watch.as_ref().and_then(std::sync::Weak::upgrade) {
                     if watch.watch.is_stopped() { continue; }
                     work.charge(WorkCounters {
                         bytes_copied: std::mem::size_of::<Arc<NativeSourceWatchBacking>>() as u64,
@@ -4862,7 +4841,7 @@ pub mod native {
             let watches = self.inner.watches.read().unwrap_or_else(std::sync::PoisonError::into_inner);
             for watch in watches.entries.iter() {
                 work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-                if watch.strong_count() != 0 { return Ok(true); }
+                if watch.as_ref().is_some_and(|watch| watch.strong_count() != 0) { return Ok(true); }
             }
             Ok(false)
         }
@@ -6173,14 +6152,13 @@ pub mod native {
     #[derive(Clone, Copy)]
     enum NativeChangedName<'a> {
         Os(&'a std::ffi::OsStr),
-        Invalid,
         #[cfg(windows)]
         Wide(&'a [u16]),
     }
 
     impl NativeDemandInner {
         fn names_with_work<'a, W: SourceDemandReadWork>(
-            &self, parts: impl Iterator<Item = NativeChangedName<'a>> + Clone,
+            &self, parts: impl Iterator<Item = Option<NativeChangedName<'a>>> + Clone,
             work: &mut W,
         ) -> Result<(NamespacePath, bool, Option<crate::NativeAllocation>), DemandError> {
             let mut count = 0_usize;
@@ -6215,6 +6193,7 @@ pub mod native {
                 for part in parts {
                     work.charge(WorkCounters { items_examined: 1, source_path_components: 1, ..WorkCounters::UNCHARGED })?;
                     if names.len() == capacity { exact = false; break; }
+                    let Some(part) = part else { exact = false; break; };
                     let encoded = match part {
                         NativeChangedName::Os(name) => crate::native_name::host_name_bytes_with_source_work(
                             name, self.profile, self.limits.maximum_component_bytes, work,
@@ -6223,7 +6202,6 @@ pub mod native {
                         NativeChangedName::Wide(name) => crate::native_name::host_wide_name_bytes_with_source_work(
                             name, self.profile, self.limits.maximum_component_bytes, work,
                         ),
-                        NativeChangedName::Invalid => { exact = false; break; }
                     };
                     let ((encoding, bytes), mut guard) = match encoded {
                         Ok(encoded) => encoded,
@@ -6279,15 +6257,15 @@ pub mod native {
 
         fn name_with_work<W: SourceDemandReadWork>(&self, relative: &Path, work: &mut W) -> Result<(NamespacePath, bool, Option<crate::NativeAllocation>), DemandError> {
             self.names_with_work(relative.components().map(|component| match component {
-                std::path::Component::Normal(name) => NativeChangedName::Os(name),
-                _ => NativeChangedName::Invalid,
+                std::path::Component::Normal(name) => Some(NativeChangedName::Os(name)),
+                _ => None,
             }), work)
         }
 
         #[cfg(windows)]
         fn name_wide_with_work<W: SourceDemandReadWork>(&self, relative: &[u16], work: &mut W) -> Result<(NamespacePath, bool, Option<crate::NativeAllocation>), DemandError> {
             self.names_with_work(relative.split(|unit| *unit == u16::from(b'\\') || *unit == u16::from(b'/'))
-                .filter(|name| !name.is_empty()).map(NativeChangedName::Wide), work)
+                .filter(|name| !name.is_empty()).map(|name| Some(NativeChangedName::Wide(name))), work)
         }
     }
 
