@@ -2,7 +2,7 @@
 
 use super::{
     FilesystemHost, FilesystemTaskRuntime, ForkPreparationLimits, ForkToolArguments,
-    ParentMergePlan, ParentProjectController, RetainedSourceBinding,
+    ParentProjectController, RetainedSourceBinding,
     TaskCommandHost, TaskCommandProgress, FORK_PREPARE_TASK_COMMAND_KIND,
     MODEL_TASK_COMMAND_KIND, TASK_ADMIT_PREPARED_COMMAND_KIND, fork_preparation_request,
 };
@@ -1214,27 +1214,20 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             validate_merge_binding(context, original.source, &binding, io)?;
             let controller = ParentProjectController::new(binding.filesystem.as_ref(),
                 binding.destination.reducer(), &binding.verifier, &binding.scope, &binding.project, io)?;
+            let inspected = match &binding.source_read {
+                Some(handle) => controller.prepare_project_import_from_selected_source(
+                    &binding.source_project, &binding.source_generation, None, handle,
+                    &owner.journal_owner, context.task(), context.operation_id()).await?,
+                None => controller.prepare_project_import(&binding.source_project, &binding.source_generation, None).await?,
+            };
             let expected_target_generation = 'generation: {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let (Some(io), Some(work)) = (io, native_work) {
-                    let inspected = match &binding.source_read {
-                        Some(handle) => controller.prepare_project_import_from_selected_source_with_native_work(
-                            &binding.source_project, &binding.source_generation, handle,
-                            &owner.journal_owner, context.task(), context.operation_id(), work).await?,
-                        None => controller.prepare_project_import_with_native_work(
-                            &binding.source_project, &binding.source_generation, work).await?,
-                    };
                     let (generation, custody) = GenerationRef::new_with_native_work(
-                        binding.project.provider(), &inspected.0.target_head().digest().into_bytes(), None, work)?;
+                        binding.project.provider(), &inspected.target_head().digest().into_bytes(), None, work)?;
                     io.absorb_native_custody(custody)?;
                     break 'generation generation;
                 }
-                let inspected = match &binding.source_read {
-                    Some(handle) => controller.prepare_project_import_from_selected_source(
-                        &binding.source_project, &binding.source_generation, handle,
-                        &owner.journal_owner, context.task(), context.operation_id()).await?,
-                    None => controller.prepare_project_import(&binding.source_project, &binding.source_generation).await?,
-                };
                 break 'generation binding.filesystem.generation_ref_id(inspected.target_head())?;
             };
             let destination = match io {
@@ -1297,26 +1290,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         check_merge_binding(merge, &binding, io)?;
         let controller = ParentProjectController::new(binding.filesystem.as_ref(), binding.destination.reducer(),
             &binding.verifier, &binding.scope, &binding.project, io)?;
-        let inspected = 'inspection: {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let (Some(io), Some(work)) = (io, native_work) {
-                let (inspected, custody) = match &binding.source_read {
-                    Some(handle) => controller.prepare_project_import_at_from_selected_source_with_native_work(
-                        &merge.source_project, &merge.source_generation, &merge.expected_target_generation,
-                        handle, &owner.journal_owner, context.task(), context.operation_id(), work).await?,
-                    None => controller.prepare_project_import_at_with_native_work(
-                        &merge.source_project, &merge.source_generation, &merge.expected_target_generation, work).await?,
-                };
-                io.absorb_native_custody(custody)?;
-                break 'inspection inspected;
-            }
-            break 'inspection match &binding.source_read {
-                Some(handle) => controller.prepare_project_import_at_from_selected_source(
-                    &merge.source_project, &merge.source_generation, &merge.expected_target_generation,
-                    handle, &owner.journal_owner, context.task(), context.operation_id()).await?,
-                None => controller.prepare_project_import_at(
-                    &merge.source_project, &merge.source_generation, &merge.expected_target_generation).await?,
-            };
+        let inspected = match &binding.source_read {
+            Some(handle) => controller.prepare_project_import_from_selected_source(
+                &merge.source_project, &merge.source_generation, Some(&merge.expected_target_generation),
+                handle, &owner.journal_owner, context.task(), context.operation_id()).await?,
+            None => controller.prepare_project_import(
+                &merge.source_project, &merge.source_generation, Some(&merge.expected_target_generation)).await?,
         };
         'owner: {
             #[cfg(not(target_arch = "wasm32"))]
@@ -1345,21 +1324,14 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 }
                 sides.insert(conflict, side);
             }
-            'join: {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let (Some(io), Some(work)) = (io, native_work) {
-                    let (outcome, custody) = if sides.is_empty() {
-                        controller.apply_project_merge_with_native_work(&inspected, context.operation_id(), work).await?
-                    } else {
-                        controller.apply_project_merge_sides_with_native_work(&inspected, context.operation_id(), &sides, work).await?
-                    };
-                    io.absorb_native_custody(custody)?;
-                    break 'join outcome;
-                }
-                break 'join if sides.is_empty() {
-                    controller.apply_project_merge(&inspected, context.operation_id()).await?
-                } else { controller.apply_project_merge_sides(&inspected, context.operation_id(), sides).await? };
+            let (outcome, custody) = controller.apply_project_merge(&inspected, context.operation_id(), sides).await?;
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(custody) = custody {
+                io.expect("native controller IO").absorb_native_custody(custody)?;
             }
+            #[cfg(target_arch = "wasm32")]
+            let _ = custody;
+            outcome
         };
         'owner: {
             #[cfg(not(target_arch = "wasm32"))]
@@ -1382,17 +1354,14 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         struct Status { status: &'static str }
         match &outcome {
             JoinOutcome::Applied(_) | JoinOutcome::AlreadyApplied(_) => {
-                let receipt = 'receipt: {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if let (Some(io), Some(work)) = (io, native_work) {
-                        let (receipt, custody) = controller.merge_receipt_with_native_work(
-                            &inspected, &outcome, &merge.source, context.operation_id(), &merge.notice, work)?;
-                        io.absorb_native_custody(custody)?;
-                        break 'receipt receipt;
-                    }
-                    break 'receipt controller.merge_receipt(&inspected, &outcome, merge.source.clone(),
-                        context.operation_id(), merge.notice.clone())?;
-                };
+                let (receipt, custody) = controller.merge_receipt(&inspected, &outcome,
+                    &merge.source, context.operation_id(), &merge.notice)?;
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(custody) = custody {
+                    io.expect("native controller IO").absorb_native_custody(custody)?;
+                }
+                #[cfg(target_arch = "wasm32")]
+                let _ = custody;
                 encode(&Applied { status: "applied", receipt: &receipt }, output_io)
             }
             JoinOutcome::NoChanges(generation) | JoinOutcome::StaleTarget(generation) => {
@@ -2001,15 +1970,6 @@ fn check_merge_binding<P: StreamProvider, A, O>(plan: &RecursiveMergeToolPlan,
             "restored merge changed its original inspected binding"));
     }
     Ok(())
-}
-
-impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProjectController<'_, A, O> {
-    /// Restores the exact originally inspected plan after a lost acknowledgement.
-    pub async fn prepare_project_import_at(&self, source: &VolumeRef, source_generation: &GenerationRef,
-        target_generation: &GenerationRef) -> Result<ParentMergePlan<A, O>> {
-        self.prepare_project_import_checked(source, source_generation, Some(target_generation), false,
-            || std::future::ready(Ok(()))).await
-    }
 }
 
 #[cfg(test)]

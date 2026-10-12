@@ -31,7 +31,7 @@ pub(super) async fn exercise_uploads<'a>(
     )
     .await?;
     assert_eq!(result.size, 135_000);
-    assert_eq!(provider.get(get("stream"), 135_000).await?.into_body(), bytes);
+    assert_eq!(provider.get(get(bucket(), "stream"), 135_000).await?.into_body(), bytes);
     let failure = || {
         stream::iter([
             Ok(OwnedBytes::from_static(b"partial")),
@@ -73,7 +73,7 @@ pub(super) async fn exercise_uploads<'a>(
             .map(|error| error.code),
         Some(wire::ErrorCode::AccessDenied)
     );
-    assert_eq!(provider.get(get("stream"), 135_000).await?.into_body(), bytes);
+    assert_eq!(provider.get(get(bucket(), "stream"), 135_000).await?.into_body(), bytes);
     let (started, started_rx) = futures::channel::oneshot::channel();
     let pending = stream::once(async move {
         let _ = started.send(());
@@ -172,7 +172,7 @@ pub(super) async fn exercise_streaming<'a>(
         .await?;
     let bytes = OwnedBytes::from((0..=250u8).cycle().take(135_000).collect::<Vec<_>>());
     provider.put(put("stream"), bytes.clone()).await?;
-    let mut selected = get(self::get("stream"), 135_000).await?;
+    let mut selected = get(self::get(bucket(), "stream"), 135_000).await?;
     assert_eq!(
         selected.header.object.as_ref().map(|info| info.size),
         Some(135_000)
@@ -187,11 +187,11 @@ pub(super) async fn exercise_streaming<'a>(
     }
     assert_eq!(chunks, 3);
     assert_eq!(result.as_slice(), bytes.as_slice());
-    let mut cancelled = get(self::get("stream"), 135_000).await?;
+    let mut cancelled = get(self::get(bucket(), "stream"), 135_000).await?;
     assert!(cancelled.body.next().await.transpose()?.is_some());
     drop(cancelled);
     assert_eq!(
-        get(self::get("stream"), 135_000)
+        get(self::get(bucket(), "stream"), 135_000)
             .await?
             .collect(135_000)
             .await?
@@ -199,7 +199,7 @@ pub(super) async fn exercise_streaming<'a>(
         bytes
     );
     assert_eq!(
-        get(self::get("stream"), 16)
+        get(self::get(bucket(), "stream"), 16)
             .await
             .err()
             .map(|error| error.code),
@@ -208,7 +208,7 @@ pub(super) async fn exercise_streaming<'a>(
     provider
         .put(put("terminal-error"), OwnedBytes::from_static(b"body"))
         .await?;
-    let failed = get(self::get("terminal-error"), 16).await?;
+    let failed = get(self::get(bucket(), "terminal-error"), 16).await?;
     assert_eq!(
         failed.collect(16).await.err().map(|error| error.code),
         Some(wire::ErrorCode::AccessDenied)
@@ -248,9 +248,9 @@ fn put(key: &str) -> wire::PutObjectHeader {
         ..Default::default()
     }
 }
-pub(super) fn get(key: &str) -> wire::GetObjectRequest {
+pub(super) fn get(bucket: Option<wire::BucketRef>, key: &str) -> wire::GetObjectRequest {
     wire::GetObjectRequest {
-        bucket: bucket(),
+        bucket,
         object_key: key.into(),
         ..Default::default()
     }
@@ -319,10 +319,10 @@ async fn native_batch_preserves_order_bounds_and_failed_item_rollback() -> Resul
     );
     let reads = provider
         .get_batch(vec![
-            (get("third"), 3),
-            (get("first"), 2),
-            (get("second"), 8),
-            (get("first"), 3),
+            (get(bucket(), "third"), 3),
+            (get(bucket(), "first"), 2),
+            (get(bucket(), "second"), 8),
+            (get(bucket(), "first"), 3),
         ])
         .await;
     assert_eq!(reads.len(), 4);
@@ -412,14 +412,14 @@ async fn conditional_publication_and_retry_do_not_overwrite_later_values() -> Re
             .map(|error| error.code),
         Some(wire::ErrorCode::PreconditionFailed)
     );
-    let current = provider.get(get("value"), 16).await?;
+    let current = provider.get(get(bucket(), "value"), 16).await?;
     assert_eq!(
         provider
             .put(original.clone(), OwnedBytes::from_static(b"first"))
             .await?,
         first
     );
-    assert_eq!(provider.get(get("value"), 16).await?, current);
+    assert_eq!(provider.get(get(bucket(), "value"), 16).await?, current);
     assert_eq!(
         provider
             .put(original, OwnedBytes::from_static(b"changed"))
@@ -465,7 +465,7 @@ async fn quota_failure_rolls_back_publication_and_retry_receipt() -> Result<(), 
     );
     assert_eq!(
         provider
-            .get(get("new"), 16)
+            .get(get(bucket(), "new"), 16)
             .await
             .err()
             .map(|error| error.code),
@@ -481,13 +481,13 @@ async fn quota_failure_rolls_back_publication_and_retry_receipt() -> Result<(), 
     provider.put(attempted, OwnedBytes::from_static(b"ab")).await?;
     assert_eq!(
         provider
-            .get(get("new"), 1)
+            .get(get(bucket(), "new"), 1)
             .await
             .err()
             .map(|error| error.code),
         Some(wire::ErrorCode::QuotaExceeded)
     );
-    let mut suffix = get("new");
+    let mut suffix = get(bucket(), "new");
     suffix.range = Some(wire::ByteRange {
         selection: Some(wire::byte_range::Selection::SuffixLength(1)),
     });
@@ -682,7 +682,7 @@ async fn multipart_failure_keeps_parts_and_completion_is_atomic_and_replayable()
         Some(wire::ErrorCode::PreconditionFailed)
     );
     assert_eq!(
-        provider.get(get("value"), 16).await?.into_body(),
+        provider.get(get(bucket(), "value"), 16).await?.into_body(),
         OwnedBytes::from_static(b"old")
     );
     let parts = provider
@@ -712,7 +712,7 @@ async fn multipart_failure_keeps_parts_and_completion_is_atomic_and_replayable()
     assert_eq!(provider.complete_multipart(complete).await?, info); // Retried completion does not resurrect the deleted object.
     assert_eq!(
         provider
-            .get(get("value"), 16)
+            .get(get(bucket(), "value"), 16)
             .await
             .err()
             .map(|error| error.code),
@@ -955,7 +955,7 @@ async fn assert_completed_multipart_range(
     info: &wire::ObjectInfo,
 ) -> Result<(), Error> {
     assert_eq!(info.size, 5 * 1024 * 1024 + 3);
-    let mut crossing = get("value");
+    let mut crossing = get(bucket(), "value");
     crossing.range = Some(wire::ByteRange {
         selection: Some(wire::byte_range::Selection::Bytes(wire::InclusiveRange {
             start: 5 * 1024 * 1024 - 2,

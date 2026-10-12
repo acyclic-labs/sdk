@@ -3124,7 +3124,7 @@ fn validate_model_content_scope(
     if let Some(scope) = scope {
         crate::executor::with_history_io(io, |work| content.validate_limits(scope.limits(), work))?;
     }
-    let schemas = scope.and_then(RuntimeScope::extension_schema_registry_ref);
+    let schemas = scope.and_then(RuntimeScope::extension_schema_registry);
     let runtime = scope.and_then(RuntimeScope::extension_runtime);
     for (file, binding) in content.file_bindings() {
         if let Some(scope) = scope
@@ -5198,8 +5198,10 @@ mod tests {
     struct Projection;
 
     impl crate::tool::ToolProjection for Projection {
-        fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-            Ok(serde_json::json!({"kind":"json","value":result.value}))
+        fn project(&self, _: &ToolInvocation, result: &ToolResult,
+            work: crate::NativeWork<'_>) -> Result<(Value, crate::NativeCustody)> {
+            self.supports_native_projection(work)?;
+            Ok((serde_json::json!({"kind":"json","value":result.value}), None))
         }
     }
 
@@ -6688,6 +6690,12 @@ mod tests {
         struct DispatchObserver {
             claims: AtomicUsize,
             owned: std::sync::atomic::AtomicBool,
+        }
+        impl crate::runtime::TaskSpawner for DispatchObserver {
+            fn policy_identity(&self) -> Option<ComponentIdentity> { None }
+            fn admit<'a>(&'a self, _: crate::runtime::TaskAdmissionRecord) -> BoxFuture<'a, Result<crate::Admission<TaskId>>> {
+                Box::pin(async { Err(Error::Unsupported("test observer".into())) })
+            }
         }
         impl DurableTaskHost for DispatchObserver {
             fn verify_execution_owner<'a>(

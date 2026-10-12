@@ -30,6 +30,11 @@ tracing = { workspace = true, optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 futures.workspace = true
+http-body = "1.1.0"
+tonic.workspace = true
+tokio = { workspace = true, features = ["sync", "time"] }
+rcgen = "0.14.10"
+tempfile = "3.27.0"
 tracing-subscriber.workspace = true
 
 [lints]

@@ -8,10 +8,10 @@ use crate::foundation::{
 use crate::performance::{WorkBudget, WorkCounters};
 use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
 use crate::storage::{
-    AppendOutcome, AuthorityFailure, AuthorityResult, AuthorityStoreError, CreateAuthorityOutcome,
+    AppendOutcome, AuthorityStoreError, CreateAuthorityOutcome,
     ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectResult, ObjectStoreError, PublicationReservation, ReplayLimit, ReservationOutcome, object_digest,
 };
-use acyclic_stream::{OwnedBytes, ProviderTask};
+use acyclic_stream::OwnedBytes;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 use thiserror::Error;
@@ -751,13 +751,6 @@ fn lost_authority_acknowledgement(operation: &'static str) -> AuthorityStoreErro
     }
 }
 
-fn intercept_authority(
-    state: &Mutex<State>,
-    operation: SimulationOperation,
-) -> Result<Option<SimulationFault>, AuthorityFailure> {
-    select_authority_fault(state, operation).map_err(AuthorityFailure::before_work)
-}
-
 fn check_authority_fault(fault: Option<SimulationFault>) -> Result<(), AuthorityStoreError> {
     match fault {
         Some(SimulationFault::RejectBefore) => {
@@ -770,433 +763,155 @@ fn check_authority_fault(fault: Option<SimulationFault>) -> Result<(), Authority
     }
 }
 
-fn reject_authority(fault: Option<SimulationFault>) -> Result<(), AuthorityFailure> {
-    check_authority_fault(fault).map_err(AuthorityFailure::before_work)
-}
-
 impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedStore<A> {
-    async fn publication_reservation(
-        &self,
-        authority_id: AuthorityId,
-        operation_id: OperationId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<Option<PublicationReservation>> {
-        cancellation.check().map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
-        let fault = intercept_authority(&self.state, SimulationOperation::AuthorityReservation)?;
-        reject_authority(fault)?;
-        self.inner.publication_reservation(authority_id, operation_id, budget, cancellation).await
-    }
-
-    async fn reserve_publication(
-        &self,
-        authority_id: AuthorityId,
-        expected: Head,
-        operation_id: OperationId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<ReservationOutcome> {
-        cancellation.check().map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
-        let fault = intercept_authority(&self.state, SimulationOperation::AuthorityReserve)?;
-        reject_authority(fault)?;
-        let receipt = self.inner.reserve_publication(authority_id, expected, operation_id, budget, cancellation).await?;
-        if matches!(fault, Some(SimulationFault::AmbiguousAuthorityAppend))
-            && matches!(receipt.value, ReservationOutcome::Reserved(_) | ReservationOutcome::AlreadyReserved(_)) {
-            return Err(AuthorityFailure::new(AuthorityStoreError::Indeterminate {
-                operation: "reserve-publication",
-                source: std::io::Error::other("scheduled acknowledgement loss"),
-            }, receipt.work));
-        }
-        Ok(receipt)
-    }
-
-    async fn release_publication(
-        &self,
-        reservation: PublicationReservation,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<()> {
-        cancellation.check().map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
-        let fault = intercept_authority(&self.state, SimulationOperation::AuthorityRelease)?;
-        reject_authority(fault)?;
-        let receipt = self.inner.release_publication(reservation, budget, cancellation).await?;
-        if matches!(fault, Some(SimulationFault::AmbiguousAuthorityAppend)) {
-            return Err(AuthorityFailure::new(AuthorityStoreError::Indeterminate {
-                operation: "release-publication",
-                source: std::io::Error::other("scheduled acknowledgement loss"),
-            }, receipt.work));
-        }
-        Ok(receipt)
-    }
-
-    async fn fork_generation_authority(
-        &self,
-        source: GenerationForkSource,
-        destination_authority: AuthorityId,
-        operation_id: OperationId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<CreateAuthorityOutcome> {
-        cancellation
-            .check()
-            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
-        let fault = intercept_authority(&self.state, SimulationOperation::AuthorityCreate)?;
-        reject_authority(fault)?;
-        self.inner
-            .fork_generation_authority(
-                source,
-                destination_authority,
-                operation_id,
-                budget,
-                cancellation,
-            )
-            .await
-    }
-
-    async fn create_authority(
-        &self,
-        authority_id: AuthorityId,
-        genesis_epoch: Epoch,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<CreateAuthorityOutcome> {
-        cancellation
-            .check()
-            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
-        let fault = intercept_authority(&self.state, SimulationOperation::AuthorityCreate)?;
-        reject_authority(fault)?;
-        self.inner
-            .create_authority(authority_id, genesis_epoch, budget, cancellation)
-            .await
-    }
-
-    async fn create_authority_with_first_record(
-        &self,
-        authority: AuthorityId,
-        commit: ProposedCommit,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<bool> {
-        cancellation.check()
-            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
-        let fault = intercept_authority(&self.state, SimulationOperation::AuthorityCreate)?;
-        reject_authority(fault)?;
-        let receipt = self.inner.create_authority_with_first_record(
-            authority, commit, budget, cancellation,
-        ).await?;
-        if receipt.value && matches!(fault, Some(SimulationFault::AmbiguousAuthorityAppend)) {
-            return Err(AuthorityFailure::new(
-                lost_authority_acknowledgement("create-authority-with-first-record"), receipt.work,
-            ));
-        }
-        Ok(receipt)
-    }
-
-    async fn create_authority_with_first_record_guarded<F, Fut>(
-        &self,
-        authority: AuthorityId,
-        commit: ProposedCommit,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-        guard: &mut F,
-    ) -> crate::FsResult<bool>
-    where
-        F: FnMut(WorkBudget) -> Fut + ProviderTask,
-        Fut: Future<Output = crate::FsResult<()>> + ProviderTask,
-    {
-        cancellation.check().map_err(|error| crate::OperationFailure::before_work(error.into()))?;
-        let fault = select_authority_fault(&self.state, SimulationOperation::AuthorityCreate)
-            .map_err(|error| crate::OperationFailure::before_work(error.into()))?;
-        check_authority_fault(fault)
-            .map_err(|error| crate::OperationFailure::before_work(error.into()))?;
-        let receipt = self.inner.create_authority_with_first_record_guarded(
-            authority, commit, budget, cancellation, guard,
-        ).await?;
-        if receipt.value && matches!(fault, Some(SimulationFault::AmbiguousAuthorityAppend)) {
-            return Err(crate::OperationFailure::new(
-                lost_authority_acknowledgement("create-authority-with-first-record").into(),
-                receipt.work,
-            ));
-        }
-        Ok(receipt)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn create_authority_with_first_record_with_native_work(
-        &self,
-        authority: AuthorityId,
-        commit: ProposedCommit,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<bool, AuthorityStoreError> {
-        cancellation.check().map_err(|_| AuthorityStoreError::Cancelled)?;
-        original.admit(WorkCounters::UNCHARGED)?;
-        let fault = select_native_authority_fault(
-            &self.state, SimulationOperation::AuthorityCreate, original,
-        )?;
+    async fn create_first_record<G: crate::AuthorityGuard>(&self, authority: AuthorityId, commit: ProposedCommit, work: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>)
+        -> Result<bool, crate::AuthorityError<G::Error>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if work.original.is_some() && guard.is_some() { return Err(AuthorityStoreError::NativeOriginalUnsupported.into()); }
+        work.cancellation.check().map_err(|_| AuthorityStoreError::Cancelled)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let fault = if let Some(original) = work.original {
+            original.admit(WorkCounters::UNCHARGED).map_err(AuthorityStoreError::from)?;
+            select_native_authority_fault(&self.state, SimulationOperation::AuthorityCreate, original)?
+        } else { select_authority_fault(&self.state, SimulationOperation::AuthorityCreate)? };
+        #[cfg(target_arch = "wasm32")]
+        let fault = select_authority_fault(&self.state, SimulationOperation::AuthorityCreate)?;
         check_authority_fault(fault)?;
-        let created = self.inner.create_authority_with_first_record_with_native_work(
-            authority, commit, original, cancellation,
-        ).await?;
-        if created && matches!(fault, Some(SimulationFault::AmbiguousAuthorityAppend)) {
-            return Err(lost_authority_acknowledgement("create-authority-with-first-record"));
+        let value = self.inner.create_first_record(authority, commit, work, guard.as_deref_mut()).await?;
+        if value && matches!(fault, Some(SimulationFault::AmbiguousAuthorityAppend)) {
+            return Err(lost_authority_acknowledgement("create-authority-with-first-record").into());
         }
-        Ok(created)
+        Ok(value)
     }
-
-    async fn head(
-        &self,
-        authority_id: AuthorityId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<Head> {
-        cancellation
-            .check()
-            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
-        let fault = intercept_authority(&self.state, SimulationOperation::AuthorityHead)?;
-        reject_authority(fault)?;
-        if let Some(SimulationFault::StaleAuthorityHead(head)) = fault {
-            let work = WorkCounters {
-                authority_records_read: 1,
-                ..WorkCounters::default()
-            };
-            work.verify(budget)
-                .map_err(|error| AuthorityFailure::before_work(error.into()))?;
-            return Ok(crate::OperationReceipt { value: head, work });
-        }
-        self.inner.head(authority_id, budget, cancellation).await
-    }
-
-    async fn compare_and_append(
-        &self,
-        authority_id: AuthorityId,
-        epoch: Epoch,
-        expected: Head,
-        commit: ProposedCommit,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<AppendOutcome> {
-        self.compare_and_append_guarded(crate::GuardedAppend {
-            authority_id, epoch, expected, commit,
-            permit: crate::PublicationPermit::Unrestricted,
-        }, budget, cancellation).await
-    }
-
-    async fn compare_and_append_guarded(
-        &self,
-        request: crate::GuardedAppend,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<AppendOutcome> {
-        cancellation.check()
-            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
-        let fault = intercept_authority(&self.state, SimulationOperation::AuthorityAppend)?;
-        reject_authority(fault)?;
-        if matches!(fault, Some(SimulationFault::FenceBeforeAuthorityAppend)) {
-            let fenced = self.inner.fence(
-                request.authority_id, request.expected, budget, cancellation,
-            ).await?;
-            let remaining = fenced.work.remaining(budget)
-                .map_err(|error| AuthorityFailure::new(error.into(), fenced.work))?;
-            let appended = self.inner.compare_and_append_guarded(
-                request, remaining, cancellation,
-            ).await.map_err(|failure| {
-                let nested = *failure.work;
-                match fenced.work.checked_add(nested) {
-                    Ok(combined) => AuthorityFailure::new(failure.error, combined),
-                    Err(error) => AuthorityFailure::new(error.into(), fenced.work),
-                }
-            })?;
-            let work = fenced.work.checked_add(appended.work)
-                .map_err(|error| AuthorityFailure::new(error.into(), fenced.work))?;
-            return Ok(crate::OperationReceipt { value: appended.value, work });
-        }
-        let receipt = self.inner.compare_and_append_guarded(request, budget, cancellation).await?;
-        if matches!(fault, Some(SimulationFault::AmbiguousAuthorityAppend))
-            && matches!(receipt.value, AppendOutcome::Committed(_) | AppendOutcome::AlreadyCommitted(_))
-        {
-            return Err(AuthorityFailure::new(
-                lost_authority_acknowledgement("compare-and-append"), receipt.work,
-            ));
-        }
-        Ok(receipt)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn compare_and_append_guarded_with_native_work(
-        &self,
-        request: crate::GuardedAppend,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<(AppendOutcome, crate::NativeAllocation), AuthorityStoreError> {
-        cancellation.check().map_err(|_| AuthorityStoreError::Cancelled)?;
-        original.admit(WorkCounters::UNCHARGED)?;
-        let fault = select_native_authority_fault(
-            &self.state, SimulationOperation::AuthorityAppend, original,
-        )?;
+    async fn compare_and_append<G: crate::AuthorityGuard>(&self, request: crate::GuardedAppend, work: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>)
+        -> Result<(AppendOutcome, crate::AuthorityAllocation), crate::AuthorityError<G::Error>> {
+        work.cancellation.check().map_err(|_| AuthorityStoreError::Cancelled)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let fault = if let Some(original) = work.original {
+            original.admit(WorkCounters::UNCHARGED).map_err(AuthorityStoreError::from)?;
+            select_native_authority_fault(&self.state, SimulationOperation::AuthorityAppend, original)?
+        } else { select_authority_fault(&self.state, SimulationOperation::AuthorityAppend)? };
+        #[cfg(target_arch = "wasm32")]
+        let fault = select_authority_fault(&self.state, SimulationOperation::AuthorityAppend)?;
         check_authority_fault(fault)?;
         if matches!(fault, Some(SimulationFault::FenceBeforeAuthorityAppend)) {
-            self.inner.fence_with_native_work(
-                request.authority_id, request.expected, original, cancellation,
-            ).await?;
+            self.inner.fence(request.authority_id, request.expected, work).await?;
         }
-        let result = self.inner.compare_and_append_guarded_with_native_work(
-            request, original, cancellation,
-        ).await?;
-        if matches!(fault, Some(SimulationFault::AmbiguousAuthorityAppend))
-            && matches!(result.0, AppendOutcome::Committed(_) | AppendOutcome::AlreadyCommitted(_))
-        {
-            return Err(lost_authority_acknowledgement("compare-and-append"));
-        }
-        Ok(result)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn compare_and_append_guarded_with_native_owner<F, Fut, E>(
-        &self,
-        request: crate::GuardedAppend,
-        original: &crate::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-        guard: &mut F,
-    ) -> Result<(AppendOutcome, crate::NativeAllocation), E>
-    where
-        F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
-        Fut: Future<Output = Result<(), E>> + Send + 'static,
-        E: From<AuthorityStoreError> + Send + 'static,
-    {
-        cancellation.check().map_err(|_| E::from(AuthorityStoreError::Cancelled))?;
-        original.admit(WorkCounters::UNCHARGED)
-            .map_err(AuthorityStoreError::from).map_err(E::from)?;
-        let fault = select_native_authority_fault(
-            &self.state, SimulationOperation::AuthorityAppend, original,
-        ).map_err(E::from)?;
-        check_authority_fault(fault).map_err(E::from)?;
-        if matches!(fault, Some(SimulationFault::FenceBeforeAuthorityAppend)) {
-            self.inner.fence_with_native_work(
-                request.authority_id, request.expected, original, cancellation,
-            ).await.map_err(E::from)?;
-        }
-        let result = self.inner.compare_and_append_guarded_with_native_owner(
-            request, original, cancellation, guard,
-        ).await?;
-        if matches!(fault, Some(SimulationFault::AmbiguousAuthorityAppend))
-            && matches!(result.0, AppendOutcome::Committed(_) | AppendOutcome::AlreadyCommitted(_))
-        {
+        let value = self.inner.compare_and_append(request, work, guard.as_deref_mut()).await?;
+        if matches!(&value.0, AppendOutcome::Committed(_) | AppendOutcome::AlreadyCommitted(_)) && matches!(fault, Some(SimulationFault::AmbiguousAuthorityAppend)) {
             return Err(lost_authority_acknowledgement("compare-and-append").into());
         }
-        Ok(result)
+        Ok(value)
     }
-
-    async fn replay(
-        &self,
-        authority_id: AuthorityId,
-        after: Sequence,
-        limit: ReplayLimit,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<Vec<DurableCommit>> {
-        cancellation
-            .check()
-            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
-        let fault = intercept_authority(&self.state, SimulationOperation::AuthorityReplay)?;
-        reject_authority(fault)?;
-        let mut receipt = self
-            .inner
-            .replay(authority_id, after, limit, budget, cancellation)
-            .await?;
-        if matches!(fault, Some(SimulationFault::DuplicateAuthorityReplay))
-            && let Some(last) = receipt.value.last().cloned()
-        {
-            let copied = u64::try_from(last.payload.len()).unwrap_or(u64::MAX);
-            let extra = WorkCounters {
-                allocation_operations: 1,
-                bytes_copied: copied,
-                peak_allocation_bytes: copied,
-                items_returned: 1,
-                ..WorkCounters::default()
-            };
-            let work = receipt
-                .work
-                .checked_add(extra)
-                .map_err(|error| AuthorityFailure::new(error.into(), receipt.work))?;
-            work.verify(budget)
-                .map_err(|error| AuthorityFailure::new(error.into(), receipt.work))?;
-            receipt.value.push(last);
-            receipt.work = work;
+    async fn create_authority<G: crate::AuthorityGuard>(&self, authority: AuthorityId, epoch: Epoch, work: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>)
+        -> Result<CreateAuthorityOutcome, crate::AuthorityError<G::Error>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if work.original.is_some() { return Err(AuthorityStoreError::NativeOriginalUnsupported.into()); }
+        crate::async_storage::seal(guard.as_deref_mut(), work).await?;
+        work.cancellation.check().map_err(|_| AuthorityStoreError::Cancelled)?;
+        let fault = select_authority_fault(&self.state, SimulationOperation::AuthorityCreate)?;
+        check_authority_fault(fault)?;
+        let value =self.inner.create_authority(authority, epoch, work, None::<&mut ()>).await
+            .map_err(|error| crate::AuthorityError::Authority(error.into_error(std::convert::identity)))?;
+        if matches!(value, CreateAuthorityOutcome::Existing(_)) { crate::async_storage::seal(guard.as_deref_mut(), work).await?; }
+        Ok(value)
+    }
+    async fn fork_authority<G: crate::AuthorityGuard>(&self, source: GenerationForkSource, destination: AuthorityId, operation: OperationId, work: &mut crate::AuthorityWork<'_>, mut guard: Option<&mut G>)
+        -> Result<CreateAuthorityOutcome, crate::AuthorityError<G::Error>> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if work.original.is_some() { return Err(AuthorityStoreError::NativeOriginalUnsupported.into()); }
+        crate::async_storage::seal(guard.as_deref_mut(), work).await?;
+        work.cancellation.check().map_err(|_| AuthorityStoreError::Cancelled)?;
+        let fault = select_authority_fault(&self.state, SimulationOperation::AuthorityCreate)?;
+        check_authority_fault(fault)?;
+        let value = self.inner.fork_authority(source, destination, operation, work, None::<&mut ()>).await
+            .map_err(|error| crate::AuthorityError::Authority(error.into_error(std::convert::identity)))?;
+        if matches!(value, CreateAuthorityOutcome::Existing(_)) { crate::async_storage::seal(guard.as_deref_mut(), work).await?; }
+        Ok(value)
+    }
+    async fn publication_reservation(&self, authority: AuthorityId, operation: OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<Option<PublicationReservation>, AuthorityStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if work.original.is_some() { work.check()?; return Err(AuthorityStoreError::NativeOriginalUnsupported); }
+        work.cancellation.check().map_err(|_| AuthorityStoreError::Cancelled)?;
+        let fault = select_authority_fault(&self.state, SimulationOperation::AuthorityReservation)?;
+        check_authority_fault(fault)?;
+        let value = self.inner.publication_reservation(authority, operation, work).await?;
+        Ok(value)
+    }
+    async fn reserve_publication(&self, authority: AuthorityId, expected: Head, operation: OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<ReservationOutcome, AuthorityStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if work.original.is_some() { work.check()?; return Err(AuthorityStoreError::NativeOriginalUnsupported); }
+        work.cancellation.check().map_err(|_| AuthorityStoreError::Cancelled)?;
+        let fault = select_authority_fault(&self.state, SimulationOperation::AuthorityReserve)?;
+        check_authority_fault(fault)?;
+        let value = self.inner.reserve_publication(authority, expected, operation, work).await?;
+        if matches!(value, ReservationOutcome::Reserved(_) | ReservationOutcome::AlreadyReserved(_)) && matches!(fault, Some(SimulationFault::AmbiguousAuthorityAppend)) {
+            return Err(AuthorityStoreError::Indeterminate { operation: "reserve-publication",
+                source: std::io::Error::other("scheduled acknowledgement loss") });
         }
-        Ok(receipt)
+        Ok(value)
     }
-
-    async fn fence(
-        &self,
-        authority_id: AuthorityId,
-        expected: Head,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<crate::storage::FenceOutcome> {
-        cancellation
-            .check()
-            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
-        let fault = intercept_authority(&self.state, SimulationOperation::AuthorityFence)?;
-        reject_authority(fault)?;
-        self.inner
-            .fence(authority_id, expected, budget, cancellation)
-            .await
+    async fn release_publication(&self, reservation: PublicationReservation, work: &mut crate::AuthorityWork<'_>) -> Result<(), AuthorityStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if work.original.is_some() { work.check()?; return Err(AuthorityStoreError::NativeOriginalUnsupported); }
+        work.cancellation.check().map_err(|_| AuthorityStoreError::Cancelled)?;
+        let fault = select_authority_fault(&self.state, SimulationOperation::AuthorityRelease)?;
+        check_authority_fault(fault)?;
+        let value = self.inner.release_publication(reservation, work).await?;
+        if matches!(fault, Some(SimulationFault::AmbiguousAuthorityAppend)) {
+            return Err(AuthorityStoreError::Indeterminate { operation: "release-publication",
+                source: std::io::Error::other("scheduled acknowledgement loss") });
+        }
+        Ok(value)
     }
-
-    async fn find_operation(
-        &self,
-        authority_id: AuthorityId,
-        operation_id: OperationId,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<Option<DurableCommit>> {
-        cancellation
-            .check()
-            .map_err(|_| AuthorityFailure::before_work(AuthorityStoreError::Cancelled))?;
-        let fault = intercept_authority(&self.state, SimulationOperation::AuthorityFindOperation)?;
-        reject_authority(fault)?;
-        self.inner
-            .find_operation(authority_id, operation_id, budget, cancellation)
-            .await
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn head_with_native_work(
-        &self,
-        authority_id: AuthorityId,
-        work: &crate::materializer::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<Head, AuthorityStoreError> {
-        cancellation.check().map_err(|_| AuthorityStoreError::Cancelled)?;
-        work.admit(WorkCounters::UNCHARGED)?;
+    async fn head(&self, authority: AuthorityId, work: &mut crate::AuthorityWork<'_>) -> Result<Head, AuthorityStoreError> {
+        work.cancellation.check().map_err(|_| AuthorityStoreError::Cancelled)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = work.original { original.admit(WorkCounters::UNCHARGED)?; }
         let fault = select_authority_fault(&self.state, SimulationOperation::AuthorityHead)?;
         check_authority_fault(fault)?;
         if let Some(SimulationFault::StaleAuthorityHead(head)) = fault {
-            // This is synthetic metadata, not a read of the wrapped authority.
+            #[cfg(not(target_arch = "wasm32"))]
+            if work.original.is_some() { return Ok(head); }
+            let delta = WorkCounters { authority_records_read: 1, ..WorkCounters::UNCHARGED };
+            delta.verify(work.remaining()?).map_err(AuthorityStoreError::from)?;
+            work.record(delta)?;
             return Ok(head);
         }
-        self.inner.head_with_native_work(authority_id, work, cancellation).await
+        self.inner.head(authority, work).await
     }
+    async fn fence(&self, authority: AuthorityId, expected: Head, work: &mut crate::AuthorityWork<'_>) -> Result<crate::FenceOutcome, AuthorityStoreError> {
+        work.cancellation.check().map_err(|_| AuthorityStoreError::Cancelled)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = work.original { original.admit(WorkCounters::UNCHARGED)?; }
+        let fault = select_authority_fault(&self.state, SimulationOperation::AuthorityFence)?;
+        check_authority_fault(fault)?;
+        self.inner.fence(authority, expected, work).await
+    }
+    async fn find_operation(&self, authority: AuthorityId, operation: OperationId, work: &mut crate::AuthorityWork<'_>) -> Result<(Option<DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
+        work.cancellation.check().map_err(|_| AuthorityStoreError::Cancelled)?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(original) = work.original { original.admit(WorkCounters::UNCHARGED)?; }
+        let fault = select_authority_fault(&self.state, SimulationOperation::AuthorityFindOperation)?;
+        check_authority_fault(fault)?;
+        self.inner.find_operation(authority, operation, work).await
+    }
+    async fn replay(&self, authority_id: AuthorityId, after: Sequence, limit: ReplayLimit, context: &mut crate::AuthorityWork<'_>)
+        -> Result<(Vec<DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = context.original {
+            let cancellation = context.cancellation;
 
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn replay_with_native_work(
-        &self,
-        authority_id: AuthorityId,
-        after: Sequence,
-        limit: ReplayLimit,
-        work: &crate::materializer::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<(Vec<DurableCommit>, crate::materializer::NativeAllocation), AuthorityStoreError> {
         use crate::materializer::NativeTreeMaterializationError;
         cancellation.check().map_err(|_| AuthorityStoreError::Cancelled)?;
         work.admit(WorkCounters::UNCHARGED)?;
         let fault = select_authority_fault(&self.state, SimulationOperation::AuthorityReplay)?;
         check_authority_fault(fault)?;
-        let (mut records, mut custody) = self.inner
-            .replay_with_native_work(authority_id, after, limit, work, cancellation).await?;
+        let (mut records, custody) = self.inner
+            .replay(authority_id, after, limit, context).await?;
+        let mut custody = custody.expect("native replay allocation");
         if !matches!(fault, Some(SimulationFault::DuplicateAuthorityReplay)) || records.is_empty() {
-            return Ok((records, custody));
+            return Ok((records, Some(custody)));
         }
 
         let needs_growth = records.len() == records.capacity();
@@ -1255,37 +970,22 @@ impl<A: AsyncAuthorityStore> AsyncAuthorityStore for SimulatedStore<A> {
             items_returned: 1,
             ..WorkCounters::UNCHARGED
         })?;
-        Ok((records, custody))
-    }
+        return Ok((records, Some(custody)));
 
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn fence_with_native_work(
-        &self,
-        authority_id: AuthorityId,
-        expected: Head,
-        work: &crate::materializer::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<crate::storage::FenceOutcome, AuthorityStoreError> {
-        cancellation.check().map_err(|_| AuthorityStoreError::Cancelled)?;
-        work.admit(WorkCounters::UNCHARGED)?;
-        let fault = select_authority_fault(&self.state, SimulationOperation::AuthorityFence)?;
+        }
+        context.cancellation.check().map_err(|_| AuthorityStoreError::Cancelled)?;
+        let fault = select_authority_fault(&self.state, SimulationOperation::AuthorityReplay)?;
         check_authority_fault(fault)?;
-        self.inner.fence_with_native_work(authority_id, expected, work, cancellation).await
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn find_operation_with_native_work(
-        &self,
-        authority_id: AuthorityId,
-        operation_id: OperationId,
-        work: &crate::materializer::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<(Option<DurableCommit>, crate::materializer::NativeAllocation), AuthorityStoreError> {
-        cancellation.check().map_err(|_| AuthorityStoreError::Cancelled)?;
-        work.admit(WorkCounters::UNCHARGED)?;
-        let fault = select_authority_fault(&self.state, SimulationOperation::AuthorityFindOperation)?;
-        check_authority_fault(fault)?;
-        self.inner.find_operation_with_native_work(authority_id, operation_id, work, cancellation).await
+        let (mut records, allocation) = self.inner.replay(authority_id, after, limit, context).await?;
+        if matches!(fault, Some(SimulationFault::DuplicateAuthorityReplay)) && let Some(last) = records.last().cloned() {
+            let copied = u64::try_from(last.payload.len()).unwrap_or(u64::MAX);
+            let extra = WorkCounters { allocation_operations: 1, bytes_copied: copied, peak_allocation_bytes: copied,
+                items_returned: 1, ..WorkCounters::UNCHARGED };
+            extra.verify(context.remaining()?).map_err(AuthorityStoreError::from)?;
+            records.push(last);
+            context.record(extra)?;
+        }
+        Ok((records, allocation))
     }
 }
 

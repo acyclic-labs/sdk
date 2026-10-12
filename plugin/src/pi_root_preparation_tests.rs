@@ -1,7 +1,7 @@
 
 use super::*;
 use acyclic_harness::runtime::TaskStateProvider;
-use crate::{pi_root_inputs::PiRootPreparation, pi_runtime::PiTaskRuntime};
+use crate::{pi_root_inputs::{PiRootPreparation, ROOT_ALLOCATION_PROVIDER}, pi_runtime::PiTaskRuntime};
 use acyclic_harness::{
     IdempotencyKey, OperationId, effect_host::TaskEffectPlan, workflow::WorkflowCommand,
 };
@@ -156,7 +156,8 @@ async fn alter_command(
 impl Fixture {
     async fn new(case: &str) -> Self {
         let session = tempfile::tempdir().unwrap();
-        let (owner, filesystem, request, raw) = root_input_fixture(session.path(), None, |_| {}).await;
+        let raw = acyclic_fs::LocalFs::local(acyclic_fs::LocalOptions::new(session.path().join("filesystem"))).await.unwrap();
+        let (owner, filesystem, request, raw) = root_input_fixture(session.path(), raw, root_policy()).await;
         let work = work();
         let private_root = acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(
             session.path(), &work,

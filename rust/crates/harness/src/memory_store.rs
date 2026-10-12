@@ -121,7 +121,7 @@ impl MemoryStore {
         if path.len() as u64 > self.maximum_path_bytes {
             return Err(Error::Invalid("staged file exceeds harness limits".into()));
         }
-        let descriptor = FileDescriptor::from_bytes(bytes, media_type)?;
+        let descriptor = FileDescriptor::from_bytes(bytes, media_type, &mut None)?;
         let digest = canonical_json_digest(&(
             &path,
             descriptor.sha256(),
@@ -131,10 +131,10 @@ impl MemoryStore {
         ))?;
         let reference = FileRef::new(
             self.volume.clone(),
-            path,
+            path.to_owned(),
             blake3::Hash::from_bytes(digest).to_hex().to_string(),
             descriptor,
-            display_name,
+            display_name.to_owned(), &mut None,
         )?;
         self.retain_reference(&reference, bytes, update_path, None)?;
         Ok(reference)
@@ -424,7 +424,7 @@ impl MemoryStore {
 
     #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
     pub(crate) fn has(&self, file: &FileRef) -> Result<bool> {
-        file.validate()?;
+        file.validate(&mut None)?;
         if file.volume() != &self.volume {
             return Ok(false);
         }
@@ -583,7 +583,7 @@ mod tests {
             "test-volume",
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::new()),
-        )?;
+         &mut None)?;
         MemoryStore::new(volume, 4_096, 4_096, maximum_bytes, maximum_files)
     }
 
@@ -622,7 +622,7 @@ mod tests {
             first.version(),
             first.descriptor().clone(),
             "renamed.txt",
-        )?;
+         &mut None)?;
         assert!(
             store
                 .retain_reference(&changed_display, b"one", false, None)
