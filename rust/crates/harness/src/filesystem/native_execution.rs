@@ -193,9 +193,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             }
             let io = super::PreparationIo::from_native_work(work)?;
             let proof = owner.authenticated_root_binding_with_native_work(work).await?;
-            verifier.verify_audience(proof.audience(), &mut Some(&mut io.history_io()))?;
+            verifier.verify_audience(proof.audience(), &mut Some(&mut &io))?;
             crate::core::source_metadata_inspection_with_work(
-                &(scope.capabilities(), owner.input_grants()), &mut Some(&mut io.history_io()))?;
+                &(scope.capabilities(), owner.input_grants()), &mut Some(&mut &io))?;
             if scope.capabilities() != owner.input_grants() || scope.agent() != Some(proof.agent())
                 || volume.provider() != &self.provider
                 || volume.class() != crate::conversation::VolumeClass::AgentPrivate
@@ -304,7 +304,7 @@ where P: StreamProvider,
     O: AsyncObjectStore + 'static,
 {
     fn require_original(&self, work: &NativeMaterializationWork) -> Result<()> {
-        if !self.custody.matches_work(work) || !self.view._allocation.matches_work(work)
+        if !self.custody.matches_work(work) || !self.view.preparation._custody.matches_work(work)
             || !self.owner.native_shared_work_matches(work)
             || self.owner.task_binding() != (self.view.preparation.task, &self.view.preparation.original_fence)
         {
@@ -446,7 +446,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             let acquired = if recover {
                 workspace.publication_reservation_with_native_work(original_operation, work, cancellation).await
             } else {
-                workspace.reserve_publication_with_native_work(original_operation, work, cancellation).await.map(Some)
+                workspace.reserve_publication(original_operation, work, cancellation).await.map(Some).map_err(|error| (error, None))
             };
             reservation = acquired.map_err(|(cause, custody)| Error::NativeWorkspace { source: cause, custody })?;
             self.verify_with_native_work(false, work).await?;
@@ -622,8 +622,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> NativePubl
         let result = match crate::NativeFutureBundle::new(work, || async {
             self.verify_binding(owner, work)?;
             owner.verify_with_native_work(true, work).await?;
-            self.workspace.release_publication_with_native_work(self.reservation, work, cancellation)
-                .await.map_err(|(cause, custody)| Error::NativeWorkspace { source: cause, custody })?;
+            self.workspace.release_publication(self.reservation, work, cancellation)
+                .await.map_err(|source| Error::NativeWorkspace { source, custody: None })?;
             released = true;
             owner.verify_with_native_work(true, work).await?;
             self.verify_binding(owner, work)
@@ -1090,7 +1090,6 @@ pub struct NativeViewPublicationReceipt {
 pub struct NativeVolumeView<A, O> {
     volumes: Vec<PreparedVolume<A, O>>,
     preparation: NativePreparationReceipt,
-    _allocation: acyclic_fs::NativeAllocation,
 }
 
 impl<P, A, O> NativeProcessView<P> for NativeVolumeView<A, O>
@@ -1171,7 +1170,7 @@ where
 {
     /// Returns only the actual original operation retained by native preparation.
     #[must_use]
-    pub fn work(&self) -> &NativeMaterializationWork { self._allocation.work() }
+    pub fn work(&self) -> &NativeMaterializationWork { self.preparation._custody.work() }
 
     /// Retires only this held view's SDK mounts on their accepted birth credit.
     pub fn cleanup_mounts_with_native_work<'a, P: StreamProvider>(
@@ -1185,8 +1184,7 @@ where
         crate::NativeFutureBundle::new(work, || async move {
             wait.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
             if !work.remaining()?.has_finite_allowances()
-                || !self.work().shares_allocation_context(original)
-                || !self._allocation.matches_work(original)
+                || !self.preparation._custody.matches_work(original)
                 || !owner.native_shared_work_matches(original)
                 || self.preparation.manifest.volumes.len() != self.volumes.len()
                 || process.is_some() == partial.is_some()
@@ -1284,7 +1282,7 @@ where
             return Err(boundary(crate::wire::ErrorCode::Conflict, "native view Arc requires its actual original operation"));
         }
         let mut custody = work.claim(std::mem::size_of::<Self>() as u64)?;
-        self._allocation.absorb(&mut custody)?;
+        self.preparation._custody.absorb(&mut custody)?;
         Ok(Arc::new(self))
     }
 
@@ -1547,7 +1545,7 @@ where
                         .await?;
                     Ok::<(), Error>(())
                 };
-                materializer.recover_owned_guarded(
+                materializer.recover(
                     operation, acyclic_fs::MaterializationRecovery::Complete, &mut before_effect,
                 ).await
             }?
@@ -1604,16 +1602,17 @@ where
             owner.verify_with_native_work(false, &work).await?;
             cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
             checkpoint_preparation(materializer.store(), journal).await?;
-            let inspection = materializer.inspect_owned(operation).await.map_err(Error::from)?
+            let inspection = materializer.inspect(operation).await.map_err(Error::from)?
                 .ok_or(boundary(crate::wire::ErrorCode::Conflict, "native preparation journal disappeared"))?;
             owner.verify_with_native_work(false, work).await?;
             for (binding, volume) in bindings.iter().zip(&volumes) {
                 verify_binding(owner, binding, &volume._work)?;
             }
-            let receipt = preparation_receipt(intent, inspection.0, inspection.1)?;
+            let mut receipt = preparation_receipt(intent, inspection, None)?;
+            output_custody.absorb(&mut receipt._custody)?;
+            receipt._custody = output_custody;
             drop(intent_operation_custody);
-            Ok(Self { volumes, preparation: receipt,
-                _allocation: output_custody })
+            Ok(Self { volumes, preparation: receipt })
         })
     }
 
@@ -1750,7 +1749,7 @@ where
                         owner.verify_with_native_work(true, work).await?;
                         Ok::<(), Error>(())
                     };
-                    materializer.recover_owned_guarded(
+                    materializer.recover(
                         operation, acyclic_fs::MaterializationRecovery::RollBack, &mut before_effect,
                     ).await
                 }?
@@ -1760,12 +1759,9 @@ where
                 owner.verify_with_native_work(true, work).await?;
                 checkpoint_preparation(materializer.store(), rolled_back).await?;
             }
-            let mut inspection = materializer.inspect_owned(operation).await.map_err(Error::from)?
+            let inspection = materializer.inspect(operation).await.map_err(Error::from)?
                 .ok_or(boundary(crate::wire::ErrorCode::Conflict, "native preparation journal disappeared"))?;
-            if let Some(custody) = inspection.1.as_mut() {
-                intent.1.absorb(custody)?;
-            }
-            let receipt = preparation_receipt(intent.0, inspection.0, Some(intent.1))?;
+            let receipt = preparation_receipt(intent.0, inspection, Some(intent.1))?;
             materializer.store().verify_read_owner().await?;
             Ok(Some(receipt))
         })
@@ -2439,11 +2435,11 @@ pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider>
     drop(event);
     drop(reader);
     drop(reader_custody);
-    let aggregate = crate::store::StreamAggregate::open_with_native_work(
+    let mut aggregate = crate::store::StreamAggregate::open_with_native_work(
         stream, audience,
         verifier.0, crate::core::SchemaRegistry::new(), work,
     ).await?;
-    let mut aggregate = (aggregate.0.with_limits(limits)?, aggregate.1);
+    aggregate.0.set_limits(limits)?;
     if original_revision.is_none()
         && aggregate.0.reducer().conversation().and_then(|state| state.agent).is_some()
     {
@@ -2769,8 +2765,8 @@ fn decode_record<T: serde::de::DeserializeOwned>(
         maximum_depth: 256,
     };
     let io = super::PreparationIo::from_native_work(work)?;
-    let value = crate::contract::json_from_slice_bounded_native_trusted(bytes, bounds, 0,
-        crate::wire::ErrorCode::Storage, crate::contract::JsonValueSchema::None, &mut |charge| {
+    let value = crate::contract::json_from_slice_bounded(std::marker::PhantomData::<T>, bytes, bounds, 0,
+        Some(crate::wire::ErrorCode::Storage), Some(crate::contract::JsonValueSchema::None), &mut |charge| {
             if let crate::contract::JsonCodecCharge::Admission { maximum_owned_bytes: scratch, value_shape } = charge {
                 let owned = value_shape.lexical_items().checked_mul(10)
                     .and_then(|slots| slots.checked_mul(maximum_slot as u64))
@@ -2780,7 +2776,7 @@ fn decode_record<T: serde::de::DeserializeOwned>(
                     .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
                 return io.retain_owned(owned);
             }
-            crate::store::history::HistoryIo::codec_charge(&mut io.history_io(), charge)
+            crate::store::history::HistoryIo::codec_charge(&mut &io, charge)
         });
     match value {
         Ok(value) => {
@@ -2812,7 +2808,7 @@ fn encode_record<T: serde::Serialize + ?Sized>(
     let bytes = crate::store::history::canonical_bytes_for_bounds_with_work(value,
         crate::contract::JsonBounds { maximum_bytes: remaining.bytes_encoded,
             maximum_items: remaining.items_examined, maximum_depth: 256 },
-        &mut Some(&mut io.history_io()));
+        &mut Some(&mut &io));
     match bytes {
         Ok(bytes) => {
             let custody = io.into_native_custody(bytes.capacity() as u64)?;

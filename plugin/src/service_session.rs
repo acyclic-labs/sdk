@@ -465,18 +465,17 @@ impl PiSession {
         }
         self.roots.extend(handles);
         for (key, handle) in &self.roots {
-            let rebound = handle.workspace.rebind_source_with_native_work(original_native_work)
+            let rebound = handle.workspace.rebind_source(&acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(original_native_work, original_native_work.cancellation()).map_err(|source| RootError::NativeSource { source, custody: None })?)
                 .await.map_err(|source| RootError::NativeSource { source, custody: None })?;
             let original = allocation.0.1.roots.get_mut(key).ok_or(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi retained root handle is not selected by allocation" })?;
-            if rebound.0.source.identity != original.source_identity
-                || rebound.0.source.epoch < original.source_epoch
+            if rebound.as_state().source.identity != original.source_identity
+                || rebound.as_state().source.epoch < original.source_epoch
             {
                 return Err(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi root observation does not descend from original creation" });
             }
             // Only the genuine SDK rebind may advance the admitted creation epoch.
-            original.source_epoch = rebound.0.source.epoch;
-            drop(rebound.0);
-            drop(rebound.1);
+            original.source_epoch = rebound.as_state().source.epoch;
+            drop(rebound);
         }
         let PluginTaskBinding::Pi(binding) = &mut self.state.task_binding else {
             return Err(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi root binding changed during allocation" });

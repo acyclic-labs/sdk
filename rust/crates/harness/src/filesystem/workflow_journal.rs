@@ -30,7 +30,7 @@ fn external_read_hold<'a>(
     bytes: &OwnedBytes, io: Option<&'a PreparationIo>,
 ) -> Result<Option<super::DecodeReservation<'a>>> {
     let Some(io) = io else { return Ok(None); };
-    if io.uses_native_work() { return Ok(None); }
+    if io.original_native_work().is_some() { return Ok(None); }
     let retained = bytes.retained_capacity().ok_or_else(|| observation_boundary(
         Some(io), crate::wire::ErrorCode::Unsupported,
         "workflow byte backing capacity is unavailable",
@@ -102,9 +102,9 @@ pub struct FilesystemWorkflowJournal<P, A, O> {
     verifier: AuthorityVerifier,
     scope: Scope,
     maximum_payload_bytes: u64,
-    owner: Option<Arc<TaskJournalOwner<P>>>,
+    pub(super) owner: Option<Arc<TaskJournalOwner<P>>>,
     #[cfg(not(target_arch = "wasm32"))]
-    native_metadata: Option<acyclic_fs::NativeAllocation>,
+    _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
 
 /// A private original-owner observation, usable only with an atomic workflow tail comparison.
@@ -146,7 +146,7 @@ where
         owner: TaskJournalOwner<P>, host: Arc<FilesystemHost<A, O>>,
         volume: &VolumeRef, verifier: &AuthorityVerifier, scope: &Scope,
         maximum_payload_bytes: u64, io: Option<&PreparationIo>,
-    ) -> Result<Self> {
+    ) -> Result<Arc<Self>> {
         let mut history = io.map(PreparationIo::history_io);
         let mut work = history.as_mut().map(|history| history as &mut dyn crate::store::history::HistoryIo);
         owner.validate_storage(verifier, maximum_payload_bytes, &mut work)?;
@@ -163,30 +163,8 @@ where
         };
         #[cfg(target_arch = "wasm32")]
         let owner = Arc::new(owner);
-        journal.owner = Some(owner);
+        Arc::get_mut(&mut journal).expect("new journal is uniquely owned").owner = Some(owner);
         Ok(journal)
-    }
-
-    pub(crate) fn task_journal_owner(&self) -> Option<Arc<TaskJournalOwner<P>>> {
-        self.owner.clone()
-    }
-
-    /// Shares an already funded journal, admitting the actual SDK Arc attempt.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn into_native_shared(
-        self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Arc<Self>> {
-        if !self.native_metadata.as_ref().is_some_and(|custody|
-            custody.work().shares_ledger(work))
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "native journal sharing requires its original funded metadata",
-            });
-        }
-        let io = PreparationIo::from_native_work(work)?;
-        io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
-        Ok(Arc::new(self))
     }
 
     /// Binds a workflow identity and its private-volume grants using original IO.
@@ -194,7 +172,7 @@ where
         stream: Arc<P>, host: Arc<FilesystemHost<A, O>>, workflow_id: &str,
         volume: &VolumeRef, verifier: &AuthorityVerifier, scope: &Scope,
         maximum_payload_bytes: u64, io: Option<&PreparationIo>,
-    ) -> Result<Self> {
+    ) -> Result<Arc<Self>> {
         #[cfg(not(target_arch = "wasm32"))]
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         if workflow_id.is_empty()
@@ -230,11 +208,12 @@ where
         #[cfg(not(target_arch = "wasm32"))]
         let native_metadata = if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;
+            io.allocation_attempt(std::mem::size_of::<Self>() as u64)?;
             Some(io.take_native_custody(io.owned_bytes()?.checked_sub(before)
                 .ok_or_else(|| io.invalid("workflow metadata custody underflows"))?)?)
         } else { None };
         if let Some(held) = path_hold { held.into_retained(); }
-        Ok(Self {
+        Ok(Arc::new(Self {
             stream,
             host,
             path,
@@ -244,8 +223,8 @@ where
             maximum_payload_bytes,
             owner: None,
             #[cfg(not(target_arch = "wasm32"))]
-            native_metadata,
-        })
+            _native_metadata: native_metadata,
+        }))
     }
 
     fn id(&self) -> &str { &self.path["harness/v2/workflows/".len()..] }
@@ -388,13 +367,6 @@ where
             .ok_or_else(|| Error::Storage("observed workflow checkpoint is absent".into()))
     }
 
-    /// Original authenticated outbox observation; no machine callback executes.
-    pub(crate) async fn observe_latest_outbox(
-        &self, io: Option<&PreparationIo>,
-    ) -> Result<Option<crate::workflow::MachineTransition>> {
-        Ok(self.observe_latest_record(io).await?.map(|record| record.transition))
-    }
-
     pub(crate) async fn observe_latest_record(
         &self, io: Option<&PreparationIo>,
     ) -> Result<Option<WorkflowRecord>> {
@@ -402,11 +374,7 @@ where
             observation_boundary(io, crate::wire::ErrorCode::Unsupported,
                 "task outbox observation requires its original owner"))?;
         self.verify_observation_owner(owner, io).await?;
-        let Some(admission) = self.read_admission(io).await? else { return Ok(None); };
-        if &admission != owner.workflow_admission() {
-            return Err(observation_boundary(io, crate::wire::ErrorCode::Unauthorized,
-                "observed outbox differs from original task admission"));
-        }
+        if self.read_admission(io).await?.is_none() { return Ok(None); }
         let _path;
         let (stream, held) = Self::observation_stream(&self.stream, &self.path, io)?;
         _path = held;
@@ -435,9 +403,7 @@ where
     ) -> Result<Option<WorkflowReleaseWitness<'_>>> {
         let Some(record) = self.observe_latest_record(Some(io)).await? else { return Ok(None); };
         if !matches!(record.transition.status, MachineStatus::Suspended) { return Ok(None); }
-        let owner = self.owner.as_ref().ok_or_else(|| {
-            Error::Unsupported("workflow release requires its original task owner".into())
-        })?;
+        let owner = self.owner.as_ref().expect("observed outbox has its original owner");
         Ok(Some(WorkflowReleaseWitness { binding: owner.task_binding(), path: &self.path, tail: record.next.revision }))
     }
 
@@ -514,7 +480,7 @@ where
     async fn read_bound_content(&self, reference: &FileRef, io: Option<&PreparationIo>) -> Result<OwnedBytes> {
         match io {
             Some(io) => {
-                if !io.uses_native_work() {
+                if io.original_native_work().is_none() {
                     reference.validate(&mut Some(&mut io.history_io()))?;
                 }
                 if reference.volume() != &self.volume {
@@ -1011,21 +977,18 @@ where
         let appended = self.append_reference(&path, "admission", 0, admission.operation_id,
             &reference, io).await;
         match appended {
-            Ok(true) => Ok(admission),
-            Err(error) if self.owner.is_some() => Err(error),
-            Ok(false) | Err(Error::Conflict(_)) =>
-                match self.read_admission(io).await? {
-                    Some(existing) if existing == admission => Ok(existing),
-                    Some(_) => Err(Error::Conflict("workflow admission identity is already bound".into())),
-                    None if self.owner.is_some() => Err(Error::Conflict("workflow admission ownership changed".into())),
-                    None => Err(Error::Indeterminate(admission.operation_id)),
-                },
-            Err(Error::Indeterminate(_)) => match self.read_admission(io).await {
-                Ok(Some(existing)) if existing == admission => Ok(existing),
-                Ok(Some(_)) => Err(Error::Conflict("workflow admission identity is already bound".into())),
-                Ok(None) | Err(Error::Storage(_)) => Err(Error::Indeterminate(admission.operation_id)),
-                Err(error) => Err(error),
-            },
+            Ok(true) => return Ok(admission),
+            Err(error) if self.owner.is_some() => return Err(error),
+            Ok(false) | Err(Error::Conflict(_) | Error::Indeterminate(_)) => {}
+            Err(error) => return Err(error),
+        }
+        match self.read_admission(io).await {
+            Ok(Some(existing)) if existing == admission => Ok(existing),
+            Ok(Some(_)) => Err(Error::Conflict("workflow admission identity is already bound".into())),
+            Ok(None) if self.owner.is_some() => Err(Error::Conflict("workflow admission ownership changed".into())),
+            Ok(None) => Err(Error::Indeterminate(admission.operation_id)),
+            Err(Error::Storage(_)) if matches!(appended, Err(Error::Indeterminate(_))) =>
+                Err(Error::Indeterminate(admission.operation_id)),
             Err(error) => Err(error),
         }
     }

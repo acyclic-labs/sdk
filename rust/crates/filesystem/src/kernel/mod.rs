@@ -94,7 +94,7 @@ pub use attribute_access::{
 pub(crate) use attribute_access::{
     lookup_attribute_async_with_accounting};
 pub use attribute_list::{
-    AttributeListError, AttributeListFailure, AttributeListing, list_attributes};
+    AttributeListing, list_attributes};
 pub use attribute_mutation::{
     AttributeMutation, AttributeMutationError, AttributeMutationFailure, apply_attribute_mutations};
 pub use blob::{

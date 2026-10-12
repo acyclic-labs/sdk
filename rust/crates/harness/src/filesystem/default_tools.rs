@@ -48,8 +48,6 @@ pub struct RecursiveToolOwner<P, A, O> {
     pub runtime: Arc<FilesystemTaskRuntime<P, A, O>>,
     /// The same actual original caller owner used by the workflow journal.
     pub journal_owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
-    /// Actual invoking operation token, cancelled when its live future is dropped.
-    pub cancellation: CancellationToken,
     /// Original tool-effect journal.
     pub workflow: Arc<dyn WorkflowJournal>,
 }
@@ -948,7 +946,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     "recursive tool metadata differs from its original native context"));
             }
         }
-        let scope = recursive_effective_scope(context, io);
+        let scope = context.effective_scope();
         let (grant, call_grant) = if self.durable.definition.name == "acyclic.fork" {
             ("fork:publish", "tool:call:acyclic.fork")
         } else { ("project:merge", "tool:call:acyclic.merge") };
@@ -959,15 +957,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 "recursive tool lacks its exact admitted caller/effect authority"));
         }
         recursive_byte_bound(&invocation.arguments, self.maximum_request_bytes.min(scope.limits().file_bytes), io)
-    }
-    fn invoke<'a>(&'a self, context: ToolContext, invocation: ToolInvocation)
-        -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
-        let cancellation = CancellationToken::new();
-        let guard = InvocationCancellation(cancellation.clone());
-        Box::pin(async move {
-            let _guard = guard;
-            self.run(context, invocation, &cancellation).await
-        })
     }
     #[cfg(not(target_arch = "wasm32"))]
     async fn run_with_native_work(
@@ -980,7 +969,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let mut result = async {
             let work = &work;
             let cancellation = &cancellation;
-            self.authorize_with_native_context(context, invocation, work)?;
             let owner = self.source()?.owner_with_native_work(
                 context, &self.durable, invocation, cancellation, work)?.await?;
             let caller = context.durable_task_id().ok_or(Error::NativeBoundary {
@@ -1071,7 +1059,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let (arguments, intent) = match state {
             State::Ready { arguments } if self.durable.definition.name == "acyclic.fork" => {
                 let original: ForkToolArguments = decode(&arguments, io)?;
-                crate::executor::with_history_io(io, |work| original.source_task(caller, recursive_effective_scope(context, io).limits(), work))?;
+                crate::executor::with_history_io(io, |work| original.source_task(caller, context.effective_scope().limits(), work))?;
                 let payload = stage(context, derived(invocation.operation_id, "source-arguments", io)?,
                     "source-arguments", &arguments, self.maximum_request_bytes, cancellation, io).await?;
                 let intent = 'selected: {
@@ -1113,7 +1101,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 let receipt = receipt.as_deref();
                 let stage = command_stage(&command, report, io)?;
                 validate_plan(&plan, &invocation.arguments, io)?;
-                if io.is_some_and(super::PreparationIo::uses_native_work) { check_command(&command, stage, &plan, io)?; }
+                if io.is_some_and(|io| io.original_native_work().is_some()) { check_command(&command, stage, &plan, io)?; }
                 if command.operation_id != derived(invocation.operation_id, stage, io)? {
                     return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized,
                         "recursive outbox operation differs from original effect"));
@@ -1158,7 +1146,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let plan = if self.durable.definition.name == "acyclic.fork" {
             let original: ForkToolArguments = decode(arguments, io)?;
             crate::executor::with_history_io(io, |work| original.source_task(
-                caller, recursive_effective_scope(context, io).limits(), work))?;
+                caller, context.effective_scope().limits(), work))?;
             let intent = intent.ok_or_else(|| recursive_reject(io, crate::wire::ErrorCode::Unauthorized,
                 "fork source choice is not durably pinned"))?;
             let binding = 'binding: {
@@ -1267,7 +1255,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 authorized_source, notice: binding.notice }, io)?)
         };
         validate_plan(&plan, arguments, io)?;
-        if !io.is_some_and(super::PreparationIo::uses_native_work) {
+        if !io.is_some_and(|io| io.original_native_work().is_some()) {
             crate::contract::validate_json_byte_bound(&plan, self.maximum_request_bytes.min(context.scope().limits().file_bytes))?;
         }
         Ok(plan)
@@ -1492,7 +1480,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             }
             let budget = acyclic_fs::performance::work_budget(fork.request.maximum_work, fork.request.maximum_bytes);
             let published = binding.parent.publish_fork_report_measured(report_copy, binding.parent_scope,
-                owner.journal_owner.as_ref(), budget, &owner.cancellation).await.map_err(|failure| failure.error)?;
+                owner.journal_owner.as_ref(), budget, cancellation).await.map_err(|failure| failure.error)?;
             break 'publication Some(published.work.remaining(budget).map_err(|error| Error::Invalid(error.to_string()))?);
         };
         let seed = binding.parent.reducer().fork(&report.request.child).ok_or_else(|| recursive_reject(io,
@@ -1510,7 +1498,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             }
             binding.child_conversation.bind_published_child_measured(&binding.parent, seed, binding.child_scope,
                 owner.journal_owner.as_ref(), remaining.expect("measured publication preserves its remaining allowance"),
-                &owner.cancellation).await.map_err(|failure| failure.error)?;
+                cancellation).await.map_err(|failure| failure.error)?;
         }
         encode(seed, output_io)
     }
@@ -1591,7 +1579,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 };
                 match progress {
                     TaskCommandProgress::Ready(value) => {
-                        if io.is_some_and(super::PreparationIo::uses_native_work) {
+                        if io.is_some_and(|io| io.original_native_work().is_some()) {
                             return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized,
                                 "native recursive command reply lacks its original payload custody"));
                         }
@@ -1654,7 +1642,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             Some(Outcome::Succeeded(value)) => Ok(Some(value)),
             Some(Outcome::Failed { message }) => {
                 #[cfg(not(target_arch = "wasm32"))]
-                if let Some(io) = io.filter(|io| io.uses_native_work()) {
+                if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
                     let custody = io.take_native_custody(io.owned_bytes()?)?;
                     return Err(Error::NativeDiagnostic { code: crate::wire::ErrorCode::Conflict, message, custody });
                 }
@@ -1732,14 +1720,23 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
     fn execute_with_context<'a>(&'a self, context: ToolContext, invocation: ToolInvocation) -> BoxProviderFuture<'a, Result<ToolResult>> {
         let operation = invocation.operation_id;
-        let future = self.invoke(context, invocation);
-        Box::pin(async move { future.await?.ok_or(Error::Indeterminate(operation)) })
+        let cancellation = CancellationToken::new();
+        let guard = InvocationCancellation(cancellation.clone());
+        Box::pin(async move {
+            let _guard = guard;
+            self.run(context, invocation, &cancellation).await?.ok_or(Error::Indeterminate(operation))
+        })
     }
     fn reconcile<'a>(&'a self, _: ToolInvocation) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
         Box::pin(async { Err(Error::Unauthorized("recursive reconciliation requires original durable task context".into())) })
     }
     fn reconcile_with_context<'a>(&'a self, context: ToolContext, invocation: ToolInvocation) -> BoxProviderFuture<'a, Result<Option<ToolResult>>> {
-        self.invoke(context, invocation)
+        let cancellation = CancellationToken::new();
+        let guard = InvocationCancellation(cancellation.clone());
+        Box::pin(async move {
+            let _guard = guard;
+            self.run(context, invocation, &cancellation).await
+        })
     }
 }
 fn command_payload(stage: &str, plan: &Plan, report: Option<&ForkReport>,
@@ -1766,7 +1763,7 @@ async fn retained_payload(
     cancellation: &CancellationToken, io: Option<&super::PreparationIo>,
 ) -> Result<Value> {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(io) = io.filter(|io| io.uses_native_work()) {
+    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
         let work = io.original_native_work().expect("native payload reads preserve their original ledger");
         work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
         if file.descriptor().byte_length() > maximum.min(context.effective_scope().limits().file_bytes) {
@@ -1784,7 +1781,7 @@ async fn retained_payload(
 async fn stage(context: &ToolContext, operation: OperationId, label: &str, value: &Value, maximum: u64,
     cancellation: &CancellationToken, io: Option<&super::PreparationIo>) -> Result<FileRef> {
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(io) = io.filter(|io| io.uses_native_work()) {
+    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
         let work = io.original_native_work().expect("native staging preserves its original ledger");
         let bytes = io.encode(value, maximum.min(context.effective_scope().limits().file_bytes), true)?;
         let _path;
@@ -1810,7 +1807,7 @@ async fn validate_fork_binding<P, A, O>(context: &ToolContext, arguments: &ForkT
     binding: &RecursiveForkToolBinding<P, A, O>, cancellation: &CancellationToken,
     io: Option<&super::PreparationIo>) -> Result<()>
 where P: StreamProvider, A: AsyncAuthorityStore, O: AsyncObjectStore {
-    let effective = recursive_effective_scope(context, io);
+    let effective = context.effective_scope();
     crate::executor::with_history_io(io, |work| {
         binding.source.request.validate(work)?;
         binding.child.validate(work)?;
@@ -1931,7 +1928,7 @@ fn recursive_decode_bytes<T: super::PreparationRecord>(bytes: &[u8], io: Option<
 fn validate_merge_binding<P, A, O>(context: &ToolContext, source_task: TaskId,
     binding: &RecursiveMergeToolBinding<P, A, O>, io: Option<&super::PreparationIo>) -> Result<()>
 where P: StreamProvider {
-    let effective = recursive_effective_scope(context, io);
+    let effective = context.effective_scope();
     crate::executor::with_history_io(io, |work| binding.verifier.verify_scope_for_with_work(
         binding.destination.reducer().authority(), &binding.scope, work))?;
     if !recursive_volume_granted(effective.grants(), &binding.project, VolumeOperation::Write, io)? {
@@ -1997,14 +1994,6 @@ fn check_merge_binding<P: StreamProvider, A, O>(plan: &RecursiveMergeToolPlan,
             "restored merge changed its original inspected binding"));
     }
     Ok(())
-}
-
-fn recursive_effective_scope<'a>(
-    context: &'a ToolContext, io: Option<&super::PreparationIo>,
-) -> &'a RuntimeScope {
-    if io.is_some_and(super::PreparationIo::uses_native_work) {
-        context.effective_scope()
-    } else { context.scope() }
 }
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProjectController<'_, A, O> {

@@ -3,7 +3,7 @@
 use super::allocation::{AllocationError, LogicalVecCapacity, VisitedObjectSet};
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
 use super::file_read::{ReadOwned, reserve_decoded_items,
-    allocate_read_buffer, completed_read_work, owned_read_bytes, read_object_with_accounting, release_read_allocation};
+    allocate_read_buffer, owned_read_bytes, read_object_with_accounting, release_read_allocation};
 use crate::FsError;
 use super::codec::{
     CanonicalDecodeError, DecodeLimits, Decoder, Encoder,
@@ -762,7 +762,7 @@ async fn read_blob_chunk<R: AsyncBlobSource>(
             let zeroed = WorkCounters { bytes_copied: usize_to_u64(maximum), ..WorkCounters::UNCHARGED };
             accounting.admit(zeroed)?;
             owned.value.resize(maximum, 0);
-            completed_read_work(accounting, zeroed)?;
+            accounting.record_completed(zeroed)?;
         }
         let mut filled = 0_usize;
         while filled < maximum {
@@ -826,7 +826,7 @@ async fn read_standalone_blob_source<R: AsyncBlobSource>(
     if let Some(measured) = measured { completed_blob_backend(measured, accounting)?; }
     let read = result.map_err(BlobBuildError::Source)?;
     if measured.is_none() {
-        completed_read_work(accounting, WorkCounters {
+        accounting.record_completed(WorkCounters {
             source_bytes_read: usize_to_u64(read), ..WorkCounters::UNCHARGED
         })?;
     }
@@ -869,7 +869,7 @@ fn hashed_blob_object(
     };
     accounting.admit(hash)?;
     let object = HashedObject::new(kind, bytes);
-    completed_read_work(accounting, hash)?;
+    accounting.record_completed(hash)?;
     Ok(object)
 }
 
@@ -1472,7 +1472,7 @@ impl BlobRangeMachine {
             items_returned: 1, ..WorkCounters::UNCHARGED };
         accounting.admit(copied)?;
         self.output.extend_from_slice(region);
-        completed_read_work(accounting, copied)
+        accounting.record_completed(copied)
     }
 
     async fn read_chunk_batch<S: AsyncObjectStore>(

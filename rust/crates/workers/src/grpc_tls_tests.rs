@@ -17,7 +17,9 @@ async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Err
             .serve_with_incoming_shutdown(incoming, async { let _ = stopped.await; }),
     );
     let result = async {
-        let platform = connect(&endpoint, "private-token", None).await;
+        let authorization = BearerAuth::new("private-token")
+            .map_err(|()| ConnectError::InvalidCredential)?;
+        let platform = connect(&endpoint, authorization.clone(), None).await;
         if mode == "file" || mode == "dir" {
             let client = platform?;
             let mut client = client;
@@ -29,10 +31,10 @@ async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Err
             let error = crate::client_binding::Client::connect(options, tokio_util::sync::CancellationToken::new()).await.err().ok_or("typed client unexpectedly trusted")?;
             assert_eq!(error.code, "unavailable");
         }
-        let client = connect(&endpoint, "private-token", Some(pem.as_bytes())).await?;
+        let client = connect(&endpoint, authorization.clone(), Some(pem.as_bytes())).await?;
         let mut client = client;
         client.inspect_job(wire::InspectJobRequest::default()).await?;
-        let denied = connect(&endpoint, "private-token", Some(&unrelated)).await;
+        let denied = connect(&endpoint, authorization, Some(&unrelated)).await;
         let error = denied.err().ok_or("unrelated supplied CA unexpectedly trusted")?;
         assert!(std::error::Error::source(&error).is_some(), "cause lost: {error:?}");
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())

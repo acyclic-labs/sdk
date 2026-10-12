@@ -83,7 +83,7 @@ where
                 #[cfg(target_arch = "wasm32")]
                 let present = journal.admission().await?.is_some();
                 if !present { return self.finish_known_reconciliation(task, &fence, io).await; }
-                let transition = journal.observe_latest_outbox(io).await?;
+                let transition = journal.observe_latest_record(io).await?.map(|record| record.transition);
                 let Some(transition) = transition else { return self.finish_known_reconciliation(task, &fence, io).await; };
                 #[cfg(not(target_arch = "wasm32"))]
                 let context = if let Some(io) = io {

@@ -898,6 +898,26 @@ pub struct Event {
     pub payload: EventPayload,
 }
 
+impl Event {
+    fn replay(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<(ApplyResult, u64)> {
+        let (event, retained) = if work.as_deref().is_some_and(native_custody::is_native) {
+            native_event_clone_with_custody(self, work)?
+        } else {
+            let mut retained = 0;
+            if let Some(io) = work.as_deref_mut() {
+                retained = snapshot::source_inventory(self)?;
+                if matches!(&self.payload, EventPayload::ForkPublished { .. }) {
+                    io.admit_allocation(std::mem::size_of::<ForkSeed>() as u64)?;
+                }
+                io.admit_owned(retained)?;
+                io.retain_owned(retained)?;
+            }
+            (self.clone(), retained)
+        };
+        Ok((ApplyResult::Replayed { event }, retained))
+    }
+}
+
 /// Immutable command envelope accepted by the reducer.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1656,28 +1676,18 @@ impl Reducer {
         authority: Authority, authority_verifier: AuthorityVerifier, schemas: SchemaRegistry,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Self> {
+        let reducer = Self::new(authority, authority_verifier, schemas);
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut reducer = reducer;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = work.as_deref_mut().filter(|io| io.original_native_work().is_some()) {
-            let mut native_custody = NativeComponentCustody::default();
-            let inputs = (authority, authority_verifier, schemas);
-            let installed: Result<()> = (|| {
-                let authority = io.take_native_custody(inputs.0.id.capacity() as u64)?;
-                let _retired = native_custody.install(Some((NativeComponentKey::Authority, authority, None)), &mut Some(&mut *io))?;
-                let base_bytes = inputs.1.logical_owned_bytes()?;
-                let base = io.take_native_custody(base_bytes)?;
-                let _retired = native_custody.install(Some((NativeComponentKey::Base, base, None)), &mut Some(&mut *io))?;
-                Ok(())
-            })();
-            if let Err(error) = installed {
-                drop(inputs);
-                return Err(error);
-            }
-            let mut reducer = Self::new(inputs.0, inputs.1, inputs.2);
-            reducer.native_custody = native_custody;
-            return Ok(reducer);
+            let authority = io.take_native_custody(reducer.authority.id.capacity() as u64)?;
+            drop(reducer.native_custody.install(Some((NativeComponentKey::Authority, authority, None)), &mut Some(&mut *io))?);
+            let base = io.take_native_custody(reducer.authority_verifier.logical_owned_bytes()?)?;
+            drop(reducer.native_custody.install(Some((NativeComponentKey::Base, base, None)), &mut Some(&mut *io))?);
         }
         let _ = work;
-        Ok(Self::new(authority, authority_verifier, schemas))
+        Ok(reducer)
     }
 
     /// Deep-copies this projection only after funding every new live component.
@@ -2163,23 +2173,9 @@ impl Reducer {
         self.native_custody.require_work(work, "native reducer planning requires explicit native work")?;
         self.verify_command_scope_with_work(command, work)?;
         let intent = crate::contract::canonical_json_digest_with_work(command, crate::store::default_projection_read_limits().maximum_bytes, work)?;
-        let mut retained_quota = 0;
         if let Some(event) = self.event_for_operation(command.operation_id) {
             if event.intent_digest == intent {
-                if work.as_deref().is_some_and(native_custody::is_native) {
-                    let (event, produced) = native_event_clone_with_custody(event, work)?;
-                    return Ok((ApplyResult::Replayed { event }, produced));
-                }
-                if let Some(observer) = work.as_deref_mut() {
-                    let reservation = snapshot::source_inventory(event)?;
-                    if matches!(&event.payload, EventPayload::ForkPublished { .. }) {
-                        observer.admit_allocation(std::mem::size_of::<ForkSeed>() as u64)?;
-                    }
-                    observer.admit_owned(reservation)?;
-                    observer.retain_owned(reservation)?;
-                    retained_quota = reservation;
-                }
-                return Ok((ApplyResult::Replayed { event: event.clone() }, retained_quota));
+                return event.replay(work);
             }
             return Err(Error::Conflict(
                 "operation identity is already bound to another intent".into(),
@@ -2248,7 +2244,7 @@ impl Reducer {
             payload,
         };
         event.attestation = self.authority_verifier.attest_event(&event, quota.work())?;
-        retained_quota = quota.retained();
+        let retained_quota = quota.retained();
         quota.transfer();
         Ok((ApplyResult::Applied { event }, retained_quota))
     }
@@ -2394,19 +2390,7 @@ impl Reducer {
         self.authority_verifier.verify_audience(&self.authority, work)?;
         if let Some(existing) = self.event_for_operation(event.operation_id) {
             if existing == &event {
-                if work.as_deref().is_some_and(native_custody::is_native) {
-                    let (event, _) = native_event_clone_with_custody(existing, work)?;
-                    return Ok(ApplyResult::Replayed { event });
-                }
-                if let Some(observer) = work.as_deref_mut() {
-                    let reservation = snapshot::source_inventory(existing)?;
-                    if matches!(&existing.payload, EventPayload::ForkPublished { .. }) {
-                        observer.admit_allocation(std::mem::size_of::<ForkSeed>() as u64)?;
-                    }
-                    observer.admit_owned(reservation)?;
-                    observer.retain_owned(reservation)?;
-                }
-                return Ok(ApplyResult::Replayed { event: existing.clone() });
+                return existing.replay(work).map(|(result, _)| result);
             }
             return Err(crate::fork::boundary_error(work, crate::wire::ErrorCode::Conflict,
                 "operation identity is already bound to another event"));
