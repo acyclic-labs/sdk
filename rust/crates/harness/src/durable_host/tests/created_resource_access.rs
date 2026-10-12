@@ -1624,7 +1624,7 @@ async fn native_original_proof_cycle_and_foreign_revision_never_seal_access() ->
         }
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation).unwrap();
-        let input_custody = work.retain_owned(std::mem::size_of::<TaskAdmissionRecord>() as u64 + admission.logical_owned_bytes()?)?;
+        let input_custody = work.claim(std::mem::size_of::<TaskAdmissionRecord>() as u64 + admission.logical_owned_bytes()?, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         let mut io = crate::store::history::native_work_io(&work)?;
         let result = fixture.host.authenticated_scope_with_work(&admission, &mut Some(&mut io)).await;
         assert!(result.is_err());

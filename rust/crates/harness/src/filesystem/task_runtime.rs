@@ -471,13 +471,12 @@ where
             volume.clone(), verifier.clone(), signed.clone(), scope.clone(),
             tasks.clone(), machines.clone(), tools.clone(),
         );
-        let creation_providers = creation_providers.to_vec();
         let resumable_tools = resumable_tools.clone();
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(filesystem.clone(), &volume, &verifier, &signed, maximum_payload_bytes, None)?);
         let reader = Arc::new(FilesystemContentVerifier::new(filesystem.clone(), &verifier, &signed, maximum_payload_bytes, None)?);
         let mut host = CoordinatorTaskHost::new(DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None).await?, stream.clone(), payloads, reader.clone(), &(verifier.audience()), signed.clone(), verifier.clone(), scope.clone(), tasks.clone(), machines, clock, None)?
         .with_session_limits(session_limits, None)?
-        .with_resource_creation_providers(&creation_providers, None)?;
+        .with_resource_creation_providers(creation_providers, None)?;
         if let Some(policy) = &policy {
             host = host.with_policy(policy.clone(), None)?;
         }
@@ -834,23 +833,6 @@ where
         Ok(false)
     }
 
-    fn bind_interaction_owner(
-        &self,
-        journal: FilesystemExecutionJournal<P, A, O>,
-        admitted_route: bool,
-    ) -> Result<FilesystemExecutionJournal<P, A, O>> {
-        if !admitted_route {
-            return Ok(journal);
-        }
-        if let Some(owner) = &self.interaction_owner {
-            journal.with_interaction_owner(
-                &owner.verifier, &owner.schemas, &owner.scope, &owner.volume, None,
-            )
-        } else {
-            Ok(journal)
-        }
-    }
-
     pub(super) fn bind_context_interactions(
         &self,
         context: TaskContext,
@@ -1005,7 +987,7 @@ where
             &witness, query, claim, work,
         )?.await?;
         let mut preparation = owner.resource_preparation_with_native_work(request, work)?.await?;
-        let mut header = work.claim(std::mem::size_of::<crate::resource_preparation::TaskResourcePreparation>() as u64)?;
+        let mut header = work.claim(std::mem::size_of::<crate::resource_preparation::TaskResourcePreparation>() as u64, u64::from((std::mem::size_of::<crate::resource_preparation::TaskResourcePreparation>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
         preparation.native_custody.as_mut().ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized,
             reason: "native preparation has no original metadata custody",
@@ -1013,25 +995,7 @@ where
         Ok(Some(Arc::new(preparation)))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn task_mailbox_with_native_work(
-        &self, owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Arc<dyn OwnedTaskMailbox>> {
-        if !owner.original_host_binding_matches(&self.host) {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "native mailbox owner belongs to another original host" });
-        }
-        let io = super::PreparationIo::from_native_work(work)?;
-        let bytes = std::mem::size_of::<TaskJournalMailbox<P>>() as u64;
-        io.retain_owned(bytes)?;
-        io.allocation_attempt(bytes)?;
-        let custody = io.take_native_custody(io.owned_bytes()?)?;
-        Ok(Arc::new(TaskJournalMailbox {
-            host: Arc::clone(&self.host), owner,
-            native_custody: Some(custody),
-        }))
-    }
+
     #[cfg(not(target_arch = "wasm32"))]
     async fn task_context_for_original_owner_with_native_work(
         &self, task: TaskId, fence: &LeaseFence, allow_settlement: bool,
@@ -1040,7 +1004,21 @@ where
         let owner = self.host.journal_owner_with_native_work(task, fence, work).await?;
         owner.verify(allow_settlement, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
         let owner = owner.into_native_shared(work)?;
-        let mailbox = self.task_mailbox_with_native_work(owner, work)?;
+        let mailbox: Arc<dyn OwnedTaskMailbox> = {
+            if !owner.original_host_binding_matches(&self.host) {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "native mailbox owner belongs to another original host" });
+            }
+            let io = super::PreparationIo::from_native_work(work)?;
+            let bytes = std::mem::size_of::<TaskJournalMailbox<P>>() as u64;
+            io.retain_owned(bytes)?;
+            io.allocation_attempt(bytes)?;
+            let custody = io.take_native_custody(io.owned_bytes()?)?;
+            Arc::new(TaskJournalMailbox {
+                host: Arc::clone(&self.host), owner,
+                native_custody: Some(custody),
+            })
+        };
         let operation = OperationId::from_bytes(task.into_bytes());
         let (context, custody) = if allow_settlement {
             self.harness.durable_context_for_reconciliation_with_native_work(
@@ -1096,7 +1074,7 @@ where
         let io = super::PreparationIo::from_native_work(work)?;
         let admission = self.admission_observed(task, Some(&io)).await?;
         let operation = execution_operation(task, turn, Some(&io))?;
-        let owner = self.host.readonly_journal_owner_with_native_work(task, work).await?;
+        let owner = self.host.readonly_journal_owner(task, work).await?;
         let journal = FilesystemExecutionJournal::for_task(
                 owner,
                 operation,
@@ -1118,22 +1096,24 @@ where
         turn: OperationId,
         admission: &TaskAdmissionRecord,
     ) -> Result<FilesystemExecutionJournal<P, A, O>> {
-        self.bind_interaction_owner(
-            FilesystemExecutionJournal::for_task(
-                self.host.journal_owner(task, fence).await?,
-                execution_operation(task, turn, None)?,
-                turn,
-                self.filesystem.clone(),
-                &self.volume,
-                &self.verifier,
-                &self.signed,
-                self.maximum_payload_bytes.min(admission.limits.file_bytes),
-                None,
-            )?,
-            admission
-                .grants
-                .contains(crate::contract::capability::INTERACTION_ROUTE),
-        )
+        let journal = FilesystemExecutionJournal::for_task(
+            self.host.journal_owner(task, fence).await?,
+            execution_operation(task, turn, None)?,
+            turn,
+            self.filesystem.clone(),
+            &self.volume,
+            &self.verifier,
+            &self.signed,
+            self.maximum_payload_bytes.min(admission.limits.file_bytes),
+            None,
+        )?;
+        if admission.grants.contains(crate::contract::capability::INTERACTION_ROUTE)
+            && let Some(owner) = &self.interaction_owner {
+            return journal.with_interaction_owner(
+                &owner.verifier, &owner.schemas, &owner.scope, &owner.volume, None,
+            );
+        }
+        Ok(journal)
     }
 
     /// Opens the canonical tool-effect workflow under the original caller reservation.
@@ -1218,7 +1198,7 @@ where
         &self, task: TaskId, admission: &TaskAdmissionRecord,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Arc<FilesystemWorkflowJournal<P, A, O>>> {
-        let owner = self.host.readonly_journal_owner_with_native_work(task, work).await?;
+        let owner = self.host.readonly_journal_owner(task, work).await?;
         FilesystemWorkflowJournal::for_task(
             owner, Arc::clone(&self.filesystem), &self.volume, &self.verifier,
             &self.signed, self.maximum_payload_bytes.min(admission.limits.file_bytes), Some(&super::PreparationIo::from_native_work(work)?),

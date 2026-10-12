@@ -227,7 +227,7 @@ async fn append_receipt<P: StreamProvider, L: Serialize, O: Serialize>(
     work.charge(WorkCounters { bytes_hashed: bytes.len() as u64, ..WorkCounters::default() })?;
     let (key_bytes, key_custody) = work.copy_bytes(blake3::hash(&bytes).as_bytes())?;
     let key_bytes = acyclic_stream::OwnedBytes::from_vec_with_guard(
-        key_bytes, key_custody, work.runtime_meter_owner(),
+        key_bytes, key_custody, work.runtime_meter(),
     ).map_err(|failure| super::super::native_execution::native_owned_bytes_failure(failure, work))?;
     let key = acyclic_stream::IdempotencyKey::new(key_bytes)?;
     owner.append(path.clone(), tail, &key, bytes, write,

@@ -73,7 +73,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
         &self, attempt: crate::EffectAttemptId, project: &VolumeRef,
         work: &NativeMaterializationWork,
     ) -> Result<(LazySnapshotRef, NativeAllocation)> {
-        let custody = work.retain_owned(std::mem::size_of::<(LazySnapshotRef, NativeAllocation)>() as u64)
+        let custody = work.claim(std::mem::size_of::<(LazySnapshotRef, NativeAllocation)>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)
             .map_err(Error::from)?;
         let (before, before_custody) = self.owner.outcome_with_native_work(work).await?;
         if before.is_none() { self.owner.verify(true, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?; }

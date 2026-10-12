@@ -36,15 +36,10 @@ export interface OfflinePayload {
   readonly metadata?: Readonly<Record<string, number | boolean | bigint | null>>;
 }
 
-interface ClientCommandBase {
-  readonly operationId: OperationId;
-  readonly authority: Authority;
-  readonly kind: string;
-}
-
-export type ClientCommand =
-  | (ClientCommandBase & Readonly<{ payload: OfflinePayload; offlineSafe: true }>)
-  | (ClientCommandBase & Readonly<{ payload: unknown; offlineSafe?: false }>);
+export type ClientCommand = Readonly<{ operationId: OperationId; authority: Authority; kind: string }> & (
+  | Readonly<{ payload: OfflinePayload; offlineSafe: true }>
+  | Readonly<{ payload: unknown; offlineSafe?: false }>
+);
 
 export interface Connection<Event = unknown> extends AsyncIterable<Delivery<Event>> {
   send(command: ClientCommand): Promise<void>;
@@ -993,13 +988,11 @@ function openClientDatabase(
   name: string,
 ): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    let unsupportedState: Error | undefined;
     let rejected = false;
     const fail = (error: unknown): void => { rejected = true; reject(error); };
     const opening = factory.open(name, 3);
     opening.onupgradeneeded = event => {
       if ((event as IDBVersionChangeEvent).oldVersion !== 0) {
-        unsupportedState = new Error("pre-v2 Harness outbox state is unsupported");
         opening.transaction?.abort();
         return;
       }
@@ -1027,7 +1020,7 @@ function openClientDatabase(
         fail(new Error("Harness outbox sequence index is unsupported"));
       }
     };
-    opening.onerror = () => fail(unsupportedState ?? opening.error ?? new Error("IndexedDB open failed"));
+    opening.onerror = () => fail(opening.error ?? new Error("IndexedDB open failed"));
     opening.onblocked = () => fail(new Error("IndexedDB upgrade is blocked"));
   });
 }

@@ -395,7 +395,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     assert!(recovered_inspection.read_file(&selected_file).await.is_err());
     fixture.host.coordinator.lock().await.cancel_operation(
         fixture.host.verifier.audience(), &fixture.host.owner_scope, &fixture.host.verifier,
-        OperationId::from_bytes(fixture.root.into_bytes()), IdempotencyKey::new("source-cancel-original")?, true, &mut None,
+        OperationId::from_bytes(fixture.root.into_bytes()), IdempotencyKey::new("source-cancel-original")?, true, None, &mut None,
     ).await?;
     assert!(recovered_owner.authorize_project_source(&recovered_context, &issuer, &policy, fixture.root, operation,
         policy.bootstrap.clone(), 1_000_000, 128 * 1_024 * 1_024).await.is_err());

@@ -2289,7 +2289,6 @@ async fn stock_restart_with_publication_fault(
         if !reopened || !cancel_after_failure {
             coordinator
                 .apply(
-                    operation,
                     IdempotencyKey::new(if reopened { "restart" } else { "start" })?,
                     SchedulerEvent::Started {
                         operation_id: operation,
@@ -2535,7 +2534,7 @@ async fn stock_restart_with_publication_fault(
                     &issuer.verifier(&mut None).expect("verifier copy"),
                     operation,
                     IdempotencyKey::new("cancel-uncertain-model")?,
-                    false, &mut None,
+                    false, None, &mut None,
                 )
                 .await?;
             assert!(coordinator.pull(&worker).await?.is_none());
@@ -2623,7 +2622,7 @@ async fn stock_restart_with_publication_fault(
                     &issuer.verifier(&mut None).expect("verifier copy"),
                     operation,
                     IdempotencyKey::new("cancel")?,
-                    false, &mut None,
+                    false, None, &mut None,
                 )
                 .await?;
             assert!(

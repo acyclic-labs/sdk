@@ -151,7 +151,7 @@ impl NativeSupervisorControl {
             if !retained.2.work().shares_ledger(original) {
                 return Err(boundary(crate::wire::ErrorCode::Conflict, "original supervisor tree belongs to another work family"));
             }
-            retained.0.terminate(Some(work.runtime_meter()))
+            retained.0.terminate(Some(work.runtime_meter().as_ref()))
                 .map_err(|error| Error::NativeWork {
                     cause: work.runtime_error(error), custody: None })?;
         } else {
@@ -463,8 +463,8 @@ where
         mut self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Arc<Self>> {
         finite_binding::require_family(self._custody.work(), work)?;
-        let mut custody = work.claim(std::mem::size_of::<Self>() as u64)?;
-        let mut original = self._custody.work().retain_owned(0)?;
+        let mut custody = work.claim(std::mem::size_of::<Self>() as u64, u64::from((std::mem::size_of::<Self>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
+        let mut original = self._custody.work().claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         if let Err(cause) = original.absorb(&mut custody) {
             return Err(Error::NativeWork { cause, custody: Some(custody) });
         }
@@ -521,7 +521,7 @@ where
         let bytes = receipt_observation::add(
             receipt_observation::add(request.provider.capacity() as u64, request.effect_kind.capacity() as u64)?,
             request.request.logical_owned_bytes()?)?;
-        let custody = work.retain_owned(bytes)?;
+        let custody = work.claim(bytes, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         crate::NativeFutureBundle::new(work, || self.launch((request, custody), work))
     }
 

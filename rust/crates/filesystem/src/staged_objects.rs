@@ -42,7 +42,7 @@ fn staged_vector<T>(
     let bytes = capacity.checked_mul(std::mem::size_of::<T>())
         .ok_or(crate::WorkError::Overflow)?;
     let mut control = native.map(|work| {
-        if bytes == 0 { work.retain_owned(0) } else { work.claim(bytes as u64) }
+        if bytes == 0 { work.claim(0, 0, crate::WorkCounters::UNCHARGED) } else { work.claim(bytes as u64, u64::from((bytes as u64) != 0), crate::WorkCounters::UNCHARGED) }
     }).transpose()?;
     let mut values = Vec::new();
     values.try_reserve_exact(capacity).map_err(|error|
@@ -58,7 +58,7 @@ fn staged_vector<T>(
 fn staged_owned_bytes(
     bytes: Vec<u8>, allocation: NativeAllocation, native: &NativeMaterializationWork,
 ) -> Result<OwnedBytes, ObjectStoreError> {
-    OwnedBytes::from_vec_with_guard(bytes, allocation, native.runtime_meter_owner())
+    OwnedBytes::from_vec_with_guard(bytes, allocation, native.runtime_meter())
         .map_err(|failure| match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => native.runtime_error(error).into(),
             acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
@@ -71,13 +71,13 @@ async fn staged_native_read(
     file: &NativeFile, offset: u64, length: usize, native: &NativeMaterializationWork,
 ) -> Result<OwnedBytes, ObjectStoreError> {
     if length == 0 {
-        native.runtime_meter_owner().check().map_err(|error| native.runtime_error(error))?;
+        native.runtime_meter().check().map_err(|error| native.runtime_error(error))?;
         return Ok(OwnedBytes::new());
     }
     let (allocation, mut bytes) = staged_vector::<u8>(length, Some(native))?;
     bytes.resize(bytes.capacity(), 0);
     let prepared = acyclic_stream::PreparedOwnedBytes::new(
-        bytes, allocation.expect("native read buffer is funded"), native.runtime_meter_owner(),
+        bytes, allocation.expect("native read buffer is funded"), native.runtime_meter(),
     ).map_err(|failure| match failure.into_error() {
         acyclic_stream::PreparedOwnedBytesError::Admission(error) => native.runtime_error(error).into(),
         acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
@@ -85,7 +85,7 @@ async fn staged_native_read(
             ObjectStoreError::Native(NativeTreeMaterializationError::InvalidLayout),
     })?;
     let (prepared, filled) = file.read_prepared_bounded_async(
-        offset, prepared, length, false, native.runtime_meter_owner(),
+        offset, prepared, length, false, native.runtime_meter(),
     ).map_err(|error| native.runtime_error(error))?
         .await.map_err(|error| native.runtime_error(error))?;
     prepared.freeze(filled).map_err(|_| ObjectStoreError::Corrupt)
@@ -431,7 +431,7 @@ impl<S> StagedObjects<S> {
                 ).map_err(ObjectFailure::before_work)?;
                 self.spill.control_async(move |file, meter| { let meter = meter.expect("metered control");
                     acyclic_native_runtime::write_all_at(file, offset, &bytes, Some((meter, true)))
-                }, Some(native.runtime_meter_owner()))
+                }, Some(native.runtime_meter()))
                     .map_err(|error| ObjectFailure::before_work(native.runtime_error(error).into()))?
                     .await.map_err(|error| ObjectFailure::before_work(native.runtime_error(error).into()))?;
                 // Physical partial writes (including cancellation) are
@@ -675,7 +675,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         };
         if truncate {
             if let Some(native) = native {
-                self.spill.set_len_async(0, Some(native.runtime_meter_owner()))
+                self.spill.set_len_async(0, Some(native.runtime_meter()))
                     .map_err(|error| ObjectFailure::before_work(native.runtime_error(error).into()))?
                     .await.map_err(|error| ObjectFailure::before_work(native.runtime_error(error).into()))?;
             } else {
@@ -722,7 +722,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
             let (mut future, _) = crate::heap_future::in_heap_admitted(
                 native,
                 |native, bytes| {
-                    allocation = native.map(|native| native.claim(bytes)).transpose()?;
+                    allocation = native.map(|native| native.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)).transpose()?;
                     Ok::<_, NativeTreeMaterializationError>(())
                 },
                 |native| async move {
@@ -754,7 +754,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
         let (mut future, _) = crate::heap_future::in_heap_admitted(
             native,
             |native, bytes| {
-                allocation = native.map(|native| native.claim(bytes)).transpose()?;
+                allocation = native.map(|native| native.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)).transpose()?;
                 Ok::<_, NativeTreeMaterializationError>(())
             },
             |native| self.relieve_window(budget, cancellation, native),
@@ -939,7 +939,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 let (mut future, _) = crate::heap_future::in_heap_admitted(
                     native,
                     |native, bytes| {
-                        allocation = native.map(|native| native.claim(bytes)).transpose()?;
+                        allocation = native.map(|native| native.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)).transpose()?;
                         Ok::<_, NativeTreeMaterializationError>(())
                     },
                     |native| self.read_durable(object_id, maximum_bytes, budget, cancellation, native),
@@ -954,7 +954,7 @@ impl<S: AsyncObjectStore> StagedObjects<S> {
                 let (mut future, _) = crate::heap_future::in_heap_admitted(
                     native,
                     |native, bytes| {
-                        allocation = native.map(|native| native.claim(bytes)).transpose()?;
+                        allocation = native.map(|native| native.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)).transpose()?;
                         Ok::<_, NativeTreeMaterializationError>(())
                     },
                     |native| self.read_spilled_object(object_id, maximum_bytes, budget, cancellation, native),
@@ -1127,7 +1127,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         let (mut future, _) = crate::heap_future::in_heap_admitted(
             Some(work),
             |native, bytes| {
-                allocation = native.map(|native| native.claim(bytes)).transpose()?;
+                allocation = native.map(|native| native.claim(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED)).transpose()?;
                 Ok::<_, NativeTreeMaterializationError>(())
             },
             |native| self.flush_engine(scope, WorkBudget::default(), cancellation, native),
@@ -1909,8 +1909,8 @@ mod tests {
         assert_eq!(read.bytes.as_ptr(), bytes.as_ptr());
         assert_eq!(work.receipt().allocation_operations, initial);
         assert_eq!(work.receipt().backend_read_operations, 0);
-        let mut allocation = work.claim(std::mem::size_of::<Page>() as u64)?;
-        let mut control = work.claim(std::mem::size_of::<NativeAllocation>() as u64)?;
+        let mut allocation = work.claim(std::mem::size_of::<Page>() as u64, u64::from((std::mem::size_of::<Page>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
+        let mut control = work.claim(std::mem::size_of::<NativeAllocation>() as u64, u64::from((std::mem::size_of::<NativeAllocation>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
         allocation.absorb(&mut control)?;
         let custody = Arc::new(allocation);
         let page = Arc::new(Page { _custody: Arc::clone(&custody) });
