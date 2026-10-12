@@ -212,7 +212,7 @@ impl<P: StreamProvider> CreatedTaskPublicationLease<P> {
     ) -> Result<()> {
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh_with_work(work).await?;
-        let operation = coordinator.observe_operation_ref_with_work(
+        let operation = coordinator.observe_operation(
             &self.owner, &self.scope, &self.verifier, self.operation, work,
         )?;
         let fence = self.fence.as_ref().ok_or_else(|| CoordinatorTaskHost::<P>::admission_boundary(
@@ -959,7 +959,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             }
             let mut coordinator = self.host.coordinator.lock().await;
             coordinator.refresh_with_work(&mut Some(&mut io)).await?;
-            let operation = coordinator.observe_operation_ref_with_work(
+            let operation = coordinator.observe_operation(
                 &self.host.owner,&self.host.owner_scope,&self.host.verifier,
                 self.operation_id(),&mut Some(&mut io),
             )?;
@@ -1306,7 +1306,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let result: Result<(Option<crate::Outcome<FileRef>>,acyclic_fs::NativeAllocation)> = async {
             let mut coordinator = self.host.coordinator.lock().await;
             coordinator.refresh_with_work(&mut Some(&mut io)).await?;
-            let operation = coordinator.observe_operation_ref_with_work(
+            let operation = coordinator.observe_operation(
                 &self.host.owner, &self.host.owner_scope, &self.host.verifier,
                 self.operation_id(), &mut Some(&mut io),
             )?;
@@ -2019,9 +2019,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if fresh && self.deadline_epoch_ms.is_some_and(|deadline| self.host.clock.now_unix_millis() >= deadline) {
             return Err(Error::Indeterminate(self.operation_id()));
         }
-        let (outcome, retained) = crate::distributed::commit_prepared(
-            &self.stream, request, publication.operation_id, phase, None, None
-        ).await?;
+        let (outcome, retained) = request.commit(&self.stream, Some(publication.operation_id), phase, None, None).await?;
         let mut received = crate::wire_codec::CodecQuota::from_retained(work, retained);
         let result = match &outcome {
             acyclic_stream::CommitOutcome::Conflict(_) => Ok(false),
@@ -2231,9 +2229,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let request = self
             .prepare_append_with_work(&path, expected_tail, key, &bytes, write, work)
             .await?;
-        let (outcome, retained) = crate::distributed::commit_prepared(
-            &self.stream, request, self.operation_id(), None, None, None
-        ).await?;
+        let (outcome, retained) = request.commit(&self.stream, Some(self.operation_id()), None, None, None).await?;
         let mut received = crate::wire_codec::CodecQuota::from_retained(work, retained);
         let result = match &outcome {
             CommitOutcome::Conflict(_) => Ok(false),
@@ -2332,7 +2328,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             &request.scope,
             &self.verifier,
             request.operation_id,
-        )
+         &mut None,).cloned()
     }
 
     /// Cancels one operation with the caller's retained retry identity.
@@ -2385,7 +2381,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let task_operation = OperationId::from_bytes(task.into_bytes());
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh_with_work(work).await?;
-        coordinator.observe_operation_ref_with_work(
+        coordinator.observe_operation(
             &self.owner,
             &self.owner_scope,
             &self.verifier,
@@ -2435,7 +2431,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.validate_parent_scope_with_work(admission.parent, &scope, work).await?;
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh_with_work(work).await?;
-        let operation = coordinator.observe_operation_ref_with_work(
+        let operation = coordinator.observe_operation(
             &self.owner, &self.owner_scope, &self.verifier, operation_id, work,
         )?;
         crate::scheduler::require_execution_owner(operation, fence, false, work)?;
@@ -2485,7 +2481,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         self.coordinator
             .lock()
             .await
-            .pull_owned(&self.owner, &self.owner_scope, &self.verifier, worker, None)
+            .pull_owned(&self.owner, &self.owner_scope, &self.verifier, worker, None, &mut None)
             .await
     }
 
@@ -2544,7 +2540,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             let mut observer = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
             let mut coordinator = self.coordinator.lock().await;
             coordinator.refresh_with_work(&mut observer).await?;
-            let operation = coordinator.observe_operation_ref_with_work(
+            let operation = coordinator.observe_operation(
                 &self.owner, &self.owner_scope, &self.verifier,
                 OperationId::from_bytes(task.into_bytes()), &mut observer,
             )?;
@@ -2582,7 +2578,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let observed = {
             let mut coordinator = self.coordinator.lock().await;
             coordinator.refresh_with_work(work).await?;
-            let operation = coordinator.observe_operation_ref_with_work(
+            let operation = coordinator.observe_operation(
                 &self.owner, &self.owner_scope, &self.verifier,
                 OperationId::from_bytes(task.into_bytes()), work,
             )?;
@@ -2623,7 +2619,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         &self, worker: &crate::distributed::Worker, operation_id: OperationId,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<crate::distributed::WorkPull> {
-        self.coordinator.lock().await.pull_owned_with_work(&self.owner, &self.owner_scope, &self.verifier, worker, Some(operation_id), work).await
+        self.coordinator.lock().await.pull_owned(&self.owner, &self.owner_scope, &self.verifier, worker, Some(operation_id), work).await
     }
 
     /// Recovers the coordinator's original reservation after a lost pull response.
@@ -2654,7 +2650,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let admission = self.admission_with_work(operation_id, work).await?;
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh_with_work(work).await?;
-        let operation = coordinator.observe_operation_ref_with_work(
+        let operation = coordinator.observe_operation(
             &self.owner,
             &self.owner_scope,
             &self.verifier,
@@ -2801,7 +2797,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 reason: "payload staging requires the original native work observer",
             })?;
             let (reference, custody) = self.payloads
-                .stage_with_native_work(operation, key, bytes, original).await?;
+                .stage_with_native_work(operation, key, bytes, original)?.await?;
             io.absorb_native_custody(custody)?;
             Ok(reference)
         }
@@ -2969,14 +2965,14 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let parent_state = coordinator.observe_operation(
             &self.owner, &self.owner_scope, &self.verifier,
             OperationId::from_bytes(parent.into_bytes()),
-        )?;
+         &mut None,).cloned()?;
         crate::scheduler::require_execution_owner(&parent_state, &fence, false, &mut None)?;
         coordinator.cancel_child_operation(
             &self.owner, &self.owner_scope, &self.verifier,
             OperationId::from_bytes(child.into_bytes()),
             IdempotencyKey::new(format!("task-child-cancel:{parent}:{operation}"))?,
             OperationId::from_bytes(parent.into_bytes()), fence,
-        ).await
+         &mut None,).await
     }
 
     /// Starts or reattaches the exact already-admitted lease.
@@ -3000,7 +2996,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let admission = self.admission_with_work(operation_id, work).await?;
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh_with_work(work).await?;
-        let operation = coordinator.observe_operation_ref_with_work(
+        let operation = coordinator.observe_operation(
             &self.owner,
             &self.owner_scope,
             &self.verifier,
@@ -3055,7 +3051,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let operation_id = OperationId::from_bytes(task.into_bytes());
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh_with_work(work).await?;
-        coordinator.observe_operation_ref_with_work(
+        coordinator.observe_operation(
             &self.owner,
             &self.owner_scope,
             &self.verifier,
@@ -3078,7 +3074,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         } else {
             coordinator.apply_with_work(operation_id, key, event, work).await?;
         }
-        let current = coordinator.observe_operation_ref_with_work(
+        let current = coordinator.observe_operation(
             &self.owner,
             &self.owner_scope,
             &self.verifier,
@@ -3161,7 +3157,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 &self.owner_scope,
                 &self.verifier,
                 event.operation_id,
-            )?;
+             &mut None,).cloned()?;
             if operation.phase == crate::scheduler::OperationPhase::Suspended
                 && !operation.cancellation_requested
                 && operation
@@ -3202,7 +3198,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<Option<crate::scheduler::WorkflowSuspension>> {
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh_with_work(work).await?;
-        let operation = coordinator.observe_operation_ref_with_work(
+        let operation = coordinator.observe_operation(
             &self.owner,
             &self.owner_scope,
             &self.verifier,
@@ -3361,7 +3357,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let slot = {
             let mut coordinator = self.coordinator.lock().await;
             coordinator.refresh_with_work(work).await?;
-            let operation = coordinator.observe_operation_ref_with_work(
+            let operation = coordinator.observe_operation(
                 &self.owner,
                 &self.owner_scope,
                 &self.verifier,
@@ -3465,7 +3461,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             ).await?;
             return Err(Error::Indeterminate(operation_id));
         }
-        let current = coordinator.observe_operation_ref_with_work(
+        let current = coordinator.observe_operation(
             &self.owner, &self.owner_scope, &self.verifier, operation_id, work,
         )?;
         crate::scheduler::require_execution_owner(current, &fence, settlement, &mut None)?;
@@ -3494,7 +3490,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh_with_work(work).await?;
-        let operation = coordinator.observe_operation_ref_with_work(
+        let operation = coordinator.observe_operation(
             &self.owner,
             &self.owner_scope,
             &self.verifier,
@@ -3705,7 +3701,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let fence = {
             let mut coordinator = self.coordinator.lock().await;
             coordinator.refresh_with_work(work).await?;
-            let observed = coordinator.observe_operation_ref_with_work(
+            let observed = coordinator.observe_operation(
                 &self.owner, &self.owner_scope, &self.verifier, operation, work,
             )?;
             match observed.reservation.as_ref() {
@@ -3931,7 +3927,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             if native.is_some() {
                 let admission = self.admission_with_work(operation, work).await?;
                 let coordinator = self.coordinator.lock().await;
-                let observed = coordinator.observe_operation_ref_with_work(
+                let observed = coordinator.observe_operation(
                     &self.owner, &self.owner_scope, &self.verifier, operation, work,
                 )?;
                 (admission, observed.spec.owner_scope.agent())
@@ -4201,7 +4197,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         coordinator.observe_operation(
             &self.owner, &self.owner_scope, &self.verifier,
             OperationId::from_bytes(task.into_bytes()),
-        )
+         &mut None,).cloned()
     }
 
     /// Reads only the original owner's current cancellation flag.
@@ -4223,7 +4219,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     ) -> Result<bool> {
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh_with_work(work).await?;
-        let operation = coordinator.observe_operation_ref_with_work(
+        let operation = coordinator.observe_operation(
             &self.owner, &self.owner_scope, &self.verifier,
             OperationId::from_bytes(task.into_bytes()), work,
         )?;
@@ -4264,7 +4260,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh_with_work(work).await?;
-        let state = coordinator.observe_operation_ref_with_work(
+        let state = coordinator.observe_operation(
             &self.owner, &self.owner_scope, &self.verifier, operation, work,
         )?;
         if state.outcome.as_ref().is_some_and(|outcome| !matches!(outcome, Outcome::Indeterminate { .. })) {
@@ -4595,11 +4591,11 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         spec: OperationSpec,
         key: IdempotencyKey,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<crate::distributed::CoordinatorApply> {
+    ) -> Result<bool> {
         let mut coordinator = self.coordinator.lock().await;
         if let Some(limits) = self.session_limits.filter(|_| spec.parent.is_none()) {
             coordinator
-                .declare_session_with_work(
+                .declare_session(
                     &self.owner,
                     &self.owner_scope,
                     &self.verifier,
@@ -4835,7 +4831,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             {
                 let mut coordinator = self.coordinator.lock().await;
                 coordinator.refresh_with_work(proof_custody.work()).await?;
-                let prepared = coordinator.observe_operation_ref_with_work(
+                let prepared = coordinator.observe_operation(
                     &self.owner, &self.owner_scope, &self.verifier,
                     preparation.operation_id, proof_custody.work(),
                 )?;
@@ -4866,7 +4862,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                         let held = Self::reserve_proof_slots(&mut lineage, lineage_custody.work())?;
                         lineage_custody.adopt(held)?;
                         lineage.push(operation);
-                        let state = coordinator.observe_operation_ref_with_work(
+                        let state = coordinator.observe_operation(
                             &self.owner, &self.owner_scope, &self.verifier, operation,
                             lineage_custody.work(),
                         )?;
@@ -5020,7 +5016,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         } else {
             IdempotencyKey::new(format!("task-admission:{operation_id}"))?
         };
-        let indexed = crate::distributed::observe_declaration_with_work(
+        let indexed = crate::distributed::observe_declaration(
             &self.stream,
             &self.owner,
             &self.owner_scope,
@@ -5045,7 +5041,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         {
             let mut coordinator = self.coordinator.lock().await;
             coordinator.refresh_with_work(work).await?;
-            match coordinator.observe_operation_ref_with_work(
+            match coordinator.observe_operation(
                 &self.owner,
                 &self.owner_scope,
                 &self.verifier,
@@ -5997,8 +5993,8 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                         after_slot: after_slot.as_deref(),
                         maximum,
                     },
-                )
-                .await?;
+                 &mut None,)
+                .await.map(|(page, _)| page)?;
             Ok(TaskChildrenPage {
                 revision: page.revision,
                 entries: page
@@ -6624,7 +6620,7 @@ pub(crate) mod tests {
         for _ in 0..2 {
             let (input, input_guard) = fixture.host.payloads.stage_with_native_work(
                 operation, "native-existing-resume-input", br#"{"resume":true}"#, &work,
-            ).await?;
+            )?.await?;
             let mut key_io = crate::store::history::native_work_io(&work)?;
             let identity = host_digest_with_work(
                 &input, acyclic_stream::MAX_RECORD_BYTES as u64, &mut Some(&mut key_io),
@@ -8385,7 +8381,7 @@ pub(crate) mod tests {
                 stream.clone(),
                 filesystem.clone(),
                 volume.clone(),
-                issuer.verifier(),
+                issuer.verifier(), crate::core::SchemaRegistry::new(),
                 content_scope.clone(),
                 65_536,
             )?;
@@ -8515,7 +8511,7 @@ pub(crate) mod tests {
                 stream.clone(),
                 filesystem.clone(),
                 volume.clone(),
-                issuer.verifier(),
+                issuer.verifier(), crate::core::SchemaRegistry::new(),
                 content_scope.clone(),
                 65_536,
             )?;
@@ -8613,7 +8609,7 @@ pub(crate) mod tests {
         let (replacement_approval, cancellation_approval_pending) = {
             use crate::executor::ExecutionJournal;
             assert!(matches!(
-                crate::distributed::commit_prepared(&stream, approval_pending, operation_id, None, None, None).await?,
+                approval_pending.commit(&stream, Some(operation_id), None, None, None).await?,
                 (acyclic_stream::CommitOutcome::Conflict(_), 0)
             ));
             assert!(
@@ -8691,7 +8687,7 @@ pub(crate) mod tests {
             use crate::workflow::WorkflowJournal;
             assert!(
                 matches!(
-                    crate::distributed::commit_prepared(&stream, original_pending, operation_id, None, None, None).await?,
+                    original_pending.commit(&stream, Some(operation_id), None, None, None).await?,
                     (acyclic_stream::CommitOutcome::Conflict(_), 0)
                 ),
                 "lease replacement after preflight must atomically prevent publication"
@@ -8751,7 +8747,7 @@ pub(crate) mod tests {
             {
                 assert!(
                     matches!(
-                        crate::distributed::commit_prepared(&stream, execution_pending, operation_id, None, None, None).await?,
+                        execution_pending.commit(&stream, Some(operation_id), None, None, None).await?,
                         (acyclic_stream::CommitOutcome::Conflict(_), 0)
                     ),
                     "lease replacement must atomically fence execution publication"
@@ -8804,7 +8800,7 @@ pub(crate) mod tests {
             use crate::executor::{ExecutionEvent, ExecutionJournal};
             assert!(
                 matches!(
-                    crate::distributed::commit_prepared(&stream, execution_pending, operation_id, None, None, None).await?,
+                    execution_pending.commit(&stream, Some(operation_id), None, None, None).await?,
                     (acyclic_stream::CommitOutcome::Conflict(_), 0)
                 ),
                 "cancellation must atomically fence execution publication"
@@ -9009,7 +9005,7 @@ pub(crate) mod tests {
             use crate::workflow::WorkflowJournal;
             assert!(
                 matches!(
-                    crate::distributed::commit_prepared(&stream, pending, operation_id, None, None, None).await?,
+                    pending.commit(&stream, Some(operation_id), None, None, None).await?,
                     (acyclic_stream::CommitOutcome::Conflict(_), 0)
                 ),
                 "cancellation after preflight must atomically prevent publication"
@@ -9045,7 +9041,7 @@ pub(crate) mod tests {
         {
             use crate::executor::ExecutionJournal;
             assert!(matches!(
-                crate::distributed::commit_prepared(&stream, cancellation_approval_pending, operation_id, None, None, None).await?,
+                cancellation_approval_pending.commit(&stream, Some(operation_id), None, None, None).await?,
                 (acyclic_stream::CommitOutcome::Conflict(_), 0)
             ));
             assert!(

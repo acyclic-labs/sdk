@@ -1397,7 +1397,7 @@ impl NativeWatch {
             return Err(NativeWatchError::RootChanged);
         }
         #[cfg(windows)]
-        let complete = crate::native_host::reports_every_change_with_work(
+        let complete = crate::native_host::reports_every_change(
             &held_root.directory_handle(), work,
         ).map_err(demand_watch_error)?;
         #[cfg(not(windows))]

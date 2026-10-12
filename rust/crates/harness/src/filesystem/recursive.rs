@@ -674,7 +674,7 @@ pub fn fork_preparation_request_with_native_work<A: AsyncAuthorityStore, O: Asyn
         None => None,
     };
     let creation_grant = crate::filesystem::fork_preparer_io::clone_text("fork:publish", Some(&io))?;
-    let payload = super::default_tools::recursive_encode(fork, Some(&io))?;
+    let payload = super::default_tools::encode(fork, Some(&io))?;
     child.resource_proofs = proofs;
     let request = ResourcePreparationRequest {
         provider, child, resources, creation_grant,
@@ -847,8 +847,8 @@ impl ResumableMachine for ForkPreparationMachine {
 
 impl ForkPreparationMachine {
     fn initialize_engine(&self, input: &Value, io: Option<&super::PreparationIo>) -> Result<Value> {
-        use super::default_tools::{recursive_box, recursive_decode, recursive_encode, recursive_observe, recursive_reject};
-        let request: ResourcePreparationRequest = recursive_decode(input, io)?;
+        use super::default_tools::{recursive_box, decode, encode, recursive_observe, recursive_reject};
+        let request: ResourcePreparationRequest = decode(input, io)?;
         recursive_observe(io, |work| request.validate_with_work(work))?;
         let command = request.command.ok_or_else(|| recursive_reject(
             io, crate::wire::ErrorCode::Invalid, "fork preparation has no admitted command"))?;
@@ -856,12 +856,12 @@ impl ForkPreparationMachine {
             return Err(recursive_reject(io, crate::wire::ErrorCode::Invalid, "fork preparation command kind differs"));
         }
         let request_digest = preparation_payload_digest(&request.payload, io)?;
-        recursive_encode(&State::Ready { command: recursive_box(command, io)?, request_digest }, io)
+        encode(&State::Ready { command: recursive_box(command, io)?, request_digest }, io)
     }
 
     fn transition_engine(&self, state: &Value, input: &Value, io: Option<&super::PreparationIo>) -> Result<MachineTransition> {
-        use super::default_tools::{recursive_command_outbox, recursive_decode, recursive_encode, recursive_observe, recursive_reject};
-        let state: State = recursive_decode(state, io)?;
+        use super::default_tools::{recursive_command_outbox, decode, encode, recursive_observe, recursive_reject};
+        let state: State = decode(state, io)?;
         let (state, commands, status) = match state {
             State::Ready { command, request_digest } => {
                 recursive_observe(io, |work| command.validate_with_work(work))?;
@@ -872,7 +872,7 @@ impl ForkPreparationMachine {
                     recursive_command_outbox(*command, io)?, MachineStatus::Suspended)
             }
             State::Waiting { operation_id, request_digest } => {
-                let results: CommandResults = recursive_decode(input, io)?;
+                let results: CommandResults = decode(input, io)?;
                 let mut results = results.commands.into_iter();
                 let result = results.next().ok_or_else(|| recursive_reject(
                     io, crate::wire::ErrorCode::Invalid, "fork preparation result missing"))?;
@@ -887,7 +887,7 @@ impl ForkPreparationMachine {
                         {
                             return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized, "fork report changed the exact admitted source/request"));
                         }
-                        MachineStatus::Completed { value: recursive_encode(&report, io)? }
+                        MachineStatus::Completed { value: encode(&report, io)? }
                     }
                     Outcome::Failed { message } => MachineStatus::Failed { message },
                     Outcome::Cancelled => {
@@ -904,7 +904,7 @@ impl ForkPreparationMachine {
             }
             State::Settled => return Err(recursive_reject(io, crate::wire::ErrorCode::Conflict, "fork preparation is already settled")),
         };
-        Ok(MachineTransition { state: recursive_encode(&state, io)?, commands, status })
+        Ok(MachineTransition { state: encode(&state, io)?, commands, status })
     }
 }
 

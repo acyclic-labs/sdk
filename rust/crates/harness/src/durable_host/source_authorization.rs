@@ -437,7 +437,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             let retained = Self::reserve_proof_slots(&mut visited, quota.work())?;
             quota.adopt(retained)?;
             visited.push(operation);
-            let state = coordinator.observe_operation_ref_with_work(
+            let state = coordinator.observe_operation(
                 &self.owner, &self.owner_scope, &self.verifier, operation, quota.work())?;
             if state.cancellation_requested {
                 return Err(Self::admission_boundary(quota.work(), crate::wire::ErrorCode::Unauthorized,

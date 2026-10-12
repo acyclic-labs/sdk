@@ -1333,7 +1333,7 @@ where
         {
             return Err(boundary(io, ErrorCode::Unauthorized, "model is not in the committed steering outbox"));
         }
-        let previous = journal.observe_transition_with_io(latest.prior.revision, io).await?;
+        let previous = journal.observe_transition(latest.prior.revision, io).await?;
         let [receive] = previous.transition.commands.as_slice() else {
             return Err(boundary(io, ErrorCode::Unauthorized, "steering requires one committed receive"));
         };

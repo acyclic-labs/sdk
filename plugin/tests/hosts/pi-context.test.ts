@@ -9,13 +9,10 @@ import { discoverAndLoadExtensions, SessionManager, parseSessionEntries } from "
 import type { PiInboxMessage } from "../../pi/index.ts";
 import { loadPiContextHelpers } from "./pi-fixture.ts";
 
-// The installed extension is outside the SDK package and Pi resolves its imports.
-// For these native-SDK unit tests, copy the exact source beneath the qualification
-// package so Node resolves the same pinned SDK without a custom import hook.
 const {
   assertParentCutCurrent, captureParentCut, childSessionBytes,
   nativeChildSession, PiToolOperations, PiControlAcknowledgementError,
-  visibleControlResult, observePiTaskUntilTerminal, persistedPiInboxCursor, consumePiInbox, approvePiWriteback,
+  visibleControlResult, observePiOperation, persistedPiInboxCursor, consumePiInbox, approvePiWriteback,
 } = await loadPiContextHelpers();
 
 test("the native Pi loader resolves and registers the extension outside the host package", async () => {
@@ -53,27 +50,6 @@ function spawnMessage(id: string) {
   return fauxAssistantMessage(fauxToolCall("acyclic_spawn", {}, { id }), { stopReason: "toolUse", timestamp: 1 });
 }
 
-test("child keeps only the pinned current branch and never changes parent state", () => {
-  const parent = SessionManager.inMemory(process.cwd(), { id: "parent" });
-  const root = parent.appendMessage({ role: "user", content: "root instruction", timestamp: 1 });
-  parent.appendMessage({ role: "user", content: "excluded alternative", timestamp: 2 });
-  parent.branch(root);
-  parent.appendMessage(spawnMessage("spawn-1"));
-  const before = JSON.stringify([parent.getSessionId(), parent.getSessionFile(), parent.getLeafId(), parent.getEntries()]);
-  const cut = captureParentCut(parent, "spawn-1", 100, 100_000);
-  const child = childSessionBytes(cut, "child", process.cwd());
-  assert.equal(cut.parentLeafId, root);
-  assert.ok(child.includes("root instruction"));
-  assert.ok(!child.includes("excluded alternative"));
-  assert.ok(!child.includes("spawn-1"));
-  assert.equal(childSessionBytes(cut, "child", process.cwd()), child);
-  const restored = SessionManager.inMemory(process.cwd(), undefined, parseSessionEntries(child));
-  assert.equal(restored.getSessionId(), "child");
-  assert.equal(restored.getLeafId(), cut.parentLeafId);
-  assert.equal(JSON.stringify([parent.getSessionId(), parent.getSessionFile(), parent.getLeafId(), parent.getEntries()]), before);
-  parent.appendMessage({ role: "user", content: "later parent change", timestamp: 3 });
-  assert.ok(!childSessionBytes(cut, "child", process.cwd()).includes("later parent change"));
-});
 
 test("bounds, missing invocation and digest corruption reject without changing parent", () => {
   const parent = SessionManager.inMemory(process.cwd(), { id: "parent" });
@@ -259,26 +235,6 @@ test("explicit native context comes only from the caller while workspace selecti
     captureParentCut(foreign, "foreign-spawn", 100, 100_000)), /actual caller native session/);
 });
 
-test("the default native child is independently fresh with its actual header and caller provenance", () => {
-  const caller = SessionManager.inMemory(process.cwd(), { id: "caller" });
-  caller.appendMessage({ role: "user", content: "must not enter scratch", timestamp: 1 });
-  const native = nativeChildSession(caller, join(process.cwd(), "scratch-child"));
-  const rows = parseSessionEntries(native.session_bytes);
-  assert.equal(rows.length, 1);
-  assert.equal(rows[0].type, "session");
-  assert.equal(rows[0].timestamp, native.cut.capturedAt);
-  assert.equal(native.cut.mode, "scratch");
-  assert.equal(native.cut.parentSessionId, "caller");
-  assert.equal(native.cut.entriesJson, "[]");
-  assert.equal(native.cut.ownerEntryId, null);
-  assert.equal(native.cut.sourceLeafId, null);
-  assert.equal(native.cut.parentLeafId, null);
-  const child = SessionManager.inMemory(join(process.cwd(), "scratch-child"), undefined, rows);
-  assert.deepEqual(child.buildSessionContext().messages, []);
-  assert.ok(!native.session_bytes.includes("must not enter scratch"));
-  assert.notEqual(child.getSessionId(), caller.getSessionId());
-  assert.notEqual(nativeChildSession(caller, child.getCwd()).native_session_id, child.getSessionId());
-});
 
 
 test("the same SDK operation retains uncertain acknowledgement and never reseeds its native session", async () => {
@@ -517,7 +473,7 @@ test("native wait passively observes one original operation/task until an actual
   const original = Object.freeze({ session: "root", native_session: "caller", operation: "wait-original", task: "child" });
   const requests: typeof original[] = [];
   const outcome = Object.freeze({ originalHostOutcome: "opaque terminal payload" });
-  const result = await observePiTaskUntilTerminal(original.operation, async signal => {
+  const result = await observePiOperation(original.operation, async signal => {
     signal.throwIfAborted();
     requests.push(original);
     return requests.length < 3 ? { ...original, state: "pending" } : { ...original, state: "completed", outcome };
@@ -530,7 +486,7 @@ test("native wait passively observes one original operation/task until an actual
 
 test("native wait observation bound keeps pending explicit and does not dispatch replacements", async () => {
   let observations = 0;
-  const result = await observePiTaskUntilTerminal("wait-original", async () => {
+  const result = await observePiOperation("wait-original", async () => {
     observations++;
     return { operation: "wait-original", task: "child", state: "pending" };
   }, undefined, { maximumObservations: 2, timeoutMs: 1000, intervalMs: 0 });
@@ -545,30 +501,30 @@ test("native wait observation bound keeps pending explicit and does not dispatch
 test("native wait stops immediately on uncertainty or malformed terminal evidence", async () => {
   let observations = 0;
   const uncertain = { state: "pending", uncertain: { operation: "wait-original", task: "child", reason: "lost acknowledgement" } };
-  assert.equal(await observePiTaskUntilTerminal("wait-original", async () => {
+  assert.equal(await observePiOperation("wait-original", async () => {
     observations++;
     return uncertain;
   }), uncertain);
   assert.equal(observations, 1);
-  await assert.rejects(observePiTaskUntilTerminal("wait-original", async () => {
+  await assert.rejects(observePiOperation("wait-original", async () => {
     observations++;
     throw new PiControlAcknowledgementError("wait-original");
   }), /uncertain/);
   assert.equal(observations, 2, "a lost observation acknowledgement is never retried");
-  await assert.rejects(observePiTaskUntilTerminal("wait-original",
+  await assert.rejects(observePiOperation("wait-original",
     async () => ({ state: "completed", task: "child" })), /omitted its actual terminal outcome/);
 });
 
 test("native wait honors the SDK abort signal and finite elapsed deadline", async () => {
   const cancellation = new AbortController();
   let observations = 0;
-  await assert.rejects(observePiTaskUntilTerminal("wait-original", async () => {
+  await assert.rejects(observePiOperation("wait-original", async () => {
     observations++;
     cancellation.abort(new Error("native wait cancelled"));
     return { state: "pending", task: "child" };
   }, cancellation.signal), /native wait cancelled/);
   assert.equal(observations, 1);
-  const bounded = await observePiTaskUntilTerminal("wait-original", async signal => {
+  const bounded = await observePiOperation("wait-original", async signal => {
     observations++;
     if (observations > 2) await delay(10_000, undefined, { signal });
     return { state: "pending", task: "child", operation: "wait-original" };

@@ -922,7 +922,7 @@ where
             self.stream.clone(),
             self.filesystem.clone(),
             self.volume.clone(),
-            self.verifier.clone(),
+            self.verifier.clone(), crate::core::SchemaRegistry::new(),
             self.signed.clone(),
             self.maximum_payload_bytes.min(limits.file_bytes),
         )?
@@ -1817,9 +1817,9 @@ where
             let (record, custody) = journal.observe_transition_with_native_work(slot.revision, work).await?;
             io.absorb_native_custody(custody)?;
             record
-        } else { journal.observe_transition(slot.revision).await? };
+        } else { journal.observe_transition(slot.revision, None).await? };
         #[cfg(target_arch = "wasm32")]
-        let record = journal.observe_transition(slot.revision).await?;
+        let record = journal.observe_transition(slot.revision, None).await?;
         if record.next.revision != slot.revision
             || record.next.machine != admission.machine
             || !matches!(record.transition.status, MachineStatus::Suspended)

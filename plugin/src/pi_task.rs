@@ -17,8 +17,7 @@ use serde_json::Value;
 use serde_json::json;
 use std::sync::Arc;
 
-/// Resolves a creator-seeded native intent under the actual admitted child
-/// scope before staging its one-shot process effect.
+/// Resolves a creator-seeded native intent under the actual admitted child scope before staging its one-shot process effect.
 pub(crate) const NATIVE_LAUNCH_TASK_COMMAND_KIND: &str = "acyclic.pi.native.launch.v1";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -34,8 +33,7 @@ pub(crate) struct PiControlReply {
     pub(crate) value: Value,
 }
 
-/// Immutable admission input. Allocation progress stays on the existing plugin
-/// preparation/route record; it cannot change the task's admitted selection.
+/// Immutable admission input.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiTaskInput {
@@ -84,7 +82,6 @@ struct CommandResult {
     operation_id: OperationId,
     value: Outcome<FileRef>,
 }
-
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -531,9 +528,7 @@ pub(crate) fn control_reply(state: &Value) -> acyclic_harness::Result<Option<PiC
     })
 }
 
-
-/// The caller retains the checkpoint's original custody through extraction and
-/// transfers it to the moved body. This guard covers only new bounded metadata.
+/// The caller retains the checkpoint's original custody through extraction and transfers it to the moved body.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn control_reply_owned(
     mut state: Value,
@@ -713,20 +708,6 @@ impl ResumableMachine for PiTaskMachine {
     }
 }
 
-/// Reads the original machine checkpoint; catalog state is never a dispatch
-/// proof. The native host must separately verify admission and effect absence.
-pub(crate) fn original_ready_native_command(
-    state: &Value,
-) -> acyclic_harness::Result<Option<WorkflowCommand>> {
-    match decode::<PiTaskState>(state)? {
-        PiTaskState::Ready { command } if command.kind == NATIVE_LAUNCH_TASK_COMMAND_KIND => {
-            command.validate()?;
-            Ok(Some(command))
-        }
-        _ => Ok(None),
-    }
-}
-
 fn decode<T: serde::de::DeserializeOwned>(value: &Value) -> acyclic_harness::Result<T> {
     serde_json::from_value(value.clone()).map_err(|error| invalid(error.to_string()))
 }
@@ -794,8 +775,6 @@ fn transition_input(state: &PiTaskState, input: &Value) -> acyclic_harness::Resu
 }
 
 /// One pure typed engine serves both ordinary and original-work transitions.
-/// Native callers admit the closed metadata quota before decoding or entering
-/// this engine; only ordinary callers clone an input Value to deserialize it.
 fn advance(
     state: PiTaskState,
     input: TransitionInput,

@@ -77,7 +77,7 @@ pub(crate) use native_execution::NativePreparationCompletionTemplate;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
 mod native_process;
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-pub use native_process::{NativeProcessAuthority, NativeProcessProvider, NativeProcessReceipt, NativeReceiptError, NativeProcessDrainProof, NativeProcessPublishedVolume};
+pub use native_process::{NativeProcessAuthority, NativeProcessProvider, NativeProcessReceipt, NativeProcessDrainProof, NativeProcessPublishedVolume};
 mod native_capture_bounds;
 mod native_contract;
 pub use native_contract::{
@@ -120,7 +120,7 @@ pub use recursive::{
 pub use native_execution::{
     NativeExistingLazyVolume, NativeRootOutputSource, NativeTaskWorkingView,
     BorrowedNativeVolumeBinding, NativePreparationReceipt, NativePreparationRoot,
-    NativeProcessView, NativeProcessNamespaceScopes, NativePublicationFailure, NativeViewOwner, NativeVolumeView,
+    NativeProcessView, NativeProcessNamespaceScopes, NativePublicationFailure, NativeVolumeView,
     NativePublicationCleanup, NativePublicationReservation, NativePublicationReservationFailure,
     NativeReservationError,
     NativePreparationJournalError, NativePreparationJournalObservation, NativeRecordedPreparation,
@@ -1131,7 +1131,7 @@ where
     ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error>> {
         Box::pin(async move {
             self.workspace
-                .release_publication_measured(
+                .release_publication(
                     self.reservation.ok_or_else(|| acyclic_fs::OperationFailure::before_work(
                         Error::Invalid("fork publication guard has no reservation".into()),
                     ))?,
@@ -1846,7 +1846,7 @@ where
                     #[cfg(not(target_arch = "wasm32"))]
                     native_binding: None,
                 });
-                let receipt = guard.workspace.reserve_publication_measured(
+                let receipt = guard.workspace.reserve_publication(
                     acyclic_fs::OperationId::from_bytes(seed.operation_id.into_bytes()),
                     io.remaining()?,
                     cancellation,
@@ -3567,9 +3567,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .await
             .map_err(map_error)?;
         let child_workspace = workspace_ref(self.provider.clone(), &child_name)?;
-        let initial = forked
-            .operation_generation(filesystem_key(idempotency_key))
-            .await
+        let initial = forked.operation_generation(filesystem_key(idempotency_key), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(map_error)?
             .ok_or_else(|| Error::Storage("fork creation has no durable generation".into()))?;
         let child_generation = self.generation_ref(&initial)?;
@@ -4055,12 +4053,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         .map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?
                 } else {
                     io.charge(hash)?;
-                    io.receive(opened.operation_generation_measured(key, io.remaining()?, &io.cancellation).await)?
+                    io.receive(opened.operation_generation(key, io.remaining()?, &io.cancellation).await)?
                 }
                 #[cfg(target_arch = "wasm32")]
                 {
                     io.charge(hash)?;
-                    io.receive(opened.operation_generation_measured(key, io.remaining()?, &io.cancellation).await)?
+                    io.receive(opened.operation_generation(key, io.remaining()?, &io.cancellation).await)?
                 }
             }
             None => opened.operation_generation(filesystem_key(idempotency_key)).await.map_err(map_error)?,
@@ -4537,16 +4535,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let workspace = self.open(&reference).await?;
         let pinned = self.generation(&workspace, generation).await?;
         let path = format!("/{path}");
-        let stat = pinned.stat(&path).await.map_err(map_error)?;
+        let stat = pinned.stat(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(map_error)?;
         if stat.kind != FileKind::Regular {
             return Err(Error::Invalid("prefix requires a regular file".into()));
         }
         let length = stat
             .logical_bytes
             .ok_or_else(|| Error::Storage("file length is missing".into()))?;
-        pinned
-            .read_range(&path, 0, maximum_bytes.min(length))
-            .await
+        pinned.read_range(&path, 0, maximum_bytes.min(length), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.bytes).map_err(|failure| failure.error)
             .map_err(map_error)
     }
 
@@ -4643,7 +4639,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             Some(io) => {
                 let opened = fork_preparer_io::open(self, &workspace, io).await?;
                 let pinned = fork_preparer_io::generation(self, &opened, &generation, io).await?;
-                let bytes = io.receive(pinned.read_measured(&path, maximum_bytes, io.remaining()?, &io.cancellation).await)?;
+                let bytes = io.receive(pinned.read(&path, maximum_bytes, io.remaining()?, &io.cancellation).await)?;
                 let capacity = bytes.retained_capacity().ok_or_else(|| {
                     fork_preparer_io::unsupported(Some(io),
                         "content producer does not expose its owned capacity")
@@ -4678,7 +4674,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     /// Resolves the current immutable head of a named workspace.
     pub async fn resolve(&self, reference: &WorkspaceRef) -> Result<WorkspaceObservation> {
         let workspace = self.open(reference).await?;
-        let head = workspace.head().await.map_err(map_error)?;
+        let head = workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(map_error)?;
         Ok(WorkspaceObservation {
             workspace: reference.clone(),
             generation: self.generation_ref(&head)?,
@@ -4697,11 +4693,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         match generation {
             Some(reference) => self
                 .generation(&workspace, reference)
-                .await?
-                .read(path, maximum_bytes)
-                .await
+                .await?.read(path, maximum_bytes, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(map_error),
-            None => workspace.read(path, maximum_bytes).await.map_err(map_error),
+            None => workspace.read(path, maximum_bytes, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(map_error),
         }
     }
 
@@ -4716,11 +4710,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         match generation {
             Some(reference) => self
                 .generation(&workspace, reference)
-                .await?
-                .stat(path)
-                .await
+                .await?.stat(path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(map_error),
-            None => workspace.stat(path).await.map_err(map_error),
+            None => workspace.stat(path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(map_error),
         }
     }
 
@@ -4749,13 +4741,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         match generation {
             Some(reference) => self
                 .generation(&workspace, reference)
-                .await?
-                .list_directory(path, after, maximum_entries)
-                .await
+                .await?.list_directory(path, after, maximum_entries, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(map_error),
-            None => workspace
-                .list_directory(path, after, maximum_entries)
-                .await
+            None => workspace.list_directory(path, after, maximum_entries, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(map_error),
         }
     }
@@ -4811,7 +4799,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                     .await
                     .map_err(map_error)?
             }
-            None => workspace.begin_transaction(key).await.map_err(map_error)?,
+            None => workspace.begin_transaction(key, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(map_error)?,
         };
         for mutation in mutations {
             before_publication().await?;
@@ -4831,10 +4819,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             }
         }
         let cancellation = acyclic_fs::CancellationToken::new();
-        match transaction.commit_with_permit_guarded(
-            acyclic_fs::PublicationPermit::Unrestricted, &cancellation,
-            before_publication,
-        ).await? {
+        match async { let mut guard = before_publication; transaction.commit(None, acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation, |_| { let future = guard(); async move { future.await.map(|value| acyclic_fs::OperationReceipt { value, work: acyclic_fs::WorkCounters::default() }).map_err(acyclic_fs::OperationFailure::before_work) } }).await.map(|receipt| receipt.value).map_err(|failure| failure.error) }.await? {
             TransactionCommit::Committed(generation)
             | TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
             TransactionCommit::Conflict { .. } => {
@@ -4889,9 +4874,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             .key()
             .try_into()
             .map_err(|_| Error::Invalid("generation reference key must be 32 bytes".into()))?;
-        workspace
-            .generation(GenerationId::new(Digest::from_bytes(bytes)))
-            .await
+        workspace.generation(GenerationId::new(Digest::from_bytes(bytes)), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(map_error)
     }
 
@@ -5090,7 +5073,7 @@ mod tests {
             .create_workspace("adapter-test")
             .await
             .map_err(map_error)?;
-        let expected = workspace.head().await.map_err(map_error)?;
+        let expected = workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(map_error)?;
         let provider = ProviderRef::new("example", "filesystem", "1")?;
         let host = FilesystemHost::new(filesystem, provider.clone())?;
         let reference = workspace_ref(provider, "adapter-test")?;
@@ -5668,7 +5651,7 @@ async fn read_generation_with_io<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         return generation.read_with_native_work(path, maximum, original, &io.cancellation).await
             .map_err(|(source, custody)| Error::NativeWorkspace { source, custody });
     }
-    let bytes = io.receive(generation.read_measured(path, maximum, io.remaining()?, &io.cancellation).await)?;
+    let bytes = io.receive(generation.read(path, maximum, io.remaining()?, &io.cancellation).await)?;
     let capacity = bytes.retained_capacity().ok_or_else(|| {
         fork_preparer_io::unsupported(Some(io),
             "content producer does not expose its owned capacity")
