@@ -718,7 +718,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         match work.as_deref_mut() {
             Some(work) => crate::store::history::verify_content_with_work(
                 work, self.content_verifier.as_ref(), reference).await,
-            None => self.content_verifier.verify(reference).await,
+            None => self.content_verifier.verify(reference, reference.descriptor().byte_length(), None)?.await,
         }
     }
 
@@ -1866,7 +1866,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let (bytes, raw_bytes) = match custody.work().as_deref_mut() {
             Some(work) => crate::store::history::read_content_with_work(
                 work, self.content_verifier.as_ref(), reference).await?,
-            None => (self.content_verifier.read(reference).await?, 0),
+            None => (self.content_verifier.read(reference, reference.descriptor().byte_length(), None)?.await?, 0),
         };
         custody.adopt(raw_bytes)?;
         reference.descriptor().verify(bytes.as_ref(), custody.work())?;
@@ -2908,7 +2908,7 @@ pub(crate) async fn commit<P: StreamProvider>(
                     acyclic_stream::CommitOutcome::Committed(_) => CommitPhase::Committed,
                     acyclic_stream::CommitOutcome::Conflict(_) => CommitPhase::Conflict,
                 },
-                Ok(Err(error)) if *error.source() == StreamError::Unavailable => CommitPhase::Unknown,
+                Ok(Err(error)) if *error == StreamError::Unavailable => CommitPhase::Unknown,
                 Ok(Err(_)) => CommitPhase::Failed,
                 Err(_) => CommitPhase::Unknown,
             }; }
