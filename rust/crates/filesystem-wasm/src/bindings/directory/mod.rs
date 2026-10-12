@@ -54,14 +54,11 @@ impl BrowserCheckout {
     ) -> Result<Ts<BrowserDirectoryPageResult>, JsValue> {
         let maximum_entries = wasm_u32(&maximum_entries)?;
 
-        let portable =
-            PortablePath::parse(&path, self.engine.volume_config().limits).map_err(js_error)?;
-        let path = NamespacePath::from_portable_in_profile(
-            &portable,
+        let path = browser_path(
+            &path,
             self.engine.volume_config().profile,
             self.engine.volume_config().limits,
-        )
-        .map_err(js_error)?;
+        )?;
         let after = after
             .as_deref()
             .map(|value| {

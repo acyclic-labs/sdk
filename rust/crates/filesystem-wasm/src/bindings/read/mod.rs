@@ -57,14 +57,11 @@ impl BrowserCheckout {
         &mut self,
         path: String,
     ) -> Result<Ts<BrowserLookupResult>, JsValue> {
-        let portable =
-            PortablePath::parse(&path, self.engine.volume_config().limits).map_err(js_error)?;
-        let path = NamespacePath::from_portable_in_profile(
-            &portable,
+        let path = browser_path(
+            &path,
             self.engine.volume_config().profile,
             self.engine.volume_config().limits,
-        )
-        .map_err(js_error)?;
+        )?;
         let receipt = browser_call!(self, lookup_no_follow(&path,))?;
         let record = receipt.value.record;
         ts(BrowserLookupResult {
@@ -229,14 +226,11 @@ impl BrowserCheckout {
         offset: u64,
         length: u64,
     ) -> Result<Ts<BrowserFileReadResult>, JsValue> {
-        let portable =
-            PortablePath::parse(&path, self.engine.volume_config().limits).map_err(js_error)?;
-        let path = NamespacePath::from_portable_in_profile(
-            &portable,
+        let path = browser_path(
+            &path,
             self.engine.volume_config().profile,
             self.engine.volume_config().limits,
-        )
-        .map_err(js_error)?;
+        )?;
         let receipt = browser_call!(self, read_file_range(&path, ByteRange { offset, length },))?;
         ts(BrowserFileReadResult {
             bytes: receipt.value.bytes.to_vec(),
