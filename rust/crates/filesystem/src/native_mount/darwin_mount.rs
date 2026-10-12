@@ -2520,11 +2520,11 @@ fn new_detach_meter(
     native: &crate::NativeMaterializationWork,
 ) -> Result<Arc<DetachReadMeter>, NativeMountError> {
     let custody = super::NativeMountAllocationCustody::new(&mut crate::demand::NativeSourceWork::from_native_materialization_work(native)).map_err(super::NativeMountStartupAdmissionError::from)?;
-    native.original_demand_work().with_original_leaf(|original| custody.claim(std::mem::size_of::<DetachReadMeter>() as u64, original)).map_err(super::NativeMountStartupAdmissionError::from)?.map_err(super::NativeMountStartupAdmissionError::from)?;
+    native.source_leaf(|original| custody.claim(std::mem::size_of::<DetachReadMeter>() as u64, original)).map_err(super::NativeMountStartupAdmissionError::from)?.map_err(super::NativeMountStartupAdmissionError::from)?;
     let meter = Arc::new(DetachReadMeter {
         work: Mutex::new(Some(native.clone())), custody: custody.clone(),
     });
-    native.original_demand_work().with_original_leaf(|original| custody.attach_known_control(Arc::downgrade(&meter) as _, original)).map_err(super::NativeMountStartupAdmissionError::from)?.map_err(super::NativeMountStartupAdmissionError::from)?;
+    native.source_leaf(|original| custody.attach_known_control(Arc::downgrade(&meter) as _, original)).map_err(super::NativeMountStartupAdmissionError::from)?.map_err(super::NativeMountStartupAdmissionError::from)?;
     Ok(meter)
 }
 
@@ -3204,8 +3204,7 @@ impl DarwinCallbackWork<'_> {
             Ok(custody) => Ok(DarwinOwned { value: Some(value), custody: Some(custody), bytes, allocation: None }),
             Err(error) => {
                 drop(value);
-                self.native.original_demand_work()
-                    .with_original_leaf(|original| original.release(bytes))
+                self.native.source_leaf(|original| original.release(bytes))
                     .expect("original source allocation ledger")
                     .expect("dropped source-owned allocation");
                 Err(self.native_error(error.into()))

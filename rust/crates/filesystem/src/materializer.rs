@@ -601,26 +601,10 @@ impl NativeMaterializationWork {
         }
     }
 
-    /// Retains the original invocation for native queue completion.
-    pub(crate) fn original_demand_work(&self) -> crate::demand::OriginalDemandWork {
-        crate::demand::NativeSourceWork::from_native_materialization_work(self).original_demand_work()
-    }
-
-    pub(crate) fn from_original_demand_work(work: &crate::demand::OriginalDemandWork) -> Result<Self, crate::DemandError> {
-        let cancellation = work.with_original_leaf(|state| state.cancellation().clone())?;
-        Ok(Self {
-            state: std::sync::Arc::clone(&work.state), cancellation,
-            resource: work.resource.clone(), capture_origin: work.capture_origin.clone(),
-            invocation: work.invocation.clone(),
-            #[cfg(feature = "native-mount")]
-            execution: work.execution.clone(),
-        })
-    }
-
-    #[cfg(feature = "native-mount")]
     pub(crate) fn from_meter(state: std::sync::Arc<crate::demand::NativeDemandReadMeter>) -> Self {
         let cancellation = state.lock().cancellation().clone();
-        Self { state, cancellation, resource: None, capture_origin: None, invocation: None, execution: None }
+        Self { state, cancellation, resource: None, capture_origin: None, invocation: None,
+            #[cfg(feature = "native-mount")] execution: None }
     }
 
     fn state<T>(&self, operation: impl FnOnce(&mut crate::demand::DemandWork) -> T) -> T {

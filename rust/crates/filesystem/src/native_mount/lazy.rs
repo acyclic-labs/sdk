@@ -4739,17 +4739,15 @@ where
             super::adapter::NativeDemandCarrier::Native(original) =>
                 self.promote_subtree_with_original_work(path, owner, original).await,
             super::adapter::NativeDemandCarrier::Shared(original) => {
-                let original = crate::demand::OriginalDemandWork::from_meter(Arc::clone(original));
-                let original = crate::NativeMaterializationWork::from_original_demand_work(&original)
-                    .map_err(mount_demand_error)?;
+                let original = crate::NativeMaterializationWork::from_meter(Arc::clone(original));
+                original.source_leaf(|_| ()).map_err(mount_demand_error)?;
                 self.promote_subtree_with_original_work(path, owner, &original).await
             }
             super::adapter::NativeDemandCarrier::Borrowed(work) =>
                 super::adapter::BorrowedNativeDemandMeter::new(work)?
                     .run_async(|original| async move {
-                        let original = crate::demand::OriginalDemandWork::from_meter(original);
-                        let original = crate::NativeMaterializationWork::from_original_demand_work(&original)
-                            .map_err(mount_demand_error)?;
+                        let original = crate::NativeMaterializationWork::from_meter(original);
+                        original.source_leaf(|_| ()).map_err(mount_demand_error)?;
                         self.promote_subtree_with_original_work(path, owner, &original).await
                     }).await,
         }

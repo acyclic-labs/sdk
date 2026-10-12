@@ -375,7 +375,7 @@ pub(crate) struct Delivery {
     events: Option<Arc<dyn NativeEventSink>>,
     startup_failure: std::sync::Mutex<std::sync::Weak<SourceWatchStartupFailure>>,
     ownership: SourcePayloadOwnership,
-    original: Option<crate::demand::OriginalDemandWork>,
+    original: Option<crate::NativeMaterializationWork>,
 }
 
 impl Delivery {
@@ -439,7 +439,7 @@ impl Delivery {
     fn new_with_work<W: SourceDemandReadWork>(
         sink: Arc<dyn HostChangeSink>, work: &mut W,
     ) -> Result<Self, DemandError> {
-        let original = work.native_source_work().map(|work| work.original_demand_work().allocation_work());
+        let original = work.native_source_work().map(|work| work.owned().allocation_work());
         let controls = |work: &mut DemandWork| (work.budget, work.cancellation().clone());
         let (budget, cancellation) = if original.is_some() {
             work.with_original_leaf(controls)
@@ -489,7 +489,7 @@ impl Delivery {
 
     fn callback_work(&self) -> CallbackWork<'_> {
         match &self.original {
-            Some(original) => CallbackWork::Original(NativeSourceWork::from_original_work(original)),
+            Some(original) => CallbackWork::Original(NativeSourceWork::from_native_materialization_work(original)),
             None => CallbackWork::Ordinary(DemandWork::new(self.budget, &self.cancellation)),
         }
     }
@@ -497,7 +497,7 @@ impl Delivery {
     fn birth_matches<W: SourceDemandReadWork>(&self, work: &W) -> bool {
         let Some(birth) = &self.original else { return false; };
         let Some(current) = work.native_source_work() else { return false; };
-        let current = current.original_demand_work();
+        let current = current.owned();
         Arc::ptr_eq(&birth.state, &current.state)
             && match (birth.resource.as_ref(), current.resource.as_ref()) {
                 (None, None) => true,
@@ -611,7 +611,7 @@ pub struct SourceWatchStartupFailure {
     stopped: AtomicBool,
     owned_bytes: std::sync::atomic::AtomicU64,
     ownership: SourcePayloadOwnership,
-    _original: Option<crate::demand::OriginalDemandWork>,
+    _original: Option<crate::NativeMaterializationWork>,
 }
 
 struct FailedWatchLease<'a> {

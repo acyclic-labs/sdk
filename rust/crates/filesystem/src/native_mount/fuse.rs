@@ -131,8 +131,7 @@ impl<T> FuseOwned<T> {
             Ok(custody) => Ok(Self { value: Some(value), custody: Some(custody), claimed_bytes: bytes, native_allocation: None }),
             Err(error) => {
                 drop(value);
-                work.original_demand_work()
-                    .with_original_leaf(|original| original.release(bytes))??;
+                work.source_leaf(|original| original.release(bytes))??;
                 Err(error)
             }
         }

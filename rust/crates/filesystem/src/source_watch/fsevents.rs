@@ -170,14 +170,14 @@ impl PlatformWatch {
         wait.check().map_err(|_| DemandError::Cancelled)?;
         let birth = self.shared.delivery.original.as_ref()
             .ok_or(DemandError::NativeWorkUnavailable)?;
-        let mut work = crate::demand::NativeSourceWork::from_original_work(birth);
+        let mut work = crate::demand::NativeSourceWork::from_native_materialization_work(birth);
         self.stop_cleanup_wait_with_work(&mut work, Some(wait))
     }
 
     /// Completes only this original stream's accepted before-birth suffix.
     pub(super) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
         let birth = self.shared.delivery.original.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
-        let mut work = crate::demand::NativeSourceWork::from_original_work(birth);
+        let mut work = crate::demand::NativeSourceWork::from_native_materialization_work(birth);
         self.stop_cleanup_wait_with_work(&mut work, None)
     }
 

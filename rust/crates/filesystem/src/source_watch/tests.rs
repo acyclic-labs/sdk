@@ -509,12 +509,12 @@ fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation
     let root = crate::NativeMaterializationWork::new(budget, &cancellation)
         .map_err(|(error, _)| error)?;
     let scope = root.native_volume_work(budget)?;
-    let original = scope.original_demand_work();
+    let original = scope.clone();
     let resource = Arc::downgrade(scope.resource_allowance().ok_or("birth resource absent")?);
     let meter = Arc::downgrade(&original.state);
     let recorded = Arc::new(Recorded::default());
     let before = scope.receipt();
-    let mut work = NativeSourceWork::from_original_work(&original);
+    let mut work = NativeSourceWork::from_native_materialization_work(&original);
     let watch = NativeSourceWatch::start_with_work(&host, recorded.clone(), &mut work)?;
     let started = scope.receipt();
     assert!(started.backend_read_operations > before.backend_read_operations);
@@ -532,7 +532,7 @@ fn cleanup_wait_original_wrapper_preserves_birth_owner_through_root_cancellation
     wait.cancel();
     let bytes = watch.logical_owned_bytes();
     let native_bytes = watch.platform.logical_owned_bytes();
-    original.with_original_leaf(|ledger| {
+    original.source_leaf(|ledger| {
         let prefix = ledger.receipt();
         assert!(matches!(watch.stop_with_cleanup_wait(&wait), Err(DemandError::Cancelled)));
         assert_eq!(ledger.receipt(), prefix, "pre-cancel does not spend the birth cleanup suffix");
@@ -598,11 +598,11 @@ fn accepted_cleanup_wrapper_retires_original_watch_after_observer_and_root_cance
     let root = crate::NativeMaterializationWork::new(budget, &cancellation)
         .map_err(|(error, _)| error)?;
     let scope = root.native_volume_work(budget)?;
-    let original = scope.original_demand_work();
+    let original = scope.clone();
     let resource = Arc::downgrade(scope.resource_allowance().ok_or("birth resource absent")?);
     let meter = Arc::downgrade(&original.state);
     let watch = NativeSourceWatch::start_with_work(
-        &host, Arc::new(Recorded::default()), &mut NativeSourceWork::from_original_work(&original),
+        &host, Arc::new(Recorded::default()), &mut NativeSourceWork::from_native_materialization_work(&original),
     )?;
     let observer = crate::CancellationToken::new();
     observer.cancel();

@@ -312,7 +312,7 @@ impl PlatformWatch {
     /// Completes an already-owned native cleanup suffix without introducing a caller token, root, resource allowance or namespace authority.
     pub(super) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
         let birth = self.shared.delivery.original.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
-        let mut work = crate::demand::NativeSourceWork::from_original_work(birth);
+        let mut work = crate::demand::NativeSourceWork::from_native_materialization_work(birth);
         self.stop_engine(&mut work, true, None)
     }
 
@@ -323,7 +323,7 @@ impl PlatformWatch {
         wait.check().map_err(|_| DemandError::Cancelled)?;
         let birth = self.shared.delivery.original.as_ref()
             .ok_or(DemandError::NativeWorkUnavailable)?;
-        let mut work = crate::demand::NativeSourceWork::from_original_work(birth);
+        let mut work = crate::demand::NativeSourceWork::from_native_materialization_work(birth);
         self.stop_engine(&mut work, true, Some(wait))
     }
 
@@ -745,7 +745,7 @@ impl Shared {
         let original = error.raw_os_error().map(io::Error::from_raw_os_error)
             .unwrap_or_else(|| io::Error::from(error.kind()));
         if let Some(birth) = &self.delivery.original {
-            crate::demand::NativeSourceWork::from_original_work(birth).with_original_leaf(|work| {
+            crate::demand::NativeSourceWork::from_native_materialization_work(birth).with_original_leaf(|work| {
                 work.record_native_io_failure(DemandError::Io(original));
                 work.poison_native_original_work();
             });
@@ -778,7 +778,7 @@ impl Shared {
 
     fn note_native_failure(&self, error: DemandError) {
         if let Some(birth) = &self.delivery.original {
-            crate::demand::NativeSourceWork::from_original_work(birth).with_original_leaf(|work| {
+            crate::demand::NativeSourceWork::from_native_materialization_work(birth).with_original_leaf(|work| {
                 if matches!(&error, DemandError::NativeWorkUnavailable) {
                     work.record_native_io_failure(DemandError::NativeWorkUnavailable);
                 }

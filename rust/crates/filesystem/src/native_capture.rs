@@ -585,7 +585,7 @@ pub async fn capture_paths<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
     let native = capture_work(budget, cancellation)?;
-    let original = native.original_demand_work();
+    let original = native.clone();
     let result = async {
         validate_path_count(paths, options).map_err(OperationFailure::before_work)?;
         let scope = CaptureWorkScope::new(&native)?;
@@ -713,7 +713,7 @@ pub async fn capture_subtree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
     let native = capture_work(budget, cancellation)?;
-    let original = native.original_demand_work();
+    let original = native.clone();
     let result = capture_subtrees_with_native_work(
         checkout, &[root], options, &CapturePolicy::default(), cancellation, None, &native,
     ).await;
@@ -727,10 +727,10 @@ fn capture_work(budget: WorkBudget, cancellation: &CancellationToken,
 }
 
 fn capture_original_result<T>(
-    original: &crate::demand::OriginalDemandWork,
+    original: &crate::NativeMaterializationWork,
     result: Result<OperationReceipt<T>, OperationFailure<CaptureError>>,
 ) -> Result<OperationReceipt<T>, OperationFailure<CaptureError>> {
-    match (result, original.finish_operation(original.check())) {
+    match (result, original.finish_source(original.check_source())) {
         (Err(failure), Ok(completed)) =>
             Err(OperationFailure::new(failure.error, completed.work)),
         (Err(failure), Err(completed)) =>
@@ -1929,7 +1929,7 @@ pub async fn capture_baseline<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<CaptureReceipt>, OperationFailure<CaptureError>> {
     let native = capture_work(budget, cancellation)?;
-    let original = native.original_demand_work();
+    let original = native.clone();
     let result = capture_baseline_with_native_work(checkout, options, policy, cancellation, &native).await;
     capture_original_result(&original, result)
 }
@@ -2232,7 +2232,7 @@ pub async fn capture_watch_batch<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     cancellation: &CancellationToken,
 ) -> Result<OperationReceipt<WatchCaptureReceipt>, OperationFailure<CaptureError>> {
     let native = capture_work(budget, cancellation)?;
-        let original = native.original_demand_work();
+        let original = native.clone();
     let result = capture_watch_batch_with_native_work(
         checkout, batch, options, policy, cancellation, &native,
     ).await;
@@ -2802,7 +2802,7 @@ mod shared_watch_capture_tests {
         let budget = WorkBudget::UNBOUNDED;
         let native = crate::NativeMaterializationWork::new(budget, &cancellation)
             .map_err(|(error, _)| error)?;
-        let original = native.original_demand_work();
+        let original = native.clone();
         let meter = Arc::clone(&original.state);
         *binding.lock().expect("fixture binding") = Some(Arc::clone(&meter));
         let limits = checkout.volume_config().limits;

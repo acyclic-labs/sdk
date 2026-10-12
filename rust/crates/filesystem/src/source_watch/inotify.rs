@@ -701,7 +701,7 @@ impl PlatformWatch {
         // Only the original owner carries credits accepted before native birth. The caller's token controls waiting, never that owner's authority.
         let original = self.shared.delivery.original.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
         if wait.is_cancelled() { return Err(DemandError::Cancelled); }
-        self.stop(&mut crate::demand::NativeSourceWork::from_original_work(original), Some(wait), true)?;
+        self.stop(&mut crate::demand::NativeSourceWork::from_native_materialization_work(original), Some(wait), true)?;
         if wait.is_cancelled() { return Err(DemandError::Cancelled); }
         Ok(())
     }
@@ -709,7 +709,7 @@ impl PlatformWatch {
     pub(super) fn stop_accepted_cleanup(&self) -> Result<(), DemandError> {
         self.shared.delivery.ensure_stop_available()?;
         let original = self.shared.delivery.original.as_ref().ok_or(DemandError::NativeWorkUnavailable)?;
-        self.stop(&mut crate::demand::NativeSourceWork::from_original_work(original), None, true)
+        self.stop(&mut crate::demand::NativeSourceWork::from_native_materialization_work(original), None, true)
     }
 
     fn stop<W: SourceDemandReadWork>(
@@ -952,7 +952,7 @@ impl Shared {
     fn cancel_cleanup<W: SourceDemandReadWork>(&self, work: &mut W) {
         let mut cleanup = self.cleanup.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(birth) = &self.delivery.original {
-            cleanup.cancel(&mut crate::demand::NativeSourceWork::from_original_work(birth));
+            cleanup.cancel(&mut crate::demand::NativeSourceWork::from_native_materialization_work(birth));
         } else {
             cleanup.cancel(work);
         }
@@ -979,7 +979,7 @@ impl Shared {
         if let Some(original) = &self.delivery.original {
             // Every retained record belongs to this native owner, even if a different caller requested admission. Fund its mandatory drop from that owner's immutable original before record birth.
             self.cleanup.lock().unwrap_or_else(PoisonError::into_inner)
-                .reserve_record(&mut crate::demand::NativeSourceWork::from_original_work(original))?;
+                .reserve_record(&mut crate::demand::NativeSourceWork::from_native_materialization_work(original))?;
         } else if self.delivery.birth_matches(work) {
             self.cleanup.lock().unwrap_or_else(PoisonError::into_inner).reserve_record(work)?;
         }
