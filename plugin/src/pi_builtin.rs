@@ -116,14 +116,14 @@ impl PiBuiltinRequest {
         Ok(())
     }
 
-    pub(crate) fn operation(&self, root: TaskId) -> OperationId {
-        crate::pi_fork::derived(crate::pi_fork::original_operation(root, self.caller, &self.sdk_operation),
-            match self.io {
-                PiBuiltinIo::Read { .. } => "builtin-read",
-                PiBuiltinIo::Write { .. } => "builtin-write",
-                PiBuiltinIo::EditRead { .. } => "builtin-edit-read",
-                PiBuiltinIo::EditWrite { .. } => "builtin-edit-write",
-            })
+    pub(crate) fn operation(&self, root: TaskId, work: &NativeMaterializationWork) -> Result<OperationId> {
+        let original = crate::pi_fork::original_operation(root, self.caller, &self.sdk_operation, work)?;
+        crate::pi_fork::derived(original, match self.io {
+            PiBuiltinIo::Read { .. } => "builtin-read",
+            PiBuiltinIo::Write { .. } => "builtin-write",
+            PiBuiltinIo::EditRead { .. } => "builtin-edit-read",
+            PiBuiltinIo::EditWrite { .. } => "builtin-edit-write",
+        }, work)
     }
 
     pub(crate) fn require_root_source_read(&self, original_root: TaskId) -> Result<()> {
@@ -535,7 +535,7 @@ impl<'a> PiBuiltinHost<'a> {
         let PiBuiltinIo::Read { maximum_bytes, variants } = &request.io else { unreachable!("read checked") };
         let relatives = scoped_variants(variants, root)?;
         let selection = selected.selected(context, &native_context, &owner, request.caller,
-            Some(key), None, request.operation(self.protected.policy().root_task),
+            Some(key), None, request.operation(self.protected.policy().root_task, work)?,
             self.work.cancellation(), &self.work).await?;
         let (_, volume, workspace, frozen, inspection, _) = &selection;
         let reader = crate::pi_inspection::PiNativeSelectedSource::select(inspection, request.caller,
@@ -580,7 +580,7 @@ impl<'a> PiBuiltinHost<'a> {
             return Err(denied("builtin command differs from its original native task actor"));
         }
         if command.kind != PI_BUILTIN_COMMAND_KIND
-            || command.operation_id != request.operation(self.protected.policy().root_task) {
+            || command.operation_id != request.operation(self.protected.policy().root_task, work)? {
             return Err(denied("builtin command changed its original SDK operation"));
         }
         let owner = self.runtime.runtime.task_host()

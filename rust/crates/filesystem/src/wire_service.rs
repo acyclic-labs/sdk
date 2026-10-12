@@ -394,9 +394,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemWireService<A, O> {
         } else {
             Ok(JoinTargetHead::Stale(
                 target
-                    .generation(current)
-                    .await
-                    .map_err(|error| status(&error))?,
+                    .generation(current, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                    .await.map(|receipt| receipt.value)
+                    .map_err(|failure| status(&failure.error))?,
             ))
         }
     }
@@ -1128,11 +1128,9 @@ where
         let generation = self.generation(request.generation).await?;
         let checkout = generation
             .workspace
-            .engine_checkout(
+            .checkout(
                 crate::model::GenerationSelector::Exact(generation.id()),
-                crate::model::CheckoutMode::read_only_pinned(),
-            )
-            .await
+                crate::model::CheckoutMode::read_only_pinned(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|error| status(&error))?;
         let manifest = checkout
             .export_manifest(crate::WorkBudget::UNBOUNDED, &CancellationToken::new())

@@ -248,7 +248,7 @@ impl NativeProcessRequest {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         let io = super::PreparationIo::from_native_work(work)?;
-        io.decode_preparation_with_code::<Self>(
+        io.decode_preparation::<Self>(
             bytes, crate::wire::ErrorCode::Storage,
         )?.into_native_parts()
     }
@@ -353,7 +353,7 @@ impl NativeProcessResult {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         let io = super::PreparationIo::from_native_work(work)?;
-        let mut decoded = io.decode_preparation_with_code::<Self>(
+        let mut decoded = io.decode_preparation::<Self>(
             bytes, crate::wire::ErrorCode::Storage,
         )?;
         let owned = (std::mem::size_of::<Self>() as u64)

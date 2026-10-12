@@ -179,7 +179,7 @@ pub use distributed::StreamAuthorityStore;
 pub use distributed_fs::DistributedFs;
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
-    CheckoutCommitOutcome, ContentChange, ContentStager, ContentTimes, DetachedFile,
+    CheckoutCommitOutcome, ContentChange, ContentTimes, DetachedFile,
     DirectoryBindingChange, DirectoryPageRequest, DirectoryRecordEntry, DirectoryRecordPage,
     EmbeddedCapabilities, FileCloneRequest, FileDescription, FileRecordChange, Fs, FsError,
     FsReceipt, FsResult, GenerationDiff, GroupedChange, GroupedOutcome, JoinCommitWitness,
@@ -393,14 +393,14 @@ pub use windows_usn::{
     capture_windows_usn_checkpoint, validate_windows_usn_checkpoint,
 };
 pub use workspace::{
-    ApplyOptions, ChangeSet, ChangedPath, Checkpoint, DrivenJoinError, ForkOptions, Generation,
-    GenerationPin, IdempotencyKey, JoinApplication, JoinBuilder, JoinHistory, JoinOutcome,
+    ApplyOptions, ChangeSet, ChangedPath, DrivenJoinError, ForkOptions, Generation,
+    IdempotencyKey, JoinApplication, JoinBuilder, JoinHistory, JoinOutcome,
     JoinPlan, Transaction, TransactionCommit, TransactionConflict, TransactionConflictRegion,
     TransactionDependencyUse, TransactionRebase, TransactionSparseSeek, Workspace, WorkspaceDelete,
     WorkspaceDirectoryEntry, WorkspaceDirectoryPage, WorkspaceError, WorkspaceExtentKind,
     WorkspaceExtentPlan, WorkspaceExtentSpan, WorkspaceId, WorkspaceMetadata, WorkspaceName,
     WorkspaceNameError, WorkspacePathApply, WorkspacePathConflict, WorkspaceRebase,
-    WorkspaceRestore, WorkspaceStat, WorkspaceSync,
+    WorkspaceRestore, WorkspaceStat,
 };
 pub use workspace_context::{
     MemoryWorkspaceContextStore, MemoryWorkspaceContextStoreError, WorkspaceContext,

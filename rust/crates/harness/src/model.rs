@@ -1278,7 +1278,7 @@ impl ModelRequest {
                             let _bytes;
                             let bytes = io.encode(content, io.remaining()?.bytes_encoded, false)?;
                             _bytes = io.guard_bytes(&bytes)?;
-                            let envelope = io.decode_preparation::<Value>(&bytes)?;
+                            let envelope = io.decode_preparation::<Value>(&bytes, crate::wire::ErrorCode::Storage)?;
                             crate::contract::validate_json_schema_value(
                                 &tool.projection_schema, &envelope, "model tool result", Some(io),
                             )?;
@@ -1329,7 +1329,7 @@ impl PreparedModelRequest {
     ) -> Result<Self> {
         let request = match io {
             #[cfg(feature = "filesystem")]
-            Some(io) => io.decode_preparation::<ModelRequest>(bytes)?.into_retained(),
+            Some(io) => io.decode_preparation::<ModelRequest>(bytes, crate::wire::ErrorCode::Storage)?.into_retained(),
             _ => crate::contract::json_from_slice(bytes)
                 .map_err(|error| Error::Invalid(error.to_string()))?,
         };
@@ -1594,9 +1594,9 @@ impl PreparedModelRequest {
                 #[cfg(feature = "filesystem")]
                 Some(io) => {
                     io.receive_content(verifier.verify_measured(&reference,
-                        reference.descriptor().byte_length(), io.remaining()?, &io.cancellation).await)?;
+                        reference.descriptor().byte_length(), io.remaining()?, io.cancellation()).await)?;
                     io.receive_content(verifier.read_measured(&reference,
-                        reference.descriptor().byte_length(), io.remaining()?, &io.cancellation).await)?
+                        reference.descriptor().byte_length(), io.remaining()?, io.cancellation()).await)?
                 }
                 _ => {
                     verifier.verify(&reference).await?;
@@ -1613,7 +1613,7 @@ impl PreparedModelRequest {
             reference.descriptor().verify(&bytes)?;
             let segment: ModelPrefix = match io {
                 #[cfg(feature = "filesystem")]
-                Some(io) => io.decode_preparation::<ModelPrefix>(&bytes)?.into_retained(),
+                Some(io) => io.decode_preparation::<ModelPrefix>(&bytes, crate::wire::ErrorCode::Storage)?.into_retained(),
                 _ => crate::contract::json_from_slice(&bytes)
                     .map_err(|error| Error::Invalid(format!("invalid model prefix: {error}")))?,
             };
@@ -1711,7 +1711,7 @@ async fn model_verify_content_files(
             #[cfg(feature = "filesystem")]
             Some(io) => {
                 io.receive_content(verifier.verify_measured(file, file.descriptor().byte_length(),
-                    io.remaining()?, &io.cancellation).await)?;
+                    io.remaining()?, io.cancellation()).await)?;
             }
             _ => verifier.verify(file).await?,
         }
@@ -1857,7 +1857,7 @@ impl ModelEvent {
     /// Produces a paid closed SDK event directly from borrowed provider bytes.
     pub fn decode_with_native_work(bytes: &[u8], work: &NativeMaterializationWork) -> Result<(Self, NativeAllocation)> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let event = io.decode_preparation::<Self>(bytes)?.into_retained();
+        let event = io.decode_preparation::<Self>(bytes, crate::wire::ErrorCode::Storage)?.into_retained();
         let retained = event.logical_owned_bytes()?;
         let custody = io.into_native_custody(retained)?;
         Ok((event, custody))

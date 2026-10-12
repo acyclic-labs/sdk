@@ -917,7 +917,7 @@ fn decode_context_json<T: crate::executor::PreparationRecord>(
 ) -> Result<T> {
     let value = match io {
         #[cfg(feature = "filesystem")]
-        Some(io) => io.decode_preparation::<T>(bytes)?.into_retained(),
+        Some(io) => io.decode_preparation::<T>(bytes, crate::wire::ErrorCode::Storage)?.into_retained(),
         _ => crate::contract::json_from_slice(bytes)
             .map_err(|error| crate::Error::Storage(error.to_string()))?,
     };

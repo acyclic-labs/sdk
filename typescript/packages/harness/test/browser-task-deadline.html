@@ -4,16 +4,6 @@
 <pre id="result" data-status="pending">initializing</pre>
 <script type="module">
 import { qualifyTaskDeadlines } from "./browser-task-deadline.mjs";
-const result = document.querySelector("#result");
-try {
-  await qualifyTaskDeadlines(text => {
-    result.dataset.waiting = text;
-    result.textContent = text;
-  });
-  result.dataset.status = "passed";
-  result.textContent = "expired tool/model admission, hung HTTP effect interruption, original deadline/fence reopen, stale publication denial and truthful lost-ack observation passed";
-} catch (error) {
-  result.dataset.status = "failed";
-  result.textContent = String(error.stack ?? error);
-}
+import { qualifyBrowserTask } from "./browser-task-fixture.mjs";
+await qualifyBrowserTask(qualifyTaskDeadlines);
 </script>

@@ -238,7 +238,7 @@ impl GenerationReceipt {
         if growth == 0 {
             return Ok(());
         }
-        let result = self.custody.work().with_owned_allocations(|ledger, work, budget, cancellation| {
+        let result = self.custody.work().allocations(|ledger, work, budget, cancellation| {
             cancellation.check().map_err(|_| crate::NativeTreeMaterializationError::Cancelled)?;
             let prior_peak = work.peak_allocation_bytes;
             ledger.claim_bytes(bytes as u64, 1, work, budget).map_err(|error| {
@@ -392,7 +392,7 @@ fn clone_namespace_measured(
     limits: crate::model::VolumeLimits,
     receipt: &mut GenerationReceipt,
 ) -> Result<NamespacePath, GenerationFailure> {
-    let result = receipt.custody.work().with_owned_allocations(|ledger, work, budget, cancellation| {
+    let result = receipt.custody.work().allocations(|ledger, work, budget, cancellation| {
         let result = match extra {
             Some(name) => path.child_with_ledger(name, limits, ledger, work, budget, cancellation),
             None => path.clone_with_ledger(ledger, work, budget, cancellation),
@@ -1578,12 +1578,12 @@ type RestoreOwnedPath = GenerationOwned<PathBuf>;
 
 impl RestoreOwnedPath {
     fn copy(path: &Path, work: &crate::NativeMaterializationWork) -> Result<Self, MaterializeError> {
-        let (path, allocation) = work.copy_path(path).map_err(restore_allocation_error)?;
+        let (path, allocation) = work.path(path, None).map_err(restore_allocation_error)?;
         Ok(Self { value: path, _custody: allocation })
     }
 
     fn join(parent: &Path, name: &Path, work: &crate::NativeMaterializationWork) -> Result<Self, MaterializeError> {
-        let (path, allocation) = work.join_path(parent, name).map_err(restore_allocation_error)?;
+        let (path, allocation) = work.path(parent, Some(name)).map_err(restore_allocation_error)?;
         Ok(Self { value: path, _custody: allocation })
     }
 }
@@ -2963,8 +2963,7 @@ mod restore_recovery_tests {
         let missing = NamespacePath::new(vec![LogicalName::new(
             NameEncoding::Utf8, b"z-missing".to_vec(), limits.maximum_component_bytes,
         )?], limits)?;
-        checkout.create_file(first.clone(), Bytes::from_static(b"first"),
-            WorkBudget::UNBOUNDED, &cancellation).await?;
+        checkout.create(crate::AuthoredMutation::CreateFile { path: first.clone(), bytes: (Bytes::from_static(b"first")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation).await?;
         let zero_output = tempfile::tempdir()?;
         let zero = materialize_checkout(
             &mut checkout, &MaterializeOptions::native(zero_output.path()),
@@ -3641,7 +3640,7 @@ mod clone_tests {
                 limits,
             )?;
             checkout
-                .create_file(path, bytes.clone(), WorkBudget::UNBOUNDED, &cancellation)
+                .create(crate::AuthoredMutation::CreateFile { path: path, bytes: (bytes.clone()).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)
                 .await?;
         }
         let destination = directory.path().join("view");

@@ -104,8 +104,8 @@ async fn ntfs_exactification_preserves_source_hard_links() -> Result<(), Box<dyn
             .await
     })
     .await??;
-    let file = exact.value.stat("/hot/file").await?;
-    let alias = exact.value.stat("/hot/alias").await?;
+    let file = exact.value.stat("/hot/file", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let alias = exact.value.stat("/hot/alias", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(file.file_id, alias.file_id);
     assert_eq!(file.link_count, 2);
     let view = tempfile::tempdir()?;

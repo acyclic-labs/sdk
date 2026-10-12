@@ -1088,7 +1088,7 @@ async fn read_projection_value<'io, R: ContentResidencyVerifier + ?Sized>(
         return Err(projection_invalid(Some(io), "resolved tool artifact exceeds rendering limit"));
     }
     file.descriptor().verify_with_io(&bytes, Some(io))?;
-    let parsed = io.decode_preparation_with_code::<serde_json::Value>(
+    let parsed = io.decode_preparation::<serde_json::Value>(
         &bytes, crate::wire::ErrorCode::Invalid,
     )?;
     validate_model_json_numbers(&parsed.value, Some(io))?;
