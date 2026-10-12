@@ -1,4 +1,6 @@
 use super::*;
+#[cfg(not(target_arch = "wasm32"))]
+use super::prepared::record_prepared_work;
 
 pub(super) fn planned_commit_id(
     decision: u64,
