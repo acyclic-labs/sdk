@@ -58,7 +58,6 @@ export type {
   NativeFsOptions,
   NativeFsWorkspace,
   NativeMount,
-  NativePathComponent,
   NativeSourceOptions,
   NativeWorkspaceMount,
   NativeWorkspaceMountOptions,
