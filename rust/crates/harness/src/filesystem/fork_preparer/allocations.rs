@@ -196,7 +196,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     pub(crate) fn fork_allocation<'a, P: StreamProvider>(
         &'a self,
         witness: &'a crate::durable_host::TaskAdmissionReadonlyWitness<P>,
-        query: &'a Arc<crate::runtime::NativeTaskContext>,
+        query: &'a Arc<crate::runtime::TaskContext>,
         admitted: &'a crate::resource_preparation::ResourcePreparationRequest,
         volume: &'a VolumeRef,
         work: &'a acyclic_fs::NativeMaterializationWork,

@@ -4,7 +4,7 @@ use super::*;
 #[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_changes_around_the_mount_reach_every_kernel_cache()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (mounted_source, around) = shared_sources()?;
+    let (mounted_source, around) = shared_sources(posix_config())?;
     let mounted_source = Arc::new(mounted_source);
     let file = name("file");
     crate::native_mount::adapter::boundary(around.cancellation(), |work| {
@@ -56,7 +56,7 @@ pub(super) fn linux_an_open_reader_sees_a_write_through_another_handle()
 -> Result<(), Box<dyn std::error::Error>> {
     use std::io::{Read as _, Seek as _, Write as _};
 
-    let (inner, _) = shared_sources()?;
+    let (inner, _) = shared_sources(posix_config())?;
     let volume_id = inner.volume_id()?;
     let source = Arc::new(inner);
     let temporary = tempfile::tempdir()?;
@@ -87,7 +87,7 @@ pub(super) fn linux_an_open_reader_sees_a_write_through_another_handle()
 #[test]
 #[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_writes_keep_node_facts_exact() -> Result<(), Box<dyn std::error::Error>> {
-    let (inner, _) = shared_sources()?;
+    let (inner, _) = shared_sources(posix_config())?;
     let volume_id = inner.volume_id()?;
     let temporary = tempfile::tempdir()?;
     let mut session = mount(Arc::new(inner), volume_id, temporary.path())?;
@@ -108,7 +108,7 @@ pub(super) fn linux_writes_keep_node_facts_exact() -> Result<(), Box<dyn std::er
 #[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_listings_resume_across_pages_and_readers()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (inner, around) = shared_sources()?;
+    let (inner, around) = shared_sources(posix_config())?;
     let volume_id = inner.volume_id()?;
     crate::native_mount::adapter::boundary(inner.cancellation(), |work| {
         inner.create_directory(&name("many"), FileMetadata::default(), work)
@@ -177,7 +177,7 @@ pub(super) fn only_folding_volumes_with_case_variants_fold_names()
         let mut config = VolumeConfig::portable(Lifecycle::Ephemeral);
         config.profile = profile;
         config.case_sensitivity = case_sensitivity;
-        let (source, _) = shared_sources_of(config)?;
+        let (source, _) = shared_sources(config)?;
         let folded = source.folded_path(&name("Dir").child(b"MiXeD".to_vec()));
         assert_eq!(
             folded.is_some(),
@@ -213,7 +213,7 @@ pub(super) fn linux_folded_names_stay_exact_through_the_mount()
 
     let mut config = crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral);
     config.case_sensitivity = crate::model::CaseSensitivity::ProfileFolded;
-    let (source, _) = shared_sources_of(config)?;
+    let (source, _) = shared_sources(config)?;
     assert_eq!(
         source.folded_path(&name("Foo")),
         Some(name("foo")),
@@ -440,7 +440,7 @@ pub(super) fn finishes_within(limit: Duration, operation: impl FnOnce() + Send +
 #[ignore = "requires a live Linux FUSE mount"]
 pub(super) fn linux_callbacks_proceed_while_others_block_in_the_source()
 -> Result<(), Box<dyn std::error::Error>> {
-    let (inner, _) = shared_sources()?;
+    let (inner, _) = shared_sources(posix_config())?;
     let volume_id = inner.volume_id()?;
     for directory in ["slow", "busy", "free"] {
         crate::native_mount::adapter::boundary(inner.cancellation(), |work| {

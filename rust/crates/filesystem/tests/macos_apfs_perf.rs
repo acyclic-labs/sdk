@@ -189,8 +189,19 @@ async fn report_apfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
         "macos-apfs-costs",
         demand,
         MemoryLazyWorkspaceStore::default(),
-    )
-    .await?;
+    crate::VolumeConfig::portable(if (&fs).capabilities().durable {
+            crate::Lifecycle::Durable
+        } else {
+            crate::Lifecycle::Ephemeral
+        }),
+        crate::OperationId::new(),
+        &mut crate::kernel::KernelAccounting::Standalone {
+            allocations: Default::default(),
+            work: crate::WorkCounters::UNCHARGED,
+            budget: crate::WorkBudget::UNBOUNDED,
+            cancellation: &crate::CancellationToken::new(),
+        }, )
+    .await .map(|(lazy, _)| lazy) ?;
     let attach_us = started.elapsed().as_micros();
 
     let started = Instant::now();

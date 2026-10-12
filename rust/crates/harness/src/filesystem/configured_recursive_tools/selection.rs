@@ -132,7 +132,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 "foreign project selection lacks an explicitly configured RootService approval policy".into()))?;
             let chosen = self.caller(selected, None)?;
             if let Some(native) = &chosen.native_snapshot {
-                crate::contract::validate_json_byte_bound(native, context.scope().limits().file_bytes)?;
+                crate::contract::json_byte_length(native, context.scope().limits().file_bytes, &mut None).map(|_| ())?;
             }
             let generation = self.filesystem.resolve(&workspace_ref(chosen.project.provider().clone(), &chosen.project.storage_name(&mut None)?)?).await?.generation;
             cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;

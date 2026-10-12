@@ -616,7 +616,7 @@ if let Some(io) = Some(io) { io.retain_owned(std::mem::size_of::<AgentId>() as u
                     path: stock_string_copy("/.system/inherited-conversation", io)?,
                 },
                 WorkspaceMutation::PutFile {
-                    path: crate::contract::preparation_format(format_args!("/{path}"), io)?,
+                    path: crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("/{path}"), work))?,
                     bytes: copied,
                 },
             ];

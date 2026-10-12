@@ -61,9 +61,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, FilesystemRootBootstrapAllocation<A, O>>> {
         use crate::resource_preparation::RootBootstrapContentRole;
-        volume.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
+        volume.validate(&mut Some(
+            &mut PreparationIo::from_native_work(work)?.history_io(),
+        ))?;
         let agent = owner.authenticated_binding_agent(&mut Some(
-            &mut crate::store::history::native_work_io(work)?,
+            &mut PreparationIo::from_native_work(work)?.history_io(),
         ))?;
         let valid_role = match role {
             RootBootstrapContentRole::Project => volume.class() == VolumeClass::Project,
@@ -158,8 +160,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                         "Root import differs from its original workspace or selected generation",
                     ));
                 }
-                io.finish_future(source.backing.validate(snapshot, &io)?)
-                    .await?;
+                source.backing.validate(snapshot, &io)?.await?;
                 Some(snapshot)
             } else {
                 None
@@ -550,12 +551,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             .expect("authenticated original source");
         let snapshot = self.snapshot().expect("authenticated original snapshot");
         let operation = bounded_io::operation_key(key, Some(io))?;
-        io.finish_future(
-            source
-                .backing
-                .publish(snapshot, mutations, operation, permit, io, lease)?,
-        )
-        .await
+        source
+            .backing
+            .publish(snapshot, mutations, operation, permit, io, lease)?
+            .await
     }
 }
 

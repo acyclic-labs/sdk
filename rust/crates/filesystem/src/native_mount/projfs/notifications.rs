@@ -95,7 +95,7 @@ pub(super) unsafe fn notification(
             notification,
             PRJ_NOTIFICATION_FILE_OPENED | PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION
         )
-        && MetadataProbeGuard::is_active(runtime.metadata_probes.as_ref(), &path)
+        && MetadataProbeGuard::is_active(&runtime.metadata_probes, &path)
     {
         return HR_OK;
     }
@@ -176,17 +176,13 @@ pub(super) unsafe fn notification(
             if has_pending_capture(operation_failures.as_ref(), &path) {
                 return Ok(());
             }
-            let baseline = probe_host_windows_metadata(
-                metadata_root.as_ref(),
-                &path,
-                metadata_probes.as_ref(),
-                &work,
-            )?;
-            record_metadata_open(metadata_baselines.as_ref(), file_id, baseline)
+            let baseline =
+                probe_host_windows_metadata(metadata_root, &path, metadata_probes, &work)?;
+            record_metadata_open(metadata_baselines, file_id, baseline)
         } else if notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED
             || notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED
         {
-            let close = close_metadata_handle(metadata_baselines.as_ref(), file_id);
+            let close = close_metadata_handle(metadata_baselines, file_id);
             let final_close = matches!(close, MetadataClose::Final(_));
             let result = if notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_DELETED {
                 lock_recover(operation_failures.as_ref())
@@ -205,17 +201,13 @@ pub(super) unsafe fn notification(
                 && !final_close
                 && notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED
             {
-                let baseline = probe_host_windows_metadata(
-                    metadata_root.as_ref(),
-                    &path,
-                    metadata_probes.as_ref(),
-                    &work,
-                )?;
-                refresh_metadata_baseline(metadata_baselines.as_ref(), file_id, baseline);
+                let baseline =
+                    probe_host_windows_metadata(metadata_root, &path, metadata_probes, &work)?;
+                refresh_metadata_baseline(metadata_baselines, file_id, baseline);
             }
             result
         } else if notification == PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_NO_MODIFICATION {
-            let baseline = match close_metadata_handle(metadata_baselines.as_ref(), file_id) {
+            let baseline = match close_metadata_handle(metadata_baselines, file_id) {
                 MetadataClose::Pending => return Ok(()),
                 MetadataClose::Final(baseline) => baseline,
             };
@@ -228,23 +220,17 @@ pub(super) unsafe fn notification(
                 return Ok(());
             };
             *retry_path.borrow_mut() = Some(capture_path.clone());
-            let host = probe_host_windows_metadata(
-                metadata_root.as_ref(),
-                &capture_path,
-                metadata_probes.as_ref(),
-                &work,
-            )?;
+            let host =
+                probe_host_windows_metadata(metadata_root, &capture_path, metadata_probes, &work)?;
             if baseline.identity != host.identity
                 || baseline.links != host.links
                 || baseline.size != host.size
             {
-                lock_recover(projection.as_ref()).remove(&capture_path);
+                lock_recover(projection).remove(&capture_path);
                 defer_host_capture(operation_failures.as_ref(), capture_path);
                 return Ok(());
             }
-            let cached_binding = lock_recover(projection.as_ref())
-                .get(&capture_path)
-                .copied();
+            let cached_binding = lock_recover(projection).get(&capture_path).copied();
             if !metadata_changed_since_open(baseline, host)
                 && !has_pending_capture(operation_failures.as_ref(), &capture_path)
                 && let Some(binding) = cached_binding
@@ -283,7 +269,7 @@ pub(super) unsafe fn notification(
                         && !has_pending_capture(operation_failures.as_ref(), &capture_path)
                         && host.links == Some(1)
                     {
-                        let mut bindings = lock_recover(projection.as_ref());
+                        let mut bindings = lock_recover(projection);
                         if bindings.len() >= MAXIMUM_CACHED_BINDINGS {
                             bindings.clear();
                         }
@@ -299,7 +285,7 @@ pub(super) unsafe fn notification(
                     Ok(())
                 }
                 Ok(None) => {
-                    lock_recover(projection.as_ref()).remove(&capture_path);
+                    lock_recover(projection).remove(&capture_path);
                     defer_host_capture(operation_failures.as_ref(), capture_path);
                     Ok(())
                 }

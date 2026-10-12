@@ -23,7 +23,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 .transpose()?;
         }
         if let (Some(io), Some(task)) = (&io, task) {
-            io.encode(task.request(), task.request().maximum_bytes, false)?;
+            task.request().validate(&mut Some(&mut io.history_io()))?;
         }
         Ok(PreparationAttempt {
             preparer: self,

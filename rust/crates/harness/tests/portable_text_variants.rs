@@ -127,12 +127,12 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
     let read_definition = read_tool.definition.clone();
     let search_projector = search_tool.projection.clone();
     let mut tools = ToolRegistry::default();
-    tools.register(read_tool)?;
-    tools.register(search_tool)?;
-    tools.register(files::read_file()?)?;
-    tools.register(files::write_file()?)?;
-    tools.register(files::edit_file()?)?;
-    tools.register(files::patch_file(65_536, 16)?)?;
+    tools.register((read_tool, None), &mut None, None)?;
+    tools.register((search_tool, None), &mut None, None)?;
+    tools.register((files::read_file()?, None), &mut None, None)?;
+    tools.register((files::write_file()?, None), &mut None, None)?;
+    tools.register((files::edit_file()?, None), &mut None, None)?;
+    tools.register((files::patch_file(65_536, 16)?, None), &mut None, None)?;
     let captured_reader = reader.clone();
     let task = TaskDefinition::live("fixture.text_variants", "1", move |context, (): ()| {
         let source = source.clone();
@@ -349,8 +349,8 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
             );
             assert_eq!(reader.reads.load(Ordering::SeqCst), before);
             for wrong in [
-                ToolContext::new(context.clone(), OperationId::new(), "retained-read")?,
-                ToolContext::new(context.clone(), invocation.operation_id, "different-call")?,
+                ToolContext::new(std::sync::Arc::new(context.clone()), OperationId::new(), "retained-read", None)?,
+                ToolContext::new(std::sync::Arc::new(context.clone()), invocation.operation_id, "different-call", None)?,
             ] {
                 assert!(matches!(
                     executor
@@ -390,7 +390,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
         ]),
         Limits::default(),
     )?;
-    let runtime = bindings.build()?;
+    let runtime = bindings.build(None)?;
     let task = runtime.task::<(), ()>("fixture.text_variants")?;
     assert_eq!(
         runtime.spawn(&task, ()).await?.result().await?,

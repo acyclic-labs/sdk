@@ -420,9 +420,18 @@ where
                         },
                         path_custody,
                     );
-                    generation
-                        .materialize_with_native_work(&staged.0, &volume_work, cancellation)
-                        .await?;
+                    let reader = generation
+                        .workspace()
+                        .reader(generation.id(), volume_work, cancellation)
+                        .await
+                        .map_err(acyclic_fs::MountLifecycleError::Workspace)?;
+                    acyclic_fs::native_mount::materialize_checkout_with_work(
+                        &reader,
+                        &staged.0,
+                        volume_work,
+                    )
+                    .await
+                    .map_err(acyclic_fs::MountLifecycleError::Materialize)?;
                     owner
                         .verify(
                             false,

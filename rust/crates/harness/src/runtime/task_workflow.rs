@@ -5,28 +5,10 @@ pub(super) fn validate_task_transition(
     transition: &MachineTransition,
 ) -> Result<()> {
     if let MachineStatus::Completed { value } = &transition.status {
-        validate_value(output_schema, value, "task output", None)?;
+        crate::contract::validate_json_schema_value(output_schema, value, "task output", &mut None)?;
     }
     Ok(())
 }
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) enum RegisteredTaskOpening<'a> {
-    Ordinary(crate::scheduler::LeaseFence),
-    Native {
-        fence: &'a crate::scheduler::LeaseFence,
-        context: Arc<NativeTaskContext>,
-        definition: Arc<dyn RegisteredTaskDefinition>,
-    },
-}
-
-#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-pub(super) enum OrdinaryRegisteredTaskOpening {
-    Ordinary(crate::scheduler::LeaseFence),
-}
-
-#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-pub(super) type RegisteredTaskOpening<'a> = OrdinaryRegisteredTaskOpening;
 
 pub(super) fn task_original_work(
     io: Option<&crate::executor::PreparationIo>,
@@ -201,7 +183,7 @@ pub(super) async fn validate_latest_task_transition(
         let latest = native_task_open_value(transition, custody, work)?;
         if let Some(transition) = &latest.0 {
             if let MachineStatus::Completed { value } = &transition.status {
-                crate::contract::validate_json_schema_value(schema, value, "task output", io)?;
+                crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(schema, value, "task output", work))?;
             }
         }
         return Ok(());
@@ -221,7 +203,7 @@ pub struct ResumableTaskSession {
     pub(super) workflow: DurableWorkflowHost,
     pub(super) output_schema: Value,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) native_context: Option<Arc<NativeTaskContext>>,
+    pub(super) native_context: Option<Arc<TaskContext>>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) native_metadata_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -359,12 +341,10 @@ impl ResumableTaskSession {
         let check = |transition: &MachineTransition| {
             if io.is_some() {
                 if let MachineStatus::Completed { value } = &transition.status {
-                    crate::contract::validate_json_schema_value(
+                    crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(
                         output_schema,
                         value,
-                        "task output",
-                        io,
-                    )?;
+                        "task output", work))?;
                 }
                 Ok(())
             } else {

@@ -24,9 +24,9 @@ async fn source_requires_its_current_protected_original_root_record() -> Result<
         .journal_owner(fixture.root, (&fixture.root_lease.reservation).into())
         .await?;
     let agent = owner
-        .authenticated_binding_agent(&mut Some(&mut crate::store::history::native_work_io(
-            &work,
-        )?))?
+        .authenticated_binding_agent(&mut Some(
+            &mut PreparationIo::from_native_work(&work)?.history_io(),
+        ))?
         .ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized,
             reason: "fixture has no original Root actor",
@@ -38,20 +38,22 @@ async fn source_requires_its_current_protected_original_root_record() -> Result<
     };
     let configured_issuer =
         AuthorityIssuer::new("created-owner", [80; 32], configured_audience.clone());
-    let mut metadata = crate::store::history::native_work_io(&work).map_err(Error::from)?;
+    let metadata = PreparationIo::from_native_work(&work)?;
     metadata.retain_owned(
         std::mem::size_of::<(Authority, AuthorityIssuer, crate::core::Scope)>() as u64,
     )?;
-    let audience = metadata.clone_authority(&configured_audience)?;
-    let issuer = configured_issuer.copy(&mut Some(&mut metadata))?;
+    let mut observer = metadata.history_io();
+    let audience = observer.clone_authority(&configured_audience)?;
+    let issuer = configured_issuer.copy(&mut Some(&mut observer))?;
     let scope = issuer.issue(
         "genuine-original-root-bootstrap",
         &Capabilities::new(["conversation:bind"]),
         Some(agent),
         None,
-        &mut Some(&mut metadata),
+        &mut Some(&mut observer),
     )?;
-    let custody = metadata.into_custody();
+    let retained = metadata.owned_bytes()?;
+    let custody = metadata.into_native_custody(retained)?;
     let authority = (audience, issuer, scope);
     let scratch = &fixture
         .original_root_births
@@ -133,6 +135,23 @@ async fn source_requires_its_current_protected_original_root_record() -> Result<
     policy
         .verify_with_native_work(context(), &selection, &work)?
         .await?;
+    let initial = ProjectSourceSnapshot {
+        project: selection.project.clone(),
+        generation: GenerationRef::new(
+            &fixture.filesystem_provider,
+            birth.initial_generation.digest().as_bytes(),
+            None,
+            None,
+        )?
+        .0,
+        native_snapshot: None,
+    };
+    assert!(
+        match policy.verify_with_native_work(context(), &initial, &work) {
+            Ok(future) => future.await.is_err(),
+            Err(_) => true,
+        }
+    );
     let journal = allocation_ref(&creator.host.provider, &birth.volume, None)?;
     let generation = fixture.filesystem.resolve(&journal).await?.generation;
     fixture

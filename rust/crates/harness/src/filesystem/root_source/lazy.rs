@@ -48,14 +48,14 @@ pub(crate) trait RootLazyBacking<A, O>: acyclic_stream::ProviderPlatform {
         &'a self,
         snapshot: LazySnapshotRef,
         io: &'a crate::filesystem::PreparationIo,
-    ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>>;
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>>;
     fn read<'a>(
         &'a self,
         snapshot: LazySnapshotRef,
         path: &'a str,
         maximum: u64,
         io: &'a crate::filesystem::PreparationIo,
-    ) -> Result<crate::store::history::HistoryContentFuture<'a, acyclic_stream::OwnedBytes>>;
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>;
     fn list<'a>(
         &'a self,
         snapshot: LazySnapshotRef,
@@ -81,7 +81,7 @@ pub(crate) trait RootLazyBacking<A, O>: acyclic_stream::ProviderPlatform {
         io: &'a crate::filesystem::PreparationIo,
         lease: &'a Arc<dyn crate::resource_preparation::CreatedTaskLease>,
     ) -> Result<
-        crate::store::history::HistoryContentFuture<
+        crate::conversation::BoundedContentFuture<
             'a,
             (acyclic_fs::Generation<A, O>, Result<LazySnapshotRef>),
         >,
@@ -114,10 +114,10 @@ where
         &'a self,
         snapshot: LazySnapshotRef,
         io: &'a crate::filesystem::PreparationIo,
-    ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.original_native_work() {
-            return crate::NativeFutureBundle::new(work, || async move {
+            return crate::conversation::BoundedContentFuture::new(Some(io), || async move {
                 let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(
                     work,
                     work.cancellation(),
@@ -126,10 +126,9 @@ where
                     .validate_snapshot(snapshot, &accounting)
                     .await
                     .map_err(Error::from)
-            })
-            .map(crate::store::history::HistoryContentFuture::Native);
+            });
         }
-        io.history_future(|| async move {
+        crate::conversation::BoundedContentFuture::new(Some(io), || async move {
             let accounting =
                 acyclic_fs::lazy_workspace::LazyTreapWork::new(io.remaining()?, io.cancellation());
             let result = self.lazy.validate_snapshot(snapshot, &accounting).await;
@@ -147,18 +146,17 @@ where
         path: &'a str,
         maximum: u64,
         io: &'a crate::filesystem::PreparationIo,
-    ) -> Result<crate::store::history::HistoryContentFuture<'a, acyclic_stream::OwnedBytes>> {
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.original_native_work() {
-            return crate::NativeFutureBundle::new(work, || async move {
+            return crate::conversation::BoundedContentFuture::new(Some(io), || async move {
                 self.lazy
                     .read_at_snapshot_with_work(snapshot, path, maximum, work, work.cancellation())
                     .await
                     .map_err(|(source, custody)| Error::NativeSource { source, custody })
-            })
-            .map(crate::store::history::HistoryContentFuture::Native);
+            });
         }
-        io.history_future(|| async move {
+        crate::conversation::BoundedContentFuture::new(Some(io), || async move {
             io.receive_content(
                 self.lazy
                     .read_at_snapshot_measured(
@@ -213,7 +211,7 @@ where
         io: &'a crate::filesystem::fork_preparer::PreparationIo,
         lease: &'a Arc<dyn crate::resource_preparation::CreatedTaskLease>,
     ) -> Result<
-        crate::store::history::HistoryContentFuture<
+        crate::conversation::BoundedContentFuture<
             'a,
             (acyclic_fs::Generation<A, O>, Result<LazySnapshotRef>),
         >,
@@ -252,7 +250,7 @@ where
             }
         };
         if let Some(original) = io.original_native_work() {
-            return crate::NativeFutureBundle::new(original, || async move {
+            return crate::conversation::BoundedContentFuture::new(Some(io), || async move {
                 let lease = Arc::clone(lease);
                 let mut before_mutation = move |work: &acyclic_fs::NativeMaterializationWork| {
                     let original = acyclic_fs::NativeMaterializationWork::clone(work);
@@ -281,10 +279,9 @@ where
                 })
                 .await?;
                 Ok((generation(commit)?, snapshot))
-            })
-            .map(crate::store::history::HistoryContentFuture::Native);
+            });
         }
-        io.history_future(|| async move {
+        crate::conversation::BoundedContentFuture::new(Some(io), || async move {
             let allowance = io.remaining()?;
             let mut before_mutation = |budget| async move {
                 let callback =

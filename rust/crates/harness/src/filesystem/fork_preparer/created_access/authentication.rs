@@ -21,15 +21,13 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 ) -> Result<AuthenticatedAllocation> {
     let owned;
     let io = match io {
-        Some(io) => {
-            request.validate(&mut None)?;
-            io
-        }
+        Some(io) => io,
         None => {
             owned = PreparationIo::new(request, &CancellationToken::new())?;
             &owned
         }
     };
+    request.validate(&mut Some(&mut io.history_io()))?;
     proof.validate(&mut None)?;
     if request.provider != host.provider
         || proof.provider != host.provider
@@ -40,7 +38,6 @@ pub(super) async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             "created access differs from its admitted provider boundary".into(),
         ));
     }
-    io.encode(request, request.maximum_bytes, false)?;
     let maximum = request.maximum_bytes.min(MAX_REPORT_BYTES);
     #[cfg(not(target_arch = "wasm32"))]
     let fork = if io.original_native_work().is_some() {

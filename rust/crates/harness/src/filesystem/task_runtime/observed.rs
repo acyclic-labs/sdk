@@ -45,7 +45,8 @@ pub(super) fn history<'a>(io: Option<&'a PreparationIo>) -> Result<Option<impl c
     let history = io.map(|io| {
         let work = io.original_native_work().ok_or_else(|| boundary(Some(io),
             crate::wire::ErrorCode::Unsupported, "worker observation requires original native work"))?;
-        crate::store::native_work_io(work).map_err(Error::from)
+        crate::filesystem::PreparationIo::from_native_work(work)
+                .map(crate::store::HistoryWork::new)
     }).transpose()?;
     #[cfg(target_arch = "wasm32")]
     let history = { let _ = io; None::<&PreparationIo> };
@@ -94,7 +95,9 @@ where
                 reason: "worker owner requires original native work",
             })?;
             let owner = self.host.journal_owner_with_native_work(task, fence, work).await?;
-            return owner.verify(settlement, &mut Some(&mut crate::store::history::native_work_io(work)?)).await;
+            return owner.verify(settlement, &mut Some(&mut crate::store::HistoryWork::new(
+                        crate::filesystem::PreparationIo::from_native_work(work)?,
+                    ))).await;
         }
         if settlement { self.host.verify_execution_owner(task, fence.clone()).await }
         else { self.host.verify_dispatch_owner(task, fence.clone()).await }

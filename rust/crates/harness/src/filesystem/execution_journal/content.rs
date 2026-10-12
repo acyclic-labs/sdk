@@ -14,10 +14,7 @@ where
     ) -> Result<(IdempotencyKey, String)> {
         let digest = {
             let _input_hold;
-            let input = crate::contract::preparation_format(
-                format_args!("{operation_id}:{idempotency_key}"),
-                io,
-            )?;
+            let input = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("{operation_id}:{idempotency_key}"), work))?;
             _input_hold = io
                 .map(|io| io.guard_owned(input.capacity() as u64))
                 .transpose()?;
@@ -31,14 +28,8 @@ where
             }
             blake3::hash(input.as_bytes())
         };
-        let key = IdempotencyKey::new(crate::contract::preparation_format(
-            format_args!("journal-{}", digest.to_hex()),
-            io,
-        )?)?;
-        let path = crate::contract::preparation_format(
-            format_args!(".system/execution/{operation_id}/{}.json", digest.to_hex()),
-            io,
-        )?;
+        let key = IdempotencyKey::new(crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("journal-{}", digest.to_hex()), work))?)?;
+        let path = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!(".system/execution/{operation_id}/{}.json", digest.to_hex()), work))?;
         Ok((key, path))
     }
 

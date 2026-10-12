@@ -488,7 +488,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                 maximum_generations: self.maximum_generations,
                 maximum_changes: self.maximum_changes,
                 maximum_conflicts: self.maximum_conflicts,
-                resolutions,
+                resolutions: crate::facade::WorkspaceJoinResolutions::Map(resolutions),
             })
             .await?;
         self.map_join_outcome(outcome)
@@ -522,7 +522,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                 history: self.history, operation_id: options.idempotency_key.operation_id(),
                 permit, maximum_generations: self.maximum_generations,
                 maximum_changes: self.maximum_changes, maximum_conflicts: self.maximum_conflicts,
-                resolutions,
+                resolutions: crate::facade::WorkspaceJoinResolutions::Slice(resolutions),
             },
             original, cancellation, before_publication,
         ).await?;

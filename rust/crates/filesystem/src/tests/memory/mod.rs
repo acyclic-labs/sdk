@@ -168,7 +168,7 @@ async fn original_object_intrinsic_payload_lives_until_last_resident_alias()
     let mut allocation = work.claim(4, 1, crate::WorkCounters::UNCHARGED)?;
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(4)?;
-    allocation.resize_retained(bytes.capacity() as u64)?;
+    allocation.resize(bytes.capacity() as u64)?;
     bytes.extend_from_slice(b"body");
     let object = crate::storage::HashedObject::from_native_vec(
         crate::ObjectKind::BlobChunk,

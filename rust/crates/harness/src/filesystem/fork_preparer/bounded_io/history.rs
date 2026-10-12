@@ -1,6 +1,6 @@
 //! The preparation context at the existing history boundary.
 use super::*;
-use crate::store::history::{HistoryContentFuture, HistoryIo};
+use crate::store::history::HistoryIo;
 
 impl PreparationIo {
     pub(crate) fn history_io(&self) -> &Self {
@@ -10,53 +10,12 @@ impl PreparationIo {
         self.preflight(work)?;
         self.charge(work)
     }
-    fn reserve_history<T>(&self, values: &mut Vec<T>, maximum: usize) -> Result<()> {
-        if values.len() < values.capacity() {
-            return Ok(());
-        }
-        let target = values
-            .capacity()
-            .checked_mul(2)
-            .unwrap_or(maximum)
-            .max(4)
-            .min(maximum);
-        if target <= values.capacity() {
-            return Err(self.invalid("history vector exceeds declared maximum"));
-        }
-        PreparationIo::reserve(values, target, Some(self))
-    }
-    pub(crate) fn history_future<'a, T, F>(
-        &'a self,
-        build: impl FnOnce() -> F,
-    ) -> Result<HistoryContentFuture<'a, T>>
-    where
-        F: Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a,
-    {
-        let bytes = std::mem::size_of::<F>() as u64;
-        self.retain_owned(bytes)?;
-        self.allocation_attempt(bytes)?;
-        Ok(HistoryContentFuture::Ordinary {
-            future: Box::pin(build()),
-            frame_bytes: bytes,
-        })
-    }
-    pub(crate) async fn finish_future<T>(&self, future: HistoryContentFuture<'_, T>) -> Result<T> {
-        let held = match &future {
-            HistoryContentFuture::Ordinary { frame_bytes, .. } => {
-                Some(self.guard_owned(*frame_bytes)?)
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            HistoryContentFuture::Native(_) => None,
-        };
-        let result = future.await;
-        drop(held);
-        result
-    }
+
     pub(crate) async fn verify_publication_lease(
         &self,
         lease: &dyn crate::resource_preparation::CreatedTaskLease,
     ) -> Result<()> {
-        self.finish_future(lease.verify_with_io(self)?).await
+        lease.verify_with_io(self)?.await
     }
 }
 
@@ -129,45 +88,12 @@ impl HistoryIo for &PreparationIo {
     fn clone_text(&mut self, text: &str) -> Result<String> {
         stock_string_copy(text, Some(self))
     }
-    fn reserve_events(
-        &mut self,
-        values: &mut Vec<crate::core::Event>,
-        maximum: usize,
-    ) -> Result<()> {
-        self.reserve_history(values, maximum)
+
+    fn allocation_attempt(&mut self, bytes: u64) -> Result<()> {
+        PreparationIo::allocation_attempt(self, bytes)
     }
-    fn reserve_records(
-        &mut self,
-        values: &mut Vec<crate::store::operations::ObservedRecord>,
-        maximum: usize,
-    ) -> Result<()> {
-        self.reserve_history(values, maximum)
-    }
-    fn reserve_messages(
-        &mut self,
-        values: &mut Vec<crate::conversation::ConversationMessage>,
-        maximum: usize,
-    ) -> Result<()> {
-        self.reserve_history(values, maximum)
-    }
-    fn reserve_values(
-        &mut self,
-        values: &mut Vec<serde_json::Value>,
-        maximum: usize,
-    ) -> Result<()> {
-        self.reserve_history(values, maximum)
-    }
-    fn reserve_bytes(&mut self, values: &mut Vec<u8>, capacity: usize) -> Result<()> {
-        if capacity <= values.capacity() {
-            return Ok(());
-        }
-        let old = values.capacity();
-        self.retain_owned((capacity - old) as u64)?;
-        self.allocation_attempt((capacity - old) as u64)?;
-        values
-            .try_reserve_exact(capacity - values.len())
-            .map_err(Error::Allocation)?;
-        self.retain_owned((values.capacity() - capacity) as u64)
+    fn allocation_failure(&self, cause: std::collections::TryReserveError) -> Error {
+        Error::Allocation(cause)
     }
     fn reserve_text(&mut self, text: &mut String, capacity: usize) -> Result<()> {
         if capacity <= text.capacity() {
@@ -180,10 +106,7 @@ impl HistoryIo for &PreparationIo {
             .map_err(Error::Allocation)?;
         self.retain_owned((text.capacity() - capacity) as u64)
     }
-    fn admit_allocation(&mut self, bytes: u64) -> Result<()> {
-        self.admit_owned(bytes)?;
-        self.allocation_attempt(bytes)
-    }
+
     fn admit_copy(&self, bytes: u64) -> Result<()> {
         self.preflight(WorkCounters {
             bytes_copied: bytes,
@@ -272,49 +195,15 @@ impl HistoryIo for &PreparationIo {
         &'a mut self,
         verifier: &'a dyn ContentResidencyVerifier,
         file: &'a FileRef,
-    ) -> Result<HistoryContentFuture<'a, ()>> {
-        let io = *self;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
-            return crate::NativeFutureBundle::new(work, || async move {
-                verifier
-                    .verify(file, file.descriptor().byte_length(), Some(io))?
-                    .await
-            })
-            .map(HistoryContentFuture::Native);
-        }
-        io.history_future(|| async move {
-            verifier
-                .verify(file, file.descriptor().byte_length(), Some(io))?
-                .await
-        })
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        verifier.verify(file, file.descriptor().byte_length(), Some(*self))
     }
     fn read_content<'a>(
         &'a mut self,
         verifier: &'a dyn ContentResidencyVerifier,
         file: &'a FileRef,
-    ) -> Result<HistoryContentFuture<'a, (acyclic_stream::OwnedBytes, u64)>> {
-        let io = *self;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
-            return crate::NativeFutureBundle::new(work, || async move {
-                Ok((
-                    verifier
-                        .read(file, file.descriptor().byte_length(), Some(io))?
-                        .await?,
-                    0,
-                ))
-            })
-            .map(HistoryContentFuture::Native);
-        }
-        io.history_future(|| async move {
-            let bytes = verifier
-                .read(file, file.descriptor().byte_length(), Some(io))?
-                .await?;
-            let retained = bytes.retained_capacity().unwrap_or(0) as u64;
-            io.retain_owned(retained)?;
-            Ok((bytes, retained))
-        })
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        verifier.read(file, file.descriptor().byte_length(), Some(*self))
     }
 }
 

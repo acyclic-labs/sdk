@@ -199,7 +199,7 @@ impl ResourcePreparationRequest {
                 "retained preparation input changes its canonical identity on decode",
             ));
         }
-        let extent = crate::core::resource_preparation_owned_bytes(&request, quota.work())?;
+        let extent = request.logical_owned_bytes()?;
         if extent > reserved {
             return Err(crate::scheduler::diagnostic(
                 quota.work(),
@@ -343,7 +343,7 @@ impl ResourcePreparationRequest {
                 observer.release_owned(encoded_extent)?;
             }
         } else {
-            crate::contract::validate_json_byte_bound(self, self.maximum_bytes)?;
+            crate::contract::json_byte_length(self, self.maximum_bytes, &mut None).map(|_| ())?;
         }
         if let Some(checkpoint) = &self.source_checkpoint {
             checkpoint.validate(work)?;
@@ -1314,7 +1314,7 @@ pub(crate) trait CreatedTaskLease: acyclic_stream::ProviderPlatform {
     fn verify_with_io<'a>(
         &'a self,
         io: &'a crate::filesystem::PreparationIo,
-    ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>>;
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>>;
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn verify_with_native_work<'a>(

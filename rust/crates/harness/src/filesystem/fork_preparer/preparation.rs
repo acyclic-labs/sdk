@@ -481,7 +481,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                     && !{
                         let key = match self.io.as_ref() {
                             Some(io) => io.capability(&grant.file, "file:read:"),
-                            None => &grant.file.read_capability(),
+                            None => grant.file.read_capability(),
                         }?;
                         preparation.request().child.grants.contains(&key)
                     }

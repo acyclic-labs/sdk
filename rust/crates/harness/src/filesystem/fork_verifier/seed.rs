@@ -622,10 +622,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                     io.release(original_owned)?;
                     io.release(final_owned)?;
                 }
-                let path = crate::contract::preparation_format(
-                    format_args!("/{}", file.path()),
-                    Some(&io),
-                )?;
+                let path = crate::executor::with_history_io(Some(&io), |work| crate::contract::preparation_format(format_args!("/{}", file.path()), work))?;
                 let owned = path.len() as u64;
                 if !fork_verify_insert(&mut expected, path, Ord::cmp, &io)? {
                     io.release(owned)?;

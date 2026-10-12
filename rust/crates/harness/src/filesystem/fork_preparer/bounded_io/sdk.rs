@@ -6,7 +6,7 @@ use acyclic_fs::{Generation, GenerationId, TransactionCommit, Workspace};
 impl acyclic_fs::facade::FsWork for &PreparationIo {
     type Output<T, E> = (
         std::result::Result<T, E>,
-        std::result::Result<(), WorkspaceError>,
+        std::result::Result<(), acyclic_fs::FsError>,
     );
     type OwnedOutput<T> = Self::Output<T, acyclic_fs::FsError>;
     fn finish_owned<T>(
@@ -76,7 +76,7 @@ impl acyclic_fs::facade::FsWork for &PreparationIo {
             KernelAccounting::NativeOriginal { .. } => return (result, Ok(())),
         };
         let recorded = self
-            .spent_workspace(work)
+            .spent(work)
             .and_then(|()| match (result.is_ok(), self) {
                 (true, PreparationIo::Owned { budget, .. }) => {
                     self.receipt().verify(*budget).map_err(Into::into)
@@ -92,7 +92,7 @@ impl PreparationIo {
         &self,
         (result, recorded): (
             std::result::Result<T, E>,
-            std::result::Result<(), WorkspaceError>,
+            std::result::Result<(), acyclic_fs::FsError>,
         ),
     ) -> Result<T> {
         recorded?;
@@ -273,7 +273,7 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
         );
         let (result, recorded) = host
             .filesystem
-            .create_workspace_with_operation(
+            .create_workspace_with_operation::<_, _, Error>(
                 name,
                 acyclic_fs::VolumeConfig::portable(lifecycle),
                 acyclic_fs::OperationId::from_bytes(operation_key(key, Some(io))?.into_bytes()),
@@ -569,16 +569,7 @@ pub(in crate::filesystem) async fn retain<A: AsyncAuthorityStore, O: AsyncObject
         ..Default::default()
     };
     if let Some(io) = io {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
-            work.admit(encoding)?;
-        } else {
-            io.preflight_workspace(encoding)
-                .map_err(LazyError::WorkspaceCause)?;
-        }
-        #[cfg(target_arch = "wasm32")]
-        io.preflight_workspace(encoding)
-            .map_err(LazyError::WorkspaceCause)?;
+        io.preflight(encoding).map_err(LazyError::Filesystem)?;
     }
     let hex = blake3::Hash::from_bytes(generation.id().digest().into_bytes()).to_hex();
     let mut label = [0_u8; 83];
@@ -592,40 +583,12 @@ pub(in crate::filesystem) async fn retain<A: AsyncAuthorityStore, O: AsyncObject
             .map(|_| ())
             .map_err(|failure| LazyError::WorkspaceCause(failure.error));
     };
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(work) = io.original_native_work() {
-        work.spent(encoding)?;
-    } else {
-        io.spent_workspace(encoding)
-            .map_err(LazyError::WorkspaceCause)?;
-        io.remaining_workspace()
-            .map_err(LazyError::WorkspaceCause)?;
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        io.spent_workspace(encoding)
-            .map_err(LazyError::WorkspaceCause)?;
-        io.remaining_workspace()
-            .map_err(LazyError::WorkspaceCause)?;
-    }
+    io.spent(encoding).map_err(LazyError::Filesystem)?;
+    io.remaining().map_err(LazyError::Filesystem)?;
     let (result, recorded) = generation.pin(label, io, io.cancellation()).await;
     match result {
-        Ok(_) => recorded.map_err(LazyError::WorkspaceCause),
-        Err(source) => {
-            #[cfg(not(target_arch = "wasm32"))]
-            if io.original_native_work().is_some() {
-                return Err(LazyError::NativeWorkspaceCause(
-                    acyclic_fs::lazy_workspace::NativeLazyWorkspaceCause {
-                        source,
-                        custody: None,
-                    },
-                ));
-            }
-            match recorded {
-                Ok(()) => Err(LazyError::WorkspaceCause(source)),
-                Err(accounting) => Err(LazyError::WorkspacePrefixFailure { source, accounting }),
-            }
-        }
+        Err(source) => Err(LazyError::WorkspaceCause(source)),
+        Ok(_) => recorded.map_err(LazyError::Filesystem),
     }
 }
 

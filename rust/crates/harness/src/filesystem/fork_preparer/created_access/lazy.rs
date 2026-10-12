@@ -68,9 +68,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             crate::contract::preparation_format(format_args!("/{path}"), work)
         })?;
         hold = io.guard_owned(absolute.capacity() as u64)?;
-        let bytes = io
-            .finish_future(source.backing.read(snapshot, &absolute, maximum, io)?)
-            .await;
+        let bytes = source.backing.read(snapshot, &absolute, maximum, io)?.await;
         drop(absolute);
         drop(hold);
         bytes

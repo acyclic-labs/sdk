@@ -74,48 +74,55 @@ impl Reducer {
         Ok(())
     }
 
-    pub(in crate::core) fn reserve_deque_buffer<T>(
+    pub(in crate::core) fn grow_buffer<T>(
         custody: &mut NativeComponentCustody,
         key: NativeComponentKey<'_>,
-        payload: &mut VecDeque<T>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
-        if !work.as_deref().is_some_and(copying::is_native) || payload.len() < payload.capacity() {
-            return Ok(());
+        length: usize,
+        capacity: usize,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<Option<(Vec<T>, Option<native_custody::Component>)>> {
+        if !work.as_deref().is_some_and(copying::is_native) || length < capacity {
+            return Ok(None);
         }
-        let capacity = payload
-            .capacity()
+        let capacity = capacity
             .max(1)
             .checked_mul(2)
             .ok_or_else(|| Error::Invalid("component buffer capacity overflows".into()))?;
-        let copied = payload
-            .len()
-            .checked_mul(std::mem::size_of::<T>())
-            .ok_or_else(|| Error::Invalid("component buffer move size overflows".into()))?
-            as u64;
+        let copied = owned_buffer::<T>(length)?;
         work.as_deref()
             .expect("native buffer observer")
             .admit_copy(copied)?;
         let (replacement, retired) = custody.produce(&key, work, |quota| {
             copying::reserve_copy_vector::<T>(capacity, quota)
         })?;
-        let mut replacement = VecDeque::from(replacement);
         if let Err(error) = work
             .as_deref_mut()
             .expect("native buffer observer")
             .copy_bytes(copied)
         {
             drop(replacement);
-            custody.rollback(&key, retired);
+            drop(custody.rollback(&key, retired));
             return Err(error);
         }
-        replacement.append(payload);
-        let old_payload = std::mem::replace(payload, replacement);
-        drop(old_payload);
-        drop(retired);
-        Ok(())
+        Ok(Some((replacement, retired)))
     }
 
+    pub(in crate::core) fn reserve_deque_buffer<T>(
+        custody: &mut NativeComponentCustody,
+        key: NativeComponentKey<'_>,
+        payload: &mut VecDeque<T>,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<()> {
+        if let Some((replacement, retired)) =
+            Self::grow_buffer(custody, key, payload.len(), payload.capacity(), work)?
+        {
+            let mut replacement = VecDeque::from(replacement);
+            replacement.append(payload);
+            drop(std::mem::replace(payload, replacement));
+            drop(retired);
+        }
+        Ok(())
+    }
     pub(in crate::core) fn append_conversation_message_with_work(
         &mut self,
         message: &ConversationMessage,
@@ -154,11 +161,7 @@ impl Reducer {
                 0,
             ));
         }
-        crate::contract::validate_trusted_json_byte_bound(
-            &receipt.target_project,
-            acyclic_stream::MAX_RECORD_BYTES as u64,
-            work,
-        )?;
+        crate::contract::json_byte_length(&receipt.target_project, acyclic_stream::MAX_RECORD_BYTES as u64, work).map(|_| ())?;
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let name = receipt.target_project.storage_name(quota.work())?;
         quota.adopt(name.capacity() as u64)?;

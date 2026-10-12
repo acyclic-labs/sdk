@@ -130,7 +130,7 @@ pub(in crate::filesystem) fn fork_request(
         Ok::<_, Error>((authority, parent.authority().stream_path(work)?.into_bytes(), project.copy(work)?, private.copy(work)?))
     })?;
     let provider = match io { Some(io) => stream_provider.clone_with_io(io)?, None => stream_provider.clone() };
-    let version = crate::contract::preparation_format(format_args!("{}", parent.revision()), io)?;
+    let version = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("{}", parent.revision()), work))?;
     let reference = crate::executor::with_history_io(io, |work| {
         let resource = crate::resources::ResourceRef::new(crate::resources::ResourceKind::Stream, provider, path, Some(version), work)?;
         crate::resources::StreamRef::from_resource_with_work(resource, work)

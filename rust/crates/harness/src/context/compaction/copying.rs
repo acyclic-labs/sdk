@@ -2,30 +2,25 @@ use super::*;
 
 pub(crate) fn clone_context(
     context: &Context,
+    through: Option<usize>,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<(Context, u64)> {
-    let (mut copy, claim) = clone_context_prefix(context, context.messages.len(), work)?;
-    copy.current_input_index = context.current_input_index;
-    Ok((copy, claim))
-}
-
-pub(crate) fn clone_context_prefix(
-    context: &Context,
-    through: usize,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<(Context, u64)> {
-    let source = context
-        .messages
-        .get(..through)
-        .ok_or_else(|| Error::Invalid("summary extent exceeds source projection".into()))?;
+    let source = match through {
+        Some(through) => context
+            .messages
+            .get(..through)
+            .ok_or_else(|| Error::Invalid("summary extent exceeds source projection".into()))?,
+        None => context.messages.as_slice(),
+    };
+    let current_input_index = context
+        .current_input_index
+        .filter(|index| through.is_none_or(|through| (*index as usize) < through));
     if work.is_none() {
         return Ok((
             Context {
                 messages: source.to_vec(),
                 metadata: context.metadata.clone(),
-                current_input_index: context
-                    .current_input_index
-                    .filter(|index| (*index as usize) < through),
+                current_input_index: current_input_index,
             },
             0,
         ));
@@ -39,9 +34,7 @@ pub(crate) fn clone_context_prefix(
         let (metadata, claim) = clone_metadata(&context.metadata, quota.work())?;
         result.metadata = metadata;
         quota.adopt(claim)?;
-        result.current_input_index = context
-            .current_input_index
-            .filter(|index| (*index as usize) < through);
+        result.current_input_index = current_input_index;
         Ok(())
     })();
     if let Err(error) = copied {
@@ -170,79 +163,4 @@ pub(crate) fn clone_messages(
     let claim = quota.retained();
     quota.transfer();
     Ok((result, claim))
-}
-
-pub(super) fn quota_vector<T>(
-    capacity: usize,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<Vec<T>> {
-    let mut values = Vec::new();
-    reserve_vector(&mut values, capacity, quota.work())?;
-    quota.adopt((values.capacity() * std::mem::size_of::<T>()) as u64)?;
-    Ok(values)
-}
-
-pub(super) fn retire_vector<T>(
-    values: Vec<T>,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<()> {
-    let bytes = (values.capacity() * std::mem::size_of::<T>()) as u64;
-    drop(values);
-    quota.relinquish(bytes)
-}
-
-pub(crate) fn reserve_vector<T>(
-    values: &mut Vec<T>,
-    capacity: usize,
-    work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-) -> Result<()> {
-    if capacity <= values.capacity() {
-        return Ok(());
-    }
-    let Some(io) = work.as_deref_mut() else {
-        values.reserve(capacity.saturating_sub(values.len()));
-        return Ok(());
-    };
-    let bytes = capacity
-        .checked_mul(std::mem::size_of::<T>())
-        .ok_or_else(|| Error::Invalid("context vector capacity overflows".into()))?
-        as u64;
-    let old = (values.capacity() * std::mem::size_of::<T>()) as u64;
-    let copied = (values.len() * std::mem::size_of::<T>()) as u64;
-    io.admit_copy(copied)?;
-    io.admit_allocation(bytes)?;
-    let mut quota = crate::wire_codec::CodecQuota::new(work, bytes)?;
-    quota
-        .work()
-        .as_deref_mut()
-        .expect("observed vector")
-        .copy_bytes(copied)?;
-    if let Err(cause) = values.try_reserve_exact(capacity - values.len()) {
-        return Err(quota
-            .work()
-            .as_deref()
-            .expect("observed vector")
-            .allocation_failure(cause));
-    }
-    let actual = (values.capacity() * std::mem::size_of::<T>()) as u64;
-    let reconciled = (|| {
-        if actual > bytes {
-            let io = quota.work().as_deref_mut().expect("observed vector");
-            io.admit_owned(actual - bytes)?;
-            io.retain_owned(actual - bytes)?;
-            quota.adopt(actual - bytes)?;
-        }
-        quota
-            .work()
-            .as_deref_mut()
-            .expect("observed vector")
-            .release_owned(old)?;
-        Ok(())
-    })();
-    if let Err(error) = reconciled {
-        drop(std::mem::take(values));
-        return Err(error);
-    }
-    quota.transfer();
-    Ok(())
 }
