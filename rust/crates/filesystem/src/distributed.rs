@@ -3644,10 +3644,10 @@ fn generation_from_payload(
         result.map_err(GenerationDecodeFailure::Work)
     };
     let fact = if created {
-        crate::kernel::decode_volume_created_with_steps(payload, STREAM_RECORD_LIMIT, &mut observe)
+        crate::kernel::decode_volume_created(payload, STREAM_RECORD_LIMIT, &mut observe)
             .map(|created| (created.volume_id, created.initial_generation_root.digest))
     } else {
-        crate::kernel::decode_published_generation_with_steps(payload, STREAM_RECORD_LIMIT, &mut observe)
+        crate::kernel::decode_published_generation(payload, STREAM_RECORD_LIMIT, &mut observe)
             .map(|published| (published.volume_id, published.generation_root.digest))
     };
     let (volume, digest) = match fact {
@@ -4632,7 +4632,7 @@ mod tests {
             volume_id,
             config: VolumeConfig::portable(Lifecycle::Ephemeral),
             initial_generation_root: root,
-        })?;
+        }, |_| Ok::<_, crate::kernel::VolumeCreatedError>(()), |_| crate::kernel::VolumeCreatedError::Decode(crate::kernel::CanonicalDecodeError::AllocationFailed))?;
         let publication = encode_publication_payload(volume_id, root);
         let generation = GenerationId::new(root.digest);
         let cancellation = CancellationToken::new();
@@ -4680,7 +4680,7 @@ mod tests {
         let root = ObjectId { kind: ObjectKind::GenerationRoot, digest: Digest::from_bytes([0x92; 32]) };
         let source_payload = encode_volume_created(VolumeCreated {
             volume_id: volume, config: VolumeConfig::portable(Lifecycle::Ephemeral), initial_generation_root: root,
-        })?;
+        }, |_| Ok::<_, crate::kernel::VolumeCreatedError>(()), |_| crate::kernel::VolumeCreatedError::Decode(crate::kernel::CanonicalDecodeError::AllocationFailed))?;
         authority.create_authority_with_first_record(source_authority, ProposedCommit {
             operation_id: OperationId::from_bytes([0x93; 16]),
             fingerprint: Digest::from_bytes([0x94; 32]), payload: Bytes::from(source_payload),

@@ -2553,7 +2553,7 @@ async fn assert_fork_state_exact(
     )
     .await?;
     if let Some(created) = &created {
-        let record = crate::kernel::decode_volume_created(&created.payload, 4 * 1024)?;
+        let record = crate::kernel::decode_volume_created(&created.payload, 4 * 1024, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(()))?;
         assert_eq!(record.volume_id, destination.volume_id());
         assert!(
             retained.is_some(),
@@ -2608,7 +2608,7 @@ async fn workspace_creation_is_one_commit_and_exact_at_every_provider_cut()
                 first_fork_record(&stream, crate::kernel::volume_authority_id(volume)).await?;
             if let Some(created) = &created {
                 assert_eq!(
-                    crate::kernel::decode_volume_created(&created.payload, 4 * 1024)?.volume_id,
+                    crate::kernel::decode_volume_created(&created.payload, 4 * 1024, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(()))?.volume_id,
                     volume
                 );
             }

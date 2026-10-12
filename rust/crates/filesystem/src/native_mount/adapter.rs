@@ -16427,7 +16427,7 @@ mod tests {
         )), config)?;
         let attempts = objects.metadata_attempts.load(Ordering::Acquire);
         objects.refuse_metadata.store(true, Ordering::Release);
-        let encoded_bytes = crate::kernel::encode_file_metadata(metadata())?.len() as u64;
+        let encoded_bytes = crate::kernel::encode_file_metadata(metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?.len() as u64;
         let (first_reply, first) = tokio::sync::oneshot::channel();
         let (second_reply, second) = tokio::sync::oneshot::channel();
         let first_target = native_test_path("grouped-refused-first");

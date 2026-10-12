@@ -1,3 +1,5 @@
+use crate::{OperationFailure, WorkBudget};
+use crate::storage::ObjectStoreError;
 use super::*;
 use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{Digest, FileId};
@@ -33,7 +35,7 @@ fn put(store: &MemoryObjectStore, page: &TreePage) -> Result<ObjectId, Box<dyn s
     ObjectStore::put(
         store,
         id,
-        OwnedBytes::from(encode_tree_page(page, 8)?),
+        OwnedBytes::from(encode_tree_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)
@@ -60,7 +62,7 @@ fn put_file_table(
     ObjectStore::put(
         store,
         id,
-        OwnedBytes::from(encode_file_table_page(page, 8)?),
+        OwnedBytes::from(encode_file_table_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)
@@ -73,8 +75,8 @@ fn diff<S: AsyncObjectStore>(
     maximum_changes: u32,
     budget: WorkBudget,
     cancellation: &CancellationToken,
-) -> Option<Result<Diff<LogicalName, TreeEntry>, OperationFailure<DiffError>>> {
-    crate::async_storage::poll_ready(diff_tree_entries_async(
+) -> Option<Result<Diff<LogicalName, TreeEntry>, OperationFailure<FsError>>> {
+    crate::async_storage::poll_ready(diff_accounted::<_, TreeFormat>(
         store,
         before,
         after,
@@ -117,7 +119,7 @@ fn diff_validates_inputs_and_keeps_noop_paths_at_zero_work()
         .ok_or("memory diff blocked")?
         .err()
         .ok_or("zero diff limit unexpectedly succeeded")?;
-        assert!(matches!(failure.error, DiffError::InvalidLimit));
+        assert!(matches!(failure.error, FsError::InvalidDiff));
         assert_eq!(*failure.work, WorkCounters::default());
     }
     let wrong = ObjectId {
@@ -135,7 +137,7 @@ fn diff_validates_inputs_and_keeps_noop_paths_at_zero_work()
     .ok_or("memory diff blocked")?
     .err()
     .ok_or("wrong diff root kind unexpectedly succeeded")?;
-    assert!(matches!(failure.error, DiffError::WrongRootKind));
+    assert!(matches!(failure.error, FsError::InvalidDiff));
     assert_eq!(*failure.work, WorkCounters::default());
     Ok(())
 }
@@ -226,7 +228,7 @@ fn diff_cancellation_and_budget_fail_before_unadmitted_reads()
     .ok_or("memory diff blocked")?
     .err()
     .ok_or("cancelled diff unexpectedly succeeded")?;
-    assert!(matches!(failure.error, DiffError::Cancelled));
+    assert!(matches!(failure.error, FsError::Cancelled(_)));
     assert_eq!(*failure.work, WorkCounters::default());
 
     let failure = diff(
@@ -245,7 +247,7 @@ fn diff_cancellation_and_budget_fail_before_unadmitted_reads()
     .ok_or("unadmitted diff read unexpectedly succeeded")?;
     assert!(matches!(
         failure.error,
-        DiffError::Work(WorkError::BudgetExceeded {
+        FsError::Work(WorkError::BudgetExceeded {
             counter: "page_reads",
             observed: 2,
             maximum: 0,
@@ -286,7 +288,7 @@ fn internal_diff_skips_shared_merkle_children() -> Result<(), Box<dyn std::error
     let before = put(&store, &root(c_before))?;
     let after = put(&store, &root(c_after))?;
     let cancellation = CancellationToken::new();
-    let diff = crate::async_storage::poll_ready(diff_tree_entries_async(
+    let diff = crate::async_storage::poll_ready(diff_accounted::<_, TreeFormat>(
         &store,
         Some(before),
         Some(after),
@@ -340,7 +342,7 @@ fn internal_file_table_diff_aligns_shared_and_one_sided_children()
             },
         ]),
     )?;
-    let result = crate::async_storage::poll_ready(diff_file_records_async(
+    let result = crate::async_storage::poll_ready(diff_accounted::<_, FileTableFormat>(
         &store,
         Some(before),
         Some(after),
@@ -514,7 +516,7 @@ fn diff_preserves_storage_and_decode_failures_after_admitted_work()
     .ok_or("missing page unexpectedly diffed")?;
     assert!(matches!(
         failure.error,
-        DiffError::Storage(ObjectStoreError::Missing)
+        FsError::Object(ObjectStoreError::Missing)
     ));
     assert_eq!(failure.work.page_reads, 2);
     assert!(failure.work.backend_read_operations >= 1);
@@ -536,7 +538,7 @@ fn diff_preserves_storage_and_decode_failures_after_admitted_work()
     .ok_or("memory diff blocked")?
     .err()
     .ok_or("malformed page unexpectedly diffed")?;
-    assert!(matches!(failure.error, DiffError::Decode(_)));
+    assert!(matches!(failure.error, FsError::Decode(_)));
     assert!(failure.work.page_reads >= 2);
     Ok(())
 }
@@ -633,7 +635,6 @@ mod model {
     type Model = BTreeMap<u8, u8>;
     type Outcome = Result<(), Box<dyn std::error::Error>>;
 
-    /// Four items per page, so a few dozen entries span several levels.
     const LIMITS: DecodeLimits = DecodeLimits {
         maximum_object_bytes: 64 * 1024,
         maximum_name_bytes: 255,
@@ -654,7 +655,6 @@ mod model {
             .collect()
     }
 
-    /// Path-copies `from` into `to` and returns the new root.
     fn rewrite(
         store: &MemoryObjectStore,
         root: ObjectId,
@@ -785,4 +785,15 @@ fn native_diff_denies_frontier_allocation_before_backend_work()
     assert_eq!(original.receipt().backend_read_operations, 0);
     assert_eq!(original.with_allocations(|ledger, _, _, _| Ok::<_, FsError>(ledger.live_bytes()))?, baseline);
     Ok(())
+}
+
+async fn diff_accounted<S: AsyncObjectStore, F: Format>(
+    store: &S, before: Option<ObjectId>, after: Option<ObjectId>, maximum_changes: u32,
+    limits: DecodeLimits, budget: WorkBudget, cancellation: &CancellationToken,
+) -> Result<Diff<F::Key, F::Value>, OperationFailure<FsError>> {
+    let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    let result = diff_with_accounting::<S, F>(store, before, after, maximum_changes, limits, &mut accounting, cancellation).await;
+    let work = accounting.spent();
+    result.map(|(mut diff, _)| { diff.work = work; diff })
+        .map_err(|error| OperationFailure::new(error, work))
 }

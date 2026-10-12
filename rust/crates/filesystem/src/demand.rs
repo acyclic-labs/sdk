@@ -262,7 +262,7 @@ impl SourceCursor {
         accounting.record_completed(identity_work).map_err(Self::cursor_accounting_error)?;
         let item = WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED };
         accounting.charge(item).map_err(Self::cursor_accounting_error)?;
-        let epoch = decoder.u64().map_err(|_| DemandError::InvalidRequest)?;
+        let epoch = decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).map_err(|_| DemandError::InvalidRequest)?;
         let source = SourceReference { identity, epoch };
         if source != expected_source {
             return Err(DemandError::StaleCursor);
@@ -299,7 +299,7 @@ impl SourceCursor {
                 .map_err(|_| DemandError::InvalidRequest)?);
             accounting.record_completed(version_work).map_err(Self::cursor_accounting_error)?;
             accounting.charge(item).map_err(Self::cursor_accounting_error)?;
-            let token = decoder.u64().map_err(|_| DemandError::InvalidRequest)?;
+            let token = decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).map_err(|_| DemandError::InvalidRequest)?;
             cancellation.check().map_err(|_| DemandError::Cancelled)?;
             accounting.record_completed(WorkCounters::UNCHARGED).map_err(Self::cursor_accounting_error)?;
             Ok(Self {
@@ -373,11 +373,11 @@ mod source_cursor_codec_tests {
             let mut accounting = KernelAccounting::borrowed_standalone(
                 &mut ledger, &mut work, WorkBudget::UNBOUNDED, &cancellation,
             );
-            let mut encoder = Encoder::with_exact_capacity(DOMAIN, 1, DOMAIN.len() + 2 + cursor.cursor_encoded_len()?)?;
+            let mut encoder = Encoder::with_exact_capacity(DOMAIN, 1, DOMAIN.len() + 2 + cursor.cursor_encoded_len()?, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
             cursor.encode_cursor_into(&mut encoder, &mut accounting, &cancellation)?;
             let bytes = encoder.finish();
             for epoch in [cursor.source.epoch, cursor.source.epoch + 1] {
-                let mut decoder = Decoder::new(&bytes, DOMAIN, 1, u64::MAX)?;
+                let mut decoder = Decoder::new(&bytes, DOMAIN, 1, u64::MAX, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
                 let result = SourceCursor::decode_cursor(
                     &mut decoder, SourceReference { epoch, ..cursor.source }, &cursor.directory,
                     crate::FilesystemProfile::Windows, limits, &mut accounting, &cancellation,
@@ -3370,9 +3370,7 @@ impl Drop for DemandWork {
 pub(crate) fn lowercase_unicode_with_work(text: &str, work: &mut DemandWork) -> Result<Vec<u8>, DemandError> {
     work.reconcile_cancellation_registry()?;
     work.check()?;
-    let bytes = crate::kernel::types::lowercase_unicode_with_ledger(
-        text, &mut work.allocations, &mut work.work, work.budget, &work.cancellation,
-    )?;
+    let bytes = crate::kernel::types::lowercase_unicode(text, &mut work.allocations, &mut work.work, work.budget, Some(&work.cancellation))?;
     if let Err(error) = work.check() {
         let retained = bytes.capacity() as u64;
         drop(bytes);

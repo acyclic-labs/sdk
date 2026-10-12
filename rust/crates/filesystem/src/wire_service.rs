@@ -1900,14 +1900,14 @@ fn observed_mutation<A, O>(
         return Ok(mutation(wire::MutationStatus::Committed, None, None));
     }
     let root = if let Ok(publication) =
-        crate::kernel::decode_published_generation(&commit.payload, MAXIMUM_EVENT_BYTES)
+        crate::kernel::decode_published_generation(&commit.payload, MAXIMUM_EVENT_BYTES, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))
     {
         if publication.volume_id != expected {
             return Err(Status::data_loss("operation workspace identity mismatch"));
         }
         publication.generation_root
     } else if let Ok(created) =
-        crate::kernel::decode_volume_created(&commit.payload, MAXIMUM_EVENT_BYTES)
+        crate::kernel::decode_volume_created(&commit.payload, MAXIMUM_EVENT_BYTES, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(()))
     {
         if created.volume_id != expected {
             return Err(Status::data_loss("operation workspace identity mismatch"));

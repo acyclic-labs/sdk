@@ -10363,7 +10363,7 @@ fn assert_authority_volume_identity_fails_closed() -> Result<(), Box<dyn std::er
             volume_id: wrong_volume,
             config: config(),
             initial_generation_root: generation_root,
-        })?),
+        }, |_| Ok::<_, crate::kernel::VolumeCreatedError>(()), |_| crate::kernel::VolumeCreatedError::Decode(crate::kernel::CanonicalDecodeError::AllocationFailed))?),
     };
     assert!(matches!(
         generation_from_record(&creation, expected_volume, WorkCounters::default()),
@@ -10409,11 +10409,11 @@ fn assert_authority_volume_identity_fails_closed() -> Result<(), Box<dyn std::er
     let head = match active.value {
         CreateAuthorityOutcome::Created(head) | CreateAuthorityOutcome::Existing(head) => head,
     };
-    let encoded = crate::kernel::encode_volume_created_measured(VolumeCreated {
+    let encoded = crate::kernel::encode(WorkBudget::UNBOUNDED, Some(&CancellationToken::new()), 0, |observe| crate::kernel::encode_volume_created(VolumeCreated {
         volume_id: wrong_volume,
         config: config(),
         initial_generation_root: generation_root,
-    }, WorkBudget::UNBOUNDED, &CancellationToken::new(), 0)?;
+    }, observe, |_| VolumeCreatedError::Decode(crate::kernel::CanonicalDecodeError::AllocationFailed)))?;
     let (proposal, _) = creation_commit(
         OperationId::from_bytes([227; 16]), encoded,
         WorkBudget::UNBOUNDED, &CancellationToken::new(),

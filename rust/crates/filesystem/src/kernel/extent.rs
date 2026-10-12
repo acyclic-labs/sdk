@@ -1,12 +1,12 @@
 //! Canonical authenticated sparse-file extent-page encoding.
 
 use super::codec::{
-    CanonicalDecodeError, DecodeLimits, DecodedPageKind, DecodedPageShape, Decoder, Encoder,
+    CanonicalDecodeError, DecodeLimits, Decoder, Encoder,
 };
 use super::types::{Extent, ExtentChild, ExtentKind, ExtentPage, ExtentPageError, digest_object};
 use crate::storage::{ObjectId, ObjectKind, object_digest};
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
-use super::file_read::{ReadOwned, ReadDecodeError, reserve_decoded_items_with_steps};
+use super::file_read::{ReadOwned, ReadDecodeError, reserve_decoded_items};
 use super::codec::ReadAllocationStep;
 
 const DOMAIN: &[u8; 8] = b"ACYFSEXT";
@@ -14,28 +14,15 @@ const VERSION: u16 = 1;
 const LEAF_TAG: u8 = 1;
 const INTERNAL_TAG: u8 = 2;
 
-/// Encodes one validated sparse extent page.
-///
-/// # Errors
-///
-/// Rejects invalid ordering, ranges, object classes, or bounds.
-pub fn encode_extent_page(
-    page: &ExtentPage,
-    maximum_items: u32,
-) -> Result<Vec<u8>, CanonicalDecodeError> {
-    encode_extent_page_with_steps(
-        page, maximum_items, |_| Ok(()), |_| CanonicalDecodeError::AllocationFailed,
-    )
-}
-
 /// Uses the one canonical writer with caller-controlled reserve and header observations.
-pub(crate) fn encode_extent_page_with_steps<E: From<CanonicalDecodeError>>(
+/// Encodes one canonical page with physical allocation observation.
+pub fn encode_extent_page<E: From<CanonicalDecodeError>>(
     page: &ExtentPage, maximum_items: u32,
     observe: impl FnMut(super::codec::EncodeAllocationStep) -> Result<(), E>,
     allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
 ) -> Result<Vec<u8>, E> {
     let encoded_length = extent_page_encoded_length(page, maximum_items)?;
-    let mut encoder = Encoder::with_exact_capacity_with_steps(
+    let mut encoder = Encoder::with_exact_capacity(
         DOMAIN, VERSION, encoded_length, observe, allocation_error,
     )?;
     match page {
@@ -104,88 +91,15 @@ pub(crate) fn extent_page_encoded_length(
     Ok(bytes)
 }
 
-pub(crate) fn extent_page_decode_shape(
-    bytes: &[u8],
-    limits: DecodeLimits,
-) -> Result<DecodedPageShape, CanonicalDecodeError> {
-    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, limits.maximum_page_object_bytes())?;
-    let page_tag = decoder.u8()?;
-    let item_count = decoder.u32()?;
-    if item_count > limits.maximum_page_items {
-        return Err(CanonicalDecodeError::FieldTooLarge {
-            observed: item_count,
-            maximum: limits.maximum_page_items,
-        });
-    }
-    let kind = match page_tag {
-        LEAF_TAG => {
-            for _ in 0..item_count {
-                decoder.u64()?;
-                decoder.u64()?;
-                match decoder.u8()? {
-                    1 | 2 => {}
-                    3 => {
-                        let _: [u8; 32] = decoder.fixed()?;
-                        decoder.u64()?;
-                    }
-                    tag => {
-                        return Err(CanonicalDecodeError::UnknownTag {
-                            field: "extent_kind",
-                            tag,
-                        });
-                    }
-                }
-            }
-            DecodedPageKind::Leaf
-        }
-        INTERNAL_TAG => {
-            for _ in 0..item_count {
-                decoder.u64()?;
-                decoder.u64()?;
-                let _: [u8; 32] = decoder.fixed()?;
-            }
-            DecodedPageKind::Internal
-        }
-        tag => {
-            return Err(CanonicalDecodeError::UnknownTag {
-                field: "extent_page",
-                tag,
-            });
-        }
-    };
-    decoder.finish()?;
-    Ok(DecodedPageShape {
-        kind,
-        items: usize::try_from(item_count).map_err(|_| CanonicalDecodeError::LengthOverflow)?,
-        nested_bytes: 0,
-    })
-}
-
-/// Decodes and validates one bounded sparse extent page.
-///
-/// # Errors
-///
-/// Fails closed on malformed canonical bytes or semantic page invariants.
-pub fn decode_extent_page(
-    bytes: &[u8],
-    limits: DecodeLimits,
-) -> Result<ExtentPage, CanonicalDecodeError> {
-    decode_extent_page_with_steps(bytes, limits, &mut |_| Ok(()))
-}
-
 pub(crate) fn decode_extent_page_with_accounting(
     bytes: &[u8], limits: DecodeLimits, accounting: &mut KernelAccounting<'_>,
 ) -> Result<(ExtentPage, u64, KernelOwnedAllocation), crate::FsError> {
     #[cfg(not(target_arch = "wasm32"))]
     let native = accounting.native_work().is_some();
-    let mut observed = super::file_read::OriginalReadAccounting::new(accounting)?;
-    let decoded = decode_extent_page_with_steps::<ReadDecodeError>(
-        bytes, limits, &mut |step| observed.observe(step),
-    );
+    let decoded = super::file_read::decode_owned(accounting, |observe| decode_extent_page(bytes, limits, &mut |step| observe(step)));
     let page = match decoded {
         Ok(page) => page,
         Err(error) => {
-            observed.release_failed()?;
             #[cfg(not(target_arch = "wasm32"))]
             if native {
                 return Err(match error.into_original_fs_error() {
@@ -200,7 +114,7 @@ pub(crate) fn decode_extent_page_with_accounting(
             });
         }
     };
-    let owner = ReadOwned { value: page, custody: observed.into_allocation() };
+    let owner = ReadOwned { value: page.0, custody: page.1 };
     let bytes = match &owner.value {
         ExtentPage::Leaf(items) => items.capacity() * std::mem::size_of::<Extent>(),
         ExtentPage::Internal(items) => items.capacity() * std::mem::size_of::<ExtentChild>(),
@@ -208,13 +122,14 @@ pub(crate) fn decode_extent_page_with_accounting(
     Ok((owner.value, crate::foundation::usize_to_u64(bytes), owner.custody))
 }
 
-pub(crate) fn decode_extent_page_with_steps<E: From<CanonicalDecodeError>>(
+/// Decodes one canonical page with physical allocation observation.
+pub fn decode_extent_page<E: From<CanonicalDecodeError>>(
     bytes: &[u8], limits: DecodeLimits,
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
 ) -> Result<ExtentPage, E> {
-    let mut decoder = Decoder::new_with_steps(bytes, DOMAIN, VERSION, limits.maximum_page_object_bytes(), observe)?;
-    let page_tag = decoder.u8_with_steps(observe)?;
-    let item_count = decoder.u32_with_steps(observe)?;
+    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, limits.maximum_page_object_bytes(), observe)?;
+    let page_tag = decoder.u8(observe)?;
+    let item_count = decoder.u32(observe)?;
     if item_count > limits.maximum_page_items {
         return Err(CanonicalDecodeError::FieldTooLarge {
             observed: item_count,
@@ -225,17 +140,17 @@ pub(crate) fn decode_extent_page_with_steps<E: From<CanonicalDecodeError>>(
     let page = match page_tag {
         LEAF_TAG => {
             let mut extents = Vec::new();
-            reserve_decoded_items_with_steps(&mut extents, capacity, observe)?;
+            reserve_decoded_items(&mut extents, capacity, observe)?;
             for _ in 0..item_count {
                 observe(ReadAllocationStep::BeforeItem)?;
-                let offset = decoder.u64_with_steps(observe)?;
-                let length = decoder.u64_with_steps(observe)?;
-                let kind = match decoder.u8_with_steps(observe)? {
+                let offset = decoder.u64(observe)?;
+                let length = decoder.u64(observe)?;
+                let kind = match decoder.u8(observe)? {
                     1 => ExtentKind::Hole,
                     2 => ExtentKind::AllocatedZero,
                     3 => ExtentKind::Content {
-                        object: digest_object(ObjectKind::Blob, decoder.fixed_with_steps::<32, E>(observe)?),
-                        object_offset: decoder.u64_with_steps(observe)?,
+                        object: digest_object(ObjectKind::Blob, decoder.fixed::<32, E>(observe)?),
+                        object_offset: decoder.u64(observe)?,
                     },
                     tag => {
                         return Err(CanonicalDecodeError::UnknownTag {
@@ -255,13 +170,13 @@ pub(crate) fn decode_extent_page_with_steps<E: From<CanonicalDecodeError>>(
         }
         INTERNAL_TAG => {
             let mut children = Vec::new();
-            reserve_decoded_items_with_steps(&mut children, capacity, observe)?;
+            reserve_decoded_items(&mut children, capacity, observe)?;
             for _ in 0..item_count {
                 observe(ReadAllocationStep::BeforeItem)?;
                 children.push(ExtentChild {
-                    first_offset: decoder.u64_with_steps(observe)?,
-                    end_offset: decoder.u64_with_steps(observe)?,
-                    page: digest_object(ObjectKind::ExtentPage, decoder.fixed_with_steps::<32, E>(observe)?),
+                    first_offset: decoder.u64(observe)?,
+                    end_offset: decoder.u64(observe)?,
+                    page: digest_object(ObjectKind::ExtentPage, decoder.fixed::<32, E>(observe)?),
                 });
                 observe(ReadAllocationStep::Item)?;
             }
@@ -281,15 +196,11 @@ pub(crate) fn decode_extent_page_with_steps<E: From<CanonicalDecodeError>>(
 }
 
 /// Computes the typed authenticated identity of one sparse extent page.
-///
-/// # Errors
-///
-/// Returns the same validation failures as [`encode_extent_page`].
 pub fn extent_page_id(
     page: &ExtentPage,
     maximum_items: u32,
 ) -> Result<ObjectId, CanonicalDecodeError> {
-    let bytes = encode_extent_page(page, maximum_items)?;
+    let bytes = encode_extent_page(page, maximum_items, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     Ok(ObjectId {
         kind: ObjectKind::ExtentPage,
         digest: object_digest(ObjectKind::ExtentPage, &bytes),
