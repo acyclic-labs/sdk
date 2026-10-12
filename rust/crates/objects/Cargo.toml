@@ -26,6 +26,7 @@ http = ["json", "dep:reqwest"]
 local = ["dep:fs2", "dep:libc", "tokio/rt-multi-thread"]
 
 [dependencies]
+pin-project-lite = "0.2.16"
 acyclic-stream = { version = "=0.2.0", path = "../stream", default-features = false }
 async-trait.workspace = true
 blake3 = "1.8.2"
@@ -50,7 +51,6 @@ libc = { version = "0.2.175", optional = true }
 js-sys.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-pin-project-lite = "0.2.16"
 tonic = { version = "0.14.6", features = ["tls-ring"], optional = true }
 tonic-prost = { workspace = true, optional = true }
 acyclic-native-runtime = { version = "=0.2.0", path = "../native-runtime" }

@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{Error, NativeBatchObjects, Object, ObjectsProvider, request, wire};
-use crate::body::{BodyParts, BodyReadError, BodyReadMode, StoredBody};
+use crate::body::{BodyReadError, BodyReadMode, StoredBody};
 use crate::obs;
 use acyclic_stream::OwnedBytes;
 #[cfg(not(target_arch = "wasm32"))]
@@ -96,27 +96,21 @@ struct Receipt {
 }
 
 #[derive(Clone)]
-struct SharedInfo<T = wire::ObjectInfo>(Arc<InfoOwner<T>>);
-struct InfoOwner<T = wire::ObjectInfo> {
-    info: T,
-    #[cfg(not(target_arch = "wasm32"))]
-    _allocation: Option<ReadAllocation>,
-}
+struct SharedInfo<T = wire::ObjectInfo>(Arc<super::Guarded<T>>);
 impl<T> std::ops::Deref for SharedInfo<T> {
     type Target = T;
-    fn deref(&self) -> &T { &self.0.info }
+    fn deref(&self) -> &T { &self.0.value }
 }
 impl<T: PartialEq> PartialEq for SharedInfo<T> {
     fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0) || self.0.info == other.0.info
+        Arc::ptr_eq(&self.0, &other.0) || self.0.value == other.0.value
     }
 }
 impl<T> From<T> for SharedInfo<T> {
     fn from(info: T) -> Self {
-        Self(Arc::new(InfoOwner {
-            info,
-            #[cfg(not(target_arch = "wasm32"))]
-            _allocation: None,
+        Self(Arc::new(super::Guarded {
+            value: info,
+            _allocation: Default::default(),
         }))
     }
 }
@@ -770,14 +764,14 @@ impl std::borrow::Borrow<str> for SharedInfo<String> {
     fn borrow(&self) -> &str { self.as_str() }
 }
 impl std::fmt::Display for SharedInfo<String> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { self.0.info.fmt(f) }
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { self.0.value.fmt(f) }
 }
 impl<T: Eq> Eq for SharedInfo<T> {}
 impl<T: Ord> PartialOrd for SharedInfo<T> {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
 }
 impl<T: Ord> Ord for SharedInfo<T> {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.0.info.cmp(&other.0.info) }
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering { self.0.value.cmp(&other.0.value) }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -791,10 +785,10 @@ impl SharedInfo<String> {
 #[cfg(not(target_arch = "wasm32"))]
 impl<T> SharedInfo<T> {
     fn new_measured(info: T, mut allocation: ReadAllocation, meter: &Arc<dyn NativeReadMeter>) -> Result<Self, NativeObjectsError> {
-        let control = std::mem::size_of::<InfoOwner<T>>();
+        let control = std::mem::size_of::<super::Guarded<T>>();
         meter.admit_codec(0, control as u64, 0)?;
         allocation.absorb(&mut ReadAllocation::new(meter, control)?)?;
-        let result = Self(Arc::new(InfoOwner { info, _allocation: Some(allocation) }));
+        let result = Self(Arc::new(super::Guarded { value: info, _allocation: Some(allocation) }));
         meter.record_codec(0, control as u64, 0)?;
         Ok(result)
     }
@@ -853,7 +847,6 @@ fn put_digest_measured(
     drop(encoded);
     Ok(digest)
 }
-
 
 #[cfg(not(target_arch = "wasm32"))]
 fn native_vec<T>(count: usize, meter: &Arc<dyn NativeReadMeter>) -> Result<(Vec<T>, ReadAllocation), NativeObjectsError> {
@@ -1024,7 +1017,7 @@ impl NativeBatchObjects for MemoryObjects {
                             let mut next = match meter.check().map(|()| state.clone()).map_err(NativeObjectsError::from) {
                                 Ok(next) => next,
                                 Err(error) => {
-                                    failure.error.set(error)?;
+                                    failure.value.set(error)?;
                                     for _ in requests.by_ref().take(count) {
                                         results.0.push(Err(NativeObjectsError::from(NativeObjectsCause::SharedFailure(
                                             Arc::clone(&failure)))));
@@ -1039,7 +1032,7 @@ impl NativeBatchObjects for MemoryObjects {
                                 match journal.commit(&state, &mut next, Some(Arc::clone(&meter))) {
                                     Ok(()) => *state = next,
                                     Err(error) => {
-                                        failure.error.set(error)?;
+                                        failure.value.set(error)?;
                                         for result in &mut results.0[start..] {
                                             if result.is_ok() {
                                                 *result = Err(NativeObjectsError::from(NativeObjectsCause::SharedFailure(
@@ -1228,9 +1221,7 @@ impl ObjectsProvider for MemoryObjects {
         query: wire::HeadObjectRequest,
     ) -> Result<wire::HeadObjectResponse, Error> {
         obs::traced(obs::span!(INFO, "acyclic.objects.head"), async {
-            request::validate_binary("objects/head", &query.encode_to_vec(), 0)?;
-            let name = request::bucket(&query.bucket)?;
-            request::key(&query.object_key)?;
+            let name = request::head(&query)?;
             let state = self.lock_state()?;
             let value = state
                 .buckets
@@ -1269,16 +1260,7 @@ impl ObjectsProvider for MemoryObjects {
         obs::traced(
             obs::span!(INFO, "acyclic.objects.list", items = obs::Empty),
             async {
-                request::validate_binary("objects/list", &query.encode_to_vec(), 0)?;
-                let name = request::bucket(&query.bucket)?;
-                let limit = request::page_size(query.page_size)?;
-                if query.prefix.len() > 1024
-                    || query.delimiter.len() > 1024
-                    || query.prefix.contains('\0')
-                    || query.delimiter.contains('\0')
-                {
-                    return Err(InvalidArgument.into());
-                }
+                let (name, limit) = request::list(&query)?;
                 let cursor = self.decode_cursor(&query)?;
                 let state = self.lock_state()?;
                 let bucket = state.buckets.get(name).ok_or(Error::from(NotFound))?;
@@ -1432,13 +1414,7 @@ impl ObjectsProvider for MemoryObjects {
         obs::traced(
             obs::span!(INFO, "acyclic.objects.list_parts", items = obs::Empty),
             async {
-                request::validate_binary("multipart/list-parts", &query.encode_to_vec(), 0)?;
-                let name = request::bucket(&query.bucket)?;
-                request::key(&query.object_key)?;
-                let limit = request::page_size(query.page_size)?;
-                if query.after_part_number > 10_000 {
-                    return Err(InvalidArgument.into());
-                }
+                let (name, limit) = request::list_parts(&query)?;
                 let state = self.lock_state()?;
                 let value = upload(&state, name, &query.object_key, &query.upload_id)?;
                 let mut parts = value
@@ -1525,10 +1501,9 @@ impl ObjectsProvider for MemoryObjects {
                             metadata,
                             &query.preconditions,
                             StoredBody::Composite {
-                                parts: Arc::new(BodyParts {
-                                    values: bodies,
-                                    #[cfg(not(target_arch = "wasm32"))]
-                                    _allocation: None,
+                                parts: Arc::new(crate::v1::Guarded {
+                                    value: bodies,
+                                    _allocation: Default::default(),
                                 }),
                                 length: size,
                             },

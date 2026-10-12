@@ -8,6 +8,7 @@ use crate::obs;
 use acyclic_stream::OwnedBytes;
 use futures::{FutureExt, StreamExt, TryFutureExt, stream};
 use prost::Message;
+use std::sync::Arc;
 use tonic::{
     Request,
     metadata::{Ascii, MetadataValue},
@@ -18,19 +19,11 @@ const MESSAGE_BYTES: usize = 16 * 1024 * 1024;
 const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const MAX_TRANSFER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1800);
 
-struct NativeWireChunk {
-    data: bytes::Bytes,
-    _wire: acyclic_native_runtime::ReadAllocation,
-    _owner: acyclic_native_runtime::ReadAllocation,
-}
-impl AsRef<[u8]> for NativeWireChunk {
-    fn as_ref(&self) -> &[u8] { self.data.as_ref() }
-}
 pin_project_lite::pin_project! {
     struct WireBodySlot {
         #[pin]
         source: Option<tonic::body::Body>,
-        controls: response::NativeGetControls,
+        controls: Arc<super::NativeTransportErrors>,
         owners: (Vec<acyclic_native_runtime::ReadAllocationReservation>, acyclic_native_runtime::ReadAllocation),
         failed: bool,
     }
@@ -47,7 +40,7 @@ impl http_body::Body for WireBodySlot {
         if *this.failed { return Poll::Ready(None); }
         if this.controls.check().is_err() {
             *this.failed = true;
-            return Poll::Ready(Some(Err(this.controls.errors.codec_failure()
+            return Poll::Ready(Some(Err(this.controls.codec_failure()
                 .expect("native codec failure is prepared before RPC"))));
         }
         let frame = match this.source.as_mut().as_pin_mut()
@@ -65,32 +58,32 @@ impl http_body::Body for WireBodySlot {
             Ok(data) => data,
             Err(frame) => return Poll::Ready(Some(Ok(frame))),
         };
-        let wire = match this.controls.errors.take_wire(data.len()) {
+        let mut wire = match this.controls.take_wire(data.len()) {
             Ok(allocation) => allocation,
             Err(error) => {
-                this.controls.errors.record(error);
+                this.controls.record(error);
                 *this.failed = true;
-                return Poll::Ready(Some(Err(this.controls.errors.codec_failure()
+                return Poll::Ready(Some(Err(this.controls.codec_failure()
                     .expect("native codec failure is prepared before RPC"))));
             }
         };
         let Some(credit) = this.owners.0.pop() else {
-            this.controls.errors.record(std::io::Error::from(std::io::ErrorKind::InvalidData).into());
+            this.controls.record(std::io::Error::from(std::io::ErrorKind::InvalidData).into());
             *this.failed = true;
-            return Poll::Ready(Some(Err(this.controls.errors.codec_failure()
+            return Poll::Ready(Some(Err(this.controls.codec_failure()
                 .expect("native codec failure is prepared before RPC"))));
         };
-        let owner = match credit.allocate() {
-            Ok(allocation) => allocation,
+        match credit.allocate().and_then(|mut allocation| wire.absorb(&mut allocation)) {
+            Ok(()) => (),
             Err(error) => {
-                this.controls.errors.record(error.into());
+                this.controls.record(error.into());
                 *this.failed = true;
-                return Poll::Ready(Some(Err(this.controls.errors.codec_failure()
+                return Poll::Ready(Some(Err(this.controls.codec_failure()
                     .expect("native codec failure is prepared before RPC"))));
             }
         };
         // Ready frames retain their original claims through every alias.
-        let data = bytes::Bytes::from_owner(NativeWireChunk { data, _wire: wire, _owner: owner });
+        let data = bytes::Bytes::from_owner(super::Guarded { value: data, _allocation: Some(wire) });
         Poll::Ready(Some(Ok(http_body::Frame::data(data))))
     }
     fn is_end_stream(&self) -> bool {
@@ -100,22 +93,15 @@ impl http_body::Body for WireBodySlot {
         self.source.as_ref().expect("only an initialized transport slot is published").size_hint()
     }
 }
-struct CustodiedWireBody {
-    source: std::pin::Pin<Box<WireBodySlot>>,
-    _allocation: acyclic_native_runtime::ReadAllocation,
-    _erasure: acyclic_native_runtime::ReadAllocation,
-}
-impl http_body::Body for CustodiedWireBody {
-    type Data = bytes::Bytes;
-    type Error = tonic::Status;
-    fn poll_frame(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
-        self.source.as_mut().poll_frame(cx)
+impl<T: http_body::Body> http_body::Body for super::Guarded<T> {
+    type Data = T::Data;
+    type Error = T::Error;
+    fn poll_frame(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>)
+        -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        self.project().value.poll_frame(cx)
     }
-    fn is_end_stream(&self) -> bool { self.source.is_end_stream() }
-    fn size_hint(&self) -> http_body::SizeHint { self.source.size_hint() }
+    fn is_end_stream(&self) -> bool { self.value.is_end_stream() }
+    fn size_hint(&self) -> http_body::SizeHint { self.value.size_hint() }
 }
 struct PreparedWireBody {
     source: std::pin::Pin<Box<WireBodySlot>>,
@@ -124,7 +110,7 @@ struct PreparedWireBody {
 }
 impl PreparedWireBody {
     fn new(
-        controls: response::NativeGetControls,
+        controls: Arc<super::NativeTransportErrors>,
         wire_bytes: usize,
         owner_count: usize,
     ) -> Result<Self, Error> {
@@ -141,14 +127,14 @@ impl PreparedWireBody {
         credits.1.reconcile_capacity(capacity).map_err(|error| controls.fail(error))?;
         for _ in 0..owner_count {
             credits.0.push(ReadAllocationReservation::new(
-                &controls.meter, std::mem::size_of::<NativeWireChunk>() as u64,
+                &controls.meter, std::mem::size_of::<super::Guarded<bytes::Bytes>>() as u64,
             ).map_err(|error| controls.fail(error))?);
         }
         let wire = ReadAllocation::adopt(&controls.meter, wire_bytes)
             .map_err(|error| controls.fail(error))?;
-        controls.errors.retain_wire(wire).map_err(|error| controls.fail(error))?;
+        controls.retain_wire(wire).map_err(|error| controls.fail(error))?;
         let erasure = ReadAllocationReservation::new(
-            &controls.meter, std::mem::size_of::<CustodiedWireBody>() as u64,
+            &controls.meter, std::mem::size_of::<super::Guarded<std::pin::Pin<Box<WireBodySlot>>>>() as u64,
         ).map_err(|error| controls.fail(error))?;
         let allocation = ReadAllocation::new(&controls.meter, std::mem::size_of::<WireBodySlot>())
             .map_err(|error| controls.fail(error))?;
@@ -163,10 +149,9 @@ impl PreparedWireBody {
     }
     fn initialize(mut self, source: tonic::body::Body) -> Result<tonic::body::Body, NativeObjectsError> {
         self.source.as_mut().project().source.set(Some(source));
-        let erasure = self.erasure.allocate()?;
-        let body = CustodiedWireBody {
-            source: self.source, _allocation: self._allocation, _erasure: erasure,
-        };
+        let mut erasure = self.erasure.allocate()?;
+        self._allocation.absorb(&mut erasure)?;
+        let body = super::Guarded { value: self.source, _allocation: Some(self._allocation) };
         // UnsyncBoxBody downcasts directly in tonic Body::new.
         Ok(tonic::body::Body::new(http_body_util::combinators::UnsyncBoxBody::new(body)))
     }
@@ -202,9 +187,9 @@ impl tonic::codegen::Service<tonic::codegen::http::Request<tonic::body::Body>> f
             match wire.initialize(source) {
                 Ok(source) => tonic::codegen::http::Request::from_parts(parts, source),
                 Err(error) => {
-                    controls.errors.record(error);
+                    controls.record(error);
                     return futures::future::Either::Right(std::future::ready(Err(ObjectsChannelError::Native(
-                        controls.errors.codec_failure().expect("native codec failure is prepared before RPC"),
+                        controls.codec_failure().expect("native codec failure is prepared before RPC"),
                     ))));
                 }
             }
@@ -247,7 +232,7 @@ fn part_frame(chunk: Result<OwnedBytes, Error>) -> wire::UploadPartRequest {
 
 fn put_frames(
     chunks: UploadBody,
-    controls: Option<response::NativeGetControls>,
+    controls: Option<Arc<super::NativeTransportErrors>>,
     header: response::RequestInput<wire::PutObjectRequest>,
 ) -> impl futures::Stream<Item = response::RequestInput<wire::PutObjectRequest>> + Send {
     stream::unfold((Some(header), chunks, controls, false), |(mut first, mut chunks, controls, failed)| async move {
@@ -269,7 +254,7 @@ fn put_frames(
             match frame {
                 Ok(frame) => (frame, false),
                 Err(_) => (response::RequestInput::CodecFailure(
-                    controls.errors.codec_failure().expect("one prepared native source failure"),
+                    controls.codec_failure().expect("one prepared native source failure"),
                 ), true),
             }
         } else { (response::RequestInput::Ordinary(put_frame(chunk)), false) };
@@ -336,8 +321,8 @@ impl GrpcObjects {
                     rpc.code = obs::Empty
                 ),
                 async {
-                    request::upload_part_stream_digest(&query)?;
-                    let original = query.encode_to_vec();
+                    request::upload_part(&query)?;
+                    let part_number = query.part_number;
                     let header = wire::UploadPartRequest {
                         frame: Some(wire::upload_part_request::Frame::Header(query)),
                     };
@@ -362,12 +347,7 @@ impl GrpcObjects {
                         &state,
                     )
                     .await?;
-                    response::validate_binary(
-                        "multipart/upload-part",
-                        &original,
-                        &result.encode_to_vec(),
-                        state.finish()?,
-                    )?;
+                    response::part(&result, part_number, state.finish()?)?;
                     Ok(result)
                 },
             )
@@ -378,7 +358,7 @@ impl GrpcObjects {
         owner: Self,
         request_input: response::RequestInput<wire::PutObjectHeader>,
         body: UploadBody,
-        controls: Option<response::NativeGetControls>,
+        controls: Option<Arc<super::NativeTransportErrors>>,
         wire: Option<PreparedWireBody>,
     ) -> Result<(wire::ObjectInfo, Option<acyclic_native_runtime::ReadAllocation>), Error> {
         obs::traced(
@@ -389,9 +369,7 @@ impl GrpcObjects {
                     acyclic_native_runtime::ReadAllocation::adopt(&controls.meter, MESSAGE_BYTES * 4)
                         .map_err(|error| controls.fail(error))
                 }).transpose()?;
-                let validation_allocation = controls.as_ref().map(|controls| controls.request(query)).transpose()?;
-                request::put_stream_digest(query)?;
-                drop(validation_allocation);
+                request::put(query)?;
                 let header = request_input.map(|query| wire::PutObjectRequest {
                     frame: Some(wire::put_object_request::Frame::Header(query)),
                 }).with_controls(controls.clone())?;
@@ -536,7 +514,7 @@ impl GrpcObjects {
         &self,
         request_input: response::RequestInput<wire::GetObjectRequest>,
         maximum_bytes: u64,
-        controls: Option<response::NativeGetControls>,
+        controls: Option<Arc<super::NativeTransportErrors>>,
         header_allocation: &mut Option<acyclic_native_runtime::ReadAllocation>,
         wire: Option<PreparedWireBody>,
     ) -> Result<Download, Error> {
@@ -622,7 +600,7 @@ impl GrpcObjects {
                 }
                 if dispatch_failed {
                     let controls = controls.as_ref().expect("native RPC attempt");
-                    let original = controls.errors.take().expect("recorded native RPC error");
+                    let original = controls.take().expect("recorded native RPC error");
                     return Err(controls.fail(original.with_header(
                         header, header_allocation.take().expect("native header custody"),
                     )));
@@ -657,7 +635,7 @@ pub fn error_from_status(status: &tonic::Status) -> Error {
     error_from_status_controlled(status, None)
 }
 fn error_from_status_controlled(
-    status: &tonic::Status, controls: Option<&response::NativeGetControls>,
+    status: &tonic::Status, controls: Option<&Arc<super::NativeTransportErrors>>,
 ) -> Error {
     let _detail_custody = if let Some(controls) = controls {
         let Some(maximum) = status.details().len().checked_mul(4) else { return response::invalid(); };
@@ -792,7 +770,7 @@ impl ObjectsProvider for GrpcObjects {
         super::native_future(meter.clone(), async move {
             let errors = super::NativeTransportErrors::new(&meter)?;
             errors.prepare_codec_failure(&meter)?;
-            let controls = response::NativeGetControls { meter: meter.clone(), errors: errors.clone() };
+            let controls = errors.clone();
             let (header, carrier) = request_input.value();
             let wire_bytes = native_put_wire_bytes(header, carrier.len())?;
             let owners = carrier.len().div_ceil(65_536).checked_add(2).ok_or_else(response::invalid)?;
@@ -839,7 +817,7 @@ impl ObjectsProvider for GrpcObjects {
             let mut prepared = Download::prepare_native(maximum_bytes, meter.clone())?;
             let errors = prepared.errors.clone();
             errors.prepare_codec_failure(&meter)?;
-            let controls = response::NativeGetControls { meter: meter.clone(), errors: errors.clone() };
+            let controls = errors.clone();
             let mut header_allocation = Some(acyclic_native_runtime::ReadAllocation::adopt(&meter, MESSAGE_BYTES * 2)?);
             let wire_bytes = request_input.value().encoded_len().checked_add(5).ok_or_else(response::invalid)?;
             let wire = match PreparedWireBody::new(controls.clone(), wire_bytes, 1) {
@@ -869,10 +847,7 @@ impl ObjectsProvider for GrpcObjects {
         obs::traced(
             obs::span!(INFO, "acyclic.objects.grpc.head", rpc.code = obs::Empty),
             async {
-                request::validate_binary("objects/head", &query.encode_to_vec(), 0)?;
-                request::bucket(&query.bucket)?;
-                request::key(&query.object_key)?;
-                bounded(&query)?;
+                request::head(&query)?;
                 let response = self
                     .objects()
                     .head_object(self.authenticated(query, REQUEST_TIMEOUT))
@@ -909,9 +884,7 @@ impl ObjectsProvider for GrpcObjects {
         obs::traced(
             obs::span!(INFO, "acyclic.objects.grpc.list", rpc.code = obs::Empty),
             async {
-                request::validate_binary("objects/list", &query.encode_to_vec(), 0)?;
-                request::page_size(query.page_size)?;
-                bounded(&query)?;
+                request::list(&query)?;
                 let response = self
                     .objects()
                     .list_objects(self.authenticated(query.clone(), REQUEST_TIMEOUT))
@@ -968,9 +941,7 @@ impl ObjectsProvider for GrpcObjects {
                 rpc.code = obs::Empty
             ),
             async {
-                request::validate_binary("multipart/list-parts", &query.encode_to_vec(), 0)?;
-                request::page_size(query.page_size)?;
-                bounded(&query)?;
+                request::list_parts(&query)?;
                 let response = self
                     .multipart()
                     .list_parts(self.authenticated(query.clone(), REQUEST_TIMEOUT))
@@ -1055,7 +1026,7 @@ mod native_wire_tests {
         let meter: Arc<dyn NativeReadMeter> = observed.clone();
         let errors = super::super::NativeTransportErrors::new(&meter)?;
         errors.prepare_codec_failure(&meter)?;
-        let controls = response::NativeGetControls { meter: meter.clone(), errors };
+        let controls = errors;
         let packet = super::super::ObjectsNativeRequest::new(wire::GetObjectRequest::default(), (), &meter)?;
         let input = response::RequestInput::native(packet, &meter)?.with_controls(Some(controls.clone()))?;
         let ready = PreparedWireBody::new(controls.clone(), input.value().encoded_len() + 5, 1)?;

@@ -9,7 +9,6 @@ use tokio::sync::RwLock;
 use acyclic_native_runtime::{NativeReadMeter, ReadAllocation};
 use super::{NativeObjectsCause, NativeObjectsError, ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt};
 
-
 fn spawn_native_read<F>(
     future: F,
     meter: &Arc<dyn NativeReadMeter>,
@@ -18,8 +17,8 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
-    let mut future = super::GuardedFuture {
-        future: tracing::Instrument::in_current_span(future),
+    let mut future = super::Guarded {
+        value: tracing::Instrument::in_current_span(future),
         _allocation: None,
     };
     future._allocation = Some(ReadAllocation::new(meter, std::mem::size_of_val(&future))?);

@@ -155,11 +155,7 @@ pub enum NativeObjectsCause {
 
 /// One preadmitted actual grouped failure, retaining its original cause to last alias.
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug)]
-pub struct NativeObjectsSharedFailure {
-    error: std::sync::OnceLock<NativeObjectsError>,
-    _allocation: acyclic_native_runtime::ReadAllocation,
-}
+pub type NativeObjectsSharedFailure = Guarded<std::sync::OnceLock<NativeObjectsError>>;
 
 #[cfg(not(target_arch = "wasm32"))]
 impl NativeObjectsSharedFailure {
@@ -167,12 +163,12 @@ impl NativeObjectsSharedFailure {
         meter: &std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<std::sync::Arc<Self>, NativeObjectsError> {
         let allocation = acyclic_native_runtime::ReadAllocation::new(meter, std::mem::size_of::<Self>())?;
-        Ok(std::sync::Arc::new(Self { error: std::sync::OnceLock::new(), _allocation: allocation }))
+        Ok(std::sync::Arc::new(Self { value: std::sync::OnceLock::new(), _allocation: Some(allocation) }))
     }
 
     /// Borrows the same original typed cause; published aliases are always initialized.
     pub fn error(&self) -> &NativeObjectsError {
-        self.error.get().expect("only an initialized original failure is published")
+        self.value.get().expect("only an initialized original failure is published")
     }
 }
 
@@ -259,6 +255,7 @@ impl NativeObjectsError {
 /// A preallocated error slot bridging existing semantic transport body streams.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct NativeTransportErrors {
+    pub(crate) meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     error: std::sync::Mutex<Option<NativeObjectsError>>,
     #[cfg(feature = "grpc")]
     codec_status: std::sync::Mutex<Option<tonic::Status>>,
@@ -274,6 +271,7 @@ impl NativeTransportErrors {
         meter.check()?;
         let allocation = acyclic_native_runtime::ReadAllocation::new(meter, std::mem::size_of::<Self>())?;
         Ok(std::sync::Arc::new(Self {
+            meter: std::sync::Arc::clone(meter),
             error: std::sync::Mutex::new(None),
             #[cfg(feature = "grpc")]
             codec_status: std::sync::Mutex::new(None),
@@ -338,7 +336,6 @@ impl NativeTransportErrors {
     }
 }
 
-
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn native_preparation_error(error: acyclic_stream::PreparedOwnedBytesError) -> NativeObjectsError {
     match error {
@@ -393,29 +390,21 @@ impl PartialEq for Object {
 
 /// A decoded acknowledgement inseparable from its original metadata custody.
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug)]
-pub struct ObjectsPutReceipt {
-    info: wire::ObjectInfo,
-    _metadata_custody: Option<acyclic_native_runtime::ReadAllocation>,
-}
+pub type ObjectsPutReceipt = Guarded<wire::ObjectInfo>;
 
 #[cfg(not(target_arch = "wasm32"))]
 impl ObjectsPutReceipt {
-    /// Transfers actual metadata and the claim funded before its native producer.
-    pub fn new(info: wire::ObjectInfo, metadata_custody: Option<acyclic_native_runtime::ReadAllocation>) -> Self {
-        Self { info, _metadata_custody: metadata_custody }
+    /// Retains decoded metadata and its original allocation claim.
+    pub fn new(value: wire::ObjectInfo, allocation: Option<acyclic_native_runtime::ReadAllocation>) -> Self {
+        Self { value, _allocation: allocation }
     }
-    /// Borrows the real acknowledgement without separating its metadata claim.
-    pub const fn info(&self) -> &wire::ObjectInfo { &self.info }
+    /// Borrows the acknowledgement and keeps its metadata claim attached.
+    pub const fn info(&self) -> &wire::ObjectInfo { &self.value }
 }
 
 /// A genuine ordered batch owning its original result-vector custody.
 #[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug)]
-pub struct ObjectsBatch<T> {
-    results: std::vec::IntoIter<Result<T, NativeObjectsError>>,
-    _allocation: acyclic_native_runtime::ReadAllocation,
-}
+pub type ObjectsBatch<T> = Guarded<std::vec::IntoIter<Result<T, NativeObjectsError>>>;
 
 #[cfg(not(target_arch = "wasm32"))]
 impl<T> ObjectsBatch<T> {
@@ -430,47 +419,64 @@ impl<T> ObjectsBatch<T> {
             drop(allocation);
             return Err(NativeObjectsError::from(NativeObjectsCause::Admission(std::io::ErrorKind::InvalidData.into())));
         }
-        Ok(Self { results: results.into_iter(), _allocation: allocation })
+        Ok(Self { value: results.into_iter(), _allocation: Some(allocation) })
     }
 
     /// Borrows the actual ordered results without separating their original claim.
-    pub fn results(&self) -> &[Result<T, NativeObjectsError>] { self.results.as_slice() }
+    pub fn results(&self) -> &[Result<T, NativeObjectsError>] { self.value.as_slice() }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl<T> Iterator for ObjectsBatch<T> {
     type Item = Result<T, NativeObjectsError>;
-    fn next(&mut self) -> Option<Self::Item> { self.results.next() }
-    fn size_hint(&self) -> (usize, Option<usize>) { self.results.size_hint() }
+    fn next(&mut self) -> Option<Self::Item> { self.value.next() }
+    fn size_hint(&self) -> (usize, Option<usize>) { self.value.size_hint() }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl<T> ExactSizeIterator for ObjectsBatch<T> {}
 
 #[cfg(not(target_arch = "wasm32"))]
+type GuardAllocation = Option<acyclic_native_runtime::ReadAllocation>;
+#[cfg(target_arch = "wasm32")]
+type GuardAllocation = ();
+
 pin_project_lite::pin_project! {
-    /// A future whose storage retires before its allocation guard.
+    /// Storage that retires before its allocation guard.
     #[doc(hidden)]
-    pub struct GuardedFuture<F> {
+    #[derive(Debug)]
+    pub struct Guarded<T> {
         #[pin]
-        pub(crate) future: F,
-        pub(crate) _allocation: Option<acyclic_native_runtime::ReadAllocation>,
+        pub(crate) value: T,
+        pub(crate) _allocation: GuardAllocation,
     }
 }
-#[cfg(not(target_arch = "wasm32"))]
-impl<F: Future> Future for GuardedFuture<F> {
+impl<F: Future> Future for Guarded<F> {
     type Output = F::Output;
     fn poll(
         self: std::pin::Pin<&mut Self>, context: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> { self.project().future.poll(context) }
+    ) -> std::task::Poll<Self::Output> { self.project().value.poll(context) }
 }
 
-#[cfg(target_arch = "wasm32")]
-pub(crate) type GuardedFuture<F> = F;
+impl<S: futures::Stream> futures::Stream for Guarded<S> {
+    type Item = S::Item;
+    fn poll_next(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>)
+        -> std::task::Poll<Option<Self::Item>> {
+        self.project().value.poll_next(cx)
+    }
+}
+
+impl<T: PartialEq> PartialEq for Guarded<T> {
+    fn eq(&self, other: &Self) -> bool { self.value == other.value }
+}
+
+impl<T: AsRef<[u8]>> AsRef<[u8]> for Guarded<T> {
+    fn as_ref(&self) -> &[u8] { self.value.as_ref() }
+}
 
 /// A preadmitted boxed native future.
 #[cfg(not(target_arch = "wasm32"))]
-pub type ObjectsNativeFuture<'a, T> = GuardedFuture<
+pub type ObjectsNativeFuture<'a, T> = Guarded<
     std::pin::Pin<Box<dyn Future<Output = Result<T, NativeObjectsError>> + Send + 'a>>,
 >;
 
@@ -482,7 +488,7 @@ pub fn native_future<'a, T: 'a, F>(
 where F: Future<Output = Result<T, NativeObjectsError>> + Send + 'a {
     meter.check()?;
     let allocation = acyclic_native_runtime::ReadAllocation::new(&meter, std::mem::size_of::<F>())?;
-    Ok(GuardedFuture { future: Box::pin(future), _allocation: Some(allocation) })
+    Ok(Guarded { value: Box::pin(future), _allocation: Some(allocation) })
 }
 
 /// Checks only existing input custody identity, never namespace authority.
@@ -491,7 +497,8 @@ pub(crate) fn native_input_meter<T>(
     meter: &std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     input: &ObjectsNativeRequest<T>,
 ) -> Result<(), NativeObjectsError> {
-    if !input.matches_meter(meter) {
+    let owner = meter.allocation_owner().unwrap_or_else(|| std::sync::Arc::clone(meter));
+    if !std::sync::Arc::ptr_eq(input.allocation.meter(), &owner) {
         return Err(NativeObjectsError::from(NativeObjectsCause::Admission(std::io::ErrorKind::InvalidInput.into())));
     }
     meter.check()?;
@@ -502,7 +509,7 @@ pub(crate) fn native_input_meter<T>(
 #[cfg(not(target_arch = "wasm32"))]
 pub struct ObjectsNativeRequest<T> {
     pub(crate) data: T,
-    guard: Box<dyn std::any::Any + Send + Sync>,
+    guard: Box<dyn Send + Sync>,
     allocation: acyclic_native_runtime::ReadAllocation,
 }
 
@@ -513,7 +520,7 @@ impl<T> ObjectsNativeRequest<T> {
         data: T, guard: G,
         meter: &std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<Self, NativeObjectsError>
-    where G: std::any::Any + Send + Sync {
+    where G: Send + Sync + 'static {
         let request = (data, guard);
         meter.check()?;
         let allocation = acyclic_native_runtime::ReadAllocation::new(meter, std::mem::size_of::<G>())?;
@@ -523,14 +530,6 @@ impl<T> ObjectsNativeRequest<T> {
 
     /// Borrows request data without detaching its original ownership.
     pub const fn data(&self) -> &T { &self.data }
-
-
-    pub(crate) fn matches_meter(
-        &self, meter: &std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> bool {
-        let owner = meter.allocation_owner().unwrap_or_else(|| std::sync::Arc::clone(meter));
-        std::sync::Arc::ptr_eq(self.allocation.meter(), &owner)
-    }
 
     pub(crate) fn map<U>(self, map: impl FnOnce(T) -> U) -> ObjectsNativeRequest<U> {
         let Self { data, guard, allocation } = self;
@@ -548,24 +547,10 @@ pub struct Download {
 pub use crate::obs::BodyStream;
 use acyclic_stream::OwnedBytes;
 /// Caller-owned upload chunks retaining the same funded stream box through destruction.
-pub struct UploadBody {
-    stream: futures::stream::BoxStream<'static, Result<OwnedBytes, Error>>,
-    #[cfg(not(target_arch = "wasm32"))]
-    _allocation: Option<acyclic_native_runtime::ReadAllocation>,
-}
+pub type UploadBody = Guarded<futures::stream::BoxStream<'static, Result<OwnedBytes, Error>>>;
 impl From<futures::stream::BoxStream<'static, Result<OwnedBytes, Error>>> for UploadBody {
-    fn from(stream: futures::stream::BoxStream<'static, Result<OwnedBytes, Error>>) -> Self {
-        Self { stream, #[cfg(not(target_arch = "wasm32"))] _allocation: None }
-    }
-}
-
-impl futures::Stream for UploadBody {
-    type Item = Result<OwnedBytes, Error>;
-    fn poll_next(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
-        self.get_mut().stream.as_mut().poll_next(cx)
+    fn from(value: futures::stream::BoxStream<'static, Result<OwnedBytes, Error>>) -> Self {
+        Self { value, _allocation: Default::default() }
     }
 }
 
