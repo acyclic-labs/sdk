@@ -259,21 +259,11 @@ export type SelectedAgentInput =
   /** Exact selection already committed by the owning conversation provider. */
   | { readonly selectedContext: SelectedModelContext; readonly prompt?: never; readonly content?: never };
 
-function validateSelectedContext(selected: SelectedModelContext, limits: Limits): void {
-  validateSelectedModelContextWasm(selected, limits);
-}
-
-function directUserContent(input: AgentInput): ModelContent {
-  if (input.content === undefined || input.content.length === 0) return input.prompt;
-  return input.prompt
-    ? [{ kind: "text", text: input.prompt }, ...input.content]
-    : input.content;
-}
-
-/** Detach direct input before admission so validation and dispatch share one snapshot. */
+/** Detach direct input so validation and dispatch share one snapshot. */
 function snapshotDirectUserContent(input: AgentInput): ModelContent {
-  const content = directUserContent(input);
-  return typeof content === "string" ? content : structuredClone(content);
+  if (input.content === undefined || input.content.length === 0) return input.prompt;
+  const content = input.prompt ? [{ kind: "text" as const, text: input.prompt }, ...input.content] : input.content;
+  return structuredClone(content);
 }
 
 /** Exact ref-valued Rust effect status; recovered values never acquire a caller-chosen type. */
@@ -1491,33 +1481,30 @@ export class HarnessBuilder {
   readonly #tasks = new Map<string, TaskDefinition<never, unknown>>(); readonly #tools = new Map<string, RegisteredTool<never, unknown>>();
   readonly #toolSources = new Map<string, ToolDefinition<never, unknown>>();
   readonly #selectedTools = new Map<string, string>();
-  #inheritedModelPrefix?: InheritedModelPrefix;
-  #model?: BoundModel; #context?: ContextBuilder; #interactions?: InteractionHandler; #interactionResolver?: InteractionResolver; #policy?: Policy; #state?: HarnessRuntimeState; #spawner?: HarnessRuntimeSpawner; #execution?: HarnessExecutionProvider; #content?: ContentBindings; #artifacts?: ContentBindings; #parentSnapshot?: ForkParentSnapshot; #forkPublisher?: ForkPublisher; #workspaces?: ProjectWorkspaceProvider;
+  readonly #components: AgentHarnessComponents & { limits: Limits } = { limits: DEFAULT_LIMITS };
   readonly #grants: string[] = [];
-  #limits: Limits = DEFAULT_LIMITS;
-  #modelOutputTokens: number | undefined;
-  model(identity: Model, provider: ModelProvider): this { this.contracts.encodeCanonicalJson(identity.options); this.#model = bindModel(identity, provider); return this; }
+  model(identity: Model, provider: ModelProvider): this { this.contracts.encodeCanonicalJson(identity.options); this.#components.model = bindModel(identity, provider); return this; }
   /** Set the caller's output token budget for stock model requests. */
   modelOutputTokens(maximum: number): this {
     if (!Number.isInteger(maximum) || maximum <= 0 || maximum > 0xffff_ffff) {
       throw new TypeError("model output token budget must be a positive u32");
     }
-    this.#modelOutputTokens = maximum;
+    this.#components.modelOutputTokens = maximum;
     return this;
   }
   inheritedModelPrefix(value: InheritedModelPrefix): this {
     const scope = structuredClone(value.scope);
     const head = this.contracts.validate("file_ref", structuredClone(value.head));
     value.core.verifyContentRead(scope, head);
-    this.#inheritedModelPrefix = Object.freeze({ core: value.core, scope, head,
+    this.#components.inheritedModelPrefix = Object.freeze({ core: value.core, scope, head,
       files: new Map([...value.files].map(([key, bytes]) => [key, bytes.slice()])) });
     return this;
   }
-  context(value: ContextBuilder): this { this.#context = value; return this; }
+  context(value: ContextBuilder): this { this.#components.context = value; return this; }
   /** Bind a validated immutable snapshot through the ordinary context builder. No reads occur. */
   declaredContext(snapshot: DiscoveredContext): this {
     const projected = this.contracts.projectDiscoveredContext(snapshot,
-      { messages: [], metadata: {} }, "prepend", this.#limits);
+      { messages: [], metadata: {} }, "prepend", this.#components.limits);
     const sources: readonly ModelMessage[] = Object.freeze(projected.messages.map(message => {
       const content = message.content;
       if (typeof content === "string") return Object.freeze({ role: message.role, content });
@@ -1527,33 +1514,33 @@ export class HarnessBuilder {
       }
       throw new TypeError("unsupported declared context message");
     }));
-    const previous = this.#context;
-    this.#context = { build: async (input, messages) => [
+    const previous = this.#components.context;
+    this.#components.context = { build: async (input, messages) => [
       ...sources, ...(previous ? await previous.build(input, messages) : messages),
     ] };
     return this;
   }
-  interactions(value: InteractionHandler): this { this.#interactions = value; return this; }
-  interactionResolver(value: InteractionResolver): this { this.#interactionResolver = value; return this; }
-  policy(value: Policy): this { this.#policy = value; return this; }
-  state(value: HarnessRuntimeState): this { this.#state = value; return this; }
-  spawner(value: HarnessRuntimeSpawner): this { this.#spawner = value; return this; }
-  execution(value: HarnessExecutionProvider): this { this.#execution = value; return this; }
-  content(value: ContentBindings): this { this.#content = pinContentBindings(this.contracts, value); return this; }
-  artifacts(value: ContentBindings): this { this.#artifacts = pinContentBindings(this.contracts, value); return this; }
-  parentSnapshot(value: ForkParentSnapshot): this { this.#parentSnapshot = pinForkParentSnapshot(value); return this; }
-  forkPublisher(value: ForkPublisher): this { this.#forkPublisher = pinForkPublisher(this.contracts, value); return this; }
+  interactions(value: InteractionHandler): this { this.#components.interactions = value; return this; }
+  interactionResolver(value: InteractionResolver): this { this.#components.interactionResolver = value; return this; }
+  policy(value: Policy): this { this.#components.policy = value; return this; }
+  state(value: HarnessRuntimeState): this { this.#components.state = value; return this; }
+  spawner(value: HarnessRuntimeSpawner): this { this.#components.spawner = value; return this; }
+  execution(value: HarnessExecutionProvider): this { this.#components.execution = value; return this; }
+  content(value: ContentBindings): this { this.#components.content = pinContentBindings(this.contracts, value); return this; }
+  artifacts(value: ContentBindings): this { this.#components.artifacts = pinContentBindings(this.contracts, value); return this; }
+  parentSnapshot(value: ForkParentSnapshot): this { this.#components.parentSnapshot = pinForkParentSnapshot(value); return this; }
+  forkPublisher(value: ForkPublisher): this { this.#components.forkPublisher = pinForkPublisher(this.contracts, value); return this; }
   workspaces(value: ProjectWorkspaceProvider): this {
     const project = this.contracts.validate("volume_ref", value.project);
     const provider = this.contracts.validate("provider_ref", value.provider);
     if (project.class !== "project" || !this.contracts.canonicalEqual(project.provider, provider)) {
       throw new TypeError("workspace binding is not a project");
     }
-    this.#workspaces = value;
+    this.#components.workspaces = value;
     return this;
   }
   grant(...values: readonly string[]): this { if (values.some(value => !value.trim())) throw new TypeError("capability grant is empty"); this.#grants.push(...values); return this; }
-  limits(value: Partial<Limits>): this { this.#limits = this.contracts.validate("limits", { ...DEFAULT_LIMITS, ...value }); return this; }
+  limits(value: Partial<Limits>): this { this.#components.limits = this.contracts.validate("limits", { ...DEFAULT_LIMITS, ...value }); return this; }
   task<Input, Output>(value: TaskDefinition<Input, Output>): this {
     const key = componentKey(value.name, value.revision);
     if (this.#tasks.has(key)) throw new Error(`conflicting registration for ${key}`);
@@ -1608,21 +1595,31 @@ export class HarnessBuilder {
     this.#selectedTools.set(name, revision);
     return this;
   }
-  async build(): Promise<AgentHarness> { const components: AgentHarnessComponents = { limits: this.#limits }; if (this.#modelOutputTokens !== undefined) components.modelOutputTokens = this.#modelOutputTokens; if (this.#inheritedModelPrefix) components.inheritedModelPrefix = this.#inheritedModelPrefix; if (this.#model) components.model = this.#model; if (this.#context) components.context = this.#context; if (this.#interactions) components.interactions = this.#interactions; if (this.#interactionResolver) components.interactionResolver = this.#interactionResolver; if (this.#policy) components.policy = this.#policy; if (this.#execution) { components.execution = this.#execution; components.state = this.#execution.state(); components.spawner = this.#execution.spawner(); } if (this.#state) components.state = this.#state; if (this.#spawner) components.spawner = this.#spawner; if (this.#content) components.content = this.#content; if (this.#artifacts) components.artifacts = this.#artifacts; if (this.#workspaces) {
-    if (!this.#grants.includes("fork:publish") && !this.#grants.includes("project:merge")) throw new TypeError("project workspaces require fork:publish or project:merge");
-    components.workspaces = this.#workspaces;
-  } if (this.#parentSnapshot) {
-    if (!this.#grants.includes("fork:publish")) throw new TypeError("fork preparer requires fork:publish in the root scope");
-    components.parentSnapshot = this.#parentSnapshot;
-  } if (this.#forkPublisher) {
-    if (!this.#grants.includes("fork:publish") || !this.#parentSnapshot) throw new TypeError("fork publisher requires parent preparation authority");
-    if (!this.contracts.canonicalEqual(this.#forkPublisher.parent(), this.#parentSnapshot.parent)) {
-      throw new TypeError("fork publisher belongs to another parent");
+  async build(): Promise<AgentHarness> {
+    const components: AgentHarnessComponents = { ...this.#components };
+    if (components.execution) {
+      const state = components.execution.state();
+      const spawner = components.execution.spawner();
+      components.state = this.#components.state ?? state;
+      components.spawner = this.#components.spawner ?? spawner;
     }
-    components.forkPublisher = this.#forkPublisher;
-  } if ([...this.#tools.values()].some(tool => tool.machine) && !components.state?.executeTool) {
-    throw new TypeError("resumable tools require owner-host durable tool execution");
-  }
+    if (components.workspaces && !this.#grants.includes("fork:publish") && !this.#grants.includes("project:merge")) {
+      throw new TypeError("project workspaces require fork:publish or project:merge");
+    }
+    if (components.parentSnapshot && !this.#grants.includes("fork:publish")) {
+      throw new TypeError("fork preparer requires fork:publish in the root scope");
+    }
+    if (components.forkPublisher) {
+      if (!this.#grants.includes("fork:publish") || !components.parentSnapshot) {
+        throw new TypeError("fork publisher requires parent preparation authority");
+      }
+      if (!this.contracts.canonicalEqual(components.forkPublisher.parent(), components.parentSnapshot.parent)) {
+        throw new TypeError("fork publisher belongs to another parent");
+      }
+    }
+    if ([...this.#tools.values()].some(tool => tool.machine) && !components.state?.executeTool) {
+      throw new TypeError("resumable tools require owner-host durable tool execution");
+    }
     // Snapshot provider identities before asynchronous validation.
     const policyInput = structuredClone((components.policy)?.identity() ?? null);
     const statePolicyInput = structuredClone(components.state?.policyIdentity() ?? null);
@@ -2135,7 +2132,7 @@ export class AgentHarness {
   async runSelectedContext(selectedContext: SelectedModelContext, operationId?: OperationId): Promise<RunOutput> {
     if (this.state?.executeSelectedTurn !== undefined) {
       if (operationId === undefined) throw new TypeError("durable selected turns require a stable operation ID");
-      validateSelectedContext(selectedContext, this.limits);
+      validateSelectedModelContextWasm(selectedContext, this.limits);
       await this.#assertPolicyIdentity();
       const outcome = await this.state.executeSelectedTurn(operationId, selectedContext, this);
       await this.#assertPolicyIdentity();
@@ -2167,7 +2164,7 @@ export class AgentHarness {
       : value.selectedContext === undefined ? value as AgentInput
       : { prompt: "", selectedContext: value.selectedContext };
     let admittedDirectContent: ModelContent | undefined;
-    if (input.selectedContext !== undefined) validateSelectedContext(input.selectedContext, this.limits);
+    if (input.selectedContext !== undefined) validateSelectedModelContextWasm(input.selectedContext, this.limits);
     else {
       const prompt = input.prompt;
       const content = input.content;

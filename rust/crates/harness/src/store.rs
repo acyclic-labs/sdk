@@ -897,7 +897,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             drop(event);
             let record_bytes = operations::sdk_record_retained_bytes(&record, work);
             drop(record);
-            if let Some(work) = work.as_deref_mut() { work.release_record(record_bytes)?; }
+            if let Some(work) = work.as_deref_mut() { work.release_owned(record_bytes)?; }
         }
         if let Some(work) = work.as_deref_mut() {
             work.release_owned(events_retained_bytes)?;
@@ -1334,7 +1334,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             self.validate_causal_reference(event.causal_parent.as_ref(), &mut None)
                 .await?;
             let publication = checkpoints::publication_with_work(&self.client, &self.reducer, &event, &mut None).await?;
-            let request = publication.request(&self.client, idempotency_key).await?;
+            let request = publication.request(&self.client, idempotency_key, &mut None).await?.0;
             let fork_guard = if let crate::core::Action::PublishFork { seed } = &command.action {
                 let verifier = self
                     .fork_verifier
@@ -1384,7 +1384,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             };
             let result = match outcome {
                 CommitOutcome::Committed(envelope) => {
-                    if publication.verify(&envelope).is_err() {
+                    if publication.verify(&envelope, &mut None).is_err() {
                         return Err(Error::Indeterminate(publication.operation_id));
                     }
                     match self.reducer.apply_committed(event.clone(), &mut None).and_then(|result|
@@ -1506,7 +1506,11 @@ impl<P: StreamProvider> StreamAggregate<P> {
             let (bytes, claim) = Self::read_admission_content_with_work(
                 verifier.as_ref(), reference, scratch.work()).await?;
             scratch.adopt(claim)?;
-            let validated = ticket.validate_request_bytes_with_work(&bytes, scratch.work());
+            let validated = ticket.validate_request_bytes(&bytes, scratch.work()).and_then(|request| {
+                let measured = request.1;
+                drop(request);
+                scratch.work().as_deref_mut().map_or(Ok(()), |io| io.release_owned(measured))
+            });
             drop(bytes);
             let released = scratch.relinquish(claim);
             return match validated {
@@ -1541,16 +1545,16 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let (request_bytes, request_claim) = Self::read_admission_content_with_work(
             verifier.as_ref(), &ticket.request, scratch.work()).await?;
         scratch.adopt(request_claim)?;
-        let request = ticket.validate_request_bytes_owned_with_work(&request_bytes, scratch.work())?;
-        scratch.adopt(request.measured_owned_bytes())?;
+        let request = ticket.validate_request_bytes(&request_bytes, scratch.work())?;
+        scratch.adopt(request.1)?;
         let (bytes, claim) = Self::read_admission_content_with_work(
             verifier.as_ref(), reference, scratch.work()).await?;
         scratch.adopt(claim)?;
         match detail_outcome {
             Some(outcome) => ticket.validate_decision_bytes(
-                request.request(), outcome, reference, &bytes, scratch.work()),
+                &request.0, outcome, reference, &bytes, scratch.work()),
             None => ticket.validate_answer_bytes(
-                request.request(), reference, &bytes, scratch.work()),
+                &request.0, reference, &bytes, scratch.work()),
         }
     }
 
@@ -1580,7 +1584,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 Error::Unsupported("interaction content verifier is not bound".into())
             })?;
             let bytes = verifier.read(&ticket.request, ticket.request.descriptor().byte_length(), None)?.await?;
-            ticket.validate_request_bytes(&bytes)?;
+            ticket.validate_request_bytes(&bytes, &mut None)?;
         }
         if let crate::core::Action::ResolveInteraction { resolution } = action
             && let InteractionOutcome::Answered { answer } = &resolution.outcome
@@ -1593,7 +1597,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 .interaction(&resolution.id)
                 .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
             let request_bytes = verifier.read(&ticket.request, ticket.request.descriptor().byte_length(), None)?.await?;
-            let request = ticket.validate_request_bytes(&request_bytes)?;
+            let request = ticket.validate_request_bytes(&request_bytes, &mut None)?.0;
             let answer_bytes = verifier.read(answer, answer.descriptor().byte_length(), None)?.await?;
             ticket.validate_answer_bytes(&request, answer, &answer_bytes, &mut None)?;
         }
@@ -1608,7 +1612,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 .interaction(&resolution.id)
                 .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
             let request_bytes = verifier.read(&ticket.request, ticket.request.descriptor().byte_length(), None)?.await?;
-            let request = ticket.validate_request_bytes(&request_bytes)?;
+            let request = ticket.validate_request_bytes(&request_bytes, &mut None)?.0;
             let detail_bytes = verifier.read(detail, detail.descriptor().byte_length(), None)?.await?;
             ticket.validate_decision_bytes(&request, &resolution.outcome, detail, &detail_bytes, &mut None)?;
         }
@@ -1823,7 +1827,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let path = reference.authority.stream_path(work)?;
         let path_bytes = if work.is_some() { path.capacity() as u64 } else { 0 };
         let read = match operations::stream(&self.client, &path, work) {
-            Ok(stream) => operations::one_record(&self.client, stream.stream.path(),
+            Ok(stream) => operations::one_record(&self.client, stream.0.path(),
                 reference.revision.saturating_sub(1), work).await,
             Err(error) => Err(error),
         };
@@ -1839,7 +1843,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let decoded = crate::wire_codec::decode_event(&record.value, work);
         drop(record);
         let released_record = match work.as_deref_mut() {
-            Some(observer) => observer.release_record(raw), None => Ok(()),
+            Some(observer) => observer.release_owned(raw), None => Ok(()),
         };
         let ((authority, event), event_retained) = match decoded {
             Ok(decoded) => { released_record?; decoded },
@@ -3651,7 +3655,7 @@ mod tests {
             host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?;
         let reader = Arc::new(FilesystemContentVerifier::new(
             host, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 65_536, None)?);
-        let request = Interaction::question("original published prompt", json!({"type": "string"}))?;
+        let request = Interaction::question("original published prompt".into(), json!({"type": "string"}))?;
         let published = crate::contract::canonical_json_bytes(&request)?;
         let reference = publisher.stage_once(OperationId::from_bytes([95; 16]),
             "interactions/request.json", &published, "application/json", "request.json").await?;
@@ -3678,7 +3682,7 @@ mod tests {
         assert_eq!(claim, 0, "native carrier owns its claim, not the observer");
         let alias = bytes.clone();
         let empty_alias = alias.slice(0..0);
-        ticket.validate_request_bytes_with_work(&alias, &mut Some(&mut io))?;
+        ticket.validate_request_bytes(&alias, &mut Some(&mut io))?;
         drop(bytes);
         drop(alias);
         assert!(empty_alias.is_empty());
@@ -3724,7 +3728,7 @@ mod tests {
     -> Result<()> {
         let client = Arc::new(MemoryStream::default());
         let request =
-            Interaction::question("secret prompt", json!({"type": "string", "minLength": 2}))?;
+            Interaction::question("secret prompt".into(), json!({"type": "string", "minLength": 2}))?;
         let request_bytes =
             serde_json::to_vec(&request).map_err(|error| Error::Invalid(error.to_string()))?;
         let answer_bytes = br#"{"type":"question","value":"yes"}"#;

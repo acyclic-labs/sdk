@@ -186,7 +186,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         let mut work: Observer<'_> = None;
         let mut text = [0; 80];
         let mailbox = operations::stream(&self.stream, recipient_path(task, &mut text), &mut work)?;
-        let bounds = match operations::bounds_with_work(&self.stream, mailbox.stream.path(), &mut work).await? {
+        let bounds = match operations::bounds_with_work(&self.stream, mailbox.0.path(), &mut work).await? {
             Ok(bounds) => bounds,
             Err(error) if *sdk_source(&error) == StreamError::NotFound => return Ok(Vec::new()),
             Err(error) => return Err(sdk_error(error, &work)),
@@ -194,7 +194,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         if after > bounds.tail { return Err(boundary(io, crate::wire::ErrorCode::Invalid, "inbox cursor is beyond the tail")); }
         let maximum = u32::try_from(limit.min(acyclic_stream::MAX_ITEMS))
             .map_err(|_| boundary(io, crate::wire::ErrorCode::Invalid, "inbox page bound is invalid"))?;
-        let mut records = match operations::read_records_with_work(&self.stream, &mailbox.stream,
+        let mut records = match operations::read_records_with_work(&self.stream, &mailbox.0,
             after, maximum, &mut work).await? {
             Ok(records) => records,
             Err(error) if *sdk_source(&error) == StreamError::NotFound => return Ok(Vec::new()),
@@ -365,9 +365,9 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                 drop(source);
                 source_verified = true;
             }
-            let (tail, target) = match operations::bounds_with_work(&self.stream, mailbox.stream.path(), &mut work).await? {
-                Ok(bounds) => (bounds.tail, CommitCondition::Tail { path: mailbox.stream.path().clone(), expected: bounds.tail }),
-                Err(error) if *sdk_source(&error) == StreamError::NotFound => (0, CommitCondition::Absent { path: mailbox.stream.path().clone() }),
+            let (tail, target) = match operations::bounds_with_work(&self.stream, mailbox.0.path(), &mut work).await? {
+                Ok(bounds) => (bounds.tail, CommitCondition::Tail { path: mailbox.0.path().clone(), expected: bounds.tail }),
+                Err(error) if *sdk_source(&error) == StreamError::NotFound => (0, CommitCondition::Absent { path: mailbox.0.path().clone() }),
                 Err(error) => return Err(sdk_error(error, &work)),
             };
             if let Some(observer) = work.as_deref_mut() { observer.hashed_bytes(bytes.len() as u64)?; }
@@ -375,7 +375,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                 schema_revision: MAIL_SCHEMA_REVISION, route_revision: MAIL_ROUTE_REVISION,
                 sequence: tail, value_digest: *blake3::hash(&bytes).as_bytes() };
             let location_bytes = encode(&location, MAX_MAIL_LOCATION_BYTES as u64, io)?;
-            let absent = CommitCondition::Absent { path: intent.stream.path().clone() };
+            let absent = CommitCondition::Absent { path: intent.0.path().clone() };
             #[cfg(feature = "filesystem")]
             let owner_condition = match (owner, fence) {
                 (Some(owner), _) => Some(owner.condition(crate::distributed::JournalWrite::Fresh, &mut work).await?),
@@ -411,8 +411,8 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             crate::distributed::add_condition(&mut request, target)?;
             crate::distributed::add_condition(&mut request, absent)?;
             if let Some(condition) = owner_condition { crate::distributed::add_condition(&mut request, condition)?; }
-            crate::distributed::add_record(&mut request, mailbox.stream.path().clone(), bytes.clone())?;
-            crate::distributed::add_record(&mut request, intent.stream.path().clone(), location_bytes)?;
+            crate::distributed::add_record(&mut request, mailbox.0.path().clone(), bytes.clone())?;
+            crate::distributed::add_record(&mut request, intent.0.path().clone(), location_bytes)?;
             let (outcome, retained) = crate::distributed::commit(request, &self.stream, Some(message), None, None, None).await?;
             let committed = matches!(&outcome, CommitOutcome::Committed(_));
             drop(outcome);
@@ -456,7 +456,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         let mut work: Observer<'_> = None;
         let mut text = [0; 112];
         let location = operations::stream(&self.stream, intent_path(sender, message, &mut text), &mut work)?;
-        let mut records = match operations::read_records_with_work(&self.stream, &location.stream, 0, 2, &mut work).await? {
+        let mut records = match operations::read_records_with_work(&self.stream, &location.0, 0, 2, &mut work).await? {
             Ok(records) => records,
             Err(error) if *sdk_source(&error) == StreamError::NotFound => return Ok(false),
             Err(error) => return Err(sdk_error(error, &work)),
@@ -478,7 +478,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         }
         let mut text = [0; 80];
         let mailbox = operations::stream(&self.stream, recipient_path(retained.recipient, &mut text), &mut work)?;
-        let mut originals = match operations::read_records_with_work(&self.stream, &mailbox.stream,
+        let mut originals = match operations::read_records_with_work(&self.stream, &mailbox.0,
             retained.sequence, 1, &mut work).await? {
             Ok(records) => records,
             Err(error) => return Err(sdk_error(error, &work)),

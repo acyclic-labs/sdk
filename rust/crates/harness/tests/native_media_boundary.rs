@@ -1052,7 +1052,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
                 let changed_revision = context.scoped_model(
                     context.scope().grants().clone(),
                     context.scope().limits(),
-                    Model::new("fixture-native", "all", "mock-native-2", Value::Null)?,
+                    Model::new("fixture-native".into(), "all".into(), "mock-native-2".into(), Value::Null)?,
                     adapter.clone(),
                 )?;
                 let counts = adapter.counts.load(Ordering::SeqCst);
@@ -1116,7 +1116,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
     let bundle = HarnessBuilder::new()
         .journal(journal.clone())
         .model(
-            Model::new("fixture-native", "all", "mock-native-1", Value::Null)?,
+            Model::new("fixture-native".into(), "all".into(), "mock-native-1".into(), Value::Null)?,
             adapter.clone(),
         )
         .content(ContentBindings {
@@ -1241,7 +1241,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
     let current_bundle = HarnessBuilder::new()
         .journal(journal)
         .model(
-            Model::new("fixture-native", "all", "mock-native-1", Value::Null)?,
+            Model::new("fixture-native".into(), "all".into(), "mock-native-1".into(), Value::Null)?,
             adapter.clone(),
         )
         .content(ContentBindings {
@@ -1566,7 +1566,7 @@ where
                     .clone()
                     .ok_or_else(|| Error::NotFound("original lease".into()))?,
                 turn,
-                Model::new("fixture-native", "all", "mock-native-1", Value::Null)?,
+                Model::new("fixture-native".into(), "all".into(), "mock-native-1".into(), Value::Null)?,
                 adapter.clone(),
                 ContextPipeline::default(), None,
             )
@@ -1733,9 +1733,9 @@ where
     .with_input_verifier(reader.clone());
     let adapter = Arc::new(MockAdapter::new(reader.clone()));
     let model = Model::new(
-        "fixture-native",
-        "all",
-        "mock-native-1",
+        "fixture-native".into(),
+        "all".into(),
+        "mock-native-1".into(),
         json!({"context_tokens":16_384}),
     )?;
     let exchange = vec![

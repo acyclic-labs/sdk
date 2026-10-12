@@ -382,16 +382,12 @@ fn original_decode_completion_survives_cancellation_after_the_copy()
     let mut observed = OriginalReadAccounting::new(&mut accounting)?;
     let mut bytes = Vec::<u8>::new();
     let result = (|| -> Result<(), FsError> {
-        reserve_decoded_items(&mut bytes, 4, &mut |step| observed.observe(step))
-            .map_err(ReadDecodeError::into_original_fs_error)?;
-        observed.observe(ReadAllocationStep::BeforeCopy(4))
-            .map_err(ReadDecodeError::into_original_fs_error)?;
+        reserve_decoded_items(&mut bytes, 4, &mut |step| observed.observe(step))?;
+        observed.observe(ReadAllocationStep::BeforeCopy(4))?;
         bytes.extend_from_slice(b"data");
         cancellation.cancel();
-        observed.observe(ReadAllocationStep::Copied(4))
-            .map_err(ReadDecodeError::into_original_fs_error)?;
+        observed.observe(ReadAllocationStep::Copied(4))?;
         observed.observe(ReadAllocationStep::BeforeItem)
-            .map_err(ReadDecodeError::into_original_fs_error)
     })();
     drop(bytes);
     observed.release_failed()?;

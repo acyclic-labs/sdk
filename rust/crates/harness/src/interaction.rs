@@ -59,23 +59,6 @@ pub struct InteractionTicket {
     pub approval: Option<ApprovalBinding>,
 }
 
-/// Private lifetime carrier for a request used across the original response IO.
-pub(crate) struct ValidatedInteractionRequest {
-    request: Interaction,
-    // Only the existing legacy observer retains this actual DTO byte delta.
-    measured_owned_bytes: u64,
-    // LAST: the real request fields physically drop before original custody.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    _custody: Option<acyclic_fs::NativeAllocation>,
-}
-
-impl ValidatedInteractionRequest {
-    pub(crate) fn request(&self) -> &Interaction { &self.request }
-
-    /// For legacy Some only: the caller drops this DTO, then releases this original observer-owned delta on every exit.
-    pub(crate) fn measured_owned_bytes(&self) -> u64 { self.measured_owned_bytes }
-}
-
 impl InteractionTicket {
     /// A scoped observer may see the ticket and outcome refs without being authorized to answer it or read the referenced private bytes.
     #[must_use]
@@ -106,45 +89,20 @@ impl InteractionTicket {
         self.request.validate(work)
     }
 
-    /// Provider admission validates the staged bytes before publishing their ref.
-    pub fn validate_request_bytes(&self, bytes: &[u8]) -> Result<Interaction> {
-        self.validate(&mut None)?;
-        self.request.descriptor().verify(bytes, &mut None)?;
-        let request: Interaction = crate::contract::json_from_slice(bytes).map_err(|error| {
-            Error::Invalid(format!("invalid interaction request JSON: {error}"))
-        })?;
-        self.validate_decoded_request_with_work(&request, &mut None)?;
-        Ok(request)
-    }
-
-    /// Validates the original typed request without letting its payload escape.
-    pub(crate) fn validate_request_bytes_with_work(
+    /// Returns the validated request, retained byte count, and native custody.
+    pub fn validate_request_bytes(
         &self,
         bytes: &[u8],
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<(Interaction, u64, crate::NativeCustody)> {
         if work.is_none() {
-            return self.validate_request_bytes(bytes).map(drop);
-        }
-        let request = self.validate_request_bytes_owned_with_work(bytes, work)?;
-        let measured = request.measured_owned_bytes();
-        drop(request);
-        work.as_deref_mut().expect("observed interaction").release_owned(measured)
-    }
-
-    /// Decodes and validates before response IO, retaining actual request fields across that await without borrowing the original observer mutably.
-    pub(crate) fn validate_request_bytes_owned_with_work(
-        &self,
-        bytes: &[u8],
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<ValidatedInteractionRequest> {
-        if work.is_none() {
-            return Ok(ValidatedInteractionRequest {
-                request: self.validate_request_bytes(bytes)?,
-                measured_owned_bytes: 0,
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                _custody: None,
-            });
+            self.validate(work)?;
+            self.request.descriptor().verify(bytes, work)?;
+            let request: Interaction = crate::contract::json_from_slice(bytes).map_err(|error| {
+                Error::Invalid(format!("invalid interaction request JSON: {error}"))
+            })?;
+            self.validate_decoded_request_with_work(&request, work)?;
+            return Ok((request, 0, None));
         }
         self.validate(work)?;
         self.request.descriptor().verify(bytes, work)?;
@@ -169,11 +127,10 @@ impl InteractionTicket {
         decoded.1.transfer();
         let (request, quota) = decoded;
         drop(quota);
-        Ok(ValidatedInteractionRequest {
-            request, measured_owned_bytes,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            _custody: custody,
-        })
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let custody = None;
+        // LAST: request fields drop before native custody.
+        Ok((request, measured_owned_bytes, custody))
     }
 
     /// Validates a funded typed request after its original bytes were verified against this ticket's descriptor.
@@ -605,9 +562,9 @@ impl Interaction {
     }
 
     /// Creates a validated free-form question.
-    pub fn question(prompt: impl Into<String>, response_schema: Value) -> Result<Self> {
+    pub fn question(prompt: String, response_schema: Value) -> Result<Self> {
         let value = Self::Question {
-            prompt: prompt.into(),
+            prompt,
             response_schema,
         };
         value.validate(&mut None)?;
@@ -615,9 +572,9 @@ impl Interaction {
     }
 
     /// Creates a validated single-choice interaction.
-    pub fn choice(prompt: impl Into<String>, options: Vec<ChoiceOption>) -> Result<Self> {
+    pub fn choice(prompt: String, options: Vec<ChoiceOption>) -> Result<Self> {
         let value = Self::Choice {
-            prompt: prompt.into(),
+            prompt,
             options,
             min_selections: 1,
             max_selections: 1,
@@ -627,9 +584,9 @@ impl Interaction {
     }
 
     /// Creates a validated structured form.
-    pub fn form(title: impl Into<String>, schema: Value) -> Result<Self> {
+    pub fn form(title: String, schema: Value) -> Result<Self> {
         let value = Self::Form {
-            title: title.into(),
+            title,
             schema,
         };
         value.validate(&mut None)?;
@@ -638,12 +595,12 @@ impl Interaction {
 
     /// Creates an approval bound to one exact action digest.
     pub fn approval(
-        prompt: impl Into<String>,
+        prompt: String,
         operation_id: OperationId,
         action_digest: [u8; 32],
     ) -> Result<Self> {
         let value = Self::Approval {
-            prompt: prompt.into(),
+            prompt,
             operation_id,
             action_digest,
         };
@@ -1070,7 +1027,7 @@ mod tests {
         let native = NativeMaterializationWork::new(native_budget(), &cancellation)
             .expect("original ledger");
         let mut io = crate::store::history::native_work_io(&native).expect("original observer");
-        let error = ticket.validate_request_bytes_with_work(bytes, &mut Some(&mut io))
+        let error = ticket.validate_request_bytes(bytes, &mut Some(&mut io))
             .expect_err("original typed digest rejects malformed length");
         let Error::NativeDecode { code, source, custody: Some(custody) } = error else {
             panic!("native request must preserve its original typed cause and guard");
@@ -1098,12 +1055,12 @@ mod tests {
             deadline_unix_ms: None,
             approval: None,
         };
-        ticket.validate_request_bytes_with_work(bytes, &mut None)?;
+        ticket.validate_request_bytes(bytes, &mut None)?;
         let cancellation = CancellationToken::new();
         let native = NativeMaterializationWork::new(native_budget(), &cancellation)
             .expect("original ledger");
         let mut io = crate::store::history::native_work_io(&native).expect("original observer");
-        ticket.validate_request_bytes_with_work(bytes, &mut Some(&mut io))?;
+        ticket.validate_request_bytes(bytes, &mut Some(&mut io))?;
         assert_eq!(io.into_custody().bytes(), 0);
         Ok(())
     }
@@ -1127,7 +1084,7 @@ mod tests {
             deadline_unix_ms: None,
             approval: None,
         };
-        let Interaction::Question { response_schema, .. } = ticket.validate_request_bytes(&bytes)? else {
+        let Interaction::Question { response_schema, .. } = ticket.validate_request_bytes(&bytes, &mut None)?.0 else {
             panic!("original question");
         };
         assert_eq!(response_schema, schema);
@@ -1135,7 +1092,7 @@ mod tests {
         let native = NativeMaterializationWork::new(native_budget(), &cancellation)
             .expect("original ledger");
         let mut io = crate::store::history::native_work_io(&native).expect("original observer");
-        ticket.validate_request_bytes_with_work(&bytes, &mut Some(&mut io))?;
+        ticket.validate_request_bytes(&bytes, &mut Some(&mut io))?;
         assert_eq!(io.into_custody().bytes(), 0);
         Ok(())
     }
@@ -1159,9 +1116,9 @@ mod tests {
         let native = NativeMaterializationWork::new(native_budget(), &cancellation)
             .expect("original ledger");
         let mut io = crate::store::history::native_work_io(&native).expect("original observer");
-        let request = ticket.validate_request_bytes_owned_with_work(request_bytes, &mut Some(&mut io))?;
+        let request = ticket.validate_request_bytes(request_bytes, &mut Some(&mut io))?;
         let error = ticket.validate_answer_bytes(
-            request.request(), &answer, bytes, &mut Some(&mut io),
+            &request.0, &answer, bytes, &mut Some(&mut io),
         ).expect_err("original typed response rejects integer ids");
         drop(request);
         let Error::NativeDecode { code, source, custody: Some(custody) } = error else {
@@ -1203,13 +1160,13 @@ mod tests {
         let native = NativeMaterializationWork::new(native_budget(), &cancellation)
             .expect("original ledger");
         let mut io = crate::store::history::native_work_io(&native).expect("original observer");
-        let request = ticket.validate_request_bytes_owned_with_work(&request_bytes, &mut Some(&mut io))?;
-        let guard = request._custody.as_ref().expect("original native DTO guard");
-        assert_eq!(request.measured_owned_bytes(), 0);
-        assert_eq!(guard.bytes(), interaction_request_owned_bytes(request.request(), &None)?);
+        let request = ticket.validate_request_bytes(&request_bytes, &mut Some(&mut io))?;
+        let guard = request.2.as_ref().expect("original native DTO guard");
+        assert_eq!(request.1, 0);
+        assert_eq!(guard.bytes(), interaction_request_owned_bytes(&request.0, &None)?);
         assert!(native.shares_ledger(guard.work()));
         let error = ticket.validate_answer_bytes(
-            request.request(), &answer, &bytes, &mut Some(&mut io),
+            &request.0, &answer, &bytes, &mut Some(&mut io),
         ).expect_err("original typed string id rejects the funded response object");
         assert!(matches!(error, Error::NativeDecode { code: crate::wire::ErrorCode::Invalid, .. }));
         assert_eq!(io.into_custody().bytes(), 0);
@@ -1223,7 +1180,7 @@ mod tests {
     fn native_decision_artifact_keeps_exact_original_outcome_binding() -> Result<()> {
         use acyclic_fs::{CancellationToken, NativeMaterializationWork};
         let operation_id = OperationId::from_bytes([4; 16]);
-        let request = Interaction::approval("Proceed?", operation_id, [5; 32])?;
+        let request = Interaction::approval("Proceed?".into(), operation_id, [5; 32])?;
         let request_bytes = serde_json::to_vec(&request)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         let ticket = InteractionTicket {
@@ -1239,14 +1196,14 @@ mod tests {
         let native = NativeMaterializationWork::new(native_budget(), &cancellation)
             .expect("original ledger");
         let mut io = crate::store::history::native_work_io(&native).expect("original observer");
-        let request = ticket.validate_request_bytes_owned_with_work(&request_bytes, &mut Some(&mut io))?;
+        let request = ticket.validate_request_bytes(&request_bytes, &mut Some(&mut io))?;
         ticket.validate_decision_bytes(
-            request.request(), &InteractionOutcome::Declined, &detail, bytes, &mut Some(&mut io),
+            &request.0, &InteractionOutcome::Declined, &detail, bytes, &mut Some(&mut io),
         )?;
         drop(request);
-        let request = ticket.validate_request_bytes_owned_with_work(&request_bytes, &mut Some(&mut io))?;
+        let request = ticket.validate_request_bytes(&request_bytes, &mut Some(&mut io))?;
         assert!(matches!(ticket.validate_decision_bytes(
-            request.request(), &InteractionOutcome::Approved, &detail, bytes, &mut Some(&mut io),
+            &request.0, &InteractionOutcome::Approved, &detail, bytes, &mut Some(&mut io),
         ), Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Conflict,
             reason: "approval artifact disagrees with outcome",
@@ -1259,7 +1216,7 @@ mod tests {
     #[test]
     fn staged_question_and_answer_are_schema_validated_before_ref_publication() -> Result<()> {
         let request = Interaction::question(
-            "Choose a positive number",
+            "Choose a positive number".into(),
             json!({"type": "integer", "minimum": 1}),
         )?;
         let request_bytes =
@@ -1271,7 +1228,7 @@ mod tests {
             deadline_unix_ms: None,
             approval: None,
         };
-        let admitted = ticket.validate_request_bytes(&request_bytes)?;
+        let admitted = ticket.validate_request_bytes(&request_bytes, &mut None)?.0;
         let response_bytes = br#"{"type":"question","value":2}"#;
         let answer = file("answer.json", response_bytes)?;
         ticket.validate_answer_bytes(&admitted, &answer, response_bytes, &mut None)?;
@@ -1311,7 +1268,7 @@ mod tests {
     #[test]
     fn approval_binding_cannot_change_with_display_json() -> Result<()> {
         let operation_id = OperationId::from_bytes([4; 16]);
-        let request = Interaction::approval("Proceed?", operation_id, [5; 32])?;
+        let request = Interaction::approval("Proceed?".into(), operation_id, [5; 32])?;
         let request_bytes =
             serde_json::to_vec(&request).map_err(|error| Error::Invalid(error.to_string()))?;
         let mut ticket = InteractionTicket {
@@ -1325,7 +1282,7 @@ mod tests {
             }),
         };
         assert!(matches!(
-            ticket.validate_request_bytes(&request_bytes),
+            ticket.validate_request_bytes(&request_bytes, &mut None),
             Err(Error::Conflict(_))
         ));
         ticket
@@ -1333,7 +1290,7 @@ mod tests {
             .as_mut()
             .ok_or_else(|| Error::Invalid("missing approval".into()))?
             .action_digest = [5; 32];
-        ticket.validate_request_bytes(&request_bytes)?;
+        ticket.validate_request_bytes(&request_bytes, &mut None)?;
         assert!(matches!(
             InteractionResolution {
                 id: ticket.id,

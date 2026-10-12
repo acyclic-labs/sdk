@@ -4943,7 +4943,7 @@ mod tests {
     fn interactions_are_ref_only_versioned_and_responder_bound() -> Result<()> {
         use crate::interaction::{Interaction, InteractionKind, InteractionOutcome};
         let mut reducer = reducer_fixture();
-        let request = Interaction::approval("approve exact effect", operation(12), [3; 32])?;
+        let request = Interaction::approval("approve exact effect".into(), operation(12), [3; 32])?;
         let request_bytes =
             serde_json::to_vec(&request).map_err(|error| Error::Invalid(error.to_string()))?;
         let ticket = InteractionTicket {
@@ -4956,7 +4956,7 @@ mod tests {
                 action_digest: [3; 32],
             }),
         };
-        ticket.validate_request_bytes(&request_bytes)?;
+        ticket.validate_request_bytes(&request_bytes, &mut None)?;
         reducer.apply(command(
             operation(19),
             0,

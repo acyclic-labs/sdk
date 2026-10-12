@@ -85,7 +85,7 @@ fn sampling(parent: OperationId) -> McpCallbackRequest {
     McpCallbackRequest { parent, policy: policy(), message: json!({"jsonrpc":"2.0","id":"sample","method":"sampling/createMessage","params":{"messages":[{"role":"user","content":{"type":"text","text":"callback"}}],"maxTokens":128}}) }
 }
 fn executor(model: Arc<ByteModel>, scope: RuntimeScope) -> Result<StockExecutor> {
-    StockExecutor::new(Model::new("byte-model", "deterministic", "1", json!({}))?, model, ContextPipeline::default(), ToolRegistry::default()).with_tool_authority(scope, None)
+    StockExecutor::new(Model::new("byte-model".into(), "deterministic".into(), "1".into(), json!({}))?, model, ContextPipeline::default(), ToolRegistry::default()).with_tool_authority(scope, None)
 }
 
 #[tokio::test]

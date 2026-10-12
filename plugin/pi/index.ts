@@ -265,32 +265,23 @@ export async function observePiOperation(
   return { ...last, wait: { bounded: true, observations } };
 }
 
-type PiWritebackRequest = {
-  source: string;
-  root?: string;
-  paths: readonly string[];
-  confirm: boolean;
-};
-
 const writebackPreparedMessageType = "acyclic.writeback.prepared";
-
-interface PiWritebackObservation {
-  prepared: (descriptor: Readonly<Record<string, unknown>>) => void;
-  observe: (fields: Readonly<Record<string, unknown>>, signal: AbortSignal) => Promise<Record<string, unknown>>;
-  decide?: (operation: string, digest: string, decision: "approve" | "decline") => Promise<void>;
-  bounds?: { maximumObservations: number; timeoutMs: number; intervalMs: number };
-}
 
 /** One prepare; host consent and publication are observed, never dispatched by polling. */
 export async function approvePiWriteback(
   operation: string,
-  fields: PiWritebackRequest,
+  fields: { source: string; root?: string; paths: readonly string[]; confirm: boolean },
   ctx: Pick<ExtensionContext, "hasUI" | "sessionManager"> & {
     ui: Pick<ExtensionContext["ui"], "confirm">; model?: ExtensionContext["model"];
   },
   control: (fields: Readonly<Record<string, unknown>>) => Promise<Record<string, unknown>>,
   signal: AbortSignal | undefined,
-  observation: PiWritebackObservation,
+  observation: {
+    prepared: (descriptor: Readonly<Record<string, unknown>>) => void;
+    observe: (fields: Readonly<Record<string, unknown>>, signal: AbortSignal) => Promise<Record<string, unknown>>;
+    decide?: (operation: string, digest: string, decision: "approve" | "decline") => Promise<void>;
+    bounds?: { maximumObservations: number; timeoutMs: number; intervalMs: number };
+  },
 ) {
   signal?.throwIfAborted();
   const session = ctx.sessionManager;

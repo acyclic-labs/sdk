@@ -1082,7 +1082,7 @@ impl DarwinMountContext {
         mutate(&mut metadata)?;
         // Metadata of any node kind: only a handle names a regular file.
         if handle == 0 {
-            self.mutate(|| self.source.set_attributes_with_meter(path, metadata, None, work.native), work)
+            self.mutate(|| self.source.set_attributes(path, metadata, None, work.native), work)
         } else {
             self.mutate_file(path, handle, |file| file.set_attributes_with_meter(metadata, None, work.native), work)
         }
@@ -3980,7 +3980,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_mkdir(
     ffi(address, &_span, true, |context, work| {
         let path = mount_path(path, work)?;
         context.mutate(|| {
-            context.source.create_directory_with_meter(&path, create_metadata(mode, IFDIR, uid, gid), work.native)
+            context.source.create_directory(&path, create_metadata(mode, IFDIR, uid, gid), work.native)
         }, work)?;
         context.namespace_changed();
         Ok(0)
@@ -4005,7 +4005,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_remove(
             });
         }
         context.unlink(&path, lookup, || {
-            context.source.remove_with_meter(&path, Some(lookup.node.file_id), work.native)
+            context.source.remove(&path, Some(lookup.node.file_id), work.native)
         }, work)?;
         context.namespace_changed();
         Ok(0)
@@ -4026,7 +4026,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_rename(
         }
         let (source, destination) = (mount_path(source, work)?, mount_path(destination, work)?);
         let replace = flags & RENAME_NOREPLACE == 0;
-        let rename = || context.source.rename_with_meter(&source, &destination, replace, work.native);
+        let rename = || context.source.rename(&source, &destination, replace, work.native);
         // Replacing the destination unlinks it.
         match replace.then(|| context.lookup(&destination, work)) {
             Some(Ok(replaced)) => context.unlink(&destination, replaced, rename, work)?,
@@ -4070,7 +4070,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_symlink(
         let target = work.copy_bytes(target)?;
         let destination = mount_path(destination, work)?;
         context.mutate(|| {
-            context.source.create_symbolic_link_with_meter(
+            context.source.create_symbolic_link(
                 &destination,
                 target,
                 create_metadata(0o777, IFLNK, uid, gid), work.native)
@@ -5301,7 +5301,7 @@ mod tests {
             "a content write keeps the listing"
         );
 
-        source.remove(&second, None)?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.remove(&second, None, work))?;
         assert!(
             label(&root)? > root_label,
             "a namespace change relabels its directory"
@@ -5594,7 +5594,7 @@ mod tests {
         assert!(bound(read)?, "the first read binds the source file");
 
         let stale = context.run_request(false, |work| context.open(&path, 0, work)).map_err(os)?;
-        source.remove(&path, Some(created.node.file_id))?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.remove(&path, Some(created.node.file_id), work))?;
         source.create_file(&path, FileMetadata::default())?;
         assert_eq!(context.run_request(false, |work| context.file_target(&path, stale, work).map(|target| target.0)).err(), Some(libc::ESTALE));
         Ok(())
@@ -6006,7 +6006,7 @@ mod tests {
     fn directory_continuation_requires_its_listing_and_binding_unchanged() -> TestResult {
         let (source, context) = checkout_context(MountPublication::Manual)?;
         let nested = MountPath::root().child(b"nested".to_vec());
-        source.create_directory(&nested, FileMetadata::default())?;
+        super::adapter::boundary(source.cancellation(), |work| source.create_directory(&nested, FileMetadata::default(), work))?;
         let epochs = context.run_request(false, |work| context.cache_epochs(work)).map_err(os)?.ok_or("checkout has no view stamp")?;
         let root = DirectoryHandle::new(DarwinOwned::empty(MountPath::root()), Some(epochs.binding), Some(epochs));
         let directory = DirectoryHandle::new(DarwinOwned::empty(nested.clone()), Some(epochs.binding), Some(epochs));

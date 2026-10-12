@@ -161,7 +161,7 @@ impl LiveHandles {
         if let Some(session) = self.project_startup_owner.as_mut() {
             let volume_work = self.project_work.as_ref().ok_or(Error::Indeterminate(command))?;
             let stopped = session.stop_with_meter(&volume_work)
-                .map_err(|cause| pi_native::native_view_error(
+                .map_err(|cause| Error::from(
                     acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?;
             if !stopped || !session.cleanup_state().cleanup_complete() {
                 return Err(Error::Indeterminate(command));
@@ -245,7 +245,7 @@ impl PiNativeCommandHost {
     }
 
     async fn register_binding(&self, prepared: PreparedPiFork, observed: bool) -> Result<()> {
-        let original_work = prepared.original_work().clone();
+        let original_work = prepared._metadata_custody.work().clone();
         prepared.report.validate_with_native_work(&original_work)?;
         let binding = &prepared.binding;
         binding.validate_with_native_work(None, binding.project_volumes.keys().map(String::as_str), false, &original_work)?;
@@ -878,11 +878,11 @@ impl PiNativeCommandHost {
         if let Some(project) = handles.project.as_ref() {
             creator.authorize_settlement_with_native_work(&owner, meter).await?;
             let volume_work = handles.project_work.as_ref().ok_or(Error::Indeterminate(command))?;
-            project.abandon_with_work(&volume_work).map_err(pi_native::native_view_error)?;
+            project.abandon_with_work(&volume_work).map_err(Error::from)?;
             handles.project = None;
         }
         if let Some(seed) = handles.root_seed.as_ref() {
-            let _cleanup_receipt = if let Some(allocation) = seed.preparation_root() {
+            let _cleanup_receipt = if let Some(allocation) = seed.allocation.as_ref() {
                 let recorded = NativeVolumeView::<LocalAuthorityBackend, LocalObjectBackend>
                     ::inspect_preparation(&owner, allocation, meter, false)?.await?;
                 if recorded.is_some() {
@@ -1540,7 +1540,7 @@ fn validate_child_binding(actual: &PiTaskBinding, admitted: &PiTaskBinding) -> R
 fn generation(file: &acyclic_harness::conversation::FileRef) -> Result<GenerationRef> {
     let mut digest = [0; 32];
     hex::decode_to_slice(file.version(), &mut digest).map_err(|_| Error::Invalid("Pi session lacks its exact immutable generation".into()))?;
-    GenerationRef::new(file.volume().provider().clone(), digest, None)
+    GenerationRef::new(file.volume().provider().clone(), digest.into(), None)
 }
 
 fn history_limits(context: &TaskContext) -> Result<HistoryReadLimits> {

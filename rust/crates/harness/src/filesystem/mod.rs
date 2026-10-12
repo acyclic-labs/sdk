@@ -144,48 +144,15 @@ pub use task_runtime::{
 };
 
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn native_volume_storage_name(
-    volume: &VolumeRef, work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(String, acyclic_fs::NativeAllocation)> {
-    let io = PreparationIo::from_native_work(work)?;
-    let name = fork_preparer_io::volume_storage_name(volume, Some(&io))?;
-    let retained = name.capacity() as u64;
-    Ok((name, io.into_native_custody(retained)?))
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[derive(Debug)]
-struct SourcePublicationCause {
-    source: Option<Error>,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl std::fmt::Display for SourcePublicationCause {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.source {
-            Some(source) => std::fmt::Display::fmt(source, formatter),
-            None => formatter.write_str("reserved source publication failure"),
-        }
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl std::error::Error for SourcePublicationCause {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.source.as_ref().map(|source| source as &dyn std::error::Error)
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 struct SourcePublicationFailureSlot {
-    source: Box<SourcePublicationCause>,
+    source: Box<Error>,
     custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl SourcePublicationFailureSlot {
     fn prepare(io: Option<&PreparationIo>) -> Result<Self> {
-        let bytes = std::mem::size_of::<SourcePublicationCause>() as u64;
+        let bytes = std::mem::size_of::<Error>() as u64;
         let custody = if let Some(io) = io {
             io.retain_owned(bytes)?;
             io.allocation_attempt(bytes)?;
@@ -197,7 +164,7 @@ impl SourcePublicationFailureSlot {
         } else {
             None
         };
-        Ok(Self { source: Box::new(SourcePublicationCause { source: None }), custody })
+        Ok(Self { source: Box::new(Error::NativeBoundary { code: crate::wire::ErrorCode::Indeterminate, reason: "reserved source publication failure" }), custody })
     }
 
     fn finish(
@@ -205,7 +172,7 @@ impl SourcePublicationFailureSlot {
         retention_failure: Option<acyclic_fs::LazyWorkspaceError>,
     ) -> Error {
         let Self { source: mut slot, custody } = self;
-        slot.source = Some(source);
+        *slot = source;
         Error::NativeSourcePublicationUncertain {
             generation, source: slot, retention_failure, custody,
         }
@@ -215,7 +182,7 @@ impl SourcePublicationFailureSlot {
         drop(self);
         if let Some(io) = io
             && io.original_native_work().is_none() {
-            io.release(std::mem::size_of::<SourcePublicationCause>() as u64)?;
+            io.release(std::mem::size_of::<Error>() as u64)?;
         }
         Ok(())
     }
@@ -1963,7 +1930,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> VolumeImportPlan<A, O> {
             .apply(ApplyOptions {
                 if_target: self.plan.target_head(),
                 idempotency_key: filesystem_key(key),
-            })
+            }, acyclic_fs::PublicationPermit::Unrestricted)
             .await
             .map_err(map_error)
     }
@@ -2648,7 +2615,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         };
         guard().await?;
         let plan = source_workspace.join_into(&target_workspace)
-            .plan_at(&source_generation, &target_generation).await.map_err(map_error)?;
+            .plan_at(&source_generation, &target_generation, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| map_error(failure.error))?;
         guard().await?;
         Ok(ParentMergePlan { plan, child_project: source.clone(),
             parent_project: self.project.clone(), parent_scope: self.scope.clone(),
@@ -2735,8 +2702,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         guard().await?;
         let plan_custody;
         let (plan, custody) = source_workspace.join_into(&target_workspace)
-            .plan_at_with_native_work(&source_generation, &target_generation, work, work.cancellation()).await
-            .map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+            .plan_at(&source_generation, &target_generation, work, work.cancellation()).await
+            .and_then(|plan| work.claim_allocation(0, 0, acyclic_fs::WorkCounters::default()).map(|custody| (plan, custody)).map_err(|error| acyclic_fs::WorkspaceError::from(acyclic_fs::FsError::from(error))))
+            .map_err(|source| Error::NativeWorkspace { source, custody: None })?;
         plan_custody = custody;
         guard().await?;
         let child_project = source.copy(&mut Some(&mut io.history_io()))?;
@@ -2812,7 +2780,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
     ) -> Result<JoinOutcome<A, O>> {
         self.require_merge_plan(plan)?;
         plan.plan
-            .apply(Self::merge_options(plan, project_join_key(operation_id)?))
+            .apply(Self::merge_options(plan, project_join_key(operation_id)?), acyclic_fs::PublicationPermit::Unrestricted)
             .await
             .map_err(map_error)
     }
@@ -2837,9 +2805,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         };
         let io = PreparationIo::from_native_work(work)?;
         let filesystem_key = native_project_join_key(operation_id, work)?;
-        let (_witness, witness_custody) = plan.plan.commit_witness_with_native_work(
+        let _witness = plan.plan.commit_witness(
             application, filesystem_key, work, io.cancellation(),
-        ).map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+        ).map_err(|source| Error::NativeWorkspace { source, custody: None })?;
         let maximum_witness_bytes = (std::mem::size_of::<JoinCommitWitness>() as u64)
             .checked_mul(16).and_then(|bytes| bytes.checked_add(1024))
             .ok_or(Error::NativeBoundary {
@@ -2878,7 +2846,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         drop(statement_guard);
         drop(encoded);
         drop(encoded_guard);
-        drop(witness_custody);
         let mut observer = io.history_io();
         let child = crate::store::history::HistoryIo::clone_authority(&mut observer, child)?;
         drop(observer);
@@ -2943,8 +2910,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
         let filesystem_key = project_join_key(operation_id)?;
         let witness = plan
             .plan
-            .commit_witness(application, filesystem_key)
-            .map_err(map_error)?;
+            .commit_witness(application, filesystem_key, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .map(|receipt| receipt.value).map_err(|failure| map_error(failure.error))?;
         let receipt = ProjectMergeReceipt {
             operation_id,
             child,
@@ -3005,7 +2972,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProj
     ) -> Result<JoinOutcome<A, O>> {
         self.require_merge_plan(plan)?;
         plan.plan
-            .apply_candidate(Self::merge_options(plan, project_join_key(operation_id)?), candidate)
+            .apply_candidate(Self::merge_options(plan, project_join_key(operation_id)?), candidate, acyclic_fs::PublicationPermit::Unrestricted)
             .await
             .map_err(|error| Error::Storage(error.to_string()))
     }
@@ -3215,9 +3182,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         let target = destination_workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| map_error(failure.error))?;
         source_workspace
             .join_into(&destination_workspace)
-            .plan_at(&source_generation, &target)
-            .await
-            .map_err(map_error)
+            .plan_at(&source_generation, &target, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| map_error(failure.error))
     }
 
     async fn prepare_project_import(
@@ -4259,7 +4225,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         }
         let raw = hex::decode(reference.version())
             .map_err(|_| Error::Invalid("file version is not a Filesystem generation".into()))?;
-        GenerationRef::new(self.provider.clone(), raw, None)
+        GenerationRef::new(self.provider.clone(), raw.into(), None)
     }
 
     /// Resolves the current immutable head of a named workspace.
@@ -4511,13 +4477,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
     fn generation_ref(&self, generation: &Generation<A, O>) -> Result<GenerationRef> {
         GenerationRef::new(
             self.provider.clone(),
-            generation.id().digest().into_bytes(),
+            generation.id().digest().into_bytes().into(),
             None,
         )
     }
 
     fn generation_ref_id(&self, id: GenerationId) -> Result<GenerationRef> {
-        GenerationRef::new(self.provider.clone(), id.digest().into_bytes(), None)
+        GenerationRef::new(self.provider.clone(), id.digest().into_bytes().into(), None)
     }
 
     fn validate_provider(&self, provider: &ProviderRef) -> Result<()> {
@@ -4534,7 +4500,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
 /// Creates the canonical provider-owned reference for a named workspace.
 pub fn workspace_ref(provider: ProviderRef, name: &str) -> Result<WorkspaceRef> {
     acyclic_fs::WorkspaceName::new(name, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(|error| Error::Invalid(error.to_string()))?;
-    WorkspaceRef::new(provider, name.as_bytes(), None)
+    WorkspaceRef::new(provider, name.as_bytes().into(), None)
 }
 
 fn filesystem_key(key: &IdempotencyKey) -> FilesystemKey {

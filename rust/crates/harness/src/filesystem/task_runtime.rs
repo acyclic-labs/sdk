@@ -475,19 +475,7 @@ where
         let resumable_tools = resumable_tools.clone();
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(filesystem.clone(), &volume, &verifier, &signed, maximum_payload_bytes, None)?);
         let reader = Arc::new(FilesystemContentVerifier::new(filesystem.clone(), &verifier, &signed, maximum_payload_bytes, None)?);
-        let mut host = CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None).await?,
-            stream.clone(),
-            payloads,
-            reader.clone(),
-            verifier.audience().clone(),
-            signed.clone(),
-            verifier.clone(),
-            scope.clone(),
-            tasks.clone(),
-            machines,
-            clock,
-        )?
+        let mut host = CoordinatorTaskHost::new(DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None).await?, stream.clone(), payloads, reader.clone(), &(verifier.audience()), signed.clone(), verifier.clone(), scope.clone(), tasks.clone(), machines, clock, None)?
         .with_session_limits(session_limits, None)?
         .with_resource_creation_providers(&creation_providers, None)?;
         if let Some(policy) = &policy {
@@ -1334,11 +1322,13 @@ where
                         code: crate::wire::ErrorCode::Unsupported,
                         reason: "worker pull requires original native work",
                     })?;
-                    let (pull, custody) = self.host.pull_operation_with_native_work(worker, admission.operation_id, work).await?;
-                    io.absorb_native_custody(custody)?;
+                    let mut operation_io = crate::store::native_work_io(work)?;
+                    crate::store::HistoryIo::retain_owned(&mut operation_io, std::mem::size_of::<crate::distributed::WorkPull>().max(std::mem::size_of::<crate::filesystem::TaskWorkerAttempt>()) as u64)?;
+                    let pull = self.host.pull_operation(worker, admission.operation_id, &mut Some(&mut operation_io)).await?;
+                    io.absorb_native_custody(operation_io.into_custody())?;
                     return Ok(pull);
                 }
-                self.host.pull_operation(worker, admission.operation_id).await
+                self.host.pull_operation(worker, admission.operation_id, &mut None).await
             }, io, observed::pull_has_native_failure,
         ).await?;
         Ok(match pulled {
@@ -1434,12 +1424,14 @@ where
             let work = io.original_native_work().ok_or_else(|| observed::boundary(
                 Some(io), crate::wire::ErrorCode::Unsupported, "native wake requires original observer",
             ))?;
-            let (slot, custody) = self.host.workflow_suspension_with_native_work(task, work).await?;
-            io.absorb_native_custody(custody)?;
+            let mut operation_io = crate::store::native_work_io(work)?;
+            crate::store::HistoryIo::retain_owned(&mut operation_io, std::mem::size_of::<Option<crate::scheduler::WorkflowSuspension>>() as u64)?;
+            let slot = self.host.workflow_suspension(task, &mut Some(&mut operation_io)).await?;
+            io.absorb_native_custody(operation_io.into_custody())?;
             slot
-        } else { self.host.workflow_suspension(task).await? };
+        } else { self.host.workflow_suspension(task, &mut None).await? };
         #[cfg(target_arch = "wasm32")]
-        let slot = self.host.workflow_suspension(task).await?;
+        let slot = self.host.workflow_suspension(task, &mut None).await?;
         let Some(slot) = slot else {
             return Ok(false);
         };
