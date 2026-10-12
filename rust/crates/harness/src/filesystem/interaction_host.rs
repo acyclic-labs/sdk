@@ -309,7 +309,8 @@ where
                 None => aggregate.reducer().revision(),
             };
             let scope = scope.copy(&mut work)?;
-            let command_ticket = ticket.clone_with_work(&mut work)?;
+            let command_ticket = crate::core::native_interaction_ticket_clone_with_custody(
+                &ticket, &mut work)?.0;
             let idempotency_key = IdempotencyKey::new(interaction_text(
                 "interaction:", Some(operation_id.into_bytes()), "", "", "", io)?)?;
             attempt_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
@@ -522,7 +523,8 @@ where
         let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
         let outcome = aggregate.reducer().interaction(&Uuid::from_bytes(id.into_bytes()))
             .and_then(|(_, resolution)| resolution.as_ref())
-            .map(|resolution| resolution.outcome.clone_with_work(&mut work))
+            .map(|resolution| crate::core::native_interaction_outcome_clone_with_custody(
+                &resolution.outcome, &mut work).map(|(value, _)| value))
             .transpose()?;
         drop(aggregate);
         drop(aggregate_hold);
