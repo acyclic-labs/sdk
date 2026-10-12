@@ -13,7 +13,7 @@ use quota::{value_storage_bytes};
 pub use quota::{sdk_json_diagnostic_bytes, json_value_decode_owned_bytes, json_owned_value_conversion_additional_bytes};
 pub(crate) use quota::{owned_logical_bytes, json_owned_value_shape_bounded, json_typed_value_decode_owned_bytes, json_value_virtual_owned_bytes};
 mod lexical;
-use lexical::{Scan, AdmissionFailure, admit_json_value_shape_inline};
+use lexical::{Scan, admit_json_value_shape_inline};
 pub(crate) use lexical::{admit_json, admit_json_value_shape, lexical_json_diagnostic_bytes};
 mod canonical;
 pub use canonical::{canonical_json_bytes_bounded, json_value_bounded};

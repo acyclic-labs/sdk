@@ -342,14 +342,8 @@ impl ser::Serializer for Raw<'_, '_> {
             meter.charge(event).map_err(|error| meter.root_error(error))?;
             meter.items += items;
             Ok(())
-        }).map_err(|failure| match failure {
-            AdmissionFailure::Root(error) => { meter.failure = Some(error); CodecError::Interrupted },
-            AdmissionFailure::Bound(reason) => CodecError::Bound(reason),
-        })?;
-        let value_shape = scan.value_shape().map_err(|failure| match failure {
-            AdmissionFailure::Root(error) => { meter.failure = Some(error); CodecError::Interrupted },
-            AdmissionFailure::Bound(reason) => CodecError::Bound(reason),
-        })?;
+        }).map_err(|error| meter.forward(error))?;
+        let value_shape = scan.value_shape().map_err(|error| meter.forward(error))?;
         meter.items = meter.items.checked_add(value_shape.virtual_items)
             .ok_or_else(|| CodecError::Bound("JSON item count overflow"))?;
         let maximum_owned_bytes = value_storage_bytes(value_shape)

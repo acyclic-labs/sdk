@@ -30,42 +30,20 @@ pub(super) struct Scan {
     pub(super) atom: bool,
     pub(super) inspector: Option<ValueInspector>,
 }
-pub(super) enum AdmissionFailure {
-    Root(Error),
-    Bound(&'static str),
-}
-impl From<Error> for AdmissionFailure {
-    fn from(error: Error) -> Self { Self::Root(error) }
-}
-impl AdmissionFailure {
-    pub(super) fn into_error(self, code: Option<crate::wire::ErrorCode>) -> Error {
-        match self {
-            Self::Root(error) => error,
-            Self::Bound(reason) => {
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                if code.is_some() {
-                    return Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason };
-                }
-                let _ = code;
-                Error::Invalid(reason.into())
-            }
-        }
-    }
-}
 impl Scan {
     pub(super) fn with_value_schema(schema: Option<JsonValueSchema>, bounds: JsonBounds) -> Self {
         Self { inspector: Some(ValueInspector::new(schema, bounds)), ..Self::default() }
     }
-    pub(super) fn value_shape(&self) -> std::result::Result<JsonValueShape, AdmissionFailure> {
+    pub(super) fn value_shape(&self) -> std::result::Result<JsonValueShape, CodecError> {
         self.end_inline()?;
         self.inspector.as_ref().expect("Value shape requested only from configured source pass")
             .finish(self.bytes, self.items)
     }
     pub(super) fn push_inline<F: FnMut(JsonCodecCharge) -> Result<()>>(
         &mut self, bytes: &[u8], bounds: JsonBounds, charge: &mut F,
-    ) -> std::result::Result<(), AdmissionFailure> {
+    ) -> std::result::Result<(), CodecError> {
         for &byte in bytes {
-            if self.bytes >= bounds.maximum_bytes { return Err(AdmissionFailure::Bound(LEXICAL_BYTE_ERROR)); }
+            if self.bytes >= bounds.maximum_bytes { return Err(CodecError::Bound(LEXICAL_BYTE_ERROR)); }
             charge(JsonCodecCharge::Read { bytes: 1 })?;
             self.bytes += 1;
             if let Some(inspector) = &mut self.inspector { inspector.push(byte, charge)?; }
@@ -79,13 +57,13 @@ impl Scan {
             let item = match byte {
                 b'"' => { self.string = true; self.atom = false; true }
                 b'[' | b'{' => { self.depth += 1; self.atom = false; true }
-                b']' | b'}' => { self.depth = self.depth.checked_sub(1).ok_or(AdmissionFailure::Bound(LEXICAL_NESTING_ERROR))?; self.atom = false; false }
+                b']' | b'}' => { self.depth = self.depth.checked_sub(1).ok_or(CodecError::Bound(LEXICAL_NESTING_ERROR))?; self.atom = false; false }
                 b':' | b',' | b' ' | b'\r' | b'\n' | b'\t' => { self.atom = false; false }
                 _ => { let first = !self.atom; self.atom = true; first }
             };
             if item {
                 if item_depth > bounds.maximum_depth || self.items >= bounds.maximum_items {
-                    return Err(AdmissionFailure::Bound(LEXICAL_ITEM_ERROR));
+                    return Err(CodecError::Bound(LEXICAL_ITEM_ERROR));
                 }
                 charge(JsonCodecCharge::Work { bytes: 0, items: 1 })?;
                 self.items += 1;
@@ -93,8 +71,8 @@ impl Scan {
         }
         Ok(())
     }
-    pub(super) fn end_inline(&self) -> std::result::Result<(), AdmissionFailure> {
-        if self.string || self.depth != 0 { return Err(AdmissionFailure::Bound(LEXICAL_INCOMPLETE_ERROR)); }
+    pub(super) fn end_inline(&self) -> std::result::Result<(), CodecError> {
+        if self.string || self.depth != 0 { return Err(CodecError::Bound(LEXICAL_INCOMPLETE_ERROR)); }
         Ok(())
     }
 }
@@ -102,7 +80,7 @@ impl Scan {
 /// Bounds lexical tokens, including duplicate keys.
 pub(crate) fn admit_json<F: FnMut(JsonCodecCharge) -> Result<()>>(bytes: &[u8], bounds: JsonBounds, charge: &mut F) -> Result<()> {
     let bounds = JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds };
-    if bytes.len() as u64 > bounds.maximum_bytes { return Err(AdmissionFailure::Bound(LEXICAL_BYTE_ERROR).into_error(None)); }
+    if bytes.len() as u64 > bounds.maximum_bytes { return Err(CodecError::Bound(LEXICAL_BYTE_ERROR).into_error(None)); }
     let mut scan = Scan::default();
     scan.push_inline(bytes, bounds, charge).map_err(|failure| failure.into_error(None))?;
     scan.end_inline().map_err(|failure| failure.into_error(None))
@@ -110,8 +88,8 @@ pub(crate) fn admit_json<F: FnMut(JsonCodecCharge) -> Result<()>>(bytes: &[u8], 
 
 pub(super) fn admit_json_value_shape_inline<F: FnMut(JsonCodecCharge) -> Result<()>>(
     bytes: &[u8], bounds: JsonBounds, schema: Option<JsonValueSchema>, charge: &mut F,
-) -> std::result::Result<JsonValueShape, AdmissionFailure> {
-    if bytes.len() as u64 > bounds.maximum_bytes { return Err(AdmissionFailure::Bound(LEXICAL_BYTE_ERROR)); }
+) -> std::result::Result<JsonValueShape, CodecError> {
+    if bytes.len() as u64 > bounds.maximum_bytes { return Err(CodecError::Bound(LEXICAL_BYTE_ERROR)); }
     let mut scan = Scan::with_value_schema(schema, bounds);
     scan.push_inline(bytes, bounds, charge)?;
     scan.value_shape()

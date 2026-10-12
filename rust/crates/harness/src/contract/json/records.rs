@@ -25,9 +25,9 @@ impl std::io::Write for RecordWriter<'_, '_> {
                 other => other,
             };
             meter.charge(event).map_err(|error| meter.root_error(error))
-        }).map_err(|failure| match failure {
-            AdmissionFailure::Root(error) => { meter.failure = Some(error); CodecError::Interrupted.into_io() },
-            AdmissionFailure::Bound(reason) => meter.bound(reason).into_io(),
+        }).map_err(|error| match meter.forward(error) {
+            CodecError::Bound(reason) => meter.bound(reason).into_io(),
+            error => error.into_io(),
         })?;
         if let Some(output) = self.output.as_mut() {
             if bytes.len() > self.maximum - output.len() { return Err(meter.bound("JSON exceeds admitted output").into_io()); }
@@ -42,10 +42,7 @@ impl RecordWriter<'_, '_> {
     fn serialize<T: Serialize + ?Sized>(&mut self, value: &T) -> Result<u64> {
         serde_json::to_writer(&mut *self, value).map_err(|error| self.meter.root_error(error.into()))?;
         if let Some(error) = self.meter.first_error() { return Err(error); }
-        self.scan.end_inline().map_err(|failure| match failure {
-            AdmissionFailure::Root(error) => error,
-            AdmissionFailure::Bound(reason) => self.meter.root_error(CodecError::Bound(reason)),
-        })?;
+        self.scan.end_inline().map_err(|error| self.meter.root_error(error))?;
         Ok(self.scan.bytes)
     }
 }
@@ -87,9 +84,9 @@ where S: serde::de::DeserializeSeed<'de>, F: FnMut(JsonCodecCharge) -> Result<()
     let value_shape = admit_json_value_shape_inline(bytes, bounds, value_schema, charge)
         .map_err(|failure| failure.into_error(code))?;
     let scratch = (bytes.len() as u64).max(8).checked_mul(2)
-        .ok_or_else(|| AdmissionFailure::Bound("JSON scratch bound overflow").into_error(code))?;
+        .ok_or_else(|| CodecError::Bound("JSON scratch bound overflow").into_error(code))?;
     let maximum_owned_bytes = maximum_owned_bytes.checked_add(scratch)
-        .ok_or_else(|| AdmissionFailure::Bound("JSON owned bound overflow").into_error(code))?;
+        .ok_or_else(|| CodecError::Bound("JSON owned bound overflow").into_error(code))?;
     charge(JsonCodecCharge::Admission { maximum_owned_bytes, value_shape })?;
     charge(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
     let mut decoder = serde_json::Deserializer::from_slice(bytes);

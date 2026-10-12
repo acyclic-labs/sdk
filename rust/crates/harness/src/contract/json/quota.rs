@@ -45,10 +45,7 @@ pub(crate) fn json_owned_value_shape_bounded<F: FnMut(JsonCodecCharge) -> Result
     value: &Value, bounds: JsonBounds, schema: JsonValueSchema, charge: &mut F,
 ) -> Result<JsonValueShape> {
     value_shape::inspect_owned(value, JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds }, schema, charge)
-        .map_err(|failure| match failure {
-            AdmissionFailure::Root(error) => error,
-            AdmissionFailure::Bound(reason) => shape_boundary(reason),
-        })
+        .map_err(|error| error.into_error(Some(crate::wire::ErrorCode::Invalid)))
 }
 
 /// NEW logical Value-container/Raw replay/scratch/static diagnostic quota for a genuine consuming Value converter, using the original SDK-issued owned shape.

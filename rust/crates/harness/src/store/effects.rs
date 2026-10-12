@@ -619,6 +619,7 @@ mod native_effect_paid_point_tests {
     use super::super::{checkpoints, history::native_work_io};
     use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
     use acyclic_stream::{IdempotencyKey, MemoryStream};
+    use bytes::Bytes;
     use crate::{
         Capabilities, IdempotencyKey as CommandKey, OperationId,
         conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
@@ -633,13 +634,13 @@ mod native_effect_paid_point_tests {
         let issuer = AuthorityIssuer::new("paid-effect-point", [7; 32], authority.clone());
         let reducer = Reducer::new(authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
         let volume = VolumeRef::new(
-            ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?, "effect-volume",
+            ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?, "effect-volume".into(),
             VolumeClass::AgentPrivate, VolumeOwner::Agent(crate::AgentId::from_bytes([8; 16])),
-        )?;
-        let request = FileRef::new(volume.clone(), "effects/request.json", "generation-1",
-            FileDescriptor::from_bytes(b"{}", "application/json")?, "request.json")?;
-        let schema = FileRef::new(volume, "effects/schema.json", "generation-1",
-            FileDescriptor::from_bytes(br#"{"type":"object"}"#, "application/schema+json")?, "schema.json")?;
+         &mut None)?;
+        let request = FileRef::new(volume.clone(), "effects/request.json".into(), "generation-1".into(),
+            FileDescriptor::from_bytes(b"{}", "application/json", &mut None)?, "request.json".into(), &mut None)?;
+        let schema = FileRef::new(volume, "effects/schema.json".into(), "generation-1".into(),
+            FileDescriptor::from_bytes(br#"{"type":"object"}"#, "application/schema+json", &mut None)?, "schema.json".into(), &mut None)?;
         let effect = EffectId::from_bytes([91; 16]);
         let command = Command {
             operation_id: OperationId::from_bytes([92; 16]),
@@ -661,7 +662,7 @@ mod native_effect_paid_point_tests {
         let client = Arc::new(MemoryStream::default());
         let publication = checkpoints::publication_with_work(&client, &reducer, &event, &mut None).await?;
         let request = publication.request(&client,
-            IdempotencyKey::new(Bytes::from_static(b"paid-effect-point"))?, &mut None).await?.0;
+            IdempotencyKey::new(bytes::Bytes::from_static(b"paid-effect-point"))?, &mut None).await?.0;
         let acyclic_stream::CommitOutcome::Committed(envelope) = client.commit(request).await? else {
             panic!("original atomic effect publication");
         };
@@ -680,7 +681,7 @@ mod native_effect_paid_point_tests {
         }, &cancellation).expect("same original finite effect point ledger");
         let mut io = native_work_io(&native).expect("original point decoder source custody");
         let cursor = HistoryCursor { authority, after_revision: 0, through_revision: 1 };
-        let (events, paid) = read(
+        let (events, paid) = effect_events(
             &client, &issuer.verifier(&mut None).expect("verifier copy"), &cursor, effect,
             HistoryReadLimits { maximum_events: 8, maximum_bytes: 1_048_576 },
             &mut Some(&mut io),

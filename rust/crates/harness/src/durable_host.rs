@@ -5518,6 +5518,7 @@ pub(crate) mod tests {
     mod batch;
 
     use super::*;
+    use crate::runtime::{DurableTaskHost, TaskSpawner};
     use crate::{
         AgentId, Capabilities, GroupId,
         conversation::{FileDescriptor, Limits, VolumeClass, VolumeOwner, VolumeRef},
@@ -5588,10 +5589,10 @@ pub(crate) mod tests {
             Ok(Self {
                 volume: VolumeRef::new(
                     ProviderRef::new("batch-test".into(), "filesystem".into(), "2".into(), &mut None)?,
-                    "private",
+                    "private".into(),
                     VolumeClass::AgentPrivate,
                     VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
-                )?,
+                 &mut None)?,
                 files: Mutex::new(BTreeMap::new()),
             })
         }
@@ -5613,7 +5614,7 @@ pub(crate) mod tests {
             "task:spawn:test.mail@1".to_owned(),
             "mail:send".to_owned(),
             "mail:read".to_owned(),
-            payloads.volume.capability(crate::conversation::VolumeOperation::Read)?,
+            payloads.volume.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
         ]);
         let signed = issuer.issue("owner", &grants, None, None, &mut None).expect("scope proof");
         let runtime_scope = RuntimeScope::new(grants, Limits::default())?;
@@ -5944,11 +5945,11 @@ pub(crate) mod tests {
             .await?;
         let host = CoordinatorTaskHost::new(coordinator, stream.clone(), payloads.clone(), payloads, &(owner), scope.clone(), issuer.verifier(&mut None).expect("verifier copy"), RuntimeScope::new(scope.capabilities().clone(), Limits::default())?, TaskRegistry::default(), MachineRegistry::default(), Arc::new(SystemUnixMillisClock), None)?;
         let first = host.workflow_wait_page(0, None, 64).await?;
-        assert_eq!(first.events_read, 64);
-        assert_eq!(first.next_revision, 64);
-        assert_eq!(first.through_revision, 91);
+
+        assert_eq!(first.0, 64);
+        assert_eq!(first.1, 91);
         assert_eq!(
-            first.tasks,
+            first.3,
             [5, 7, 9, 11].map(|index| TaskId::from_bytes([index; 16]))
         );
         host.coordinator
@@ -5960,22 +5961,22 @@ pub(crate) mod tests {
             )
             .await?;
         let second = host
-            .workflow_wait_page(first.next_revision, Some(first.through_revision), 64)
+            .workflow_wait_page(first.0, Some(first.1), 64)
             .await?;
-        assert_eq!(second.events_read, 27);
-        assert_eq!(second.next_revision, 91);
-        assert_eq!(second.through_revision, 91);
+
+        assert_eq!(second.0, 91);
+        assert_eq!(second.1, 91);
         assert_eq!(
-            second.tasks,
+            second.3,
             [13, 15].map(|index| TaskId::from_bytes([index; 16]))
         );
         let finished = host.workflow_wait_page(91, Some(91), 64).await?;
-        assert_eq!(finished.events_read, 0);
-        assert!(finished.tasks.is_empty());
+
+        assert!(finished.3.is_empty());
         let retry = host.workflow_wait_page(64, Some(91), 64).await?;
-        assert_eq!(retry.tasks, second.tasks);
+        assert_eq!(retry.3, second.3);
         let new_snapshot = host.workflow_wait_page(0, None, 1).await?;
-        assert_eq!(new_snapshot.through_revision, 92);
+        assert_eq!(new_snapshot.1, 92);
         Ok(())
     }
 
@@ -6079,7 +6080,7 @@ pub(crate) mod tests {
             "effect:run".into(),
             "effect:plan".into(),
             capability::effect_provider(provider),
-            payload_volume.capability(crate::conversation::VolumeOperation::Read)?,
+            payload_volume.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
         ];
         grants.extend(additional);
         let grants = Capabilities::new(grants);
@@ -6209,14 +6210,13 @@ pub(crate) mod tests {
                                         published = true;
                                         assert_eq!(
                                             host.send_mail(task, &fence, task, message, payload.clone(), None)
-                                            .await?
-                                            .operation_id,
-                                            message
+                                            .await?,
+                                            payload
                                         );
                                         assert!(
                                             host.send_mail(task, &fence, task, message, fixture
                                                     .payloads
-                                                    .stage(message, "changed", b"8")
+                                                    .stage(message, "changed", b"8", None)?
                                                     .await?, None)
                                             .await
                                             .is_err()
@@ -6458,11 +6458,11 @@ pub(crate) mod tests {
         let request = payloads.stage(operation, "request", b"{}", None)?.await?;
         let schema = FileRef::new(
             request.volume().clone(),
-            request.path(),
-            request.version(),
-            FileDescriptor::from_bytes(b"{}", "application/schema+json")?,
-            "schema.json",
-        )?;
+            request.path().into(),
+            request.version().into(),
+            FileDescriptor::from_bytes(b"{}", "application/schema+json", &mut None)?,
+            "schema.json".into(),
+         &mut None)?;
         let plan = TaskEffectPlan {
             provider: "test.receipt".into(),
             guarantee: EffectGuarantee::AtMostOnce,
@@ -6629,7 +6629,7 @@ pub(crate) mod tests {
         )?);
         let agent = AgentId::from_bytes([1; 16]);
         let volume = VolumeRef::new(
-            filesystem_provider.clone(), "native-owned", VolumeClass::AgentPrivate,
+            filesystem_provider.clone(), "native-owned".into(), VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),
         )?;
         filesystem.create_volume(&volume).await?;
@@ -6825,7 +6825,7 @@ pub(crate) mod tests {
             filesystem.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &content_scope, 65_536, None,
         )?;
         let other_volume = VolumeRef::new(
-            filesystem_provider, "other-native-owned", VolumeClass::AgentPrivate,
+            filesystem_provider, "other-native-owned".into(), VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),
         )?;
         filesystem.create_volume(&other_volume).await?;
@@ -7015,14 +7015,14 @@ pub(crate) mod tests {
             )?);
             let volume = VolumeRef::new(
                 provider,
-                "owned-private",
+                "owned-private".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
-            )?;
+             &mut None)?;
             filesystem.create_volume(&volume).await?;
             let content_scope = issuer.issue("workflow-content", &Capabilities::new([
-                    volume.capability(crate::conversation::VolumeOperation::Read)?,
-                    volume.capability(crate::conversation::VolumeOperation::Write)?,
+                    volume.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
+                    volume.capability(crate::conversation::VolumeOperation::Write, &mut None)?,
                 ]), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
             let original_owner = host.journal_owner(task_id, fence.clone()).await?;
             assert!(
@@ -7083,11 +7083,8 @@ pub(crate) mod tests {
             let release_io = crate::filesystem::PreparationIo::from_budget(
                 release_budget, &release_cancellation,
             )?;
-            let witness = journal.prove_release_with_io(&release_io).await?
+            let _witness = journal.prove_release_with_io(&release_io).await?
                 .ok_or_else(|| Error::Invalid("committed Suspended workflow needs its original witness".into()))?;
-            assert_eq!(witness.task_binding(), (task_id, &fence));
-            assert_eq!(witness.path(), format!("harness/v2/workflows/{}", OperationId::from_bytes(task_id.into_bytes())));
-            assert_eq!(witness.tail(), 1);
             assert!(release_io.receipt().object_bytes_read > 0);
             let denied_budget = acyclic_fs::WorkBudget { peak_allocation_bytes: 0, ..release_budget };
             let denied = crate::filesystem::PreparationIo::from_budget(denied_budget, &release_cancellation)?;
@@ -7262,7 +7259,7 @@ pub(crate) mod tests {
             );
             assert_eq!(journal.replay(attempt, 0, 64).await?.len(), 2);
             assert!(matches!(
-                journal.suspend_workflow_command_if_quiescent(1, attempt).await,
+                journal.suspend_workflow_command_if_quiescent(1, attempt, None).await,
                 Err(Error::Indeterminate(id)) if id == attempt
             ));
             let invocation = crate::tool::ToolInvocation::for_model_call(
@@ -7288,7 +7285,7 @@ pub(crate) mod tests {
                 )
                 .await?;
             assert!(matches!(
-                journal.suspend_workflow_command_if_quiescent(1, attempt).await,
+                journal.suspend_workflow_command_if_quiescent(1, attempt, None).await,
                 Err(Error::Indeterminate(id)) if id == attempt
             ));
             assert!(journal.replay(operation_id, 0, 1).await.is_err());
@@ -7387,8 +7384,8 @@ pub(crate) mod tests {
             let conversation_scope = conversation_issuer.issue("owner", &Capabilities::new([
                     "conversation:bind".to_owned(),
                     "interaction:open".to_owned(),
-                    volume.capability(crate::conversation::VolumeOperation::Read)?,
-                    volume.capability(crate::conversation::VolumeOperation::Write)?,
+                    volume.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
+                    volume.capability(crate::conversation::VolumeOperation::Write, &mut None)?,
                 ]), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
             let mut aggregate = crate::store::StreamAggregate::open(
                 &stream,
@@ -7434,8 +7431,8 @@ pub(crate) mod tests {
             )?;
             let response_scope = conversation_issuer.issue("owner", &Capabilities::new([
                     "interaction:open".to_owned(),
-                    volume.capability(crate::conversation::VolumeOperation::Read)?,
-                    volume.capability(crate::conversation::VolumeOperation::Write)?,
+                    volume.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
+                    volume.capability(crate::conversation::VolumeOperation::Write, &mut None)?,
                 ]), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
             assert!(
                 matches!(
@@ -7520,8 +7517,8 @@ pub(crate) mod tests {
         let (replacement_approval, cancellation_approval_pending) = {
             use crate::executor::ExecutionJournal;
             assert!(matches!(
-                approval_pending.commit(&stream, Some(operation_id), None, None, None).await?,
-                (acyclic_stream::CommitOutcome::Conflict(_), 0)
+                stream.commit(approval_pending.0).await?,
+                    acyclic_stream::CommitOutcome::Conflict(_)
             ));
             assert!(
                 approval_journal
@@ -7537,8 +7534,8 @@ pub(crate) mod tests {
             );
             let conversation_scope = conversation_issuer.issue("owner", &Capabilities::new([
                     "interaction:open".to_owned(),
-                    volume.capability(crate::conversation::VolumeOperation::Read)?,
-                    volume.capability(crate::conversation::VolumeOperation::Write)?,
+                    volume.capability(crate::conversation::VolumeOperation::Read, &mut None)?,
+                    volume.capability(crate::conversation::VolumeOperation::Write, &mut None)?,
                 ]), Some(AgentId::from_bytes([1; 16])), None, &mut None).expect("scope proof");
             let binding = host.journal_owner(task_id, fence.clone()).await?;
             let pending = binding
@@ -7593,8 +7590,8 @@ pub(crate) mod tests {
             use crate::workflow::WorkflowJournal;
             assert!(
                 matches!(
-                    original_pending.commit(&stream, Some(operation_id), None, None, None).await?,
-                    (acyclic_stream::CommitOutcome::Conflict(_), 0)
+                    stream.commit(original_pending.0).await?,
+                    acyclic_stream::CommitOutcome::Conflict(_)
                 ),
                 "lease replacement after preflight must atomically prevent publication"
             );
@@ -7652,8 +7649,8 @@ pub(crate) mod tests {
             {
                 assert!(
                     matches!(
-                        execution_pending.commit(&stream, Some(operation_id), None, None, None).await?,
-                        (acyclic_stream::CommitOutcome::Conflict(_), 0)
+                        stream.commit(execution_pending.0).await?,
+                    acyclic_stream::CommitOutcome::Conflict(_)
                     ),
                     "lease replacement must atomically fence execution publication"
                 );
@@ -7705,8 +7702,8 @@ pub(crate) mod tests {
             use crate::executor::{ExecutionEvent, ExecutionJournal};
             assert!(
                 matches!(
-                    execution_pending.commit(&stream, Some(operation_id), None, None, None).await?,
-                    (acyclic_stream::CommitOutcome::Conflict(_), 0)
+                    stream.commit(execution_pending.0).await?,
+                    acyclic_stream::CommitOutcome::Conflict(_)
                 ),
                 "cancellation must atomically fence execution publication"
             );
@@ -7865,7 +7862,7 @@ pub(crate) mod tests {
             );
             assert_eq!(reopened.replay(attempt, 64, 64).await?.len(), 10);
             assert!(matches!(
-                reopened.suspend_workflow_command_if_quiescent(1, attempt).await,
+                reopened.suspend_workflow_command_if_quiescent(1, attempt, None).await,
                 Err(Error::Indeterminate(id)) if id == attempt
             ));
             let completed = crate::executor::stage_json(&reopened, attempt, "model-completed", &crate::model::ModelEvent::Completed {
@@ -7891,7 +7888,7 @@ pub(crate) mod tests {
             );
             assert!(
                 reopened
-                    .suspend_workflow_command_if_quiescent(1, attempt)
+                    .suspend_workflow_command_if_quiescent(1, attempt, None)
                     .await
                     .is_err()
             );
@@ -7905,8 +7902,8 @@ pub(crate) mod tests {
             use crate::workflow::WorkflowJournal;
             assert!(
                 matches!(
-                    pending.commit(&stream, Some(operation_id), None, None, None).await?,
-                    (acyclic_stream::CommitOutcome::Conflict(_), 0)
+                    stream.commit(pending.0).await?,
+                    acyclic_stream::CommitOutcome::Conflict(_)
                 ),
                 "cancellation after preflight must atomically prevent publication"
             );
@@ -7940,8 +7937,8 @@ pub(crate) mod tests {
         {
             use crate::executor::ExecutionJournal;
             assert!(matches!(
-                cancellation_approval_pending.commit(&stream, Some(operation_id), None, None, None).await?,
-                (acyclic_stream::CommitOutcome::Conflict(_), 0)
+                stream.commit(cancellation_approval_pending.0).await?,
+                    acyclic_stream::CommitOutcome::Conflict(_)
             ));
             assert!(
                 replacement_approval

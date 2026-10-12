@@ -2,6 +2,7 @@ use super::*;
 
 #[derive(Debug)]
 pub(super) enum CodecError {
+    Root(Error),
     Interrupted,
     Bound(&'static str),
     Json(serde_json::Error),
@@ -10,6 +11,7 @@ pub(super) enum CodecError {
 impl std::fmt::Display for CodecError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Root(error) => std::fmt::Display::fmt(error, formatter),
             Self::Interrupted => formatter.write_str("JSON admission interrupted"),
             Self::Bound(reason) => formatter.write_str(reason),
             Self::Json(error) => std::fmt::Display::fmt(error, formatter),
@@ -20,6 +22,7 @@ impl std::fmt::Display for CodecError {
 impl std::error::Error for CodecError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Root(error) => Some(error),
             Self::Interrupted | Self::Bound(_) => None,
             Self::Json(error) => Some(error),
             Self::Allocation(error) => Some(error),
@@ -37,9 +40,13 @@ impl From<serde_json::Error> for CodecError {
 impl From<std::collections::TryReserveError> for CodecError {
     fn from(error: std::collections::TryReserveError) -> Self { Self::Allocation(error) }
 }
+impl From<Error> for CodecError {
+    fn from(error: Error) -> Self { Self::Root(error) }
+}
 impl CodecError {
     pub(super) fn into_io(self) -> std::io::Error {
         match self {
+            Self::Root(_) => unreachable!("original errors stay outside serde's writer bridge"),
             Self::Interrupted => std::io::ErrorKind::Interrupted.into(),
             Self::Bound(_) => std::io::ErrorKind::InvalidData.into(),
             Self::Json(error) => std::io::Error::other(error),
@@ -50,6 +57,7 @@ impl CodecError {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(code) = native_code {
             return match self {
+                Self::Root(error) => error,
                 Self::Interrupted => unreachable!("interruption retains its original owned Root cause"),
                 Self::Bound(reason) => Error::NativeBoundary { code, reason },
                 Self::Json(source) => Error::NativeEncode { code, source, custody: None },
@@ -59,11 +67,15 @@ impl CodecError {
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let _ = native_code;
         match self {
+            Self::Root(error) => error,
             Self::Interrupted => unreachable!("interruption retains its original owned Root cause"),
             Self::Bound(reason) => Error::Invalid(reason.into()),
             Self::Json(error) => Error::Invalid(error.to_string()),
             Self::Allocation(error) => Error::Allocation(error),
         }
+    }
+    pub(super) fn into_error(self, code: Option<crate::wire::ErrorCode>) -> Error {
+        self.into_root_with_code(code.map(|_| crate::wire::ErrorCode::Invalid))
     }
 }
 
@@ -89,6 +101,12 @@ impl Drop for Meter<'_> {
 }
 
 impl Meter<'_> {
+    pub(super) fn forward(&mut self, error: CodecError) -> CodecError {
+        match error {
+            CodecError::Root(error) => { self.failure = Some(error); CodecError::Interrupted },
+            error => error,
+        }
+    }
     pub(super) fn root_error(&mut self, error: CodecError) -> Error {
         self.first_error().unwrap_or_else(|| error.into_root_with_code(self.native_code))
     }

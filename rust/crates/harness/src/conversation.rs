@@ -2963,7 +2963,7 @@ mod tests {
             10_000,
             &[],
             &state,
-        )?;
+         &mut None)?;
         for _ in 0..32 {
             assert_eq!(
                 crate::fork::InheritedConversationPrefix::select(
@@ -2972,7 +2972,7 @@ mod tests {
                     10_000,
                     &[],
                     &state
-                )?,
+                , &mut None)?,
                 pinned
             );
         }
