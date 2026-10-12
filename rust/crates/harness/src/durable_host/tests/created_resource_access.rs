@@ -1157,7 +1157,7 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
     assert_eq!(created.request.child.resource_proofs.len(),3);
     let allocation_cancellation = acyclic_fs::CancellationToken::new();
     let allocation_io = crate::filesystem::PreparationIo::from_budget(
-        test_budget(16_384, 16 * 1_024 * 1_024),&allocation_cancellation,
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),&allocation_cancellation,
     )?;
     fixture.filesystem.verify_fork_allocation_io(
         &created.seed,&created.private,Some(&allocation_io),
@@ -1220,7 +1220,7 @@ async fn explicit_unmounted_result_and_original_scratch_proof_use_same_created_s
         "text/plain","after-corruption.txt",
     ).await.is_err());
     let rejected_io = crate::filesystem::PreparationIo::from_budget(
-        test_budget(16_384, 16 * 1_024 * 1_024),&allocation_cancellation,
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024),&allocation_cancellation,
     )?;
     assert!(fixture.filesystem.verify_fork_allocation_io(
         &created.seed,result,Some(&rejected_io),
@@ -1259,7 +1259,7 @@ async fn uncertain_root_choice_is_denial_only_and_rejects_identity_substitution(
     {
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = test_work(
-            test_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
+            acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
         )?;
         assert!(matches!(
             owner.authenticated_root_binding_with_native_work(&work).await,
@@ -1279,7 +1279,7 @@ async fn native_cancel_retains_original_retry_and_never_claims_terminal_cleanup(
     let fixture = CreationFixture::new().await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = test_work(
-        test_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
     )?;
     fixture.host.cancel_with_native_work(fixture.root, &work).await?;
     fixture.host.cancel_with_native_work(fixture.root, &work).await?;
@@ -1296,7 +1296,7 @@ async fn native_cancel_retains_original_retry_and_never_claims_terminal_cleanup(
     assert_eq!(work.receipt().backend_read_operations, before);
 
     let fresh_cancellation = acyclic_fs::CancellationToken::new();
-    let mut minimal = test_budget(16_384, 16 * 1_024 * 1_024);
+    let mut minimal = acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024);
     minimal.peak_allocation_bytes = acyclic_fs::NativeMaterializationWork::accounting_state_bytes();
     let denied = test_work(
         minimal, &fresh_cancellation,
@@ -1314,7 +1314,7 @@ async fn canonical_root_preparation_witness_has_no_fabricated_scratch() -> Resul
     let fixture = CreationFixture::new().await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = test_work(
-        test_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
     )?;
     let witness = fixture.host.task_admission_readonly_witness_with_native_work(
         fixture.root, &work,
@@ -1325,7 +1325,7 @@ async fn canonical_root_preparation_witness_has_no_fabricated_scratch() -> Resul
     assert!(witness._native_custody.bytes() > 0);
     witness.verify_with_native_work(&work).await?;
     let foreign = test_work(
-        test_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
     )?;
     let before = foreign.receipt();
     assert!(matches!(witness.verify_with_native_work(&foreign).await,
@@ -1370,7 +1370,7 @@ async fn registered_native_root_keeps_configured_scope_and_same_ack_identity() -
     )?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = test_work(
-        test_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
     )?;
     let operation = OperationId::from_bytes([220; 16]);
     let expected = TaskId::from_bytes(operation.into_bytes());
@@ -1401,10 +1401,10 @@ async fn registered_native_root_rejects_foreign_input_and_child_without_fence_be
     )?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = test_work(
-        test_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
     )?;
     let foreign = test_work(
-        test_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
     )?;
     let before = foreign.receipt();
     assert!(matches!(fixture.harness.registered_root_admission_with_native_work(
@@ -1436,7 +1436,7 @@ async fn registered_native_root_cancellation_precedes_metadata_copy_and_io() -> 
     )?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = test_work(
-        test_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
     )?;
     let input = native_registered_root_input(&work)?;
     cancellation.cancel();
@@ -1458,7 +1458,7 @@ async fn authenticated_root_scope_uses_original_quota_without_created_resource_f
     let fixture = CreationFixture::new().await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = test_work(
-        test_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
     )?;
     let (admission, admission_custody) = fixture.host.admission_with_native_work(
         fixture.root_lease.operation.operation_id, &work,
@@ -1494,7 +1494,7 @@ async fn original_read_source_cannot_become_native_directory_execution_owner() -
     let fixture = CreationFixture::new().await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = test_work(
-        test_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
     )?;
     let (context, custody) = fixture.harness.durable_context_with_native_work(
         fixture.root, fixture.root_lease.operation.operation_id, &work,
@@ -1515,7 +1515,7 @@ async fn native_admission_exhaustion_precedes_source_io_and_preserves_old_ack() 
     let fixture = CreationFixture::new().await?;
     let operation = OperationId::from_bytes(fixture.root.into_bytes());
     let cancellation = acyclic_fs::CancellationToken::new();
-    let mut budget = test_budget(16_384, 16 * 1_024 * 1_024);
+    let mut budget = acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024);
     budget.allocation_operations = 1;
     let work = acyclic_fs::NativeMaterializationWork::new(budget, &cancellation)
         .expect("only the original ledger allocation");
@@ -1546,7 +1546,7 @@ async fn native_admission_json_metadata_denial_precedes_reader_and_hash() -> Res
     )?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
-        test_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
+        acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation,
     ).expect("original native metadata ledger");
     let mut io = crate::store::history::native_work_io(&work)?;
     assert!(matches!(fixture.host.read_json_with_work(&reference, &mut Some(&mut io)).await,
@@ -1592,7 +1592,7 @@ async fn native_original_root_child_grandchild_keep_exact_created_source() -> Re
     fixture.host.admit_owned(descendant.clone(), (&lease.reservation).into()).await?;
     fixture.start_next(TaskId::from_bytes([97; 16])).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(test_budget(16_384, 16 * 1_024 * 1_024), &cancellation).unwrap();
+    let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation).unwrap();
     let live = work.live_allocation_bytes();
     let root = native_fixture_scope(&fixture, OperationId::from_bytes(fixture.root.into_bytes()), &work).await?;
     assert!(root.0.parent.is_none());
@@ -1647,7 +1647,7 @@ async fn native_original_proof_cycle_and_foreign_revision_never_seal_access() ->
             _ => admission.parent = None,
         }
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(test_budget(16_384, 16 * 1_024 * 1_024), &cancellation).unwrap();
+        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation).unwrap();
         let input_custody = work.retain_owned(std::mem::size_of::<TaskAdmissionRecord>() as u64 + admission.logical_owned_bytes()?)?;
         let mut io = crate::store::history::native_work_io(&work)?;
         let result = fixture.host.authenticated_scope_with_work(&admission, &mut Some(&mut io)).await;
@@ -1660,7 +1660,7 @@ async fn native_original_proof_cycle_and_foreign_revision_never_seal_access() ->
         assert!(fixture.host.admission_with_work(OperationId::from_bytes(fixture.root.into_bytes()), &mut None).await?.parent.is_none());
     }
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(test_budget(16_384, 16 * 1_024 * 1_024), &cancellation).unwrap();
+    let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation).unwrap();
     let mut io = crate::store::history::native_work_io(&work)?;
     let admission = fixture.host.read_retained_admission_counted(created.request.child.operation_id, &mut Some(&mut io)).await.map(|(record, _)| record)?;
     let mut visited = Vec::new();
@@ -1699,7 +1699,7 @@ async fn native_stock_source_provenance_and_cancelled_preparation_are_not_author
             path: "/claim.json".into(), bytes: crate::contract::canonical_json_bytes(&source)?,
         }], &IdempotencyKey::new("native-corrupt-source-provenance")?).await?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(test_budget(16_384, 16 * 1_024 * 1_024), &cancellation).unwrap();
+        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation).unwrap();
         let live = work.live_allocation_bytes();
         let error = native_fixture_scope(&fixture, created.request.child.operation_id, &work).await;
         assert!(error.is_err());
@@ -1713,7 +1713,7 @@ async fn native_stock_source_provenance_and_cancelled_preparation_are_not_author
     let created = fixture.create_filesystem_child().await?;
     fixture.host.cancel(TaskId::from_bytes([83; 16])).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(test_budget(16_384, 16 * 1_024 * 1_024), &cancellation).unwrap();
+    let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation).unwrap();
     let mut io = crate::store::history::native_work_io(&work)?;
     let error = fixture.host.authenticated_scope_with_work(&created.request.child, &mut Some(&mut io)).await;
     assert!(matches!(error, Err(Error::NativeBoundary { code: ErrorCode::Unauthorized, .. })));
@@ -1736,7 +1736,7 @@ async fn native_declared_original_scope_mac_denial_precedes_admission_io() -> Re
     declaration.owner_scope = foreign.root("foreign-declaration",
         Capabilities::new(["operation:declare", "operation:observe"]));
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = acyclic_fs::NativeMaterializationWork::new(test_budget(16_384, 16 * 1_024 * 1_024), &cancellation)
+    let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024), &cancellation)
         .expect("original finite scope authentication ledger");
     let mut io = crate::store::history::native_work_io(&work)?;
     let before = work.receipt();

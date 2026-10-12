@@ -6083,21 +6083,6 @@ pub(crate) mod tests {
     };
     use acyclic_stream::{MemoryStream, SystemUnixMillisClock};
 
-    #[cfg(feature = "filesystem")]
-    fn test_budget(units: u64, bytes: u64) -> acyclic_fs::WorkBudget {
-        acyclic_fs::WorkBudget {
-            authority_records_read: units, authority_records_appended: units,
-            authority_bytes_read: bytes, authority_bytes_written: bytes,
-            object_probes: units, backend_read_operations: units, backend_write_operations: units,
-            durability_operations: units, page_reads: units, page_writes: units,
-            object_bytes_read: bytes, object_bytes_written: bytes, bytes_hashed: bytes,
-            bytes_copied: bytes, bytes_encoded: bytes, source_bytes_read: bytes,
-            source_path_components: units, source_entries_visited: units, output_bytes: bytes,
-            items_examined: units, items_returned: units, allocation_operations: units,
-            peak_allocation_bytes: bytes, materializations: units,
-        }
-    }
-
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn test_work(
         budget: acyclic_fs::WorkBudget, cancellation: &acyclic_fs::CancellationToken,
@@ -6117,7 +6102,7 @@ pub(crate) mod tests {
         use crate::distributed::WorkPull;
         let fixture = created_resource_access::CreationFixture::new().await?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = test_work(test_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)?;
+        let work = test_work(acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)?;
         let (admission, admission_guard) = fixture.host
             .observe_admission_with_native_work(fixture.root, &work).await?;
         assert_eq!(admission.operation_id.into_bytes(), fixture.root.into_bytes());
@@ -6188,7 +6173,7 @@ pub(crate) mod tests {
         use crate::store::history::HistoryIo as _;
         let fixture = created_resource_access::CreationFixture::new().await?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = test_work(test_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)?;
+        let work = test_work(acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)?;
         fixture.host.suspend_workflow(fixture.root, &crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation), 1, None, None, None, &mut Some(&mut crate::store::history::native_work_io(&work)?)).await?;
         let operation = OperationId::from_bytes(fixture.root.into_bytes());
         let mut original_input = None;
@@ -6245,7 +6230,7 @@ pub(crate) mod tests {
             fixture.host.tasks.clone(), fixture.host.machines.clone(), fixture.host.clock.clone(),
         )?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = test_work(test_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)?;
+        let work = test_work(acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)?;
         let (pending, pending_guard) = fixture.host.outcome_with_native_work(fixture.root, &work).await?;
         assert!(pending.is_none());
         drop(pending);
@@ -7437,7 +7422,7 @@ pub(crate) mod tests {
         )?;
         let units = 100_000;
         let bytes = 100_000_000;
-        let budget = test_budget(units, bytes);
+        let budget = acyclic_fs::performance::work_budget(units, bytes);
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = test_work(budget, &cancellation)?;
         assert!(!journal.release_if_quiescent_with_native_work(&work, &workflow).await?);
@@ -7851,20 +7836,7 @@ pub(crate) mod tests {
                 content_scope.clone(),
                 65_536,
             )?);
-            let release_budget = acyclic_fs::WorkBudget {
-                authority_records_read: 100_000, authority_records_appended: 100_000,
-                authority_bytes_read: 100_000_000, authority_bytes_written: 100_000_000,
-                object_probes: 100_000, backend_read_operations: 100_000,
-                backend_write_operations: 100_000, durability_operations: 100_000,
-                page_reads: 100_000, page_writes: 100_000,
-                object_bytes_read: 100_000_000, object_bytes_written: 100_000_000,
-                bytes_hashed: 100_000_000, bytes_copied: 100_000_000, bytes_encoded: 100_000_000,
-                source_bytes_read: 100_000_000, source_path_components: 100_000,
-                source_entries_visited: 100_000, output_bytes: 100_000_000,
-                items_examined: 100_000, items_returned: 100_000,
-                allocation_operations: 100_000, peak_allocation_bytes: 100_000_000,
-                materializations: 100_000,
-            };
+            let release_budget = acyclic_fs::performance::work_budget(100_000, 100_000_000);
             let release_cancellation = acyclic_fs::CancellationToken::new();
             let before_admission = crate::filesystem::PreparationIo::from_budget(
                 release_budget, &release_cancellation,

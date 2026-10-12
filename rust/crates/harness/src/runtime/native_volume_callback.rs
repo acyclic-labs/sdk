@@ -189,17 +189,7 @@ mod tests {
     fn work(cancellation: &acyclic_fs::CancellationToken) -> NativeMaterializationWork {
         let units = 16_384;
         let bytes = 16 * 1_024 * 1_024;
-        NativeMaterializationWork::new(acyclic_fs::WorkBudget {
-            authority_records_read: units, authority_records_appended: units,
-            authority_bytes_read: bytes, authority_bytes_written: bytes,
-            object_probes: units, backend_read_operations: units, backend_write_operations: units,
-            durability_operations: units, page_reads: units, page_writes: units,
-            object_bytes_read: bytes, object_bytes_written: bytes, bytes_hashed: bytes,
-            bytes_copied: bytes, bytes_encoded: bytes, source_bytes_read: bytes,
-            source_path_components: units, source_entries_visited: units, output_bytes: bytes,
-            items_examined: units, items_returned: units, allocation_operations: units,
-            peak_allocation_bytes: bytes, materializations: units,
-        }, cancellation).expect("original finite fixture ledger")
+        NativeMaterializationWork::new(acyclic_fs::performance::work_budget(units, bytes), cancellation).expect("original finite fixture ledger")
     }
 
     #[tokio::test]

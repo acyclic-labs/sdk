@@ -800,24 +800,10 @@ mod tests {
     use super::*;
     use crate::durable_host::tests::created_resource_access::CreationFixture;
 
-    fn budget() -> acyclic_fs::WorkBudget {
-        let units = 16_384;
-        let bytes = 16 * 1_024 * 1_024;
-        acyclic_fs::WorkBudget {
-            authority_records_read: units, authority_records_appended: units,
-            authority_bytes_read: bytes, authority_bytes_written: bytes,
-            object_probes: units, backend_read_operations: units, backend_write_operations: units,
-            durability_operations: units, page_reads: units, page_writes: units,
-            object_bytes_read: bytes, object_bytes_written: bytes, bytes_hashed: bytes,
-            bytes_copied: bytes, bytes_encoded: bytes, source_bytes_read: bytes,
-            source_path_components: units, source_entries_visited: units, output_bytes: bytes,
-            items_examined: units, items_returned: units, allocation_operations: units,
-            peak_allocation_bytes: bytes, materializations: units,
-        }
-    }
+    const BUDGET: acyclic_fs::WorkBudget = acyclic_fs::performance::work_budget(16_384, 16 * 1_024 * 1_024);
 
     fn work(cancellation: &acyclic_fs::CancellationToken) -> Result<NativeMaterializationWork> {
-        NativeMaterializationWork::new(budget(), cancellation)
+        NativeMaterializationWork::new(BUDGET, cancellation)
             .map_err(|failure| Error::NativeWork { cause: failure.error, custody: None })
     }
 
@@ -825,7 +811,7 @@ mod tests {
     async fn native_read_context_cannot_bind_an_approved_mcp_dispatch() -> Result<()> {
         let fixture = CreationFixture::new().await?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let original = NativeMaterializationWork::new(budget(), &cancellation)
+        let original = NativeMaterializationWork::new(BUDGET, &cancellation)
             .expect("finite original process binding ledger");
         let operation = fixture.root_lease.operation.operation_id;
         let (context, custody) = fixture.harness.durable_context_with_native_work(
@@ -1063,7 +1049,7 @@ mod tests {
             Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
         assert_eq!(original.receipt().backend_read_operations, reads);
 
-        let available = budget().peak_allocation_bytes - original.live_allocation_bytes();
+        let available = BUDGET.peak_allocation_bytes - original.live_allocation_bytes();
         let quota = original.claim(available)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let mut buffer = Vec::<u8>::new();
@@ -1146,7 +1132,7 @@ mod tests {
         ), Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, .. })));
         assert_eq!(original.receipt().allocation_operations, before);
 
-        let available = budget().peak_allocation_bytes - original.live_allocation_bytes();
+        let available = BUDGET.peak_allocation_bytes - original.live_allocation_bytes();
         let quota = original.claim(available)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let mut buffer = Vec::<u8>::new();

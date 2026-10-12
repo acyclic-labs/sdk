@@ -2555,7 +2555,7 @@ mod windows_name_tests {
         let directory = tempfile::tempdir()?;
         let cancellation = CancellationToken::new();
         let mut receipt = GenerationReceipt::new(
-            super::restore_recovery_tests::finite_materialization_budget(), &cancellation,
+            super::restore_recovery_tests::FINITE_MATERIALIZATION_BUDGET, &cancellation,
         )?;
         let root = receipt.run(|work| HostRoot::open(directory.path(), work))?;
         let root = receipt.owned_arc(root, 0)?;
@@ -2591,7 +2591,7 @@ mod windows_name_tests {
         )?;
         let limits = crate::model::VolumeLimits::default();
         let mut receipt = GenerationReceipt::new(
-            super::restore_recovery_tests::finite_materialization_budget(), &CancellationToken::new(),
+            super::restore_recovery_tests::FINITE_MATERIALIZATION_BUDGET, &CancellationToken::new(),
         )?;
         let namespace = NamespacePath::new(vec![valid], limits)?;
         let path = GenerationHostPath::from_namespace(&namespace, &mut receipt)?;
@@ -2677,34 +2677,7 @@ fn create_special_measured(
 mod restore_recovery_tests {
     use super::*;
 
-    pub(super) fn finite_materialization_budget() -> WorkBudget {
-        WorkBudget {
-            authority_records_read: 100_000,
-            authority_records_appended: 100_000,
-            authority_bytes_read: 64 * 1024 * 1024,
-            authority_bytes_written: 64 * 1024 * 1024,
-            object_probes: 100_000,
-            backend_read_operations: 100_000,
-            backend_write_operations: 100_000,
-            durability_operations: 100_000,
-            page_reads: 100_000,
-            page_writes: 100_000,
-            object_bytes_read: 64 * 1024 * 1024,
-            object_bytes_written: 64 * 1024 * 1024,
-            bytes_hashed: 64 * 1024 * 1024,
-            bytes_copied: 64 * 1024 * 1024,
-            bytes_encoded: 64 * 1024 * 1024,
-            source_bytes_read: 64 * 1024 * 1024,
-            source_path_components: 100_000,
-            source_entries_visited: 100_000,
-            output_bytes: 64 * 1024 * 1024,
-            items_examined: 100_000,
-            items_returned: 100_000,
-            allocation_operations: 100_000,
-            peak_allocation_bytes: 64 * 1024 * 1024,
-            materializations: 100_000,
-        }
-    }
+    pub(super) const FINITE_MATERIALIZATION_BUDGET: WorkBudget = crate::performance::work_budget(100_000, 64 * 1024 * 1024);
 
     #[test]
     fn replaced_root_is_rejected_before_destination_enumeration()
@@ -2719,7 +2692,7 @@ mod restore_recovery_tests {
         let actual = HostRoot::open(&destination, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?.identity();
         assert_ne!(original, actual);
         let cancellation = CancellationToken::new();
-        let mut receipt = GenerationReceipt::new(finite_materialization_budget(), &cancellation)?;
+        let mut receipt = GenerationReceipt::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)?;
         let failure = validate_options(
             &MaterializeOptions::native(&destination).expected_root_identity(Some(original)),
             &mut receipt,
@@ -2763,7 +2736,7 @@ mod restore_recovery_tests {
         cancelled.cancel();
         let cancelled = materialize_checkout(
             &mut checkout, &MaterializeOptions::native(cancelled_output.path()),
-            finite_materialization_budget(), &cancelled,
+            FINITE_MATERIALIZATION_BUDGET, &cancelled,
         ).await.err().ok_or("cancelled materialization was accepted")?;
         assert!(matches!(cancelled.error, MaterializeError::Cancelled(_)));
         assert_eq!(*cancelled.work, WorkCounters::UNCHARGED);
@@ -2772,7 +2745,7 @@ mod restore_recovery_tests {
         let no_write_output = tempfile::tempdir()?;
         let no_write = materialize_checkout(
             &mut checkout, &MaterializeOptions::native(no_write_output.path()),
-            WorkBudget { backend_write_operations: 0, ..finite_materialization_budget() },
+            WorkBudget { backend_write_operations: 0, ..FINITE_MATERIALIZATION_BUDGET },
             &cancellation,
         ).await.err().ok_or("zero native-write budget was accepted")?;
         assert!(matches!(no_write.error, MaterializeError::Work(_)));
@@ -2786,13 +2759,13 @@ mod restore_recovery_tests {
         let completed = materialize_checkout_paths(
             &mut checkout, std::slice::from_ref(&first),
             &MaterializeOptions::native(baseline.path()),
-            finite_materialization_budget(), &cancellation,
+            FINITE_MATERIALIZATION_BUDGET, &cancellation,
         ).await?;
         let output = tempfile::tempdir()?;
         let failed = materialize_checkout_paths(
             &mut checkout, &[first.clone(), missing.clone()],
             &MaterializeOptions::native(output.path()),
-            finite_materialization_budget(), &cancellation,
+            FINITE_MATERIALIZATION_BUDGET, &cancellation,
         ).await.err().ok_or("missing second path was accepted")?;
         assert!(matches!(failed.error, MaterializeError::MissingPath));
         assert_eq!(std::fs::read(output.path().join("a-present"))?, b"first");
@@ -2800,7 +2773,7 @@ mod restore_recovery_tests {
         assert_eq!(failed.work.materializations, completed.work.materializations);
         assert_eq!(failed.work.backend_write_operations, completed.work.backend_write_operations);
         assert!(failed.work.backend_read_operations > completed.work.backend_read_operations);
-        let mut original = GenerationReceipt::new(finite_materialization_budget(), &cancellation)?;
+        let mut original = GenerationReceipt::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)?;
         let candidate = checkout.private_candidate(original.custody.work(), &cancellation);
         let candidate = original.original_result(candidate)?;
         let reader = candidate.into_pinned_reader_with_native_work(original.custody.work(), &cancellation);
@@ -2840,7 +2813,7 @@ mod restore_recovery_tests {
             ).await.err().ok_or("logical action bypassed the original task fence")?;
             assert!(matches!(error, TaskFenceFailure::Owner));
             let after = original.meter.with_original_leaf(|work| work.work);
-            after.verify(finite_materialization_budget())?;
+            after.verify(FINITE_MATERIALIZATION_BUDGET)?;
             assert!(after.backend_read_operations > before.backend_read_operations);
             if deny_before_output {
                 assert!(!guarded_output.path().join("a-present").exists());
@@ -2853,7 +2826,7 @@ mod restore_recovery_tests {
         }
 
         let mut no_write = GenerationReceipt::new(
-            WorkBudget { backend_write_operations: 0, ..finite_materialization_budget() }, &cancellation,
+            WorkBudget { backend_write_operations: 0, ..FINITE_MATERIALIZATION_BUDGET }, &cancellation,
         )?;
         let candidate = checkout.private_candidate(no_write.custody.work(), &cancellation);
         let candidate = no_write.original_result(candidate)?;
@@ -2932,7 +2905,7 @@ mod restore_recovery_tests {
             relative,
             HostPathReplacement::Atomic,
             &MaterializeOptions::native(temporary.path()),
-            finite_materialization_budget(),
+            FINITE_MATERIALIZATION_BUDGET,
             &cancellation,
         )
         .await?;
@@ -2947,7 +2920,7 @@ mod restore_recovery_tests {
         let invalid = restore_checkout_host_path(
             &mut checkout, Path::new(""), HostPathReplacement::Atomic,
             &MaterializeOptions::native(temporary.path()),
-            finite_materialization_budget(), &cancellation,
+            FINITE_MATERIALIZATION_BUDGET, &cancellation,
         ).await;
         assert!(matches!(invalid, Err(failure) if matches!(failure.error, MaterializeError::InvalidPath)));
         Ok(())
@@ -2990,7 +2963,7 @@ mod restore_recovery_tests {
         let temporary = tempfile::tempdir()?;
         std::fs::write(temporary.path().join("file"), b"data")?;
         let cancellation = CancellationToken::new();
-        let mut receipt = GenerationReceipt::new(finite_materialization_budget(), &cancellation)?;
+        let mut receipt = GenerationReceipt::new(FINITE_MATERIALIZATION_BUDGET, &cancellation)?;
         let root = receipt.run(|work| HostRoot::open(temporary.path(), work))?;
         let root = receipt.owned_arc(root, 0)?;
         let limits = crate::model::VolumeLimits::default();
@@ -3335,7 +3308,7 @@ mod clone_tests {
                 maximum_extent_spans: 16,
                 transfer_bytes: 64 * 1024,
             },
-            super::restore_recovery_tests::finite_materialization_budget(),
+            super::restore_recovery_tests::FINITE_MATERIALIZATION_BUDGET,
             &cancellation,
         )
         .await?;

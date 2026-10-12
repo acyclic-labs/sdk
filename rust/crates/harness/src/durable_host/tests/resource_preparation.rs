@@ -299,7 +299,7 @@ async fn check_native_preparation_authority(
     ordinary: &crate::resource_preparation::TaskResourcePreparation,
 ) -> Result<()> {
     let cancellation = acyclic_fs::CancellationToken::new();
-    let work = test_work(test_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)?;
+    let work = test_work(acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)?;
     let before = work.receipt();
     assert!(matches!(ordinary.verify_creation_with_native_work(&work),
         Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
@@ -336,7 +336,7 @@ async fn check_native_preparation_authority(
 
     let foreign_cancellation = acyclic_fs::CancellationToken::new();
     let foreign = test_work(
-        test_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &foreign_cancellation,
+        acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &foreign_cancellation,
     )?;
     let before = foreign.receipt();
     assert!(matches!(token.verify_creation_with_native_work(&foreign),
