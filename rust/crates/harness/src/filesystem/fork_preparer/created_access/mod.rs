@@ -53,7 +53,7 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
         }
         #[cfg(target_arch = "wasm32")]
         let io = None;
-        let mut observer = io.as_ref().map(PreparationIo::history_io);
+        let mut observer = io.as_ref();
         let issuer = issuer.copy(
             &mut observer
                 .as_mut()

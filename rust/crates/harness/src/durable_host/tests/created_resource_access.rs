@@ -877,7 +877,7 @@ impl CreationFixture {
             input_files: Vec::new(), read_authorization: fork.authorized_source.clone(),
         };
         let (preparation, _, _invocation) = self.prepare(&request).await?;
-        let report = preparer.prepare_for_task(fork, &preparation).await?;
+        let report = preparer.prepare_for_task(fork, &Arc::new(preparation)).await?;
         let seed = report.clone().into_seed(&mut None)?;
         Ok(PreparedFilesystemChild { request, private, project, seed, report,
             parent: aggregate.reducer().copy(&mut None)?, parent_scope: fork_scope, parent_verifier: fork_issuer.verifier(&mut None).expect("verifier copy") })

@@ -3,7 +3,7 @@ use super::*;
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FilesystemForkPreparer<A, O> {
     pub(super) fn attempt<'a>(
         &'a self,
-        task: Option<&'a TaskResourcePreparation>,
+        task: Option<&'a Arc<TaskResourcePreparation>>,
     ) -> Result<PreparationAttempt<'a, A, O>> {
         let mut io = None;
         #[cfg(not(target_arch = "wasm32"))]
@@ -29,8 +29,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             preparer: self,
             io,
             task_preparation: task,
-            #[cfg(not(target_arch = "wasm32"))]
-            native_creation_guard: None,
         })
     }
 
@@ -38,7 +36,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
     pub async fn prepare_for_task(
         &self,
         request: ForkRequest,
-        preparation: &TaskResourcePreparation,
+        preparation: &Arc<TaskResourcePreparation>,
     ) -> Result<ForkReport> {
         if preparation.request().provider != self.host.provider
             || preparation.request().creation_grant != capability::FORK_PUBLISH
@@ -48,7 +46,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             ));
         }
         let attempt = self.attempt(Some(preparation))?;
-        self.check_request(&request, attempt.io.as_ref(), Some(preparation))?;
+        self.check_request(&request, attempt.io.as_ref(), Some(preparation.as_ref()))?;
         attempt.prepare(request).await
     }
 
@@ -61,9 +59,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (ForkReport, acyclic_fs::NativeAllocation)>> {
         self.require_native_projection_work(work)?;
-        let mut attempt = self.attempt(Some(preparation.as_ref()))?;
+        let attempt = self.attempt(Some(preparation))?;
         self.check_request(request, attempt.io.as_ref(), Some(preparation.as_ref()))?;
-        attempt.native_creation_guard = Some(Arc::clone(preparation));
         crate::NativeFutureBundle::new(work, || async move {
             preparation.verify_creation_with_native_work(work)?.await?;
             let io = attempt
@@ -93,7 +90,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             preparation
                 .verify_reconciliation_with_native_work(work)?
                 .await?;
-            let attempt = self.attempt(Some(preparation.as_ref()))?;
+            let attempt = self.attempt(Some(preparation))?;
             let io = attempt
                 .io
                 .as_ref()
@@ -220,7 +217,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         let digest = *bounded_io::digest(&encoded, self.io.as_ref())?.as_bytes();
         drop(encoded);
         drop(encoded_hold);
-        for (volume, _) in creation_volumes(request) {
+        for volume in creation_volumes(request) {
             let journal = allocation_ref(&self.preparer.host.provider, volume, self.io.as_ref())?;
             let retained = read_record::<A, O, AllocationClaim>(
                 &self.preparer.host,
@@ -312,9 +309,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             name,
             &creation_key,
             self.io.as_ref(),
-            self.task_preparation,
+            self.task_preparation.map(Arc::as_ref),
             #[cfg(not(target_arch = "wasm32"))]
-            self.native_creation_guard.as_ref(),
+            self.task_preparation,
         )
         .await?;
         if read_claim(
@@ -341,8 +338,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             &key,
             self.io.as_ref(),
             self.task_preparation,
-            #[cfg(not(target_arch = "wasm32"))]
-            self.native_creation_guard.as_ref(),
         )
         .await?;
         if !read_claim(
@@ -377,8 +372,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             &key,
             self.io.as_ref(),
             self.task_preparation,
-            #[cfg(not(target_arch = "wasm32"))]
-            self.native_creation_guard.as_ref(),
         )
         .await?;
         match read_report(
@@ -484,8 +477,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             &key,
             self.io.as_ref(),
             self.task_preparation,
-            #[cfg(not(target_arch = "wasm32"))]
-            self.native_creation_guard.as_ref(),
         )
         .await?;
         match read_record::<A, O, Uuid>(
@@ -539,8 +530,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             &key,
             self.io.as_ref(),
             self.task_preparation,
-            #[cfg(not(target_arch = "wasm32"))]
-            self.native_creation_guard.as_ref(),
         )
         .await?;
         match self.capture_result(journal, index, selection).await? {

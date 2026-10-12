@@ -41,7 +41,7 @@ pub(crate) fn seed_digest(
     maximum_bytes: u64,
     io: Option<&PreparationIo>,
 ) -> Result<[u8; 32]> {
-    let mut history = io.map(PreparationIo::history_io);
+    let mut history = io;
     seed.validate(
         &mut history
             .as_mut()
@@ -72,10 +72,7 @@ pub(super) async fn write_record<A: AsyncAuthorityStore, O: AsyncObjectStore, T:
     maximum_bytes: u64,
     key: &IdempotencyKey,
     io: Option<&PreparationIo>,
-    preparation: Option<&TaskResourcePreparation>,
-    #[cfg(not(target_arch = "wasm32"))] guard: Option<
-        &Arc<crate::resource_preparation::TaskResourcePreparation>,
-    >,
+    preparation: Option<&Arc<TaskResourcePreparation>>,
 ) -> Result<()> {
     let bytes = encode(value, maximum_bytes, io)?;
     let hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
@@ -90,9 +87,9 @@ pub(super) async fn write_record<A: AsyncAuthorityStore, O: AsyncObjectStore, T:
         }],
         key,
         io,
-        preparation,
+        preparation.map(Arc::as_ref),
         #[cfg(not(target_arch = "wasm32"))]
-        guard,
+        preparation,
     )
     .await;
     drop(hold);

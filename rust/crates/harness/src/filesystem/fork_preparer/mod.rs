@@ -29,7 +29,7 @@ mod journal;
 mod preparation;
 mod references;
 pub(crate) use allocations::AllocationClaim;
-use allocations::{ForkAllocationRole, creation_volumes, same_task_origin};
+use allocations::{creation_volumes, same_task_origin};
 pub(crate) use journal::seed_digest;
 use journal::*;
 use references::add_summary_readers;
@@ -71,9 +71,7 @@ struct BoundSummary {
 struct PreparationAttempt<'a, A, O> {
     preparer: &'a FilesystemForkPreparer<A, O>,
     io: Option<PreparationIo>,
-    task_preparation: Option<&'a TaskResourcePreparation>,
-    #[cfg(not(target_arch = "wasm32"))]
-    native_creation_guard: Option<Arc<crate::resource_preparation::TaskResourcePreparation>>,
+    task_preparation: Option<&'a Arc<TaskResourcePreparation>>,
 }
 
 impl<A, O> FilesystemForkPreparer<A, O> {
@@ -130,7 +128,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
         #[cfg(target_arch = "wasm32")]
         let io = None;
         let reject = |code, reason| bounded_io::failure(io.as_ref(), code, reason);
-        let mut observer = io.as_ref().map(PreparationIo::history_io);
+        let mut observer = io.as_ref();
         let mut work = observer
             .as_mut()
             .map(|io| io as &mut dyn crate::store::history::HistoryIo);
@@ -297,16 +295,24 @@ where
 
     fn prepare<'a>(&'a self, request: ForkRequest) -> BoxFuture<'a, Result<ForkReport>> {
         Box::pin(async move {
-            let attempt = self.attempt(self.task_preparation.as_deref())?;
-            self.check_request(&request, attempt.io.as_ref(), attempt.task_preparation)?;
+            let attempt = self.attempt(self.task_preparation.as_ref())?;
+            self.check_request(
+                &request,
+                attempt.io.as_ref(),
+                attempt.task_preparation.map(Arc::as_ref),
+            )?;
             attempt.prepare(request).await
         })
     }
 
     fn reconcile<'a>(&'a self, request: ForkRequest) -> BoxFuture<'a, Result<Option<ForkReport>>> {
         Box::pin(async move {
-            let this = self.attempt(self.task_preparation.as_deref())?;
-            self.check_request(&request, this.io.as_ref(), this.task_preparation)?;
+            let this = self.attempt(self.task_preparation.as_ref())?;
+            self.check_request(
+                &request,
+                this.io.as_ref(),
+                this.task_preparation.map(Arc::as_ref),
+            )?;
             if request.authorized_source.is_some() && this.task_preparation.is_none() {
                 return Err(Error::Unauthorized(
                     "authorized workspace reconciliation requires its original preparation lease"

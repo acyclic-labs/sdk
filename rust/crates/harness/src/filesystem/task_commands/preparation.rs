@@ -96,7 +96,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             }
             retained.preparer
         };
-        ready(Outcome::Succeeded(preparer.prepare_for_task(fork, &preparation).await?), None)
+        ready(Outcome::Succeeded(preparer.prepare_for_task(fork, &Arc::new(preparation)).await?), None)
     }
 
     pub(super) async fn admit_prepared_command(

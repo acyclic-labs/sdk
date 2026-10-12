@@ -592,24 +592,19 @@ pub(in crate::filesystem) async fn retain<A: AsyncAuthorityStore, O: AsyncObject
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = io.original_native_work() {
         work.spent(encoding)?;
-        return generation
-            .pin(label, io, io.cancellation())
-            .await
-            .0
-            .map(|_| ())
-            .map_err(|source| {
-                LazyError::NativeWorkspaceCause(
-                    acyclic_fs::lazy_workspace::NativeLazyWorkspaceCause {
-                        source,
-                        custody: None,
-                    },
-                )
-            });
+    } else {
+        io.spent_workspace(encoding)
+            .map_err(LazyError::WorkspaceCause)?;
+        io.remaining_workspace()
+            .map_err(LazyError::WorkspaceCause)?;
     }
-    io.spent_workspace(encoding)
-        .map_err(LazyError::WorkspaceCause)?;
-    io.remaining_workspace()
-        .map_err(LazyError::WorkspaceCause)?;
+    #[cfg(target_arch = "wasm32")]
+    {
+        io.spent_workspace(encoding)
+            .map_err(LazyError::WorkspaceCause)?;
+        io.remaining_workspace()
+            .map_err(LazyError::WorkspaceCause)?;
+    }
     let (result, recorded) = generation.pin(label, io, io.cancellation()).await;
     match result {
         Ok(_) => recorded.map_err(LazyError::WorkspaceCause),
@@ -686,25 +681,26 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
         Some(paths) => options.inherit_paths(paths),
         None => options,
     };
-    #[cfg(not(target_arch = "wasm32"))]
-    let forked = if let Some(work) = io.original_native_work() {
-        let guard = Arc::clone(native_guard.expect("native creation guard was verified"));
-        let mut before = move |work: &acyclic_fs::NativeMaterializationWork| {
-            let work = work.clone();
-            let guard = Arc::clone(&guard);
-            async move { guard.verify_creation_with_native_work(&work)?.await }
-        };
-        workspace
-            .fork_with_native_work(
-                &name,
-                options,
-                acyclic_fs::PublicationPermit::Unrestricted,
-                work,
-                io.cancellation(),
-                &mut before,
-            )
-            .await?
-    } else {
+    let forked = 'forked: {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = io.original_native_work() {
+            let guard = Arc::clone(native_guard.expect("native creation guard was verified"));
+            let mut before = move |work: &acyclic_fs::NativeMaterializationWork| {
+                let work = work.clone();
+                let guard = Arc::clone(&guard);
+                async move { guard.verify_creation_with_native_work(&work)?.await }
+            };
+            break 'forked workspace
+                .fork_with_native_work(
+                    &name,
+                    options,
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                    work,
+                    io.cancellation(),
+                    &mut before,
+                )
+                .await?;
+        }
         io.receive(
             workspace
                 .fork(
@@ -723,24 +719,6 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
                 .await,
         )?
     };
-    #[cfg(target_arch = "wasm32")]
-    let forked = io.receive(
-        workspace
-            .fork(
-                &name,
-                options,
-                acyclic_fs::PublicationPermit::Unrestricted,
-                io.remaining()?,
-                io.cancellation(),
-                |_| {
-                    std::future::ready(Ok(OperationReceipt {
-                        value: (),
-                        work: WorkCounters::default(),
-                    }))
-                },
-            )
-            .await,
-    )?;
     io.remaining()?;
     let initial = io
         .sdk(
