@@ -1589,7 +1589,27 @@ impl PreparedModelRequest {
         let bytes_hold;
         let bytes = match io {
             #[cfg(feature = "filesystem")]
-            Some(io) => io.encode_json(&request, io.remaining()?.bytes_encoded, true)?,
+            Some(io) => {
+                let encoded = io.encode_json(&request, io.remaining()?.bytes_encoded, true)?;
+                let hold = io.guard_bytes(&encoded)?;
+                let bytes = match encoded.try_into_ordinary_vec() {
+                    Ok(bytes) => bytes,
+                    Err(encoded) => {
+                        let copy = acyclic_fs::WorkCounters { bytes_copied: encoded.len() as u64, ..Default::default() };
+                        io.preflight(copy)?;
+                        io.claim(encoded.len() as u64)?;
+                        io.allocation_attempt(encoded.len() as u64)?;
+                        let mut bytes = Vec::new();
+                        bytes.try_reserve_exact(encoded.len()).map_err(Error::Allocation)?;
+                        io.claim((bytes.capacity() - encoded.len()) as u64)?;
+                        bytes.extend_from_slice(encoded.as_ref());
+                        io.charge(copy)?;
+                        bytes
+                    }
+                };
+                if let Some(hold) = hold { hold.into_retained(); }
+                bytes
+            },
             _ => crate::contract::canonical_json_bytes(&request)?,
         };
         #[cfg(feature = "filesystem")]
@@ -1658,7 +1678,7 @@ impl PreparedModelRequest {
             model_step(Some(&io), 1)?;
             let _hold;
             let bytes = io.encode_json(message, io.remaining()?.bytes_encoded, false)?;
-            _hold = io.guard_owned(bytes.capacity() as u64)?;
+            _hold = io.guard_bytes(&bytes)?;
             let mut tokens = bytes.len() as u64;
             message.content.visit_file_bindings(|file, _| {
                 model_step(Some(&io), 1)?;
@@ -1789,10 +1809,10 @@ impl PreparedModelRequest {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 Some(io) if io.original_native_work().is_some() => {
                     let work = io.original_native_work().expect("native branch retains original work");
-                    verifier.verify_with_native_work(&reference, reference.descriptor().byte_length(), work).await?;
+                    verifier.verify_with_native_work(&reference, reference.descriptor().byte_length(), work)?.await?;
                     let bytes = verifier.read_with_native_work(
                         &reference, reference.descriptor().byte_length(), work,
-                    ).await?;
+                    )?.await?;
                     bytes
                 }
                 #[cfg(feature = "filesystem")]
@@ -1943,7 +1963,7 @@ async fn model_verify_content_files(
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Some(io) if io.original_native_work().is_some() => {
                 verifier.verify_with_native_work(file, file.descriptor().byte_length(),
-                    io.original_native_work().expect("native branch retains original work")).await?;
+                    io.original_native_work().expect("native branch retains original work"))?.await?;
             }
             #[cfg(feature = "filesystem")]
             Some(io) => {
