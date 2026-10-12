@@ -1,8 +1,8 @@
 use super::*;
 
 #[tokio::test]
-async fn a_half_full_journal_is_compacted_into_a_snapshot()
--> Result<(), Box<dyn std::error::Error>> {
+async fn a_half_full_journal_is_compacted_into_a_snapshot() -> Result<(), Box<dyn std::error::Error>>
+{
     let directory = tempfile::tempdir()?;
     let limits = compacting_limits();
     let provider = LocalStream::open(directory.path(), limits).await?;
@@ -29,7 +29,8 @@ async fn a_half_full_journal_is_compacted_into_a_snapshot()
             limit: 21,
         })
         .await?
-        .try_collect::<Vec<_>>().await?;
+        .try_collect::<Vec<_>>()
+        .await?;
     assert_eq!(history.len(), 21);
     for (index, record) in (0_u64..21).zip(&history) {
         assert_eq!(record.sequence, index);
@@ -50,7 +51,8 @@ async fn a_half_full_journal_is_compacted_into_a_snapshot()
             limit: 21,
         })
         .await?
-        .try_collect::<Vec<_>>().await?;
+        .try_collect::<Vec<_>>()
+        .await?;
     assert_eq!(fork_history, history);
     for (index, outcome) in (0..).zip(&outcomes) {
         assert_eq!(&append_keyed(&reopened, index).await?, outcome, "{index}");

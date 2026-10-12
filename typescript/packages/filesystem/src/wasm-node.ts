@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
 
-import type { WasmBindings } from "./contracts.js";
+import type { WasmBindings } from "./binding-types.js";
 
 let bindingsPromise: Promise<WasmBindings> | undefined;
 

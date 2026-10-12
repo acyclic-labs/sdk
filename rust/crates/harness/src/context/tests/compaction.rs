@@ -35,7 +35,7 @@ use super::*;
             }).collect(),
             current_input_index: Some(3), ..Context::default()
         };
-        let prefix = compaction::clone_context_prefix(&source, 2, &mut None)?.0;
+        let prefix = compaction::clone_context(&source, Some(2), &mut None)?.0;
         let output = message(ModelRole::Assistant, "summary")?.content.file_refs().next().unwrap().clone();
         let summary = ContextSummary { operation_id: crate::OperationId::new(), step: 0,
             source_messages: 2, source_digest: crate::contract::canonical_json_digest(&prefix)?, output };

@@ -35,7 +35,7 @@ pub fn read_file_range(
         adapter,
         super::schema::input::<ReadInput>()?,
         super::schema::output::<ReadResult>()?,
-        projection.schema()?,
+        mode.schema::<ReadResult>()?,
         Arc::new(projection),
         json!({"read":options,"maximum_result_bytes":maximum_result_bytes,"projection":mode}),
     )
@@ -60,7 +60,7 @@ pub fn search_file(
         adapter,
         super::schema::input::<SearchInput>()?,
         super::schema::output::<SearchResult>()?,
-        projection.schema()?,
+        mode.schema::<SearchResult>()?,
         Arc::new(projection),
         json!({"search":options,"maximum_result_bytes":maximum_result_bytes,"projection":mode}),
     )

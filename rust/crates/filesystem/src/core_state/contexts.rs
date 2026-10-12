@@ -454,7 +454,7 @@ impl Namespace {
                     .map(|allocation| allocation.work())
                 {
                     Some(work) => {
-                        let (paths, allocation) = self.record(CORE_LOG_FAMILY, &[0; 16], work)?;
+                        let paths = self.record(CORE_LOG_FAMILY, &[0; 16])?;
                         materialization_lock(paths, work, |_| {
                             let control = work.claim(
                                 std::mem::size_of::<RwLock<Residents>>() as u64,

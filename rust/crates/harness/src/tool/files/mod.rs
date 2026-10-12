@@ -99,11 +99,14 @@ fn assemble(adapter: FileTool) -> Result<Tool> {
         output_schema,
     };
     definition.validate(&mut None)?;
-    let implementation = Arc::new(adapter);
+    let projection: Arc<dyn ToolProjection> = match adapter {
+        FileTool::Read => Arc::new(ReadFileProjection(super::schema::ProjectionMode::Full)),
+        _ => Arc::new(FileResultProjection(super::schema::ProjectionMode::Full)),
+    };
     Ok(Tool {
         definition,
-        executor: implementation.clone(),
-        projection: implementation,
+        executor: Arc::new(adapter),
+        projection,
     })
 }
 

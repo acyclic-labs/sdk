@@ -6476,7 +6476,7 @@ pub(crate) mod tests {
             request: Mutex::new(None),
         });
         let mut providers = EffectRegistry::default().with_result_resolver(payloads.clone());
-        providers.register(receipt.clone())?;
+        providers.register(receipt.clone(), None)?;
         let conversation = Authority {
             kind: AggregateKind::Conversation,
             id: "effect-conversation".into(),

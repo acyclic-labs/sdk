@@ -1062,7 +1062,7 @@ fn stock_context_prefix(
         ));
     }
     with_history_io(io, |work| {
-        crate::context::clone_context_prefix(context, through, work).map(|(prefix, _)| prefix)
+        crate::context::clone_context(context, Some(through), work).map(|(prefix, _)| prefix)
     })
 }
 

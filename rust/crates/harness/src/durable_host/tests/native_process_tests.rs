@@ -542,7 +542,7 @@ where
 
     fn effects(&self, process: Arc<Process<P>>) -> Result<ConversationEffectHost<P>> {
         let mut registry = EffectRegistry::default().with_result_resolver(self.content.clone());
-        registry.register(process)?;
+        registry.register(process, None)?;
         ConversationEffectHost::new(
             self.owner.stream(),
             self.issuer.verifier(&mut None).expect("verifier copy").audience().clone(),
@@ -2236,7 +2236,7 @@ async fn reopen_native(
         .await?,
     );
     let mut registry = EffectRegistry::default().with_result_resolver(content.clone());
-    registry.register(process.clone())?;
+    registry.register(process.clone(), None)?;
     let effects = ConversationEffectHost::new(
         owner.stream(),
         issuer.verifier(&mut None).expect("verifier copy").audience().clone(),

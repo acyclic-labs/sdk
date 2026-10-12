@@ -188,13 +188,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
         let reads = if requests.is_empty() {
             Vec::new()
         } else {
-            let receipt = self
+            let receipt = ({ let __object_args = (&requests, remaining(work, budget)?, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = self
                 .volume
                 .fs
                 .inner
-                .objects
-                .read_many(&requests, remaining(work, budget)?, cancellation)
-                .await
+                .objects.read_many(__object_args.0, &mut __object_work).await.map(|(values, _allocation)| values); __object_work.receipt(__object_result) })
                 .map_err(|failure| failure.map_with_prior_work(work, FsError::Object))?;
             work = add(work, receipt.work)?;
             receipt.value

@@ -40,18 +40,21 @@ pub fn json_projection<T: JsonSchema>() -> Result<Value> {
 
 pub(crate) fn project_json<T: Serialize>(
     value: &T,
+    work: crate::NativeWork<'_>,
+) -> Result<(Value, crate::NativeCustody)> {
+    project(&JsonProjection::Json { value }, work)
+}
+
+fn project<T: Serialize>(
+    projection: &T,
     _work: crate::NativeWork<'_>,
 ) -> Result<(Value, crate::NativeCustody)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = _work {
-        return super::value(
-            &JsonProjection::Json { value },
-            work.remaining()?.bytes_encoded,
-            work,
-        )
-        .map(|(value, custody)| (value, Some(custody)));
+        return super::value(projection, work.remaining()?.bytes_encoded, work)
+            .map(|(value, custody)| (value, Some(custody)));
     }
-    serde_json::to_value(JsonProjection::Json { value })
+    serde_json::to_value(projection)
         .map(|value| (value, None))
         .map_err(|error| Error::Invalid(error.to_string()))
 }
@@ -65,6 +68,16 @@ pub enum ProjectionMode {
     Full,
     /// Summary and original immutable file reference; omitted details stay canonical.
     Reference,
+}
+
+impl ProjectionMode {
+    /// Generates the complete model envelope for one canonical result type.
+    pub fn schema<T: JsonSchema>(self) -> Result<Value> {
+        match self {
+            Self::Full => json_projection::<T>(),
+            Self::Reference => reference_projection(),
+        }
+    }
 }
 
 #[derive(Serialize, JsonSchema)]
@@ -110,14 +123,7 @@ pub(crate) fn project_reference(
             },
         ],
     };
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = _work {
-        return super::value(&projection, work.remaining()?.bytes_encoded, work)
-            .map(|(value, custody)| (value, Some(custody)));
-    }
-    serde_json::to_value(projection)
-        .map(|value| (value, None))
-        .map_err(|error| Error::Invalid(error.to_string()))
+    project(&projection, _work)
 }
 
 #[cfg(test)]
@@ -172,13 +178,13 @@ mod tests {
                 FileResultProjection(ProjectionMode::Reference)
                     .project(&invocation, &published, None)?
                     .0,
-                FileResultProjection(ProjectionMode::Reference).schema()?,
+                ProjectionMode::Reference.schema::<FileResult>()?,
             ),
             (
                 ReadFileProjection(ProjectionMode::Reference)
                     .project(&invocation, &read, None)?
                     .0,
-                ReadFileProjection(ProjectionMode::Reference).schema()?,
+                ProjectionMode::Reference.schema::<String>()?,
             ),
         ] {
             crate::tool::validate_value(&schema, &projection, "file reference projection", None)?;
@@ -223,7 +229,7 @@ mod tests {
         let mut tool = files::write_file()?;
         let original_digest = tool.definition.digest()?;
         let projector = FileResultProjection(ProjectionMode::Reference);
-        tool.definition.projection_schema = projector.schema()?;
+        tool.definition.projection_schema = ProjectionMode::Reference.schema::<FileResult>()?;
         tool.projection = std::sync::Arc::new(projector);
         assert_ne!(tool.definition.digest()?, original_digest);
         assert_eq!(

@@ -18,7 +18,10 @@ impl<P> Clone for Stream<P> {
 impl<P: StreamProvider> Stream<P> {
     /// Opens one validated path on its provider.
     pub fn new(provider: Arc<P>, path: impl AsRef<str>) -> Result<Self, StreamError> {
-        Ok(Self { provider, path: StreamPath::new(path)? })
+        Ok(Self {
+            provider,
+            path: StreamPath::new(path)?,
+        })
     }
 
     /// Permanent path.

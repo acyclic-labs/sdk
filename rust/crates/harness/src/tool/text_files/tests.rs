@@ -78,7 +78,12 @@ fn replaceable_projections_preserve_canonical_results_and_real_model_wire() -> R
     for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
         let projector = ReadProjection(mode);
         let projected = projector.project(&input, &result, None)?.0;
-        super::super::validate_value(&projector.schema()?, &projected, "read projection", None)?;
+        super::super::validate_value(
+            &mode.schema::<ReadResult>()?,
+            &projected,
+            "read projection",
+            None,
+        )?;
         if mode == ProjectionMode::Full {
             assert_eq!(projected, json!({"kind":"json","value":result.value}));
         } else {
@@ -105,7 +110,12 @@ fn replaceable_projections_preserve_canonical_results_and_real_model_wire() -> R
     for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
         let projector = SearchProjection(mode);
         let projected = projector.project(&input, &result, None)?.0;
-        super::super::validate_value(&projector.schema()?, &projected, "search projection", None)?;
+        super::super::validate_value(
+            &mode.schema::<SearchResult>()?,
+            &projected,
+            "search projection",
+            None,
+        )?;
         if mode == ProjectionMode::Full {
             assert_eq!(projected, json!({"kind":"json","value":result.value}));
         } else {

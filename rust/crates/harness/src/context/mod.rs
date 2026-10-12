@@ -26,7 +26,7 @@ mod discovery;
 pub use discovery::*;
 mod compaction;
 pub use compaction::*;
-pub(crate) use compaction::clone_context_prefix;
+pub(crate) use compaction::clone_context;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use compaction::clone_retention_native;
 mod snapshot;

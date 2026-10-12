@@ -4,7 +4,9 @@ use super::*;
 pub(super) fn record_frame(
     meter: Option<&Arc<dyn NativeReadMeter>>,
     late: &mut Option<&mut std::io::Result<()>>,
-    encoded: u64, copied: u64, hashed: u64,
+    encoded: u64,
+    copied: u64,
+    hashed: u64,
 ) -> std::io::Result<()> {
     if let Some(meter) = meter {
         let recorded = meter.record_codec(encoded, copied, hashed);
@@ -21,8 +23,10 @@ pub(super) fn encode_frame(
     command: &Command,
     committed_at_millis: u64,
     meter: Option<&Arc<dyn NativeReadMeter>>,
-) -> Result<MemoryOutput<Vec<u8>>, LocalStreamError> {
-    if let Some(meter) = meter { meter.admit_examination(1, 0)?; }
+) -> Result<NativeStreamOutput<Vec<u8>>, LocalStreamError> {
+    if let Some(meter) = meter {
+        meter.admit_examination(1, 0)?;
+    }
     let journal = crate::wire_codec::CanonicalWire::Journal(command);
     if let Some(meter) = meter {
         meter.record_examination(1, 0)?;
@@ -39,11 +43,18 @@ pub(super) fn encode_frame(
     if encoded_length > MAX_COMMAND_BYTES {
         return Err(LocalStreamError::InvalidLimits);
     }
-    let capacity = encoded_length.checked_add(4 + FRAME_TIME_BYTES + FRAME_CHECKSUM_BYTES)
+    let capacity = encoded_length
+        .checked_add(4 + FRAME_TIME_BYTES + FRAME_CHECKSUM_BYTES)
         .ok_or(LocalStreamError::InvalidLimits)?;
     let mut frame = crate::memory::vec(meter, capacity)?;
-    write_frame(&mut frame.value, &journal, committed_at_millis, encoded_length,
-        meter, None)?;
+    write_frame(
+        &mut frame.value,
+        &journal,
+        committed_at_millis,
+        encoded_length,
+        meter,
+        None,
+    )?;
     Ok(frame)
 }
 
@@ -55,21 +66,40 @@ pub(super) fn write_frame(
     meter: Option<&Arc<dyn NativeReadMeter>>,
     mut late: Option<&mut std::io::Result<()>>,
 ) -> Result<(), LocalStreamError> {
-    let capacity = encoded_length.checked_add(4 + FRAME_TIME_BYTES + FRAME_CHECKSUM_BYTES)
+    let capacity = encoded_length
+        .checked_add(4 + FRAME_TIME_BYTES + FRAME_CHECKSUM_BYTES)
         .ok_or(LocalStreamError::InvalidLimits)?;
     let length = u32::try_from(capacity - 4 - FRAME_CHECKSUM_BYTES)
-        .map_err(|_| LocalStreamError::InvalidLimits)?.to_le_bytes();
-    if capacity > encoded.capacity() { return Err(LocalStreamError::InvalidLimits); }
+        .map_err(|_| LocalStreamError::InvalidLimits)?
+        .to_le_bytes();
+    if capacity > encoded.capacity() {
+        return Err(LocalStreamError::InvalidLimits);
+    }
     encoded.clear();
-    if late.is_none() && let Some(meter) = meter {
+    if late.is_none()
+        && let Some(meter) = meter
+    {
         meter.admit_codec(encoded_length as u64, capacity as u64, 0)?;
     }
     encoded.extend_from_slice(&length);
     encoded.extend_from_slice(&committed_at_millis.to_le_bytes());
-    journal.encode(encoded).map_err(|_| LocalStreamError::InvalidLimits)?;
-    record_frame(meter, &mut late, encoded_length as u64, (capacity - FRAME_CHECKSUM_BYTES) as u64, 0)?;
+    journal
+        .encode(encoded)
+        .map_err(|_| LocalStreamError::InvalidLimits)?;
+    record_frame(
+        meter,
+        &mut late,
+        encoded_length as u64,
+        (capacity - FRAME_CHECKSUM_BYTES) as u64,
+        0,
+    )?;
     let command_bytes = encoded.get(4..).ok_or(LocalStreamError::InvalidLimits)?;
-    let checksum = checksum(FRAME_DOMAIN, &[&length, command_bytes], meter, late.as_deref_mut())?;
+    let checksum = checksum(
+        FRAME_DOMAIN,
+        &[&length, command_bytes],
+        meter,
+        late.as_deref_mut(),
+    )?;
     encoded.extend_from_slice(&checksum);
     record_frame(meter, &mut late, 0, FRAME_CHECKSUM_BYTES as u64, 0)?;
     Ok(())
@@ -95,7 +125,10 @@ pub(super) fn command_length(length_bytes: [u8; 4]) -> Option<usize> {
 }
 
 /// Reads one checksummed frame, returning `None` for a torn or invalid frame.
-pub(super) fn read_frame(file: &mut File, remaining: u64) -> Result<Option<Vec<u8>>, LocalStreamError> {
+pub(super) fn read_frame(
+    file: &mut File,
+    remaining: u64,
+) -> Result<Option<Vec<u8>>, LocalStreamError> {
     let mut length_bytes = [0_u8; 4];
     if remaining < 4 {
         return Ok(None);
@@ -111,7 +144,10 @@ pub(super) fn read_frame(file: &mut File, remaining: u64) -> Result<Option<Vec<u
     file.read_exact(&mut encoded)?;
     let mut expected = [0_u8; FRAME_CHECKSUM_BYTES];
     file.read_exact(&mut expected)?;
-    Ok((checksum(FRAME_DOMAIN, &[&length_bytes, &encoded], None, None)? == expected).then_some(encoded))
+    Ok(
+        (checksum(FRAME_DOMAIN, &[&length_bytes, &encoded], None, None)? == expected)
+            .then_some(encoded),
+    )
 }
 
 /// Whether a whole frame with a matching checksum starts `bytes`.
@@ -127,7 +163,11 @@ pub(super) fn frame_is_valid(bytes: &[u8]) -> bool {
     };
     bytes
         .get(4 + length..4 + length + FRAME_CHECKSUM_BYTES)
-        .is_some_and(|expected| expected == checksum(FRAME_DOMAIN, &[length_bytes, encoded], None, None).expect("unmetered checksum"))
+        .is_some_and(|expected| {
+            expected
+                == checksum(FRAME_DOMAIN, &[length_bytes, encoded], None, None)
+                    .expect("unmetered checksum")
+        })
 }
 
 pub(super) fn validate_limits(limits: LocalStreamLimits) -> Result<(), LocalStreamError> {
@@ -148,7 +188,9 @@ pub(super) fn validate_limits(limits: LocalStreamLimits) -> Result<(), LocalStre
     }
 }
 
-pub(super) fn encode_limits(limits: LocalStreamLimits) -> Result<[u8; LIMITS_BYTES], LocalStreamError> {
+pub(super) fn encode_limits(
+    limits: LocalStreamLimits,
+) -> Result<[u8; LIMITS_BYTES], LocalStreamError> {
     let memory = limits.memory;
     let values = [
         u64::try_from(memory.paths).map_err(|_| LocalStreamError::InvalidLimits)?,
@@ -167,7 +209,10 @@ pub(super) fn encode_limits(limits: LocalStreamLimits) -> Result<[u8; LIMITS_BYT
     Ok(encoded)
 }
 
-pub(super) fn encode_header(limits: LocalStreamLimits, epoch: u64) -> Result<[u8; HEADER_BYTES], LocalStreamError> {
+pub(super) fn encode_header(
+    limits: LocalStreamLimits,
+    epoch: u64,
+) -> Result<[u8; HEADER_BYTES], LocalStreamError> {
     let mut encoded = [0_u8; HEADER_BYTES];
     let (magic, rest) = encoded.split_at_mut(HEADER_MAGIC.len());
     magic.copy_from_slice(HEADER_MAGIC);
@@ -186,16 +231,22 @@ pub(super) fn decode_header(header: &[u8], limits: LocalStreamLimits) -> Option<
 }
 
 pub(super) fn checksum(
-    domain: &[u8], parts: &[&[u8]],
-    meter: Option<&Arc<dyn NativeReadMeter>>, mut late: Option<&mut std::io::Result<()>>,
+    domain: &[u8],
+    parts: &[&[u8]],
+    meter: Option<&Arc<dyn NativeReadMeter>>,
+    mut late: Option<&mut std::io::Result<()>>,
 ) -> std::io::Result<[u8; 32]> {
     let hashed = domain.len() + parts.iter().map(|part| part.len()).sum::<usize>();
-    if late.is_none() && let Some(meter) = meter {
+    if late.is_none()
+        && let Some(meter) = meter
+    {
         meter.admit_codec(0, 0, hashed as u64)?;
     }
     let mut hasher = Sha256::new();
     hasher.update(domain);
-    for part in parts { hasher.update(part); }
+    for part in parts {
+        hasher.update(part);
+    }
     let checksum = hasher.finalize().into();
     record_frame(meter, &mut late, 0, 0, hashed as u64)?;
     Ok(checksum)

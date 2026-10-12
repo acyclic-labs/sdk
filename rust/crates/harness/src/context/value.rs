@@ -161,5 +161,5 @@ impl ContextInput {
     }
 }
 pub(crate) fn copy_context(context: &Context, io: Option<&crate::executor::PreparationIo>) -> Result<Context> {
-    crate::executor::with_history_io(io, |work| compaction::clone_context(context, work).map(|(copy, _)| copy))
+    crate::executor::with_history_io(io, |work| compaction::clone_context(context, None, work).map(|(copy, _)| copy))
 }

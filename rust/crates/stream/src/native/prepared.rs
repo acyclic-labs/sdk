@@ -17,7 +17,12 @@ impl PreparedNativeCommit {
         record: Arc<NativeCommitRecordSlot>,
         maximum_record_bytes: usize,
     ) -> Self {
-        Self { future: Some(future), recovery: Some(recovery), record, maximum_record_bytes }
+        Self {
+            future: Some(future),
+            recovery: Some(recovery),
+            record,
+            maximum_record_bytes,
+        }
     }
 
     /// Transfers the already funded same-key inspection future exactly once.
@@ -37,21 +42,28 @@ impl PreparedNativeCommit {
             Ok(record)
         };
         self.record.supply(record);
-        self.future.take().expect("prepared Commit future is transferred once")
+        self.future
+            .take()
+            .expect("prepared Commit future is transferred once")
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl Drop for PreparedNativeCommit {
     fn drop(&mut self) {
-        if self.future.is_some() { self.record.close(); }
+        if self.future.is_some() {
+            self.record.close();
+        }
     }
 }
 
 /// One private ingress cell, not a journal, authority or request queue.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) struct NativeCommitRecordSlot {
-    state: std::sync::Mutex<(Option<Result<OwnedBytes, StreamError>>, Option<std::task::Waker>)>,
+    state: std::sync::Mutex<(
+        Option<Result<OwnedBytes, StreamError>>,
+        Option<std::task::Waker>,
+    )>,
     ready: std::sync::Condvar,
     _allocation: acyclic_native_runtime::ReadAllocation,
 }
@@ -76,46 +88,73 @@ impl NativeCommitRecordSlot {
 
     pub(crate) async fn receive(&self) -> Result<OwnedBytes, StreamError> {
         futures::future::poll_fn(|context| {
-            let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Some(record) = &mut state.0 {
-                return std::task::Poll::Ready(std::mem::replace(record, Err(StreamError::Unavailable)));
+                return std::task::Poll::Ready(std::mem::replace(
+                    record,
+                    Err(StreamError::Unavailable),
+                ));
             }
-            if !state.1.as_ref().is_some_and(|waiter| waiter.will_wake(context.waker())) {
+            if !state
+                .1
+                .as_ref()
+                .is_some_and(|waiter| waiter.will_wake(context.waker()))
+            {
                 state.1 = Some(context.waker().clone());
             }
             std::task::Poll::Pending
-        }).await
+        })
+        .await
     }
 
     /// The already submitted Local journal worker waits without holding a provider visibility or journal lock.
     #[cfg(feature = "local")]
     pub(crate) fn receive_blocking(&self) -> Result<OwnedBytes, StreamError> {
-        let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         loop {
             if let Some(record) = &mut state.0 {
                 return std::mem::replace(record, Err(StreamError::Unavailable));
             }
-            state = self.ready.wait(state).unwrap_or_else(std::sync::PoisonError::into_inner);
+            state = self
+                .ready
+                .wait(state)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
     }
 
     fn supply(&self, record: Result<OwnedBytes, StreamError>) {
         let waiter = {
-            let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.0 = Some(record);
             state.1.take()
         };
-        if let Some(waiter) = waiter { waiter.wake(); }
+        if let Some(waiter) = waiter {
+            waiter.wake();
+        }
         self.ready.notify_one();
     }
 
     pub(crate) fn close(&self) {
         let waiter = {
-            let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut state = self
+                .state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             state.0.get_or_insert(Err(StreamError::Unavailable));
             state.1.take()
         };
-        if let Some(waiter) = waiter { waiter.wake(); }
+        if let Some(waiter) = waiter {
+            waiter.wake();
+        }
         self.ready.notify_one();
     }
 }

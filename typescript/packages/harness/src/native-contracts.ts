@@ -11,7 +11,7 @@ import type {
   WasmTaskAdmissionIdentities, WasmTaskAdmissionInput, WasmTaskAdmissionWire,
   WasmMachineIdentityWire, WasmNativeLimitsWire, WasmTaskRunLimitsWire,
   WasmExecutionPlacementWire, WasmWorkflowAdmissionWire,
-  WasmTaskIdentityInput, WasmTurnPreparation, ModelContent as ModelContentWire, ModelContentPart as ModelContentPartWire,
+  WasmTaskIdentityInput, WasmTurnPreparation, ModelContent as ModelContentWire,
   WasmModelEventAdmission, WasmModelEventAdmissionState, ModelRole as ModelRoleWire,
   WasmTaskDependencyInput,
   McpCatalog, McpStdioRequest, McpCallbackRequest,
@@ -25,17 +25,15 @@ import type {
 import type { ExtensionAdmission, ExtensionConfiguration, ExtensionDependency, ExtensionRecord, ExtensionStateMigration } from "./extension.js";
 import type { ApprovalBinding, InteractionId, InteractionResolution, InteractionTicket, ResolutionReceipt } from "./interaction.js";
 import type { ProjectMergeReceipt } from "./project.js";
-import type { BatchAdmissionRequest, PrivateDirectoryPage, TaskChildrenPage } from "./runtime.js";
+import type { BatchAdmissionRequest } from "./task-group.js";
+import type { PrivateDirectoryPage } from "./content.js";
+import type { TaskChildrenPage } from "./task.js";
 import type { ModelContent, ModelEvent, ToolDefinition, ToolJsonSchema, ToolJsonValue, ToolInvocation, ToolResult, ToolResultContent } from "./model.js";
 import type { IdentityKind, IdentityKindMap, OperationId, TaskId } from "./index.js";
 import { assertHarnessWasmExports, ensureHarnessWasm } from "./wasm-runtime.js";
 import { HARNESS_MAX_ATTACHMENT_COUNT } from "./limits-contract.js";
 
-/** Rust generated admission projection input and output shapes. */
-export type TaskAdmissionProjectionInput = WasmTaskAdmissionInput;
-export type BatchAdmissionProjectionInput = WasmBatchAdmissionInput;
-/** JSON value accepted by the Rust admission ABI after schema validation. */
-export type NativeJsonValue = WasmToolJsonValue;
+export type { WasmTaskAdmissionInput, WasmBatchAdmissionInput, WasmToolJsonValue, WasmTaskAdmissionWire, WasmDurableBatchWire, WasmTaskAdmissionIdentities, WasmExecutionPlacementWire, WasmTaskRunLimitsWire, WasmNativeLimitsWire, WasmMachineIdentityWire } from "../generated/wasm/acyclic_harness_wasm.js";
 /** MCP contracts are emitted from the production Rust protocol owner. */
 export type { McpCatalog, McpSchemaExposure, McpDiscoveryPolicy, McpToolDefinition, McpToolResult, McpToolsPage,
   McpStdioRequest, McpStdioMethod, McpCallbackPolicy, McpCallbackRequest,
@@ -49,14 +47,7 @@ export type { Context, ContextAttribute, ContextSourceValue, ContextSelection,
   ContextRoot, InstructionScope, ContextDiscoveryPolicy, ContextDiscoveryLimits,
   ContextDiscovery, ContextReloadPolicy, ContextDiscoveryReader, ContextDirectoryQuery,
   ContextReadQuery, ContextPathResult, DiscoveredContext, PinnedContextPath, SkillMetadata } from "../generated/wasm/acyclic_harness_wasm.js";
-export type TaskAdmissionWire = WasmTaskAdmissionWire;
-export type DurableBatchWire = WasmDurableBatchWire;
-export type TaskAdmissionIdentities = WasmTaskAdmissionIdentities;
 
-/** Public names are aliases to the declarations emitted from the Rust WASM module. */
-export type ExecutionPlacementWire = WasmExecutionPlacementWire;
-export type TaskRunLimitsWire = WasmTaskRunLimitsWire;
-export type NativeLimitsWire = WasmNativeLimitsWire;
 
 /** Rust-owned per-step model event admission state with cumulative text bytes. */
 export type ModelEventAdmissionState = Readonly<Omit<WasmModelEventAdmissionState, "calls"> & Readonly<{
@@ -73,8 +64,6 @@ export type ModelEventAdmission = Omit<WasmModelEventAdmission, "event" | "state
 export type NativeFileRef = Omit<FileRef, "descriptor"> & Readonly<{
   descriptor: Omit<FileDescriptor, "byte_length"> & Readonly<{ byte_length: number | bigint }>;
 }>;
-export type NativeModelContentPart = ModelContentPartWire;
-export type NativeModelContent = ModelContentWire;
 export interface NativeSelectedModelContext {
   readonly selection: Readonly<{
     readonly conversation_revision: bigint;
@@ -83,11 +72,10 @@ export interface NativeSelectedModelContext {
   }>;
   readonly messages: readonly Readonly<{
     role: ModelRoleWire;
-    content: NativeModelContent;
+    content: ModelContentWire;
   }>[];
 }
 
-export type MachineIdentityWire = WasmMachineIdentityWire;
 /** Exact Rust projection for a pinned resumable-tool machine admission. */
 export type WorkflowAdmissionWire = Readonly<WasmWorkflowAdmissionWire>;
 
@@ -107,11 +95,11 @@ interface ContractValues {
   readonly attachments: ReferencedAttachments;
   readonly conversation_message: ConversationMessage;
   readonly task_outcome: TaskOutcomeRecord;
-  readonly execution_placement: ExecutionPlacementWire;
-  readonly task_admission: TaskAdmissionWire;
+  readonly execution_placement: WasmExecutionPlacementWire;
+  readonly task_admission: WasmTaskAdmissionWire;
   readonly workflow_admission: WorkflowAdmissionWire;
-  readonly machine_identity: MachineIdentityWire;
-  readonly durable_batch_request: DurableBatchWire;
+  readonly machine_identity: WasmMachineIdentityWire;
+  readonly durable_batch_request: WasmDurableBatchWire;
   readonly resource_revision: ResourceRevision;
   readonly fork_request: ForkRequest;
   readonly fork_report: ForkReport;
@@ -127,37 +115,37 @@ interface ContractValues {
 /** Rust performs admission validation; TypeScript preserves the exact public shape. */
 export class NativeContracts {
   static #instance: NativeContracts | undefined;
-  private constructor(private readonly native: typeof wasm) {}
+  private constructor() {}
 
   /** Initialize the shared WASM instance before synchronous contract calls. */
   static async create(): Promise<NativeContracts> {
     await ensureHarnessWasm();
     if (NativeContracts.#instance === undefined) {
       assertHarnessWasmExports(wasm);
-      NativeContracts.#instance = new NativeContracts(wasm);
+      NativeContracts.#instance = new NativeContracts();
     }
     return NativeContracts.#instance;
   }
 
   /** The replaceable default comes directly from the production Rust executor's policy. */
   defaultCompactionPolicy(): CompactionPolicy {
-    return freezeNative(normalizeNativeValue(this.native.defaultCompactionPolicy())) as CompactionPolicy;
+    return freezeNative(normalizeNativeValue(wasm.defaultCompactionPolicy())) as CompactionPolicy;
   }
 
   /** Rust validates selected capacity and returns the finite effective output ceiling. */
   validateThresholdCompaction(config: ThresholdCompaction, capacity: ModelContextCapacity,
     outputTokens?: number): number {
-    return this.native.validateThresholdCompaction(config, capacity, outputTokens);
+    return wasm.validateThresholdCompaction(config, capacity, outputTokens);
   }
 
   /** Rust prepares the canonical request and binds the provider's exact additive counts. */
   validateModelTokenCount(request: ModelRequestWire, count: ModelTokenCount, limits: Limits): bigint {
-    return this.native.validateModelTokenCount(request, count, limits);
+    return wasm.validateModelTokenCount(request, count, limits);
   }
 
   /** Admit task dependencies with the same graph and capability rules as Rust. */
   validateTaskRequirements(value: WasmTaskDependencyInput): void {
-    this.native.validateTaskRequirements(value);
+    wasm.validateTaskRequirements(value);
   }
 
   validate<Family extends string>(kind: "provider_ref", value: ProviderRef<Family>): ProviderRef<Family>;
@@ -174,8 +162,8 @@ export class NativeContracts {
     // Retain native u64/usize counters as BigInt.
     const admitted = normalizeNativeValue(
       kind === "workflow_admission"
-        ? this.native.validateWorkflowAdmission(value as WorkflowAdmissionWire)
-        : this.native.validateContract(kind, value, context ?? null),
+        ? wasm.validateWorkflowAdmission(value as WorkflowAdmissionWire)
+        : wasm.validateContract(kind, value, context ?? null),
     );
     if (kind === "project_merge_receipt") {
       const receipt = admitted as ProjectMergeReceipt;
@@ -188,49 +176,49 @@ export class NativeContracts {
   }
 
   verifyFileBytes(file: FileRef, bytes: Uint8Array): void {
-    this.native.verifyFileBytes(file, bytes);
+    wasm.verifyFileBytes(file, bytes);
   }
 
   decodeAttachmentManifest(manifest: FileRef, bytes: Uint8Array, itemCount: number): readonly Attachment[] {
     if (!Number.isSafeInteger(itemCount) || itemCount < 0 || itemCount > HARNESS_MAX_ATTACHMENT_COUNT) {
       throw new TypeError("attachment count is outside the protocol limit");
     }
-    return freezeNative(normalizeNativeValue(this.native.decodeAttachmentManifest(manifest, bytes, itemCount))) as readonly Attachment[];
+    return freezeNative(normalizeNativeValue(wasm.decodeAttachmentManifest(manifest, bytes, itemCount))) as readonly Attachment[];
   }
 
   /** Rust's typed serde serialization is the manifest byte contract. */
   encodeAttachmentManifest(items: readonly Attachment[]): Uint8Array {
-    return Uint8Array.from(this.native.encodeAttachmentManifest(items));
+    return Uint8Array.from(wasm.encodeAttachmentManifest(items));
   }
 
   forkSeed(report: ForkReport): ForkSeed {
-    return freezeNative(normalizeNativeValue(this.native.forkSeedFromReport(report))) as ForkSeed;
+    return freezeNative(normalizeNativeValue(wasm.forkSeedFromReport(report))) as ForkSeed;
   }
 
   /** The Rust tool registry's JSON Schema admission, before a typed parser runs. */
   validateToolValue(schema: ToolJsonSchema, value: unknown): unknown {
-    return normalizeNativeValue(this.native.validateToolValue(schema, value), true);
+    return normalizeNativeValue(wasm.validateToolValue(schema, value), true);
   }
 
   /** Validate host-approved selections without granting read authority. */
   validateContextSelection(selection: ContextSelection, limits: Limits): void {
-    this.native.validateContextSelection(selection, limits);
+    wasm.validateContextSelection(selection, limits);
   }
 
   /** Parse only the bounded frontmatter prefix through the native Rust parser. */
   parseSkillMetadata(prefix: Uint8Array, source: PinnedContextPath): SkillMetadata {
-    return freezeNative(normalizeNativeValue(this.native.parseSkillMetadata(prefix, source))) as SkillMetadata;
+    return freezeNative(normalizeNativeValue(wasm.parseSkillMetadata(prefix, source))) as SkillMetadata;
   }
 
   /** Call-scoped owner reads feeding the same Rust discovery implementation. */
   async captureDiscoveredContext(declaration: ContextDiscovery, reader: ContextDiscoveryReader): Promise<DiscoveredContext> {
-    return freezeNative(normalizeNativeValue(await this.native.captureDiscoveredContext(declaration, reader))) as DiscoveredContext;
+    return freezeNative(normalizeNativeValue(await wasm.captureDiscoveredContext(declaration, reader))) as DiscoveredContext;
   }
 
   /** Select an immutable revision at the caller's admitted request boundary. */
   async contextForRequest(declaration: ContextDiscovery, reader: ContextDiscoveryReader,
     current: DiscoveredContext, reload: ContextReloadPolicy): Promise<DiscoveredContext> {
-    return freezeNative(normalizeNativeValue(await this.native.contextForRequest(declaration, reader, current, reload))) as DiscoveredContext;
+    return freezeNative(normalizeNativeValue(await wasm.contextForRequest(declaration, reader, current, reload))) as DiscoveredContext;
   }
 
   /** Bounded pinned body read; the bytes belong to this result and remain a Uint8Array. */
@@ -239,7 +227,7 @@ export class NativeContracts {
     if (!Number.isSafeInteger(maximumBytes) || maximumBytes <= 0 || maximumBytes > 0xffff_ffff) {
       throw new RangeError("pinned context read bound is invalid");
     }
-    const result = await this.native.readPinnedContextPath(source, reader, maximumBytes);
+    const result = await wasm.readPinnedContextPath(source, reader, maximumBytes);
     return Object.freeze({ file: freezeNative(normalizeNativeValue(result.file)) as ContextPathResult["file"],
       bytes: Uint8Array.from(result.bytes) });
   }
@@ -247,7 +235,7 @@ export class NativeContracts {
   /** Project an immutable discovery revision using the same Rust source and bounds. */
   projectDiscoveredContext(snapshot: DiscoveredContext, context: Context,
     placement: ContextPlacement, limits: Limits): Context {
-    return freezeNative(normalizeNativeValue(this.native.projectDiscoveredContext(
+    return freezeNative(normalizeNativeValue(wasm.projectDiscoveredContext(
       snapshot, context, placement, limits,
     ))) as Context;
   }
@@ -255,45 +243,45 @@ export class NativeContracts {
   /** Shared Rust projection placement and finite bounds; performs no effects. */
   applyContextProjection(context: Context, messages: readonly WasmModelMessageInput[],
     mode: ContextRenderMode, placement: ContextPlacement, limits: Limits): Context {
-    return freezeNative(normalizeNativeValue(this.native.applyContextProjection(
+    return freezeNative(normalizeNativeValue(wasm.applyContextProjection(
       context, messages, mode, placement, limits,
     ))) as Context;
   }
 
   /** Rust owns the complete model-visible tool definition contract. */
   validateToolDefinition(definition: Pick<ToolDefinition, "name" | "revision" | "description" | "inputSchema" | "outputSchema" | "projection">): void {
-    this.native.validateToolDefinition(nativeToolDefinition(definition));
+    wasm.validateToolDefinition(nativeToolDefinition(definition));
   }
 
   /** Validate a whole catalog before an explicit registration/reload. */
   validateMcpCatalog(catalog: McpCatalog, maximumTools: number, maximumBytes: number): void {
-    this.native.validateMcpCatalog(catalog, maximumTools, maximumBytes);
+    wasm.validateMcpCatalog(catalog, maximumTools, maximumBytes);
   }
 
   /** Validate an exact native stdio descriptor without selecting a process provider. */
   validateMcpStdioRequest(request: McpStdioRequest): void {
-    this.native.validateMcpStdioRequest(request);
+    wasm.validateMcpStdioRequest(request);
   }
 
   /** Validates the retained request without granting callback authority. */
   validateMcpCallbackRequest(request: McpCallbackRequest): void {
-    this.native.validateMcpCallbackRequest(request);
+    wasm.validateMcpCallbackRequest(request);
   }
 
   /** Returns the original Rust-owned callback operation identity. */
   mcpCallbackOperation(request: McpCallbackRequest): string {
-    return this.native.mcpCallbackOperation(request);
+    return wasm.mcpCallbackOperation(request);
   }
 
   /** Project explicitly selected schemas without granting tool authority. */
   mcpModelDefinitions(catalog: McpCatalog, maximumTools: number, maximumBytes: number): readonly import("../generated/wasm/acyclic_harness_wasm.js").ToolDefinition[] {
-    return this.native.mcpModelDefinitions(catalog, maximumTools, maximumBytes);
+    return wasm.mcpModelDefinitions(catalog, maximumTools, maximumBytes);
   }
 
   /** Pure bounded search; returned definitions convey no invocation authority. */
   searchMcpCatalog(catalog: McpCatalog, query: string, after: string | undefined,
     maximumResults: number, maximumTools: number, maximumBytes: number): readonly import("../generated/wasm/acyclic_harness_wasm.js").ToolDefinition[] {
-    return this.native.searchMcpCatalog(catalog, query, after, maximumResults, maximumTools, maximumBytes);
+    return wasm.searchMcpCatalog(catalog, query, after, maximumResults, maximumTools, maximumBytes);
   }
 
   /** Rust owns tool invocation identity and argument schema validation. */
@@ -301,7 +289,7 @@ export class NativeContracts {
     definition: Pick<ToolDefinition, "name" | "revision" | "description" | "inputSchema" | "outputSchema" | "projection">,
     invocation: Pick<ToolInvocation, "callId" | "name" | "arguments">,
   ): void {
-    this.native.validateToolInvocation(nativeToolDefinition(definition), invocation);
+    wasm.validateToolInvocation(nativeToolDefinition(definition), invocation);
   }
 
   /** Rust owns tool result output schema validation. */
@@ -309,11 +297,11 @@ export class NativeContracts {
     definition: Pick<ToolDefinition, "name" | "revision" | "description" | "inputSchema" | "outputSchema" | "projection">,
     result: ToolResult,
   ): void {
-    this.native.validateToolResult(nativeToolDefinition(definition), result);
+    wasm.validateToolResult(nativeToolDefinition(definition), result);
   }
 
   jsonToolProjectionSchema(schema: ToolJsonSchema): ToolJsonSchema {
-    return normalizeNativeValue(this.native.jsonToolProjectionSchema(schema), true) as ToolJsonSchema;
+    return normalizeNativeValue(wasm.jsonToolProjectionSchema(schema), true) as ToolJsonSchema;
   }
 
   /** Validate the complete projection using its own schema and caller-selected bounds. */
@@ -322,12 +310,12 @@ export class NativeContracts {
     projection: ToolResultContent,
     limits: Limits,
   ): void {
-    this.native.validateToolProjection(nativeToolDefinition(definition), projection, limits);
+    wasm.validateToolProjection(nativeToolDefinition(definition), projection, limits);
   }
 
   /** The Rust inventory includes tool media and immutable native option references. */
   modelContentInventory(content: ModelContent, limits: Limits): Readonly<Omit<WasmModelContentInventoryWire, "files"> & { files: readonly FileRef[] }> {
-    return freezeNative(normalizeNativeValue(this.native.modelContentInventory(content, limits))) as
+    return freezeNative(normalizeNativeValue(wasm.modelContentInventory(content, limits))) as
       Readonly<Omit<WasmModelContentInventoryWire, "files"> & { files: readonly FileRef[] }>;
   }
 
@@ -335,7 +323,7 @@ export class NativeContracts {
   admitModelEvent(event: ModelEvent, limits: Limits, state?: ModelEventAdmissionState): ModelEventAdmission {
     // Preserve provider BigInts while projecting bounded admission counters to Numbers.
     const admitted = normalizeNativeValue(
-      this.native.admitModelEvent(
+      wasm.admitModelEvent(
         event,
         limits,
         state === undefined ? null : { ...state, calls: [...state.calls] },
@@ -371,7 +359,7 @@ export class NativeContracts {
     maximumRenderBytes: number,
     maximumProjectedAttachments: number,
   ): Promise<NativeSelectedModelContext> {
-    return this.native.selectModelContext(
+    return wasm.selectModelContext(
       conversation, selection, files, maximumMessages, maximumAttachments, maximumRenderBytes,
       maximumProjectedAttachments,
     ).then(value => normalizeNativeValue(value) as NativeSelectedModelContext);
@@ -382,7 +370,7 @@ export class NativeContracts {
     conversation: Readonly<{ agent: string | null; messages: readonly ConversationMessage[] }>,
     selection: Readonly<{ conversation_revision: bigint; message_ids: readonly ConversationMessageId[] }>,
   ): void {
-    this.native.validateModelContextSelection(conversation, selection);
+    wasm.validateModelContextSelection(conversation, selection);
   }
 
   /** Rust-owned deterministic admission and retry plan for one conversation turn. */
@@ -396,98 +384,70 @@ export class NativeContracts {
     hasCompletedOutput: boolean,
     canReconcile: boolean,
   ): WasmTurnPreparation {
-    return normalizeNativeValue(this.native.prepareConversationTurn(
+    return normalizeNativeValue(wasm.prepareConversationTurn(
       conversation, operationId, content, attachments, limits, existingSelection,
       hasCompletedOutput, canReconcile,
     )) as WasmTurnPreparation;
   }
 
-  validateWireHandshake(request: Uint8Array, response: Uint8Array): Uint8Array {
-    return Uint8Array.from(this.native.validateWireHandshake(request, response));
-  }
-  validateWireCommand(command: Uint8Array): Uint8Array {
-    return Uint8Array.from(this.native.validateWireCommand(command));
-  }
-  validateWireCommandProtocol(command: Uint8Array): Uint8Array {
-    return Uint8Array.from(this.native.validateWireCommandProtocol(command));
-  }
-  validateWireResume(request: Uint8Array): Uint8Array {
-    return Uint8Array.from(this.native.validateWireResume(request));
-  }
-  validateWireObserve(request: Uint8Array): Uint8Array {
-    return Uint8Array.from(this.native.validateWireObserve(request));
-  }
-  validateWireCancel(request: Uint8Array): Uint8Array {
-    return Uint8Array.from(this.native.validateWireCancel(request));
-  }
-  validateWireAdmission(command: Uint8Array, admission: Uint8Array): Uint8Array {
-    return Uint8Array.from(this.native.validateWireAdmission(command, admission));
-  }
-  validateWireStatus(request: Uint8Array, status: Uint8Array): Uint8Array {
-    return Uint8Array.from(this.native.validateWireStatus(request, status));
-  }
-  validateWireCancellation(request: Uint8Array, response: Uint8Array): Uint8Array {
-    return Uint8Array.from(this.native.validateWireCancellation(request, response));
-  }
-
   validateConversationMessageId(value: string): ConversationMessageId {
-    return this.native.validateConversationMessageId(value) as ConversationMessageId;
+    return wasm.validateConversationMessageId(value) as ConversationMessageId;
   }
 
   validateIdentity<Kind extends IdentityKind>(kind: Kind, value: string): IdentityKindMap[Kind] {
-    return this.native.validateIdentity(kind, value) as IdentityKindMap[Kind];
+    return wasm.validateIdentity(kind, value) as IdentityKindMap[Kind];
   }
 
   deriveOperationId(operation: OperationId, label: string): OperationId {
-    return this.native.deriveOperationUuid(operation, label) as OperationId;
+    return wasm.deriveOperationUuid(operation, label) as OperationId;
   }
 
   batchMemberOperationId(group: string, batch: string, index: number): OperationId {
     // The native WASM entry point accepts u32; reject values it would truncate.
     if (!Number.isSafeInteger(index) || index < 0 || index > 0xffff_ffff) throw new RangeError("batch index is out of range");
-    return this.native.batchMemberOperationId(group, batch, index) as OperationId;
+    return wasm.batchMemberOperationId(group, batch, index) as OperationId;
   }
 
   taskIdentityDigest(name: string, version: string, input: ToolJsonSchema, output: ToolJsonSchema,
     requirements: readonly string[], machineDigest: Uint8Array): readonly number[] {
-    const digest = Uint8Array.from(this.native.taskIdentityDigest(name, version, input, output,
+    const digest = Uint8Array.from(wasm.taskIdentityDigest(name, version, input, output,
       [...requirements], Uint8Array.from(machineDigest)));
     if (digest.length !== 32) throw new TypeError("native task identity digest has an invalid length");
     return Object.freeze(Array.from(digest));
   }
 
-  taskAdmissionIdentities(value: WasmTaskIdentityInput): TaskAdmissionIdentities {
-    return freezeNative(normalizeNativeValue(this.native.taskAdmissionIdentities({
+  taskAdmissionIdentities(value: WasmTaskIdentityInput): WasmTaskAdmissionIdentities {
+    return freezeNative(normalizeNativeValue(wasm.taskAdmissionIdentities({
       ...value,
       requirements: [...value.requirements],
       machine_digest: [...value.machine_digest],
-    }))) as TaskAdmissionIdentities;
+    }))) as WasmTaskAdmissionIdentities;
   }
 
   /** Rust-owned durable task admission and canonical envelope projection. */
-  admitTask(value: TaskAdmissionProjectionInput): TaskAdmissionWire {
-    return freezeNative(normalizeNativeValue(this.native.admitTask({
+  admitTask(value: WasmTaskAdmissionInput): WasmTaskAdmissionWire {
+    return freezeNative(normalizeNativeValue(wasm.admitTask({
       ...value,
       requirements: [...value.requirements],
       machine_digest: [...value.machine_digest],
       grants: [...value.grants],
-    }))) as TaskAdmissionWire;
+    }))) as WasmTaskAdmissionWire;
   }
 
   /** Rust-owned immutable batch request construction and validation. */
-  admitBatch(value: BatchAdmissionProjectionInput): DurableBatchWire {
-    return freezeNative(normalizeNativeValue(this.native.admitBatch({
+  admitBatch(value: WasmBatchAdmissionInput): WasmDurableBatchWire {
+    return freezeNative(normalizeNativeValue(wasm.admitBatch({
       ...value,
       requirements: [...value.requirements],
       machine_digest: [...value.machine_digest],
       inputs: [...value.inputs],
       grants: [...value.grants],
-    }))) as DurableBatchWire;
+    }))) as WasmDurableBatchWire;
   }
 
   /** Rust-owned complete batch envelope, members, and canonical digest. */
-  admitBatchRequest(value: BatchAdmissionProjectionInput): BatchAdmissionRequest {
-    return freezeNative(normalizeNativeValue(this.native.admitBatchRequest({
+  admitBatchRequest(value: WasmBatchAdmissionInput): BatchAdmissionRequest {
+    return freezeNative(normalizeNativeValue(wasm.admitBatchRequest({
       ...value,
       requirements: [...value.requirements],
       machine_digest: [...value.machine_digest],
@@ -499,29 +459,29 @@ export class NativeContracts {
   idFromDigest(digest: Uint8Array, kind: "operation"): OperationId;
   idFromDigest(digest: Uint8Array, kind: "interaction"): InteractionId;
   idFromDigest(digest: Uint8Array, kind: "operation" | "interaction"): OperationId | InteractionId {
-    const value = this.native.uuidFromDigestHalf(digest, kind === "interaction");
+    const value = wasm.uuidFromDigestHalf(digest, kind === "interaction");
     return kind === "operation"
       ? this.validateIdentity("operation", value)
       : this.validateIdentity("interaction", value);
   }
 
   fileDescriptor(bytes: Uint8Array, mediaType: string): FileDescriptor {
-    return freezeNative(normalizeNativeValue(this.native.fileDescriptor(Uint8Array.from(bytes), mediaType))) as FileDescriptor;
+    return freezeNative(normalizeNativeValue(wasm.fileDescriptor(Uint8Array.from(bytes), mediaType))) as FileDescriptor;
   }
 
   /** Rust JSON parser retains every full-width integer before any JS normalization. */
   decodeCanonicalJson(bytes: Uint8Array): unknown {
-    return normalizeNativeValue(this.native.decodeCanonicalJson(bytes));
+    return normalizeNativeValue(wasm.decodeCanonicalJson(bytes));
   }
 
   /** Untrusted provider JSON may not silently round integers into JS Number. */
   decodeModelJson(bytes: Uint8Array): ToolJsonValue {
-    return normalizeNativeValue(this.native.decodeJson(bytes), true) as ToolJsonValue;
+    return normalizeNativeValue(wasm.decodeJson(bytes), true) as ToolJsonValue;
   }
 
   /** Admits the Rust-generated ref-only executor observation and freezes its exact wire fields. */
   decodeExecutionEventJson(bytes: Uint8Array): ExecutionEvent {
-    return freezeNative(normalizeNativeValue(this.native.decodeExecutionEventJson(bytes))) as ExecutionEvent;
+    return freezeNative(normalizeNativeValue(wasm.decodeExecutionEventJson(bytes))) as ExecutionEvent;
   }
 
   conversationPage(core: WasmReducer, afterSequence: bigint, limit: number): ConversationPage {
@@ -544,7 +504,7 @@ export class NativeContracts {
       throw new TypeError("native task child page revision is invalid");
     }
     const snapshot: TaskChildrenPage = { revision, entries, nextAfter };
-    return freezeNative(normalizeNativeValue(this.native.validateTaskChildrenPage({
+    return freezeNative(normalizeNativeValue(wasm.validateTaskChildrenPage({
       parent,
       expectedRevision,
       afterSlot,
@@ -554,7 +514,7 @@ export class NativeContracts {
   }
 
   encodeCanonicalJson(value: unknown): Uint8Array {
-    return Uint8Array.from(this.native.encodeCanonicalJson(value));
+    return Uint8Array.from(wasm.encodeCanonicalJson(value));
   }
 
   /** Compare complete admitted records without maintaining parallel field lists. */
@@ -567,7 +527,7 @@ export class NativeContracts {
 
   /** Rust canonical JSON plus BLAKE3; only the digest leaves this boundary. */
   digestCanonicalJson(value: unknown): Uint8Array {
-    const digest = Uint8Array.from(this.native.digestCanonicalJson(value));
+    const digest = Uint8Array.from(wasm.digestCanonicalJson(value));
     if (digest.byteLength !== 32) throw new TypeError("native canonical digest has an invalid length");
     return digest;
   }

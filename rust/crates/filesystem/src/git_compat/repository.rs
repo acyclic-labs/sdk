@@ -31,7 +31,10 @@ impl<S> GitCompatRepository<S> {
     /// Creates a façade. State is initialized lazily on the first command.
     #[must_use]
     pub const fn new(workspace_id: WorkspaceId, store: S) -> Self {
-        Self { workspace_id, store }
+        Self {
+            workspace_id,
+            store,
+        }
     }
 
     /// Returns the workspace whose compatibility state is stored here.
@@ -59,7 +62,11 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
 
     /// Returns the latest explicit compatibility commit for the current branch.
     pub async fn head(&self) -> Result<Option<GitCommitId>, GitCompatError<S::Error>> {
-        self.load().await?.current().map(|branch| branch.head).map_err(|_| GitCompatError::InvalidState)
+        self.load()
+            .await?
+            .current()
+            .map(|branch| branch.head)
+            .map_err(|_| GitCompatError::InvalidState)
     }
 
     /// Executes a command and completes its required filesystem work.
@@ -70,7 +77,10 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         executor: &E,
     ) -> Result<GitCommandOutput, GitCompatRunError<S::Error, E::Error>> {
         self.validate_workspace_tree(workspace_tree).await?;
-        executor.validate().await.map_err(GitCompatRunError::Executor)?;
+        executor
+            .validate()
+            .await
+            .map_err(GitCompatRunError::Executor)?;
         match &command {
             GitCommand::MergeContinue => {
                 return self.continue_join(workspace_tree, executor).await;
@@ -87,7 +97,10 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             _ => {}
         }
         let output = self.execute_validated(command, workspace_tree).await?;
-        executor.validate().await.map_err(GitCompatRunError::Executor)?;
+        executor
+            .validate()
+            .await
+            .map_err(GitCompatRunError::Executor)?;
         self.finish_output(output, workspace_tree, executor).await
     }
 
@@ -96,20 +109,25 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         workspace_tree: GitTreeRef,
         executor: &E,
     ) -> Result<GitCommandOutput, GitCompatRunError<S::Error, E::Error>> {
-        let pending = self
-            .pending_transition()
-            .await?
-            .ok_or_else(|| GitCompatError::InvalidCommand("merge --continue requires a pending merge".to_owned()))?;
+        let pending = self.pending_transition().await?.ok_or_else(|| {
+            GitCompatError::InvalidCommand("merge --continue requires a pending merge".to_owned())
+        })?;
         if !matches!(pending.mutation, GitPendingMutation::Join { .. }) {
             return Err(GitCompatError::TransitionPending(pending.id).into());
         }
         let GitFilesystemAction::Join { tracked_paths, .. } = &pending.action else {
             return Err(GitCompatError::InvalidState.into());
         };
-        executor.validate().await.map_err(GitCompatRunError::Executor)?;
+        executor
+            .validate()
+            .await
+            .map_err(GitCompatRunError::Executor)?;
         self.complete_transition_result(
             pending.id,
-            &GitFilesystemResult::Applied { tree: Some(workspace_tree), tracked_paths: Some(tracked_paths.clone()) },
+            &GitFilesystemResult::Applied {
+                tree: Some(workspace_tree),
+                tracked_paths: Some(tracked_paths.clone()),
+            },
         )
         .await
         .map_err(Into::into)
@@ -119,10 +137,9 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         &self,
         executor: &E,
     ) -> Result<GitCommandOutput, GitCompatRunError<S::Error, E::Error>> {
-        let pending = self
-            .pending_transition()
-            .await?
-            .ok_or_else(|| GitCompatError::InvalidCommand("merge --abort requires a pending merge".to_owned()))?;
+        let pending = self.pending_transition().await?.ok_or_else(|| {
+            GitCompatError::InvalidCommand("merge --abort requires a pending merge".to_owned())
+        })?;
         if !matches!(pending.mutation, GitPendingMutation::Join { .. }) {
             return Err(GitCompatError::TransitionPending(pending.id).into());
         }
@@ -138,11 +155,17 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         let result = executor
             .execute(
                 OperationId::from_bytes(operation_id),
-                &GitFilesystemAction::RestoreGeneration { tree: target_tree, paths: None },
+                &GitFilesystemAction::RestoreGeneration {
+                    tree: target_tree,
+                    paths: None,
+                },
             )
             .await
             .map_err(GitCompatRunError::Executor)?;
-        executor.validate().await.map_err(GitCompatRunError::Executor)?;
+        executor
+            .validate()
+            .await
+            .map_err(GitCompatRunError::Executor)?;
         self.abort_transition(pending.id).await?;
         Ok(GitCommandOutput::Filesystem(result))
     }
@@ -168,11 +191,20 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         let Some(pending) = self.pending_transition().await? else {
             return Ok(None);
         };
-        let result =
-            executor.execute(pending.id.operation_id(), &pending.action).await.map_err(GitCompatRunError::Executor)?;
-        executor.validate().await.map_err(GitCompatRunError::Executor)?;
+        let result = executor
+            .execute(pending.id.operation_id(), &pending.action)
+            .await
+            .map_err(GitCompatRunError::Executor)?;
+        executor
+            .validate()
+            .await
+            .map_err(GitCompatRunError::Executor)?;
         let output = self.complete_transition_result(pending.id, &result).await?;
-        Ok(Some(if matches!(output, GitCommandOutput::NoOp) { GitCommandOutput::Filesystem(result) } else { output }))
+        Ok(Some(if matches!(output, GitCommandOutput::NoOp) {
+            GitCommandOutput::Filesystem(result)
+        } else {
+            output
+        }))
     }
 
     pub(super) async fn finish_output<E: GitFilesystemExecutor>(
@@ -186,11 +218,19 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 let operation_id = action_operation_id(self.workspace_id, workspace_tree, &action)?;
                 (action, operation_id, None)
             }
-            GitCommandOutput::Prepared { transition, action } => (action, transition.operation_id(), Some(transition)),
+            GitCommandOutput::Prepared { transition, action } => {
+                (action, transition.operation_id(), Some(transition))
+            }
             other => return Ok(other),
         };
-        let result = executor.execute(operation_id, &action).await.map_err(GitCompatRunError::Executor)?;
-        executor.validate().await.map_err(GitCompatRunError::Executor)?;
+        let result = executor
+            .execute(operation_id, &action)
+            .await
+            .map_err(GitCompatRunError::Executor)?;
+        executor
+            .validate()
+            .await
+            .map_err(GitCompatRunError::Executor)?;
         if let Some(transition) = transition {
             let completed = self.complete_transition_result(transition, &result).await?;
             return Ok(if matches!(completed, GitCommandOutput::NoOp) {
@@ -209,7 +249,11 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                     expected_head,
                     ..
                 },
-                GitFilesystemResult::Captured { tree, tracked_paths, proof },
+                GitFilesystemResult::Captured {
+                    tree,
+                    tracked_paths,
+                    proof,
+                },
             ) => self
                 .record_captured_commit(GitCommit::new(
                     tree,
@@ -224,12 +268,19 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 .await
                 .map_err(Into::into),
             (
-                GitFilesystemAction::ForkBranch { branch, head, switch, .. },
+                GitFilesystemAction::ForkBranch {
+                    branch,
+                    head,
+                    switch,
+                    ..
+                },
                 GitFilesystemResult::Forked { workspace_id },
-            ) => self.register_branch_workspace(branch, workspace_id, head, switch).await.map_err(Into::into),
-            (GitFilesystemAction::CaptureCommit { .. }, _) | (GitFilesystemAction::ForkBranch { .. }, _) => {
-                Err(GitCompatRunError::InvalidResult)
-            }
+            ) => self
+                .register_branch_workspace(branch, workspace_id, head, switch)
+                .await
+                .map_err(Into::into),
+            (GitFilesystemAction::CaptureCommit { .. }, _)
+            | (GitFilesystemAction::ForkBranch { .. }, _) => Err(GitCompatRunError::InvalidResult),
             (_, result) => Ok(GitCommandOutput::Filesystem(result)),
         }
     }
@@ -255,9 +306,12 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 return Err(GitCompatError::TransitionPending(pending.id));
             }
             let before = state.clone();
-            let output = execute_command(&mut state, command.clone(), workspace_tree).map_err(map_state_error)?;
+            let output = execute_command(&mut state, command.clone(), workspace_tree)
+                .map_err(map_state_error)?;
             let output = match output {
-                GitCommandOutput::Action(action) => prepare_transition(&mut state, action, GitPendingMutation::NoOp),
+                GitCommandOutput::Action(action) => {
+                    prepare_transition(&mut state, action, GitPendingMutation::NoOp)
+                }
                 output => output,
             };
             if state == before {
@@ -276,14 +330,21 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         workspace_tree: GitTreeRef,
     ) -> Result<(), GitCompatError<S::Error>> {
         let state = self.load().await?;
-        if state.current().map_err(|_| GitCompatError::InvalidState)?.workspace_id != workspace_tree.workspace_id() {
+        if state
+            .current()
+            .map_err(|_| GitCompatError::InvalidState)?
+            .workspace_id
+            != workspace_tree.workspace_id()
+        {
             return Err(GitCompatError::WorkspaceMismatch);
         }
         Ok(())
     }
 
     /// Returns the durable sequencer transition that requires recovery.
-    pub async fn pending_transition(&self) -> Result<Option<GitPendingTransition>, GitCompatError<S::Error>> {
+    pub async fn pending_transition(
+        &self,
+    ) -> Result<Option<GitPendingTransition>, GitCompatError<S::Error>> {
         self.load().await.map(|state| state.pending)
     }
 
@@ -316,7 +377,10 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
     }
 
     /// Clears an exact prepared transition after filesystem rollback.
-    pub async fn abort_transition(&self, transition: GitTransitionId) -> Result<(), GitCompatError<S::Error>> {
+    pub async fn abort_transition(
+        &self,
+        transition: GitTransitionId,
+    ) -> Result<(), GitCompatError<S::Error>> {
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let mut state = self.load().await?;
             if state.pending.as_ref().map(|pending| pending.id) != Some(transition) {
@@ -354,7 +418,13 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         let branch = branch.into();
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let mut state = self.load().await?;
-            let output = register_branch_workspace_state(&mut state, branch.clone(), workspace_id, head, switch)?;
+            let output = register_branch_workspace_state(
+                &mut state,
+                branch.clone(),
+                workspace_id,
+                head,
+                switch,
+            )?;
             let expected = next_revision(&mut state.revision);
             if self.compare_and_swap_state(expected, state).await? {
                 return Ok(output);
@@ -403,11 +473,18 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         } = publication;
         for _ in 0..MAXIMUM_CAS_ATTEMPTS {
             let mut state = self.load().await?;
-            let current = state.current().map_err(|_| GitCompatError::InvalidState)?.clone();
+            let current = state
+                .current()
+                .map_err(|_| GitCompatError::InvalidState)?
+                .clone();
             if workspace_tree.workspace_id() != current.workspace_id {
                 return Err(GitCompatError::WorkspaceMismatch);
             }
-            if current.head.and_then(|head| state.commits.get(&head)).is_some_and(|commit| commit.tree == tree) {
+            if current
+                .head
+                .and_then(|head| state.commits.get(&head))
+                .is_some_and(|commit| commit.tree == tree)
+            {
                 return Ok(GitCommandOutput::NoOp);
             }
             let mut parents = current.head.into_iter().collect::<Vec<_>>();
@@ -419,7 +496,9 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
                 }
                 parents.push(source_head);
             }
-            let previous_tree = current.head.and_then(|id| state.commits.get(&id).map(|commit| commit.tree));
+            let previous_tree = current
+                .head
+                .and_then(|id| state.commits.get(&id).map(|commit| commit.tree));
             if !capture_proof_valid(tree, workspace_tree, capture_proof.as_ref(), previous_tree) {
                 return Err(GitCompatError::WorkspaceMismatch);
             }
@@ -435,7 +514,9 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
             );
             state.reflog.insert(0, current.head);
             state.commits.insert(commit.id, commit.clone());
-            let branch = state.current_mut().map_err(|_| GitCompatError::InvalidState)?;
+            let branch = state
+                .current_mut()
+                .map_err(|_| GitCompatError::InvalidState)?;
             branch.head = Some(commit.id);
             branch.tracked_paths = tracked_paths.clone();
             let expected = next_revision(&mut state.revision);
@@ -478,6 +559,9 @@ impl<S: GitCompatStore> GitCompatRepository<S> {
         state: GitCompatState,
     ) -> Result<bool, GitCompatError<S::Error>> {
         validate_git_state(&state).map_err(|()| GitCompatError::InvalidState)?;
-        self.store.compare_and_swap(self.workspace_id, expected, state).await.map_err(GitCompatError::Store)
+        self.store
+            .compare_and_swap(self.workspace_id, expected, state)
+            .await
+            .map_err(GitCompatError::Store)
     }
 }
