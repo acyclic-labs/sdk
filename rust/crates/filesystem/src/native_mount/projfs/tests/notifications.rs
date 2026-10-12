@@ -3,6 +3,7 @@ use super::*;
 #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn created_and_renamed_files_stay_observed_after_capture()
 -> Result<(), Box<dyn std::error::Error>> {
+    let work = setup_work()?;
     let source = windows_checkout_source().await?;
     let (_root, destination, mut session) = mount_source(&source)?;
     let external = |command: &str| -> Result<(), Box<dyn std::error::Error>> {
@@ -25,23 +26,23 @@ async fn created_and_renamed_files_stay_observed_after_capture()
     };
 
     external("echo first> created.txt")?;
-    session.flush_callbacks()?;
+    session.flush_callbacks(&work)?;
     assert_eq!(content("created.txt")?, b"first\r\n");
     external("echo second> created.txt")?;
-    session.flush_callbacks()?;
+    session.flush_callbacks(&work)?;
     assert_eq!(content("created.txt")?, b"second\r\n");
     external("ren created.txt renamed.txt")?;
-    session.flush_callbacks()?;
+    session.flush_callbacks(&work)?;
     external("echo third> renamed.txt")?;
-    session.flush_callbacks()?;
+    session.flush_callbacks(&work)?;
     assert_eq!(content("renamed.txt")?, b"third\r\n");
     external("mklink /H linked.txt renamed.txt > nul && del renamed.txt")?;
-    session.flush_callbacks()?;
+    session.flush_callbacks(&work)?;
     assert!(source.lookup(&windows_path("created.txt"))?.is_none());
     assert!(source.lookup(&windows_path("renamed.txt"))?.is_none());
     assert_eq!(content("linked.txt")?, b"third\r\n");
     external("del linked.txt")?;
-    session.flush_callbacks()?;
+    session.flush_callbacks(&work)?;
     assert!(source.lookup(&windows_path("linked.txt"))?.is_none());
     session.stop()?;
     Ok(())
@@ -62,33 +63,9 @@ async fn native_watcher_observes_both_projected_rename_paths()
         .await
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
-    let mut transaction = workspace
-        .begin_transaction(IdempotencyKey::new(), &work, work.cancellation())
+    workspace
+        .write("/original.txt", Bytes::from_static(b"original"))
         .await?;
-    transaction
-        .create_file(
-            "/original.txt",
-            Bytes::from_static(b"original"),
-            crate::kernel::FileMetadata::default(),
-            &work,
-            work.cancellation(),
-        )
-        .await?;
-    transaction
-        .commit::<crate::WorkspaceError, _, _>(
-            None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            work.cancellation(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::default(),
-                }))
-            },
-        )
-        .await
-        .map_err(|failure| failure.error)?;
 
     let destination = root.path().join("projection");
     std::fs::create_dir(&destination)?;

@@ -279,36 +279,6 @@ where
             .map_err(|(cause, accounting)| (cause.into(), accounting))
     }
 
-    /// Validates the supplied immutable view on the original work allowance.
-    pub async fn validate_snapshot_with_work(
-        &self,
-        frozen: crate::LazySnapshotRef,
-        work: &NativeMaterializationWork,
-    ) -> Result<(), MountLifecycleError> {
-        self.source
-            .lazy
-            .validate_snapshot(
-                frozen,
-                &LazyTreapWork::native_with_work(work, work.cancellation())?,
-            )
-            .await
-            .map_err(Into::into)
-    }
-
-    /// Looks up exactly the supplied frozen view on the original work allowance.
-    pub async fn lookup_at_snapshot_with_work(
-        &self,
-        frozen: crate::LazySnapshotRef,
-        path: &str,
-        work: &NativeMaterializationWork,
-    ) -> Result<(LazyLookup, NativeAllocation), MountLifecycleError> {
-        self.source
-            .lazy
-            .lookup_at_snapshot_with_work(frozen, path, &work, work.cancellation())
-            .await
-            .map_err(Into::into)
-    }
-
     /// Publishes through the source's dedicated callback runtime.
     pub fn sync_blocking(&self) -> Result<(), MountLifecycleError> {
         flush_session_callbacks(&self.session)?;

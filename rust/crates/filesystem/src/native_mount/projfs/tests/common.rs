@@ -93,7 +93,7 @@ pub(super) fn sorted_names(directory: &std::path::Path) -> std::io::Result<Vec<S
 }
 
 pub(super) fn powershell(script: &str) -> std::io::Result<acyclic_native_runtime::ProcessTree> {
-    acyclic_native_runtime::spawn_process_tree(std::process::Command::new("powershell.exe").args([
+    acyclic_native_runtime::ProcessTree::spawn(std::process::Command::new("powershell.exe").args([
         "-NoProfile",
         "-NonInteractive",
         "-Command",
@@ -105,7 +105,7 @@ pub(super) fn succeeded(
     mut child: acyclic_native_runtime::ProcessTree,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let result = child.wait(std::time::Duration::from_secs(120));
-    child.terminate()?;
+    child.terminate(None)?;
     let status = result?;
     if status.success() {
         Ok(())

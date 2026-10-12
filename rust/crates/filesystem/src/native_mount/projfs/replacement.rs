@@ -28,36 +28,40 @@ pub(super) fn rewrite(
     current: Option<(MountLookup, Option<MountContentPin>)>,
     basis: Option<ReadBasis>,
 ) -> Result<Replaced, String> {
-    if let Some(Owned::File(state)) = owned
-        && let Some((lookup, pin)) = current
-        && lookup.node.kind == MountNodeKind::Regular
-    {
-        return replace_ordinary(projection, path, state, lookup, pin, basis);
-    }
-    if owned.is_some() {
-        if release(projection, path, owned)? == Release::Busy {
-            return Ok(Replaced::Busy);
+    let replacing = match (owned, current) {
+        (Some(Owned::File(state)), Some((lookup, _)))
+            if lookup.node.kind == MountNodeKind::Regular =>
+        {
+            Some(state)
         }
-    } else {
-        // SAFETY: the name outlives this synchronous call on a live context.
-        match unsafe {
-            PrjDeleteFile(
-                projection.context,
-                relative,
-                Some(PRJ_UPDATE_ALLOW_READ_ONLY),
-                None,
-            )
-        } {
-            Ok(()) => {}
-            Err(error) if [HR_FILE_NOT_FOUND, HR_PATH_NOT_FOUND].contains(&error.code()) => {}
-            Err(error) if error.code() == HR_SHARING_VIOLATION => return Ok(Replaced::Busy),
-            Err(error)
-                if [HR_VIRTUALIZATION_INVALID_OPERATION, HR_DIRECTORY_NOT_EMPTY]
-                    .contains(&error.code()) =>
-            {
-                return Ok(Replaced::Released);
+        _ => None,
+    };
+    if replacing.is_none() {
+        if owned.is_some() {
+            if release(projection, path, owned)? == Release::Busy {
+                return Ok(Replaced::Busy);
             }
-            Err(error) => return Err(driver_error(&error).to_string()),
+        } else {
+            // SAFETY: the name outlives this synchronous call on a live context.
+            match unsafe {
+                PrjDeleteFile(
+                    projection.context,
+                    relative,
+                    Some(PRJ_UPDATE_ALLOW_READ_ONLY),
+                    None,
+                )
+            } {
+                Ok(()) => {}
+                Err(error) if [HR_FILE_NOT_FOUND, HR_PATH_NOT_FOUND].contains(&error.code()) => {}
+                Err(error) if error.code() == HR_SHARING_VIOLATION => return Ok(Replaced::Busy),
+                Err(error)
+                    if [HR_VIRTUALIZATION_INVALID_OPERATION, HR_DIRECTORY_NOT_EMPTY]
+                        .contains(&error.code()) =>
+                {
+                    return Ok(Replaced::Released);
+                }
+                Err(error) => return Err(driver_error(&error).to_string()),
+            }
         }
     }
     let Some((lookup, pin)) =
@@ -79,7 +83,17 @@ pub(super) fn rewrite(
     else {
         return Ok(Replaced::Released);
     };
-    Ok(match write_entry(projection, path, &entry)? {
+    let placed = match replacing {
+        Some(state) => write_ordinary(
+            projection,
+            path,
+            &host_relative_path(path).map_err(|error| error.to_string())?,
+            &entry,
+            Some(state),
+        )?,
+        None => write_entry(projection, path, &entry)?,
+    };
+    Ok(match placed {
         Placed::Nothing => Replaced::Released,
         Placed::Retry => Replaced::Busy,
         placed => Replaced::Rewritten(Box::new(WrittenEntry {
@@ -89,43 +103,6 @@ pub(super) fn rewrite(
             basis,
         })),
     })
-}
-
-pub(super) fn replace_ordinary(
-    projection: Projection<'_>,
-    path: &MountPath,
-    state: HostWindowsMetadata,
-    lookup: MountLookup,
-    pin: Option<MountContentPin>,
-    basis: Option<ReadBasis>,
-) -> Result<Replaced, String> {
-    let (Some(parent), Some(component)) = (path.parent(), path.components().last()) else {
-        return Ok(Replaced::Released);
-    };
-    let Some(entry) = projected_entry(
-        projection,
-        &parent,
-        owned_component(projection, component).map_err(|error| error.to_string())?,
-        lookup,
-        pin,
-    )
-    .map_err(|error| error.to_string())?
-    else {
-        return Ok(Replaced::Released);
-    };
-    let host = host_relative_path(path).map_err(|error| error.to_string())?;
-    Ok(
-        match write_ordinary(projection, path, &host, &entry, Some(state))? {
-            Placed::Owned(owned) => Replaced::Rewritten(Box::new(WrittenEntry {
-                file_id: lookup.node.file_id,
-                owned: Some(owned),
-                facts: Some(entry.facts),
-                basis,
-            })),
-            Placed::Retry => Replaced::Busy,
-            Placed::Nothing | Placed::Unowned => Replaced::Released,
-        },
-    )
 }
 
 pub(super) struct SendContext(pub(super) PRJ_NAMESPACE_VIRTUALIZATION_CONTEXT);

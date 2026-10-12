@@ -62,7 +62,7 @@ async fn write_through_a_handle_opened_before_a_rename_lands_at_the_new_name()
         8 * 1024 * 1024,
     )?;
     assert!(output.status.success(), "external edit failed: {output:?}");
-    session.flush_callbacks()?;
+    session.flush_callbacks(&work)?;
     assert!(source.lookup(&seed)?.is_none());
     let moved = windows_path("moved.txt");
     assert_eq!(source.read_range(&moved, 0, 5)?.as_ref(), b"seed!");
@@ -85,9 +85,9 @@ async fn an_opened_file_follows_its_source() -> Result<(), Box<dyn std::error::E
         projected.display()
     ))?)?;
     assert_eq!(super::reparse_tag(&projected)?.0, None, "a placeholder");
-    session.flush_callbacks()?;
+    session.flush_callbacks(&work)?;
     source.write_range(&tracked, 0, Bytes::from_static(b"after!"))?;
-    session.revalidate()?;
+    session.revalidate(&work)?;
     assert_eq!(std::fs::read(&projected)?, b"after!");
     session.stop()?;
     Ok(())
@@ -107,8 +107,8 @@ async fn an_opened_file_the_user_wrote_stays() -> Result<(), Box<dyn std::error:
         "[IO.File]::AppendAllText('{}', ' and user')",
         projected.display()
     ))?)?;
-    session.flush_callbacks()?;
-    session.revalidate()?;
+    session.flush_callbacks(&work)?;
+    session.revalidate(&work)?;
     assert_eq!(std::fs::read(&projected)?, b"source and user");
     assert_eq!(
         source.read_range(&kept, 0, 15)?.as_ref(),
@@ -139,7 +139,7 @@ async fn a_link_the_user_replaced_stays() -> Result<(), Box<dyn std::error::Erro
     std::fs::remove_file(&projected)?;
     std::fs::create_dir(&projected)?;
     source.remove(&link, None, &work)?;
-    session.revalidate()?;
+    session.revalidate(&work)?;
     assert!(std::fs::symlink_metadata(&projected)?.is_dir());
     session.stop()?;
     Ok(())
@@ -361,33 +361,9 @@ async fn a_file_renamed_before_it_is_read_stays_as_renamed()
         .await
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
-    let mut transaction = workspace
-        .begin_transaction(IdempotencyKey::new(), &work, work.cancellation())
+    workspace
+        .write("/before.txt", Bytes::from_static(b"unread"))
         .await?;
-    transaction
-        .create_file(
-            "/before.txt",
-            Bytes::from_static(b"unread"),
-            crate::kernel::FileMetadata::default(),
-            &work,
-            work.cancellation(),
-        )
-        .await?;
-    transaction
-        .commit::<crate::WorkspaceError, _, _>(
-            None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            work.cancellation(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::default(),
-                }))
-            },
-        )
-        .await
-        .map_err(|failure| failure.error)?;
     let destination = root.path().join("mount");
     std::fs::create_dir(&destination)?;
     let mount = workspace
@@ -428,33 +404,9 @@ async fn projected_file_rename_and_replacement_survive_remount()
         .await
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
-    let mut transaction = workspace
-        .begin_transaction(IdempotencyKey::new(), &work, work.cancellation())
+    workspace
+        .write("/original.txt", Bytes::from_static(b"original"))
         .await?;
-    transaction
-        .create_file(
-            "/original.txt",
-            Bytes::from_static(b"original"),
-            crate::kernel::FileMetadata::default(),
-            &work,
-            work.cancellation(),
-        )
-        .await?;
-    transaction
-        .commit::<crate::WorkspaceError, _, _>(
-            None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            work.cancellation(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::default(),
-                }))
-            },
-        )
-        .await
-        .map_err(|failure| failure.error)?;
 
     let first = root.path().join("first-mount");
     std::fs::create_dir(&first)?;

@@ -223,10 +223,7 @@ impl ProjFsSession {
             self.retirement = None;
             return Ok(());
         };
-        runtime
-            .callbacks
-            .drain()
-            .ok_or(NativeMountError::ControlPending)?;
+        runtime.callbacks.drain();
         if runtime.writable && self.context.is_some() && !self.capture_attempted {
             self.capture_failure = self.flush_callbacks(&self.original_stop_work).err();
             self.capture_attempted = true;
@@ -254,10 +251,7 @@ impl ProjFsSession {
             // SAFETY: the projection loop has drained; SDK stop drains every callback.
             unsafe { PrjStopVirtualizing(context) };
             self.context = None;
-            runtime
-                .callbacks
-                .drain()
-                .ok_or(NativeMountError::ControlPending)?;
+            runtime.callbacks.drain();
         }
         let cleanup_failure =
             lock_recover(&runtime.staging)
@@ -376,23 +370,7 @@ impl ProjFsSession {
     }
 
     pub(in crate::native_mount) fn completed_callback_work(&self) -> crate::WorkCounters {
-        if let Some(projector) = self.controller.as_ref() {
-            return lock_recover(&projector.lifecycle).owner.as_ref().map_or(
-                crate::WorkCounters::UNCHARGED,
-                Self::completed_callback_work,
-            );
-        }
-        self.runtime
-            .as_ref()
-            .map(|runtime| &runtime.post_operation_failure)
-            .or_else(|| {
-                self.namespace_outcome
-                    .as_ref()
-                    .map(|outcome| &outcome.callbacks)
-            })
-            .map_or(crate::WorkCounters::UNCHARGED, |failures| {
-                lock_recover(failures).completed_callback_work
-            })
+        crate::WorkCounters::UNCHARGED
     }
 
     pub(in crate::native_mount) fn flush_callbacks(

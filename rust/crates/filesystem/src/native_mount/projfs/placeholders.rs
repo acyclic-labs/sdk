@@ -381,6 +381,7 @@ pub(super) fn write_ordinary(
             std::path::Path::new(&temporary),
             &directory,
             std::path::Path::new(name),
+            None,
             &mut &*work,
         )
     };

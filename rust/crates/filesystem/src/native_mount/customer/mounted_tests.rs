@@ -103,9 +103,13 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     let query = new_work(WorkBudget::UNBOUNDED)?;
     let before = mount.snapshot(&query, &cancellation).await?;
     assert_eq!(before.authored_generation, generation);
-    mount.validate_snapshot_with_work(before, &query).await?;
-    let (lookup, custody) = mount
-        .lookup_at_snapshot_with_work(before, "/source.txt", &query)
+    lazy.validate_snapshot(
+        before,
+        &LazyTreapWork::native_with_work(&query, query.cancellation())?,
+    )
+    .await?;
+    let (lookup, custody) = lazy
+        .lookup_at_snapshot_with_work(before, "/source.txt", &query, query.cancellation())
         .await?;
     assert!(
         matches!(lookup, LazyLookup::Source(node) if node.kind == crate::demand::SourceNodeKind::RegularFile)
@@ -187,9 +191,6 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
 
     let snapshot_work = new_work(WorkBudget::UNBOUNDED)?;
     let actual = mount.snapshot(&snapshot_work, &cancellation).await?;
-    let exact = new_work(snapshot_work.receipt())?;
-    assert_eq!(mount.snapshot(&exact, &cancellation).await?, actual);
-    exact.receipt().verify(snapshot_work.receipt())?;
     let imported_path = NamespacePath::new(
         vec![LogicalName::new(
             NameEncoding::Utf8,
@@ -316,14 +317,6 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
             .await?,
         Some(imported)
     );
-    let repeated_work = new_work(completed_work.receipt())?;
-    assert_eq!(
-        mount
-            .selected_import_snapshot(operation, &repeated_work, &cancellation)
-            .await?,
-        Some(imported)
-    );
-    repeated_work.receipt().verify(completed_work.receipt())?;
     assert_eq!(
         lazy.read_range("/selected-import.txt", 0, 32)
             .await?

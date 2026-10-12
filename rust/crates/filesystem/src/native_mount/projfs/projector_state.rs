@@ -9,7 +9,7 @@ pub(super) const MATERIALIZE_WORKERS: usize = 8;
 
 pub(super) struct SharedProjection<'a>(pub(super) Projection<'a>);
 
-// SAFETY: the source is `Sync`, the root a shared path, and the context an
+// SAFETY: the shared runtime synchronizes mutations and retains the SDK context.
 unsafe impl Sync for SharedProjection<'_> {}
 
 pub(super) struct MaterializeQueue {

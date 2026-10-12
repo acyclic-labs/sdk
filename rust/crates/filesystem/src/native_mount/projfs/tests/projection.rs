@@ -33,7 +33,7 @@ async fn listing_follows_source_and_mount_changes() -> Result<(), Box<dyn std::e
     assert_eq!(sorted_names(&destination)?, ["a.txt"]);
     assert_eq!(sorted_names(&destination)?, ["a.txt"]);
     source.create_file(&windows_path("b.txt"), FileMetadata::default(), None, &work)?;
-    session.revalidate()?;
+    session.revalidate(&work)?;
     assert_eq!(sorted_names(&destination)?, ["a.txt", "b.txt"]);
 
     let external = acyclic_native_runtime::process_output(
@@ -48,7 +48,7 @@ async fn listing_follows_source_and_mount_changes() -> Result<(), Box<dyn std::e
         "external edit failed: {external:?}"
     );
     assert_eq!(sorted_names(&destination)?, ["a.txt", "c.txt"]);
-    session.flush_callbacks()?;
+    session.flush_callbacks(&work)?;
     assert_eq!(sorted_names(&destination)?, ["a.txt", "c.txt"]);
     assert!(source.lookup(&windows_path("b.txt"))?.is_none());
     assert!(source.lookup(&windows_path("c.txt"))?.is_some());
@@ -81,14 +81,14 @@ async fn a_projected_link_follows_its_source_target() -> Result<(), Box<dyn std:
         FileMetadata::default(),
         &work,
     )?;
-    session.revalidate()?;
+    session.revalidate(&work)?;
     assert_eq!(sorted_names(&destination)?, ["link"]);
     assert_eq!(
         std::fs::read_link(destination.join("link"))?,
         std::path::Path::new("second.txt")
     );
     source.remove(&link, None, &work)?;
-    session.revalidate()?;
+    session.revalidate(&work)?;
     assert!(sorted_names(&destination)?.is_empty());
     session.stop()?;
     Ok(())
@@ -140,7 +140,7 @@ async fn a_directory_replaces_a_projected_link() -> Result<(), Box<dyn std::erro
     let (_root, destination, mut session) = mount_source(&source)?;
     source.remove(&name, None, &work)?;
     source.create_directory(&name, FileMetadata::default(), &work)?;
-    session.revalidate()?;
+    session.revalidate(&work)?;
     assert!(std::fs::symlink_metadata(destination.join("name"))?.is_dir());
     session.stop()?;
     Ok(())
@@ -180,7 +180,7 @@ async fn a_directory_replaces_a_link_held_open_once_closed()
         std::thread::sleep(std::time::Duration::from_millis(300));
         drop(held);
     });
-    session.revalidate()?;
+    session.revalidate(&work)?;
     closer.join().map_err(|_| "closer panicked")?;
     let held_by = || format!("the mount holds {:?}", sorted_names(&destination));
     let kind = std::fs::symlink_metadata(&projected)
@@ -222,7 +222,7 @@ async fn a_link_held_open_goes_once_closed() -> Result<(), Box<dyn std::error::E
         std::thread::sleep(std::time::Duration::from_millis(300));
         drop(held);
     });
-    session.revalidate()?;
+    session.revalidate(&work)?;
     closer.join().map_err(|_| "closer panicked")?;
     assert!(sorted_names(&destination)?.is_empty());
     session.stop()?;
@@ -254,7 +254,7 @@ async fn paths_the_source_gains_appear_once_revalidated() -> Result<(), Box<dyn 
         0,
         Bytes::from_static(b"listed"),
     )?;
-    session.revalidate()?;
+    session.revalidate(&work)?;
     assert_eq!(sorted_names(&destination)?, ["listed.txt"]);
     assert_eq!(std::fs::read(destination.join("listed.txt"))?, b"listed");
 
@@ -269,7 +269,7 @@ async fn paths_the_source_gains_appear_once_revalidated() -> Result<(), Box<dyn 
         &work,
     )?;
     session.invalidate(b"/invalidated.txt")?;
-    session.revalidate()?;
+    session.revalidate(&work)?;
     assert_eq!(
         std::fs::metadata(destination.join("invalidated.txt"))?.len(),
         0
@@ -302,33 +302,9 @@ async fn advanced_view_reveals_a_path_absent_before() -> Result<(), Box<dyn std:
         std::fs::metadata(&added).err().map(|error| error.kind()),
         Some(std::io::ErrorKind::NotFound)
     );
-    let mut transaction = workspace
-        .begin_transaction(IdempotencyKey::new(), &work, work.cancellation())
+    workspace
+        .write("/added.txt", Bytes::from_static(b"added"))
         .await?;
-    transaction
-        .create_file(
-            "/added.txt",
-            Bytes::from_static(b"added"),
-            FileMetadata::default(),
-            &work,
-            work.cancellation(),
-        )
-        .await?;
-    transaction
-        .commit::<crate::WorkspaceError, _, _>(
-            None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            work.cancellation(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::default(),
-                }))
-            },
-        )
-        .await
-        .map_err(|failure| failure.error)?;
     mount.advance_to_head().await?;
     assert_eq!(std::fs::read(&added)?, b"added");
     mount.unmount().await?;
@@ -419,33 +395,12 @@ async fn rustc_links_object_files_created_inside_projection()
         .await
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
-    let mut transaction = workspace
-        .begin_transaction(IdempotencyKey::new(), &work, work.cancellation())
-        .await?;
-    transaction
-        .create_file(
+    workspace
+        .write(
             "/acyclic-workflow.rs",
             Bytes::from_static(b"fn main() { println!(\"ok\"); }\n"),
-            crate::kernel::FileMetadata::default(),
-            &work,
-            work.cancellation(),
         )
         .await?;
-    transaction
-        .commit::<crate::WorkspaceError, _, _>(
-            None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            work.cancellation(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::default(),
-                }))
-            },
-        )
-        .await
-        .map_err(|failure| failure.error)?;
     let path = root.path().join("mount");
     std::fs::create_dir(&path)?;
     let mount = workspace
@@ -516,11 +471,15 @@ fn newer_capture_is_not_cleared_by_an_older_flush() {
 }
 
 #[test]
-fn closed_callback_gate_refuses_late_admission() {
+fn closing_callback_admission_preserves_an_already_admitted_operation() {
     let gate = CallbackGate::start().expect("callback gate");
+    let admitted = gate.enter().expect("open callback gate");
     gate.close_admission();
-    assert!(
-        gate.call_observed(0, || panic!("closed callback ran"), |_| {})
-            .is_none()
+    assert!(gate.enter().is_none());
+    assert_eq!(
+        gate.call_observed(0, || 7, |result| assert_eq!(*result, 7)),
+        7
     );
+    drop(admitted);
+    gate.drain();
 }

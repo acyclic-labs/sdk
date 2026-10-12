@@ -352,8 +352,8 @@ pub(super) unsafe fn notification(
         });
     keep_file_notifications(notification, operation_parameters);
     match result {
-        Some(Ok(())) => HR_OK,
-        Some(Err(error)) => {
+        Ok(()) => HR_OK,
+        Err(error) => {
             let status = source_hresult(&error);
             if matches!(
                 error.semantic_error(),
@@ -363,13 +363,11 @@ pub(super) unsafe fn notification(
             ) {
                 let mut failures = lock_recover(&runtime.post_operation_failure);
                 if failures.callback_failure.is_none() {
-                    failures.callback_failure =
-                        Some((error.into(), lock_recover(&runtime.work).receipt()));
+                    failures.callback_failure = Some((error.into(), work.receipt()));
                 }
             }
             status
         }
-        None => HR_UNEXPECTED,
     }
 }
 

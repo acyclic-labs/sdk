@@ -44,7 +44,6 @@ pub(super) struct PostOperationFailures {
     pub(super) next_capture_serial: u64,
     pub(super) unreplayable: Option<String>,
     pub(super) callback_failure: Option<(NativeMountError, crate::WorkCounters)>,
-    pub(super) completed_callback_work: crate::WorkCounters,
 }
 
 #[derive(Clone)]
@@ -163,12 +162,7 @@ impl CallbackGate {
         })
     }
 
-    pub(super) fn call<T>(&self, operation: impl FnOnce() -> T) -> Option<T> {
-        self.drain()?;
-        Some(operation())
-    }
-
-    pub(super) fn drain(&self) -> Option<()> {
+    pub(super) fn drain(&self) {
         let mut active = lock_recover(&self.active);
         while active.0 != 0 {
             active = self
@@ -176,7 +170,6 @@ impl CallbackGate {
                 .wait(active)
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
         }
-        Some(())
     }
 
     pub(super) fn call_observed<T>(
@@ -184,14 +177,13 @@ impl CallbackGate {
         key: u128,
         operation: impl FnOnce() -> T,
         observe: impl FnOnce(&T),
-    ) -> Option<T> {
-        let count = u128::try_from(self.shards.len()).ok()?;
-        let shard = usize::try_from(key % count).ok()?;
-        let _active = self.enter()?;
-        let _serial = lock_recover(self.shards.get(shard)?);
+    ) -> T {
+        let shard = (key % self.shards.len() as u128) as usize;
+        // The SDK entry already owns admission through operation and observation.
+        let _serial = lock_recover(&self.shards[shard]);
         let result = operation();
         observe(&result);
-        Some(result)
+        result
     }
 
     pub(super) fn close_admission(&self) {
@@ -204,17 +196,12 @@ pub(super) fn flush_callback_gate(
     failure: Arc<Mutex<PostOperationFailures>>,
     capture: impl Fn(&[(MountPath, bool)]) -> Result<(), MountSourceError>,
 ) -> Result<(), NativeMountError> {
-    let pending_failure = Arc::clone(&failure);
-    let pending = callbacks
-        .call(move || {
-            lock_recover(pending_failure.as_ref())
-                .pending_captures
-                .iter()
-                .map(|(path, capture)| (path.clone(), capture.serial, capture.subtree))
-                .collect::<Vec<_>>()
-        })
-        .ok_or_else(|| NativeMountError::Driver("ProjFS callback worker stopped".to_owned()))?;
-    let mut pending = pending;
+    callbacks.drain();
+    let mut pending = lock_recover(failure.as_ref())
+        .pending_captures
+        .iter()
+        .map(|(path, capture)| (path.clone(), capture.serial, capture.subtree))
+        .collect::<Vec<_>>();
     pending.sort_by(|(left, ..), (right, ..)| {
         left.components()
             .len()
@@ -249,18 +236,15 @@ pub(super) fn flush_callback_gate(
             }
         }
     }
-    let failure = callbacks
-        .call(move || {
-            let failure = lock_recover(failure.as_ref());
-            failure.unreplayable.clone().or_else(|| {
-                failure
-                    .pending_captures
-                    .iter()
-                    .next()
-                    .map(|(path, capture)| format!("{path:?}: {}", capture.error))
-            })
-        })
-        .ok_or_else(|| NativeMountError::Driver("ProjFS callback worker stopped".to_owned()))?;
+    callbacks.drain();
+    let failure = lock_recover(failure.as_ref());
+    let failure = failure.unreplayable.clone().or_else(|| {
+        failure
+            .pending_captures
+            .iter()
+            .next()
+            .map(|(path, capture)| format!("{path:?}: {}", capture.error))
+    });
     if let Some(failure) = failure {
         Err(NativeMountError::Driver(format!(
             "ProjFS post-operation capture failed; mount cannot publish: {failure}"

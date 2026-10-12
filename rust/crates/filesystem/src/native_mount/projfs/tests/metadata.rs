@@ -3,6 +3,7 @@ use super::*;
 #[ignore = "requires a host that permits mounting a writable ProjFS provider"]
 async fn metadata_edit_after_a_boundary_through_a_handle_opened_before_it_is_captured()
 -> Result<(), Box<dyn std::error::Error>> {
+    let work = setup_work()?;
     let source = windows_checkout_source().await?;
     let (root, destination, mut session) = mount_source(&source)?;
     let file = destination.join("late.txt");
@@ -25,7 +26,7 @@ async fn metadata_edit_after_a_boundary_through_a_handle_opened_before_it_is_cap
         $h.Close()";
     let ready = root.path().join("ready");
     let go = root.path().join("go");
-    let mut editor = acyclic_native_runtime::spawn_process_tree(
+    let mut editor = acyclic_native_runtime::ProcessTree::spawn(
         std::process::Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command", script])
             .env("ACYCLIC_FS_TEST_FILE", &file)
@@ -33,16 +34,16 @@ async fn metadata_edit_after_a_boundary_through_a_handle_opened_before_it_is_cap
             .env("ACYCLIC_FS_TEST_GO", &go),
     )?;
     while !ready.exists() {
-        assert!(editor.try_wait()?.is_none(), "editor exited early");
+        assert!(editor.try_wait(None)?.is_none(), "editor exited early");
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    session.flush_callbacks()?;
+    session.flush_callbacks(&work)?;
     std::fs::write(&go, b"")?;
     assert!(
         editor.wait(std::time::Duration::from_secs(30))?.success(),
         "metadata edit failed"
     );
-    session.flush_callbacks()?;
+    session.flush_callbacks(&work)?;
     let captured = source
         .lookup(&windows_path("late.txt"))?
         .ok_or("late.txt was not captured")?;
@@ -93,8 +94,8 @@ catch [IO.IOException] {{ if ($try -ge 500) {{ exit 2 }}; Start-Sleep -Milliseco
     ))?;
     succeeded(editor)?;
     succeeded(reader)?;
-    session.flush_callbacks()?;
-    session.revalidate()?;
+    session.flush_callbacks(&work)?;
+    session.revalidate(&work)?;
     let wanted = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
     let mut lost = Vec::new();
     for index in 0..FILES {
@@ -131,33 +132,9 @@ async fn external_metadata_only_change_survives_remount() -> Result<(), Box<dyn 
         .await
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
-    let mut transaction = workspace
-        .begin_transaction(IdempotencyKey::new(), &work, work.cancellation())
+    workspace
+        .write("/metadata.txt", Bytes::from_static(b"unchanged contents"))
         .await?;
-    transaction
-        .create_file(
-            "/metadata.txt",
-            Bytes::from_static(b"unchanged contents"),
-            crate::kernel::FileMetadata::default(),
-            &work,
-            work.cancellation(),
-        )
-        .await?;
-    transaction
-        .commit::<crate::WorkspaceError, _, _>(
-            None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            work.cancellation(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::default(),
-                }))
-            },
-        )
-        .await
-        .map_err(|failure| failure.error)?;
 
     let first = root.path().join("first-mount");
     std::fs::create_dir(&first)?;

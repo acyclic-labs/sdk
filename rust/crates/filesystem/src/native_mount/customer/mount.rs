@@ -156,26 +156,14 @@ where
         if selected.kind != FileKind::Directory {
             return Err(MountLifecycleError::Workspace(WorkspaceError::NotDirectory));
         }
-        let shared = SharedCheckout::with_publication_meter(checkout, options.publication, &work)?;
-        let root_custody = match root_custody {
-            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(custody) => custody,
-            crate::kernel::allocation::KernelOwnedAllocation::Standalone => {
-                return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
-            }
-        };
-        let source = CheckoutMountSource::new_at_meter(
-            shared,
-            config,
-            root,
-            root_custody,
+        let source = options::checkout_source(
+            checkout,
+            (root, root_custody),
+            options.publication,
             &work,
             options.native_original.as_ref(),
+            options.callback_guard.as_ref(),
         )?;
-        let source = match options.callback_guard {
-            Some(guard) => source.with_native_callback_guard(guard),
-            None => source,
-        }
-        .into_arc_meter(&work)?;
         let session_destination = work.path(&destination, None)?;
         let prepared =
             super::super::prepare_native_mount_start(&work).map_err(NativeMountError::from)?;

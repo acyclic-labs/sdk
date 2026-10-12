@@ -82,12 +82,6 @@ impl Runtime {
     }
 }
 
-pub(in crate::native_mount) fn detach_work_error(
-    error: impl Into<NativeMountError>,
-) -> NativeMountError {
-    error.into()
-}
-
 pub(super) fn native_call<T>(
     work: &crate::NativeMaterializationWork,
     write: bool,
