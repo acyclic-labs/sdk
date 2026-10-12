@@ -7659,7 +7659,7 @@ pub(crate) mod tests {
             Limits::default(),
             None,
         )?;
-        let model_digest = prepared_request.manifest().request_digest;
+        let model_digest = prepared_request.request_digest();
         let payloads = Arc::new(MemoryPayloads::new()?);
         let owner = Authority {
             kind: AggregateKind::Task,
