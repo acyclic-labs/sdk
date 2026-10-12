@@ -7,7 +7,7 @@ use crate::foundation::{AuthorityId, Digest, DurableCommit, Epoch, Head, Operati
 use crate::kernel::{RetentionKind, retention_authority_id, volume_authority_id};
 use crate::memory::MemoryAuthorityStore;
 use crate::storage::{
-    AppendOutcome, AuthorityResult, AuthorityStore, AuthorityStoreError, CreateAuthorityOutcome,
+    AppendOutcome, AuthorityResult, AuthorityStoreError, CreateAuthorityOutcome,
     FenceOutcome, ObjectId, ObjectKind, ReplayLimit,
 };
 use crate::{AsyncAuthorityStore, CancellationToken, Fs, GenerationForkSource, IdempotencyKey, MemoryFs, MemoryObjectBackend, WorkBudget};
@@ -247,16 +247,14 @@ async fn accounting_requires_original_objects_and_authoritative_time_not_offline
     ).await, Err(AccountingError::Proof(_))));
     let initial = records(&authority, authority_id).await?.remove(0);
     let offline = MemoryAuthorityStore::default();
-    let CreateAuthorityOutcome::Created(head) = AuthorityStore::create_authority(
-        &offline, authority_id, initial.epoch, BUDGET,
-    )?.value else {
+    let CreateAuthorityOutcome::Created(head) = AsyncAuthorityStore::create_authority(
+        &offline, authority_id, initial.epoch, BUDGET, &crate::CancellationToken::new()).await?.value else {
         return Err("offline fixture authority already existed".into());
     };
-    let AppendOutcome::Committed(committed) = AuthorityStore::compare_and_append(
+    let AppendOutcome::Committed(committed) = AsyncAuthorityStore::compare_and_append(
         &offline, authority_id, initial.epoch, head,
         ProposedCommit { operation_id: initial.operation_id, fingerprint: initial.fingerprint, payload: initial.payload },
-        BUDGET,
-    )?.value else {
+        BUDGET, &crate::CancellationToken::new()).await?.value else {
         return Err("offline actual Memory authority did not commit".into());
     };
     assert_eq!(committed.settled_at_micros, None);
