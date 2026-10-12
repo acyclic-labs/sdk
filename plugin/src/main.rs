@@ -14,6 +14,7 @@ mod control_protocol;
 mod control_transport;
 mod git;
 mod guidance;
+mod identity;
 mod install;
 mod obs;
 mod pi;
@@ -109,6 +110,16 @@ fn main() {
 fn main_result() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let mut arguments = env::args().skip(1);
     match arguments.next().as_deref() {
+        Some(command) if identity::is_command(command) => {
+            let arguments = std::iter::once(command.to_owned())
+                .chain(arguments)
+                .collect::<Vec<_>>();
+            return tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(identity::run(&arguments))
+                .map_err(Into::into);
+        }
         Some("__hook") => return run_native_hook(&arguments.collect::<Vec<_>>()),
         Some("__mcp") => return codex_hook_mcp::serve().map_err(Into::into),
         _ => {}
@@ -434,7 +445,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         .is_some_and(|argument| matches!(argument.as_str(), "--help" | "-h"))
     {
         println!(
-            "Acyclic {}\n\nUsage: acyclic [COMMAND]\n\nCommands:\n  install HOST       Install host integration\n  uninstall HOST [--purge]\n                       Remove integration; preserve durable state unless purged\n  doctor [--json]    Diagnose the release installation\n  git ARGS...        Run Git compatibility commands\n  agents [--json]    List recursive agent workspace status\n  discard WORKSPACE  Discard a child workspace\n  mcp                 Serve MCP over standard input/output",
+            "Acyclic {}\n\nUsage: acyclic [COMMAND]\n\nCommands:\n  login [--json]     Sign in with device approval\n  whoami [--json]    Show the signed-in identity\n  orgs [--json]      List organizations\n  refresh [--json]   Rotate the session token\n  install HOST       Install host integration\n  uninstall HOST [--purge]\n                       Remove integration; preserve durable state unless purged\n  doctor [--json]    Diagnose the release installation\n  git ARGS...        Run Git compatibility commands\n  agents [--json]    List recursive agent workspace status\n  discard WORKSPACE  Discard a child workspace\n  mcp                 Serve MCP over standard input/output",
             env!("CARGO_PKG_VERSION")
         );
         return Ok(());

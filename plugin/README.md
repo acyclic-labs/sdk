@@ -67,7 +67,25 @@ acyclic install <host> [--project]
 acyclic install --detected
 acyclic uninstall <host> [--purge]
 acyclic doctor [--json]
+acyclic login [--json]
+acyclic whoami [--json]
+acyclic orgs [--json]
+acyclic refresh [--json]
 ```
+
+Set `ACYCLIC_API_URL` to the public Edge origin, or pass `--endpoint ORIGIN`
+to each identity command. `acyclic login` prints a device approval URL and
+code on stderr, waits for approval, and saves the session. With `--json`, stdout
+contains one JSON result or error; device approval instructions on stderr are
+also JSON. Identity results never include access or refresh tokens.
+
+The credential file defaults to `~/.acyclic/identity.json`. Override it with
+`ACYCLIC_IDENTITY_FILE` or `--credentials PATH`. It is bound to its API origin,
+written atomically, and locked across identity operations so two processes
+cannot reuse a rotating refresh token. Unix files have mode 0600; on Windows,
+use a private user directory with its inherited ACL. `whoami` and `orgs`
+refresh expiring access tokens automatically. A failed or ambiguous refresh
+clears the local session; sign in again rather than replaying a refresh token.
 
 `acyclic install pi [--project]` installs the initial Pi diagnostics extension.
 Pi owns its context, compaction and model retries. This source slice exposes
