@@ -70,7 +70,7 @@ async fn publish_lifecycle(
     let CommitOutcome::Committed(envelope) = client.commit(request).await? else {
         return Err(Error::Invalid("root fixture publication conflicted".into()));
     };
-    indexed.verify(&envelope)?;
+    indexed.verify(&envelope, &mut None)?;
     reducer.apply_committed(event, &mut None)?;
     Ok(())
 }

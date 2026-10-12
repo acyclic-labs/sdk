@@ -47,7 +47,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     let fixture = CreationFixture::new().await?;
     let created = fixture.create_filesystem_child().await?;
     let preparation_task = TaskId::from_bytes([83;16]);
-    let crate::distributed::WorkPull::Claimed(preparation_lease) = fixture.host.recover_work(preparation_task).await? else {
+    let crate::distributed::WorkPull::Claimed(preparation_lease) = fixture.host.recover_work(preparation_task, &mut None).await? else {
         return Err(Error::NotFound("genuine source allocation preparation".into()));
     };
     fixture.host.settle_task(preparation_task, &(&preparation_lease.reservation).into(), Outcome::Succeeded(serde_json::to_value(&created.report)
@@ -271,7 +271,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         operation, child, &snapshot, budget).await.is_err());
     owner.authorize_project_source(&context, &issuer, &policy, fixture.root, operation,
         policy.bootstrap.clone(), 1_000_000, 128 * 1_024 * 1_024).await?;
-    let crate::distributed::WorkPull::Claimed(child_lease) = fixture.host.recover_work(child).await? else {
+    let crate::distributed::WorkPull::Claimed(child_lease) = fixture.host.recover_work(child, &mut None).await? else {
         return Err(Error::NotFound("source child lease".into()));
     };
     let child_context = runtime.task_context(child, (&child_lease.reservation).into()).await?;
@@ -284,7 +284,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     let mut sibling_admission = fixture.admission(122, serde_json::json!({}));
     sibling_admission.grants = Capabilities::new(["task:spawn:test.created@1"]);
     fixture.admit_child(sibling_admission).await?;
-    let crate::distributed::WorkPull::Claimed(sibling_lease) = fixture.host.recover_work(sibling).await? else {
+    let crate::distributed::WorkPull::Claimed(sibling_lease) = fixture.host.recover_work(sibling, &mut None).await? else {
         return Err(Error::NotFound("source sibling lease".into()));
     };
     let sibling_context = runtime.task_context(sibling, (&sibling_lease.reservation).into()).await?;
@@ -374,7 +374,7 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
     assert!(owner.restore_project_source_authorization(&context, handle.authorization()).await.is_err());
     assert!(inspected.read_file(&selected_file).await.is_err());
     assert!(inspected.list(&snapshot.project, "", "", &snapshot.generation, None, 1).await.is_err());
-    let crate::distributed::WorkPull::Claimed(recovered_root) = fixture.host.recover_work(fixture.root).await? else {
+    let crate::distributed::WorkPull::Claimed(recovered_root) = fixture.host.recover_work(fixture.root, &mut None).await? else {
         return Err(Error::NotFound("recovered original source caller".into()));
     };
     fixture.host.start_task(&recovered_root, None).await?;
