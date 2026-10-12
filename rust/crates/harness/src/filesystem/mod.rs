@@ -3405,6 +3405,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             code: crate::wire::ErrorCode::Storage,
             reason: "join witness decoder did not admit its statement",
         })?.into_retained();
+        drop(statement_guard);
         drop(encoded);
         drop(encoded_guard);
         drop(witness_custody);

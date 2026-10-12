@@ -277,7 +277,16 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
         let model = crate::model::model_model_clone_with_io(model, Some(&io))?;
         let context = context.clone_with_native_work(work)?;
         io.absorb_native_custody(context.1)?;
-        let compaction = crate::executor::stock_compaction_copy(compaction, Some(&io))?;
+        let compaction = match compaction {
+            crate::context::CompactionPolicy::Disabled => crate::context::CompactionPolicy::Disabled,
+            crate::context::CompactionPolicy::Threshold(policy) => {
+                let (retention, custody) = crate::context::clone_retention_native(&policy.retention, work)?;
+                io.absorb_native_custody(custody)?;
+                crate::context::CompactionPolicy::Threshold(crate::context::ThresholdCompaction {
+                    response_reserve_tokens: policy.response_reserve_tokens, recent_tokens: policy.recent_tokens, retention,
+                })
+            }
+        };
         let binding_bytes = io.owned_bytes()?.checked_sub(self_bytes)
             .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                 reason: "native model configuration custody underflows" })?;
@@ -1189,7 +1198,7 @@ where
                 }
             }
         }
-        let runner = DurableToolRunner::new_with_native_work(&self.runtime.tool_registry(), journal, work)?
+        let runner = DurableToolRunner::new_with_native_work(self.runtime.tool_registry(), journal, work)?
             .with_limits(context.context().scope().limits())?;
         let (outcome, custody) = if reconciliation_only {
             runner.reconcile_with_native_context(task, operation, definition, &invocation.arguments, &tool_context, work)?.await?
@@ -1401,7 +1410,7 @@ where
         }
         let limits = context.scope().limits();
         let runner =
-            DurableToolRunner::new(self.runtime.tool_registry(), journal).with_limits(limits)?;
+            DurableToolRunner::new(self.runtime.tool_registry().clone(), journal).with_limits(limits)?;
         let outcome = runner
             .run_with_context(
                 task,
