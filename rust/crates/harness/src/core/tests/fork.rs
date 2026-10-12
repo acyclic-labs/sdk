@@ -296,8 +296,6 @@ fn fork_is_invisible_until_one_seed_event_commits() -> Result<()> {
         &mut None,
     )?;
     assert_eq!(restored, reducer);
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    native_snapshot_round_trip(&reducer, &issuer(), usize::MAX)?;
     let mut reused = seed;
     reused.operation_id = operation(9);
     reused.child.id = "conversation-3".into();

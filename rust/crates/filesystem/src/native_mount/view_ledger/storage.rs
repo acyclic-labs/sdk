@@ -6,7 +6,7 @@ use crate::demand::NativeMountAllocationCustody;
 pub(super) fn vector<T>(
     count: usize,
     carrier: &mut NativeDemandCarrier<'_>,
-) -> Result<(Vec<T>, Option<NativeMountAllocationCustody>), MountSourceError> {
+) -> Result<(Vec<T>, Option<std::sync::Arc<NativeMountAllocationCustody>>), MountSourceError> {
     carrier
         .with_work(|work| work.check())
         .map_err(mount_demand_error)?;
@@ -62,7 +62,7 @@ pub(super) struct ChangePositions {
     floor: u64,
     latest: HashMap<u64, u64>,
     // Physical backing drops before its original allocation owner.
-    custody: Option<NativeMountAllocationCustody>,
+    custody: Option<std::sync::Arc<NativeMountAllocationCustody>>,
 }
 
 pub(super) fn record(
@@ -172,7 +172,7 @@ pub(super) fn unchanged_since(
 }
 pub(super) fn grow_vector<T>(
     entries: &mut Vec<T>,
-    owner: &mut Option<NativeMountAllocationCustody>,
+    owner: &mut Option<std::sync::Arc<NativeMountAllocationCustody>>,
     capacity: usize,
     carrier: &mut NativeDemandCarrier<'_>,
 ) -> Result<(), MountSourceError> {
@@ -197,13 +197,13 @@ pub(super) fn grow_vector<T>(
 
 fn replace<T>(
     value: &mut T,
-    owner: &mut Option<NativeMountAllocationCustody>,
+    owner: &mut Option<std::sync::Arc<NativeMountAllocationCustody>>,
     bytes: u64,
     carrier: &mut NativeDemandCarrier<'_>,
     build: impl FnOnce(
         &mut T,
         &mut NativeDemandCarrier<'_>,
-    ) -> Result<(T, Option<NativeMountAllocationCustody>), MountSourceError>,
+    ) -> Result<(T, Option<std::sync::Arc<NativeMountAllocationCustody>>), MountSourceError>,
 ) -> Result<(), MountSourceError> {
     let borrowed = owner
         .as_ref()
@@ -213,7 +213,7 @@ fn replace<T>(
         .is_some_and(|admitted| !admitted);
     if borrowed {
         carrier
-            .with_work(|work| work.adopt(bytes))
+            .with_work(|work| work.claim_allocation(bytes, 0, crate::WorkCounters::UNCHARGED))
             .map_err(mount_demand_error)?;
     }
     let result = build(value, carrier).map(|(next, custody)| {

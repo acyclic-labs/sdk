@@ -73,31 +73,26 @@ impl McpStdioRequest {
             return Err(rejection(work, "invalid MCP stdio exchange contract"));
         }
         let maximum_bytes = self.maximum_bytes as usize;
+        let params: &serde_json::value::RawValue = serde_json::from_str(concat!(
+            "{\"capabilities\":{},\"clientInfo\":{\"name\":\"acyclic-harness\",\"version\":\"",
+            env!("CARGO_PKG_VERSION"),
+            "\"},\"protocolVersion\":\"2025-11-25\"}",
+        ))
+        .map_err(|_| rejection(work, "invalid MCP client identity"))?;
         let first = encode_line(
             &Envelope {
                 id: self.initialization,
                 jsonrpc: "2.0",
                 method: "initialize",
-                params: InitializeParams {
-                    capabilities: Empty {},
-                    client_info: ClientInfo {
-                        name: "acyclic-harness",
-                        version: env!("CARGO_PKG_VERSION"),
-                    },
-                    protocol_version: PROTOCOL_VERSION,
-                },
+                params,
             },
             maximum_bytes,
             work,
         )?;
-        let ready = encode_line(
-            &Initialized {
-                jsonrpc: "2.0",
-                method: "notifications/initialized",
-            },
-            maximum_bytes,
-            work,
-        )?;
+        let initialized: &serde_json::value::RawValue =
+            serde_json::from_str(r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#)
+                .map_err(|_| rejection(work, "invalid MCP readiness message"))?;
+        let ready = encode_line(initialized, maximum_bytes, work)?;
         let request = encode_line(
             &Envelope {
                 id: self.operation,

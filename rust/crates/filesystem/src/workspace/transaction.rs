@@ -121,38 +121,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         .await
     }
 
-    pub(crate) async fn restore_record<W: crate::facade::FsWork>(
-        &mut self,
-        path: &str,
-        record: crate::kernel::FileRecord,
-        work: W,
-        cancellation: &CancellationToken,
-    ) -> W::Output<(), WorkspaceError> {
-        let mut accounting = work.accounting(cancellation);
-        let result = async {
-            let path = self.mutation_path(path, &mut accounting, cancellation)?;
-            let mut operations = crate::kernel::Owned::allocate(1, &mut accounting)?;
-            Self::push_mutation(
-                &mut operations,
-                crate::kernel::Owned::new(
-                    crate::kernel::Mutation::Restore {
-                        path: path.value,
-                        record,
-                    },
-                    path.allocation,
-                    path.bytes,
-                ),
-                &mut accounting,
-            )?;
-            self.checkout
-                .mutate_owned_with_accounting(operations, &mut accounting, cancellation)
-                .await
-                .map_err(WorkspaceError::from)
-        }
-        .await;
-        work.finish(result, &accounting)
-    }
-
     pub(crate) async fn mutate<W: crate::facade::FsWork>(
         &mut self,
         path: &str,

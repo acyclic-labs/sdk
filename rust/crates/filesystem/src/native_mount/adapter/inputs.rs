@@ -85,7 +85,7 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
                     .checked_add(extra)
                     .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
                 self.carrier
-                    .with_work(|work| work.record_adoption(extra, &work.capture_custody()))
+                    .with_work(|work| work.record_native_owned_completed(extra, &work.capture_custody()).1)
                     .map_err(super::lazy::mount_demand_error)
             };
             if let Err(error) = result {
@@ -247,12 +247,7 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
         let observer = if let Some(work) = self.carrier.original_native_work() {
             checkout.observer(&work, cancellation).map_err(fs_error)?
         } else {
-            let (budget, live) = self.carrier.with_work(|work| {
-                Ok::<_, MountSourceError>((
-                    work.remaining().map_err(super::lazy::mount_demand_error)?,
-                    work.live_allocation_bytes(),
-                ))
-            })?;
+            let (budget, live) = self.carrier.remaining()?;
             self.carrier.accept_with_prior_live(
                 checkout.observer(budget, cancellation),
                 live,
@@ -280,7 +275,7 @@ impl<'a, 'w> InputBuffers<'a, 'w> {
             .ok_or(MountSourceError::Work(WorkError::Overflow))?;
         self.carrier
             .with_work(|work| {
-                work.record_adoption(bytes, &None)?;
+                work.record_native_owned_completed(bytes, &None).1?;
                 work.retain_observer_custody(custody)
             })
             .map_err(super::lazy::mount_demand_error)?;
@@ -297,7 +292,7 @@ impl Drop for InputBuffers<'_, '_> {
         if let Some(proof) = self.proof.take() {
             let _ = self
                 .carrier
-                .with_work(|work| work.merge(proof.take_completed_data_work()));
+                .with_work(|work| work.merge(proof.take_completed_data_work(), work.live_allocation_bytes()));
         }
         if self.allocation.is_none() {
             self.carrier

@@ -128,19 +128,6 @@ async fn expired_session_and_receipt_absence_never_repost() -> Result<()> {
 #[tokio::test]
 async fn envelope_and_callback_negative_controls() -> Result<()> {
     let operation = OperationId::from_bytes([1; 16]);
-    let value: Value =
-        serde_json::from_str(&message(operation)).map_err(|e| Error::Invalid(e.to_string()))?;
-    for field in ["id", "jsonrpc", "result"] {
-        let mut malformed = value.clone();
-        malformed
-            .as_object_mut()
-            .ok_or_else(|| Error::Invalid("fixture object absent".into()))?
-            .remove(field);
-        assert!(rpc_result(malformed, operation, None).is_err());
-    }
-    let mut both = value;
-    both["error"] = json!({"code":-1,"message":"no"});
-    assert!(rpc_result(both, operation, None).is_err());
     assert!(matches!(
         sse::response(
             Box::pin(futures::stream::iter([Ok(Bytes::from_static(

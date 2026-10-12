@@ -100,18 +100,8 @@ pub(super) fn validate_git_commits(
     known_workspaces: &BTreeSet<WorkspaceId>,
 ) -> Result<(), ()> {
     for (id, commit) in &state.commits {
-        let rebuilt = GitCommit::new(
-            commit.tree,
-            commit.workspace_tree,
-            commit.capture_proof.clone(),
-            commit.tracked_paths.clone(),
-            commit.parents.clone(),
-            commit.author.clone(),
-            commit.authored_at_seconds,
-            commit.message.clone(),
-        );
         if *id != commit.id
-            || rebuilt.id != commit.id
+            || commit.hash_id() != commit.id
             || !known_workspaces.contains(&commit.workspace_tree.workspace_id())
             || !capture_proof_valid(
                 commit.tree,

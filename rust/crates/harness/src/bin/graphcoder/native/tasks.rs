@@ -59,7 +59,7 @@ impl NativeSession {
             mailbox_operation: None,
             selected_output_volume: None,
         })
-        .map_err(|error| Error::Invalid(error.to_string()))?;
+        .map_err(invalid)?;
         if bytes.len() > MAX_FRAME_BYTES {
             return Err(Error::Invalid(
                 "published prompt command exceeds terminal bounds".into(),
@@ -204,33 +204,27 @@ impl NativeSession {
             .harness()
             .children(task, revision, after, MAX_PAGE_EVENTS)
             .await?;
-        let encoded =
-            serde_json::to_string(&page).map_err(|error| Error::Invalid(error.to_string()))?;
-        Ok(format!(
-            "{}children-json={encoded}\n",
+        Ok(
             crate::terminal::text(&format!("children parent-task={task} {page:?}\n"))
-        ))
+                + &json_line("children", &page)?,
+        )
     }
     pub async fn outcome(&self, task: TaskId) -> Result<String> {
         let admission = self.runtime.task_host().observe_admission(task).await?;
         let outcome = self.runtime.task_host().outcome(task).await?;
-        let encoded = serde_json::to_string(&serde_json::json!({
-            "task": task, "admission_operation": admission.operation_id, "outcome": outcome,
-        }))
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-        Ok(format!(
-            "{}task-json={encoded}\n",
-            crate::terminal::text(&format!(
-                "task={task} admission-operation={} outcome={outcome:?}\n",
-                admission.operation_id
-            ))
-        ))
+        Ok(crate::terminal::text(&format!(
+            "task={task} admission-operation={} outcome={outcome:?}\n",
+            admission.operation_id
+        )) + &json_line(
+            "task",
+            &serde_json::json!({
+                "task": task, "admission_operation": admission.operation_id, "outcome": outcome,
+            }),
+        )?)
     }
 }
 pub fn lease_hex(lease: &WorkLease) -> Result<String> {
-    Ok(hex::encode(
-        serde_json::to_vec(lease).map_err(|error| Error::Invalid(error.to_string()))?,
-    ))
+    Ok(hex::encode(serde_json::to_vec(lease).map_err(invalid)?))
 }
 pub fn render_attempt(attempt: TaskWorkerAttempt) -> Result<String> {
     match attempt {

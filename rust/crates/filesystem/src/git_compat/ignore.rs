@@ -15,7 +15,7 @@ struct GitIgnoreRule {
 }
 
 impl GitIgnorePolicy {
-    /// Identifies changed, newly ignored paths whose child-side binding wins
+    /// Identifies changed, newly ignored paths whose child binding wins.
     pub async fn newly_ignored_paths_at<A, O>(
         &self,
         generation: &Generation<A, O>,
@@ -34,9 +34,7 @@ impl GitIgnorePolicy {
                 .after
                 .or(change.before)
                 .is_some_and(|record| record.kind == FileKind::Directory);
-            // A directory binding can contain tracked or independently changed
-            // descendants. Child-wins publication is pathwise for newly ignored
-            // files, never a replacement of the enclosing subtree.
+            // Directory bindings can contain tracked descendants.
             if is_directory {
                 continue;
             }
@@ -100,11 +98,7 @@ impl GitIgnorePolicy {
         }
         let path = path.trim_start_matches('/');
         let mut ignored = false;
-        for rule in &self.rules {
-            if ignore_matches(rule, path, is_directory) {
-                ignored = !rule.negated;
-            }
-        }
+        self.apply(path, is_directory, &mut ignored);
         !ignored
     }
 

@@ -85,8 +85,6 @@ where
                         })
                         .map_err(|_| MountSourceError::Cancelled)
                 },
-                None,
-                |publication, _| publication,
             )
             .await?;
         if installed == Some(super::super::MountPublication::PerMutation) {
@@ -113,7 +111,7 @@ where
                 ), None, &mut None,
             ).await.map_err(|(error, _)| error);
             if borrowed {
-                carrier.with_work(|leaf| leaf.merge_with_prior_live(work.receipt(), prior_live))
+                carrier.with_work(|leaf| leaf.merge(work.receipt(), prior_live))
                     .map_err(mount_demand_error)?;
             }
             return result;
