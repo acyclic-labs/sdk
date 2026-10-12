@@ -450,7 +450,7 @@ pub fn validate_request(kind: &str, input: &[u8]) -> String {
 #[wasm_bindgen(js_name = encodeHttpRequest)]
 pub fn encode_http_request(route: &str, input: &[u8]) -> Result<String, JsValue> {
     check_command_size(input)?;
-    http::encode(route, input).map_err(JsValue::from_str)
+    crate::http_codec::encode(route, input).map_err(JsValue::from_str)
 }
 
 /// Validate one hosted HTTP JSON success response using the same path, width, identity, and tagged-union rules as the canonical Stream domain.
@@ -458,7 +458,7 @@ pub fn encode_http_request(route: &str, input: &[u8]) -> Result<String, JsValue>
 pub fn validate_http_response(route: &str, response_json: &str) -> Result<(), JsValue> {
     let value: Value = serde_json::from_str(response_json)
         .map_err(|error| JsValue::from_str(&format!("invalid JSON: {error}")))?;
-    http::validate(route, &value).map_err(JsValue::from_str)
+    crate::http_validation::validate(route, &value).map_err(JsValue::from_str)
 }
 
 /// Validate and project one hosted HTTP JSON success response into the public JavaScript shape.
@@ -480,9 +480,6 @@ mod http {
 
     type Result<T = ()> = std::result::Result<T, &'static str>;
 
-    pub(super) fn encode(route: &str, input: &[u8]) -> Result<String> {
-        crate::http_codec::encode(route, input)
-    }
     pub(super) fn decode_wire_response(operation: &str, input: &[u8]) -> Result<JsValue> {
         let route = match operation {
             "inspect_idempotency" => "idempotency/inspect",
@@ -497,57 +494,8 @@ mod http {
         }
     }
 
-    fn object(value: &Value) -> Result<&serde_json::Map<String, Value>> {
-        value.as_object().ok_or("expected object")
-    }
-    fn field<'a>(item: &'a serde_json::Map<String, Value>, name: &str) -> Result<&'a Value> {
-        item.get(name).ok_or("missing field")
-    }
-    fn string(value: &Value) -> Result<&str> {
-        value
-            .as_str()
-            .filter(|value| !value.is_empty())
-            .ok_or("expected non-empty string")
-    }
-    fn encoded_bytes(value: &Value) -> Result<&str> {
-        value.as_str().ok_or("expected base64 string")
-    }
-    fn u64_string(value: &Value) -> Result<u64> {
-        let value = string(value)?;
-        if !value.as_bytes().iter().all(|byte| byte.is_ascii_digit())
-            || (value.len() > 1 && value.starts_with('0'))
-        {
-            return Err("expected decimal uint64 string");
-        }
-        value.parse().map_err(|_| "expected decimal uint64 string")
-    }
-    fn boolean(value: &Value) -> Result<bool> {
-        value.as_bool().ok_or("expected boolean")
-    }
-    fn array(value: &Value) -> Result<&Vec<Value>> {
-        value.as_array().ok_or("expected array")
-    }
-    fn path(value: &Value) -> Result<()> {
-        let value = string(value)?;
-        crate::StreamPath::new(value)
-            .map(|_| ())
-            .map_err(|_| "invalid path")
-    }
-    fn bytes(value: &Value) -> Result<Vec<u8>> {
-        let value = encoded_bytes(value)?;
-        decode_base64(value).ok_or("expected base64")
-    }
-    fn id(value: &Value) -> Result<()> {
-        (bytes(value)?.len() == 32)
-            .then_some(())
-            .ok_or("expected 32-byte id")
-    }
-    fn key(value: &Value) -> Result<()> {
-        let len = bytes(value)?.len();
-        (len > 0 && len <= crate::MAX_IDEMPOTENCY_KEY_BYTES)
-            .then_some(())
-            .ok_or("invalid idempotency key")
-    }
+    use crate::http_validation::{array, boolean, bytes, field, object, string, u64_string};
+
     fn set(object: &Object, name: &str, value: &JsValue) -> Result {
         Reflect::set(object.as_ref(), &JsValue::from_str(name), value)
             .map(|_| ())
@@ -566,10 +514,7 @@ mod http {
         Ok(Uint8Array::from(bytes(value)?.as_slice()).into())
     }
 
-    fn array_js<F>(value: &Value, mut convert: F) -> Result<JsValue>
-    where
-        F: FnMut(&Value) -> Result<JsValue>,
-    {
+    fn array_js(value: &Value, convert: fn(&Value) -> Result<JsValue>) -> Result<JsValue> {
         let result = Array::new();
         for item in array(value)? {
             result.push(&convert(item)?);
@@ -579,39 +524,26 @@ mod http {
 
     fn record_js(value: &Value) -> Result<JsValue> {
         let item = object(value)?;
-        id(field(item, "commitId")?)?;
         let result = Object::new();
         set(&result, "sequence", &bigint_js(field(item, "sequence")?)?)?;
         set(&result, "value", &bytes_js(field(item, "value")?)?)?;
         set(&result, "commitId", &bytes_js(field(item, "commitId")?)?)?;
-        set(
-            &result,
-            "committedAtMicros",
-            &bigint_js(field(item, "committedAtMicros")?)?,
-        )?;
+        set(&result, "committedAtMicros", &bigint_js(field(item, "committedAtMicros")?)?)?;
+        Ok(result.into())
+    }
+
+    fn child_js(value: &Value) -> Result<JsValue> {
+        let item = object(value)?;
+        let result = Object::new();
+        set(&result, "path", &string_js(field(item, "path")?)?)?;
         Ok(result.into())
     }
 
     fn children_page_js(value: &Value) -> Result<JsValue> {
         let item = object(value)?;
-        id(field(item, "hierarchyVersion")?)?;
         let result = Object::new();
-        set(
-            &result,
-            "hierarchyVersion",
-            &bytes_js(field(item, "hierarchyVersion")?)?,
-        )?;
-        set(
-            &result,
-            "children",
-            &array_js(field(item, "children")?, |value| {
-                let child = object(value)?;
-                path(field(child, "path")?)?;
-                let result = Object::new();
-                set(&result, "path", &string_js(field(child, "path")?)?)?;
-                Ok(result.into())
-            })?,
-        )?;
+        set(&result, "hierarchyVersion", &bytes_js(field(item, "hierarchyVersion")?)?)?;
+        set(&result, "children", &array_js(field(item, "children")?, child_js)?)?;
         if let Some(next_after) = item.get("nextAfter").filter(|value| !value.is_null()) {
             set(&result, "nextAfter", &string_js(next_after)?)?;
         }
@@ -624,48 +556,22 @@ mod http {
         let ok = boolean(field(item, "ok")?)?;
         set(&result, "ok", &JsValue::from_bool(ok))?;
         if ok {
-            let start = u64_string(field(item, "start")?)?;
-            let end = u64_string(field(item, "end")?)?;
-            let tail = u64_string(field(item, "tail")?)?;
-            if start > end || end > tail {
-                return Err("invalid append positions");
-            }
-            id(field(item, "commitId")?)?;
             set(&result, "start", &bigint_js(field(item, "start")?)?)?;
             set(&result, "end", &bigint_js(field(item, "end")?)?)?;
             set(&result, "tail", &bigint_js(field(item, "tail")?)?)?;
             set(&result, "commitId", &bytes_js(field(item, "commitId")?)?)?;
             return Ok(result.into());
         }
-        if string(field(item, "code")?)? != "tail_conflict" {
-            return Err("invalid append conflict code");
-        }
         set(&result, "code", &string_js(field(item, "code")?)?)?;
-        set(
-            &result,
-            "actualTail",
-            &bigint_js(field(item, "actualTail")?)?,
-        )?;
+        set(&result, "actualTail", &bigint_js(field(item, "actualTail")?)?)?;
         Ok(result.into())
     }
 
     fn fork_receipt_js(value: &Value) -> Result<JsValue> {
         let item = object(value)?;
-        path(field(item, "source")?)?;
-        path(field(item, "destination")?)?;
-        let forked_at = u64_string(field(item, "forkedAt")?)?;
-        let tail = u64_string(field(item, "tail")?)?;
-        if forked_at > tail {
-            return Err("invalid fork positions");
-        }
-        id(field(item, "commitId")?)?;
         let result = Object::new();
         set(&result, "source", &string_js(field(item, "source")?)?)?;
-        set(
-            &result,
-            "destination",
-            &string_js(field(item, "destination")?)?,
-        )?;
+        set(&result, "destination", &string_js(field(item, "destination")?)?)?;
         set(&result, "forkedAt", &bigint_js(field(item, "forkedAt")?)?)?;
         set(&result, "tail", &bigint_js(field(item, "tail")?)?)?;
         set(&result, "commitId", &bytes_js(field(item, "commitId")?)?)?;
@@ -674,26 +580,13 @@ mod http {
 
     fn conflict_js(value: &Value) -> Result<JsValue> {
         let item = object(value)?;
-        path(field(item, "path")?)?;
         let result = Object::new();
         set(&result, "path", &string_js(field(item, "path")?)?)?;
         if item.get("expectedAbsent") == Some(&Value::Bool(true)) {
-            match string(field(item, "actual")?)? {
-                "exists" => {}
-                _ => return Err("invalid conflict state"),
-            }
             set(&result, "expectedAbsent", &JsValue::TRUE)?;
             set(&result, "actual", &string_js(field(item, "actual")?)?)?;
         } else {
-            u64_string(field(item, "expectedTail")?)?;
-            if let Some(actual) = item.get("actualTail") {
-                u64_string(actual)?;
-            }
-            set(
-                &result,
-                "expectedTail",
-                &bigint_js(field(item, "expectedTail")?)?,
-            )?;
+            set(&result, "expectedTail", &bigint_js(field(item, "expectedTail")?)?)?;
             if let Some(actual) = item.get("actualTail") {
                 set(&result, "actualTail", &bigint_js(actual)?)?;
             }
@@ -706,7 +599,6 @@ mod http {
         let result = Object::create(&null_prototype);
         for (path_name, tail) in object(value)? {
             // A null prototype keeps `__proto__` as an own data property.
-            crate::StreamPath::new(path_name).map_err(|_| "invalid path")?;
             set(&result, path_name, &bigint_js(tail)?)?;
         }
         Ok(result.into())
@@ -718,7 +610,6 @@ mod http {
         let ok = boolean(field(item, "ok")?)?;
         set(&result, "ok", &JsValue::from_bool(ok))?;
         if ok {
-            id(field(item, "commitId")?)?;
             set(&result, "commitId", &bytes_js(field(item, "commitId")?)?)?;
             set(&result, "tails", &tails_js(field(item, "tails")?)?)?;
             set(
@@ -726,8 +617,6 @@ mod http {
                 "forks",
                 &array_js(field(item, "forks")?, |value| {
                     let fork = object(value)?;
-                    path(field(fork, "path")?)?;
-                    u64_string(field(fork, "tail")?)?;
                     let result = Object::new();
                     set(&result, "path", &string_js(field(fork, "path")?)?)?;
                     set(&result, "tail", &bigint_js(field(fork, "tail")?)?)?;
@@ -735,15 +624,8 @@ mod http {
                 })?,
             )?;
         } else {
-            if string(field(item, "code")?)? != "conflict" {
-                return Err("invalid commit conflict code");
-            }
             set(&result, "code", &string_js(field(item, "code")?)?)?;
-            set(
-                &result,
-                "conflicts",
-                &array_js(field(item, "conflicts")?, conflict_js)?,
-            )?;
+            set(&result, "conflicts", &array_js(field(item, "conflicts")?, conflict_js)?)?;
         }
         Ok(result.into())
     }
@@ -755,45 +637,19 @@ mod http {
         set(&result, "type", &JsValue::from_str(kind))?;
         match kind {
             "append" => {
-                path(field(item, "path")?)?;
-                let start = u64_string(field(item, "start")?)?;
-                let end = u64_string(field(item, "end")?)?;
-                let tail = u64_string(field(item, "tail")?)?;
-                if start > end || end > tail {
-                    return Err("invalid append positions");
-                }
                 set(&result, "path", &string_js(field(item, "path")?)?)?;
                 set(&result, "start", &bigint_js(field(item, "start")?)?)?;
                 set(&result, "end", &bigint_js(field(item, "end")?)?)?;
                 set(&result, "tail", &bigint_js(field(item, "tail")?)?)?;
-                set(
-                    &result,
-                    "records",
-                    &array_js(field(item, "records")?, record_js)?,
-                )?;
+                set(&result, "records", &array_js(field(item, "records")?, record_js)?)?;
             }
             "fork" => {
-                path(field(item, "source")?)?;
-                path(field(item, "destination")?)?;
-                let forked_at = u64_string(field(item, "forkedAt")?)?;
-                let tail = u64_string(field(item, "tail")?)?;
-                if forked_at > tail {
-                    return Err("invalid fork positions");
-                }
                 set(&result, "source", &string_js(field(item, "source")?)?)?;
-                set(
-                    &result,
-                    "destination",
-                    &string_js(field(item, "destination")?)?,
-                )?;
+                set(&result, "destination", &string_js(field(item, "destination")?)?)?;
                 set(&result, "forkedAt", &bigint_js(field(item, "forkedAt")?)?)?;
                 set(&result, "tail", &bigint_js(field(item, "tail")?)?)?;
                 if item.get("records").is_some() {
-                    set(
-                        &result,
-                        "records",
-                        &array_js(field(item, "records")?, record_js)?,
-                    )?;
+                    set(&result, "records", &array_js(field(item, "records")?, record_js)?)?;
                 }
             }
             _ => return Err("invalid mutation type"),
@@ -803,54 +659,25 @@ mod http {
 
     fn envelope_js(value: &Value) -> Result<JsValue> {
         let item = object(value)?;
-        id(field(item, "commitId")?)?;
         let result = Object::new();
         set(&result, "commitId", &bytes_js(field(item, "commitId")?)?)?;
-        set(
-            &result,
-            "mutations",
-            &array_js(field(item, "mutations")?, mutation_js)?,
-        )?;
+        set(&result, "mutations", &array_js(field(item, "mutations")?, mutation_js)?)?;
         Ok(result.into())
     }
 
     fn idempotency_js(value: &Value) -> Result<JsValue> {
         let item = object(value)?;
-        key(field(item, "idempotencyKey")?)?;
-        if bytes(field(item, "requestDigest")?)?.len() != 32 {
-            return Err("requestDigest must contain 32 bytes");
-        }
         let result = Object::new();
-        set(
-            &result,
-            "idempotencyKey",
-            &bytes_js(field(item, "idempotencyKey")?)?,
-        )?;
-        set(
-            &result,
-            "requestDigest",
-            &bytes_js(field(item, "requestDigest")?)?,
-        )?;
+        set(&result, "idempotencyKey", &bytes_js(field(item, "idempotencyKey")?)?)?;
+        set(&result, "requestDigest", &bytes_js(field(item, "requestDigest")?)?)?;
         let outcome = object(field(item, "outcome")?)?;
         let outcome_result = Object::new();
         let kind = string(field(outcome, "type")?)?;
         set(&outcome_result, "type", &JsValue::from_str(kind))?;
         match kind {
-            "append" => set(
-                &outcome_result,
-                "outcome",
-                &append_result_js(field(outcome, "outcome")?)?,
-            )?,
-            "fork" => set(
-                &outcome_result,
-                "receipt",
-                &fork_receipt_js(field(outcome, "receipt")?)?,
-            )?,
-            "commit" => set(
-                &outcome_result,
-                "outcome",
-                &commit_result_js(field(outcome, "outcome")?)?,
-            )?,
+            "append" => set(&outcome_result, "outcome", &append_result_js(field(outcome, "outcome")?)?)?,
+            "fork" => set(&outcome_result, "receipt", &fork_receipt_js(field(outcome, "receipt")?)?)?,
+            "commit" => set(&outcome_result, "outcome", &commit_result_js(field(outcome, "outcome")?)?)?,
             _ => return Err("invalid idempotency outcome type"),
         }
         set(&result, "outcome", &outcome_result.into())?;
@@ -881,13 +708,7 @@ mod http {
             Some("append") => append_result_js(value),
             Some("fork") => fork_receipt_js(value),
             Some("records") => array_js(value, record_js),
-            Some("children") => array_js(value, |value| {
-                let item = object(value)?;
-                path(field(item, "path")?)?;
-                let result = Object::new();
-                set(&result, "path", &string_js(field(item, "path")?)?)?;
-                Ok(result.into())
-            }),
+            Some("children") => array_js(value, child_js),
             Some("children_page") => children_page_js(value),
             Some("commit") => commit_result_js(value),
             Some("envelope") => envelope_js(value),
@@ -903,48 +724,7 @@ mod http {
         }
     }
 
-    pub(super) fn validate(route: &str, value: &Value) -> Result {
-        crate::http_validation::validate(route, value)
-    }
-    fn decode_base64(value: &str) -> Option<Vec<u8>> {
-        if !value.len().is_multiple_of(4) {
-            return None;
-        }
-        let mut output = Vec::with_capacity(value.len() / 4 * 3);
-        let bytes = value.as_bytes();
-        for (index, chunk) in bytes.as_chunks::<4>().0.iter().enumerate() {
-            let &[a_byte, b_byte, c_byte, d_byte] = chunk;
-            let a = sextet(a_byte)?;
-            let b = sextet(b_byte)?;
-            let c = if c_byte == b'=' { 0 } else { sextet(c_byte)? };
-            let d = if d_byte == b'=' { 0 } else { sextet(d_byte)? };
-            if c_byte == b'=' {
-                if d_byte != b'=' || b & 0x0f != 0 {
-                    return None;
-                }
-            } else if d_byte == b'=' && (c & 0x03 != 0 || index + 1 != bytes.len() / 4) {
-                return None;
-            }
-            output.push(a << 2 | b >> 4);
-            if c_byte != b'=' {
-                output.push(b << 4 | c >> 2);
-            }
-            if d_byte != b'=' {
-                output.push(c << 6 | d);
-            }
-        }
-        Some(output)
-    }
-    fn sextet(value: u8) -> Option<u8> {
-        match value {
-            b'A'..=b'Z' => Some(value - b'A'),
-            b'a'..=b'z' => Some(value - b'a' + 26),
-            b'0'..=b'9' => Some(value - b'0' + 52),
-            b'+' => Some(62),
-            b'/' => Some(63),
-            _ => None,
-        }
-    }
+
 }
 
 #[cfg(test)]
