@@ -4,7 +4,6 @@ import {
   AgentHarness,
   AdmissionUncertainError,
   ExecutionScope,
-  GroupPolicies,
   Harness,
   HarnessBuilder,
   NativeContracts,
@@ -27,16 +26,14 @@ import {
   type HostBatchReplay,
   type HarnessRuntimeSpawner,
   type HarnessRuntimeState,
-  type TaskAdmissionRecord,
   type TaskAdmissionWire,
   type NativeLimitsWire,
   type WorkflowAdmissionWire,
   type ComponentIdentity,
-  type MessageId,
+  type OperationId,
   type Outcome,
   type PolicyIdentity,
-  type OperationId,
-  type RuntimeTaskId,
+  type TaskId,
   type TaskMessage,
   type ModelMessage,
   type ModelToolDefinition,
@@ -54,8 +51,8 @@ const imagePolicy = { native: { intent: { kind: "image", detail: "auto" },
 const jsonProjection = await jsonToolProjection({});
 
 test("Rust owns child page bounds, slot ordering, and the generated facade default", async () => {
-  const parent = "12345678-1234-4234-8234-123456789abc" as RuntimeTaskId;
-  const child = "22345678-1234-4234-8234-123456789abc" as RuntimeTaskId;
+  const parent = "12345678-1234-4234-8234-123456789abc" as TaskId;
+  const child = "22345678-1234-4234-8234-123456789abc" as TaskId;
   const page = { revision: 7n, entries: [{ slot: "a", taskId: child }], nextAfter: null } as const;
   expect(contracts.validateTaskChildrenPage(parent, 7n, null, 1_024, page)).toEqual(page);
   let revisionReads = 0;
@@ -226,29 +223,16 @@ const numberSchema = await defineRuntimeSchema("number", { type: "number" }, (va
 });
 
 test("fork capture binding requires parent publication authority", async () => {
-  const preparer = { parentSnapshot: () => ({ parent: { kind: "conversation" as const, id: "parent" }, revision: 1n }),
-    async prepare() { throw new Error("unused"); }, async reconcile() { return null; } };
-  await expect(Harness.builder(contracts).forkPreparer(preparer).build()).rejects.toThrow("fork:publish");
-  const bound = await Harness.builder(contracts).forkPreparer(preparer).grant("fork:publish").build();
+  const snapshot = { parent: { kind: "conversation" as const, id: "parent" }, revision: 1n };
+  await expect(Harness.builder(contracts).parentSnapshot(snapshot).build()).rejects.toThrow("fork:publish");
+  const bound = await Harness.builder(contracts).parentSnapshot(snapshot).grant("fork:publish").limits({ attachments: 1 }).build();
+  expect(bound.limits.attachments).toBe(1);
   expect(bound).toBeInstanceOf(AgentHarness);
   const narrowed = await bound.scoped(ExecutionScope.create().onlyGrants("fork:publish"));
-  expect(() => narrowed.atParentSnapshot(preparer)).toThrow("not bound");
-  expect(() => bound.atParentSnapshot(preparer)).toThrow("advance");
-  expect(() => bound.atParentSnapshot({ ...preparer,
-    parentSnapshot: () => ({ parent: { kind: "conversation" as const, id: "other" }, revision: 2n }) })).toThrow("another parent");
-  expect(bound.atParentSnapshot({ ...preparer,
-    parentSnapshot: () => ({ parent: { kind: "conversation" as const, id: "parent" }, revision: 2n }) })).toBeInstanceOf(AgentHarness);
-});
-
-test("grouped provider bindings use the same authority and limit admission", async () => {
-  const preparer = { parentSnapshot: () => ({ parent: { kind: "conversation" as const, id: "parent" }, revision: 1n }),
-    async prepare() { throw new Error("unused"); }, async reconcile() { return null; } };
-  await expect(Harness.builder(contracts).bindings({ forkPreparer: preparer }).build()).rejects.toThrow("fork:publish");
-  const runtime = await Harness.builder(contracts).bindings({
-    forkPreparer: preparer, grants: ["fork:publish"], limits: { attachments: 1 },
-  }).build();
-  expect(runtime.scope.grants).toContain("fork:publish");
-  expect(runtime.components.limits?.attachments).toBe(1);
+  expect(() => narrowed.atParentSnapshot(snapshot)).toThrow("not bound");
+  expect(() => bound.atParentSnapshot(snapshot)).toThrow("advance");
+  expect(() => bound.atParentSnapshot({ ...snapshot, parent: { kind: "conversation" as const, id: "other" }, revision: 2n })).toThrow("another parent");
+  expect(bound.atParentSnapshot({ ...snapshot, parent: { kind: "conversation" as const, id: "parent" }, revision: 2n })).toBeInstanceOf(AgentHarness);
 });
 const parseNumber = numberSchema.parse;
 const parseString = (value: unknown): string => {
@@ -308,7 +292,7 @@ test("resumable tools are pinned at registration and execute only through durabl
   await expect(Harness.builder(contracts).resumableTool(definition, machine).build()).rejects.toThrow("owner-host");
   expect(() => Harness.builder(contracts).resumableTool(definition, { ...machine, digest: Array(32).fill(0) })).toThrow();
   const operation = "12345678-1234-4234-8234-123456789abc" as OperationId;
-  const taskId = "22345678-1234-4234-8234-123456789abc" as RuntimeTaskId;
+  const taskId = "22345678-1234-4234-8234-123456789abc" as TaskId;
   const state: HarnessRuntimeState = {
     policyIdentity: () => null,
     async attach() { throw new Error("not used"); },
@@ -549,7 +533,7 @@ describe("typed agent runtime", () => {
   test("preserves task input and output types through nested execution", async () => {
     const double = await TaskDefinition.live<number, number>("double", "1", async (_context, value) => value * 2);
     const sum = await TaskDefinition.live<readonly number[], number>("sum", "1", async (context, values) => {
-      const group = context.group<number>(GroupPolicies.collectAll);
+      const group = context.group<number>({ kind: "collect-all" });
       return (await group.map(context.task(double), values)).reduce((left, right) => left + right, 0);
     });
     const runtime = await Harness.builder(contracts).task(double).task(sum).grant("task:spawn:double@1").build();
@@ -584,7 +568,7 @@ describe("typed agent runtime", () => {
     expect(await narrowed.spawn(nested, 1).result()).toEqual({ kind: "succeeded", value: true });
     expect(await context.spawn(allowedRef, 1).result()).toEqual({ kind: "succeeded", value: 2 });
     expect(() => context.spawn(deniedRef, 1)).toThrow("task scope lacks task:spawn:denied-child@1");
-    const group = context.group<number>(GroupPolicies.collectAll);
+    const group = context.group<number>({ kind: "collect-all" });
     const blocked = await group.spawnMany(deniedRef, { id: "batch:blocked" as BatchId, inputs: [1] });
     expect(blocked[0]?.admission).toMatchObject({ kind: "rejected", reason: { code: "unsupported" } });
     await expect(group.reconcileBatch(deniedRef, { id: "batch:blocked" as BatchId, inputs: [1] }))
@@ -592,7 +576,7 @@ describe("typed agent runtime", () => {
     const admitted = await group.spawnMany(allowedRef, { id: "batch:allowed" as BatchId, inputs: [2] });
     expect(admitted[0]?.admission.kind).toBe("accepted");
     const durable = new TaskContext(narrowed, new AbortController().signal,
-      "task:parent" as RuntimeTaskId, true);
+      "task:parent" as TaskId, true);
     expect(() => durable.admit(deniedRef, 1, "operation:blocked"))
       .toThrow("task scope lacks task:spawn:denied-child@1");
     expect(owner.task(denied)).toBe(denied);
@@ -612,7 +596,7 @@ describe("typed agent runtime", () => {
     }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
     const local = await Harness.builder(contracts).task(definition).build();
     expect(() => local.spawn(definition, 3)).toThrow("async durable admission");
-    const rejected = await local.group<number>(GroupPolicies.collectAll).spawnMany(definition, { id: "batch:resumable" as BatchId, inputs: [3] });
+    const rejected = await local.group<number>({ kind: "collect-all" }).spawnMany(definition, { id: "batch:resumable" as BatchId, inputs: [3] });
     expect(rejected[0]?.admission).toMatchObject({ kind: "rejected", reason: { code: "unsupported" } });
     expect(transitions).toBe(0);
 
@@ -623,7 +607,7 @@ describe("typed agent runtime", () => {
       async admitResumable(_operationId, task, input) {
         if (typeof input !== "number") throw new TypeError("test host expected a number");
         admitted = { input, revision: task.revision };
-        return { kind: "accepted" as const, task: new Task("task:durable" as RuntimeTaskId, async () => 6) };
+        return { kind: "accepted" as const, task: new Task("task:durable" as TaskId, async () => 6) };
       },
       async attach(id) { return { task: new Task(id, async () => 6), operationId: admissionId, taskName: "durable", revision: "1", implementationDigest: durableDigest }; },
       async reconcileEffect() { return { state: "indeterminate" } as const; },
@@ -682,7 +666,7 @@ describe("typed agent runtime", () => {
   });
 
   test("host-backed handles preserve authoritative events and cancellation", async () => {
-    const taskId = "task:remote" as RuntimeTaskId;
+    const taskId = "task:remote" as TaskId;
     const observed: number[] = [];
     let cancelled = false;
     const terminal = { id: "event:terminal", taskId, sequence: 42,
@@ -816,7 +800,7 @@ describe("typed agent runtime", () => {
       async admitResumable(operationId: string) {
         if (reject) return { kind: "rejected" as const, reason: { code: "unsupported" as const, message: "policy" } };
         let task = observed.get(operationId);
-        if (!task) { task = new Task("task:once" as RuntimeTaskId, async () => "wrong type" as unknown as number); observed.set(operationId, task); }
+        if (!task) { task = new Task("task:once" as TaskId, async () => "wrong type" as unknown as number); observed.set(operationId, task); }
         if (loseAcknowledgement) { loseAcknowledgement = false; throw new AdmissionUncertainError(operationId, new Error("ack lost")); }
         return { kind: "accepted" as const, task };
       },
@@ -845,7 +829,7 @@ describe("typed agent runtime", () => {
     for await (const event of second.task.events()) if (event.event.kind === "settled") settled.push(event.event.outcome);
     expect(settled).toMatchObject([{ kind: "failed", error: { message: expect.stringContaining("tool value failed validation") } }]);
     const reconnected = await Harness.builder(contracts).state(host).spawner(host).task(definition).build();
-    expect(await (await reconnected.attach(definition, "task:once" as RuntimeTaskId)).result())
+    expect(await (await reconnected.attach(definition, "task:once" as TaskId)).result())
       .toMatchObject({ kind: "failed", error: { message: expect.stringContaining("tool value failed validation") } });
     reject = true;
     expect(await runtime.admit(definition, 2, rejectedId)).toMatchObject({ kind: "rejected", reason: { code: "unsupported" } });
@@ -860,9 +844,9 @@ describe("typed agent runtime", () => {
       initial: input => input,
       async transition(_context, value) { return { kind: "finish", output: value }; },
     }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
-    const id = "task:split" as RuntimeTaskId;
+    const id = "task:split" as TaskId;
     const admissionId = "12345678-1234-4234-8234-123456789abe";
-    let retained: TaskAdmissionRecord | undefined;
+    let retained: TaskAdmissionWire | undefined;
     let corruptAdmission = false;
     const operation = "03030303-0303-0303-0303-030303030303" as OperationId;
     const tool = await defineTool<number, number>({ name: "split-tool", revision: "1", description: "split",
@@ -930,9 +914,9 @@ describe("typed agent runtime", () => {
       readiness_revision: Array.from({ length: 32 }, () => 3),
     };
     const operationId = "12345678-1234-4234-8234-123456789abc";
-    const taskId = "task:placed" as RuntimeTaskId;
+    const taskId = "task:placed" as TaskId;
     const ownerTask = new Task(taskId, async () => 7);
-    let retained: TaskAdmissionRecord | undefined;
+    let retained: TaskAdmissionWire | undefined;
     let qualifications = 0;
     let corruptOwner = false;
     const attachment = () => retained === undefined
@@ -1029,7 +1013,7 @@ describe("typed agent runtime", () => {
     }
     const groupId = "11111111-1111-4111-8111-111111111111" as GroupId;
     const batch = { id: "22222222-2222-4222-8222-222222222222" as BatchId, inputs: [1, 2] };
-    const group = (await Harness.builder(contracts).state(host).spawner(host).task(definition).build()).group<number>(GroupPolicies.collectAll, groupId);
+    const group = (await Harness.builder(contracts).state(host).spawner(host).task(definition).build()).group<number>({ kind: "collect-all" }, groupId);
     expect((await group.spawnMany(definition, batch)).map(entry => entry.admission.kind)).toEqual(["indeterminate", "indeterminate"]);
     expect((await group.spawnMany(definition, batch)).map(entry => entry.admission.kind)).toEqual(["indeterminate", "indeterminate"]);
     expect(admittedManifests).toBe(1);
@@ -1039,7 +1023,7 @@ describe("typed agent runtime", () => {
     expect(completed).toHaveLength(2);
     expect(completed.map(entry => entry.admission.kind)).toEqual(["indeterminate", "indeterminate"]);
     expect((await group.join()).complete).toBeFalse();
-    const reconstructed = (await Harness.builder(contracts).state(host).spawner(host).task(definition).build()).group<number>(GroupPolicies.collectAll, groupId);
+    const reconstructed = (await Harness.builder(contracts).state(host).spawner(host).task(definition).build()).group<number>({ kind: "collect-all" }, groupId);
     expect((await reconstructed.reconcileBatchId(definition, batch.id))?.map(entry => entry.admission.kind)).toEqual(["indeterminate", "indeterminate"]);
     expect(await reconstructed.reconcileBatchId(definition, "33333333-3333-4333-8333-333333333333" as BatchId)).toBeNull();
     expect((await reconstructed.join()).entries).toHaveLength(2);
@@ -1104,14 +1088,14 @@ describe("typed agent runtime", () => {
     const groupId = "55555555-5555-4555-8555-555555555555" as GroupId;
     const batch = { id: batchId, inputs: [1, 2] };
     const first = (await Harness.builder(contracts).execution(execution).task(definition).build())
-      .group<number>(GroupPolicies.collectAll, groupId);
+      .group<number>({ kind: "collect-all" }, groupId);
     expect((await first.spawnMany(definition, batch)).map(entry => entry.admission.kind))
       .toEqual(["indeterminate", "indeterminate"]);
     expect(parsedInputs).toBe(2);
     expect(qualifications).toBe(1);
     unavailable = true;
     const reopened = (await Harness.builder(contracts).execution(execution).task(definition).build())
-      .group<number>(GroupPolicies.collectAll, groupId);
+      .group<number>({ kind: "collect-all" }, groupId);
     expect((await reopened.spawnMany(definition, batch)).map(entry => entry.admission.kind))
       .toEqual(["indeterminate", "indeterminate"]);
     expect(parsedInputs).toBe(4);
@@ -1135,9 +1119,9 @@ describe("typed agent runtime", () => {
         expect(request.canonical.group_policy).toBe("cancel-on-failure");
         const [first, second] = request.members;
         if (!first || !second) throw new Error("expected two batch members");
-        tasks.set(first.operation_id, new Task<number>(first.operation_id as RuntimeTaskId,
+        tasks.set(first.operation_id, new Task<number>(first.operation_id as TaskId,
           async () => { throw new Error("first member failed"); }));
-        tasks.set(second.operation_id, new Task<number>(second.operation_id as RuntimeTaskId,
+        tasks.set(second.operation_id, new Task<number>(second.operation_id as TaskId,
           async signal => new Promise<number>((_resolve, reject) => {
             signal.addEventListener("abort", () => { requested++; reject(new Error("owner cancelled sibling")); }, { once: true });
           })));
@@ -1171,7 +1155,7 @@ describe("typed agent runtime", () => {
     const groupId = "11111111-1111-4111-8111-111111111112" as GroupId;
     const batchId = "22222222-2222-4222-8222-222222222223" as BatchId;
     const group = (await Harness.builder(contracts).state(host).spawner(host).task(definition).build())
-      .group<number>(GroupPolicies.cancelOnFailure, groupId);
+      .group<number>({ kind: "cancel-on-failure" }, groupId);
     const admitted = await group.spawnMany(definition, { id: batchId, inputs: [1, 2] });
     expect(admitted.map(entry => entry.admission.kind)).toEqual(["accepted", "accepted"]);
     const completed = await group.join();
@@ -1207,7 +1191,7 @@ describe("typed agent runtime", () => {
     }
     const batch = { id: "33333333-3333-4333-8333-333333333333" as BatchId, inputs: [1, 2, 3] };
     const group = (await Harness.builder(contracts).state(host).spawner(host).task(definition).build())
-      .group<number>(GroupPolicies.collectAll, "44444444-4444-4444-8444-444444444444" as GroupId);
+      .group<number>({ kind: "collect-all" }, "44444444-4444-4444-8444-444444444444" as GroupId);
     expect((await group.spawnMany(definition, batch)).map(entry => entry.admission.kind))
       .toEqual(["indeterminate", "indeterminate", "indeterminate"]);
     expect(retained?.members).toHaveLength(3);
@@ -1242,7 +1226,7 @@ describe("typed agent runtime", () => {
       async *inbox() { yield* []; },
     }
     const group = (await Harness.builder(contracts).state(host).spawner(host).task(definition).build())
-      .group<number>(GroupPolicies.collectAll, "66666666-6666-4666-8666-666666666666" as GroupId);
+      .group<number>({ kind: "collect-all" }, "66666666-6666-4666-8666-666666666666" as GroupId);
     await group.spawnMany(definition, batch);
     const entry = (index: number, operationId: string = contracts.batchMemberOperationId(group.id, batch.id, index)) =>
       ({ key: { batchId: batch.id, index }, admission: { kind: "indeterminate" as const, operationId } });
@@ -1286,7 +1270,7 @@ describe("typed agent runtime", () => {
       async *inbox() { yield* []; },
     }
     const group = (await Harness.builder(contracts).state(host).spawner(host).task(definition).build())
-      .group<number>(GroupPolicies.collectAll, "77777777-7777-4777-8777-777777777777" as GroupId);
+      .group<number>({ kind: "collect-all" }, "77777777-7777-4777-8777-777777777777" as GroupId);
     const inputs = [1, undefined] as unknown as number[];
     const entries = await group.spawnMany(definition, { id: "88888888-8888-4888-8888-888888888888" as BatchId, inputs: inputs });
     expect(entries.map(entry => entry.admission.kind)).toEqual(["rejected", "rejected"]);
@@ -1329,9 +1313,9 @@ describe("typed agent runtime", () => {
       async *inbox() { yield* []; },
     }
     const runtime = await Harness.builder(contracts).state(host).spawner(host).task(definition).build();
-    await expect(runtime.attach(definition, "task:drift" as RuntimeTaskId)).rejects.toThrow("policy implementation changed");
+    await expect(runtime.attach(definition, "task:drift" as TaskId)).rejects.toThrow("policy implementation changed");
     currentIdentity = null;
-    const group = runtime.group<number>(GroupPolicies.collectAll, "99999999-9999-4999-8999-999999999999" as GroupId);
+    const group = runtime.group<number>({ kind: "collect-all" }, "99999999-9999-4999-8999-999999999999" as GroupId);
     const batch = { id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" as BatchId, inputs: [1] };
     await group.spawnMany(definition, batch);
     await expect(group.reconcileBatch(definition, batch))
@@ -1357,7 +1341,7 @@ describe("typed agent runtime", () => {
       async send(message: TaskMessage) { return { accepted: true, messageId: message.id }; },
       async *inbox() { yield* [] as TaskMessage[]; },
     }
-    const group = (await Harness.builder(contracts).state(host).spawner(host).task(definition).build()).group<number>(GroupPolicies.collectAll,
+    const group = (await Harness.builder(contracts).state(host).spawner(host).task(definition).build()).group<number>({ kind: "collect-all" },
       "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" as GroupId);
     const entries = await group.spawnMany(definition, { id: "cccccccc-cccc-4ccc-8ccc-cccccccccccc" as BatchId, inputs: [1, -1, 2] });
     expect(entries.map(entry => entry.admission.kind)).toEqual(["rejected", "rejected", "rejected"]);
@@ -1472,7 +1456,7 @@ describe("typed agent runtime", () => {
 
   test("durable tool calls preserve explicit unresolved and terminal outcomes", async () => {
     const operation = "01010101-0101-0101-0101-010101010101" as OperationId;
-    const task = "task:durable-tool" as RuntimeTaskId;
+    const task = "task:durable-tool" as TaskId;
     let localExecutions = 0;
     const tool = await defineTool<number, number>({ name: "durable-count", revision: "1", description: "count",
       inputSchema: { type: "number" }, outputSchema: { type: "number" }, parseInput: parseNumber,
@@ -1526,7 +1510,7 @@ describe("typed agent runtime", () => {
         evaluate: async () => ({ kind: "require-approval", prompt: "approve exact tool call" }) })
       .interactions({ route: async () => { throw new Error("local approval must not be used"); } })
       .grant("tool:call:guarded-durable").build();
-    const context = new TaskContext(runtime, new AbortController().signal, "task:approval" as RuntimeTaskId, true);
+    const context = new TaskContext(runtime, new AbortController().signal, "task:approval" as TaskId, true);
     const operation = "02020202-0202-0202-0202-020202020202" as OperationId;
     const outcome = await context.callDurable(operation,
       runtime.tool(tool), 1);
@@ -1741,7 +1725,7 @@ describe("typed agent runtime", () => {
 
   test("keeps rejected batch admissions explicit after close", async () => {
     const task = await TaskDefinition.live<number, number>("identity", "1", async (_context, value) => value);
-    const group = (await Harness.builder(contracts).task(task).build()).group<number>(GroupPolicies.collectAll);
+    const group = (await Harness.builder(contracts).task(task).build()).group<number>({ kind: "collect-all" });
     group.close();
     const entries = await group.spawnMany(task, { id: "batch:test" as BatchId, inputs: [1, 2] });
 
@@ -1754,7 +1738,7 @@ describe("typed agent runtime", () => {
       runs++;
       return value;
     });
-    const group = (await Harness.builder(contracts).task(task).build()).group<number>(GroupPolicies.collectAll,
+    const group = (await Harness.builder(contracts).task(task).build()).group<number>({ kind: "collect-all" },
       "group:live-stable" as GroupId);
     const batch = { id: "batch:live-stable" as BatchId, inputs: [1, 2] };
     const first = await group.spawnMany(task, batch);
@@ -1768,7 +1752,7 @@ describe("typed agent runtime", () => {
 
   test("streams thousands of completed tasks once without rebuilding pending races", async () => {
     const task = await TaskDefinition.live<number, number>("bulk", "1", async (_context, value) => value);
-    const group = (await Harness.builder(contracts).task(task).build()).group<number>(GroupPolicies.collectAll);
+    const group = (await Harness.builder(contracts).task(task).build()).group<number>({ kind: "collect-all" });
     const inputs = Array.from({ length: 2_048 }, (_value, index) => index);
     await group.spawnMany(task, { id: "batch:bulk" as BatchId, inputs: inputs });
     const completed: number[] = [];
@@ -1781,7 +1765,7 @@ describe("typed agent runtime", () => {
 
   test("routes recovery, effect reconciliation, and typed messaging through a durable host", async () => {
     const messages: TaskMessage[] = [];
-    const recoveredId = "task:recovered" as RuntimeTaskId;
+    const recoveredId = "task:recovered" as TaskId;
     const payload = await mailboxFile(10);
     const host: HarnessRuntimeSpawner & HarnessRuntimeState = {
       policyIdentity: () => null,
@@ -1793,7 +1777,7 @@ describe("typed agent runtime", () => {
     const definition = await TaskDefinition.live<void, number>("hosted", "1", async context => {
       const effect = await context.reconcileEffect("effect:one" as EffectId);
       if (effect.state !== "succeeded") return -1;
-      await context.send(recoveredId, payload, "message:one" as MessageId);
+      await context.send(recoveredId, payload, "message:one" as OperationId);
       for await (const message of context.inbox()) return message.value.descriptor.byte_length;
       return -1;
     });
@@ -1813,7 +1797,7 @@ describe("typed agent runtime", () => {
       return "late";
     });
     const runtime = (await Harness.builder(contracts).task(task).build());
-    await expect(runtime.group<string>(GroupPolicies.cancelOnFailure).map<"fail" | "hang">(task, ["hang", "fail"])).rejects.toThrow();
+    await expect(runtime.group<string>({ kind: "cancel-on-failure" }).map<"fail" | "hang">(task, ["hang", "fail"])).rejects.toThrow();
     expect(aborted).toBeTrue();
   });
 
@@ -1821,7 +1805,7 @@ describe("typed agent runtime", () => {
     const runtime = await Harness.builder(contracts).build();
     const controller = new AbortController();
     controller.abort(new Error("already cancelled"));
-    const task = new Task("task:pre-aborted" as RuntimeTaskId, signal =>
+    const task = new Task("task:pre-aborted" as TaskId, signal =>
       new TaskContext(runtime, signal).sleepUntil(new Date(Date.now() + 60_000)), controller);
 
     expect(await task.result()).toMatchObject({ kind: "cancelled" });
@@ -1834,19 +1818,19 @@ describe("typed agent runtime", () => {
       return input.value;
     });
     const runtime = (await Harness.builder(contracts).task(task).build());
-    const group = runtime.group<string>(GroupPolicies.collectAll);
+    const group = runtime.group<string>({ kind: "collect-all" });
     await group.spawnMany(task, { id: "batch:race" as BatchId, inputs: [{ delay: 0 }, { delay: 10, value: "winner" }, { delay: 50, value: "late" }] });
     const first = await group.race();
     expect(first.outcome?.kind).toBe("failed");
     expect((await group.join()).entries.at(-1)?.outcome).toEqual({ kind: "succeeded", value: "late" });
-    const succeeding = runtime.group<string>(GroupPolicies.collectAll);
+    const succeeding = runtime.group<string>({ kind: "collect-all" });
     await succeeding.spawnMany(task, { id: "batch:first-success" as BatchId, inputs: [{ delay: 0 }, { delay: 10, value: "winner" }, { delay: 50, value: "late" }] });
     expect((await succeeding.firstSuccess()).value).toBe("winner");
     expect((await succeeding.join()).entries.at(-1)?.outcome).toEqual({ kind: "succeeded", value: "late" });
   });
 
   test("executes model tool calls with durable task ownership and typed receipts", async () => {
-    let modelStep = 0; let sender: RuntimeTaskId | undefined; let toolOperationId: string | undefined;
+    let modelStep = 0; let sender: TaskId | undefined; let toolOperationId: string | undefined;
     const payload = await mailboxFile(3);
     const host: HarnessRuntimeSpawner & HarnessRuntimeState = {
       policyIdentity: () => null,
