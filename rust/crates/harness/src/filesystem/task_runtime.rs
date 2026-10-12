@@ -434,9 +434,9 @@ where
             if let Some(policy) = &policy { policy.supports_native_policy(work)?; }
             let payloads = FilesystemSchedulerPayloadStore::new(filesystem.clone(), volume, verifier, signed, maximum_payload_bytes, Some(&io))?.into_native_shared(work)?;
             let reader = FilesystemContentVerifier::new(filesystem.clone(), verifier, signed, maximum_payload_bytes, Some(&io))?.into_native_shared(work)?;
-            let coordinator = DistributedCoordinator::open_with_native_work(
-                &stream, reader.clone(), work,
-            ).await?.with_payload_store(payloads.clone());
+            let coordinator = DistributedCoordinator::open(
+                &stream, reader.clone(),Some(payloads.clone()), &mut Some(&mut crate::store::history::native_work_io(work)?),
+            ).await?;
             let mut host = CoordinatorTaskHost::new_with_native_work(
                 coordinator, stream.clone(), payloads, reader.clone(),
                 verifier.audience(), signed, verifier, scope, tasks, machines, clock, work,
@@ -477,9 +477,9 @@ where
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(filesystem.clone(), &volume, &verifier, &signed, maximum_payload_bytes, None)?);
         let reader = Arc::new(FilesystemContentVerifier::new(filesystem.clone(), &verifier, &signed, maximum_payload_bytes, None)?);
         let mut host = CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&stream, reader.clone())
+            DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None)
                 .await?
-                .with_payload_store(payloads.clone()),
+                ,
             stream.clone(),
             payloads,
             reader.clone(),
