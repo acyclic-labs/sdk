@@ -89,11 +89,8 @@ impl MountOptions {
     pub fn read_only() -> Self {
         Self {
             writable: false,
-            subdirectory: std::borrow::Cow::Borrowed("/"),
             publication: MountPublication::Manual,
-            work: None,
-            callback_guard: None,
-            native_original: None,
+            ..Self::read_write()
         }
     }
 

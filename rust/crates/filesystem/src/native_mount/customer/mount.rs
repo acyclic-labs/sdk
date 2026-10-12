@@ -23,7 +23,7 @@ where
 {
     /// Publishes all pending authored effects with one fenced generation.
     pub async fn sync(&self) -> Result<(), MountLifecycleError> {
-        flush_session_callbacks(&self.session)?;
+        with_session_work(&self.session, NativeMountSession::flush_callbacks)?;
         self.source
             .sync_async(PublicationPermit::Unrestricted)
             .await
@@ -35,13 +35,13 @@ where
     pub async fn advance_to_head(&self) -> Result<(), MountLifecycleError> {
         let advanced = self.source.advance_to_head_async().await;
         // Even a failed advance may have moved part of the view.
-        revalidate_session(&self.session)?;
+        with_session_work(&self.session, NativeMountSession::revalidate)?;
         advanced.map_err(MountLifecycleError::Source)
     }
 
     /// Publishes all pending effects on the source's dedicated callback runtime.
     pub fn sync_blocking(&self) -> Result<(), MountLifecycleError> {
-        flush_session_callbacks(&self.session)?;
+        with_session_work(&self.session, NativeMountSession::flush_callbacks)?;
         self.source.sync().map_err(MountLifecycleError::Source)
     }
 
