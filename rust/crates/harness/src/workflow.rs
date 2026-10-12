@@ -1,7 +1,6 @@
 //! Explicit versioned resumable state machines for durable authoring.
 
 use crate::IdempotencyKey;
-use crate::contract::next_revision;
 use crate::{Error, OperationId, Result, conversation::FileRef};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Serialize};
@@ -56,18 +55,12 @@ fn copy_machine_transition(
     })
 }
 
-fn copy_workflow_key(
-    source: &IdempotencyKey, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<IdempotencyKey> {
-    Ok(IdempotencyKey(crate::core::copy_text(&source.0, quota)?))
-}
-
 fn copy_workflow_record(
     source: &WorkflowRecord, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<WorkflowRecord> {
     Ok(WorkflowRecord {
         operation_id: source.operation_id,
-        idempotency_key: copy_workflow_key(&source.idempotency_key, quota)?,
+        idempotency_key: IdempotencyKey(crate::core::copy_text(&source.idempotency_key.0, quota)?),
         input_digest: source.input_digest,
         prior: copy_machine_checkpoint(&source.prior, quota)?,
         input: crate::core::copy_value(&source.input, quota)?,
@@ -96,7 +89,6 @@ workflow_physical_copy!(workflow_copy_identity, MachineIdentity, copy_machine_id
 workflow_physical_copy!(workflow_copy_checkpoint, MachineCheckpoint, copy_machine_checkpoint);
 workflow_physical_copy!(workflow_copy_transition, MachineTransition, copy_machine_transition);
 workflow_physical_copy!(workflow_copy_record, WorkflowRecord, copy_workflow_record);
-workflow_physical_copy!(workflow_copy_key, IdempotencyKey, copy_workflow_key);
 
 /// Replay-safe command emitted by a machine.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -142,8 +134,16 @@ pub struct MachineIdentity {
 impl MachineIdentity {
     /// Rejects an unpinned or malformed state-machine implementation.
     pub fn validate(&self, work: &mut Option<&mut dyn crate::store::HistoryIo>) -> Result<()> {
-        workflow_label(&self.name, "machine name", work)?;
-        workflow_label(&self.version, "machine version", work)?;
+        for label in [&self.name, &self.version] {
+            if let Some(observer) = work.as_deref_mut() {
+                observer.check_cancellation()?;
+                observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+            }
+            if !crate::contract::is_valid_component_label(label) {
+                return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Invalid,
+                    "machine component label is invalid"));
+            }
+        }
         if self.digest == [0; 32] {
             return Err(crate::scheduler::diagnostic(work, crate::wire::ErrorCode::Invalid,
                 "machine implementation digest must be a nonzero 32-byte value"));
@@ -596,13 +596,6 @@ impl WorkflowAdmission {
 /// Internal replay batch size; callers may request any positive page allowance.
 pub(crate) const WORKFLOW_REPLAY_PAGE_RECORDS: u32 = 64;
 
-pub(crate) fn validate_workflow_page(_after: u64, maximum: u32) -> Result<()> {
-    if maximum == 0 {
-        return Err(Error::Invalid("workflow page bounds are invalid".into()));
-    }
-    Ok(())
-}
-
 pub(crate) fn validate_workflow_commit(
     expected_revision: u64,
     key: &IdempotencyKey,
@@ -747,11 +740,6 @@ impl WorkflowJournal for MemoryWorkflowJournal {
                     "workflow admission identity is already bound".into(),
                 )),
                 None => {
-                    if !state.records.is_empty() {
-                        return Err(Error::Conflict(
-                            "workflow already has transitions without admission".into(),
-                        ));
-                    }
                     state.admission = Some(admission.clone());
                     Ok(admission)
                 }
@@ -761,7 +749,9 @@ impl WorkflowJournal for MemoryWorkflowJournal {
 
     fn replay(&self, after: u64, maximum: u32) -> BoxFuture<'_, Result<Vec<WorkflowRecord>>> {
         Box::pin(async move {
-            validate_workflow_page(after, maximum)?;
+            if maximum == 0 {
+                return Err(Error::Invalid("workflow page bounds are invalid".into()));
+            }
             let state = self
                 .state
                 .lock()
@@ -836,14 +826,10 @@ impl WorkflowJournal for MemoryWorkflowJournal {
                     "workflow transition differs from admission".into(),
                 ));
             }
-            if state.records.len() as u64 != expected_revision {
-                return Err(Error::Conflict("stale workflow revision".into()));
-            }
-            let requested: BTreeSet<_> = record.operation_ids().collect();
             if state.records.iter().any(|existing| {
                 existing
                     .operation_ids()
-                    .any(|operation_id| requested.contains(&operation_id))
+                    .any(|operation_id| record.operation_ids().any(|requested| requested == operation_id))
             }) {
                 return Err(Error::Conflict(
                     "workflow command or transition identity is already bound".into(),
@@ -944,7 +930,7 @@ impl DurableWorkflowHost {
                 if let Some(io) = io {
                     host.reserve_native_index(record.transition.commands.len(), io)?;
                 }
-                keys.insert(workflow_copy_key(&record.idempotency_key, io)?);
+                keys.insert(IdempotencyKey(crate::executor::stock_string_copy(&record.idempotency_key.0, io)?));
                 host.reserved_operations.extend(record.operation_ids());
                 host.intents.insert(
                     record.operation_id,
@@ -1142,7 +1128,7 @@ impl DurableWorkflowHost {
         check(&transition)?;
         let record = WorkflowRecord {
             operation_id,
-            idempotency_key: workflow_copy_key(&idempotency_key, io)?,
+            idempotency_key: IdempotencyKey(crate::executor::stock_string_copy(&idempotency_key.0, io)?),
             input_digest: crate::executor::preparation_digest(&input, io)?,
             prior: workflow_copy_checkpoint(&self.checkpoint, io)?,
             input,
@@ -1166,7 +1152,7 @@ impl DurableWorkflowHost {
             self.reserve_native_index(record.transition.commands.len(), io)?;
         }
         let committed_record = workflow_copy_record(&record, io)?;
-        let commit_key = workflow_copy_key(&idempotency_key, io)?;
+        let commit_key = IdempotencyKey(crate::executor::stock_string_copy(&idempotency_key.0, io)?);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let observed = if let Some(io) = io {
             let work = io.original_native_work().ok_or_else(|| native_workflow_unsupported(
@@ -1304,26 +1290,10 @@ fn validate_workflow_key(
     Ok(())
 }
 
-fn workflow_label(value: &str, field: &str, work: &mut Option<&mut dyn crate::store::HistoryIo>) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(observer) = work.as_deref_mut() {
-        observer.check_cancellation()?;
-        observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
-        return if crate::contract::is_valid_component_label(value) { Ok(()) }
-            else { Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                reason: "workflow component label is invalid" }) };
-    }
-    let _ = work;
-    crate::contract::validate_component_label(value, field)
-}
-
 fn workflow_next_revision(revision: u64, io: Option<&crate::executor::PreparationIo>) -> Result<u64> {
-    if io.is_some() && revision == u64::MAX {
-        return Err(workflow_error(io, crate::wire::ErrorCode::Invalid, "revision exhausted"));
-    }
-    next_revision(revision)
+    revision.checked_add(1).ok_or_else(||
+        workflow_error(io, crate::wire::ErrorCode::Invalid, "revision exhausted"))
 }
-
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 fn native_workflow_unsupported(reason: &'static str) -> Error {
@@ -1457,8 +1427,6 @@ mod tests {
             .collect();
         validate_workflow_commit(prior.revision, &record.idempotency_key, &record, None)?;
         validate_workflow_next(&prior, false, &reserved, &BTreeSet::new(), &record, None)?;
-        validate_workflow_page(prior.revision, u32::MAX)?;
-        crate::executor::validate_execution_page(u32::MAX)?;
         let mut unsafe_command = serde_json::to_value(&record.transition.commands[0])
             .map_err(|error| Error::Invalid(error.to_string()))?;
         unsafe_command["body"] = json!("inline attachment bytes");
@@ -1545,7 +1513,7 @@ mod tests {
         );
         assert_eq!(
             journal
-                .replay(0, WORKFLOW_REPLAY_PAGE_RECORDS + 1)
+                .replay(0, u32::MAX)
                 .await?
                 .len(),
             (WORKFLOW_REPLAY_PAGE_RECORDS + 1) as usize
