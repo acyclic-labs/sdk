@@ -1,7 +1,7 @@
 //! Local Objects hot paths (see `docs/observability.md`).
 #![allow(clippy::unwrap_used, reason = "benchmarks abort on setup failure")]
 
-use acyclic_objects::v1::{MemoryObjects, NativeBatchObjects, ObjectsProvider, wire};
+use acyclic_objects::v1::{MemoryObjects, ObjectsProvider, wire};
 use acyclic_objects::{LocalObjects, LocalObjectsLimits};
 use acyclic_stream::OwnedBytes;
 use divan::Bencher;

@@ -56,42 +56,6 @@ pub const HTTP_ROUTES: &[(&str, &str, &str)] = &[
 ];
 pub use memory::{MemoryObjects, MemoryOptions};
 
-/// Native composition capability for filesystem storage over logical Objects.
-#[async_trait::async_trait]
-#[doc(hidden)]
-pub trait NativeBatchObjects: ObjectsProvider {
-    /// Publishes ordered, individually atomic mutations in one native admission.
-    async fn put_batch(
-        &self,
-        requests: Vec<(wire::PutObjectHeader, acyclic_stream::OwnedBytes)>,
-    ) -> Vec<Result<wire::ObjectInfo, Error>>;
-
-    /// Reads ordered, individually bounded selections under one native admission.
-    async fn get_batch(
-        &self,
-        requests: Vec<(wire::GetObjectRequest, u64)>,
-    ) -> Vec<Result<Object, Error>>;
-
-    /// Reads a genuine batch using the caller's original allocation owner.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn get_batch_native(
-        &self,
-        _requests: ObjectsNativeRequest<Vec<(wire::GetObjectRequest, u64)>>,
-        _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<Object>>, NativeObjectsError> {
-        Err(NativeObjectsError::Unsupported)
-    }
-
-    /// Publishes a genuine batch with the current caller's original admissions.
-    #[cfg(not(target_arch = "wasm32"))]
-    fn put_batch_native(
-        &self,
-        _requests: ObjectsNativeRequest<Vec<(wire::PutObjectHeader, acyclic_stream::OwnedBytes)>>,
-        _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
-        Err(NativeObjectsError::Unsupported)
-    }
-}
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 pub mod grpc;
 #[cfg(all(test, feature = "grpc", not(target_arch = "wasm32")))]
@@ -701,6 +665,42 @@ impl Download {
 /// Transport-independent logical Objects interface.
 #[async_trait::async_trait]
 pub trait ObjectsProvider: Send + Sync {
+    /// Publishes ordered, individually atomic mutations in one native admission.
+    async fn put_batch(
+        &self,
+        requests: Vec<(wire::PutObjectHeader, acyclic_stream::OwnedBytes)>,
+    ) -> Vec<Result<wire::ObjectInfo, Error>> {
+        vec![Err(wire::ErrorCode::Unsupported.into()); requests.len()]
+    }
+
+    /// Reads ordered, individually bounded selections under one native admission.
+    async fn get_batch(
+        &self,
+        requests: Vec<(wire::GetObjectRequest, u64)>,
+    ) -> Vec<Result<Object, Error>> {
+        requests.into_iter().map(|_| Err(wire::ErrorCode::Unsupported.into())).collect()
+    }
+
+    /// Reads a genuine batch using the caller's original allocation owner.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn get_batch_native(
+        &self,
+        _requests: ObjectsNativeRequest<Vec<(wire::GetObjectRequest, u64)>>,
+        _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<Object>>, NativeObjectsError> {
+        Err(NativeObjectsError::Unsupported)
+    }
+
+    /// Publishes a genuine batch with the current caller's original admissions.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn put_batch_native(
+        &self,
+        _requests: ObjectsNativeRequest<Vec<(wire::PutObjectHeader, acyclic_stream::OwnedBytes)>>,
+        _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
+        Err(NativeObjectsError::Unsupported)
+    }
+
     /// Creates a tenant-scoped logical bucket.
     async fn create_bucket(
         &self,

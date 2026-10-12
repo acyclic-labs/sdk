@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::{Error, NativeBatchObjects, Object, ObjectsProvider, request, wire};
+use super::{Error, Object, ObjectsProvider, request, wire};
 use crate::body::{BodyParts, BodyReadMode, StoredBody};
 use crate::obs;
 use acyclic_stream::OwnedBytes;
@@ -929,8 +929,31 @@ fn get_native_locked(
     Ok((selected, retained))
 }
 
+
+
+#[cfg(feature = "local")]
+fn put_group_sizes(
+    requests: &[(wire::PutObjectHeader, OwnedBytes)],
+) -> impl Iterator<Item = usize> + '_ {
+    let mut requests = requests.iter().peekable();
+    std::iter::from_fn(move || {
+        requests.peek()?;
+        let mut bytes = 0_usize;
+        let mut count = 0_usize;
+        while requests.next_if(|(query, body)| {
+            let total = bytes.saturating_add(persistence::put_record_bytes(query, body));
+            let fits = bytes == 0 || total <= persistence::RECORD_LIMIT;
+            if fits { bytes = total; }
+            fits
+        }).is_some() {
+            count += 1;
+        }
+        Some(count)
+    })
+}
+
 #[async_trait::async_trait]
-impl NativeBatchObjects for MemoryObjects {
+impl ObjectsProvider for MemoryObjects {
     async fn put_batch(
         &self,
         requests: Vec<(wire::PutObjectHeader, OwnedBytes)>,
@@ -1105,31 +1128,7 @@ impl NativeBatchObjects for MemoryObjects {
             }).await
         })
     }
-}
 
-#[cfg(feature = "local")]
-fn put_group_sizes(
-    requests: &[(wire::PutObjectHeader, OwnedBytes)],
-) -> impl Iterator<Item = usize> + '_ {
-    let mut requests = requests.iter().peekable();
-    std::iter::from_fn(move || {
-        requests.peek()?;
-        let mut bytes = 0_usize;
-        let mut count = 0_usize;
-        while requests.next_if(|(query, body)| {
-            let total = bytes.saturating_add(persistence::put_record_bytes(query, body));
-            let fits = bytes == 0 || total <= persistence::RECORD_LIMIT;
-            if fits { bytes = total; }
-            fits
-        }).is_some() {
-            count += 1;
-        }
-        Some(count)
-    })
-}
-
-#[async_trait::async_trait]
-impl ObjectsProvider for MemoryObjects {
     async fn create_bucket(&self, query: wire::CreateBucketRequest) -> Result<wire::Bucket, Error> {
         obs::traced(obs::span!(INFO, "acyclic.objects.create_bucket"), async {
             request::bucket_name(&query.name)?;
