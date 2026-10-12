@@ -71,9 +71,9 @@ impl Fixture {
             "task:spawn:acyclic.fork_preparation@1".to_owned(), "fork:publish".to_owned(), "conversation:bind".to_owned(),
             "effect:plan".to_owned(), "effect:run".to_owned(), format!("effect:provider:{ROOT_ALLOCATION_PROVIDER}"),
             format!("effect:provider:{}", crate::pi_native::PI_NATIVE_PROVIDER),
-            journal_volume.directory_read_capability(ROOT_INPUT_DIRECTORY).unwrap(),
-            scratch.capability(VolumeOperation::Read).unwrap(), scratch.capability(VolumeOperation::Write).unwrap(),
-            project.capability(VolumeOperation::Read).unwrap(), project.capability(VolumeOperation::Write).unwrap(),
+            journal_volume.directory_read_capability(ROOT_INPUT_DIRECTORY, &mut None).unwrap(),
+            scratch.capability(VolumeOperation::Read, &mut None).unwrap(), scratch.capability(VolumeOperation::Write, &mut None).unwrap(),
+            project.capability(VolumeOperation::Read, &mut None).unwrap(), project.capability(VolumeOperation::Write, &mut None).unwrap(),
         ]);
         let owner = PiOwnerConfig::new(&PiOwnerPolicy { root_task: task, agent, journal: journal_volume.clone(), grants,
             limits: Limits { file_bytes: 1_048_576, path_bytes: 4096, render_bytes: 1_048_576, ..Limits::default() },
@@ -375,8 +375,8 @@ pub(crate) fn policy() -> PiOwnerPolicy {
             "operation:cancel".to_owned(),
             "operation:wake".to_owned(),
             "task:spawn:acyclic.pi@1".to_owned(),
-            scratch.capability(VolumeOperation::Read).unwrap(),
-            scratch.capability(VolumeOperation::Write).unwrap(),
+            scratch.capability(VolumeOperation::Read, &mut None).unwrap(),
+            scratch.capability(VolumeOperation::Write, &mut None).unwrap(),
         ]),
         limits: Limits {
             file_bytes: 65_536,
@@ -439,13 +439,13 @@ async fn actual_fork_creation_admission_publication_and_lost_reply_reopen_preser
     let coordinator = fixture.coordinator(&crate::pi_fork::tests::work()).unwrap();
     let created = fixture.advance_with(&coordinator, &fixture.context, &fixture.journal, &fixture.fence, &plan,
         fixture.root_handle.workspace.clone(), crate::pi_root_provider::allocation_budget(), CancellationToken::new()).await.unwrap().unwrap();
-    assert_eq!(created.workspace.workspace().name().as_str(), plan.commit.child.project_volumes.values().next().unwrap().storage_name().unwrap());
+    assert_eq!(created.workspace.workspace().name().as_str(), plan.commit.child.project_volumes.values().next().unwrap().storage_name(&mut None).unwrap());
     assert_eq!(created.workspace.read("/observed.txt", 64).await.unwrap().as_ref(), b"original");
     assert!(created.workspace.read("/authored-later.txt", 64).await.is_err());
     assert_eq!(created.report.request, serde_json::from_value::<ForkRequest>(plan.request.payload.clone()).unwrap());
     assert!(matches!(created.binding.scratch.allocation, PiScratchAllocation::Created(_)));
-    assert!(!created.admission.grants.contains(&plan.source.project.capability(VolumeOperation::Write).unwrap()));
-    assert!(!created.admission.grants.contains(&plan.source.private_volume.capability(VolumeOperation::Read).unwrap()));
+    assert!(!created.admission.grants.contains(&plan.source.project.capability(VolumeOperation::Write, &mut None).unwrap()));
+    assert!(!created.admission.grants.contains(&plan.source.private_volume.capability(VolumeOperation::Read, &mut None).unwrap()));
     let child_workspace = created.workspace.workspace().id();
     let child_generation = created.native_lazy;
     drop(created); // All original successful replies may be lost by the caller.
@@ -471,7 +471,7 @@ async fn original_preparation_task_partial_checkpoint_reopens_without_early_chil
         &fixture.runtime.runtime.commands(), 1, work).await.unwrap();
     assert!(matches!(partial.0, Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { .. }))));
     assert!(host.observe_admission(plan.request.child.task_id()).await.is_err());
-    assert!(fixture.resources.fs.open_workspace_with_native_work(&plan.commit.child.scratch.volume.storage_name().unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
+    assert!(fixture.resources.fs.open_workspace_with_native_work(&plan.commit.child.scratch.volume.storage_name(&mut None).unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
     let restored = fixture.advance_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal, &fixture.fence, &plan,
         fixture.root_handle.workspace.clone(), crate::pi_root_provider::allocation_budget(), CancellationToken::new()).await.unwrap().unwrap();
     assert_eq!(restored.admission, plan.request.child);
@@ -489,7 +489,7 @@ async fn cancellation_and_owner_replacement_never_admit_a_child() {
     let replacement = PiOwnerConfig::new(fixture.owner.policy(), None, &crate::pi_fork::tests::work()).unwrap();
     assert!(PiForkCoordinator::new(fixture.runtime.clone(), fixture.filesystem.clone(), fixture.stream.clone(),
         &fixture.resources, Arc::new(replacement), &crate::pi_fork::tests::work()).is_err());
-    assert!(fixture.resources.fs.open_workspace_with_native_work(&plan.commit.child.scratch.volume.storage_name().unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
+    assert!(fixture.resources.fs.open_workspace_with_native_work(&plan.commit.child.scratch.volume.storage_name(&mut None).unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
 }
 
 #[tokio::test]
@@ -504,7 +504,7 @@ async fn changed_native_plan_never_prepares_or_admits_a_child() {
             1 => changed.commit.launch.session_bytes.push_str("{}\n"),
             2 => changed.commit.child.native_session_id = "another-native-sdk-session".into(),
             _ => {
-                let foreign_write = plan.source.project.capability(VolumeOperation::Write).unwrap();
+                let foreign_write = plan.source.project.capability(VolumeOperation::Write, &mut None).unwrap();
                 changed.request.child.grants = Capabilities::new(changed.request.child.grants.iter()
                     .chain(std::iter::once(foreign_write.as_str())));
                 changed.preparation.input = serde_json::to_value(&changed.request).unwrap();
@@ -514,7 +514,7 @@ async fn changed_native_plan_never_prepares_or_admits_a_child() {
             &changed, fixture.root_handle.workspace.clone(), crate::pi_root_provider::allocation_budget(), CancellationToken::new()).await.is_err());
         assert!(fixture.runtime.runtime.task_host().observe_admission(plan.preparation.task_id()).await.is_err());
         assert!(fixture.runtime.runtime.task_host().observe_admission(plan.request.child.task_id()).await.is_err());
-        assert!(fixture.resources.fs.open_workspace_with_native_work(&plan.commit.child.scratch.volume.storage_name().unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
+        assert!(fixture.resources.fs.open_workspace_with_native_work(&plan.commit.child.scratch.volume.storage_name(&mut None).unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
     }
 }
 
@@ -539,7 +539,7 @@ async fn explicit_root_sibling_and_descendant_sources_use_operation_read_proofs_
     let journal = Arc::new(fixture.runtime.runtime.task_host().journal_owner(first.binding.task_id, fence.clone()).await.unwrap());
     let context = fixture.runtime.runtime.task_context(first.binding.task_id, fence.clone()).await.unwrap();
     let original_grants = context.scope().grants().clone();
-    let source_read = root.binding.project_volumes.values().next().unwrap().capability(VolumeOperation::Read).unwrap();
+    let source_read = root.binding.project_volumes.values().next().unwrap().capability(VolumeOperation::Read, &mut None).unwrap();
     assert!(!original_grants.contains(&source_read));
 
     let mut commit = fixture.next_commit(&first.binding, root.binding.task_id, "selected-root-call");
@@ -569,7 +569,7 @@ async fn explicit_root_sibling_and_descendant_sources_use_operation_read_proofs_
         crate::pi_root_provider::allocation_budget(), CancellationToken::new()).await.unwrap().unwrap();
     assert_eq!(actual.workspace.read("/observed.txt", 64).await.unwrap().as_ref(), b"original");
     assert!(!actual.admission.grants.contains(&sibling.binding.project_volumes.values().next().unwrap()
-        .capability(VolumeOperation::Read).unwrap()));
+        .capability(VolumeOperation::Read, &mut None).unwrap()));
 
     let source = descendant.workspace.clone();
     let commit = fixture.next_commit(&root.binding, descendant.binding.task_id, "selected-descendant-call");
@@ -682,5 +682,5 @@ async fn explicit_source_without_original_session_task_proof_cannot_prepare_or_a
         &root.binding, fixture.root_handle.workspace.clone(), commit).await.is_err());
     assert!(fixture.runtime.runtime.task_host().observe_admission(task_id_for_admission(operations.preparation)).await.is_err());
     assert!(fixture.runtime.runtime.task_host().observe_admission(task_id_for_admission(operations.child)).await.is_err());
-    assert!(fixture.resources.fs.open_workspace_with_native_work(&future_project.storage_name().unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
+    assert!(fixture.resources.fs.open_workspace_with_native_work(&future_project.storage_name(&mut None).unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
 }

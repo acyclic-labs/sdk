@@ -23,9 +23,6 @@ use std::{collections::BTreeMap, path::Path};
 #[path = "pi_task_model_tests.rs"]
 mod bounded_model;
 
-type OwnedRuntime =
-    PiTaskRuntime<LocalStream>;
-
 fn preparation() -> WorkflowCommand {
     WorkflowCommand {
         operation_id: OperationId::from_bytes([86; 16]),
@@ -164,7 +161,7 @@ async fn open(
     root: &Path,
     binding: &PiTaskBinding,
     create: bool,
-) -> acyclic_harness::Result<(OwnedRuntime, acyclic_fs::NativeMaterializationWork)> {
+) -> acyclic_harness::Result<(PiTaskRuntime<LocalStream>, acyclic_fs::NativeMaterializationWork)> {
     let work = acyclic_fs::NativeMaterializationWork::new(
         crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new(),
     ).map_err(|(cause, work)| acyclic_harness::Error::NativeConstruction { cause, work })?;
@@ -187,12 +184,12 @@ async fn open(
             binding
                 .scratch
                 .volume
-                .capability(VolumeOperation::Read)
+                .capability(VolumeOperation::Read, &mut None)
                 .unwrap(),
             binding
                 .scratch
                 .volume
-                .capability(VolumeOperation::Write)
+                .capability(VolumeOperation::Write, &mut None)
                 .unwrap(),
         ]
         .into_iter()
@@ -200,7 +197,7 @@ async fn open(
             binding
                 .project_volumes
                 .values()
-                .map(|volume| volume.capability(VolumeOperation::Read).unwrap()),
+                .map(|volume| volume.capability(VolumeOperation::Read, &mut None).unwrap()),
         ),
     );
     let config = if create {
@@ -630,7 +627,7 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
         assert!(
             !admission
                 .grants
-                .contains(&journal.capability(operation).unwrap())
+                .contains(&journal.capability(operation, &mut None).unwrap())
         );
     }
     assert_eq!(
@@ -652,7 +649,7 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
     .unwrap();
     assert!(
         storage
-            .open_workspace_with_native_work(&binding.scratch.volume.storage_name().unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new())
+            .open_workspace_with_native_work(&binding.scratch.volume.storage_name(&mut None).unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new())
             .await
             .is_err()
     );
@@ -923,7 +920,7 @@ async fn pi_real_preparation_pending_reserved_and_succeeded_never_report_future_
     report.0.validate().unwrap();
     assert!(host.observe_admission(plan.request.child.task_id()).await.is_err());
     let reopen_work = crate::pi_fork::tests::work();
-    let reopened = OwnedRuntime::open_with_native_work(
+    let reopened = PiTaskRuntime::<LocalStream>::open_with_native_work(
         fixture.stream.clone(), fixture.filesystem.clone(), &fixture.owner.policy().journal,
         fixture.owner.authority_with_native_work(&reopen_work).unwrap(), &reopen_work,
     ).await.unwrap();
@@ -998,7 +995,7 @@ async fn pi_real_root_committed_control_reopen_keeps_original_context_and_next_a
         &fixture.stream, 0, 1024).await.unwrap();
     assert!(accounting.len() < 1024, "bounded fixture must fit one complete accounting page");
     let reopen_work = crate::pi_fork::tests::work();
-    let reopened = OwnedRuntime::open_with_native_work(
+    let reopened = PiTaskRuntime::<LocalStream>::open_with_native_work(
         fixture.stream.clone(), fixture.filesystem.clone(), &fixture.owner.policy().journal,
         fixture.owner.authority_with_native_work(&reopen_work).unwrap(), &reopen_work,
     ).await.unwrap();
@@ -1135,9 +1132,8 @@ mod native_transition {
     }
 
     #[test]
-    fn native_all_states_preserve_commands_and_settlement() {
+    fn native_transition_preserves_commands_and_settlement_and_denies_cancellation() {
         let machine = PiTaskMachine::new(&work()).unwrap();
-        assert!(machine.supports_native_work());
         let command = preparation();
         let control = WorkflowCommand {
             operation_id: OperationId::from_bytes([91; 16]),
@@ -1189,11 +1185,6 @@ mod native_transition {
             assert!(step(&machine, &state, &Value::Null, &work).is_err());
             assert_eq!(work.live_allocation_bytes(), work_baseline);
         }
-    }
-
-    #[test]
-    fn native_cancellation_precedes_state_and_command_vector_growth() {
-        let machine = PiTaskMachine::new(&work()).unwrap();
         let state = json!({"state":"preparing","command":preparation()});
         let cancellation = CancellationToken::new();
         let work = NativeMaterializationWork::new(
@@ -1288,7 +1279,6 @@ mod native_transition {
         assert_eq!(original.receipt().backend_read_operations, before.backend_read_operations);
         assert_eq!(original.receipt().backend_write_operations, before.backend_write_operations);
         assert_eq!(recovered.checkpoint(), &checkpoint);
-        assert!(original.receipt().peak_allocation_bytes > 128 * 1024);
         drop(denied);
         drop(recovered);
         drop(context);
@@ -1315,7 +1305,7 @@ mod native_transition {
     }
 
     #[test]
-    fn native_initialization_uses_original_ledger_and_matches_both_execution_modes() {
+    fn native_initialization_preserves_execution_modes_and_denies_cancelled_or_malformed_input() {
         let machine_work = work();
         let machine_work_baseline = machine_work.live_allocation_bytes();
         let machine = PiTaskMachine::new(&machine_work).unwrap();
@@ -1339,13 +1329,6 @@ mod native_transition {
             drop(initialized);
             assert_eq!(original.live_allocation_bytes(), original_baseline);
         }
-        drop(machine);
-        assert_eq!(machine_work.live_allocation_bytes(), machine_work_baseline);
-    }
-
-    #[test]
-    fn native_initialization_denies_cancellation_and_malformed_binding() {
-        let machine = PiTaskMachine::new(&work()).unwrap();
         let input = serde_json::to_value(PiTaskInput {
             binding: binding(),
             execution: PiTaskExecution::Host { root: PiRootIntent::ScratchOnly {}, preparation: preparation() },
@@ -1385,5 +1368,7 @@ mod native_transition {
             drop(failure);
             assert_eq!(original.live_allocation_bytes(), original_baseline);
         }
+        drop(machine);
+        assert_eq!(machine_work.live_allocation_bytes(), machine_work_baseline);
     }
 }

@@ -178,8 +178,7 @@ async fn actual_admitted_child_cannot_read_root_only_operator_proof_or_upgrade_i
     (private, private_custody) = pi_root_provider::stage_pi_operator_input(
         &fixture.owner, &fixture.filesystem, operation, "operator-proof-isolation", &request, &work).await.unwrap();
     assert!(private.path().starts_with(crate::pi_root_provider::OPERATOR_INPUT_DIRECTORY));
-    assert!(!child_context.context().scope().grants().contains(&fixture.owner.policy().journal.directory_read_capability(
-        crate::pi_root_provider::OPERATOR_INPUT_DIRECTORY).unwrap()));
+    assert!(!child_context.context().scope().grants().contains(&fixture.owner.policy().journal.directory_read_capability(crate::pi_root_provider::OPERATOR_INPUT_DIRECTORY, &mut None).unwrap()));
     assert!(matches!(child_context.context().read_file(&private).await, Err(Error::Unauthorized(_))));
     let (caller, caller_custody) = pi_caller::issue(&fixture.owner, session, &child.binding, &work).unwrap();
     request.operator = caller.0;

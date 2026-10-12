@@ -188,7 +188,7 @@ impl Fixture {
 
     async fn head(&self) -> acyclic_fs::GenerationId {
         let observation = work();
-        self.raw.open_workspace_with_native_work(&self.owner.policy.journal.storage_name().unwrap(),
+        self.raw.open_workspace_with_native_work(&self.owner.policy.journal.storage_name(&mut None).unwrap(),
             &observation, observation.cancellation()).await.unwrap()
             .head(&observation, observation.cancellation()).await.unwrap().id()
     }
@@ -309,7 +309,7 @@ async fn pi_preparation_dispatch_requires_current_uncancelled_original_execution
         assert!(
             fixture
                 .raw
-                .open_workspace_with_native_work(&volume.storage_name().unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new())
+                .open_workspace_with_native_work(&volume.storage_name(&mut None).unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new())
                 .await
                 .is_err()
         );

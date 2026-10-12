@@ -37,22 +37,21 @@ async fn builtin_arguments_cannot_substitute_the_original_sdk_invocation_actor()
         operation_id: operation, call_id: "original-call".into(),
         name: PI_BUILTIN_COMMAND_KIND.into(), arguments: value.0,
     };
-    assert!(decoded_tool_request(&tool, &invocation, &work).is_ok());
     let executor = builtin_tool_executor_with_native_work(&work).unwrap();
     executor.authorize_with_native_context(&tool, &invocation, &work).unwrap();
     assert!(executor.execute_with_native_context(&tool, &invocation, &work).unwrap().await.is_err());
     assert!(executor.reconcile_with_native_context(&tool, &invocation, &work).unwrap().await.is_err());
     invocation.operation_id = OperationId::from_bytes([43; 16]);
-    assert!(decoded_tool_request(&tool, &invocation, &work).is_err());
+    assert!(executor.authorize_with_native_context(&tool, &invocation, &work).is_err());
     invocation.operation_id = operation;
     invocation.call_id = "other-call".into();
-    assert!(decoded_tool_request(&tool, &invocation, &work).is_err());
+    assert!(executor.authorize_with_native_context(&tool, &invocation, &work).is_err());
     invocation.call_id = "original-call".into();
     input.caller = TaskId::from_bytes([44; 16]);
     let value = crate::pi_root_provider::guarded_pi_value(&input, MAXIMUM_BUILTIN_BYTES * 2, &work).unwrap();
     let _other_value_custody = value.1;
     invocation.arguments = value.0;
-    assert!(decoded_tool_request(&tool, &invocation, &work).is_err());
+    assert!(executor.authorize_with_native_context(&tool, &invocation, &work).is_err());
 }
 
 #[test]

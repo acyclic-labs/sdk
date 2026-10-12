@@ -2030,36 +2030,12 @@ async fn codex_hook_turn_identity_case() {
 
 #[test]
 fn recursive_publication_is_direct_parent_only() {
-    std::thread::Builder::new()
-        .name("plugin-e2e".to_owned())
-        .stack_size(32 * 1024 * 1024)
-        .spawn(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("test runtime")
-                .block_on(recursive_publication_case());
-        })
-        .expect("test thread")
-        .join()
-        .expect("plugin e2e thread");
+    run_large_stack("plugin-e2e", recursive_publication_case);
 }
 
 #[test]
 fn multi_root_contexts_fork_route_publish_and_resume_atomically() {
-    std::thread::Builder::new()
-        .name("plugin-multi-root-e2e".to_owned())
-        .stack_size(32 * 1024 * 1024)
-        .spawn(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("test runtime")
-                .block_on(multi_root_publication_case());
-        })
-        .expect("test thread")
-        .join()
-        .expect("plugin multi-root e2e thread");
+    run_large_stack("plugin-multi-root-e2e", multi_root_publication_case);
 }
 
 #[test]
@@ -2069,19 +2045,7 @@ fn root_registration_intents_recover_before_native_reopen() {
 
 #[test]
 fn lifecycle_edges_recover_and_fail_closed() {
-    std::thread::Builder::new()
-        .name("plugin-lifecycle-e2e".to_owned())
-        .stack_size(32 * 1024 * 1024)
-        .spawn(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("test runtime")
-                .block_on(lifecycle_hardening_case());
-        })
-        .expect("test thread")
-        .join()
-        .expect("plugin lifecycle e2e thread");
+    run_large_stack("plugin-lifecycle-e2e", lifecycle_hardening_case);
 }
 
 /// A response reaches a client that is slow to read it, for as long as a
@@ -2128,65 +2092,53 @@ async fn a_pipe_served_by_this_user_is_accepted() {
 #[cfg(any(unix, windows))]
 #[test]
 fn service_drain_waits_for_shutdown_completion_and_lock_release() {
-    std::thread::Builder::new()
-        .name("plugin-service-drain".to_owned())
-        .stack_size(32 * 1024 * 1024)
-        .spawn(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("test runtime")
-                .block_on(async {
-                    let temporary = tempfile::tempdir().expect("temporary directory");
-                    let data = temporary.path().join("state");
-                    let service_data = data.clone();
-                    let service = tokio::spawn(async move { run_service(service_data).await });
-                    for _ in 0..250 {
-                        if data.join("service.identity").exists() {
-                            break;
-                        }
-                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                    }
-                    let identity = ServiceMarker::read(&data)
-                        .expect("service identity")
-                        .instance_id;
-                    let mismatch = drain_service(&data, Some("replacement-service")).await;
-                    assert!(matches!(
-                        mismatch,
-                        Err(error) if error == "refusing to drain a replacement Acyclic service"
-                    ));
-                    assert!(acquire_service_lock(&data).expect("service lock").is_none());
-                    // Two requesters that ask at once are both answered.
-                    let (first, second) = tokio::join!(
-                        async {
-                            drop(
-                                drain_service(&data, Some(&identity))
-                                    .await
-                                    .expect("identity-bound durable drain"),
-                            );
-                        },
-                        async {
-                            drop(
-                                drain_service(&data, Some(&identity))
-                                    .await
-                                    .expect("concurrent durable drain"),
-                            );
-                        }
-                    );
-                    let ((), ()) = (first, second);
-                    tokio::time::timeout(std::time::Duration::from_secs(5), service)
+    run_large_stack("plugin-service-drain", || async {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path().join("state");
+        let service_data = data.clone();
+        let service = tokio::spawn(async move { run_service(service_data).await });
+        for _ in 0..250 {
+            if data.join("service.identity").exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let identity = ServiceMarker::read(&data)
+            .expect("service identity")
+            .instance_id;
+        let mismatch = drain_service(&data, Some("replacement-service")).await;
+        assert!(matches!(
+            mismatch,
+            Err(error) if error == "refusing to drain a replacement Acyclic service"
+        ));
+        assert!(acquire_service_lock(&data).expect("service lock").is_none());
+        // Two requesters that ask at once are both answered.
+        let (first, second) = tokio::join!(
+            async {
+                drop(
+                    drain_service(&data, Some(&identity))
                         .await
-                        .expect("service exit deadline")
-                        .expect("service task")
-                        .expect("clean service shutdown");
-                    assert!(!data.join("service.identity").exists());
-                    assert!(service_drain_completion_path(&data, &identity).exists());
-                    assert!(acquire_service_lock(&data).expect("service lock").is_some());
-                });
-        })
-        .expect("test thread")
-        .join()
-        .expect("service drain thread");
+                        .expect("identity-bound durable drain"),
+                );
+            },
+            async {
+                drop(
+                    drain_service(&data, Some(&identity))
+                        .await
+                        .expect("concurrent durable drain"),
+                );
+            }
+        );
+        let ((), ()) = (first, second);
+        tokio::time::timeout(std::time::Duration::from_secs(5), service)
+            .await
+            .expect("service exit deadline")
+            .expect("service task")
+            .expect("clean service shutdown");
+        assert!(!data.join("service.identity").exists());
+        assert!(service_drain_completion_path(&data, &identity).exists());
+        assert!(acquire_service_lock(&data).expect("service lock").is_some());
+    });
 }
 
 /// A service of another release speaks another control protocol, so it
@@ -2269,37 +2221,25 @@ fn a_service_speaking_another_protocol_is_identified_and_stopped() {
 #[cfg(any(unix, windows))]
 #[test]
 fn failed_identity_publication_releases_endpoint_service_and_root() {
-    std::thread::Builder::new()
-        .name("plugin-service-marker-failure".to_owned())
-        .stack_size(32 * 1024 * 1024)
-        .spawn(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("test runtime")
-                .block_on(async {
-                    let temporary = tempfile::tempdir().expect("temporary directory");
-                    let data = temporary.path().join("state");
-                    fs::create_dir_all(data.join("service.identity"))
-                        .expect("identity publication obstruction");
-                    assert!(
-                        run_service_with_identity(data.clone(), Some("service".to_owned()), None)
-                            .await
-                            .is_err()
-                    );
-                    #[cfg(unix)]
-                    assert!(!data.join("service.sock").exists());
-                    let fence = acquire_service_lock(&data)
-                        .expect("service lifecycle lock")
-                        .expect("failed startup released the service lifecycle");
-                    drop(fence);
-                    let (_service_lock, reopened) = test_service_control(data).await.expect("reopen root after failed service startup");
-                    reopened.shutdown().await.expect("reopened shutdown");
-                });
-        })
-        .expect("test thread")
-        .join()
-        .expect("service marker failure thread");
+    run_large_stack("plugin-service-marker-failure", || async {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path().join("state");
+        fs::create_dir_all(data.join("service.identity"))
+            .expect("identity publication obstruction");
+        assert!(
+            run_service_with_identity(data.clone(), Some("service".to_owned()), None)
+                .await
+                .is_err()
+        );
+        #[cfg(unix)]
+        assert!(!data.join("service.sock").exists());
+        let fence = acquire_service_lock(&data)
+            .expect("service lifecycle lock")
+            .expect("failed startup released the service lifecycle");
+        drop(fence);
+        let (_service_lock, reopened) = test_service_control(data).await.expect("reopen root after failed service startup");
+        reopened.shutdown().await.expect("reopened shutdown");
+    });
 }
 
 #[test]
@@ -2442,129 +2382,105 @@ fn parent_lifecycle_fence_survives_removal_of_the_service_data_tree() {
 #[cfg(any(unix, windows))]
 #[test]
 fn service_handoff_durably_drains_a_mismatched_binary() {
-    std::thread::Builder::new()
-        .name("plugin-service-handoff".to_owned())
-        .stack_size(32 * 1024 * 1024)
-        .spawn(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("test runtime")
-                .block_on(async {
-                    let temporary = tempfile::tempdir().expect("temporary directory");
-                    let data = temporary.path().join("state");
-                    let service_data = data.clone();
-                    let service = tokio::spawn(async move {
-                        run_service_with_identity(
-                            service_data,
-                            Some("older-service-binary".to_owned()),
-                            None,
-                        )
-                        .await
-                    });
-                    for _ in 0..250 {
-                        if data.join("service.identity").exists() {
-                            break;
-                        }
-                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                    }
-                    let instance_id = ServiceMarker::read(&data)
-                        .expect("service instance identity")
-                        .instance_id;
-                    assert!(uuid::Uuid::parse_str(&instance_id).is_ok());
-                    // Workspace state outlives the binary that wrote it.
-                    let kept = ["core-state", "filesystem", "sessions", "w"]
-                        .map(|name| data.join(name).join("kept"));
-                    for path in &kept {
-                        std::fs::create_dir_all(path.parent().expect("state directory"))
-                            .expect("state directory");
-                        std::fs::write(path, b"kept").expect("state file");
-                    }
-                    assert!(
-                        !service_is_ready_for_identity(&data, "replacement-service-binary")
-                            .await
-                            .expect("durable handoff")
-                    );
-                    tokio::time::timeout(std::time::Duration::from_secs(5), service)
-                        .await
-                        .expect("service exit deadline")
-                        .expect("service task")
-                        .expect("clean service shutdown");
-                    assert!(service_drain_completion_path(&data, &instance_id).exists());
-                    assert!(acquire_service_lock(&data).expect("service lock").is_some());
-                    assert!(kept.iter().all(|path| path.exists()));
-                });
-        })
-        .expect("test thread")
-        .join()
-        .expect("service handoff thread");
+    run_large_stack("plugin-service-handoff", || async {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path().join("state");
+        let service_data = data.clone();
+        let service = tokio::spawn(async move {
+            run_service_with_identity(
+                service_data,
+                Some("older-service-binary".to_owned()),
+                None,
+            )
+            .await
+        });
+        for _ in 0..250 {
+            if data.join("service.identity").exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        let instance_id = ServiceMarker::read(&data)
+            .expect("service instance identity")
+            .instance_id;
+        assert!(uuid::Uuid::parse_str(&instance_id).is_ok());
+        // Workspace state outlives the binary that wrote it.
+        let kept = ["core-state", "filesystem", "sessions", "w"]
+            .map(|name| data.join(name).join("kept"));
+        for path in &kept {
+            std::fs::create_dir_all(path.parent().expect("state directory"))
+                .expect("state directory");
+            std::fs::write(path, b"kept").expect("state file");
+        }
+        assert!(
+            !service_is_ready_for_identity(&data, "replacement-service-binary")
+                .await
+                .expect("durable handoff")
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), service)
+            .await
+            .expect("service exit deadline")
+            .expect("service task")
+            .expect("clean service shutdown");
+        assert!(service_drain_completion_path(&data, &instance_id).exists());
+        assert!(acquire_service_lock(&data).expect("service lock").is_some());
+        assert!(kept.iter().all(|path| path.exists()));
+    });
 }
 
 #[cfg(any(unix, windows))]
 #[test]
 fn service_handoff_durably_drains_live_sessions_before_replacement() {
-    std::thread::Builder::new()
-        .name("plugin-live-service-handoff".to_owned())
-        .stack_size(32 * 1024 * 1024)
-        .spawn(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("test runtime")
-                .block_on(async {
-                    let temporary = tempfile::tempdir().expect("temporary directory");
-                    let data = temporary.path().join("state");
-                    let root = temporary.path().join("root");
-                    fs::create_dir(&root).expect("root directory");
-                    let service_data = data.clone();
-                    let service = tokio::spawn(async move {
-                        run_service_with_identity(
-                            service_data,
-                            Some("older-service-binary".to_owned()),
-                            None,
-                        )
-                        .await
-                    });
-                    for _ in 0..250 {
-                        if data.join("service.identity").exists() {
-                            break;
-                        }
-                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                    }
-                    send_control_request(
-                        &data,
-                        &ControlRequest {
-                            version: 1,
-                            command: ControlCommand::Hook,
-                            cwd: root.clone(),
-                            argv: Vec::new(),
-                            name: "codex:SessionStart".to_owned(),
-                            arguments: json!({"session_id":"live","cwd":root.clone()}),
-                        },
-                    )
-                    .await
-                    .expect("start live session");
+    run_large_stack("plugin-live-service-handoff", || async {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let data = temporary.path().join("state");
+        let root = temporary.path().join("root");
+        fs::create_dir(&root).expect("root directory");
+        let service_data = data.clone();
+        let service = tokio::spawn(async move {
+            run_service_with_identity(
+                service_data,
+                Some("older-service-binary".to_owned()),
+                None,
+            )
+            .await
+        });
+        for _ in 0..250 {
+            if data.join("service.identity").exists() {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        send_control_request(
+            &data,
+            &ControlRequest {
+                version: 1,
+                command: ControlCommand::Hook,
+                cwd: root.clone(),
+                argv: Vec::new(),
+                name: "codex:SessionStart".to_owned(),
+                arguments: json!({"session_id":"live","cwd":root.clone()}),
+            },
+        )
+        .await
+        .expect("start live session");
 
-                    assert!(
-                        !service_is_ready_for_identity(&data, "replacement-service-binary")
-                            .await
-                            .expect("drain live service")
-                    );
-                    tokio::time::timeout(std::time::Duration::from_secs(5), service)
-                        .await
-                        .expect("service exit deadline")
-                        .expect("service task")
-                        .expect("clean service shutdown");
-                    let (_service_lock, reopened) = test_service_control(data.clone()).await.expect("reopen drained service state");
-                    assert!(
-                        reopened.sessions.is_empty(),
-                        "handoff-drained sessions must not reopen"
-                    );
-                });
-        })
-        .expect("test thread")
-        .join()
-        .expect("live service handoff thread");
+        assert!(
+            !service_is_ready_for_identity(&data, "replacement-service-binary")
+                .await
+                .expect("drain live service")
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), service)
+            .await
+            .expect("service exit deadline")
+            .expect("service task")
+            .expect("clean service shutdown");
+        let (_service_lock, reopened) = test_service_control(data.clone()).await.expect("reopen drained service state");
+        assert!(
+            reopened.sessions.is_empty(),
+            "handoff-drained sessions must not reopen"
+        );
+    });
 }
 
 #[test]
@@ -2629,19 +2545,7 @@ fn explicit_shutdown_processes_sessions_after_an_earlier_failure() {
 #[cfg(any(windows, all(unix, not(target_os = "linux"))))]
 #[test]
 fn endpoint_shutdown_cancels_inflight_requests_before_reopen() {
-    std::thread::Builder::new()
-        .name("plugin-endpoint-shutdown".to_owned())
-        .stack_size(32 * 1024 * 1024)
-        .spawn(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("test runtime")
-                .block_on(endpoint_shutdown_case());
-        })
-        .expect("test thread")
-        .join()
-        .expect("plugin endpoint shutdown thread");
+    run_large_stack("plugin-endpoint-shutdown", endpoint_shutdown_case);
 }
 
 #[cfg(any(unix, windows))]
@@ -2667,19 +2571,7 @@ fn rustc_executes_inside_the_child_mount() {
 #[cfg(any(windows, all(unix, not(target_os = "linux"))))]
 #[test]
 fn client_disconnect_does_not_cancel_inflight_control_dispatch() {
-    std::thread::Builder::new()
-        .name("plugin-endpoint-disconnect".to_owned())
-        .stack_size(32 * 1024 * 1024)
-        .spawn(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("test runtime")
-                .block_on(endpoint_disconnect_case());
-        })
-        .expect("test thread")
-        .join()
-        .expect("plugin endpoint disconnect thread");
+    run_large_stack("plugin-endpoint-disconnect", endpoint_disconnect_case);
 }
 
 #[cfg(target_os = "linux")]
@@ -2712,19 +2604,7 @@ fn stalled_control_stream_respects_the_caller_deadline() {
 #[cfg(windows)]
 #[test]
 fn windows_control_endpoint_keeps_the_next_pipe_while_reaping_connections() {
-    std::thread::Builder::new()
-        .name("plugin-endpoint-sequential".to_owned())
-        .stack_size(32 * 1024 * 1024)
-        .spawn(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("test runtime")
-                .block_on(sequential_endpoint_case());
-        })
-        .expect("test thread")
-        .join()
-        .expect("plugin sequential endpoint thread");
+    run_large_stack("plugin-endpoint-sequential", sequential_endpoint_case);
 }
 
 #[tokio::test]
@@ -2783,19 +2663,7 @@ fn authenticated_control_protocol_dispatches_git() {
 
 #[test]
 fn root_git_uses_the_same_repository_and_materializer() {
-    std::thread::Builder::new()
-        .name("plugin-root-git".to_owned())
-        .stack_size(32 * 1024 * 1024)
-        .spawn(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("test runtime")
-                .block_on(root_git_case());
-        })
-        .expect("test thread")
-        .join()
-        .expect("plugin root Git thread");
+    run_large_stack("plugin-root-git", root_git_case);
 }
 
 /// Writes `name` into `directory` under `root` from a separate process, as an
@@ -2829,90 +2697,66 @@ fn write_as_another_process(root: &Path, directory: &str, name: &str, contents: 
 
 #[test]
 fn unobserved_parent_directory_reports_a_typed_merge_conflict() {
-    std::thread::Builder::new()
-        .name("plugin-unobserved-directory-merge".to_owned())
-        .stack_size(32 * 1024 * 1024)
-        .spawn(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("test runtime")
-                .block_on(async {
-                    let temporary = tempfile::tempdir().expect("temporary directory");
-                    let root = temporary.path().join("root");
-                    fs::create_dir_all(root.join("sub")).expect("unobserved directory");
-                    let mut control = ControlPlane::open(temporary.path().join("plugin-data"))
-                        .await
-                        .expect("control plane");
-                    control
-                        .session_start(
-                            json!({"session_id":"session","cwd":root.display().to_string()}),
-                        )
-                        .await
-                        .expect("root session");
-                    control
-                        .user_prompt(json!({"session_id":"session","turn_id":"root-turn"}))
-                        .expect("root turn");
-                    control
-                        .pre_tool(json!({
-                            "session_id":"session","turn_id":"root-turn",
-                            "tool_use_id":"spawn-child","tool_name":"spawn_agent","tool_input":{}
-                        }))
-                        .await
-                        .expect("spawn child");
-                    control
-                        .subagent_start(json!({
-                            "session_id":"session","turn_id":"child-turn",
-                            "agent_id":"child","agent_type":"explorer"
-                        }))
-                        .await
-                        .expect("child start");
-                    let child_root = route_path(&control.state.routes["child"]);
-                    write_as_another_process(&child_root, "sub", "cache.tmp", "child");
-                    fs::write(root.join("sub/cache.tmp"), b"parent").expect("parent file");
-                    let result = control
-                        .agent_merge(json!({"agent":"child","_caller_turn_id":"root-turn"}))
-                        .await
-                        .expect("typed conflict, not an invalid candidate");
-                    // Both directories merge by path; only the file both
-                    // sides added under one name conflicts.
-                    assert_eq!(result["status"], "conflicted", "{result}");
-                    assert!(
-                        result["conflicts"].as_array().is_some_and(|conflicts| {
-                            conflicts.len() == 1
-                                && conflicts.iter().all(|conflict| {
-                                    conflict["path"] == "/sub/cache.tmp"
-                                        && conflict["kind"] == "Binding"
-                                })
-                        }),
-                        "{result}"
-                    );
-                    assert_eq!(
-                        fs::read(root.join("sub/cache.tmp")).expect("parent file remains"),
-                        b"parent"
-                    );
-                });
-        })
-        .expect("test thread")
-        .join()
-        .expect("unobserved directory merge thread");
+    run_large_stack("plugin-unobserved-directory-merge", || async {
+        let temporary = tempfile::tempdir().expect("temporary directory");
+        let root = temporary.path().join("root");
+        fs::create_dir_all(root.join("sub")).expect("unobserved directory");
+        let mut control = ControlPlane::open(temporary.path().join("plugin-data"))
+            .await
+            .expect("control plane");
+        control
+            .session_start(
+                json!({"session_id":"session","cwd":root.display().to_string()}),
+            )
+            .await
+            .expect("root session");
+        control
+            .user_prompt(json!({"session_id":"session","turn_id":"root-turn"}))
+            .expect("root turn");
+        control
+            .pre_tool(json!({
+                "session_id":"session","turn_id":"root-turn",
+                "tool_use_id":"spawn-child","tool_name":"spawn_agent","tool_input":{}
+            }))
+            .await
+            .expect("spawn child");
+        control
+            .subagent_start(json!({
+                "session_id":"session","turn_id":"child-turn",
+                "agent_id":"child","agent_type":"explorer"
+            }))
+            .await
+            .expect("child start");
+        let child_root = route_path(&control.state.routes["child"]);
+        write_as_another_process(&child_root, "sub", "cache.tmp", "child");
+        fs::write(root.join("sub/cache.tmp"), b"parent").expect("parent file");
+        let result = control
+            .agent_merge(json!({"agent":"child","_caller_turn_id":"root-turn"}))
+            .await
+            .expect("typed conflict, not an invalid candidate");
+        // Both directories merge by path; only the file both
+        // sides added under one name conflicts.
+        assert_eq!(result["status"], "conflicted", "{result}");
+        assert!(
+            result["conflicts"].as_array().is_some_and(|conflicts| {
+                conflicts.len() == 1
+                    && conflicts.iter().all(|conflict| {
+                        conflict["path"] == "/sub/cache.tmp"
+                            && conflict["kind"] == "Binding"
+                    })
+            }),
+            "{result}"
+        );
+        assert_eq!(
+            fs::read(root.join("sub/cache.tmp")).expect("parent file remains"),
+            b"parent"
+        );
+    });
 }
 
 #[test]
 fn publication_history_recovers_after_a_crash_boundary() {
-    std::thread::Builder::new()
-        .name("plugin-publication-history-recovery".to_owned())
-        .stack_size(32 * 1024 * 1024)
-        .spawn(|| {
-            tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("test runtime")
-                .block_on(publication_history_recovery_case());
-        })
-        .expect("test thread")
-        .join()
-        .expect("publication history recovery thread");
+    run_large_stack("plugin-publication-history-recovery", publication_history_recovery_case);
 }
 
 async fn publication_history_recovery_case() {

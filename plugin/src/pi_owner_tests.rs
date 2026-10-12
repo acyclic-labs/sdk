@@ -46,9 +46,9 @@ async fn root_input_fixture(
         policy.grants.iter().map(str::to_owned).chain([
             policy
                 .journal
-                .directory_read_capability(ROOT_INPUT_DIRECTORY)
+                .directory_read_capability(ROOT_INPUT_DIRECTORY, &mut None)
                 .unwrap(),
-            project.capability(VolumeOperation::Read).unwrap(),
+            project.capability(VolumeOperation::Read, &mut None).unwrap(),
         ]),
     );
     configure(&mut policy);
@@ -142,7 +142,7 @@ async fn pi_root_input_staging_reuses_original_upload_and_narrow_read_authority(
     let mut changed = request.clone();
     let observation = crate::pi_fork::tests::work();
     let workspace = raw
-        .open_workspace_with_native_work(&owner.policy.journal.storage_name().unwrap(), &observation, observation.cancellation())
+        .open_workspace_with_native_work(&owner.policy.journal.storage_name(&mut None).unwrap(), &observation, observation.cancellation())
         .await
         .unwrap();
     let original_head = workspace.head(&observation, observation.cancellation()).await.unwrap().id();
@@ -335,7 +335,7 @@ async fn pi_root_input_staging_requires_original_owner_explicit_read_and_finite_
                             *grant
                                 != policy
                                     .journal
-                                    .directory_read_capability(ROOT_INPUT_DIRECTORY)
+                                    .directory_read_capability(ROOT_INPUT_DIRECTORY, &mut None)
                                     .unwrap()
                         })
                         .map(str::to_owned),
@@ -351,7 +351,7 @@ async fn pi_root_input_staging_requires_original_owner_explicit_read_and_finite_
         .await;
         let observation = crate::pi_fork::tests::work();
         let workspace = raw
-            .open_workspace_with_native_work(&owner.policy.journal.storage_name().unwrap(), &observation, observation.cancellation())
+            .open_workspace_with_native_work(&owner.policy.journal.storage_name(&mut None).unwrap(), &observation, observation.cancellation())
             .await
             .unwrap();
         let original_head = workspace.head(&observation, observation.cancellation()).await.unwrap().id();
@@ -509,8 +509,8 @@ fn pi_owner_rejects_non_v1_unknown_fields_empty_keys_and_widened_journal_grants(
             6 => { value.as_object_mut().unwrap().remove("version"); }
             7 => { value.as_object_mut().unwrap().insert("unknown".into(), json!(true)); }
             8 => { value["policy"].as_object_mut().unwrap().insert("unknown".into(), json!(true)); }
-            9 => value["policy"]["grants"].as_array_mut().unwrap().push(json!(owner.policy.journal.directory_read_capability("").unwrap())),
-            10 => value["policy"]["grants"].as_array_mut().unwrap().push(json!(owner.policy.journal.capability(VolumeOperation::Read).unwrap())),
+            9 => value["policy"]["grants"].as_array_mut().unwrap().push(json!(owner.policy.journal.directory_read_capability("", &mut None).unwrap())),
+            10 => value["policy"]["grants"].as_array_mut().unwrap().push(json!(owner.policy.journal.capability(VolumeOperation::Read, &mut None).unwrap())),
             _ => unreachable!(),
         }
         let plain = serde_json::to_vec(&value).unwrap();
@@ -576,7 +576,7 @@ async fn pi_root_startup_quota_and_cancellation_do_not_publish_inputs() {
     let session = tempfile::tempdir().unwrap();
     let (owner, filesystem, request, raw) = root_input_fixture(session.path(), None, |_| {}).await;
     let observation = crate::pi_fork::tests::work();
-    let workspace = raw.open_workspace_with_native_work(&owner.policy.journal.storage_name().unwrap(), &observation, observation.cancellation()).await.unwrap();
+    let workspace = raw.open_workspace_with_native_work(&owner.policy.journal.storage_name(&mut None).unwrap(), &observation, observation.cancellation()).await.unwrap();
     let original = workspace.head(&observation, observation.cancellation()).await.unwrap().id();
     let limited = NativeMaterializationWork::new(WorkBudget {
         peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes() + 1,

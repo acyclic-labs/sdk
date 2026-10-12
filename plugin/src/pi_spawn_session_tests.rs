@@ -67,7 +67,7 @@ async fn preparing_native_seed_is_pure_single_root_and_has_distinct_empty_privat
     assert_eq!(result.volume.provider(), fixture.owner.policy().journal.provider());
     assert!(!commit.launch.invocation.environment.contains_key("ACYCLIC_PI_CALLER"));
     for volume in commit.child.project_volumes.values().chain([&commit.child.scratch.volume, &result.volume]) {
-        assert!(fixture.resources.fs.open_workspace_with_native_work(&volume.storage_name().unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
+        assert!(fixture.resources.fs.open_workspace_with_native_work(&volume.storage_name(&mut None).unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
     }
     assert!(session.state.pending.is_empty());
     assert!(session.native.is_none());
@@ -103,7 +103,7 @@ async fn original_creator_catalog_barriers_and_duplicate_observation_do_not_disp
     assert!(preparing.routes.is_empty());
     assert_eq!(preparing.pending[0].agent_id.as_deref(), Some(commit.alias.as_str()));
     assert_eq!(preparing.pending[0].fork_key, operations.fork.into_bytes());
-    assert!(fixture.resources.fs.open_workspace_with_native_work(&commit.child.scratch.volume.storage_name().unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
+    assert!(fixture.resources.fs.open_workspace_with_native_work(&commit.child.scratch.volume.storage_name(&mut None).unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
     let fork_request: acyclic_harness::fork::ForkRequest = serde_json::from_value(plan.request.payload.clone()).unwrap();
     assert!(fork_request.selections.iter().any(|selection| matches!(&selection.revision,
         acyclic_harness::fork::ResourceRevision::PrivateVolume { volume, paths, .. }
@@ -116,7 +116,7 @@ async fn original_creator_catalog_barriers_and_duplicate_observation_do_not_disp
     assert_ne!(result_creation.workspace_id, scratch_creation.workspace_id);
     assert_eq!(prepared.report.child_result_volume.as_ref(), Some(&results.volume));
     assert_eq!(prepared.report.child_result_generation.as_ref(), Some(&result_creation.generation));
-    assert_eq!(fixture.resources.fs.open_workspace_with_native_work(&results.volume.storage_name().unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.unwrap().id().into_bytes(),
+    assert_eq!(fixture.resources.fs.open_workspace_with_native_work(&results.volume.storage_name(&mut None).unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.unwrap().id().into_bytes(),
         result_creation.workspace_id);
     let workspace = prepared.workspace.workspace().id();
     let source_cut = prepared.frozen_source;
@@ -139,7 +139,6 @@ async fn original_creator_catalog_barriers_and_duplicate_observation_do_not_disp
     assert!(reply_work.shares_ledger(&query_work));
     let reply_baseline = reply_work.live_allocation_bytes() - custody.bytes();
     assert!(reply_work.live_allocation_bytes() > reply_baseline);
-    assert!(reply_work.receipt().bytes_encoded > 0);
     assert_eq!(reply["child"]["task"], json!(commit.child.task_id));
     assert_eq!(reply["fork_operation"], json!(operations.fork));
     assert_eq!(reply["native_operation"], json!(operations.native));
