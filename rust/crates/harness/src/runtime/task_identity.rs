@@ -1,18 +1,5 @@
 use super::*;
 
-/// One source of truth for Rust and WASM task registration identities.
-
-pub(crate) fn task_definition_digest(
-    name: &str,
-    version: &str,
-    input_schema: &Value,
-    output_schema: &Value,
-    requirements: &BTreeSet<String>,
-    machine_digest: Option<[u8; 32]>,
-) -> Result<[u8; 32]> {
-    task_definition_digest_with_io(name, version, input_schema, output_schema, requirements, machine_digest, None)
-}
-
 #[derive(Serialize)]
 pub(super) struct TaskDefinitionDigest<'a> {
     pub(super) contract: &'static str,
@@ -24,13 +11,20 @@ pub(super) struct TaskDefinitionDigest<'a> {
     pub(super) machine_digest: Option<[u8; 32]>,
 }
 
-pub(super) fn task_definition_digest_with_io(
-    name: &str, version: &str, input_schema: &Value, output_schema: &Value,
-    requirements: &BTreeSet<String>, machine_digest: Option<[u8; 32]>,
+/// Computes the pinned task identity using the caller's IO context.
+pub(crate) fn task_definition_digest(
+    name: &str,
+    version: &str,
+    input_schema: &Value,
+    output_schema: &Value,
+    requirements: &BTreeSet<String>,
+    machine_digest: Option<[u8; 32]>,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<[u8; 32]> {
     validate_identity(name, version, io)?;
-    crate::executor::with_history_io(io, |work| validate_task_schemas(input_schema, output_schema, machine_digest.is_some(), work))?;
+    crate::executor::with_history_io(io, |work| {
+        validate_task_schemas(input_schema, output_schema, machine_digest.is_some(), work)
+    })?;
     let mut invalid = machine_digest == Some([0; 32]);
     if !invalid {
         for value in requirements {
@@ -42,21 +36,36 @@ pub(super) fn task_definition_digest_with_io(
         }
     }
     if invalid {
-        return Err(task_workflow_error(task_original_work(io)?, crate::wire::ErrorCode::Invalid,
-            "task dependency or machine digest is invalid"));
+        return Err(task_workflow_error(
+            task_original_work(io)?,
+            crate::wire::ErrorCode::Invalid,
+            "task dependency or machine digest is invalid",
+        ));
     }
-    crate::executor::preparation_digest(&TaskDefinitionDigest {
-        contract: "harness.task.v2", name, version, input_schema, output_schema,
-        requirements, machine_digest,
-    }, io)
+    crate::executor::preparation_digest(
+        &TaskDefinitionDigest {
+            contract: "harness.task.v2",
+            name,
+            version,
+            input_schema,
+            output_schema,
+            requirements,
+            machine_digest,
+        },
+        io,
+    )
 }
 
 pub(crate) fn scope_metadata_boundary(
     work: &Option<&mut dyn crate::store::history::HistoryIo>,
-    code: crate::wire::ErrorCode, reason: &'static str,
+    code: crate::wire::ErrorCode,
+    reason: &'static str,
 ) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work.as_deref().is_some_and(|io| io.original_native_work().is_some()) {
+    if work
+        .as_deref()
+        .is_some_and(|io| io.original_native_work().is_some())
+    {
         return Error::NativeBoundary { code, reason };
     }
     let _ = work;
@@ -87,6 +96,7 @@ pub fn task_admission_identities(
         output_schema,
         requirements,
         Some(machine_digest),
+        None,
     )?;
     Ok((
         ComponentIdentity {
@@ -103,26 +113,42 @@ pub fn task_admission_identities(
 }
 
 pub(crate) fn validate_task_schemas(
-    input: &Value, output: &Value, resumable: bool,
+    input: &Value,
+    output: &Value,
+    resumable: bool,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<()> {
     for (label, schema, refusal) in [
-        ("task input", input, "resumable task input schema cannot accept every value"),
-        ("task output", output, "resumable task output schema cannot accept every value"),
+        (
+            "task input",
+            input,
+            "resumable task input schema cannot accept every value",
+        ),
+        (
+            "task output",
+            output,
+            "resumable task output schema cannot accept every value",
+        ),
     ] {
         crate::contract::compile_json_schema(schema, label, work)?;
         if resumable
             && (schema == &Value::Bool(true)
                 || schema.as_object().is_some_and(serde_json::Map::is_empty))
         {
-            return Err(crate::store::guarded_boundary(work, crate::wire::ErrorCode::Invalid, refusal));
+            return Err(crate::store::guarded_boundary(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                refusal,
+            ));
         }
     }
     Ok(())
 }
 
 pub(super) fn validate_identity(
-    name: &str, version: &str, io: Option<&crate::executor::PreparationIo>,
+    name: &str,
+    version: &str,
+    io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if io.is_some() {
@@ -145,8 +171,11 @@ pub(super) fn validate_identity(
         validate_component_label(version, "task version")?;
     }
     if name.contains('@') || version.contains('@') {
-        return Err(task_workflow_error(task_original_work(io)?, crate::wire::ErrorCode::Invalid,
-            "task name and version cannot contain the version separator"));
+        return Err(task_workflow_error(
+            task_original_work(io)?,
+            crate::wire::ErrorCode::Invalid,
+            "task name and version cannot contain the version separator",
+        ));
     }
     Ok(())
 }
@@ -160,39 +189,52 @@ pub(super) fn task_copy_with_io<T>(
     #[cfg(feature = "filesystem")]
     let mut observer = io.map(|io| io.history_io());
     #[cfg(feature = "filesystem")]
-    let mut work = observer.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
+    let mut work = observer
+        .as_mut()
+        .map(|io| io as &mut dyn crate::store::history::HistoryIo);
     #[cfg(not(feature = "filesystem"))]
-    let mut work = { let _ = io; None };
+    let mut work = {
+        let _ = io;
+        None
+    };
     let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
     let value = copy(&mut quota)?;
     quota.transfer();
     Ok(value)
 }
 
-pub(super) fn task_copy_text(source: &str, io: Option<&crate::executor::PreparationIo>) -> Result<String> {
+pub(super) fn task_copy_text(
+    source: &str,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<String> {
     task_copy_with_io(io, |quota| crate::core::copy_text(source, quota))
 }
 
-pub(super) fn task_copy_value(source: &Value, io: Option<&crate::executor::PreparationIo>) -> Result<Value> {
+pub(super) fn task_copy_value(
+    source: &Value,
+    io: Option<&crate::executor::PreparationIo>,
+) -> Result<Value> {
     task_copy_with_io(io, |quota| crate::core::copy_value(source, quota))
 }
 
-pub(super) fn task_copy_component(source: &ComponentIdentity, quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<ComponentIdentity> {
+pub(super) fn task_copy_component(
+    source: &ComponentIdentity,
+    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+) -> Result<ComponentIdentity> {
     Ok(ComponentIdentity {
         name: crate::core::copy_text(&source.name, quota)?,
-        version: crate::core::copy_text(&source.version, quota)?, digest: source.digest,
+        version: crate::core::copy_text(&source.version, quota)?,
+        digest: source.digest,
     })
 }
 
-pub(super) fn task_copy_machine(source: &MachineIdentity, quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<MachineIdentity> {
+pub(super) fn task_copy_machine(
+    source: &MachineIdentity,
+    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+) -> Result<MachineIdentity> {
     Ok(MachineIdentity {
         name: crate::core::copy_text(&source.name, quota)?,
-        version: crate::core::copy_text(&source.version, quota)?, digest: source.digest,
+        version: crate::core::copy_text(&source.version, quota)?,
+        digest: source.digest,
     })
-}
-
-pub(super) fn task_copy_key(source: &(String, String), io: Option<&crate::executor::PreparationIo>) -> Result<(String, String)> {
-    task_copy_with_io(io, |quota| Ok((
-        crate::core::copy_text(&source.0, quota)?, crate::core::copy_text(&source.1, quota)?,
-    )))
 }
