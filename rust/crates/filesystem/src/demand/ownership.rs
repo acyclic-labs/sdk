@@ -9,19 +9,12 @@ use std::sync::{
 pub(crate) enum SourcePayloadOwnership {
     #[default]
     Borrowed,
-    Allocation(Option<crate::NativeAllocation>),
+    Allocation(crate::NativeAllocation),
     Registered(Arc<NativeMountAllocationCustody>, AtomicU64),
 }
 impl SourcePayloadOwnership {
     pub(crate) fn from_native_allocation(allocation: crate::NativeAllocation) -> Self {
-        Self::Allocation(Some(allocation))
-    }
-    pub(crate) fn into_native_allocation(mut self) -> Option<crate::NativeAllocation> {
-        if let Self::Allocation(allocation) = &mut self {
-            allocation.take()
-        } else {
-            None
-        }
+        Self::Allocation(allocation)
     }
     pub(crate) fn new<W: SourceDemandReadWork>(work: &mut W) -> Result<Self, DemandError> {
         work.check()?;
@@ -79,8 +72,6 @@ impl SourcePayloadOwnership {
         match self {
             Self::Borrowed => Ok(Self::Borrowed),
             Self::Allocation(allocation) => allocation
-                .as_mut()
-                .ok_or(crate::NativeTreeMaterializationError::InvalidLayout)?
                 .split_off(bytes)
                 .map(Self::from_native_allocation),
             Self::Registered(custody, retained) => {
@@ -139,15 +130,6 @@ impl NativeMountAllocationCustody {
             work.roots.native_mount_admissions.0[index] = (Arc::downgrade(&custody), metadata);
             Ok(custody)
         })
-    }
-    pub(crate) fn from_admitted(
-        bytes: u64,
-        work: &mut DemandWork,
-    ) -> Result<Arc<Self>, DemandError> {
-        let custody = Self::new(work)?;
-        work.check()?;
-        custody.retain(bytes, work)?;
-        Ok(custody)
     }
     pub(crate) fn is_admitted(&self, work: &mut DemandWork) -> Result<bool, DemandError> {
         work.reconcile_cancellation_registry()?;
