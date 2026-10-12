@@ -309,7 +309,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
 
     /// Builds the real portable file and recursive durable tools over this source.
     pub fn tools(self: &Arc<Self>, maximum_bytes: u64) -> Result<RecursiveDefaultToolset> {
-        recursive_default_tools(self.clone(), maximum_bytes)
+        recursive_default_tools(Some(self.clone()), maximum_bytes)
     }
 
     fn runtime(&self, io: Option<&super::PreparationIo>) -> Result<Arc<FilesystemTaskRuntime<P, A, O>>> {

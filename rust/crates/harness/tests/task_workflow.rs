@@ -54,9 +54,10 @@ use futures::{future::BoxFuture, stream::BoxStream};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::{Arc, Mutex}};
 
 struct InterruptedModel {
+    requests: Mutex<Vec<Vec<u8>>>,
     approval_tool: bool,
     observed_events: usize,
     output_tokens: AtomicU64,
@@ -227,6 +228,7 @@ impl ModelProvider for InterruptedModel {
         request: PreparedModelRequest,
         _dispatch: acyclic_harness::model::ModelDispatch,
     ) -> BoxStream<'a, Result<ModelEvent>> {
+        self.requests.lock().unwrap().push(request.bytes().to_vec());
         self.output_tokens.store(
             u64::from(request.request().max_output_tokens.unwrap_or(0)),
             Ordering::SeqCst,
@@ -906,6 +908,7 @@ async fn worker_restart_with_options(
     let mut old_lease: Option<acyclic_harness::distributed::WorkLease> = None;
     let mut discovery_cursor = None;
     let model = Arc::new(InterruptedModel {
+        requests: Mutex::new(Vec::new()),
         approval_tool: with_model_approval,
         observed_events: 1,
         output_tokens: AtomicU64::new(0),
@@ -2076,6 +2079,7 @@ async fn stock_restart_with_publication_fault(
     };
     let mut previous_lease: Option<acyclic_harness::distributed::WorkLease> = None;
     let model = Arc::new(InterruptedModel {
+        requests: Mutex::new(Vec::new()),
         approval_tool: false,
         observed_events: usize::from(fault != Some(ExecutionFaultMode::Before)),
         output_tokens: AtomicU64::new(0),
@@ -2587,6 +2591,119 @@ async fn stock_restart_with_publication_fault(
             assert_eq!(recovery_journal.replay(0, 64).await?.len(), 2);
         }
         previous_lease = Some(lease);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_reopen() -> Result<()> {
+    use acyclic_harness::filesystem::StockTurnMachine;
+    for queued in [true, false] {
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let fs_options = LocalOptions::new(directory.path().join("filesystem"));
+    let stream_root = directory.path().join("streams");
+    let provider = ProviderRef::new("stock-mail", "filesystem", "2")?;
+    let agent = AgentId::new();
+    let volume = VolumeRef::new(provider.clone(), "private", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
+    let issuer = AuthorityIssuer::new("stock-mail", [81;32], Authority { kind: AggregateKind::Task, id: "stock-mail".into() });
+    let signed = issuer.root_for_agent(agent, "owner", Capabilities::new([
+        "operation:declare".to_owned(), "operation:observe".to_owned(), "operation:cancel".to_owned(),
+        "task:spawn:acyclic.stock_turn@1".to_owned(), "model:generate".to_owned(),
+        "mail:send".to_owned(), "mail:read".to_owned(),
+        volume.capability(VolumeOperation::Read)?, volume.capability(VolumeOperation::Write)?,
+    ]));
+    let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?;
+    let machine = Arc::new(StockTurnMachine::new());
+    let definition = machine.definition()?;
+    let mut tasks = TaskRegistry::default();
+    tasks.register(definition)?;
+    let definition = tasks.get_version::<Value, acyclic_harness::executor::TurnOutput>("acyclic.stock_turn", "1")?;
+    let mut machines = MachineRegistry::default();
+    machines.register(machine)?;
+    let operation = OperationId::new();
+    let task = TaskId::from_bytes(operation.into_bytes());
+    let receive_operation = OperationId::new();
+    let model_operation = OperationId::new();
+    let model = Model::new("fixture", "stock-mail", "1", Value::Null)?;
+    let provider_model = Arc::new(InterruptedModel {
+        requests: Mutex::new(Vec::new()), approval_tool: false, observed_events: 1,
+        output_tokens: AtomicU64::new(0), generated: AtomicUsize::new(0), reconciled: AtomicUsize::new(0),
+    });
+    let worker = Worker { id: "stock-mail".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new() };
+    let mut retained_lease = None;
+    let mut admitted_model = None;
+    let mut selected = None;
+    for phase in 0..4 {
+        let filesystem = Arc::new(FilesystemHost::new(Fs::local(fs_options.clone()).await
+            .map_err(|error| Error::Storage(error.to_string()))?, provider.clone())?);
+        if phase == 0 { filesystem.create_volume(&volume).await?; }
+        let stream = StreamClient::new(Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await?));
+        let runtime = FilesystemTaskRuntime::open(stream, filesystem.clone(), volume.clone(), issuer.verifier(), signed.clone(),
+            scope.clone(), tasks.clone(), machines.clone(), ToolRegistry::new(),
+            SessionLimits { active_tasks: 1, total_tasks: 1, depth: 1, model_steps: 1 }, 1, 65536).await?;
+        let payloads = FilesystemSchedulerPayloadStore::new(filesystem, volume.clone(), &issuer.verifier(), &signed, 65536)?;
+        let commands = runtime.commands().with_model(model.clone(), provider_model.clone(), ContextPipeline::default(),
+            acyclic_harness::context::CompactionPolicy::Disabled);
+        if phase == 0 {
+            let model_payload = payloads.stage(operation, "model", &serde_json::to_vec(&ModelTaskCommand {
+                input: ModelContent::Text("original prompt".into()), selected_context: None, max_steps: 1,
+                max_output_tokens: None, mailbox_operation: None, selected_output_volume: None,
+            }).map_err(|error| Error::Invalid(error.to_string()))?).await?;
+            let model_command = WorkflowCommand { operation_id: model_operation, kind: MODEL_TASK_COMMAND_KIND.into(), payload: model_payload };
+            let receive = WorkflowCommand { operation_id: receive_operation, kind: MAIL_RECEIVE_TASK_COMMAND_KIND.into(),
+                payload: payloads.stage(operation, "receive", &serde_json::to_vec(&MailReceiveTaskCommand { after: 0 })
+                    .map_err(|error| Error::Invalid(error.to_string()))?).await? };
+            assert!(matches!(runtime.harness().admit(operation, &definition, json!({"receive":receive,"model":model_command}), None).await?, Admission::Accepted(_)));
+            admitted_model = Some(model_command);
+            let WorkPull::Claimed(lease) = runtime.task_host().pull_work(&worker).await? else {
+                return Err(Error::NotFound("stock lease".into()));
+            };
+            runtime.task_host().start_task(&lease).await?;
+            let fence = LeaseFence::from(&lease.reservation);
+            for (path, bytes) in [("first", b"first steering".as_slice()), ("second", b"later steering".as_slice())].into_iter().filter(|_| queued) {
+                let payload = payloads.stage(OperationId::new(), path, bytes).await?;
+                runtime.task_host().send_owned(task, fence.clone(), task, OperationId::new(), payload).await?;
+            }
+            let items = runtime.task_host().inbox(task, 0, 2).await?;
+            assert_eq!(items.len(), if queued { 2 } else { 0 });
+            selected = items.into_iter().next();
+            retained_lease = Some(lease);
+        }
+        let lease = retained_lease.clone().unwrap();
+        let attempt = runtime.resume_task(lease.clone(), &commands, if phase == 3 { 4 } else { 1 }).await;
+        match phase {
+            0 | 1 => assert!(matches!(attempt, TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { .. }))),
+            2 => assert!(matches!(attempt, TaskWorkerAttempt::Unresolved { error: Error::Indeterminate(_), .. }
+                | TaskWorkerAttempt::Progress(TaskWorkerOutcome::Reconciling { .. }))),
+            _ => assert!(matches!(attempt, TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { .. }))),
+        }
+        if phase == 1 || phase == 2 {
+            let journal = runtime.workflow_journal(task, LeaseFence::from(&lease.reservation)).await?;
+            let record = journal.replay(0, 8).await?.pop().unwrap();
+            assert_eq!(record.transition.commands, vec![admitted_model.clone().unwrap()]);
+            assert_eq!(record.next.state["mail"], serde_json::to_value(&selected).unwrap());
+            let remaining = runtime.task_host().inbox(task, 1, 1).await?;
+            if queued { assert_eq!(remaining[0].sequence, 2); } else { assert!(remaining.is_empty()); }
+        }
+        if phase == 2 && queued {
+            let request: acyclic_harness::model::ModelRequest = serde_json::from_slice(
+                &provider_model.requests.lock().unwrap()[0],
+            ).map_err(|error| Error::Invalid(error.to_string()))?;
+            let parcel_path = format!("mailbox/{receive_operation}/parcel");
+            let parcel = request.messages.iter().flat_map(|message| message.content.file_refs())
+                .find(|file| file.path() == parcel_path).ok_or_else(|| Error::NotFound("selected model parcel".into()))?;
+            assert_eq!(parcel.descriptor(), selected.as_ref().unwrap().payload.descriptor());
+            assert_eq!(runtime.harness().durable_context(task, operation).await?.read_file(parcel).await?.as_ref(), b"first steering");
+        }
+        if phase == 3 {
+            let Some(Outcome::Succeeded(value)) = runtime.task_host().outcome(task).await? else {
+                return Err(Error::Invalid("stock model did not settle".into()));
+            };
+            assert_eq!(value["text"], "partial-restored");
+        }
+    }
+    assert_eq!(provider_model.generated.load(Ordering::SeqCst), 1);
+    assert_eq!(provider_model.reconciled.load(Ordering::SeqCst), 1);
     }
     Ok(())
 }
