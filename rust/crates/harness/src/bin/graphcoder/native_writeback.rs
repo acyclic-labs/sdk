@@ -5,7 +5,7 @@ use acyclic_fs::{GenerationId, MaterializationJournal, WorkBudget, WorkCounters}
 use acyclic_harness::{
     Error, OperationId, Result, TaskId,
     conversation::{ContentGrant, VolumeClass, VolumeOperation, VolumeRef},
-    core::{AuthorityIssuer, AuthorityVerifier},
+    core::AuthorityIssuer,
     distributed::WorkLease,
     interaction::{InteractionResolution, InteractionTicket},
 };
@@ -38,11 +38,6 @@ pub struct NativePublicationConfig {
     pub transfer_bytes: u64,
 }
 
-fn verifier(binding: &AuthorityBinding) -> Result<AuthorityVerifier> {
-    let verifier = AuthorityIssuer::new(&binding.issuer, binding.key, binding.authority.clone()).verifier(&mut None).expect("verifier copy");
-    verifier.verify(&binding.scope)?;
-    Ok(verifier)
-}
 impl NativePublicationConfig {
     pub fn validate(&self) -> Result<()> {
         for path in [&self.root, &self.operation_directory, &self.state_root] {
@@ -75,11 +70,11 @@ impl NativePublicationConfig {
         {
             return Err(Error::Invalid("publication source selections must belong to the original filesystem provider".into()));
         }
-        let verifier = verifier(&self.owner)?;
-        ContentGrant::verify(&verifier, &self.owner.scope, &self.from_project, VolumeOperation::Read)?;
-        ContentGrant::verify(&verifier, &self.owner.scope, &self.to_project, VolumeOperation::Read)?;
-        ContentGrant::verify(&verifier, &self.owner.scope, &self.to_project, VolumeOperation::Write)?;
-        ContentGrant::verify(&verifier, &self.owner.scope, &self.private_volume, VolumeOperation::Write)?;
+        let verifier = self.owner.verifier()?;
+        ContentGrant::verify(&verifier, &self.owner.scope, &self.from_project, VolumeOperation::Read, u64::MAX, &mut None)?;
+        ContentGrant::verify(&verifier, &self.owner.scope, &self.to_project, VolumeOperation::Read, u64::MAX, &mut None)?;
+        ContentGrant::verify(&verifier, &self.owner.scope, &self.to_project, VolumeOperation::Write, u64::MAX, &mut None)?;
+        ContentGrant::verify(&verifier, &self.owner.scope, &self.private_volume, VolumeOperation::Write, u64::MAX, &mut None)?;
         Ok(())
     }
 }
@@ -309,9 +304,9 @@ impl NativeSession {
         let owner = self.runtime.task_host().journal_owner(binding.caller, LeaseFence::from(&request.caller_lease.reservation)).await?;
         let admission = self.runtime.task_host().observe_admission(binding.caller).await?;
         let maximum_bytes = (MAX_FRAME_BYTES as u64).min(admission.limits.file_bytes);
-        let interaction_verifier = verifier(&binding.owner)?;
+        let interaction_verifier = binding.owner.verifier()?;
         let journal = Journal::for_task(owner, binding.operation_id, binding.operation_id, self.files.clone(),
-            &self.config.private_volume, &verifier(&self.config.owner)?, &self.config.owner.scope, maximum_bytes, None)?
+            &self.config.private_volume, &self.config.owner.verifier()?, &self.config.owner.scope, maximum_bytes, None)?
             .with_interaction_owner(&interaction_verifier, &SchemaRegistry::default(), &binding.owner.scope, &binding.private_volume, None)?;
         let interactions = Interactions::new(self.stream.clone(), self.files.clone(), &binding.owner.authority,
             &interaction_verifier, &SchemaRegistry::default(), &binding.owner.scope, &binding.private_volume, maximum_bytes, None)?;
@@ -386,7 +381,7 @@ impl NativeSession {
             Some(agent) => issuer.issue(&label, &capabilities, Some(agent), None, &mut None).expect("scope proof"),
             None => issuer.issue(&label, &capabilities, None, None, &mut None).expect("scope proof"),
         };
-        let aggregate = StreamAggregate::open(&self.stream, binding.owner.authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::default()).await?;
+        let aggregate = StreamAggregate::open(&self.stream, binding.owner.authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::default(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
         let operation = decision_operation(binding.operation_id, approved);
         let action = Action::ResolveInteraction { resolution: InteractionResolution {
             id: ticket.id, expected_version: 1,

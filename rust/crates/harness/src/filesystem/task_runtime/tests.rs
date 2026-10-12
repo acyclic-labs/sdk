@@ -200,11 +200,11 @@ impl Fixture {
             "operation:cancel".to_owned(), "task:spawn:test.deadline@1".to_owned(),
             "tool:call:test.deadline".to_owned(), "model:generate".to_owned(),
             "mail:send".to_owned(), "mail:read".to_owned(),
-            volume.capability(VolumeOperation::Read)?,
-            volume.capability(VolumeOperation::Write)?,
+            volume.capability(VolumeOperation::Read, &mut None)?,
+            volume.capability(VolumeOperation::Write, &mut None)?,
         ]), Some(agent), None, &mut None).expect("scope proof");
         let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?
-            .with_run_limits(TaskRunLimits { deadline_epoch_ms: Some(20), ..TaskRunLimits::default() })?;
+            .with_run_limits(TaskRunLimits { deadline_epoch_ms: Some(20), ..TaskRunLimits::default() }, &mut None)?;
         let machine = Arc::new(Machine {
             identity: MachineIdentity {
                 name: "test.deadline".into(), version: "1".into(),
@@ -219,7 +219,7 @@ impl Fixture {
             machine.clone(), json!({"type":"object"}), json!({}),
         )?)?;
         let mut machines = MachineRegistry::default();
-        machines.register(machine.clone())?;
+        machines.register(machine.clone(), &mut None)?;
         let clock = Arc::new(Clock(AtomicU64::new(10)));
         let tool = Arc::new(PendingTool {
             clock: clock.clone(), executed: AtomicUsize::new(0), reconciled: AtomicUsize::new(0),
@@ -498,7 +498,7 @@ async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_ex
         let runtime = fixture.runtime().await?;
         let lease = fixture.admit(&runtime).await?;
         let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
-        runtime.task_host().start_task(&lease).await?;
+        runtime.task_host().start_task(&lease, None).await?;
         let fence = LeaseFence::from(&lease.reservation);
         let turn = OperationId::from_bytes([106; 16]);
         let model = Model::new("synthetic", "deadline", "1", Value::Null)?;
@@ -592,7 +592,7 @@ async fn native_machine_without_callback_rejects_before_owner_deadline_or_provid
     let lease = fixture.admit(&runtime).await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let fence = LeaseFence::from(&lease.reservation);
-    runtime.task_host().start_task(&lease).await?;
+    runtime.task_host().start_task(&lease, None).await?;
     let mut session = runtime.open_task(task, fence).await?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
@@ -999,7 +999,7 @@ async fn genuine_stock_native_context_preserves_mcp_current_and_settlement_sourc
     let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::WorkBudget::default(), &cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let (lease, recovery_custody) = fixture.native_lease(&runtime, &work).await?;
-    runtime.task_host().start_task_with_native_work(&lease, &work).await?;
+    runtime.task_host().start_task(&lease, Some(&work)).await?;
     let task = TaskId::from_bytes(lease.operation.operation_id.into_bytes());
     let fence = LeaseFence::from(&lease.reservation);
     let shared = runtime.task_context_with_native_work(task, &fence, &work).await?;

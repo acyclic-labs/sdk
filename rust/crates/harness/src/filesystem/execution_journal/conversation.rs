@@ -30,9 +30,7 @@ where
         self.host
             .put_internal_content(
                 &self.volume,
-                &ContentGrant::verify(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Write,
-                )?,
+                &ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Write, u64::MAX, &mut None)?,
                 "turns/.canonical/payload",
                 bytes,
                 media_type,
@@ -57,15 +55,15 @@ where
         max_steps: u32,
     ) -> Result<TurnOutput> {
         let limits = bundle.limits();
-        limits.validate_file(&content)?;
+        limits.validate_file(&content, &mut None)?;
         if attachments.len() > limits.attachments {
             return Err(Error::Invalid(
                 "turn attachments exceed harness limits".into(),
             ));
         }
         for attachment in &attachments {
-            attachment.validate()?;
-            limits.validate_file(&attachment.file)?;
+            attachment.validate(&mut None)?;
+            limits.validate_file(&attachment.file, &mut None)?;
         }
         let referenced = if attachments.len() <= 128 {
             ReferencedAttachments::Inline { items: attachments }
@@ -74,7 +72,7 @@ where
             let manifest = self.host
                 .put_internal_content(
                     &self.volume,
-                    &ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Write)?,
+                    &ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Write, u64::MAX, &mut None)?,
                     "turns/.canonical/payload",
                     &bytes,
                     "application/vnd.acyclic.harness.attachments+json",
@@ -332,8 +330,8 @@ where
             ));
         }
         for attachment in &output.attachments {
-            attachment.validate()?;
-            limits.validate_file(&attachment.file)?;
+            attachment.validate(&mut None)?;
+            limits.validate_file(&attachment.file, &mut None)?;
         }
         let assistant_operation = derived_operation_id(operation_id, b"conversation-assistant");
         let assistant_id = Uuid::from_bytes(assistant_operation.into_bytes());
@@ -360,7 +358,7 @@ where
             let manifest = self.host
                 .put_internal_content(
                     &self.volume,
-                    &ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Write)?,
+                    &ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Write, u64::MAX, &mut None)?,
                     "turns/.canonical/payload",
                     &bytes,
                     "application/vnd.acyclic.harness.attachments+json",

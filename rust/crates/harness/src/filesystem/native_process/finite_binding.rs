@@ -3,12 +3,8 @@ use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 use crate::filesystem::PreparationIo;
 
 pub(super) fn require_family(
-    bound: Option<&NativeMaterializationWork>, work: &NativeMaterializationWork,
+    bound: &NativeMaterializationWork, work: &NativeMaterializationWork,
 ) -> Result<()> {
-    let bound = bound.ok_or(Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Unsupported,
-        reason: "native provider was not bound to an original finite work family",
-    })?;
     if !bound.shares_ledger(work) {
         return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
             reason: "native provider work differs from its original binding" });
@@ -33,8 +29,8 @@ pub(super) fn copy_plan_with_io(
         provider: crate::store::history::HistoryIo::clone_text(&mut observer, &plan.provider)?,
         guarantee: plan.guarantee,
         effect_kind: crate::store::history::HistoryIo::clone_text(&mut observer, &plan.effect_kind)?,
-        request: plan.request.clone_with_io(io)?,
-        result_schema: plan.result_schema.clone_with_io(io)?,
+        request: plan.request.copy(&mut Some(&mut observer))?,
+        result_schema: plan.result_schema.copy(&mut Some(&mut observer))?,
     })
 }
 
@@ -88,7 +84,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             if plan.request.descriptor().media_type() != "application/json" {
                 return Err(validation_error(Some(&io), crate::wire::ErrorCode::Invalid, "native request must be JSON content"));
             }
-            let bytes = authority.content.read_with_native_work(&plan.request, owner.input_limits().file_bytes, work)?.await?;
+            let bytes = authority.content.read(&plan.request, owner.input_limits().file_bytes, Some(&io))?.await?;
             let request = crate::filesystem::retain_decoded(io.decode_preparation::<NativeProcessRequest>(
                 bytes.as_ref(), crate::wire::ErrorCode::Invalid)?);
             drop(bytes);
@@ -116,7 +112,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                 return Err(validation_error(Some(&io), crate::wire::ErrorCode::Invalid,
                     "effect schema must be JSON schema content"));
             }
-            let schema = authority.content.read_with_native_work(&plan.result_schema, owner.input_limits().file_bytes, work)?.await?;
+            let schema = authority.content.read(&plan.result_schema, owner.input_limits().file_bytes, Some(&io))?.await?;
             let decoded = io.decode_preparation::<serde_json::Value>(schema.as_ref(), crate::wire::ErrorCode::Invalid)?;
             crate::contract::compile_json_schema(&decoded.0, "effect result", Some(&io))?;
             let result_schema = crate::filesystem::retain_decoded(decoded);
@@ -150,7 +146,7 @@ pub(super) fn assemble<P: StreamProvider + 'static>(
     let plan = arc(plan, &io)?;
     let authority = arc(authority, &io)?;
     let history = arc(history, &io)?;
-    let supervisor = arc(NativeSupervisorControl::new(), &io)?;
+    let supervisor = arc(NativeSupervisorControl { active: Mutex::new(None), completion: tokio::sync::Notify::new(), process: Mutex::new(None) }, &io)?;
     let retained = io.owned_bytes()?;
     Ok(NativeProcessProvider { owner, command, plan, invocation, approval, authority,
         supervisor, effect_id, history, _arc_custody: None,

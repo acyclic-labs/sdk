@@ -1,9 +1,4 @@
 //! Browser persistence and WebAssembly bindings for the canonical Rust engine.
-//!
-//! Installed bindings use the single `acyclic_fs::browser` IndexedDB provider
-//! and its portable authority protocol controls. OPFS remains an explicit,
-//! authenticated object-storage profile; it never substitutes a native backend.
-//! Browser-owned allocations are not native physical-quota guarantees.
 
 #[cfg(target_arch = "wasm32")]
 mod opfs;
@@ -1292,15 +1287,15 @@ mod bindings {
         #[wasm_bindgen]
         pub async fn write(&mut self, path: String, bytes: Vec<u8>) -> Result<(), JsValue> {
             let bytes = bytes::Bytes::from(bytes);
-            Box::pin(self.engine.write(&path, bytes))
-                .await
+            Box::pin(self.engine.write(&path, bytes, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()))
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                 .map_err(js_error)
         }
 
         /// Removes one existing namespace binding inside this transaction.
         #[wasm_bindgen]
         pub async fn remove(&mut self, path: String) -> Result<(), JsValue> {
-            self.engine.remove(&path).await.map_err(js_error)
+            self.engine.remove(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(js_error)
         }
 
         /// Clones one complete regular file without copying its body.

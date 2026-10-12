@@ -693,7 +693,7 @@ fn preflight_context_composition(
         metadata: JoinedMetadata<'a>,
         current_input_index: Option<u32>,
     }
-    super::validate_context_json(
+    crate::executor::with_history_io(io, |work| crate::contract::validate_trusted_json_byte_bound(
         &JoinedContext {
             messages: super::ContextMessages {
                 first,
@@ -704,8 +704,8 @@ fn preflight_context_composition(
             current_input_index,
         },
         limits.render_bytes,
-        io,
-    )?;
+        work,
+    ))?;
     Ok(current_input_index)
 }
 

@@ -8,7 +8,7 @@ use super::search::counted_binary_search;
 use super::{CanonicalDecodeError, DecodeLimits};
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
-use crate::performance::{WorkCounters, WorkError};
+use crate::performance::{OperationReceipt, WorkCounters, WorkError};
 use crate::storage::{
     HashedObject, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectStoreError,
 };
@@ -101,12 +101,6 @@ pub(crate) trait Mutation<F: Format> {
     fn map_error(error: Error<Self::Error>) -> crate::FsError;
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct Receipt {
-    pub(crate) root: ObjectId,
-    pub(crate) work: WorkCounters,
-}
-
 #[derive(Debug, Error)]
 pub(crate) enum Error<E: std::error::Error> {
     #[error("persistent B+tree mutation batch is empty")]
@@ -184,7 +178,7 @@ pub(crate) async fn apply_with_accounting<S, F, M>(
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
-) -> Result<Receipt, crate::FsError>
+) -> Result<OperationReceipt<ObjectId>, crate::FsError>
 where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
     accounting.check()?;
     validate::<F, M>(root, mutations, maximum_mutations, limits).map_err(M::map_error)?;
@@ -211,7 +205,7 @@ where S: crate::AsyncObjectStore, F: Format, M: Mutation<F> {
     let root = context.finish_root(summaries).await?;
     context.visited.retire(context.accounting)?;
     ordered.retire(context.accounting)?;
-    Ok(Receipt { root, work: context.accounting.spent() })
+    Ok(OperationReceipt { value: root, work: context.accounting.spent() })
 }
 
 fn sort_indexed<F, M>(
