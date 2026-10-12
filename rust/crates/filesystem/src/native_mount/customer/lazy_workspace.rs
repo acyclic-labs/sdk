@@ -67,9 +67,7 @@ where
     pub(super) async fn prepare_authored_mount_source(
         &self,
         options: &MountOptions,
-        callback_guard: Option<&Arc<dyn super::super::NativeMountCallbackGuard>>,
         work: &NativeMaterializationWork,
-        native_original: Option<&NativeMaterializationWork>,
     ) -> Result<
         (
             Arc<CheckoutMountSource<A, O>>,
@@ -78,7 +76,10 @@ where
         ),
         MountLifecycleError,
     > {
-        super::super::adapter::validate_native_source_io_binding(work, native_original)?;
+        super::super::adapter::validate_native_source_io_binding(
+            work,
+            options.native_original.as_ref(),
+        )?;
         let cancellation = work.cancellation();
         let config = self.workspace().volume_config();
         let mut accounting =
@@ -155,14 +156,7 @@ where
             .workspace()
             .checkout(GenerationSelector::Head, mode, work, cancellation)
             .await?;
-        let source = options::checkout_source(
-            checkout,
-            root,
-            options.publication,
-            work,
-            native_original,
-            callback_guard,
-        )?;
+        let source = options::checkout_source(checkout, root, options, work)?;
         Ok((source, self.workspace().id().volume_id(), root_text))
     }
 
@@ -185,9 +179,6 @@ where
             .map_err(|(cause, _)| MountLifecycleError::Materialization(cause))?
         };
         let work = &work;
-        let native_original = options.native_original.clone();
-        let native_original = native_original.as_ref();
-        let callback_guard = options.callback_guard.clone();
         super::super::adapter::validate_native_source_io_binding(work, native_original)?;
         let destination = work.path(destination.as_ref(), None)?;
         let destination_custody = destination.1;
@@ -200,9 +191,8 @@ where
         if options.writable && options.publication == MountPublication::PerMutation {
             return Err(MountSourceError::NativeUnsupported.into());
         }
-        let (authored, volume_id, root_text) = self
-            .prepare_authored_mount_source(&options, callback_guard.as_ref(), work, native_original)
-            .await?;
+        let (authored, volume_id, root_text) =
+            self.prepare_authored_mount_source(&options, work).await?;
         let root_custody = match root_text.1 {
             crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(custody) => custody,
             crate::kernel::allocation::KernelOwnedAllocation::Standalone => {

@@ -124,6 +124,11 @@ impl<T> Default for FuseOwned<Vec<T>> {
         Self::empty(Vec::new())
     }
 }
+impl<T> Default for FuseOwned<std::vec::IntoIter<T>> {
+    fn default() -> Self {
+        Self::empty(Vec::new().into_iter())
+    }
+}
 impl std::borrow::Borrow<MountPath> for FuseOwned<MountPath> {
     fn borrow(&self) -> &MountPath {
         self

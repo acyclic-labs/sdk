@@ -27,7 +27,7 @@ where
     let (metadata, named_attributes) = host_metadata(metadata);
     if let Some(root) = named_attributes {
         let read = read_source!(reader, receipt, remaining, value,
-            reader.read_named_attributes_with_native_work(root, receipt.custody.work(), cancellation)
+            reader.read_named_attributes(root, receipt.custody.work(), cancellation)
                 => receipt.accept_source(value.0, value.1)?,
             reader.read_named_attributes(root, remaining, cancellation) => {
                 receipt.adopt(vec_bytes(&value))?;

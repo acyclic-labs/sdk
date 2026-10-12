@@ -3,6 +3,7 @@ use crate::demand::native::NativeDemandSource;
 use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
 use crate::model::{FilesystemProfile, VolumeLimits};
 use crate::{CancellationToken, Fs, MemoryLazyWorkspaceStore, WorkBudget};
+use std::future::{Ready, ready};
 
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "mounts a live native session; requires the host's native mount capability"]
@@ -122,7 +123,7 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
             identity,
             Path::new("source.txt"),
             32,
-            || std::future::ready(Ok(())),
+            || ready(Ok(())),
         )
         .await?;
     drop(io_scope);
@@ -139,7 +140,7 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     let publication_work = new_work(WorkBudget::UNBOUNDED)?;
     let denied = mount
         .sync_with_permit(PublicationPermit::Unrestricted, &publication_work, |_| {
-            std::future::ready(Err::<(), _>(MountLifecycleError::Source(
+            ready(Err::<(), _>(MountLifecycleError::Source(
                 MountSourceError::Stale,
             )))
         })
@@ -161,7 +162,7 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
             move |work: &NativeMaterializationWork| {
                 assert!(work.shares_ledger(&callback_work));
                 assert!(work.shares_resource_allowance(&callback_work));
-                std::future::ready(Ok::<(), MountLifecycleError>(()))
+                ready(Ok::<(), MountLifecycleError>(()))
             },
         )
         .await?;
@@ -175,13 +176,10 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
 
     let snapshot_work = new_work(WorkBudget::UNBOUNDED)?;
     let actual = mount.snapshot(&snapshot_work, &cancellation).await?;
-    let imported_path = NamespacePath::new(
-        vec![LogicalName::new(
-            NameEncoding::Utf8,
-            b"selected-import.txt".to_vec(),
-            VolumeLimits::default().maximum_component_bytes,
-        )?],
-        VolumeLimits::default(),
+    let limits = VolumeLimits::default();
+    let imported_path = NamespacePath::from_portable(
+        &crate::path::PortablePath::parse("/selected-import.txt", limits)?,
+        limits,
     )?;
     let operation = crate::OperationId::new();
     let (child, _) = lazy
@@ -216,8 +214,12 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
         };
         Ok::<_, LazyWorkspaceError>((plan, custody))
     };
-    let (plan, custody) = prepare().await?;
-    assert!(
+    let import = async |plan,
+                        custody,
+                        work: &NativeMaterializationWork,
+                        before: fn(
+        &NativeMaterializationWork,
+    ) -> Ready<Result<(), MountLifecycleError>>| {
         mount
             .import_selected(
                 actual,
@@ -225,30 +227,28 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
                 custody,
                 operation,
                 PublicationPermit::Unrestricted,
-                &selected_work,
+                work,
                 &cancellation,
-                |_| std::future::ready(Err::<(), _>(MountLifecycleError::Source(
-                    MountSourceError::Stale
-                ))),
+                before,
             )
             .await
-            .is_err()
+    };
+    let (plan, custody) = prepare().await?;
+    assert!(
+        import(plan, custody, &selected_work, |_| ready(Err::<(), _>(
+            MountLifecycleError::Source(MountSourceError::Stale)
+        )),)
+        .await
+        .is_err()
     );
     assert_eq!(
         lazy.workspace().head(&setup, &cancellation).await?.id(),
         imported_head
     );
     let (plan, custody) = prepare().await?;
-    let unpolled = mount.import_selected(
-        actual,
-        plan,
-        custody,
-        operation,
-        PublicationPermit::Unrestricted,
-        &selected_work,
-        &cancellation,
-        |_| std::future::ready(Ok::<(), MountLifecycleError>(())),
-    );
+    let unpolled = import(plan, custody, &selected_work, |_| {
+        ready(Ok::<(), MountLifecycleError>(()))
+    });
     drop(unpolled);
     assert_eq!(
         lazy.workspace().head(&setup, &cancellation).await?.id(),
@@ -256,18 +256,11 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
     );
     let (plan, custody) = prepare().await?;
     assert!(matches!(
-        mount
-            .import_selected(
-                actual,
-                plan,
-                custody,
-                operation,
-                PublicationPermit::Unrestricted,
-                &foreign,
-                &cancellation,
-                |_| std::future::ready(Ok::<(), MountLifecycleError>(())),
-            )
-            .await,
+        import(plan, custody, &foreign, |_| ready(Ok::<
+            (),
+            MountLifecycleError,
+        >(())),)
+        .await,
         Err(MountLifecycleError::Native(
             NativeMountError::Materialization(crate::NativeTreeMaterializationError::InvalidLayout)
         ))
@@ -277,18 +270,10 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
         imported_head
     );
     let (plan, custody) = prepare().await?;
-    let imported = mount
-        .import_selected(
-            actual,
-            plan,
-            custody,
-            operation,
-            PublicationPermit::Unrestricted,
-            &selected_work,
-            &cancellation,
-            |_| std::future::ready(Ok::<(), MountLifecycleError>(())),
-        )
-        .await?;
+    let imported = import(plan, custody, &selected_work, |_| {
+        ready(Ok::<(), MountLifecycleError>(()))
+    })
+    .await?;
     assert_eq!(
         imported.authored_generation,
         lazy.workspace().head(&setup, &cancellation).await?.id()

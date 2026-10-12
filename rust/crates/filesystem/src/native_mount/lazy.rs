@@ -7658,8 +7658,6 @@ fn lazy_error(error: LazyWorkspaceError) -> MountSourceError {
     let error = match error {
         LazyWorkspaceError::OriginalSnapshotUnavailable =>
             return MountSourceError::OriginalSnapshotUnavailable,
-        LazyWorkspaceError::SelectedPublication(outcome) =>
-            return MountSourceError::SelectedPublication(outcome),
         LazyWorkspaceError::Demand(DemandError::Mount(error)) => return error,
         LazyWorkspaceError::Demand(DemandError::Io(error)) => return MountSourceError::Io(error, None),
         LazyWorkspaceError::NativeWork(error) => return MountSourceError::NativeWork(error),
