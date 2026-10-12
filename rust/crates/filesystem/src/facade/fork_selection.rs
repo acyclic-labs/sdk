@@ -507,12 +507,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         while !pending.value.is_empty() {
             fork_file_table_copy::<FileId>(1, accounting, cancellation)?;
             let id = pending.value.pop().ok_or(WorkspaceError::JoinLimit)?;
-            let position = match fork_file_table_search(
+            let position = match crate::kernel::binary_search_with_accounting(
                 &records.value,
-                id,
-                |record| record.file_id,
                 accounting,
-                cancellation,
+                |record| record.file_id.cmp(&id),
             )? {
                 Ok(_) => continue,
                 Err(position) => position,
@@ -581,12 +579,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                             return Err(WorkspaceError::JoinLimit);
                         }
                         let child = entry.file_id;
-                        match fork_file_table_search(
+                        match crate::kernel::binary_search_with_accounting(
                             &links.value,
-                            child,
-                            |binding| binding.0,
                             accounting,
-                            cancellation,
+                            |binding| binding.0.cmp(&child),
                         )? {
                             Ok(position) => {
                                 links.value[position].1 = links.value[position]
@@ -667,12 +663,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             Owned::<Vec<FileTableMutation>>::allocate(records.value.len(), accounting)?;
         for record in &records.value {
             fork_selection_items(accounting, cancellation)?;
-            let position = fork_file_table_search(
+            let position = crate::kernel::binary_search_with_accounting(
                 &links.value,
-                record.file_id,
-                |binding| binding.0,
                 accounting,
-                cancellation,
+                |binding| binding.0.cmp(&record.file_id),
             )?
             .map_err(|_| WorkspaceError::JoinLimit)?;
             fork_file_table_copy::<FileRecord>(1, accounting, cancellation)?;
