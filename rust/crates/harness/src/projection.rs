@@ -716,7 +716,7 @@ impl<'a, T> ProjectionIndex<'a, T> {
 
 enum ProjectionAttachments<'a> {
     Borrowed(&'a [Attachment]),
-    Owned(Vec<Attachment>),
+    Owned(Vec<Attachment>, Option<crate::conversation::ContentHold<'a>>),
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     Native(Vec<Attachment>, acyclic_fs::NativeAllocation),
 }
@@ -725,7 +725,7 @@ impl ProjectionAttachments<'_> {
     fn as_slice(&self) -> &[Attachment] {
         match self {
             Self::Borrowed(items) => items,
-            Self::Owned(items) => items,
+            Self::Owned(items, _) => items,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::Native(items, _) => items,
         }
@@ -749,6 +749,7 @@ impl ProjectionAttachments<'_> {
         // Declare custody first so attachment storage drops before its guard.
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut custody = None;
+        let _hold;
         let items = match self {
             Self::Borrowed(items) => {
                 for attachment in items.iter().take(count) {
@@ -758,7 +759,7 @@ impl ProjectionAttachments<'_> {
                 }
                 return Ok(());
             }
-            Self::Owned(items) => items,
+            Self::Owned(items, hold) => { _hold = hold; items },
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::Native(items, guard) => { custody = Some(guard); items }
         };
@@ -826,10 +827,14 @@ async fn resolve_projection_attachments<'a, R: ContentResidencyVerifier + ?Sized
                 hold.into_retained();
                 ProjectionAttachments::Native(value, custody)
             } else {
-                ProjectionAttachments::Owned(crate::conversation::load_manifest(resolver, manifest, *item_count, None).await?.0)
+                let (items, hold) = crate::conversation::load_manifest(resolver, manifest, *item_count, io).await?;
+                ProjectionAttachments::Owned(items, hold)
             };
             #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let loaded = ProjectionAttachments::Owned(crate::conversation::load_manifest(resolver, manifest, *item_count, None).await?.0);
+            let loaded = {
+                let (items, hold) = crate::conversation::load_manifest(resolver, manifest, *item_count, io).await?;
+                ProjectionAttachments::Owned(items, hold)
+            };
             if loaded.as_slice().len() != *item_count as usize {
                 return Err(projection_invalid(io, "attachment manifest count does not match its declared count"));
             }

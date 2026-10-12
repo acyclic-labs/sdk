@@ -3302,7 +3302,8 @@ impl Reducer {
                 let mut owned = crate::fork::ForkValidationWork::new(work)?;
                 for resource in &seed.resources {
                     if let crate::fork::ResourceRevision::Project { volume, .. } = &resource.source {
-                        require(&volume.capability(VolumeOperation::Read, &mut None)?)?;
+                        let capability = owned.volume_capability(volume)?;
+                        require(&capability)?;
                     }
                     if let crate::fork::ResourceRevision::PrivateVolume { volume, .. } =
                         &resource.source
@@ -3817,17 +3818,12 @@ impl Reducer {
             owned.adopt(prefix.attached_agents.capacity() as u64 * std::mem::size_of::<AgentId>() as u64)?;
             let bytes = owned.canonical(&prefix)?;
             const PREFIX_MEDIA: &str = "application/vnd.acyclic.harness.inherited-conversation+json";
-            if let Some(observer) = owned.work().as_deref_mut() {
-                observer.hashed_bytes(bytes.len() as u64)?;
-                observer.admit_allocation(PREFIX_MEDIA.len() as u64)?;
-                observer.copy_bytes(PREFIX_MEDIA.len() as u64)?;
-            }
-            owned.retain(PREFIX_MEDIA.len() as u64)?;
             let expected = FileDescriptor::from_bytes(
                 &bytes,
                 PREFIX_MEDIA,
                 owned.work(),
             )?;
+            owned.adopt(expected.logical_owned_bytes())?;
             if file.descriptor() != &expected
                 || file.display_name() != "inherited-conversation.json"
             {

@@ -32,7 +32,10 @@ impl ContextRoot {
         if !self.directory.is_empty() {
             crate::conversation::validate_content_path(&self.directory, work)?;
         }
-        self.volume.directory_read_capability(&self.directory, work)?;
+        let capability = self.volume.directory_read_capability(&self.directory, work)?;
+        let retained = capability.capacity() as u64;
+        drop(capability);
+        if let Some(io) = work.as_deref_mut() { io.release_owned(retained)?; }
         Ok(())
     }
 }

@@ -340,10 +340,11 @@ impl DurableContextProvider {
             *destination = *byte;
         }
         let operation = crate::OperationId::from_bytes(identity);
+        let path = format!("context/projections/{operation}.json");
         let (content, _hold) = publisher
             .stage(
                 operation,
-                &format!("context/projections/{operation}.json"),
+                &path,
                 &bytes,
                 "application/json",
                 "context.json",
@@ -1424,7 +1425,7 @@ impl BorrowedContext<'_> {
                 message.content.validate_limits(limits, work)?;
             }
             if let Some(content) = self.messages.user { content.validate_limits(limits, work)?; }
-            Ok::<(), Error>(())
+            Ok::<(), crate::Error>(())
         })?;
         validate_context_json(self, limits.render_bytes, io)
     }
@@ -1877,7 +1878,7 @@ impl ContextPipeline {
                 work.copy_bytes(copied as u64)?;
             }
             stages.extend(self.0.iter().cloned());
-            Ok::<(), Error>(())
+            Ok::<(), crate::Error>(())
         })?;
         Ok(Self(stages))
     }
@@ -3104,8 +3105,7 @@ mod tests {
                 &crate::contract::canonical_json_bytes(&context)?,
                 "application/json",
                 "context.json",
-                None,
-            )?
+            )
             .await?;
         let record = StoredContextRevision {
             format_version: 5,
