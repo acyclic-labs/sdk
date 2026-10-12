@@ -403,7 +403,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let mut scoped = allocation.child.scope.capabilities().iter().map(str::to_owned).collect::<Vec<_>>();
         for volume in [&allocation.project, &allocation.private_volume].into_iter().chain(allocation.result_volume.as_ref()) {
             for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-                let grant = volume.capability(operation)?;
+                let grant = volume.capability(operation, &mut None)?;
                 grants.push(grant.clone());
                 scoped.push(grant);
             }
@@ -820,8 +820,10 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         &self, context: &ToolContext, volume: &VolumeRef, operation: VolumeOperation,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
-        let capability = volume.capability_with_native_work(operation, work)?;
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
+        let capability = volume.capability(operation, &mut Some(&mut io.history_io()))?;
+        let hold = io.guard_owned(capability.capacity() as u64)?;
+        let capability = (capability, hold);
         io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 }, true)?;
         if !context.effective_scope().grants().contains(&capability.0) {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
@@ -980,7 +982,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         for grant in allocation.child.scope.capabilities().iter() { append(&mut scoped, grant)?; }
         for volume in [&allocation.project, &allocation.private_volume].into_iter().chain(allocation.result_volume.as_ref()) {
             for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-                let grant = volume.capability_with_native_work(operation, work)?;
+                let grant = volume.capability(operation, &mut Some(&mut io.history_io()))?;
+                let hold = io.guard_owned(grant.capacity() as u64)?;
+                let grant = (grant, hold);
                 append(&mut grants, &grant.0)?;
                 append(&mut scoped, &grant.0)?;
             }
@@ -1226,7 +1230,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 context.task(), authorization, work,
             )?.await?)
         } else {
-            let capability = selected.volume.capability_with_native_work(VolumeOperation::Read, work)?;
+            let capability = selected.volume.capability(VolumeOperation::Read, &mut Some(&mut io.history_io()))?;
+            let hold = io.guard_owned(capability.capacity() as u64)?;
+            let capability = (capability, hold);
             if context.effective_scope().grants().contains(&capability.0) { None }
             else if original.is_some() {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
@@ -1355,7 +1361,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     intent.request.copy(&mut Some(&mut history))?.0
                 };
                 let capture = SourceCheckpoint {
-                    snapshot: pinned.0.reducer().snapshot_native(1, work)?,
+                    snapshot: pinned.0.reducer().snapshot(1, &mut Some(&mut io.history_io()))?.0,
                     request, caller: caller.task, arguments: ForkToolArguments { id: arguments.id, msg: super::fork_preparer_io::clone_text(&arguments.msg, Some(&io))?, source: arguments.source },
                 };
                 let bytes_guard;
@@ -1491,7 +1497,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "native trusted original source record differs from sealed preparation" });
             }
-            let snapshot = original.snapshot.clone_native(work)?;
+            let snapshot = original.snapshot.copy(&mut Some(&mut io.history_io()))?;
             self.native_restore_snapshot(&caller.owner, &request, snapshot, None, cancellation, work).await?
         } else {
             let original = self.native_open_aggregate(&caller.owner, Some(request.parent_revision), cancellation, work).await?;

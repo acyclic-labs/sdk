@@ -1260,7 +1260,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     drop(hold);
                     file
                 };
-                let checkpoint = recursive_observe(io, |work| binding.source_checkpoint.clone_with_work(work))?;
+                let checkpoint = recursive_observe(io, |work| binding.source_checkpoint.copy(work))?;
                 let request = fork_preparation_request(binding.source.preparer.as_ref(), &binding.source.request,
                     task_id_for_admission(operation), binding.child, WorkflowCommand {
                         operation_id: context.operation_id(),
@@ -1651,7 +1651,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                         };
                         let command = WorkflowCommand { operation_id: command.operation_id,
                             kind: history.clone_text(&command.kind)?,
-                            payload: command.payload.clone_with_work(&mut Some(&mut *history))? };
+                            payload: command.payload.copy(&mut Some(&mut *history))? };
                         let payload = crate::core::native_value_clone_with_custody(&payload, &mut Some(&mut *history))?.0;
                         break 'progress owner.runtime.commands().execute_with_native_work(
                             Arc::clone(context), fence, command, payload, work)?.await?;
@@ -2060,7 +2060,7 @@ fn recursive_volume_granted(grants: &Capabilities, volume: &VolumeRef, operation
         Some(io) => io.contains_capability(grants, volume, match operation {
             VolumeOperation::Read => "volume:read:", VolumeOperation::Write => "volume:write:",
         }),
-        None => Ok(grants.contains(&volume.capability(operation)?)),
+        None => Ok(grants.contains(&volume.capability(operation, &mut None)?)),
     }
 }
 

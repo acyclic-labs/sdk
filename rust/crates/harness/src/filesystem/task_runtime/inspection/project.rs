@@ -55,7 +55,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             if !path.is_empty() {
                 crate::conversation::validate_content_path(path, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
             }
-            return handle.grant().require_directory_path_with_native_work(project, path, work);
+            return handle.grant().require_directory_path(project, path, Some(&super::super::PreparationIo::from_native_work(work)?));
         }
         host.require_private_directory(&handle.authorization().project, handle.grant(), path)
     }
@@ -158,7 +158,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
 
     fn file(&self, file: &FileRef) -> Result<()> {
         self.limits.validate_file(file, &mut None)?;
-        self.handle.grant().require_file_read(file)?;
+        self.handle.grant().require_file_read(file, None)?;
         self.path(file.volume(), "", file.path(), &self.authorization().generation)?;
         let mut generation = [0_u8; 32];
         hex::decode_to_slice(file.version(), &mut generation)
