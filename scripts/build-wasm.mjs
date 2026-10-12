@@ -63,11 +63,11 @@ if (unexpected.length > 0 || (packageArgument && !Object.hasOwn(packages, packag
 
 const cargo = cargoArgument || process.env.ACYCLIC_CARGO_BIN || "cargo";
 const capture = (executable, args) => {
-  const result = spawnSync(executable, args, { cwd: root, encoding: "utf8" });
+  const result = spawnSync(executable, args, { cwd: root, encoding: "utf8", windowsHide: true });
   return result.error || result.status !== 0 ? undefined : result.stdout.trim();
 };
 const run = (executable, args) => {
-  const result = spawnSync(executable, args, { cwd: root, stdio: "inherit" });
+  const result = spawnSync(executable, args, { cwd: root, stdio: "inherit", windowsHide: true });
   if (result.error) throw result.error;
   if (result.status !== 0) throw new Error(`${executable} exited with ${result.status ?? "unknown"}`);
 };

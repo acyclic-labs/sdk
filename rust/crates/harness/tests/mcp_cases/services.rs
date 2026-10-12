@@ -282,7 +282,7 @@ async fn sampling_media_uses_scoped_filesystem_publication_and_native_policy() -
                 acyclic_harness::executor::ExecutionEvent::ModelStarted { request, .. } => Some(request), _ => None,
             }).ok_or_else(|| Error::NotFound("media model request".into()))?;
             let prepared: acyclic_harness::model::ModelRequest = serde_json::from_slice(&disk.load(file).await?).map_err(|error| Error::Invalid(error.to_string()))?;
-            let files = prepared.messages.last().ok_or_else(|| Error::NotFound("media input".into()))?.content.file_refs();
+            let files = prepared.messages.last().ok_or_else(|| Error::NotFound("media input".into()))?.content.file_refs().collect::<Vec<_>>();
             assert_eq!(files.len(), 2);
             let mut bytes = Vec::new();
             for file in files { bytes.push(context.read_file(file).await?); }

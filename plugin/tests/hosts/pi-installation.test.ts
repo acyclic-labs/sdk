@@ -38,7 +38,6 @@ test("public Pi installer pins a loadable extension and restores owned settings"
     };
     const settingsAt = (path: string) => JSON.parse(readFileSync(path, "utf8"));
     const doctor = async () => {
-      // Doctor cold-starts only the service bound to this fixture's data root.
       drain = async () => {
         await command("__service-drain");
         const status = JSON.parse((await command("__service-status")).stdout);

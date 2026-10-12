@@ -64,7 +64,7 @@ pub(in crate::filesystem) fn boundary(io: Option<&PreparationIo>, code: crate::w
 pub(super) fn digest<T: serde::Serialize>(value: &T, io: Option<&PreparationIo>) -> Result<[u8; 32]> {
     let Some(io) = io else { return crate::contract::canonical_json_digest(value); };
     let hold;
-    let bytes = io.encode_json(value, acyclic_stream::MAX_RECORD_BYTES as u64, true)?;
+    let bytes = io.encode(value, acyclic_stream::MAX_RECORD_BYTES as u64, true)?;
     hold = io.guard_bytes(&bytes)?;
     let hash = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
     io.preflight(hash)?;
@@ -130,9 +130,9 @@ where
                 code: crate::wire::ErrorCode::Unsupported,
                 reason: "worker settlement requires original native work",
             })?;
-            return self.host.settle_task_with_native_work(task, clone_fence(fence, Some(io))?, outcome, work).await;
+            return self.host.settle_task(task, clone_fence(fence, Some(io))?, outcome, &mut Some(&mut crate::store::history::native_work_io(work)?)).await;
         }
-        self.host.settle_task(task, fence.clone(), outcome).await
+        self.host.settle_task(task, fence.clone(), outcome, &mut None).await
     }
 
     pub(super) async fn suspend_observed(&self, task: TaskId, fence: &LeaseFence, revision: u64, io: Option<&PreparationIo>) -> Result<()> {
@@ -142,8 +142,8 @@ where
                 code: crate::wire::ErrorCode::Unsupported,
                 reason: "worker suspension requires original native work",
             })?;
-            return self.host.suspend_workflow_with_native_work(task, clone_fence(fence, Some(io))?, revision, work).await;
+            return self.host.suspend_workflow(task, fence, revision, None, None, None, &mut Some(&mut crate::store::history::native_work_io(work)?)).await;
         }
-        self.host.suspend_workflow(task, fence.clone(), revision).await
+        self.host.suspend_workflow(task, &fence, revision, None, None, None, &mut None).await
     }
 }

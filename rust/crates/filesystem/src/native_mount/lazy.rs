@@ -286,10 +286,10 @@ impl<'w> MountSyncWork<'w> {
     }
 
     async fn lock_checkout<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
-        &mut self, source: &'a CheckoutMountSource<A, O>, cancellation: &crate::CancellationToken,
+        &mut self, source: &'a CheckoutMountSource<A, O>, cancellation: crate::CancellationToken,
     ) -> Result<super::adapter::SharedCheckoutGuard<'a, A, O>, MountSourceError> {
         source.shared_checkout().lock_with_carrier(
-            &mut self.meter, cancellation, Some(source.cancellation()),
+            &mut self.meter, &cancellation, Some(source.cancellation()),
         ).await
     }
 
@@ -342,7 +342,7 @@ impl<'w> MountSyncWork<'w> {
 
     fn sync_authored_recovery_guarded<'a, A, O, F, Fut, E>(
         &'a mut self, source: &'a CheckoutMountSource<A, O>, permit: crate::PublicationPermit,
-        cancellation: &'a crate::CancellationToken, before_publication: &'a mut F,
+        cancellation: crate::CancellationToken, before_publication: &'a mut F,
     ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), E>> + Send + 'a>>
     where A: AsyncAuthorityStore, O: AsyncObjectStore,
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
@@ -352,14 +352,14 @@ impl<'w> MountSyncWork<'w> {
         Box::pin(async move {
             if self.observation == MountPublicationObservation::Qualified
                 && let Some(context) = source.retained_publication_context_with_carrier(
-                    &mut self.meter, cancellation,
+                    &mut self.meter, &cancellation,
                 ).await?
             {
                 self.sync_authored_context_guarded(
-                    source, permit, true, cancellation, before_publication, context,
+                    source, permit, true, &cancellation, before_publication, context,
                 ).await
             } else {
-                self.sync_authored_guarded(source, permit, true, cancellation, before_publication).await
+                self.sync_authored_guarded(source, permit, true, &cancellation, before_publication).await
             }
         })
     }
@@ -2975,10 +2975,7 @@ where
         &self, wait: Option<&crate::CancellationToken>,
     ) -> Result<(), MountSourceError> {
         if self.physically_retired()? { return Ok(()); }
-        match wait {
-            Some(wait) => self.authored.cancel_with_cleanup_wait(wait)?,
-            None => self.authored.cancel_accepted_cleanup()?,
-        }
+        self.authored.cancel_cleanup(wait)?;
         self.cursors.clear_with_cleanup(wait)?;
         if let Some(watch) = &self.source_watch { watch.stop_with_cleanup(wait)?; }
         Ok(())
@@ -3435,12 +3432,12 @@ where
                         committed = Some(false);
                     }
                     let retained = {
-                        let mut checkout = work.lock_checkout(&self.authored, cancellation).await?;
+                        let mut checkout = work.lock_checkout(&self.authored, cancellation.clone()).await?;
                         checkout.has_retained_operation().then(|| checkout.retained_operation_id())
                     };
                     if retained == Some(custody.operation) {
                         work.sync_authored_recovery_guarded(
-                            &self.authored, permit, cancellation, before_publication,
+                            &self.authored, permit, cancellation.clone(), before_publication,
                         ).await?;
                     } else if committed != Some(true) {
                         return Err(E::from(MountSourceError::Stale));
@@ -3469,10 +3466,10 @@ where
                 }
                 return self.finish_mount_custody(custody.operation, work).map_err(E::from);
             }
-            let retained = work.lock_checkout(&self.authored, cancellation).await?.has_retained_operation();
+            let retained = work.lock_checkout(&self.authored, cancellation.clone()).await?.has_retained_operation();
             if retained {
                 work.sync_authored_recovery_guarded(
-                    &self.authored, permit, cancellation, before_publication,
+                    &self.authored, permit, cancellation.clone(), before_publication,
                 ).await?;
             }
             if let Some(committed) = committed {
@@ -3688,7 +3685,7 @@ where
                     return Err(MountSourceError::Stale);
                 }
             }
-            let checkout = work.lock_checkout(&self.authored, cancellation).await?;
+            let checkout = work.lock_checkout(&self.authored, cancellation.clone()).await?;
             checkout.ensure_publication_resolved()?;
             if checkout.has_pending_mutations() || self.authored.captures_pending() {
                 return Err(MountSourceError::Stale);
@@ -3722,7 +3719,7 @@ where
                 ).await;
                 work.meter.accept_with_prior_live(receipt, prior_live, lazy_error)?
             };
-            let checkout = work.lock_checkout(&self.authored, cancellation).await?;
+            let checkout = work.lock_checkout(&self.authored, cancellation.clone()).await?;
             checkout.ensure_publication_resolved()?;
             if checkout.has_pending_mutations() || self.authored.captures_pending()
                 || checkout.generation_id() != generation
@@ -4059,7 +4056,7 @@ where
         self.recover_pending_mount_change_measured(
             permit, work, cancellation, before_publication,
         ).await?;
-        let inputs = self.snapshot_sync_inputs(work, cancellation).await?;
+        let inputs = self.snapshot_sync_inputs(work, cancellation.clone()).await?;
         if selected.is_none() && inputs.paths.value.is_empty() && inputs.dirty.value.is_empty() {
             if work.observation == MountPublicationObservation::Qualified {
                 let original = work.meter.original_native_work().ok_or(MountSourceError::Indeterminate)?;
@@ -4266,10 +4263,10 @@ where
     }
 
     async fn snapshot_sync_inputs(
-        &self, work: &mut MountSyncWork<'_>, cancellation: &crate::CancellationToken,
+        &self, work: &mut MountSyncWork<'_>, cancellation: crate::CancellationToken,
     ) -> Result<MountSyncInputs, MountSourceError>
     where A: AsyncAuthorityStore, O: AsyncObjectStore {
-        drop(work.lock_checkout(&self.authored, cancellation).await?);
+        drop(work.lock_checkout(&self.authored, cancellation.clone()).await?);
         let (paths, removed_ids) = {
             let state = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
             let mut paths = work.owned_vec::<String>(state.paths.len())?;
@@ -4307,7 +4304,7 @@ where
         let mut dirty = work.owned_vec::<DirtyDetachedRecord>(0)?;
         for (id, file, published) in &detached.value {
             work.items(1)?;
-            let (record, metadata, epoch) = file.snapshot_with_carrier(&mut work.meter, cancellation).await?;
+            let (record, metadata, epoch) = file.snapshot_with_carrier(&mut work.meter, &cancellation).await?;
             if epoch > *published {
                 if dirty.value.capacity() == 0 { dirty = work.owned_vec(detached.value.len())?; }
                 let copied = crate::WorkCounters {
@@ -4328,7 +4325,7 @@ where
         &self, work: &mut MountSyncWork<'_>, cancellation: &crate::CancellationToken,
     ) -> Result<PreparedMountSync<A, O>, MountSourceError>
     where A: AsyncAuthorityStore, O: AsyncObjectStore {
-        let inputs = self.snapshot_sync_inputs(work, cancellation).await?;
+        let inputs = self.snapshot_sync_inputs(work, cancellation.clone()).await?;
         self.prepare_sync_candidate_from_inputs(inputs, work, cancellation).await
     }
 
@@ -5402,7 +5399,7 @@ where
                     .map_err(native_lazy_error)?;
                 let mut page = self.lazy.list_directory_in_state_with_native_work(
                     state.as_state(), &text, cursor.take(), DIRECTORY_PROMOTION_PAGE,
-                    &original, cancellation, Some(&mut observation.observer()),
+                    &original, cancellation, Some(&mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value),
                     Some((&removed, opaque)), None,
                 ).await.map_err(native_lazy_error)?;
                 for entry in &page.entries {
@@ -5728,7 +5725,7 @@ where
                 observation.ensure_publication_resolved()?;
                 self.lazy
                     .list_directory_in_checkout(
-                        &mut observation.observer(),
+                        &mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value,
                         &text,
                         cursor,
                         maximum_entries,
@@ -5870,7 +5867,7 @@ where
                 .map_err(directory_lazy_error)?;
             let page = self.lazy.list_directory_in_state_with_native_work(
                 state.as_state(), &text, cursor, maximum_entries, original, &caller,
-                Some(&mut observation.observer()), Some((&removed_children, opaque)), None,
+                Some(&mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value), Some((&removed_children, opaque)), None,
             ).await.map_err(directory_lazy_error)?;
             (page, state)
         };
@@ -5943,8 +5940,8 @@ where
         } else { None };
         scratch.keep(output_storage + output_names + cursor_bytes)?;
         Ok(match scratch.native_backing.take() {
-            Some(allocation) => MountDirectoryPage::with_native_allocation(entries, next_cursor, allocation),
-            None => MountDirectoryPage::new(entries, next_cursor),
+            Some(allocation) => MountDirectoryPage::new(entries, next_cursor, Some(allocation)),
+            None => MountDirectoryPage::new(entries, next_cursor, None),
         })
     }
 
@@ -8511,9 +8508,7 @@ where
                         }
                     } else {
                         match &resolution {
-                            Resolution::Authored(_) => self.authored.read_range_owned_async_with_carrier(
-                                path, next, wanted, owner, carrier,
-                            ).await?,
+                            Resolution::Authored(_) => self.authored.read_bytes(path, Some(crate::ByteRange { offset: next, length: u64::from(wanted) }), owner, carrier).await?,
                             Resolution::Unauthored(lookup, source, _) => {
                                 let caller = carrier.cancellation();
                                 if let Some(original) = carrier.original_native_work() {
@@ -8576,9 +8571,7 @@ where
         let result = async {
             match self.resolve_with_carrier(path, &text, owner, carrier).await? {
                 Resolution::Absent => Err(MountSourceError::NotFound),
-                Resolution::Authored(_) => self.authored.read_link_owned_async_with_carrier(
-                    path, owner, carrier,
-                ).await,
+                Resolution::Authored(_) => self.authored.read_bytes(path, None, owner, carrier).await,
                 Resolution::Unauthored(lookup, source, allocation) => {
                     let lookup = MountOwnedBuffer { legacy_bytes: lookup.logical_owned_bytes(), value: lookup, allocation };
                     let lookup_bytes = lookup.legacy_owned_bytes();
@@ -9433,9 +9426,7 @@ mod tests {
         ).await;
         assert!(work.accept(result, lazy_error)?);
         assert_eq!(view.lazy.mount_removal_publication().await?, None);
-        let original_generation = view.lazy.workspace().operation_generation(
-            IdempotencyKey::from_bytes(operation.into_bytes()),
-        ).await?.ok_or("original operation was not physically published")?;
+        let original_generation = view.lazy.workspace().operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.ok_or("original operation was not physically published")?;
         held.write_range(0, Bytes::from_static(b"epoch-two"))?;
         view.remove(&next, None)?;
         let before_cleanup = work.with_work(|work| {
@@ -9452,7 +9443,7 @@ mod tests {
             assert!(custody.published);
             assert_eq!(removals.paths.get("/next").ok_or("new removal was lost")?.operation, None);
         }
-        let reservation = view.lazy.workspace().reserve_publication(crate::OperationId::new()).await?;
+        let reservation = view.lazy.workspace().reserve_publication(crate::OperationId::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         let permit = crate::PublicationPermit::Reservation {
             operation_id: reservation.operation_id.into_bytes(),
             gate_tail: reservation.gate_tail,
@@ -9472,7 +9463,7 @@ mod tests {
         assert!(view.lookup(&next)?.is_none());
         assert!(view.removals.lock().map_err(|_| "poisoned removals")?.paths.is_empty());
         assert!(view.removals.lock().map_err(|_| "poisoned removals")?.publication.is_none());
-        view.lazy.workspace().release_publication(reservation).await?;
+        view.lazy.workspace().release_publication(reservation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         Ok(())
     }
 
@@ -9528,11 +9519,9 @@ mod tests {
                 Some(view.authored.shared_checkout().lock().await.retained_operation_id())
             } else { None };
             let acknowledged_generation = if let Some(operation) = original {
-                Some(lazy.workspace().operation_generation(
-                    IdempotencyKey::from_bytes(operation.into_bytes()),
-                ).await?.ok_or("lost acknowledgement did not physically append the original operation")?)
+                Some(lazy.workspace().operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.ok_or("lost acknowledgement did not physically append the original operation")?)
             } else { None };
-            let reservation = lazy.workspace().reserve_publication(crate::OperationId::new()).await?;
+            let reservation = lazy.workspace().reserve_publication(crate::OperationId::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             let permit = crate::PublicationPermit::Reservation {
                 operation_id: reservation.operation_id.into_bytes(),
                 gate_tail: reservation.gate_tail,
@@ -9554,11 +9543,11 @@ mod tests {
             assert_eq!(std::fs::read(source_root.path().join("a"))?, b"source");
             assert_eq!(std::fs::read(source_root.path().join("b"))?, b"source");
             assert!(view.lookup(&a)?.is_none());
-            lazy.workspace().release_publication(reservation).await?;
+            lazy.workspace().release_publication(reservation, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             drop(held);
             drop(view);
             let reopened = LazyWorkspace::open(
-                fs.open_workspace("bounded-mount-fault").await?, demand, store,
+                fs.open_workspace("bounded-mount-fault", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, demand, store,
             ).await?;
             assert!(matches!(reopened.lookup("/a").await,
                 Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound)));
@@ -9775,13 +9764,11 @@ mod tests {
         current.write_range(0, Bytes::from_static(b"orphan"))?;
         assert_eq!(current.read_range(0, 6)?.as_ref(), b"orphan");
         let mut external = lazy
-            .workspace()
-            .begin_transaction(IdempotencyKey::new())
-            .await?;
+            .workspace().begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         external
             .write("/external", Bytes::from_static(b"unrelated"))
             .await?;
-        external.commit().await?;
+        external.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         view.sync_async().await?;
         assert!(matches!(
             lazy.lookup("/c").await,
@@ -9843,13 +9830,11 @@ mod tests {
         let file = view.open_file(&path)?;
         view.remove(&path, Some(file.lookup()?.node.file_id))?;
         let mut conflicting = lazy
-            .workspace()
-            .begin_transaction(IdempotencyKey::new())
-            .await?;
+            .workspace().begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         conflicting
             .write("/file", Bytes::from_static(b"external"))
             .await?;
-        conflicting.commit().await?;
+        conflicting.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         assert!(matches!(
             view.sync_async().await,
             Err(MountSourceError::Stale)
@@ -10474,7 +10459,7 @@ mod tests {
                 .observe(SourceViewGate::callback_owner()).await?;
             observation.ensure_publication_resolved()?;
             view.lazy.list_directory_in_checkout(
-                &mut observation.observer(), "/dir", None, 1, None,
+                &mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value, "/dir", None, 1, None,
             ).await.map(|(_, state)| state).map_err(lazy_error)
         })?;
         let caller = crate::CancellationToken::new();
@@ -10634,7 +10619,7 @@ mod tests {
                 .observe(SourceViewGate::callback_owner()).await?;
             observation.ensure_publication_resolved()?;
             view.lazy.list_directory_in_checkout(
-                &mut observation.observer(), "/dir", None, 1, None,
+                &mut observation.observer(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("unbounded observer preserves a validated checkout").value, "/dir", None, 1, None,
             ).await.map(|(_, state)| state).map_err(lazy_error)
         })?;
         let caller = crate::CancellationToken::new();
@@ -11122,8 +11107,7 @@ mod tests {
         let caller_visits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let before = visits.load(Ordering::Acquire);
         owner.cancel();
-        let result = view.authored.sync_async_with_permit_native_work_guarded(
-            crate::PublicationPermit::Unrestricted, &original.native_mount_work(), &caller,
+        let result = view.authored.sync_async_with_permit_carrier_guarded(crate::PublicationPermit::Unrestricted, false, &mut super::super::adapter::NativeDemandCarrier::Native(&original.native_mount_work()), &mut super::super::view_ledger::ViewLedgerAdmission::default(), &caller, &mut
             {
                 let caller_visits = Arc::clone(&caller_visits);
                 move |work: &crate::NativeMaterializationWork| {
@@ -11167,8 +11151,7 @@ mod tests {
             Arc::clone(view.authored.shared_checkout()), view.lazy.workspace().volume_config(),
         )?.with_native_callback_guard(guard));
         let caller_visits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let result = view.authored.sync_async_with_permit_native_work_guarded(
-            crate::PublicationPermit::Unrestricted, &original.native_mount_work(), &caller,
+        let result = view.authored.sync_async_with_permit_carrier_guarded(crate::PublicationPermit::Unrestricted, false, &mut super::super::adapter::NativeDemandCarrier::Native(&original.native_mount_work()), &mut super::super::view_ledger::ViewLedgerAdmission::default(), &caller, &mut
             {
                 let caller_visits = Arc::clone(&caller_visits);
                 move |work: &crate::NativeMaterializationWork| {

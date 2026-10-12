@@ -45,8 +45,6 @@ export interface ConversationProjectionOptions {
   /** Owner-mediated exact reads for structured tool artifacts. */
   readonly resolveFile?: (file: FileRef) => Promise<Uint8Array>;
   readonly maxRenderBytes?: number;
-  /** Optional owner decoder; its result must match Rust's canonical decoding exactly. */
-  readonly decodeManifest?: (manifest: FileRef, bytes: Uint8Array, count: number) => readonly Attachment[] | Promise<readonly Attachment[]>;
   /** Optional additional owning-provider validation; never bypasses Rust. */
   readonly validateMessage?: (message: ConversationState["messages"][number]) => ConversationState["messages"][number] | Promise<ConversationState["messages"][number]>;
 }
@@ -54,8 +52,6 @@ export interface ConversationProjectionOptions {
 export interface FileProjectionOptions {
   /** Must enforce the owner's read grant before returning exact bytes. */
   readonly resolveFile?: (file: FileRef) => Promise<Uint8Array>;
-  /** Optional additional owner verification; Rust always verifies the descriptor. */
-  readonly verifyFile?: (file: FileRef, bytes: Uint8Array) => void | Promise<void>;
   readonly maxResolvedBytes?: number;
 }
 
@@ -77,24 +73,19 @@ export function verifiedContentResolver(
   };
 }
 
-export type ProjectedFile =
-  | Readonly<{ kind: "reference"; text: string }>
-  | Readonly<{ kind: "text"; text: string }>;
-
 /** Shared fail-closed file boundary for default model adapters. */
 export async function projectModelFile(
   part: Extract<ModelContentPart, { kind: "file" }>, options: FileProjectionOptions,
-): Promise<ProjectedFile> {
+): Promise<string> {
   const file = (await NativeContracts.create()).validate("file_ref", part.file);
   if (part.policy === "reference") {
     const hash = file.descriptor.sha256.map(byte => byte.toString(16).padStart(2, "0")).join("");
-    return { kind: "reference", text: `[file: ${file.display_name}; ${file.descriptor.media_type}; sha256=${hash}; bytes=${file.descriptor.byte_length}]` };
+    return `[file: ${file.display_name}; ${file.descriptor.media_type}; sha256=${hash}; bytes=${file.descriptor.byte_length}]`;
   }
   if (part.policy !== "bounded_full") {
     throw new TypeError("unsupported file projection policy");
   }
-  const boundedText = part.policy === "bounded_full" && file.descriptor.media_type.startsWith("text/");
-  if (!boundedText) {
+  if (!file.descriptor.media_type.startsWith("text/")) {
     throw new TypeError("unsupported file content for selected projection policy");
   }
   const limit = options.maxResolvedBytes ?? HARNESS_PROJECTION_DEFAULT_MAX_RESOLVED_BYTES;
@@ -105,12 +96,8 @@ export async function projectModelFile(
   if (!(bytes instanceof Uint8Array) || bytes.byteLength > limit) {
     throw new TypeError("resolved file exceeds projection byte limit");
   }
-  await options.verifyFile?.(file, bytes);
   await verifyFileBytes(file, bytes);
-  if (boundedText) {
-    return { kind: "text", text: new TextDecoder("utf-8", { fatal: true }).decode(bytes) };
-  }
-  throw new TypeError("unsupported file content for selected projection policy");
+  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
 }
 
 export async function selectModelContext(
@@ -205,12 +192,7 @@ async function captureProjectionFiles(
     if (itemCount > maxAttachments) throw new TypeError("selected message exceeds attachment projection limit");
     if (reference.descriptor.byte_length > maxManifestBytes) throw new TypeError("attachment manifest exceeds projection limit");
     const bytes = await capture(reference, manifestResolver, "attachment manifest", maxManifestBytes);
-    const canonical = contracts.decodeAttachmentManifest(reference, bytes, itemCount);
-    if (options.decodeManifest !== undefined) {
-      const ownerDecoded = await options.decodeManifest(reference, bytes, itemCount);
-      if (!contracts.canonicalEqual(canonical, ownerDecoded)) throw new TypeError("owner attachment decoder disagrees with canonical manifest");
-    }
-    return canonical;
+    return contracts.decodeAttachmentManifest(reference, bytes, itemCount);
   };
   for (const id of selectedIds) {
     const message = byId.get(id);
