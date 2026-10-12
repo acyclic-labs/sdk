@@ -2,7 +2,6 @@ use super::*;
 
 impl AgentHarness {
     /// Derives an immutable application view with no more authority or resources than its parent.
-
     pub fn scoped(self: &Arc<Self>, grants: Capabilities, limits: Limits) -> Result<Arc<Self>> {
         let mut child = self.as_ref().clone();
         child.scope = self.scope.narrow(grants, limits)?;
@@ -12,7 +11,6 @@ impl AgentHarness {
     }
 
     /// Narrows the effective task execution bounds for newly admitted work.
-
     pub fn scoped_run_limits(self: &Arc<Self>, limits: TaskRunLimits) -> Result<Arc<Self>> {
         let mut child = self.as_ref().clone();
         child.scope = self.scope.clone().with_run_limits(limits, &mut None)?;
@@ -23,7 +21,6 @@ impl AgentHarness {
     }
 
     /// Selects a different qualified execution route for newly admitted work under attenuated authority.
-
     pub fn scoped_execution(
         self: &Arc<Self>,
         grants: Capabilities,
@@ -45,7 +42,6 @@ impl AgentHarness {
     }
 
     /// Submits one signed, versioned answer through its conversation owner.
-
     pub async fn resolve_answer(
         &self,
         operation_id: OperationId,
@@ -76,7 +72,6 @@ impl AgentHarness {
     }
 
     /// Submits one signed decision for the ticket's exact approved intent.
-
     pub async fn resolve_approval(
         &self,
         operation_id: OperationId,
@@ -111,13 +106,11 @@ impl AgentHarness {
     }
 
     /// Resolves one registered task with exact Rust input/output types.
-
     pub fn task<I: 'static, O: 'static>(&self, name: &str) -> Result<Arc<TaskDefinition<I, O>>> {
         self.tasks.get(name)
     }
 
     /// Resolves one model-visible tool definition by exact registered name.
-
     pub fn tool(&self, name: &str) -> Result<ToolDefinition> {
         self.tools
             .get(name, None)?
@@ -126,7 +119,6 @@ impl AgentHarness {
     }
 
     /// Verifies an already staged input or output through a bound content or artifact owner and the runtime's effective read grant.
-
     pub async fn verify_readable_file(&self, file: &FileRef) -> Result<()> {
         file.validate(&mut None)?;
         self.scope.limits.validate_file(file, &mut None)?;

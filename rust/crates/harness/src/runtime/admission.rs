@@ -1,7 +1,6 @@
 use super::*;
 
 /// Provider-neutral, owner-attested execution route pinned at admission.
-
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionPlacement {
@@ -41,7 +40,6 @@ impl ExecutionPlacement {
 }
 
 /// Exact owner-retained task admission.
-
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskAdmissionRecord {
@@ -83,7 +81,6 @@ pub(super) struct CanonicalTaskAdmission<'a> {
 }
 
 /// One owner-retained direct task child, independent of fork ancestry.
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TaskChild {
     /// Stable parent slot, independent of completion order.
@@ -93,7 +90,6 @@ pub struct TaskChild {
 }
 
 /// Bounded hierarchy observation; a changed revision invalidates continuation.
-
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct TaskChildrenPage {
     /// Retained owner revision observed for this page.
@@ -105,7 +101,6 @@ pub struct TaskChildrenPage {
 }
 
 /// Canonical ordinary task identity for a caller-retained admission operation.
-
 #[must_use]
 pub fn task_id_for_admission(operation: OperationId) -> TaskId {
     TaskId::from_bytes(operation.into_bytes())
@@ -196,111 +191,30 @@ impl TaskAdmissionRecord {
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
-        use crate::store::history::HistoryIo as _;
-        fn resource(
-            source: &crate::resources::ResourceRef,
-            quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-        ) -> Result<crate::resources::ResourceRef> {
-            let provider = crate::core::copy_provider(source.provider(), quota)?;
-            let key = crate::core::copy_copy_vector(source.key(), quota)?;
-            let version = source
-                .version()
-                .map(|value| crate::core::copy_text(value, quota))
-                .transpose()?;
-            crate::resources::ResourceRef::new(source.kind(), provider, key, version, quota.work())
-        }
+        use crate::store::HistoryIo as _;
         let mut io = crate::store::HistoryWork::new(
             crate::filesystem::PreparationIo::from_native_work(work)?,
         );
-        io.check_cancellation()?;
-        let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut io);
+        let mut observer = Some(&mut io as &mut dyn crate::store::HistoryIo);
         let mut quota =
             crate::wire_codec::CodecQuota::new(&mut observer, std::mem::size_of::<Self>() as u64)?;
-        let task = task_copy_component(&self.task, &mut quota)?;
-        let machine = MachineIdentity {
-            name: crate::core::copy_text(&self.machine.name, &mut quota)?,
-            version: crate::core::copy_text(&self.machine.version, &mut quota)?,
-            digest: self.machine.digest,
-        };
-        let input = crate::core::copy_value(&self.input, &mut quota)?;
-        let input_schema = crate::core::copy_value(&self.input_schema, &mut quota)?;
-        let output_schema = crate::core::copy_value(&self.output_schema, &mut quota)?;
-        let resource_proofs =
-            RuntimeScope::copy_resource_proofs(&self.resource_proofs, &mut quota)?;
-        let (grants, grant_custody) = self.grants.clone_with_native_work(work)?;
-        let grant_bytes = grant_custody.bytes();
-        quota
-            .work()
-            .as_deref_mut()
-            .expect("native admission clone observer")
-            .absorb_native_custody(grant_custody)?;
-        quota.adopt(grant_bytes)?;
-        let policy = self
-            .policy
-            .as_ref()
-            .map(|policy| task_copy_component(policy, &mut quota))
-            .transpose()?;
-        let extensions = self
-            .extensions
-            .as_ref()
-            .map(|source| -> Result<_> {
-                let (copied, retained) = source.copy(quota.work())?;
-                quota.adopt(retained)?;
-                Ok(copied)
-            })
-            .transpose()?;
-        let execution = self
-            .execution
-            .as_ref()
-            .map(|source| -> Result<_> {
-                let provider = task_copy_component(&source.provider, &mut quota)?;
-                let build = resource(source.build.as_resource(), &mut quota)?;
-                let build = ArtifactRef::from_resource_with_work(build, quota.work())?;
-                let environment = source
-                    .environment
-                    .as_ref()
-                    .map(|source| -> Result<_> {
-                        let copied = resource(source.as_resource(), &mut quota)?;
-                        SandboxRef::from_resource_with_work(copied, quota.work())
-                    })
-                    .transpose()?;
-                Ok(ExecutionPlacement {
-                    provider,
-                    build,
-                    environment,
-                    readiness_revision: source.readiness_revision,
-                })
-            })
-            .transpose()?;
-        let copied = Self {
-            operation_id: self.operation_id,
-            task,
-            machine,
-            input,
-            input_schema,
-            output_schema,
-            parent: self.parent,
-            resource_proofs,
-            grants,
-            limits: self.limits,
-            run_limits: self.run_limits,
-            policy,
-            extensions,
-            execution,
-        };
+        let copied = crate::core::copy_owned(self, &mut quota, |record, work| {
+            for proof in &record.resource_proofs {
+                proof.validate(work)?;
+            }
+            let bytes = record.logical_owned_bytes()?;
+            if bytes != 0 {
+                work.as_deref_mut()
+                    .expect("native admission copy")
+                    .admit_allocation(bytes)?;
+            }
+            Ok(bytes)
+        })?;
         let held = quota.retained();
         quota.transfer();
         drop(quota);
         drop(observer);
-        let custody = io.take_native_custody(held)?;
-        if !custody.work().shares_allocation_context(work) {
-            drop(copied);
-            return Err(Error::NativeWork {
-                cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
-                custody: Some(custody),
-            });
-        }
-        Ok((copied, custody))
+        Ok((copied, io.take_native_custody(held)?))
     }
 
     /// Constructs and validates an exact admission envelope from the fields supplied by an SDK boundary.
@@ -403,61 +317,53 @@ impl TaskAdmissionRecord {
                 "resource-derived admission requires a parent",
             ));
         }
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let mut created = BTreeSet::new();
-        for proof in &self.resource_proofs {
-            proof.validate(quota.work())?;
-            let bytes = crate::store::history::canonical_bytes_with_work(
-                &proof.resource,
-                acyclic_stream::MAX_RECORD_BYTES as u64,
-                quota.work(),
-            )?;
-            quota.adopt(bytes.capacity() as u64)?;
-            let slot = std::mem::size_of::<Vec<u8>>() as u64;
-            if let Some(io) = quota.work().as_deref_mut() {
-                io.retain_owned(slot)?;
-            }
-            quota.adopt(slot)?;
-            if !created.insert(bytes) {
-                return Err(crate::store::guarded_boundary(
-                    quota.work(),
-                    crate::wire::ErrorCode::Invalid,
-                    "task admission repeats a created resource proof",
-                ));
+        for (index, proof) in self.resource_proofs.iter().enumerate() {
+            proof.validate(work)?;
+            for previous in &self.resource_proofs[..index] {
+                if let Some(io) = work.as_deref_mut() {
+                    io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+                }
+                if previous.resource == proof.resource {
+                    return Err(crate::store::guarded_boundary(
+                        work,
+                        crate::wire::ErrorCode::Invalid,
+                        "task admission repeats a created resource proof",
+                    ));
+                }
             }
         }
-        validate_task_schemas(&self.input_schema, &self.output_schema, true, quota.work())?;
+        validate_task_schemas(&self.input_schema, &self.output_schema, true, work)?;
         crate::contract::validate_json_schema_value(
             &self.input_schema,
             &self.input,
             "task input",
-            quota.work(),
+            work,
         )?;
-        self.limits.validate(quota.work())?;
-        self.run_limits.validate(quota.work())?;
+        self.limits.validate(work)?;
+        self.run_limits.validate(work)?;
         if let Some(policy) = &self.policy {
             if !crate::contract::is_valid_component_label(&policy.name)
                 || !crate::contract::is_valid_component_label(&policy.version)
             {
                 return Err(crate::store::guarded_boundary(
-                    quota.work(),
+                    work,
                     crate::wire::ErrorCode::Invalid,
                     "policy identity is invalid",
                 ));
             }
             if policy.digest == [0; 32] {
                 return Err(crate::store::guarded_boundary(
-                    quota.work(),
+                    work,
                     crate::wire::ErrorCode::Invalid,
                     "policy digest is empty",
                 ));
             }
         }
         if let Some(extensions) = &self.extensions {
-            extensions.validate(quota.work())?;
+            extensions.validate(work)?;
         }
         if let Some(execution) = &self.execution {
-            execution.validate(quota.work())?;
+            execution.validate(work)?;
         }
         Ok(())
     }

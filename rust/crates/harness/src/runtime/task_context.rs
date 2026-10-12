@@ -1,7 +1,6 @@
 use super::*;
 
 /// One admitted task's mailbox borrowed from its current owner token.
-
 pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
     fn validate_scope(&self, scope: &RuntimeScope) -> Result<()>;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -76,7 +75,6 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
 }
 
 /// Capability-scoped context passed to live task code.
-
 pub struct TaskContext {
     pub(super) harness: Arc<AgentHarness>,
     pub(super) task_id: OperationId,
@@ -88,15 +86,8 @@ pub struct TaskContext {
     pub(super) model_steps: Arc<(AtomicUsize, Option<NativeCustody>)>,
     pub(super) owned_mailbox: Option<Arc<dyn OwnedTaskMailbox>>,
     pub(super) output_content: Option<ContentBindings>,
-    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-    pub(super) native_root_output: std::sync::OnceLock<(
-        Arc<crate::filesystem::NativeRootOutputSource>,
-        ContentBindings,
-    )>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) native_metadata_source: Option<native_context::NativeMetadataSource>,
-    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-    pub(super) working_view: std::sync::OnceLock<Arc<dyn crate::filesystem::NativeTaskWorkingView>>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) native_custody: Option<acyclic_fs::NativeAllocation>,
 }
@@ -113,13 +104,9 @@ impl Clone for TaskContext {
             owned_interactions: self.owned_interactions.clone(),
             owned_mailbox: self.owned_mailbox.clone(),
             output_content: self.output_content.clone(),
-            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-            native_root_output: self.native_root_output.clone(),
             model_steps: Arc::clone(&self.model_steps),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_metadata_source: None,
-            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-            working_view: std::sync::OnceLock::new(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_custody: None,
         }
@@ -128,7 +115,6 @@ impl Clone for TaskContext {
 
 impl TaskContext {
     /// Selects a trusted host-provided output binding under the unchanged task authority.
-
     pub fn with_content_bindings(mut self, binding: ContentBindings) -> Result<Self> {
         let writer = binding
             .writer
@@ -164,7 +150,6 @@ impl TaskContext {
     }
 
     /// Selects an existing authenticated created destination without cloning the harness, widening grants or acquiring another owner reservation.
-
     pub fn with_output_volume(self, volume: &VolumeRef) -> Result<Self> {
         let binding = self
             .scope
@@ -177,7 +162,6 @@ impl TaskContext {
     }
 
     /// Returns only the exact creator-authenticated handles already admitted to this task.
-
     pub fn created_content_bindings(&self, volume: &VolumeRef) -> Result<ContentBindings> {
         volume.validate(&mut None)?;
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
@@ -226,7 +210,6 @@ impl TaskContext {
     }
 
     /// Returns only the original owner fence already bound to this exact task context.
-
     #[cfg(feature = "filesystem")]
     pub fn owned_task_fence(&self) -> Result<crate::scheduler::LeaseFence> {
         let owner = self
@@ -276,14 +259,12 @@ impl TaskContext {
     }
 
     /// Returns this invocation's stable local operation identity.
-
     #[must_use]
     pub const fn id(&self) -> OperationId {
         self.task_id
     }
 
     /// Admitted durable owner, absent for a process-local task.
-
     #[must_use]
     pub const fn durable_task_id(&self) -> Option<TaskId> {
         self.durable_task
@@ -299,14 +280,12 @@ impl TaskContext {
     }
 
     /// Returns the exact effective authority and bounds.
-
     #[must_use]
     pub const fn scope(&self) -> &RuntimeScope {
         &self.scope
     }
 
     /// Produces an attenuated view for descendants and tool calls.
-
     pub fn scoped(&self, grants: Capabilities, limits: Limits) -> Result<Self> {
         let mut child = self.clone();
         child.scope = self.scope.narrow(grants, limits)?;
@@ -314,7 +293,6 @@ impl TaskContext {
     }
 
     /// Attenuates task execution bounds for this context and its descendants.
-
     pub fn scoped_run_limits(&self, limits: TaskRunLimits) -> Result<Self> {
         let mut child = self.clone();
         child.scope = self.scope.clone().with_run_limits(limits, &mut None)?;
@@ -326,7 +304,6 @@ impl TaskContext {
     }
 
     /// Overrides only this live task's model binding for itself and local descendants.
-
     pub fn scoped_model(
         &self,
         grants: Capabilities,
@@ -345,7 +322,6 @@ impl TaskContext {
     }
 
     /// Places newly admitted descendants on another qualified provider.
-
     pub fn scoped_execution(
         &self,
         grants: Capabilities,
@@ -367,19 +343,16 @@ impl TaskContext {
     }
 
     /// Resolves one registered task without widening its scope.
-
     pub fn task<I: 'static, O: 'static>(&self, name: &str) -> Result<Arc<TaskDefinition<I, O>>> {
         self.harness.task(name)
     }
 
     /// Resolves one pinned tool contract.
-
     pub fn tool(&self, name: &str) -> Result<ToolDefinition> {
         self.harness.tool(name)
     }
 
     /// Spawns a local child; durable work must use stable host admission instead.
-
     pub async fn spawn<I, O>(
         &self,
         definition: &Arc<TaskDefinition<I, O>>,
@@ -408,7 +381,6 @@ impl TaskContext {
     }
 
     /// Returns a separately cancellable bounded group for additional local work.
-
     #[must_use]
     pub fn group(&self) -> RuntimeGroup {
         RuntimeGroup {
@@ -424,7 +396,6 @@ impl TaskContext {
     }
 
     /// Admits a durable child using an explicit stable operation identity.
-
     pub async fn admit<I, O>(
         &self,
         operation_id: OperationId,

@@ -22,7 +22,6 @@ pub(crate) async fn find_operation_bounded_with_work<P: StreamProvider>(
     .map(|(event, bytes)| (event.map(|(event, _)| event), bytes))
 }
 
-/// Carries the actual original wire decoder's retained event claim, without inventorying the returned event again or replacing its source admission.
 pub(crate) async fn bounded_operation_with_retained_quota<P: StreamProvider>(
     client: &std::sync::Arc<P>,
     authority: &Authority,
@@ -32,111 +31,86 @@ pub(crate) async fn bounded_operation_with_retained_quota<P: StreamProvider>(
     return_event: bool,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<(Option<(Event, u64)>, u64)> {
-    verifier.verify_audience(authority, work)?;
+    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+    verifier.verify_audience(authority, quota.work())?;
     if maximum_bytes == 0 {
         return Err(crate::store::guarded_boundary(
-            work,
+            quota.work(),
             crate::wire::ErrorCode::Invalid,
             "operation lookup byte bound must be positive",
         ));
     }
-    let (path, path_owned) = {
-        publication_path(
-            authority,
-            "harness/v2/aggregate-operations/",
-            Some((&operation, 36)),
-            work,
-        )?
-    };
-    let mut location_owned = 0;
-    let mut raw_owned = 0;
-    let mut staged = None;
+    let (path, path_owned) = publication_path(
+        authority,
+        "harness/v2/aggregate-operations/",
+        Some((&operation, 36)),
+        quota.work(),
+    )?;
+    quota.adopt(path_owned)?;
     let result = async {
-        let Some(index) = one_record(client, &path, 0, work).await? else {
-            return match tail_optional_with_work(client, &path, work).await? {
-                None => Ok(0),
+        let Some(index) = one_record(client, &path, 0, quota.work()).await? else {
+            return match tail_optional_with_work(client, &path, quota.work()).await? {
+                None => Ok((None, 0, 0)),
                 Some(_) => Err(crate::store::guarded_boundary(
-                    work,
+                    quota.work(),
                     crate::wire::ErrorCode::Storage,
                     "operation location is missing before its committed tail",
                 )),
             };
         };
-        raw_owned = sdk_record_retained_bytes(&index, work);
-        let index_bytes = index.value.len() as u64;
-        if index_bytes >= maximum_bytes {
+        let raw_owned = sdk_record_retained_bytes(&index, quota.work());
+        quota.adopt(raw_owned)?;
+        if index.value.len() as u64 >= maximum_bytes {
             return Err(crate::store::guarded_boundary(
-                work,
+                quota.work(),
                 crate::wire::ErrorCode::Invalid,
                 "operation lookup exceeds byte bound",
             ));
         }
-        if tail_with_work(client, &path, work).await? != 1 {
+        if tail_with_work(client, &path, quota.work()).await? != 1 {
             return Err(crate::store::guarded_boundary(
-                work,
+                quota.work(),
                 crate::wire::ErrorCode::Storage,
                 "operation location is not a single immutable record",
             ));
         }
-        let location = decode_location_with_work(&index.value, work)?;
-        location_owned = location.authority.id.capacity() as u64;
+        let location = decode_location_with_work(&index.value, quota.work())?;
+        quota.adopt(location.authority.id.capacity() as u64)?;
         if &location.authority != authority
             || location.operation_id != operation
             || location.revision == 0
         {
             return Err(crate::store::guarded_boundary(
-                work,
+                quota.work(),
                 crate::wire::ErrorCode::Storage,
                 "operation location identity is invalid",
             ));
         }
-        let ((event, event_owned), bytes) = verify_operation_locator(
+        let (event, bytes) = verify_operation_locator(
             client,
             authority,
             verifier,
             &index,
             &location,
             maximum_bytes,
-            work,
+            quota.work(),
         )
         .await?;
-        staged = Some((event, event_owned));
-        drop(location);
-        drop(index);
-        Ok(bytes)
+        quota.adopt(event.1)?;
+        Ok((Some(event), bytes, raw_owned))
     }
     .await;
     drop(path);
-    let released = match work.as_deref_mut() {
-        Some(observer) => {
-            let raw = observer.release_owned(raw_owned);
-            let location = observer.release_owned(location_owned);
-            let path = observer.release_owned(path_owned);
-            raw.and(location).and(path)
-        }
-        None => Ok(()),
-    };
-    let result = match result {
-        Ok(bytes) => released.map(|()| bytes),
-        Err(error) => Err(error),
-    };
-    let result = result.and_then(|bytes| {
-        if return_event
-            && staged.is_some()
-            && let Some(observer) = work.as_deref_mut()
-        {
-            observer.stage_output(bytes - raw_owned, 1)?;
-        }
-        Ok(bytes)
-    });
-    match result {
-        Ok(bytes) => Ok((staged, bytes)),
-        Err(error) => {
-            let event_owned = staged.as_ref().map_or(0, |(_, owned)| *owned);
-            drop(staged);
-            release_owned_after_drop(Err(error), event_owned, work)
-        }
+    let (event, bytes, raw_owned) = result?;
+    quota.replace(event.as_ref().map_or(0, |(_, owned)| *owned))?;
+    if return_event
+        && event.is_some()
+        && let Some(io) = quota.work().as_deref_mut()
+    {
+        io.stage_output(bytes - raw_owned, 1)?;
     }
+    quota.transfer();
+    Ok((event, bytes))
 }
 
 pub(in crate::store) async fn verify_operation_locator<P: StreamProvider>(
@@ -148,76 +122,63 @@ pub(in crate::store) async fn verify_operation_locator<P: StreamProvider>(
     maximum_bytes: u64,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<((Event, u64), u64)> {
-    verifier.verify_audience(authority, work)?;
+    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+    verifier.verify_audience(authority, quota.work())?;
     let index_bytes = index.value.len() as u64;
     if index_bytes >= maximum_bytes {
         return Err(crate::store::guarded_boundary(
-            work,
+            quota.work(),
             crate::wire::ErrorCode::Invalid,
             "operation lookup exceeds byte bound",
         ));
     }
     if &location.authority != authority || location.revision == 0 {
         return Err(crate::store::guarded_boundary(
-            work,
+            quota.work(),
             crate::wire::ErrorCode::Storage,
             "operation location identity is invalid",
         ));
     }
-    let (canonical, path_owned) = if work.is_none() {
-        (StreamPath::new(authority.stream_path(&mut None)?)?, 0)
-    } else {
-        publication_path(authority, "harness/v2/", None, work)?
-    };
+    let (path, path_owned) = publication_path(authority, "harness/v2/", None, quota.work())?;
+    quota.adopt(path_owned)?;
     let sequence = location.revision - 1;
-    let received = one_record(client, &canonical, sequence, work).await;
-    drop(canonical);
-    let record = release_owned_after_drop(received, path_owned, work)?.ok_or_else(|| {
+    let received = one_record(client, &path, sequence, quota.work()).await;
+    drop(path);
+    let released = quota.relinquish(path_owned);
+    let record = received?;
+    released?;
+    let record = record.ok_or_else(|| {
         crate::store::guarded_boundary(
-            work,
+            quota.work(),
             crate::wire::ErrorCode::Storage,
             "indexed canonical event is missing",
         )
     })?;
-    let record_bytes = record.value.len() as u64;
-    let result = (|| {
-        let consumed_bytes = index_bytes
-            .checked_add(record_bytes)
-            .filter(|bytes| *bytes <= maximum_bytes)
-            .ok_or_else(|| {
-                crate::store::guarded_boundary(
-                    work,
-                    crate::wire::ErrorCode::Invalid,
-                    "operation lookup exceeds byte bound",
-                )
-            })?;
-        let (event, owned) = crate::store::history::verify_history_record_with_retained_quota(
-            verifier, authority, sequence, &record, work,
-        )?;
-        if let Err(error) =
-            verify_operation_binding(authority, index, location, &record, &event, work)
-        {
-            drop(event);
-            return release_owned_after_drop(Err(error), owned, work);
-        }
-        Ok(((event, owned), consumed_bytes))
-    })();
-    let record_retained = sdk_record_retained_bytes(&record, work);
+    let retained = sdk_record_retained_bytes(&record, quota.work());
+    quota.adopt(retained)?;
+    let bytes = index_bytes
+        .checked_add(record.value.len() as u64)
+        .filter(|bytes| *bytes <= maximum_bytes)
+        .ok_or_else(|| {
+            crate::store::guarded_boundary(
+                quota.work(),
+                crate::wire::ErrorCode::Invalid,
+                "operation lookup exceeds byte bound",
+            )
+        })?;
+    let (event, owned) = crate::store::history::verify_history_record_with_retained_quota(
+        verifier,
+        authority,
+        sequence,
+        &record,
+        quota.work(),
+    )?;
+    quota.adopt(owned)?;
+    verify_operation_binding(authority, index, location, &record, &event, quota.work())?;
     drop(record);
-    let released = match work.as_deref_mut() {
-        Some(observer) => observer.release_owned(record_retained),
-        None => Ok(()),
-    };
-    match result {
-        Ok(((event, owned), bytes)) => match released {
-            Ok(()) => Ok(((event, owned), bytes)),
-            Err(error) => {
-                drop(event);
-                release_owned_after_drop(Err(error), owned, work)
-            }
-        },
-        Err(error) => Err(error),
-    }
+    quota.replace(owned)?;
+    quota.transfer();
+    Ok(((event, owned), bytes))
 }
 
 pub(in crate::store) fn verify_operation_binding(
@@ -403,7 +364,7 @@ pub(super) async fn find_message_at_locator_with_work<P: StreamProvider>(
 
 #[allow(
     clippy::too_many_arguments,
-    reason = "shared original atomic locator verification plus optional receipts"
+    reason = "binds an exact locator and pinned cut"
 )]
 pub(super) async fn verify_message_locator<P: StreamProvider>(
     client: &std::sync::Arc<P>,
@@ -416,99 +377,82 @@ pub(super) async fn verify_message_locator<P: StreamProvider>(
     maximum_bytes: u64,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<(Option<crate::conversation::ConversationMessage>, u64)> {
-    let location = decode_message_location_with_work(&index.value, work)?;
-    let location_bytes = location.location.authority.id.capacity() as u64;
-    let result = async {
-        if &location.location.authority != authority
-            || expected_id.is_some_and(|id| location.message_id != id)
-            || expected_sequence.is_some_and(|sequence| location.sequence != sequence)
-            || location.location.revision == 0
-            || (location.sequence == 0 && expected_sequence != Some(0))
+    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let location = decode_message_location_with_work(&index.value, quota.work())?;
+    let location_owned = location.location.authority.id.capacity() as u64;
+    quota.adopt(location_owned)?;
+    if &location.location.authority != authority
+        || expected_id.is_some_and(|id| location.message_id != id)
+        || expected_sequence.is_some_and(|sequence| location.sequence != sequence)
+        || location.location.revision == 0
+        || (location.sequence == 0 && expected_sequence != Some(0))
+    {
+        return Err(crate::store::guarded_boundary(
+            quota.work(),
+            crate::wire::ErrorCode::Storage,
+            "message location identity is invalid",
+        ));
+    }
+    let ((event, owned), bytes) = verify_operation_locator(
+        client,
+        authority,
+        verifier,
+        index,
+        &location.location,
+        maximum_bytes,
+        quota.work(),
+    )
+    .await?;
+    quota.adopt(owned)?;
+    if let Some(io) = quota.work().as_deref() {
+        io.check_cancellation()?;
+    }
+    if location.sequence == 0 {
+        if !location.message_id.is_nil()
+            || !matches!(
+                event.payload,
+                crate::core::EventPayload::ConversationBound { .. }
+            )
         {
             return Err(crate::store::guarded_boundary(
-                work,
+                quota.work(),
                 crate::wire::ErrorCode::Storage,
-                "message location identity is invalid",
+                "empty message head differs from its canonical binding",
             ));
         }
-        let ((event, owned), consumed_bytes) = verify_operation_locator(
-            client,
-            authority,
-            verifier,
-            index,
-            &location.location,
-            maximum_bytes,
-            work,
-        )
-        .await?;
-        let selected = (|| {
-            if let Some(observer) = work.as_deref_mut() {
-                observer.check_cancellation()?;
-            }
-            if location.sequence == 0 {
-                if !location.message_id.is_nil()
-                    || !matches!(
-                        &event.payload,
-                        crate::core::EventPayload::ConversationBound { .. }
-                    )
-                {
-                    return Err(crate::store::guarded_boundary(
-                        work,
-                        crate::wire::ErrorCode::Storage,
-                        "empty message head differs from its canonical binding",
-                    ));
-                }
-                return Ok(false);
-            }
-            let message = match &event.payload {
-                crate::core::EventPayload::ConversationMessageAppended { message } => {
-                    message.as_ref()
-                }
-                crate::core::EventPayload::ProjectMergePublished { receipt } => &receipt.notice,
-                _ => {
-                    return Err(crate::store::guarded_boundary(
-                        work,
-                        crate::wire::ErrorCode::Storage,
-                        "message location points to another event kind",
-                    ));
-                }
-            };
-            if message.id != location.message_id || message.sequence != location.sequence {
-                return Err(crate::store::guarded_boundary(
-                    work,
-                    crate::wire::ErrorCode::Storage,
-                    "message location differs from its canonical message",
-                ));
-            }
-            if event.revision > through_revision {
-                return Ok(false);
-            }
-            if let Some(observer) = work.as_deref_mut() {
-                observer.check_cancellation()?;
-                observer.stage_output(consumed_bytes - index.value.len() as u64, 1)?;
-            }
-            Ok(true)
-        })();
-        match selected {
-            Ok(true) => {
-                let message = match event.payload {
-                    crate::core::EventPayload::ConversationMessageAppended { message } => *message,
-                    crate::core::EventPayload::ProjectMergePublished { receipt } => receipt.notice,
-                    _ => unreachable!("selected canonical message payload"),
-                };
-                drop(event.scope);
-                drop(event.causal_parent);
-                Ok((Some(message), consumed_bytes))
-            }
-            selected => {
-                drop(event);
-                release_owned_after_drop(selected.map(|_| (None, consumed_bytes)), owned, work)
-            }
-        }
+        return Ok((None, bytes));
     }
-    .await;
+    let message = match event.payload {
+        crate::core::EventPayload::ConversationMessageAppended { message } => *message,
+        crate::core::EventPayload::ProjectMergePublished { receipt } => receipt.notice,
+        _ => {
+            return Err(crate::store::guarded_boundary(
+                quota.work(),
+                crate::wire::ErrorCode::Storage,
+                "message location points to another event kind",
+            ));
+        }
+    };
+    if message.id != location.message_id || message.sequence != location.sequence {
+        return Err(crate::store::guarded_boundary(
+            quota.work(),
+            crate::wire::ErrorCode::Storage,
+            "message location differs from its canonical message",
+        ));
+    }
+    if event.revision > through_revision {
+        return Ok((None, bytes));
+    }
+    if let Some(io) = quota.work().as_deref_mut() {
+        io.check_cancellation()?;
+        io.stage_output(bytes - index.value.len() as u64, 1)?;
+    }
+    drop(event.scope);
+    drop(event.causal_parent);
     drop(location);
-    release_owned_after_drop(result, location_bytes, work)
+    quota.relinquish(location_owned)?;
+    quota.transfer();
+    Ok((Some(message), bytes))
 }
 
 /// Captures one logical message head without a reducer or retained-history scan.

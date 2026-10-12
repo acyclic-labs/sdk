@@ -357,7 +357,7 @@ async fn measured_checkpoint_cancellation_stops_before_next_sdk_call() -> Result
 async fn measured_snapshot_authentication_observes_original_encoder_and_mac_failures() -> Result<()>
 {
     let provider = fixture().await?;
-    let snapshot = checkpoints::load_with_work(
+    let snapshot = crate::store::checkpoints::load_with_work(
         &provider,
         &authority(),
         &issuer().verifier(&mut None).expect("verifier copy"),

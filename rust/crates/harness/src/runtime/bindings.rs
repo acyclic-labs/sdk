@@ -1,7 +1,6 @@
 use super::*;
 
 /// Immutable typed runtime assembled from task/tool registries and providers.
-
 pub struct AgentHarness {
     pub(super) tasks: TaskRegistry,
     pub(super) tools: ToolRegistry,
@@ -105,7 +104,6 @@ impl ForkBinding {
 }
 
 /// Provider-owned, scope-bound file handles.
-
 #[derive(Clone)]
 pub struct ContentBindings {
     /// Authenticated, exact-version read and residency boundary.
@@ -115,11 +113,9 @@ pub struct ContentBindings {
 }
 
 /// Artifact access uses immutable file references.
-
 pub type ArtifactBindings = ContentBindings;
 
 /// Immutable admission bindings assembled before tasks can run.
-
 pub struct Bindings {
     /// Version-pinned typed task definitions.
     pub tasks: TaskRegistry,
@@ -320,26 +316,26 @@ impl Bindings {
                         "resumable registry differs from its definitions",
                     )
                 })?;
-                let same_adapter = adapter.definition == *definition && {
-                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                    let same_identity = if let Some(io) = startup {
-                        let work = io.original_native_work().ok_or(Error::NativeBoundary {
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                let native = startup
+                    .map(|io| {
+                        io.original_native_work().ok_or(Error::NativeBoundary {
                             code: crate::wire::ErrorCode::Unsupported,
                             reason: "startup requires original native work",
-                        })?;
-                        adapter
-                            .executor
-                            .resumable_machine_identity_with_native_work(work)?
-                            == Some(pinned.machine.identity_with_native_work(work)?)
-                    } else {
-                        adapter.executor.resumable_machine_identity().as_ref()
-                            == Some(pinned.machine.identity())
-                    };
-                    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-                    let same_identity = adapter.executor.resumable_machine_identity().as_ref()
-                        == Some(pinned.machine.identity());
-                    same_identity
+                        })
+                    })
+                    .transpose()?;
+                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                let native = None;
+                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                let machine = match native {
+                    Some(work) => pinned.machine.identity_with_native_work(work)?,
+                    None => pinned.machine.identity(),
                 };
+                #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+                let machine = pinned.machine.identity();
+                let same_adapter = adapter.definition == *definition
+                    && adapter.executor.resumable_machine_identity(native)? == Some(machine);
                 if same_adapter {
                     continue;
                 }

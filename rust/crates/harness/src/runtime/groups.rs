@@ -1,7 +1,6 @@
 use super::*;
 
 /// Typed live group whose cancellation is independent of sibling groups.
-
 pub struct RuntimeGroup {
     pub(super) harness: Arc<AgentHarness>,
     pub(super) group: TaskGroup,
@@ -11,7 +10,6 @@ pub struct RuntimeGroup {
 }
 
 /// Ordered immutable batch selection.
-
 pub struct Batch<I> {
     /// Caller-retained identity allocated before dispatch.
     pub id: BatchId,
@@ -28,7 +26,6 @@ impl<I> Batch<I> {
 }
 
 /// One unambiguous slot in an admitted batch.
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InputKey {
     /// Batch owning this input.
@@ -38,7 +35,6 @@ pub struct InputKey {
 }
 
 /// Group behavior retained with the exact batch identity.
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum BatchGroupPolicy {
@@ -49,7 +45,6 @@ pub enum BatchGroupPolicy {
 }
 
 /// Exact immutable batch request presented to a durable owner.
-
 #[derive(Clone)]
 pub struct DurableBatchRequest {
     /// Stable group identity.
@@ -203,7 +198,12 @@ impl DurableBatchRequest {
             execution.validate(&mut None)?;
         }
         for input in &self.inputs {
-            crate::contract::validate_json_schema_value(&self.input_schema, input, "batch input", &mut None)?;
+            crate::contract::validate_json_schema_value(
+                &self.input_schema,
+                input,
+                "batch input",
+                &mut None,
+            )?;
         }
         if crate::contract::canonical_json_bytes(&self.canonical_value())?.len() as u64
             > self.scope.limits().file_bytes
@@ -301,7 +301,6 @@ impl DurableBatchRequest {
 }
 
 /// One canonical operation identity shared by native and WASM batch facades.
-
 #[must_use]
 pub fn batch_member_operation_id(
     group_id: GroupId,
@@ -319,7 +318,6 @@ pub fn batch_member_operation_id(
 }
 
 /// One exact input slot, preserving the admission decision before and after terminal observation without introducing another key-bearing shape.
-
 pub struct BatchEntry<T> {
     /// Stable batch/index key.
     pub key: InputKey,
@@ -328,7 +326,6 @@ pub struct BatchEntry<T> {
 }
 
 /// Ordered admission receipt; every submitted input retains a slot.
-
 pub struct AdmissionBatch<O> {
     /// Owning group identity.
     pub group_id: GroupId,
@@ -342,7 +339,6 @@ pub struct AdmissionBatch<O> {
 }
 
 /// Ordered outcome of all observable batch slots.
-
 pub struct BatchOutcome<O> {
     /// Stable group identity.
     pub group_id: GroupId,
@@ -355,7 +351,6 @@ pub struct BatchOutcome<O> {
 }
 
 /// One cancellation request, never a claim that the task is terminal.
-
 pub enum BatchCancellationStatus {
     /// The owner accepted an idempotent cancellation request; observe outcome separately.
     Requested,
@@ -377,7 +372,6 @@ pub enum BatchCancellationStatus {
 }
 
 /// Per-member request report for a retained batch.
-
 pub struct BatchCancellationReport {
     /// Owning group.
     pub group_id: GroupId,
@@ -541,7 +535,6 @@ impl<O: DeserializeOwned + Send + 'static> AdmissionBatch<O> {
 }
 
 /// A typed ordered map cannot silently discard a rejected admission, failed child, or unknown outcome.
-
 pub enum RuntimeMap<O> {
     /// Every input admitted and completed successfully, in input order.
     Complete(Vec<O>),

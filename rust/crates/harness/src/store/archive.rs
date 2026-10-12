@@ -24,7 +24,10 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }
         if let Some(state) = self.reducer.effect(effect) {
             crate::contract::json_byte_length(state, limits.maximum_bytes, work).map(|_| ())?;
-            return crate::wire_codec::CodecQuota::produce(work, |quota| crate::core::copy_effect(state, quota)).map(Some);
+            return crate::wire_codec::CodecQuota::produce(work, |quota| {
+                crate::core::copy_effect(state, quota)
+            })
+            .map(Some);
         }
         let reader = HistoryReader::new(
             &self.client,
@@ -173,7 +176,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
             )
             .await?;
             let (cloned, returned_owned) =
-                crate::wire_codec::CodecQuota::produce(owned.work(), |quota| crate::core::copy_event(&event, quota))?;
+                crate::wire_codec::CodecQuota::produce(owned.work(), |quota| {
+                    crate::core::copy_event(&event, quota)
+                })?;
             owned.adopt(returned_owned)?;
             let result = self.reducer.apply_committed(cloned, owned.work())?;
             if indexed {
@@ -316,7 +321,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     "aggregate refresh page is not contiguous".into(),
                 ));
             }
-            let ((authority, event), _) = decode_event(&record.value, &mut None)?;
+            let ((authority, event), _) =
+                crate::wire_codec::decode_event(&record.value, &mut None)?;
             if &authority != self.reducer.authority()
                 || event.revision
                     != record.sequence.checked_add(1).ok_or_else(|| {

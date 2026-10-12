@@ -1,10 +1,7 @@
 //! Aggregate accounting on the existing IO context.
 use super::HistoryIo;
 use crate::filesystem::PreparationIo;
-use crate::{
-    Error, Result,
-    core::{Authority, Event},
-};
+use crate::{Error, Result, core::Authority};
 use acyclic_fs::{
     CancellationToken, MeasuredResult, OperationFailure, OperationReceipt, WorkCounters,
 };
@@ -219,7 +216,9 @@ impl HistoryIo for HistoryWork {
         }
     }
     fn decode_json_value(&mut self, bytes: &[u8]) -> Result<(serde_json::Value, u64)> {
-        HistoryIo::decode_json_value(&mut &self.io, bytes)
+        let value = self.io.decode_json::<serde_json::Value>(bytes)?;
+        let retained = crate::contract::json_value_logical_owned_bytes(&value)?;
+        Ok((value, retained))
     }
     fn hashed_bytes(&mut self, bytes: u64) -> Result<()> {
         HistoryIo::hashed_bytes(&mut &self.io, bytes)
