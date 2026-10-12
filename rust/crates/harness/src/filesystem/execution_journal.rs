@@ -1027,7 +1027,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
         let volume = volume.copy(&mut work)?;
         let verifier = verifier.copy(&mut work)?;
-        let schemas = schemas.clone_with_work(&mut work)?;
+        let schemas = schemas.copy(&mut work)?;
         let scope = scope.copy(&mut work)?;
         let interactions = match verifier.audience().kind {
             crate::core::AggregateKind::Conversation => Some(FilesystemInteractionHost::new(
