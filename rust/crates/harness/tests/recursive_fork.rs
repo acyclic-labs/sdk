@@ -181,7 +181,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         &stream,
         authority.clone(),
         issuer.verifier(&mut None).expect("verifier copy"),
-        SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+        SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
         host.clone(),
@@ -830,7 +830,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 &stream,
                 authority.clone(),
                 issuer.verifier(&mut None).expect("verifier copy"),
-                SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+                SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
             .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
                 Arc::new(
@@ -855,7 +855,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 &stream,
                 authority.clone(),
                 issuer.verifier(&mut None).expect("verifier copy"),
-                SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+                SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
             .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[Arc::new(
                 FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?,
@@ -1063,7 +1063,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             &stream,
             child_authority.clone(),
             child_issuer.verifier(&mut None).expect("verifier copy"),
-            SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+            SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
         .await?
         .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
             host.clone(),
@@ -1081,7 +1081,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 &prebound_stream,
                 child_authority.clone(),
                 child_issuer.verifier(&mut None).expect("verifier copy"),
-                SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+                SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?;
             prebound_child
                 .execute(command(
@@ -1285,7 +1285,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 &stream,
                 authority.clone(),
                 issuer.verifier(&mut None).expect("verifier copy"),
-                SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+                SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
             .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
                 host.clone(),
@@ -1301,7 +1301,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 &stream,
                 child_authority.clone(),
                 child_issuer.verifier(&mut None).expect("verifier copy"),
-                SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
+                SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
             .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
                 host.clone(),
