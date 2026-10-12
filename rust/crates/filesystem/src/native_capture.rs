@@ -8,7 +8,7 @@ use crate::kernel::{
     FileKind, FileMetadata, FileRecord, LogicalName, MetadataField, NameEncoding, NamespacePath,
 };
 use crate::model::FilesystemProfile;
-use crate::native_host::{HostDataRange, HostRoot, HostStat, allocated_data_ranges_with_work};
+use crate::native_host::{HostDataRange, HostRoot, HostStat, allocated_data_ranges};
 use crate::native_host::NativeHostWork as _;
 use crate::demand::{
     DemandError, DemandWork, NativeDemandReadMeter,
@@ -6140,8 +6140,8 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         }
         ensure_same_host_node(snapshot, &metadata)?;
         let logical_bytes = metadata.len();
-        let ranges = allocated_data_ranges_with_work(
-            &file, logical_bytes, maximum_extent_spans, &mut host_work,
+        let ranges = allocated_data_ranges(
+            &file, 0, logical_bytes, maximum_extent_spans, &mut host_work,
             |work| capture_ledger_meter(work.scope().original()).remaining(),
             #[cfg(windows)]
             |file, code, input, output, work| {
