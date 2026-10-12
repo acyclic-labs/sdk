@@ -5,7 +5,12 @@ pub(super) fn preparation_journal(
     operation: OperationId,
     io: Option<&PreparationIo>,
 ) -> Result<WorkspaceRef> {
-    let name = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("harness-fork-preparation-{operation}"), work))?;
+    let name = crate::executor::with_history_io(io, |work| {
+        crate::contract::preparation_format(
+            format_args!("harness-fork-preparation-{operation}"),
+            work,
+        )
+    })?;
     let provider = match io {
         Some(io) => provider.clone_with_io(io)?,
         None => provider.clone(),
@@ -22,8 +27,9 @@ pub(super) fn allocation_ref(
     let hold = io
         .map(|io| io.guard_owned(volume_name.capacity() as u64))
         .transpose()?;
-    let name =
-        crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("fork-allocation-{volume_name}"), work))?;
+    let name = crate::executor::with_history_io(io, |work| {
+        crate::contract::preparation_format(format_args!("fork-allocation-{volume_name}"), work)
+    })?;
     drop(volume_name);
     drop(hold);
     let provider = match io {
@@ -55,7 +61,7 @@ pub(super) fn record_digest<T: Serialize>(
     let encoded_hold;
     let encoded = encode(value, maximum_bytes, io)?;
     encoded_hold = io.map(|io| io.guard_bytes(&encoded)).transpose()?.flatten();
-    let digest = *bounded_io::digest(&encoded, io)?.as_bytes();
+    let digest = crate::model::hash_bytes(&encoded, io)?;
     drop(encoded);
     drop(encoded_hold);
     Ok(digest)
@@ -79,7 +85,7 @@ pub(super) async fn write_record<A: AsyncAuthorityStore, O: AsyncObjectStore, T:
         journal,
         Some(&observed.generation),
         &[WorkspaceMutation::PutFile {
-            path: bounded_io::clone_text(path, io)?,
+            path: stock_string_copy(path, io)?,
             bytes,
         }],
         key,
@@ -133,7 +139,7 @@ pub(super) async fn read_claim<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .await?
     {
         Some(claim) if claim == *request => Ok(true),
-        Some(_) => Err(bounded_io::failure(
+        Some(_) => Err(stock_boundary(
             io,
             crate::wire::ErrorCode::Conflict,
             "fork operation is claimed by another request",
@@ -154,7 +160,7 @@ pub(super) async fn read_report<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     if let Some(report) = &report {
         crate::executor::with_history_io(io, |work| report.validate(work))?;
         if report.request != *request {
-            return Err(bounded_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Conflict,
                 "fork report does not match its claimed request",
@@ -286,3 +292,5 @@ pub(super) fn journal_absent(error: &Error) -> bool {
         _ => false,
     }
 }
+
+use crate::executor::{stock_boundary, stock_string_copy};

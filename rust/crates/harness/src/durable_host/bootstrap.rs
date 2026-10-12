@@ -298,12 +298,12 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn verify_root_bootstrap_context_with_native_work(
-        &self,
-        root: &TaskAdmissionRecord,
-        binding: &crate::store::VerifiedRootBinding,
+    pub(crate) async fn root_bootstrap_context<'a>(
+        &'a self,
+        root: &'a TaskAdmissionRecord,
+        binding: &'a crate::store::VerifiedRootBinding,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
+    ) -> Result<crate::resource_preparation::RootBootstrapContentContext<'a>> {
         self.verify_root_binding_identity_with_native_work(binding, true, work)?;
         if root.parent.is_some()
             || crate::runtime::task_id_for_admission(root.operation_id) != self.task_id
@@ -315,7 +315,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         }
         let mut io = crate::filesystem::PreparationIo::from_native_work(work)
             .map(crate::store::HistoryWork::new)?;
-        let digest = crate::contract::canonical_json_digest_with_work(
+        let digest = crate::contract::canonical_json_digest(
             root,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             &mut Some(&mut io),
@@ -326,11 +326,11 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 reason: "bootstrap admission differs from protected original workflow",
             });
         }
-        self.verify_read_access(&mut Some(
-            &mut crate::filesystem::PreparationIo::from_native_work(work)
-                .map(crate::store::HistoryWork::new)?,
+        self.verify_read_access(&mut Some(&mut io)).await?;
+        let digest = root.canonical_digest_with_work(&mut Some(&mut io))?;
+        Ok(crate::resource_preparation::RootBootstrapContentContext::authenticated(
+            root, self.root_bootstrap_owner(), binding, digest,
         ))
-        .await
     }
 
     pub(crate) fn retain_root_binding(
@@ -476,13 +476,13 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn verify_original_root_bootstrap_source_with_native_work(
+    pub(crate) fn original_root_bootstrap_context<'a>(
         &self,
-        original: &(OperationSpec, &LeaseFence),
-        root: &TaskAdmissionRecord,
-        binding: &crate::store::VerifiedRootBinding,
+        original: &'a (OperationSpec, &LeaseFence),
+        root: &'a TaskAdmissionRecord,
+        binding: &'a crate::store::VerifiedRootBinding,
         native: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
+    ) -> Result<crate::resource_preparation::RootBootstrapContentContext<'a>> {
         let mut io = crate::filesystem::PreparationIo::from_native_work(native)
             .map(crate::store::HistoryWork::new)?;
         let mut observer = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
@@ -502,7 +502,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "bootstrap binding differs from its canonical original root reservation",
             ));
         }
-        let digest = crate::contract::canonical_json_digest_with_work(
+        let digest = crate::contract::canonical_json_digest(
             root,
             acyclic_stream::MAX_RECORD_BYTES as u64,
             &mut observer,
@@ -514,7 +514,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "bootstrap root input differs from its protected original workflow",
             ));
         }
-        Ok(())
+        let digest = root.canonical_digest_with_work(&mut observer)?;
+        Ok(crate::resource_preparation::RootBootstrapContentContext::authenticated(
+            root, declaration.owner.authority(), binding, digest,
+        ))
     }
 
     /// Restores only configured, originally allocated ROOT content.
@@ -524,7 +527,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         root: &TaskAdmissionRecord,
         native: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Option<crate::resource_preparation::CreatedResourceAccess>> {
-        use crate::resource_preparation::{CreatedResourceAccess, RootBootstrapContentContext};
+        use crate::resource_preparation::CreatedResourceAccess;
         let mut access: Option<CreatedResourceAccess> = None;
         for provider in &self.resource_creation {
             for source in provider.root_bootstrap_sources(root.operation_id) {
@@ -548,19 +551,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                     &mut Some(&mut io),
                 )
                 .await?;
-                let context =
-                    RootBootstrapContentContext::from_verified_original_root_with_native_work(
-                        self, &original, root, binding, native,
-                    )
-                    .await?;
-                let received = provider
+                let context = self.original_root_bootstrap_context(&original, root, binding, native)?;
+                let next = provider
                     .verify_root_bootstrap_with_native_work(context, request, native)?
                     .await?;
-                let next = CreatedResourceAccess::consume_root_bootstrap_with_native_work(
-                    context, request, received.0, received.1, native,
-                )?;
                 access = Some(match access.take() {
-                    Some(current) => current.merge_root_bootstrap_with_native_work(next, native)?,
+                    Some(current) => current.merge_root(next, native)?,
                     None => next,
                 });
                 drop(original);

@@ -1,4 +1,4 @@
-import { copyBytes, copyName, copyOptionalBytes, requireIdentity, requireWorkspaceName } from "./binding-values.js";
+import { copyName, copyOptionalBytes, requireIdentity, requireWorkspaceName } from "./binding-values.js";
 import { createRequire } from "node:module";
 import { arch, platform } from "node:process";
 import type { EngineCapabilities, FsGeneration, FsWorkspace, NativeFsEngine, NativeFsWorkspace, NativeFsOptions, NativeWatcher, NativeWatchBatch, NativeNamespacePath, CaptureResult, NativeWorkspaceMount, SourceResult, WorkCounters, TransactionOperation, GenerationExportManifest } from "./contracts.js";
@@ -78,12 +78,12 @@ function copyWorkspaceLineageRecord(
   return {
     version: record.version,
     revision: record.revision,
-    workspaceId: copyBytes(record.workspaceId),
+    workspaceId: new Uint8Array(record.workspaceId),
     workspaceName: record.workspaceName,
     parentWorkspaceId: copyOptionalBytes(record.parentWorkspaceId),
     parentWorkspaceName: record.parentWorkspaceName,
-    forkGeneration: copyBytes(record.forkGeneration),
-    initialGeneration: copyBytes(record.initialGeneration),
+    forkGeneration: new Uint8Array(record.forkGeneration),
+    initialGeneration: new Uint8Array(record.initialGeneration),
   };
 }
 
@@ -101,7 +101,7 @@ function adaptWorkspaceGraph(raw: NativeRawWorkspaceGraph): WorkspaceGraph {
     },
     async fork(parent, destination, idempotencyKey) {
       requireWorkspaceName(destination);
-      if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, "idempotency key");
+      if (idempotencyKey !== undefined) requireIdentity(idempotencyKey, 16, "idempotency key");
       const scope = workspaceScopes.get(parent);
       if (scope === undefined) throw new TypeError("workspace belongs to another filesystem engine");
       return scope.adaptWorkspace((normalizeNative(
@@ -109,14 +109,14 @@ function adaptWorkspaceGraph(raw: NativeRawWorkspaceGraph): WorkspaceGraph {
       ) as WasmRawWorkspace));
     },
     async authorizeJoin(childWorkspaceId, parentWorkspaceId) {
-      requireIdentity(childWorkspaceId, "child workspace identity");
-      requireIdentity(parentWorkspaceId, "parent workspace identity");
+      requireIdentity(childWorkspaceId, 16, "child workspace identity");
+      requireIdentity(parentWorkspaceId, 16, "parent workspace identity");
       return copyWorkspaceLineageRecord(
         await raw.authorizeJoin(childWorkspaceId, parentWorkspaceId),
       );
     },
     async ancestors(workspaceId, maximum) {
-      requireIdentity(workspaceId, "workspace identity");
+      requireIdentity(workspaceId, 16, "workspace identity");
       return (await raw.ancestors(workspaceId, maximum)).map(copyWorkspaceLineageRecord);
     },
   };
@@ -250,7 +250,7 @@ function createNativeAdapter() {
       return {
         mount(destination, writable) {
           const value = raw.mount(destination, writable);
-          return { get id() { return copyBytes(value.id); }, destination: value.destination, revalidate() { value.revalidate(); }, stop() { return value.stop(); } };
+          return { get id() { return new Uint8Array(value.id); }, destination: value.destination, revalidate() { value.revalidate(); }, stop() { return value.stop(); } };
         },
         async materialize(options) {
           const value = await raw.materialize(options);
@@ -302,7 +302,7 @@ function createNativeAdapter() {
 function nativeTransactionOperation(value: TransactionOperation): NativeRawTransactionOperation {
   return Object.fromEntries(Object.entries(value)
     .filter(([, field]) => field !== undefined)
-    .map(([key, field]) => [key, field instanceof Uint8Array ? copyBytes(field) : field]),
+    .map(([key, field]) => [key, field instanceof Uint8Array ? new Uint8Array(field) : field]),
   ) as NativeRawTransactionOperation;
 }
 
@@ -331,7 +331,7 @@ function parseSourceResult(value: NativeRawSourceResult): SourceResult {
   return {
     status,
     reason,
-    generationId: value.generationId === undefined ? undefined : copyBytes(value.generationId),
+    generationId: value.generationId === undefined ? undefined : new Uint8Array(value.generationId),
   };
 }
 

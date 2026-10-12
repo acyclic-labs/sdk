@@ -65,13 +65,13 @@ async fn deletion_is_terminal_and_does_not_invalidate_a_fork() -> Result<(), Box
     let workspace = fs.create_workspace("repo", B, &cancel).await?.value;
     let generation = workspace.head(B, &cancel).await?.value;
     let fork = workspace
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "survivor",
             ForkOptions::from_generation(generation, IdempotencyKey::new()),
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>,
+            &mut allow::<FsError>,
         )
         .await?
         .value;

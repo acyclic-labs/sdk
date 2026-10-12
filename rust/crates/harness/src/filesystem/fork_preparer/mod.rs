@@ -127,7 +127,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
             .transpose()?;
         #[cfg(target_arch = "wasm32")]
         let io = None;
-        let reject = |code, reason| bounded_io::failure(io.as_ref(), code, reason);
+        let reject = |code, reason| stock_boundary(io.as_ref(), code, reason);
         let mut observer = io.as_ref();
         let mut work = observer
             .as_mut()
@@ -243,7 +243,7 @@ impl<A, O> FilesystemForkPreparer<A, O> {
             || prepared.parent_revision() != self.parent.revision()
             || journal.canonical_authority() != Some(self.parent.authority())
         {
-            return Err(bounded_io::failure(
+            return Err(stock_boundary(
                 None,
                 crate::wire::ErrorCode::Conflict,
                 "summary capture differs from this original parent",
@@ -328,3 +328,5 @@ where
         })
     }
 }
+
+use crate::executor::stock_boundary;

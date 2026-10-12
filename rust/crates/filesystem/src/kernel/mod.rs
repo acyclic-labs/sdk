@@ -1,6 +1,6 @@
 //! Canonical authenticated filesystem page formats and sparse algorithms.
 
-pub(crate) mod allocation;
+pub mod allocation;
 pub use allocation::{KernelAccounting, KernelOwnedAllocation};
 mod attribute;
 mod attribute_access;
@@ -35,6 +35,7 @@ mod persistent_diff;
 mod persistent_io;
 mod persistent_pagination;
 mod persistent_point;
+pub use persistent_point::Owned;
 mod probe;
 mod publication;
 mod publication_evidence;
@@ -165,8 +166,7 @@ pub(crate) use path_access::{
     lookup_path_async_with_accounting, lookup_paths_async_with_accounting, lookup_paths_selected_async_with_accounting, observe_path_async_with_accounting, observe_path_refs_async_with_accounting, observe_paths_async_with_accounting};
 pub use path_access::{
     ObservedPathBatch, ObservedPathLookup, PathBatchEntry, PathBatchLookup, PathLookup, PathLookupError, PathLookupFailure, lookup_path, lookup_path_refs, lookup_paths, observe_path_async, observe_paths_async};
-pub(crate) use persistent_point::{
-    Owned, retire_allocation};
+pub(crate) use persistent_point::retire_allocation;
 pub use probe::{
     AuthenticatedGenerationProbe, AuthenticatedProbeError, ProbeLimits, capture_content_range_bytes};
 pub(crate) use publication::contextual_publication_fingerprint;

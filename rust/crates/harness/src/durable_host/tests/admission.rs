@@ -100,7 +100,7 @@ async fn admission_retry_retains_original_owner_grant_after_renewal() -> Result<
             .await
             .pull(&crate::distributed::Worker {
                 id: "renewal-worker".into(),
-                available: crate::scheduler::ResourceSnapshot::default(),
+                available: crate::scheduler::ResourceRequest::default(),
                 labels: BTreeMap::new(),
             })
             .await?

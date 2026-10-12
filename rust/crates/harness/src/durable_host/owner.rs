@@ -199,8 +199,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                     io.preflight(step)?;
                     io.charge(step)?;
                 }
-                if &binding.file == file {
-                    reader = Some(&binding.reader);
+                if &binding.0 == file {
+                    reader = Some(&binding.1);
                     break;
                 }
             }
@@ -395,8 +395,9 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let proof = binding.scratch_creation.as_ref().ok_or_else(|| {
             Error::Unauthorized("current scratch is not a verified filesystem allocation".into())
         })?;
-        if proof.original_task() != self.task_id
-            || Some(proof.agent()) != self.input_agent
+        if crate::runtime::task_id_for_admission(proof.origin().intended_child) != self.task_id
+            || !matches!(proof.volume().owner(), crate::conversation::VolumeOwner::Agent(agent)
+                if Some(*agent) == self.input_agent)
             || proof.volume() != &binding.volume
         {
             return Err(Error::Unauthorized(

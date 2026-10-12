@@ -47,7 +47,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             )
         })?;
         let mut records =
-            match operations::read_records(&self.stream, &mailbox.0, after, maximum, &mut work)
+            match operations::read_records(&self.stream, mailbox.0.path(), after, maximum, &mut work)
                 .await?
             {
                 Ok(records) => records,

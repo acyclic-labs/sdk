@@ -393,7 +393,7 @@ async fn task_effect_dispatch_race_and_cancelled_settlement_use_one_owner() -> R
         known: AtomicBool::new(false),
         request: Mutex::new(None),
     });
-    let mut providers = EffectRegistry::default().with_result_resolver(payloads.clone());
+    let mut providers = EffectRegistry::new(None, Some(payloads.clone()))?;
     providers.register(receipt.clone(), None)?;
     let conversation = Authority {
         kind: AggregateKind::Conversation,
@@ -417,46 +417,47 @@ async fn task_effect_dispatch_race_and_cancelled_settlement_use_one_owner() -> R
     )?;
     let command = OperationId::from_bytes([55; 16]);
     let (first, second) = tokio::join!(
-        effects.run_task_effect(&binding, command, plan.clone()),
-        effects.run_task_effect(&binding, command, plan.clone())
+        effects.run_task_effect(&binding, command, &plan, None),
+        effects.run_task_effect(&binding, command, &plan, None)
     );
     assert!(matches!(
         (&first, &second),
-        (Err(_), Ok(EffectStatus::Indeterminate)) | (Ok(EffectStatus::Indeterminate), Err(_))
+        (Err(_), Ok((EffectStatus::Indeterminate, _)))
+            | (Ok((EffectStatus::Indeterminate, _)), Err(_))
     ));
     assert_eq!(receipt.calls.load(Ordering::SeqCst), 1);
     let mut mutated = plan.clone();
     mutated.effect_kind = "changed.v1".into();
     assert!(matches!(
         effects
-            .run_task_effect(&binding, command, mutated.clone())
-            .await,
+            .run_task_effect(&binding, command, &mutated, None)
+            .await.map(|result| result.0),
         Err(Error::Conflict(_))
     ));
     assert!(matches!(
         effects
-            .reconcile_task_effect(&binding, command, &mutated)
-            .await,
+            .reconcile_task_effect(&binding, command, &mutated, None)
+            .await.map(|result| result.0),
         Err(Error::Conflict(_))
     ));
     host.cancel(task, None).await?;
     assert!(
         effects
-            .run_task_effect(&binding, command, plan.clone())
-            .await
+            .run_task_effect(&binding, command, &plan, None)
+            .await.map(|result| result.0)
             .is_err()
     );
     assert_eq!(
         effects
-            .reconcile_task_effect(&binding, command, &plan)
-            .await?,
+            .reconcile_task_effect(&binding, command, &plan, None)
+            .await.map(|result| result.0)?,
         EffectStatus::Indeterminate
     );
     receipt.known.store(true, Ordering::SeqCst);
     assert_eq!(
         effects
-            .reconcile_task_effect(&binding, command, &plan)
-            .await?,
+            .reconcile_task_effect(&binding, command, &plan, None)
+            .await.map(|result| result.0)?,
         EffectStatus::Failed {
             message: "observed exit".into()
         }
@@ -481,8 +482,8 @@ async fn task_effect_dispatch_race_and_cancelled_settlement_use_one_owner() -> R
         .await?;
     assert!(
         effects
-            .reconcile_task_effect(&binding, command, &plan)
-            .await
+            .reconcile_task_effect(&binding, command, &plan, None)
+            .await.map(|result| result.0)
             .is_err()
     );
     Ok(())

@@ -533,76 +533,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
         context.accept(result)
     }
 
-    async fn prepare_generation_publication(
-        &self,
-        request: &crate::kernel::PublishGenerationRequest,
-        proof: &crate::kernel::GenerationProof,
-        append: &crate::GuardedAppend,
-        scope: crate::PublicationScope<'_>,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(), crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = context.original {
-            let cancellation = context.cancellation;
-            return async {
-                {
-                    let __object_args = (request, proof, append, scope, original, cancellation);
-                    let mut __object_work =
-                        crate::AuthorityWork::native(__object_args.4, __object_args.5);
-                    let __object_result = self
-                        .store
-                        .prepare_generation_publication(
-                            __object_args.0,
-                            __object_args.1,
-                            __object_args.2,
-                            __object_args.3,
-                            &mut __object_work,
-                        )
-                        .await;
-                    __object_result
-                }
-            }
-            .await;
-        }
-        let budget = context.work.remaining(context.budget)?;
-        let cancellation = context.cancellation;
-        let result = async {
-            let mut accounting = KernelAccounting::standalone(budget, cancellation);
-            let result = async {
-                let resident = self.extra_resident()?;
-                let remaining = provider_remaining(&accounting, resident)?;
-                match {
-                    let __object_args = (request, proof, append, scope, remaining, cancellation);
-                    let mut __object_work =
-                        crate::AuthorityWork::new(__object_args.4, __object_args.5);
-                    let __object_result = self
-                        .store
-                        .prepare_generation_publication(
-                            __object_args.0,
-                            __object_args.1,
-                            __object_args.2,
-                            __object_args.3,
-                            &mut __object_work,
-                        )
-                        .await;
-                    __object_work.receipt(__object_result)
-                } {
-                Ok(receipt) => compose_backend(&mut accounting, receipt.work, resident),
-                Err(failure) => {
-                    compose_backend(&mut accounting, *failure.work, resident)?;
-                    Err(failure.error.into())
-                }
-            }
-            }
-            .await;
-            let work = accounting.spent();
-            result
-                .map(|()| crate::OperationReceipt { value: (), work })
-                .map_err(|error| ObjectFailure::new(object_error(error), work))
-        }
-        .await;
-        context.accept(result)
-    }
+
 
     fn collection(&self) -> Option<&std::sync::Arc<crate::Collection>> {
         self.store.collection()
@@ -616,6 +547,13 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
         maximum_bytes: u64,
         context: &mut crate::AuthorityWork<'_>,
     ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+        if let Some((observation, _)) = context.read_observation {
+            context.read_observation = if self.data_custody
+                .is_some_and(|owner| std::ptr::eq(observation, owner)) {
+                None
+            } else { Some((observation, 0)) };
+        }
+
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = context.original {
             let cancellation = context.cancellation;
@@ -648,7 +586,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             }
             .await;
         }
-        let budget = context.work.remaining(context.budget)?;
+        let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
             let mut accounting = KernelAccounting::standalone(budget, cancellation);
@@ -705,33 +643,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
         context.accept(result)
     }
 
-    async fn read_with_custody(
-        &self,
-        object_id: ObjectId,
-        maximum_bytes: u64,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-        observation: Option<&super::ProofDataCustody>,
-    ) -> ObjectResult<ObjectRead> {
-        let already_observed = observation.is_some_and(|observation| {
-            self.data_custody
-                .is_some_and(|owner| std::ptr::eq(observation, owner))
-        });
-        let result = {
-            let __object_args = (object_id, maximum_bytes, budget, cancellation);
-            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-            let __object_result = self
-                .read(__object_args.0, __object_args.1, &mut __object_work)
-                .await;
-            __object_work.receipt(__object_result)
-        };
-        match observation {
-            Some(observation) if !already_observed => {
-                async_storage::observe_read(observation, result)
-            }
-            _ => result,
-        }
-    }
+
     async fn read_many(
         &self,
         requests: &[ObjectReadRequest],

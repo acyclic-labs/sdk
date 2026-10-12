@@ -56,13 +56,13 @@ async fn workspace_forks_an_unpublished_checkpoint_without_mutating_its_source()
     let checkpoint = transaction.checkout.checkpoint(B, &cancel).await?.value;
     let unpublished = source.generation(checkpoint, B, &cancel).await?.value;
     let child = source
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "checkpoint-child",
             ForkOptions::from_generation(unpublished, IdempotencyKey::from_bytes([0x44; 16])),
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
@@ -126,13 +126,13 @@ async fn transaction_is_atomic_idempotent_and_visible_to_forks() -> Result<(), B
         OwnedBytes::from_static(b"ready")
     );
     let fork = workspace
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "copy",
             ForkOptions::from_generation(generation.clone(), IdempotencyKey::new()),
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>,
+            &mut allow::<FsError>,
         )
         .await?
         .value;

@@ -38,8 +38,7 @@ async fn ambiguous_append_is_durable_and_retry_resolves_identity()
             None::<&mut ()>,
         )
         .await
-        .map_err(|error| error.into_error(std::convert::identity))
-        .map(|(value, _allocation)| value));
+        .map_err(|error| error.into_error(std::convert::identity)));
     let Err(ambiguous) = ambiguous_result else {
         return Err("scheduled ambiguous append returned success".into());
     };
@@ -60,8 +59,7 @@ async fn ambiguous_append_is_durable_and_retry_resolves_identity()
             None::<&mut ()>,
         )
         .await
-        .map_err(|error| error.into_error(std::convert::identity))
-        .map(|(value, _allocation)| value))?;
+        .map_err(|error| error.into_error(std::convert::identity)))?;
     assert!(matches!(retry, AppendOutcome::AlreadyCommitted(_)));
     Ok(())
 }
@@ -110,7 +108,6 @@ async fn duplicate_replay_and_fence_change_are_observable_without_hidden_repair(
             )
             .await
             .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, _allocation)| value)
     })?;
     let AppendOutcome::Committed(commit) = committed else {
         return Err("first simulated append did not commit".into());
@@ -152,7 +149,6 @@ async fn duplicate_replay_and_fence_change_are_observable_without_hidden_repair(
             )
             .await
             .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, _allocation)| value)
     })?;
     assert!(matches!(fenced, AppendOutcome::Fenced { .. }));
     Ok(())
@@ -205,8 +201,7 @@ async fn fence_before_append_preserves_nested_budget_failure_work()
                 None::<&mut ()>,
             )
             .await
-            .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, _allocation)| value);
+            .map_err(|error| error.into_error(std::convert::identity));
         __authority_work.receipt(__authority_result)
     })
     .await;

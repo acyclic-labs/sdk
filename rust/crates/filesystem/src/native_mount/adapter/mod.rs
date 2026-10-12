@@ -53,7 +53,7 @@ pub(super) struct CaptureSourceGate {
     cancelled: bool,
     producers: u64,
     retired: bool,
-    namespace_bound: bool,
+    pub(in crate::native_mount) namespace_bound: bool,
     ever_used: bool,
 }
 

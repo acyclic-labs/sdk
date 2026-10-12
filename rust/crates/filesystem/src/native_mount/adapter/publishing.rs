@@ -27,7 +27,7 @@ impl<A, O> Drop for Publication<'_, A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
-    pub(super) async fn publish<F, Fut, E>(
+    pub(in crate::native_mount) async fn publish<E, F, Fut>(
         &self,
         permit: crate::PublicationPermit,
         work: &crate::NativeMaterializationWork,
@@ -56,7 +56,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             .map_err(early)?;
         let notification = self
             .ledger
-            .prepare_everything_notification(work.native_read_meter())
+            .prepare_everything_notification(work)
             .map_err(early)?;
         let projected = SharedCheckoutState {
             recorded_view: projection.root().file_table,

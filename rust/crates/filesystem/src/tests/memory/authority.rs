@@ -41,8 +41,7 @@ async fn authority_is_fenced_and_replay_is_bounded() -> Result<(), Box<dyn std::
                 None::<&mut ()>
             )
             .await
-            .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, _allocation)| value)?,
+            .map_err(|error| error.into_error(std::convert::identity))?,
         AppendOutcome::Committed(_)
     ));
     let current = store
@@ -116,8 +115,7 @@ async fn authority_payload_and_replay_bounds_preserve_forward_progress()
                 None::<&mut ()>
             )
             .await
-            .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, _allocation)| value)?,
+            .map_err(|error| error.into_error(std::convert::identity))?,
         AppendOutcome::Committed(_)
     ));
     assert!(matches!(
@@ -159,8 +157,7 @@ async fn authority_payload_and_replay_bounds_preserve_forward_progress()
                 None::<&mut ()>
             )
             .await
-            .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, _allocation)| value),
+            .map_err(|error| error.into_error(std::convert::identity)),
         Err(AuthorityStoreError::PayloadTooLarge {
             observed: 3,
             maximum: 2,
@@ -210,8 +207,7 @@ async fn replay_stops_at_the_payload_bound_after_contiguous_progress()
                 None::<&mut ()>,
             )
             .await
-            .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, _allocation)| value)?;
+            .map_err(|error| error.into_error(std::convert::identity))?;
         let AppendOutcome::Committed(commit) = appended else {
             return Err("authority append did not commit".into());
         };
@@ -298,14 +294,13 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
             None::<&mut ()>,
         )
         .await
-        .map_err(|error| error.into_error(std::convert::identity))
-        .map(|(value, _allocation)| value)?;
+        .map_err(|error| error.into_error(std::convert::identity))?;
     let AppendOutcome::Committed(durable) = committed else {
         return Err("first append was not committed".into());
     };
     assert!(matches!(
         store
-            .compare_and_append(crate::GuardedAppend { authority_id: authority_id, epoch: Epoch::GENESIS, expected: genesis, commit: proposed.clone(), permit: crate::PublicationPermit::Unrestricted }, &mut crate::AuthorityWork::new(B, &cancel), None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value)?
+            .compare_and_append(crate::GuardedAppend { authority_id: authority_id, epoch: Epoch::GENESIS, expected: genesis, commit: proposed.clone(), permit: crate::PublicationPermit::Unrestricted }, &mut crate::AuthorityWork::new(B, &cancel), None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity))?
             ,
         AppendOutcome::AlreadyCommitted(actual) if actual == durable
     ));
@@ -314,7 +309,7 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
             .compare_and_append(crate::GuardedAppend { authority_id: authority_id, epoch: Epoch::GENESIS, expected: genesis, commit: ProposedCommit {
                     fingerprint: Digest::from_bytes([24; 32]),
                     ..proposed
-                }, permit: crate::PublicationPermit::Unrestricted }, &mut crate::AuthorityWork::new(B, &cancel), None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value)?
+                }, permit: crate::PublicationPermit::Unrestricted }, &mut crate::AuthorityWork::new(B, &cancel), None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity))?
             ,
         AppendOutcome::IdempotencyConflict {
             committed_fingerprint,
@@ -327,8 +322,7 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
                 operation_id,
                 &mut crate::AuthorityWork::new(B, &cancel)
             )
-            .await
-            .map(|(value, _allocation)| value)?,
+            .await?,
         Some(durable.clone())
     );
     assert!(
@@ -338,8 +332,7 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
                 OperationId::from_bytes([25; 16]),
                 &mut crate::AuthorityWork::new(B, &cancel)
             )
-            .await
-            .map(|(value, _allocation)| value)?
+            .await?
             .is_none()
     );
     let current = store
@@ -362,8 +355,7 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
             None::<&mut ()>,
         )
         .await
-        .map_err(|error| error.into_error(std::convert::identity))
-        .map(|(value, _allocation)| value)?;
+        .map_err(|error| error.into_error(std::convert::identity))?;
     assert!(matches!(
         stale,
         AppendOutcome::Conflict { actual } if actual == current
@@ -409,8 +401,7 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
             None::<&mut ()>,
         )
         .await
-        .map_err(|error| error.into_error(std::convert::identity))
-        .map(|(value, _allocation)| value)?;
+        .map_err(|error| error.into_error(std::convert::identity))?;
     assert!(matches!(
         wrong_epoch,
         AppendOutcome::Fenced { actual_epoch } if actual_epoch == fenced_head.epoch

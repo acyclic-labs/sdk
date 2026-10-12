@@ -102,50 +102,32 @@ impl<P: StreamProvider> CreatedTaskPublicationLease<P> {
 impl<P: StreamProvider> crate::resource_preparation::CreatedTaskLease
     for CreatedTaskPublicationLease<P>
 {
-    fn verify(&self) -> BoxFuture<'_, Result<()>> {
-        Box::pin(async move { self.verify_with_work(&mut None).await })
-    }
     fn fence(&self) -> Result<crate::scheduler::LeaseFence> {
         self.fence.clone().ok_or_else(|| {
             Error::Conflict("created resource task has no execution reservation".into())
         })
     }
-    #[cfg(feature = "filesystem")]
-    fn verify_with_io<'a>(
+    fn verify<'a>(
         &'a self,
-        io: &'a crate::filesystem::PreparationIo,
-    ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
-            return self
-                .verify_with_native_work(work)
-                .map(crate::store::history::HistoryContentFuture::Native);
+        io: Option<&'a crate::executor::PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = io.and_then(crate::filesystem::PreparationIo::original_native_work) {
+            if self._native_custody.as_ref().is_none_or(|custody|
+                !custody.work().shares_allocation_context(work))
+            {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "created publication lease differs from its original SDK metadata ledger",
+                });
+            }
         }
-        io.history_future(|| async move {
-            let mut observer = io.history_io();
-            self.verify_with_work(&mut Some(&mut observer)).await
-        })
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn verify_with_native_work<'a>(
-        &'a self,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        if !self
-            ._native_custody
-            .as_ref()
-            .is_some_and(|custody| custody.work().shares_allocation_context(work))
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "created publication lease differs from its original SDK metadata ledger",
-            });
-        }
-        crate::NativeFutureBundle::new(work, || async move {
-            let mut io = crate::filesystem::PreparationIo::from_native_work(work)
-                .map(crate::store::HistoryWork::new)?;
-            self.verify_with_work(&mut Some(&mut io)).await
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            #[cfg(feature = "filesystem")]
+            if let Some(io) = io {
+                return self.verify_with_work(&mut Some(&mut io.history_io())).await;
+            }
+            self.verify_with_work(&mut None).await
         })
     }
 }
@@ -416,7 +398,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 .await?;
             proof_custody.adopt(held)?;
             let (request, held) =
-                crate::resource_preparation::ResourcePreparationRequest::from_borrowed_value_with_work(
+                crate::resource_preparation::ResourcePreparationRequest::decode(
                     &preparation.input, proof_custody.work(),
                 )?;
             proof_custody.adopt(held)?;
@@ -428,7 +410,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             if preparation.parent != request.child.parent
                 || preparation.operation_id.into_bytes() != proof.preparation.into_bytes()
                 || request.provider != proof.provider
-                || !request.resources.contains(&proof.resource)
+                || !request.resources().any(|resource| resource == &proof.resource)
                 || !request.child.resource_proofs.contains(proof)
                 || !preparation.grants.contains(&request.creation_grant)
             {
@@ -604,13 +586,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 || receipt.origin.preparation_task != proof.preparation
                 || receipt.origin.intended_child != request.child.operation_id
                 || receipt.origin.admission_digest
-                    != crate::contract::canonical_json_digest_with_work(
+                    != crate::contract::canonical_json_digest(
                         &preparation,
                         acyclic_stream::MAX_RECORD_BYTES as u64,
                         proof_custody.work(),
                     )?
                 || receipt.origin.request_digest
-                    != crate::contract::canonical_json_digest_with_work(
+                    != crate::contract::canonical_json_digest(
                         &request,
                         acyclic_stream::MAX_RECORD_BYTES as u64,
                         proof_custody.work(),

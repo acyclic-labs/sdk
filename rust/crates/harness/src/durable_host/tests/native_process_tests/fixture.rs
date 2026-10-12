@@ -536,7 +536,7 @@ where
                 .protect_root_bootstrap_with_native_work(
                     &owner,
                     &source,
-                    crate::resource_preparation::RootBootstrapContentRole::Project,
+                    crate::conversation::VolumeClass::Project,
                     operation,
                     config,
                     initial_generation,
@@ -1043,7 +1043,7 @@ pub(super) async fn reopen_native(
         )
         .await?,
     );
-    let mut registry = EffectRegistry::default().with_result_resolver(content.clone());
+    let mut registry = EffectRegistry::new(None, Some(content.clone()))?;
     registry.register(process.clone(), None)?;
     let effects = ConversationEffectHost::new(
         owner.stream(),
@@ -1060,7 +1060,7 @@ pub(super) async fn reopen_native(
         None,
         None,
     )?
-    .clone_with_native_work(work)?;
+    .copy(work)?;
     Ok(LocalNativeRecovery {
         files,
         task,
