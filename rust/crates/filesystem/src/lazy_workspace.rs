@@ -16268,16 +16268,14 @@ mod tests {
         let node = root.source.lookup(reference, &namespace, WorkBudget::UNBOUNDED, &token).await
             .expect("fixture metadata").value.expect("fixture link");
         drop(namespace);
-        let (bytes, metadata) = root.read_source_link(
+        let bytes = root.read_source_link(
             "/link", reference, node.version, target.len() as u64, &original, &token,
         ).await.expect("same original link producer");
         assert_eq!(bytes.bytes.as_ref(), target);
         assert!(bytes.is_intrinsic());
         assert!(bytes.logical_owned_bytes >= target.len() as u64);
         assert_eq!(original.receipt().source_bytes_read, target.len() as u64);
-        assert_eq!(metadata.bytes(), 0);
         drop(bytes);
-        drop(metadata);
         token.cancel();
         let (error, custody) = root.read_source_link(
             "/link", reference, node.version, target.len() as u64, &original, &token,
