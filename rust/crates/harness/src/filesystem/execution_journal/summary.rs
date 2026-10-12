@@ -163,7 +163,7 @@ impl ExecutionSummary {
         }
         let tool_key = self.require_next(&record.event, io)?;
         let digest = crate::executor::with_history_io(io, |work|
-            crate::contract::canonical_json_digest_with_work(&record.event, u64::MAX, work))?;
+            crate::executor::json::canonical_json_digest(&record.event, u64::MAX, work))?;
         if let Some(io) = io {
             let extra = match &record.event {
                 ExecutionEvent::ContextPrepared { .. } => std::mem::size_of::<(u32, bool)>(),
@@ -247,13 +247,13 @@ impl ExecutionSummary {
 
     pub(super) fn quiescent(&self, io: Option<&PreparationIo>) -> Result<bool> {
         for model in self.models.values() {
-            crate::filesystem::fork_preparer_io::item(io, 0)?;
+            crate::model::charge_items(io, 1)?;
             if model.is_some() {
                 return Ok(false);
             }
         }
         for settled in self.tools.values() {
-            crate::filesystem::fork_preparer_io::item(io, 0)?;
+            crate::model::charge_items(io, 1)?;
             if !settled {
                 return Ok(false);
             }
@@ -322,6 +322,6 @@ impl PreparationRecord for Observation {
             }
             bytes
         };
-        crate::contract::preparation_serde_diagnostic_label_bytes() + PRIVATE_LABEL_BYTES
+        crate::executor::json::preparation_serde_diagnostic_label_bytes() + PRIVATE_LABEL_BYTES
     }
 }

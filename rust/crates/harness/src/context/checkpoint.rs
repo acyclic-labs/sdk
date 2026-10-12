@@ -168,7 +168,7 @@ impl CanonicalContextCheckpoint {
     pub fn encode(&self, limits: Limits) -> Result<Vec<u8>> {
         self.validate(limits, None)?;
         // Count the typed envelope before canonical serialization creates its Value tree and byte buffer.
-        crate::contract::json_byte_length(self, limits.file_bytes.min(limits.render_bytes), &mut None).map(|_| ())?;
+        crate::executor::json::json_byte_length(self, limits.file_bytes.min(limits.render_bytes), &mut None).map(|_| ())?;
         let bytes = crate::contract::canonical_json_bytes(self)?;
         if bytes.len() as u64 > limits.file_bytes || bytes.len() as u64 > limits.render_bytes {
             return Err(crate::Error::Invalid(

@@ -72,8 +72,9 @@ async fn local_facade_reopens_durable_volume_and_exact_generation()
 }
 
 #[cfg(all(feature = "local", any(unix, windows)))]
-#[test]
-fn local_root_lifecycle_outlives_provider_destruction() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn local_root_lifecycle_outlives_provider_destruction()
+-> Result<(), Box<dyn std::error::Error>> {
     struct BlockingProviderDrop {
         entered: std::sync::mpsc::SyncSender<()>,
         release: std::sync::mpsc::Receiver<()>,
@@ -189,7 +190,6 @@ async fn cancelled_local_initialization_keeps_root_owned_until_startup_stops()
     let (release_tx, release_rx) = tokio::sync::oneshot::channel();
     let opening = tokio::spawn(run_local_initialization(
         ownership,
-        crate::obs::span!(DEBUG, "test.local_initialization"),
         move |ownership| async move {
             let _ownership = ownership;
             let _ = started_tx.send(());
@@ -358,12 +358,7 @@ async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
             crate::PublicationPermit::Unrestricted,
             WorkBudget::UNBOUNDED,
             &cancellation,
-            |_| async {
-                crate::FsResult::Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                })
-            },
+            allow::<FsError>,
         )
         .await?;
     let pending = path("pending.txt")?;
@@ -388,12 +383,7 @@ async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
             crate::PublicationPermit::Unrestricted,
             WorkBudget::UNBOUNDED,
             &cancellation,
-            |_| async {
-                crate::FsResult::Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                })
-            },
+            allow::<FsError>,
         )
         .await?;
     fs.collect_local_garbage(None, &cancellation).await?;

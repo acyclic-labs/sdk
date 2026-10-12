@@ -1,20 +1,11 @@
-use super::{
-    CallbackGate, PostOperationFailures, flush_callback_gate, record_post_operation_failure,
-    reject_stale_projection, source_hresult,
-};
+use super::*;
 use crate::kernel::{FileMetadata, KernelAccounting};
-use crate::model::{
-    AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, Lifecycle, MutationMode,
-    VolumeConfig,
-};
+use crate::model::{AccessMode, CheckoutMode, ConsistencyMode, GenerationSelector, MutationMode};
 use crate::native_mount::adapter::{CheckoutMountSource, SharedCheckout};
 use crate::native_mount::{MountFilesystem, MountPath, MountSourceError};
-use crate::{
-    CancellationToken, Fs, IdempotencyKey, LocalOptions, MountOptions, MountPublication, WorkBudget,
-};
-use bytes::Bytes;
+use crate::{MountOptions, MountPublication};
 use std::collections::HashSet;
-use std::sync::{Arc, Barrier, Mutex};
+use std::sync::{Arc, Mutex};
 use windows::Win32::Storage::ProjectedFileSystem::{
     PRJ_NOTIFICATION_FILE_HANDLE_CLOSED_FILE_MODIFIED, PRJ_NOTIFICATION_PRE_DELETE,
     PrjMarkDirectoryAsPlaceholder,
@@ -142,12 +133,7 @@ pub(super) async fn writes_only_promised_content(
     .await?;
     let destination = root.path().join("mount");
     std::fs::create_dir(&destination)?;
-    let mount = lazy
-        .mount(
-            &destination,
-            MountOptions::read_write().publication(MountPublication::Manual),
-        )
-        .await?;
+    let mount = lazy.mount(&destination, manual_mount_options()).await?;
     if listed_first {
         assert_eq!(std::fs::read_dir(&destination)?.count(), 2);
     }
@@ -216,4 +202,24 @@ pub(super) async fn windows_demand_source(
     .await
     .map(|receipt| receipt.value)
     .map_err(|failure| failure.error)
+}
+
+pub(super) async fn local_workspace(
+    root: &std::path::Path,
+    name: &str,
+    work: &crate::NativeMaterializationWork,
+) -> Result<
+    crate::Workspace<crate::facade::LocalAuthorityBackend, crate::facade::LocalObjectBackend>,
+    Box<dyn std::error::Error>,
+> {
+    Ok(Fs::local(LocalOptions::new(root.join("state")))
+        .await?
+        .create_workspace(name, WorkBudget::UNBOUNDED, work.cancellation())
+        .await
+        .map_err(|failure| failure.error)?
+        .value)
+}
+
+pub(super) fn manual_mount_options() -> MountOptions {
+    MountOptions::read_write().publication(MountPublication::Manual)
 }

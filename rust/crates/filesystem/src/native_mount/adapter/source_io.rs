@@ -1,18 +1,15 @@
 use super::*;
 
 /// Retains a physical source operation until its last alias finishes.
-#[derive(Clone)]
-pub struct NativeSourceIoLease {
-    inner: Arc<CaptureProducer>,
-}
+pub type NativeSourceIoLease = Arc<CaptureProducer>;
 
-impl NativeSourceIoLease {
+impl CaptureProducer {
     pub(crate) fn original_work(&self) -> Option<&crate::NativeMaterializationWork> {
-        self.inner.original.as_ref()
+        self.original.as_ref()
     }
 }
 
-impl std::fmt::Debug for NativeSourceIoLease {
+impl std::fmt::Debug for CaptureProducer {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("NativeSourceIoLease")
@@ -20,7 +17,8 @@ impl std::fmt::Debug for NativeSourceIoLease {
     }
 }
 
-pub(super) struct CaptureProducer {
+/// One accepted physical source operation.
+pub struct CaptureProducer {
     pub(super) gate: Arc<StdMutex<CaptureSourceGate>>,
     pub(super) quiesced: Arc<std::sync::Condvar>,
     pub(super) original: Option<crate::NativeMaterializationWork>,
@@ -42,7 +40,7 @@ impl Drop for CaptureProducer {
 }
 
 impl CaptureSourceGate {
-    pub(super) fn fresh_for_namespace(&self) -> bool {
+    pub(in crate::native_mount) fn fresh_for_namespace(&self) -> bool {
         !self.namespace_bound
             && !self.ever_used
             && !self.cancelled
@@ -123,14 +121,13 @@ impl<A, O> CheckoutMountSource<A, O> {
         self.accept_capture_poll(&mut credit)?;
         gate.producers = producers;
         gate.ever_used = true;
-        let inner = Arc::new(CaptureProducer {
+        Ok(Arc::new(CaptureProducer {
             gate: Arc::clone(&self.capture_gate),
             quiesced: Arc::clone(&self.capture_quiesced),
             original: self.native_io_original.clone(),
             _owner: Some(owner),
             _allocation: Some(allocation),
-        });
-        Ok(NativeSourceIoLease { inner })
+        }))
     }
 
     pub(super) fn reserve_capture_poll(

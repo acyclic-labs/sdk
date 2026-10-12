@@ -197,24 +197,22 @@ async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
     let cursor = reader.pin(0, Some(&mut io)).await?;
     assert_eq!(cursor.through_revision, 1);
     let page = reader
-        .read_page_with_work(
+        .read_page(
             &cursor,
             HistoryReadLimits {
                 maximum_events: 1,
                 maximum_bytes: event_bytes,
             },
-            true,
             Some(&mut io),
         )
         .await?;
-    assert_eq!(page.0.events.as_slice(), std::slice::from_ref(&event));
-    assert_eq!(page.1.len(), 1);
+    assert_eq!(page.events.as_slice(), std::slice::from_ref(&event));
     assert_eq!(native.receipt().authority_bytes_read, event_bytes);
     assert_eq!(native.receipt().source_bytes_read, event_bytes);
     let mut work: Option<&mut dyn HistoryIo> = Some(&mut io);
     let bounds = bounds_with_work(&client, &publication.path, &mut work)
         .await?
-        .map_err(|error| sdk_error(error, &work))?;
+        .map_err(|error| crate::store::operations::stream_error_with_work(error, &work))?;
     assert_eq!(bounds.tail, 1);
     drop(page);
     drop(cursor);
@@ -239,7 +237,7 @@ async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
     .await
     .expect_err("real raw locator reaches the original guarded wire decoder");
     assert!(
-        matches!(&error, Error::NativeDecode { custody: Some(custody), .. }
+        matches!(&error, Error::NativeJson { custody: Some(custody), .. }
             if native.shares_ledger(custody.work()))
     );
     assert_eq!(native.receipt().authority_bytes_read, 2);
@@ -272,13 +270,12 @@ async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
         if maximum_bytes == 1 {
             assert!(
                 reader
-                    .read_page_with_work(
+                    .read_page(
                         &cursor,
                         HistoryReadLimits {
                             maximum_events: 1,
                             maximum_bytes
                         },
-                        false,
                         Some(&mut io)
                     )
                     .await
@@ -289,13 +286,12 @@ async fn exercise<P: StreamProvider>(provider: Arc<P>) -> Result<()> {
             cancellation.cancel();
             assert!(
                 reader
-                    .read_page_with_work(
+                    .read_page(
                         &cursor,
                         HistoryReadLimits {
                             maximum_events: 1,
                             maximum_bytes
                         },
-                        false,
                         Some(&mut io)
                     )
                     .await

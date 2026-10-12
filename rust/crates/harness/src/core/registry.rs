@@ -57,9 +57,9 @@ impl SchemaRegistry {
                 "extension binding needs a namespaced name, positive version, and implementation digest".into(),
             ));
         }
-        crate::contract::compile_json_schema(&schema, "extension", &mut None)?;
+        crate::executor::compile_json_schema(&schema, "extension", &mut None)?;
         if let Some(configuration_schema) = &configuration_schema {
-            crate::contract::compile_json_schema(configuration_schema, "configuration", &mut None)?;
+            crate::executor::compile_json_schema(configuration_schema, "configuration", &mut None)?;
         }
         let mut required = BTreeSet::new();
         for dependency in dependencies {
@@ -72,14 +72,14 @@ impl SchemaRegistry {
             }
         }
         let binding = ExtensionBinding {
-            schema_digest: crate::contract::canonical_json_digest(&schema)?,
+            schema_digest: crate::executor::json::canonical_json_digest(&schema, u64::MAX, &mut None)?,
             schema,
             implementation_digest,
             fork_policy,
             dependencies: required,
             configuration_schema_digest: configuration_schema
                 .as_ref()
-                .map(crate::contract::canonical_json_digest)
+                .map(|value| crate::executor::json::canonical_json_digest(value, u64::MAX, &mut None))
                 .transpose()?,
             configuration_schema,
         };
@@ -244,7 +244,7 @@ impl SchemaRegistry {
         let value: Value = crate::contract::json_from_slice(bytes)
             .map_err(|error| Error::Invalid(format!("extension content is not JSON: {error}")))?;
         let binding = self.pinned_binding(name, version, None, &mut None)?;
-        crate::contract::validate_json_schema_value(
+        crate::executor::validate_json_schema_value(
             &binding.schema,
             &value,
             "extension payload", &mut None)?;
@@ -362,6 +362,6 @@ impl SchemaRegistry {
             .configuration_schema
             .as_ref()
             .ok_or_else(|| Error::Invalid("extension does not declare configuration".into()))?;
-        crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(schema, value, "configuration", work))
+        crate::executor::with_history_io(io, |work| crate::executor::validate_json_schema_value(schema, value, "configuration", work))
     }
 }

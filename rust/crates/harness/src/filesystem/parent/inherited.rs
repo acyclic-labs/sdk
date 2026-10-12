@@ -113,7 +113,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             if archive.parent() != parent.authority()
                 || archive.parent_revision() != parent.revision()
             {
-                return Err(fork_preparer_io::failure(
+                return Err(stock_boundary(
                     io.as_ref(),
                     crate::wire::ErrorCode::Conflict,
                     "inherited archive is not the original parent cut",
@@ -211,14 +211,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             ));
         }
         let count = usize::try_from(through_sequence).map_err(|_| {
-            fork_preparer_io::failure(
+            stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "inherited prefix is too large",
             )
         })?;
         if count > maximum_messages || count > history.messages.len() {
-            return Err(fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "inherited prefix exceeds the selected history or limit",
@@ -243,7 +243,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         io: Option<&PreparationIo>,
     ) -> Result<(Vec<ReferenceGrant>, Vec<FileRef>)> {
         let count = usize::try_from(through_sequence).map_err(|_| {
-            fork_preparer_io::failure(
+            stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "inherited prefix is too large",
@@ -254,28 +254,28 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let mut manifests = BTreeMap::<String, FileRef>::new();
         let mut manifest_bytes_total = 0_u64;
         for message in history.messages.iter().take(count) {
-            fork_preparer_io::item(io, 0)?;
-            fork_preparer_io::item(io, std::mem::size_of::<(String, FileRef)>() as u64)?;
+            crate::model::charge_items(io, 1)?;
+            crate::model::charge_items(io, 1)?;
+if let Some(io) = io { io.retain_owned(std::mem::size_of::<(String, FileRef)>() as u64)?; }
             direct.insert(
-                fork_preparer_io::reference_key(&message.content, io)?,
+                match io { Some(io) => io.capability(&message.content, "file:read:"), None => message.content.read_capability(&mut None) }?,
                 crate::executor::with_history_io(io, |work| message.content.copy(work))?,
             );
             for reference in message.extensions.values() {
-                fork_preparer_io::item(io, std::mem::size_of::<(String, FileRef)>() as u64)?;
+                crate::model::charge_items(io, 1)?;
+if let Some(io) = io { io.retain_owned(std::mem::size_of::<(String, FileRef)>() as u64)?; }
                 direct.insert(
-                    fork_preparer_io::reference_key(reference, io)?,
+                    match io { Some(io) => io.capability(reference, "file:read:"), None => reference.read_capability(&mut None) }?,
                     crate::executor::with_history_io(io, |work| reference.copy(work))?,
                 );
             }
             match &message.attachments {
                 ReferencedAttachments::Inline { items } => {
                     for item in items {
-                        fork_preparer_io::item(
-                            io,
-                            std::mem::size_of::<(String, FileRef)>() as u64,
-                        )?;
+                        crate::model::charge_items(io, 1)?;
+if let Some(io) = io { io.retain_owned(std::mem::size_of::<(String, FileRef)>() as u64)?; }
                         direct.insert(
-                            fork_preparer_io::reference_key(&item.file, io)?,
+                            match io { Some(io) => io.capability(&item.file, "file:read:"), None => item.file.read_capability(&mut None) }?,
                             crate::executor::with_history_io(io, |work| item.file.copy(work))?,
                         );
                     }
@@ -287,14 +287,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     manifest_bytes_total = manifest_bytes_total
                         .checked_add(manifest.descriptor().byte_length())
                         .ok_or_else(|| {
-                            fork_preparer_io::failure(
+                            stock_boundary(
                                 io,
                                 crate::wire::ErrorCode::Invalid,
                                 "inherited manifests exceed byte limit",
                             )
                         })?;
                     if manifest_bytes_total > maximum_bytes {
-                        return Err(fork_preparer_io::failure(
+                        return Err(stock_boundary(
                             io,
                             crate::wire::ErrorCode::Invalid,
                             "inherited attachment manifest exceeds limit",
@@ -304,34 +304,30 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                         crate::conversation::load_manifest(resolver, manifest, *item_count, io)
                             .await?;
                     if items.len() != *item_count as usize {
-                        return Err(fork_preparer_io::failure(
+                        return Err(stock_boundary(
                             io,
                             crate::wire::ErrorCode::Invalid,
                             "inherited attachment manifest count mismatch",
                         ));
                     }
-                    let key = fork_preparer_io::reference_key(manifest, io)?;
-                    fork_preparer_io::item(
-                        io,
-                        (2 * std::mem::size_of::<(String, FileRef)>()) as u64,
-                    )?;
+                    let key = match io { Some(io) => io.capability(manifest, "file:read:"), None => manifest.read_capability(&mut None) }?;
+                    crate::model::charge_items(io, 1)?;
+if let Some(io) = io { io.retain_owned((2 * std::mem::size_of::<(String, FileRef)>()) as u64)?; }
                     direct.insert(
-                        fork_preparer_io::clone_text(&key, io)?,
+                        stock_string_copy(&key, io)?,
                         crate::executor::with_history_io(io, |work| manifest.copy(work))?,
                     );
                     manifests.insert(
-                        fork_preparer_io::clone_text(&key, io)?,
+                        stock_string_copy(&key, io)?,
                         crate::executor::with_history_io(io, |work| manifest.copy(work))?,
                     );
                     for item in items {
-                        fork_preparer_io::item(
-                            io,
-                            std::mem::size_of::<((String, String), (FileRef, FileRef))>() as u64,
-                        )?;
+                        crate::model::charge_items(io, 1)?;
+if let Some(io) = io { io.retain_owned(std::mem::size_of::<((String, String), (FileRef, FileRef))>() as u64)?; }
                         member.insert(
                             (
-                                fork_preparer_io::clone_text(&key, io)?,
-                                fork_preparer_io::reference_key(&item.file, io)?,
+                                stock_string_copy(&key, io)?,
+                                match io { Some(io) => io.capability(&item.file, "file:read:"), None => item.file.read_capability(&mut None) }?,
                             ),
                             (
                                 crate::executor::with_history_io(io, |work| manifest.copy(work))?,
@@ -342,7 +338,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 }
             }
             if direct.len().saturating_add(member.len()) > maximum_references {
-                return Err(fork_preparer_io::failure(
+                return Err(stock_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,
                     "inherited reference count exceeds limit",
@@ -358,7 +354,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let mut readers = BTreeSet::from([child_agent]);
         readers.extend(attached_agents.iter().copied());
         if readers.len() != attached_agents.len().saturating_add(1) {
-            return Err(fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "inherited readers are duplicated",
@@ -369,13 +365,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             .saturating_add(member.len())
             .saturating_mul(readers.len());
         if total_grants > maximum_references {
-            return Err(fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "inherited read grants exceed limit",
             ));
         }
-        let mut reference_grants = fork_preparer_io::vector(total_grants, io)?;
+        let mut reference_grants = crate::model::vec_with_capacity(total_grants, io)?;
         for reader in readers {
             for file in direct.values() {
                 if file.volume().class() == VolumeClass::AgentPrivate
@@ -404,7 +400,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 });
             }
         }
-        let mut attachment_manifests = fork_preparer_io::vector(manifests.len(), io)?;
+        let mut attachment_manifests = crate::model::vec_with_capacity(manifests.len(), io)?;
         attachment_manifests.extend(manifests.into_values());
         Ok((reference_grants, attachment_manifests))
     }
@@ -445,17 +441,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             native_creation_guard.ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native inherited publication requires its original issued creation guard",
-            })?.verify_creation_with_native_work(work)?.await?;
+            })?.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
         }
         if !native && let Some(preparation) = preparation {
-            preparation.verify_creation().await?;
+            preparation.verify(false, io)?.await?;
         }
         if let Some(io) = io {
             let project = io.capability(&self.project, "volume:read:")?;
             if !self.scope.capabilities().contains(&project)
                 || !self.scope.capabilities().contains(capability::FORK_PUBLISH)
             {
-                return Err(fork_preparer_io::failure(
+                return Err(stock_boundary(
                     Some(io),
                     crate::wire::ErrorCode::Unauthorized,
                     "parent fork preparation is not granted",
@@ -470,7 +466,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             || child_private.class() != VolumeClass::AgentPrivate
             || child_private.owner() != &VolumeOwner::Agent(child_agent)
         {
-            return Err(fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unauthorized,
                 "inherited context is not parent-controlled and child-owned",
@@ -478,7 +474,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            child_private.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
+            child_private.validate(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?))?;
         } else {
             child_private.validate(&mut None)?;
         }
@@ -497,7 +493,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             }
             let mut readers = BTreeSet::new();
             for reader in attached_agents {
-                fork_preparer_io::item(Some(io), std::mem::size_of::<AgentId>() as u64)?;
+                crate::model::charge_items(Some(io), 1)?;
+if let Some(io) = Some(io) { io.retain_owned(std::mem::size_of::<AgentId>() as u64)?; }
                 if !readers.insert(*reader) {
                     return Err(io.invalid("inherited attached agents are invalid"));
                 }
@@ -506,14 +503,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 history.history_prefix_digest(through_sequence, &mut Some(&mut io.history_io()))?;
             let inherited_parent = crate::core::Authority {
                 kind: self.verifier.audience().kind,
-                id: fork_preparer_io::clone_text(&self.verifier.audience().id, Some(io))?,
+                id: stock_string_copy(&self.verifier.audience().id, Some(io))?,
             };
             let copied = acyclic_fs::WorkCounters {
                 bytes_copied: std::mem::size_of_val(attached_agents) as u64,
                 ..Default::default()
             };
             io.preflight(copied)?;
-            let mut attached = fork_preparer_io::vector(attached_agents.len(), Some(io))?;
+            let mut attached = crate::model::vec_with_capacity(attached_agents.len(), Some(io))?;
             attached.extend_from_slice(attached_agents);
             io.charge(copied)?;
             InheritedConversationPrefix {
@@ -553,7 +550,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             None => crate::contract::canonical_json_bytes(&prefix)?.into(),
         };
         if bytes.len() as u64 > maximum_bytes {
-            return Err(fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "inherited context exceeds byte limit",
@@ -594,7 +591,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                     }
                 }
                 if !continued {
-                    return Err(fork_preparer_io::failure(
+                    return Err(stock_boundary(
                         io,
                         crate::wire::ErrorCode::Conflict,
                         "child private volume changed after inherited-context staging",
@@ -607,7 +604,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 .await?
                 .generation;
             if &initial != initial_generation {
-                return Err(fork_preparer_io::failure(
+                return Err(stock_boundary(
                     io,
                     crate::wire::ErrorCode::Conflict,
                     "child private volume is not fresh",
@@ -616,10 +613,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let copied = bytes.clone();
             let mutations = [
                 WorkspaceMutation::CreateDirectory {
-                    path: fork_preparer_io::clone_text("/.system/inherited-conversation", io)?,
+                    path: stock_string_copy("/.system/inherited-conversation", io)?,
                 },
                 WorkspaceMutation::PutFile {
-                    path: crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("/{path}"), work))?,
+                    path: crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("/{path}"), work))?,
                     bytes: copied,
                 },
             ];
@@ -646,10 +643,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let reference = crate::executor::with_history_io(io, |work| {
             FileRef::new(
                 child_private.copy(work)?,
-                fork_preparer_io::clone_text(path, io)?,
+                stock_string_copy(path, io)?,
                 version,
                 descriptor,
-                fork_preparer_io::clone_text("inherited-conversation.json", io)?,
+                stock_string_copy("inherited-conversation.json", io)?,
                 work,
             )
         })?;
@@ -658,7 +655,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             .read_pinned_io(&reference, maximum_bytes, io)
             .await?;
         if committed.as_ref() != bytes.as_ref() {
-            return Err(fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Conflict,
                 "inherited-context retry identity belongs to different prefix",
@@ -672,3 +669,5 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         })
     }
 }
+
+use crate::executor::{stock_boundary, stock_string_copy};

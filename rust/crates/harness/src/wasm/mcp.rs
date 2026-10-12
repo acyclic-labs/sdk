@@ -11,7 +11,8 @@ pub fn validate_mcp_stdio_request(
     #[wasm_bindgen(unchecked_param_type = "McpStdioRequest")] request: JsValue,
 ) -> Result<(), JsValue> {
     from_js::<crate::mcp::stdio::McpStdioRequest>(request)?
-        .validate()
+        .exchange(None)
+        .map(drop)
         .map_err(js_error)
 }
 
@@ -20,7 +21,7 @@ pub fn validate_mcp_stdio_request(
 pub fn validate_mcp_callback_request(
     #[wasm_bindgen(unchecked_param_type = "McpCallbackRequest")] request: JsValue,
 ) -> Result<(), JsValue> {
-    from_js::<crate::mcp::callbacks::McpCallbackRequest>(request)?.validate().map_err(js_error)
+    from_js::<crate::mcp::callbacks::McpCallbackRequest>(request)?.validate().map(|_| ()).map_err(js_error)
 }
 
 /// Returns the same stable callback identity used by recorded runtime admission.
@@ -29,8 +30,7 @@ pub fn mcp_callback_operation(
     #[wasm_bindgen(unchecked_param_type = "McpCallbackRequest")] request: JsValue,
 ) -> Result<String, JsValue> {
     let request: crate::mcp::callbacks::McpCallbackRequest = from_js(request)?;
-    request.validate().map_err(js_error)?;
-    request.operation().map(|operation| operation.to_string()).map_err(js_error)
+    request.validate().map(|operation| operation.to_string()).map_err(js_error)
 }
 
 /// Validates the complete bounded replacement before the host selects it.

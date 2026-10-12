@@ -2,7 +2,7 @@ use super::*;
 
 pub(super) fn decode_interaction_json<'loan, 'io, T: serde::de::DeserializeOwned>(
     bytes: &[u8],
-    schema: crate::contract::JsonValueSchema,
+    schema: crate::executor::json::JsonValueSchema,
     typed_slot: u64,
     work: &'loan mut Option<&'io mut dyn crate::store::history::HistoryIo>,
 ) -> Result<(T, crate::wire_codec::CodecQuota<'loan, 'io>)> {
@@ -15,7 +15,7 @@ pub(super) fn decode_interaction_json<'loan, 'io, T: serde::de::DeserializeOwned
     let diagnostic = interaction_decode_diagnostic_bytes(bytes.len() as u64)?;
     let mut items = 0_u64;
     let native = interaction_native_mode(custody.work());
-    let bounds = crate::contract::JsonBounds {
+    let bounds = crate::executor::json::JsonBounds {
         maximum_bytes: bytes.len() as u64,
         maximum_items: bytes.len() as u64,
         maximum_depth: 256,
@@ -23,7 +23,7 @@ pub(super) fn decode_interaction_json<'loan, 'io, T: serde::de::DeserializeOwned
     let decoded = {
         let mut charge = |charge| -> Result<()> {
             match charge {
-                crate::contract::JsonCodecCharge::Work { items: visited, .. } => {
+                crate::executor::json::JsonCodecCharge::Work { items: visited, .. } => {
                     items = items.checked_add(visited).ok_or_else(|| {
                         interaction_denial(
                             custody.work(),
@@ -32,11 +32,11 @@ pub(super) fn decode_interaction_json<'loan, 'io, T: serde::de::DeserializeOwned
                         )
                     })?;
                 }
-                crate::contract::JsonCodecCharge::Admission {
+                crate::executor::json::JsonCodecCharge::Admission {
                     maximum_owned_bytes,
                     value_shape,
                 } => {
-                    let value_owned = crate::contract::json_value_decode_owned_bytes(value_shape)?;
+                    let value_owned = crate::executor::json::json_value_decode_owned_bytes(value_shape)?;
                     let planned = interaction_decode_owned_bytes(
                         items,
                         typed_slot,
@@ -65,7 +65,7 @@ pub(super) fn decode_interaction_json<'loan, 'io, T: serde::de::DeserializeOwned
                 .expect("observed interaction")
                 .codec_charge(charge)
         };
-        crate::contract::json_from_slice_bounded(
+        crate::executor::json::json_from_slice_bounded(
             std::marker::PhantomData::<T>,
             bytes,
             bounds,
@@ -77,7 +77,7 @@ pub(super) fn decode_interaction_json<'loan, 'io, T: serde::de::DeserializeOwned
     };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let decoded = decoded.map_err(|mut error| {
-        if let Error::NativeDecode {
+        if let Error::NativeJson {
             custody: error_custody,
             ..
         } = &mut error
@@ -204,7 +204,7 @@ pub(super) fn interaction_decode_diagnostic_bytes(input_bytes: u64) -> Result<u6
         "invalid length: found ",
         "failed to parse a UUID",
     ];
-    crate::contract::audited_serde_diagnostic_bytes(
+    crate::executor::json::audited_serde_diagnostic_bytes(
         input_bytes,
         LABELS.iter().map(|label| label.len() as u64 + 4).sum(),
     )
@@ -247,12 +247,12 @@ pub(super) fn interaction_request_owned_bytes(
             prompt,
             response_schema,
         } => (prompt.capacity() as u64)
-            .checked_add(crate::contract::json_value_logical_owned_bytes(
+            .checked_add(crate::executor::json::json_value_logical_owned_bytes(
                 response_schema,
             )?)
             .ok_or_else(overflow),
         Interaction::Form { title, schema } => (title.capacity() as u64)
-            .checked_add(crate::contract::json_value_logical_owned_bytes(schema)?)
+            .checked_add(crate::executor::json::json_value_logical_owned_bytes(schema)?)
             .ok_or_else(overflow),
         Interaction::Choice {
             prompt, options, ..

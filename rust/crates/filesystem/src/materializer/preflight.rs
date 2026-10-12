@@ -40,7 +40,7 @@ pub(super) async fn preflight<A: crate::AsyncAuthorityStore, O: crate::AsyncObje
             Err(error) => return Err(error.into()),
         };
         let observed = match &parent {
-            Some(parent) => match { #[cfg(unix)] { root.stat(relative, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(relative, &mut &*work, |path, work| root.stat(path, work)) } } {
+            Some(_) => match { #[cfg(unix)] { root.stat(relative, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(relative, &mut &*work, |path, work| root.stat(path, work)) } } {
                 Ok(stat) => Some(stat),
                 Err(NativeTreeMaterializationError::Io(error))
                     if error.kind() == std::io::ErrorKind::NotFound =>
@@ -113,8 +113,7 @@ pub(super) async fn preflight<A: crate::AsyncAuthorityStore, O: crate::AsyncObje
                 }
                 let finished = crate::native_host::stat_file(&file, &mut &*work)?;
                 if finished.identity() != observed.identity()
-                    || finished.modified()? != observed.modified()?
-                    || finished.len() != observed.len()
+                    || !same_file_version(&observed, &finished)?
                     || !source_metadata_matches(&finished, &source.metadata, false, work)?
                 {
                     return Ok(false);
@@ -126,19 +125,18 @@ pub(super) async fn preflight<A: crate::AsyncAuthorityStore, O: crate::AsyncObje
                     .await?;
                 if !{
                     #[cfg(unix)]
-                    let name = leaf.as_os_str();
-                    #[cfg(windows)]
-                    let (name, _name_allocation) = wide_name(leaf, work)?;
-                    #[cfg(unix)]
                     let (target, _allocation) =
                         root.read_link(relative, work.remaining()?.source_bytes_read, &mut &*work)?;
                     #[cfg(windows)]
-                    let (target, _allocation) = crate::native_host::read_link_held_wide(
-                        &parent,
-                        &name,
-                        work.remaining()?.source_bytes_read,
-                        &mut &*work,
-                    )?;
+                    let (target, _allocation) =
+                        crate::native_host::with_wide_path(leaf, &mut &*work, |name, meter| {
+                            crate::native_host::read_link_held_wide(
+                                &parent,
+                                name,
+                                work.remaining()?.source_bytes_read,
+                                meter,
+                            )
+                        })?;
                     #[cfg(unix)]
                     let bytes = target.iter().copied();
                     #[cfg(windows)]
@@ -165,7 +163,7 @@ pub(super) async fn preflight<A: crate::AsyncAuthorityStore, O: crate::AsyncObje
             }
             _ => return Ok(false),
         }
-        let selected = { #[cfg(unix)] { root.stat(relative, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(relative, &mut &*work, |path, work| root.stat(path, work)) } }?;
+        let selected = { #[cfg(unix)] { { #[cfg(unix)] { root.stat(relative, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(relative, &mut &*work, |path, work| root.stat(path, work)) } } } #[cfg(windows)] { crate::native_host::with_wide_path(relative, &mut &*work, |path, work| root.stat(path, work)) } }?;
         if selected.identity() != observed.identity()
             || children && observed.is_dir() && selected.modified()? != observed.modified()?
         {

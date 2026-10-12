@@ -1,5 +1,5 @@
 use super::*;
-use crate::core::{Authority, Event};
+use crate::core::Authority;
 
 /// Observes only a protected completion accepted under pre-action custody.
 pub(crate) struct AcceptedCompletionIo {
@@ -18,7 +18,9 @@ impl AcceptedCompletionIo {
         reservation: NativeWorkReservation,
         custody: NativeAllocation,
     ) -> Result<Self> {
-        if !reservation.matches_work(original) || !custody.work().shares_allocation_context(original) {
+        if !reservation.work().shares_allocation_context(original)
+            || !custody.work().shares_allocation_context(original)
+        {
             return Err(Error::NativeWork {
                 cause: NativeTreeMaterializationError::InvalidLayout,
                 custody: Some(custody),
@@ -260,16 +262,16 @@ impl HistoryIo for AcceptedCompletionIo {
             ..WorkCounters::default()
         })
     }
-    fn codec_charge(&mut self, charge: crate::contract::JsonCodecCharge) -> Result<()> {
+    fn codec_charge(&mut self, charge: crate::executor::json::JsonCodecCharge) -> Result<()> {
         match charge {
-            crate::contract::JsonCodecCharge::Work { bytes, items } => {
+            crate::executor::json::JsonCodecCharge::Work { bytes, items } => {
                 self.record_completed(WorkCounters {
                     bytes_encoded: bytes,
                     items_examined: items,
                     ..WorkCounters::default()
                 })
             }
-            crate::contract::JsonCodecCharge::Copy { bytes } => self.copy_bytes(bytes),
+            crate::executor::json::JsonCodecCharge::Copy { bytes } => self.copy_bytes(bytes),
             _ => Err(Self::unsupported()),
         }
     }

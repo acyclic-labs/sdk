@@ -38,10 +38,12 @@ pub(super) async fn read_records<P: StreamProvider>(
     maximum: u32,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Option<operations::ObservedRecords>> {
-    match operations::read_records_with_work(client, stream, from, maximum, work).await? {
+    match operations::read_records(client, stream.path(), from, maximum, work).await? {
         Ok(source) => Ok(Some(source)),
-        Err(error) if *sdk_source(&error) == StreamError::NotFound && from == 0 => Ok(None),
-        Err(error) => Err(sdk_error(error, work)),
+        Err(error) if error == StreamError::NotFound && from == 0 => Ok(None),
+        Err(error) => Err(crate::store::operations::stream_error_with_work(
+            error, work,
+        )),
     }
 }
 
@@ -75,7 +77,7 @@ pub(super) async fn next_record(
         ));
     }
     if record.sequence != *next {
-        return Err(coordinator_boundary(
+        return Err(guarded_boundary(
             quota.work(),
             wire::ErrorCode::Storage,
             "coordinator record prefix has a cursor gap",
@@ -171,7 +173,7 @@ pub(super) async fn read_intent<P: StreamProvider>(
                 drop(source_key);
                 quota.relinquish(key_bytes)?;
                 if intent.is_some() {
-                    return Err(coordinator_boundary(
+                    return Err(guarded_boundary(
                         quota.work(),
                         wire::ErrorCode::Conflict,
                         "coordinator history repeats an idempotency key",
@@ -185,7 +187,7 @@ pub(super) async fn read_intent<P: StreamProvider>(
             }
         }
         if next == from {
-            return Err(coordinator_boundary(
+            return Err(guarded_boundary(
                 quota.work(),
                 wire::ErrorCode::Storage,
                 "coordinator intent prefix is incomplete",
@@ -196,27 +198,4 @@ pub(super) async fn read_intent<P: StreamProvider>(
     quota.relinquish(path_bytes)?;
     quota.transfer();
     Ok(intent)
-}
-
-pub(super) fn coordinator_boundary(
-    work: &Option<&mut dyn HistoryIo>,
-    code: wire::ErrorCode,
-    reason: &'static str,
-) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work
-        .as_deref()
-        .is_some_and(operations::original_native_decode_mode)
-    {
-        return Error::NativeBoundary { code, reason };
-    }
-    let _ = work;
-    match code {
-        wire::ErrorCode::Invalid => Error::Invalid(reason.into()),
-        wire::ErrorCode::Unauthorized => Error::Unauthorized(reason.into()),
-        wire::ErrorCode::Conflict => Error::Conflict(reason.into()),
-        wire::ErrorCode::NotFound => Error::NotFound(reason.into()),
-        wire::ErrorCode::Unsupported => Error::Unsupported(reason.into()),
-        _ => Error::Storage(reason.into()),
-    }
 }

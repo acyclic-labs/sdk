@@ -53,7 +53,7 @@ pub fn decode_command_envelope(envelope: wire::CommandEnvelope) -> Result<(Autho
     };
     if !envelope.intent_digest.is_empty()
         && envelope.intent_digest.as_slice()
-            != crate::contract::canonical_json_digest_with_work(
+            != crate::executor::json::canonical_json_digest(
                 &command,
                 crate::store::default_projection_read_limits().maximum_bytes,
                 &mut None,

@@ -1,10 +1,225 @@
 use super::*;
+use crate::materializer::NativeWorkReservation;
+
+pub(super) struct DriverSessionResources {
+    pub(super) state: Mutex<LoopState>,
+    pub(super) changed: Condvar,
+    pub(super) requested: AtomicBool,
+    pub(super) provider_exited: AtomicBool,
+    pub(super) credit: NativeWorkReservation,
+    pub(super) native: Mutex<(usize, Option<NativeAllocation>, NativeWorkReservation)>,
+    _allocation: NativeAllocation,
+}
+
+pub(super) struct LoopState {
+    pub(super) resources: Option<(
+        Arc<DarwinMountContext>,
+        Arc<DarwinOwned<CString>>,
+        [usize; 7],
+    )>,
+    pub(super) mounted: bool,
+    pub(super) control: DarwinRecoveryControl,
+    pub(super) probe: MountProbe,
+    pub(super) retirement: Option<crate::native_mount::NativeMountRetirement>,
+    pub(super) failure: Option<NativeMountError>,
+}
+
+impl DriverSessionResources {
+    pub(super) fn new(
+        context: Arc<DarwinMountContext>,
+        destination: &Path,
+        work: &Work,
+    ) -> Result<Arc<Self>, NativeMountError> {
+        let name = destination
+            .file_name()
+            .ok_or(NativeMountError::InvalidDestination)?
+            .as_bytes();
+        let mut probe = MountProbe::new(destination, work)?;
+        probe.preallocate(work)?;
+        let probes = control_visits(DISKUTIL_VISIBILITY_TIMEOUT, STOP_POLL_INTERVAL)? + 3;
+        let mut waits = 0_u64;
+        for timeout in [
+            DIRECT_UNMOUNT_TIMEOUT,
+            DISKUTIL_UNMOUNT_TIMEOUT,
+            DISKUTIL_VISIBILITY_TIMEOUT,
+            MOUNT_LOOP_EXIT_TIMEOUT,
+        ] {
+            waits = waits
+                .checked_add(control_visits(timeout, STOP_POLL_INTERVAL)?)
+                .ok_or(WorkError::Overflow)?;
+        }
+        let credit = work.reserve_work(WorkCounters {
+            backend_read_operations: probes
+                .checked_mul(5)
+                .and_then(|n| n.checked_add(waits + 2))
+                .ok_or(WorkError::Overflow)?,
+            backend_write_operations: probes,
+            bytes_copied: probes
+                .checked_mul(name.len() as u64)
+                .ok_or(WorkError::Overflow)?,
+            ..WorkCounters::UNCHARGED
+        })?;
+        let destination = shared(work, native_name(destination.as_os_str().as_bytes(), work)?)?;
+        let options = [
+            Some(c"nobrowse"),
+            (!context.writable).then_some(c"ro"),
+            context
+                .source
+                .supports_posix_named_attributes()
+                .then_some(c"namedattr"),
+        ];
+        let mut pointers = [0; 7];
+        pointers[0] = c"acyclic-fs".as_ptr() as usize;
+        for (index, option) in options.into_iter().flatten().enumerate() {
+            pointers[2 * index + 1] = c"-o".as_ptr() as usize;
+            pointers[2 * index + 2] = option.as_ptr() as usize;
+        }
+        let control = DarwinRecoveryControl {
+            prepared_direct: Some(DirectDetach::new(Arc::clone(&destination), work)?),
+            diskutil: Some(Diskutil::prepare(work)?),
+            ..DarwinRecoveryControl::default()
+        };
+        let cleanup = work.reserve_work(WorkCounters {
+            backend_read_operations: 1,
+            backend_write_operations: 2,
+            ..WorkCounters::UNCHARGED
+        })?;
+        let allocation = work.claim(
+            (std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64,
+            1,
+            WorkCounters::UNCHARGED,
+        )?;
+        Ok(Arc::new(Self {
+            state: Mutex::new(LoopState {
+                resources: Some((context, destination, pointers)),
+                mounted: false,
+                control,
+                probe,
+                retirement: None,
+                failure: None,
+            }),
+            changed: Condvar::new(),
+            requested: AtomicBool::new(false),
+            provider_exited: AtomicBool::new(false),
+            credit,
+            native: Mutex::new((0, None, cleanup)),
+            _allocation: allocation,
+        }))
+    }
+
+    pub(super) fn context(&self) -> Result<Arc<DarwinMountContext>, NativeMountError> {
+        self.state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .resources
+            .as_ref()
+            .map(|resources| Arc::clone(&resources.0))
+            .ok_or(NativeMountError::Lifecycle(
+                "Darwin mount session has stopped",
+            ))
+    }
+    pub(super) fn birth(&self, work: &Work) -> Result<(), NativeMountError> {
+        let created = (|| {
+            // SAFETY: the bridge reports its fixed allocation size.
+            let bytes = unsafe { acyclic_fs_darwin_mount_session_allocation_size() } as u64;
+            let allocation = work.allocation_work().claim(bytes, 1, WRITE_WORK)?;
+            // SAFETY: the allocator has no preconditions.
+            let pointer = unsafe { acyclic_fs_darwin_mount_session_new() } as usize;
+            if pointer == 0 {
+                return Err(driver_errno(libc::ENOMEM));
+            }
+            Ok((pointer, allocation))
+        })();
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        let result = match created {
+            Ok((pointer, allocation)) => {
+                let mut native = self.native.lock().unwrap_or_else(PoisonError::into_inner);
+                native.0 = pointer;
+                native.1 = Some(allocation);
+                Ok(())
+            }
+            Err(error) => {
+                state.control.start_aborted = true;
+                Err(error)
+            }
+        };
+        self.changed.notify_all();
+        result
+    }
+
+    pub(super) fn pointer(&self) -> usize {
+        self.native.lock().unwrap_or_else(PoisonError::into_inner).0
+    }
+
+    pub(super) fn interrupt(
+        &self,
+        wait: Option<&crate::CancellationToken>,
+    ) -> Result<(), NativeMountError> {
+        let mut native = self.native.lock().unwrap_or_else(PoisonError::into_inner);
+        if native.0 == 0 || native.2.remaining_work().backend_write_operations < 2 {
+            return Ok(());
+        }
+        let write = WRITE_WORK;
+        if let Some(wait) = wait {
+            native.2.loan(Some(wait)).started_io(write)?;
+        } else {
+            native.2.started_drop_io(write);
+        }
+        // SAFETY: this locked owner retains the live bridge session.
+        unsafe {
+            acyclic_fs_darwin_mount_interrupt(native.0 as *mut c_void);
+        }
+        Ok(())
+    }
+
+    pub(super) fn start_join(
+        &self,
+        wait: &crate::CancellationToken,
+    ) -> Result<(), NativeMountError> {
+        self.native
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .2
+            .loan(Some(wait))
+            .started_io(READ_WORK)?;
+        Ok(())
+    }
+
+    pub(super) fn free(
+        &self,
+        wait: Option<&crate::CancellationToken>,
+    ) -> Result<(), NativeMountError> {
+        let mut native = self.native.lock().unwrap_or_else(PoisonError::into_inner);
+        if native.0 == 0 {
+            return Ok(());
+        }
+        let write = WRITE_WORK;
+        if let Some(wait) = wait {
+            native.2.loan(Some(wait)).started_io(write)?;
+        } else {
+            native.2.started_drop_io(write);
+        }
+        // SAFETY: only the quiescent loop or its joined owner calls free.
+        unsafe {
+            acyclic_fs_darwin_mount_session_free(native.0 as *mut c_void);
+        }
+        native.0 = 0;
+        drop(native.1.take());
+        Ok(())
+    }
+}
+
+impl Drop for DriverSessionResources {
+    fn drop(&mut self) {
+        self.free(None).expect("birth-paid SDK destruction");
+    }
+}
 
 impl DarwinMountSession {
     pub(in crate::native_mount) fn start_into<F>(
         request: &NativeMountRequest,
         source: Arc<dyn MountFilesystem>,
-        original: &crate::NativeMaterializationWork,
+        original: &Work,
         out: &mut Option<Self>,
         retirement: &mut Option<crate::native_mount::NativeMountRetirement>,
         prepare: F,
@@ -16,7 +231,7 @@ impl DarwinMountSession {
             return Err(NativeMountError::ControlPending);
         }
         original_work(source.as_ref(), Some(original))?;
-        original.admit(crate::WorkCounters::UNCHARGED)?;
+        original.admit(WorkCounters::UNCHARGED)?;
         static STARTUP: std::sync::LazyLock<Mutex<()>> =
             std::sync::LazyLock::new(|| Mutex::new(()));
         let _startup = STARTUP
@@ -43,10 +258,6 @@ impl DarwinMountSession {
         crate::native_host::unix_name(parent.as_os_str(), &mut host, |path, work| {
             start_stat(path, work)
         })?;
-        let custody = crate::demand::NativeMountAllocationCustody::new(
-            &mut crate::demand::NativeSourceWork::from_native_materialization_work(original),
-        )
-        .map_err(crate::native_mount::NativeMountStartupAdmissionError::from)?;
         let mut context = DarwinMountContext::new(
             source,
             request.writable,
@@ -55,7 +266,6 @@ impl DarwinMountSession {
             root.node.file_id,
             original,
         )?;
-        context.allocation_custody = Some(custody);
         context
             .native_allocation
             .grow((2 * std::mem::size_of::<usize>()) as u64)?;
@@ -64,85 +274,28 @@ impl DarwinMountSession {
         context
             .source
             .observe_view_with_meter(Arc::downgrade(&context), original)?;
-        let startup = StartupBuffers::new(
-            &request.destination,
-            request.writable,
-            context.source.supports_posix_named_attributes(),
-            original,
-        )?;
-        let bytes = request.destination.as_os_str().as_bytes().len();
-        let mut destination = owned(original, bytes as u64, || {
-            copying(original, copy_work(bytes as u64), || {
-                request.destination.clone()
-            })
-        })?;
-        if let Some(allocation) = &mut destination.allocation {
-            allocation.reconcile_capacity(destination.value.capacity() as u64)?;
-        }
-        let events = Arc::new(LoopEvents {
-            _allocation: Some(original.claim(
-                (std::mem::size_of::<LoopEvents>() + 2 * std::mem::size_of::<usize>()) as u64,
-                1,
-                crate::WorkCounters::UNCHARGED,
-            )?),
-            ..LoopEvents::default()
-        });
-        let resources_allocation = original.claim(
-            (std::mem::size_of::<DriverSessionResources>() + 2 * std::mem::size_of::<usize>())
-                as u64,
-            1,
-            crate::WorkCounters::UNCHARGED,
-        )?;
-        let cleanup = original.reserve_work(crate::WorkCounters {
-            backend_read_operations: 1,
-            backend_write_operations: 2,
-            ..crate::WorkCounters::UNCHARGED
-        })?;
-        let resources = Arc::new(DriverSessionResources {
-            context,
-            native: Mutex::new((0, None, cleanup)),
-            startup,
-            _allocation: resources_allocation,
-        });
-        let unmount = DarwinStopController::new(&resources, &destination, original)?;
+        let resources = DriverSessionResources::new(context, &request.destination, original)?;
         *out = Some(Self {
-            handler_failure: Arc::clone(&resources.context.handler_failure),
-            resources: Some(resources),
-            destination,
+            handler_failure: Arc::clone(&resources.context()?.handler_failure),
+            unmount: resources,
             thread: None,
-            events,
             loop_finished_before_teardown: None,
             loop_result: None,
-            teardown_complete: true,
-            unmount,
             native_root_identity: None,
         });
         let session = out
             .as_mut()
             .expect("logical driver installed before SDK birth");
-        let name = "acyclic-fs-darwin-nfs";
-        let owned = (
-            Arc::clone(session.resources.as_ref().expect("new resources")),
-            Arc::clone(&session.events),
-            Arc::clone(&session.unmount),
-            Some(original.clone()),
-        );
+        let owned = (Arc::clone(&session.unmount), original.clone());
         let allocation = original.claim(
-            (std::mem::size_of_val(&owned)
-                + std::mem::size_of::<crate::NativeAllocation>()
-                + name.len()) as u64,
+            (std::mem::size_of_val(&owned) + std::mem::size_of::<NativeAllocation>()) as u64,
             1,
-            crate::WorkCounters::UNCHARGED,
+            WorkCounters::UNCHARGED,
         )?;
-        let owned = (owned.0, owned.1, owned.2, owned.3, allocation);
-        let name = copying(original, copy_work(name.len() as u64), || name.to_owned())?;
         original.charge(WRITE_WORK)?;
         session.thread = Some(
-            std::thread::Builder::new()
-                .name(name)
-                .spawn(move || run_loop(owned))?,
+            std::thread::Builder::new().spawn(move || run_loop((owned.0, owned.1, allocation)))?,
         );
-        session.teardown_complete = false;
         let mut packet = retirement.take();
         let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             packet.as_mut().map_or(Ok(()), prepare)
@@ -163,62 +316,36 @@ impl DarwinMountSession {
             Ok(result) => result?,
             Err(panic) => std::panic::resume_unwind(panic),
         }
-        let resources = session.resources.as_ref().expect("new resources");
-        match DriverSessionResources::new_sdk_session(original) {
-            Ok((pointer, allocation)) => {
-                let mut native = resources
-                    .native
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner);
-                native.0 = pointer;
-                native.1 = Some(allocation);
-            }
-            Err(error) => {
-                session
-                    .unmount
-                    .state
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .control
-                    .start_aborted = true;
-                session.unmount.changed.notify_all();
-                return Err(error);
-            }
-        }
-        session
-            .unmount
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .ready = true;
-        session.unmount.changed.notify_all();
+        session.unmount.birth(original)?;
         session.await_mount(original)
     }
 
-    fn await_mount(
-        &mut self,
-        original: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeMountError> {
+    fn await_mount(&mut self, original: &Work) -> Result<(), NativeMountError> {
         let deadline = Instant::now() + MOUNT_VISIBILITY_TIMEOUT;
         let reported = loop {
             original.charge(scan_work(1))?;
-            let state = self.events.current();
-            if state.mounted || self.thread.as_ref().is_none_or(JoinHandle::is_finished) {
-                break state;
+            let mounted = self
+                .unmount
+                .state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .mounted;
+            if mounted || self.thread.as_ref().is_none_or(JoinHandle::is_finished) {
+                break mounted;
             }
-            original.admit(crate::WorkCounters::UNCHARGED)?;
+            original.admit(WorkCounters::UNCHARGED)?;
             if Instant::now() >= deadline {
                 return Err(std::io::Error::from(std::io::ErrorKind::TimedOut).into());
             }
             original.charge(READ_WORK)?;
-            self.events.wait_until(Duration::from_millis(10), |state| {
+            self.unmount.wait_until(Duration::from_millis(10), |state| {
                 state.mounted || self.thread.as_ref().is_none_or(JoinHandle::is_finished)
             });
         };
         if let Some((error, _)) = self.take_callback_failure() {
             return Err(error);
         }
-        if !reported.mounted {
+        if !reported {
             return Err(driver_errno(libc::EIO));
         }
         let mut state = self
@@ -226,51 +353,29 @@ impl DarwinMountSession {
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if !state.probe.mounted(
-            &self.destination,
-            &ProbeWork {
-                original,
-                cleanup: None,
-            },
-        )? {
+        let LoopState {
+            resources, probe, ..
+        } = &mut *state;
+        let destination = resources
+            .as_ref()
+            .ok_or(NativeMountError::ControlPending)?
+            .1
+            .as_bytes();
+        let destination = Path::new(std::ffi::OsStr::from_bytes(destination));
+        if !probe.mounted(destination, &ProbeWork::Live(original))? {
             return Err(driver_errno(libc::EIO));
         }
-        drop(state);
-        let read = READ_WORK;
-        original.admit(read)?;
-        let close = original.reserve_cleanup_write()?;
-        original.record_admitted(read)?;
-        let path = &self.resources()?.startup.destination;
-        // SAFETY: startup retains the terminated destination through open.
-        let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
-        if fd < 0 {
-            return Err(std::io::Error::last_os_error().into());
-        }
-        use std::os::fd::{FromRawFd as _, IntoRawFd as _};
-        // SAFETY: fd is a newly opened descriptor; its explicit close is prepaid.
-        let file = std::mem::ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) });
-        let mut host = original;
-        let identity = crate::native_host::file_identity_and_length(&file, &mut host);
-        let (closed, recorded) = close.attempt(|| {
-            // SAFETY: file represents fd, and ManuallyDrop prevents a second close.
-            if unsafe { libc::close(fd) } == 0 {
-                Ok(())
-            } else {
-                Err(std::io::Error::last_os_error())
-            }
-        });
-        let _ = std::mem::ManuallyDrop::into_inner(file).into_raw_fd();
-        recorded?;
-        let (identity, _) = identity?;
-        closed?;
-        self.native_root_identity = Some(identity);
+        self.native_root_identity = Some(crate::native_host::root_path_identity(
+            destination,
+            &mut &*original,
+        )?);
         Ok(())
     }
 }
 
 fn start_stat(
     path: &CStr,
-    work: &crate::NativeMaterializationWork,
+    work: &Work,
 ) -> Result<libc::stat, crate::NativeTreeMaterializationError> {
     loop {
         work.charge(READ_WORK)?;
@@ -287,32 +392,24 @@ fn start_stat(
 }
 
 fn run_loop(
-    mut owned: (
-        Arc<DriverSessionResources>,
-        Arc<LoopEvents>,
-        Arc<DarwinStopController>,
-        Option<crate::NativeMaterializationWork>,
-        crate::NativeAllocation,
-    ),
+    (driver, original, _allocation): (Arc<DriverSessionResources>, Work, NativeAllocation),
 ) -> c_int {
-    let (resources, events, controller, original, _) = &owned;
-    let original = original
-        .as_ref()
-        .expect("born loop retains original execution");
-    let mut state = controller
-        .state
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner);
-    let mut gate = state.start_wait.take().expect("birth-paid startup wait");
-    if !state.ready && !state.control.start_aborted {
-        gate.started_drop_io(READ_WORK);
-        state = controller
+    let mut state = driver.state.lock().unwrap_or_else(PoisonError::into_inner);
+    if driver.pointer() == 0 && !state.control.start_aborted {
+        driver.credit.started_drop_io(READ_WORK);
+        state = driver
             .changed
-            .wait_while(state, |state| !state.ready && !state.control.start_aborted)
+            .wait_while(state, |state| {
+                driver.pointer() == 0 && !state.control.start_aborted
+            })
             .unwrap_or_else(PoisonError::into_inner);
     }
     let aborted = state.control.start_aborted;
-    state.start_wait = Some(gate);
+    let (context, destination, pointers) = state
+        .resources
+        .as_ref()
+        .expect("provider resources")
+        .clone();
     drop(state);
     let admitted = if aborted {
         Err(NativeMountError::ControlPending)
@@ -321,34 +418,35 @@ fn run_loop(
     };
     let status = match admitted {
         Err(error) => {
-            controller
+            driver
                 .state
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
                 .control
                 .start_aborted = true;
-            let work = (&original.state).lock().work;
-            resources.context.record_failure(error, work);
+            context.record_failure(error, original.receipt());
             -libc::EIO
         }
         Ok(()) => {
-            let buffers = &resources.startup;
             let mut interrupted = 0;
-            // SAFETY: this tuple retains SDK, argv, context, events and output through the blocking loop.
+            // SAFETY: this thread retains the SDK owner, context, argv and destination through the loop.
             let status = unsafe {
                 acyclic_fs_darwin_mount_run(
-                    resources.pointer() as *mut c_void,
-                    buffers.argument_count(),
-                    buffers.pointers.as_ptr().cast::<*const c_char>(),
-                    buffers.destination.as_ptr(),
-                    Arc::as_ptr(&resources.context) as usize,
+                    driver.pointer() as *mut c_void,
+                    pointers
+                        .iter()
+                        .position(|pointer| *pointer == 0)
+                        .unwrap_or(7) as c_int,
+                    pointers.as_ptr().cast(),
+                    destination.as_ptr(),
+                    Arc::as_ptr(&context) as usize,
                     report_mounted,
-                    Arc::as_ptr(events).cast_mut().cast(),
+                    Arc::as_ptr(&driver).cast_mut().cast(),
                     &mut interrupted,
                 )
             };
             if interrupted != 0 {
-                controller
+                driver
                     .state
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner)
@@ -358,8 +456,9 @@ fn run_loop(
             status
         }
     };
-    events.report(|state| state.provider_exited = true);
-    drop(owned.3.take());
-    owned.2.finish(&owned.0);
+    driver.provider_exited.store(true, Ordering::Release);
+    driver.changed.notify_all();
+    drop(original);
+    driver.finish();
     status
 }

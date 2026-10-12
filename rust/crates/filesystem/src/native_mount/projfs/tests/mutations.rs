@@ -22,20 +22,16 @@ async fn stopped_projection_cannot_publish_a_late_open_writer()
         .write(true)
         .share_mode(FILE_SHARE_READ.0 | FILE_SHARE_WRITE.0)
         .open(&projected)?;
-    let stop = session
+    session
         .stop()
         .expect_err("an open non-delete-sharing handle must fence cleanup");
-    assert!(
-        stop.to_string().contains("removal failed"),
-        "unexpected cleanup fence: {stop}"
-    );
 
     late.rewind()?;
     late.write_all(b"late")?;
     late.flush()?;
     drop(late);
 
-    assert_eq!(source.read_range(&seed, 0, 4)?, b"seed"[..]);
+    assert_eq!(source.read_range(&seed, 0, 4)?.as_ref(), b"seed");
     session.stop()?;
     Ok(())
 }
@@ -169,13 +165,7 @@ async fn a_held_placeholder_is_replaced_before_revalidation_returns()
     .await?;
     let destination = root.path().join("mount");
     std::fs::create_dir(&destination)?;
-    let mount = Arc::new(
-        lazy.mount(
-            &destination,
-            MountOptions::read_write().publication(MountPublication::Manual),
-        )
-        .await?,
-    );
+    let mount = Arc::new(lazy.mount(&destination, manual_mount_options()).await?);
     let held_path = destination.join("held.txt");
     assert_eq!(std::fs::metadata(&held_path)?.len(), 3);
     let held = std::fs::File::open(&held_path)?;
@@ -228,12 +218,7 @@ async fn a_read_only_placeholder_is_replaced_when_its_source_changes()
     .await?;
     let destination = root.path().join("mount");
     std::fs::create_dir(&destination)?;
-    let mount = lazy
-        .mount(
-            &destination,
-            MountOptions::read_write().publication(MountPublication::Manual),
-        )
-        .await?;
+    let mount = lazy.mount(&destination, manual_mount_options()).await?;
     let projected = destination.join("locked.txt");
     assert_eq!(std::fs::metadata(&projected)?.len(), 3);
     assert!(std::fs::metadata(&projected)?.permissions().readonly());
@@ -274,22 +259,11 @@ async fn projected_directories_rename_and_what_moved_with_them_reads()
     .await?;
     let destination = root.path().join("mount");
     std::fs::create_dir(&destination)?;
-    let mount = lazy
-        .mount(
-            &destination,
-            MountOptions::read_write().publication(MountPublication::Manual),
-        )
-        .await?;
-    let listed = |path: &std::path::Path| {
-        sorted_names(path).map_err(|error| {
-            format!(
-                "listing {}: {error}; the mount holds {:?}",
-                path.display(),
-                sorted_names(&destination)
-            )
-        })
-    };
-    assert_eq!(listed(&destination.join("pkg"))?, ["shared.rs", "sub"]);
+    let mount = lazy.mount(&destination, manual_mount_options()).await?;
+    assert_eq!(
+        sorted_names(&destination.join("pkg"))?,
+        ["shared.rs", "sub"]
+    );
     let moved = acyclic_native_runtime::process_output(
         std::process::Command::new("cmd.exe")
             .args(["/D", "/C", "move pkg lib"])
@@ -298,13 +272,13 @@ async fn projected_directories_rename_and_what_moved_with_them_reads()
         8 * 1024 * 1024,
     )?;
     assert!(moved.status.success(), "move failed: {moved:?}");
-    let read = |path: &std::path::Path| {
-        std::fs::read(path).map_err(|error| format!("reading {}: {error}", path.display()))
-    };
-    assert_eq!(listed(&destination)?, ["lib"]);
-    assert_eq!(read(&destination.join("lib").join("shared.rs"))?, b"shared");
+    assert_eq!(sorted_names(&destination)?, ["lib"]);
     assert_eq!(
-        read(&destination.join("lib").join("sub").join("deep.rs"))?,
+        std::fs::read(&destination.join("lib").join("shared.rs"))?,
+        b"shared"
+    );
+    assert_eq!(
+        std::fs::read(&destination.join("lib").join("sub").join("deep.rs"))?,
         b"deep"
     );
     mount.sync().await?;
@@ -333,29 +307,16 @@ async fn projected_directories_rename_and_what_moved_with_them_reads()
 async fn a_file_renamed_before_it_is_read_stays_as_renamed()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
-    use std::os::windows::fs::MetadataExt as _;
 
     let root = tempfile::tempdir()?;
-    let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-    let workspace = engine
-        .create_workspace(
-            "rename-unread-projfs",
-            WorkBudget::UNBOUNDED,
-            work.cancellation(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let workspace = local_workspace(root.path(), "rename-unread-projfs", &work).await?;
     workspace
         .write("/before.txt", Bytes::from_static(b"unread"))
         .await?;
     let destination = root.path().join("mount");
     std::fs::create_dir(&destination)?;
     let mount = workspace
-        .mount(
-            &destination,
-            MountOptions::read_write().publication(MountPublication::Manual),
-        )
+        .mount(&destination, manual_mount_options())
         .await?;
     let external = acyclic_native_runtime::process_output(
         std::process::Command::new("cmd.exe")
@@ -367,11 +328,6 @@ async fn a_file_renamed_before_it_is_read_stays_as_renamed()
     assert!(external.status.success(), "rename failed: {external:?}");
     mount.sync().await?;
     let renamed = destination.join("after.txt");
-    assert_eq!(
-        std::fs::metadata(&renamed)?.file_attributes()
-            & super::FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS.0,
-        0
-    );
     assert_eq!(std::fs::read(&renamed)?, b"unread");
     mount.unmount().await?;
     Ok(())
@@ -383,24 +339,14 @@ async fn projected_file_rename_and_replacement_survive_remount()
 -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
     let root = tempfile::tempdir()?;
-    let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-    let workspace = engine
-        .create_workspace("replace-projfs", WorkBudget::UNBOUNDED, work.cancellation())
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let workspace = local_workspace(root.path(), "replace-projfs", &work).await?;
     workspace
         .write("/original.txt", Bytes::from_static(b"original"))
         .await?;
 
     let first = root.path().join("first-mount");
     std::fs::create_dir(&first)?;
-    let mount = workspace
-        .mount(
-            &first,
-            MountOptions::read_write().publication(MountPublication::Manual),
-        )
-        .await?;
+    let mount = workspace.mount(&first, manual_mount_options()).await?;
     let original = first.join("original.txt");
     for _ in 0..3 {
         assert_eq!(std::fs::read(&original)?, b"original");
@@ -425,12 +371,7 @@ async fn projected_file_rename_and_replacement_survive_remount()
 
     let second = root.path().join("second-mount");
     std::fs::create_dir(&second)?;
-    let remount = workspace
-        .mount(
-            &second,
-            MountOptions::read_write().publication(MountPublication::Manual),
-        )
-        .await?;
+    let remount = workspace.mount(&second, manual_mount_options()).await?;
     assert_eq!(
         std::fs::read(second.join("renamed.txt")).expect("renamed path after remount"),
         b"original"

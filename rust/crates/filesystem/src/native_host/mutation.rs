@@ -80,7 +80,7 @@ impl HostRoot {
             let mut directory = clone_directory(&self.directory, work)?;
             if !path.is_empty() {
                 for name in path.split(|u| *u == 92) {
-                    work.charge(ITEM)?;
+                    work.started_io(ITEM)?;
                     directory =
                         Dir::from_std_file(create_windows_directory(&directory, name, work)?);
                 }
@@ -181,13 +181,13 @@ pub(super) fn bind_unix_socket_in<W: SourceDemandReadWork>(
     let base = {
         let prefix = b"/proc/self/fd/";
         let fd = parent.as_raw_fd() as u32;
-        work.charge(WorkCounters {
+        work.started_io(WorkCounters {
             bytes_encoded: u64::from(fd.checked_ilog10().unwrap_or(0) + 1),
             ..WorkCounters::UNCHARGED
         })?;
         let number = rustix::path::DecInt::new(fd);
         let digits = number.as_bytes();
-        work.charge(copy_work((prefix.len() + digits.len()) as u64))?;
+        work.started_io(copy_work((prefix.len() + digits.len()) as u64))?;
         path[..prefix.len()].copy_from_slice(prefix);
         path[prefix.len()..prefix.len() + digits.len()].copy_from_slice(digits);
         prefix.len() + digits.len()
@@ -210,7 +210,7 @@ pub(super) fn bind_unix_socket_in<W: SourceDemandReadWork>(
     if length >= address.sun_path.len() {
         return Err(DemandError::InvalidRequest);
     }
-    work.charge(copy_work((length + leaf.to_bytes().len()) as u64))?;
+    work.started_io(copy_work((length + leaf.to_bytes().len()) as u64))?;
     path[base] = b'/';
     path[base + 1..length].copy_from_slice(leaf.to_bytes());
     for (destination, byte) in address.sun_path.iter_mut().zip(&path[..length]) {
@@ -220,7 +220,7 @@ pub(super) fn bind_unix_socket_in<W: SourceDemandReadWork>(
     {
         address.sun_len = (std::mem::offset_of!(libc::sockaddr_un, sun_path) + length + 1) as u8;
     }
-    work.charge(WRITE)?;
+    work.started_io(WRITE)?;
     #[cfg(target_os = "linux")]
     let kind = libc::SOCK_STREAM | libc::SOCK_CLOEXEC;
     #[cfg(not(target_os = "linux"))]
@@ -233,7 +233,7 @@ pub(super) fn bind_unix_socket_in<W: SourceDemandReadWork>(
     let socket = unsafe { std::os::fd::OwnedFd::from_raw_fd(fd) };
     #[cfg(target_os = "macos")]
     {
-        work.charge(WRITE)?;
+        work.started_io(WRITE)?;
         if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 {
             return Err(io::Error::last_os_error().into());
         }
@@ -438,7 +438,7 @@ impl HostRoot {
             return Err(DemandError::InvalidRequest);
         }
         for unit in target {
-            work.charge(ITEM)?;
+            work.started_io(ITEM)?;
             if *unit == 0 {
                 return Err(DemandError::InvalidRequest);
             }

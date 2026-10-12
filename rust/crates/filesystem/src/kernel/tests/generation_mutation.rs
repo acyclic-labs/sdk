@@ -2477,95 +2477,53 @@ struct NoGenerationCalls;
 
 #[cfg(not(target_arch = "wasm32"))]
 impl AsyncObjectStore for NoGenerationCalls {
-    fn decoded_cache_get(&self, _: crate::async_storage::DecodedCacheKey)
-    -> Result<Option<crate::async_storage::DecodedCacheValue>, crate::storage::ObjectStoreError> {
+    fn decoded_cache_get(
+        &self,
+        _: crate::async_storage::DecodedCacheKey,
+    ) -> Result<Option<crate::async_storage::DecodedCacheValue>, crate::ObjectStoreError> {
         panic!("denied generation entered provider cache");
     }
-    async fn put(&self, _: ObjectId, _: OwnedBytes,
-        context: &mut crate::AuthorityWork<'_>,
+
+    async fn put(
+        &self,
+        _: ObjectId,
+        _: OwnedBytes,
+        _: &mut crate::AuthorityWork<'_>,
     ) -> Result<(), crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(crate::ObjectStoreError::NativeUnavailable);
-        }
-        let _ = context.work.remaining(context.budget)?;
-        let _ = context.cancellation;
-        let result = async {
-        panic!("denied generation entered ordinary write");
+        panic!("denied generation entered provider write");
     }
-        .await;
-        context.accept(result)
-    }
-    async fn read(&self, _: ObjectId, _: u64,
-        context: &mut crate::AuthorityWork<'_>,
+
+    async fn read(
+        &self,
+        _: ObjectId,
+        _: u64,
+        _: &mut crate::AuthorityWork<'_>,
     ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(_) = context.original {
-            let _ = context.cancellation;
-            return async {
-        panic!("denied generation entered original read");
+        panic!("denied generation entered provider read");
     }
-            .await;
-        }
-        let _ = context.work.remaining(context.budget)?;
-        let _ = context.cancellation;
-        let result = async {
-        panic!("denied generation entered ordinary read");
-    }
-        .await;
-        context.accept(result)
-    }
-    async fn read_many(&self, _: &[crate::storage::ObjectReadRequest],
-        context: &mut crate::AuthorityWork<'_>,
+
+    async fn read_many(
+        &self,
+        _: &[crate::storage::ObjectReadRequest],
+        _: &mut crate::AuthorityWork<'_>,
     ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(_) = context.original {
-            let _ = context.cancellation;
-            return async {
-        panic!("denied generation entered original batch");
+        panic!("denied generation entered provider batch");
     }
-            .await
-            .map(|(values, allocation)| (values, Some(allocation)));
-        }
-        let _ = context.work.remaining(context.budget)?;
-        let _ = context.cancellation;
-        let result = async {
-        panic!("denied generation entered ordinary batch");
-    }
-        .await;
-        context.accept(result).map(|values| (values, None))
-    }
-    async fn contains(&self, _: ObjectId,
-        context: &mut crate::AuthorityWork<'_>,
+
+    async fn contains(
+        &self,
+        _: ObjectId,
+        _: &mut crate::AuthorityWork<'_>,
     ) -> Result<bool, crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if context.original.is_some() {
-            return Err(crate::ObjectStoreError::NativeUnavailable);
-        }
-        let _ = context.work.remaining(context.budget)?;
-        let _ = context.cancellation;
-        let result = async {
-        panic!("denied generation entered ordinary probe");
-    }
-        .await;
-        context.accept(result)
+        panic!("denied generation entered provider probe");
     }
 
     async fn put_hashed(
         &self,
         _: crate::storage::HashedObject,
-        context: &mut crate::AuthorityWork<'_>,
+        _: &mut crate::AuthorityWork<'_>,
     ) -> Result<(), crate::ObjectStoreError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(_) = context.original {
-            let _ = context.cancellation;
-            return async {
-        panic!("denied generation entered original write");
-    }
-            .await;
-        }
-        let (id, bytes) = _.into_parts();
-        self.put(id, bytes, context).await
+        panic!("denied generation entered provider write");
     }
 }
 

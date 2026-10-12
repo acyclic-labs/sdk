@@ -112,7 +112,7 @@ async fn context_pages_reject_corrupt_identity_and_unproven_compaction() -> Resu
     records.push(b"not-json".to_vec());
     let mut missing_source = record;
     missing_source["compaction"] = serde_json::to_value(CompactionReference {
-        source_digest: crate::contract::canonical_json_digest(&context)?,
+        source_digest: crate::executor::json::canonical_json_digest(&context, u64::MAX, &mut None)?,
         maximum_messages: 2,
         retention: CompactionRetention::default(),
         summary: None,
@@ -203,7 +203,7 @@ async fn durable_sources_and_compaction_reopen_exactly() -> Result<()> {
             operation_id: crate::OperationId::new(),
             step: 0,
             source_messages: 3,
-            source_digest: crate::contract::canonical_json_digest(&original)?,
+            source_digest: crate::executor::json::canonical_json_digest(&original, u64::MAX, &mut None)?,
             output: message(ModelRole::System, "summary")?
                 .content
                 .file_refs()
@@ -334,7 +334,7 @@ async fn continuing_compaction_publishes_and_retries_one_atomic_pair() -> Result
             operation_id: crate::OperationId::new(),
             step: 0,
             source_messages: 2,
-            source_digest: crate::contract::canonical_json_digest(&covered)?,
+            source_digest: crate::executor::json::canonical_json_digest(&covered, u64::MAX, &mut None)?,
             output,
         }),
         CompactionRetention::default(),

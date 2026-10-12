@@ -23,8 +23,6 @@ use indexed_db_futures::prelude::*;
 use indexed_db_futures::transaction::{
     Transaction, TransactionDurability, TransactionMode, TransactionOptions,
 };
-#[cfg(test)]
-use js_sys::Promise;
 use js_sys::{Array, Uint8Array};
 use std::future::{Future, poll_fn};
 use std::mem::size_of;
@@ -36,7 +34,6 @@ use web_sys::Blob;
 
 const DATABASE_VERSION: u32 = 1;
 const OBJECTS: &str = "objects";
-const OBJECT_METADATA: &str = "object_metadata";
 const AUTHORITY_HEADS: &str = "authority_heads";
 const AUTHORITY_COMMITS: &str = "authority_commits";
 const AUTHORITY_OPERATIONS: &str = "authority_operations";
@@ -84,7 +81,6 @@ async fn open_database(name: &str) -> Result<Database, IndexedDbOpenError> {
             }
             for name in [
                 OBJECTS,
-                OBJECT_METADATA,
                 AUTHORITY_HEADS,
                 AUTHORITY_COMMITS,
                 AUTHORITY_OPERATIONS,
@@ -119,20 +115,20 @@ fn create_blob(bytes: &[u8]) -> Result<Blob, JsValue> {
     parts.push(&Uint8Array::from(bytes));
     Blob::new_with_u8_array_sequence(&parts)
 }
-async fn await_cancellable<T, E>(
+async fn await_cancellable<T, E: std::fmt::Display>(
     operation: impl Future<Output = Result<T, E>>,
     cancellation: &CancellationToken,
-) -> Result<T, Option<E>> {
+) -> Result<T, AuthorityStoreError> {
     let mut operation = std::pin::pin!(operation);
     let mut cancelled = std::pin::pin!(cancellation.cancelled());
     poll_fn(|context| {
         if cancelled.as_mut().poll(context).is_ready() {
-            return Poll::Ready(Err(None));
+            return Poll::Ready(Err(AuthorityStoreError::Cancelled));
         }
         operation
             .as_mut()
             .poll(context)
-            .map(|result| result.map_err(Some))
+            .map(|result| result.map_err(backend))
     })
     .await
 }
@@ -445,19 +441,18 @@ impl IndexedDbObjectStore {
         }
         Ok(())
     }
-    async fn length(
+    async fn object(
         io: &crate::AuthorityWork<'_>,
         tx: &Transaction<'_>,
         key: &str,
-    ) -> Result<Option<u64>, ObjectStoreError> {
-        io.get(tx, OBJECT_METADATA, key)
+    ) -> Result<Option<Blob>, ObjectStoreError> {
+        io.get(tx, OBJECTS, key)
             .await
             .map_err(object_error)?
             .map(|value| {
                 value
-                    .as_string()
-                    .and_then(|s| s.parse().ok())
-                    .ok_or_else(|| (ObjectStoreError::Corrupt))
+                    .dyn_into::<Blob>()
+                    .map_err(|_| ObjectStoreError::Corrupt)
             })
             .transpose()
     }

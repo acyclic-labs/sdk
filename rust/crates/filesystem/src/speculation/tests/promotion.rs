@@ -58,7 +58,7 @@ impl AsyncObjectStore for UnderreportedOwnedStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
+        let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
             let mut receipt = {
@@ -831,12 +831,8 @@ async fn simulated_remote_promotion_fails_exactly_and_retries_idempotently()
     .await?;
     assert_eq!(retried.work.backend_read_operations, 1);
     assert_eq!(retried.work.backend_write_operations, 1);
-    let contains = (executor.destination(
-        object_id,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
-    assert!(contains.value);
+    let contains = executor.destination().contains(object_id, &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation)).await?;
+    assert!(contains);
     assert_eq!(source_simulation.trace()?.len(), 2);
     assert_eq!(destination_simulation.trace()?.len(), 3);
     Ok(())

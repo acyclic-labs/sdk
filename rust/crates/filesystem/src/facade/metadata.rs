@@ -48,27 +48,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         workspace: &Volume<A, O>,
         record: FileRecord,
     ) -> Result<Vec<u8>, WorkspaceError> {
-        let read = ({
-            let authority_input_0 = record.metadata;
-            let authority_input_1 = workspace.config.limits.maximum_object_bytes;
-            let authority_cancellation = &CancellationToken::new();
-            let mut __object_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __object_result = self
-                .inner
-                .objects
-                .read(authority_input_0, authority_input_1, &mut __object_work)
-                .await;
-            __object_work.receipt(__object_result)
-        })
-        .map_err(WorkspaceError::engine)?;
+        let read = self
+            .inner
+            .objects
+            .read(
+                record.metadata,
+                workspace.config.limits.maximum_object_bytes,
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()),
+            )
+            .await
+            .map_err(WorkspaceError::engine)?;
         crate::kernel::decode_file_metadata(
-            &read.value.bytes,
+            &read.bytes,
             DecodeLimits::for_volume(workspace.config),
             &mut |_| Ok::<_, FsError>(()),
         )
         .map_err(WorkspaceError::engine)?;
-        Ok(read.value.bytes.to_vec())
+        Ok(read.bytes.to_vec())
     }
 
     pub(crate) async fn stage_merge_metadata(
@@ -83,25 +79,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         )
         .map_err(WorkspaceError::engine)?;
         let cancellation = CancellationToken::new();
-        let encoded = crate::kernel::encode::<FsError>(
-            WorkBudget::UNBOUNDED,
-            Some(&cancellation),
-            0,
-            |observe| {
-                crate::kernel::encode_file_metadata(
-                    metadata,
-                    observe,
-                    FsError::EncodedAllocationFailed,
-                )
-            },
-        )
-        .map_err(|failure| WorkspaceError::engine(failure.error))?;
-        let (object, _) = self
-            .put_encoded(
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        let encoded = crate::kernel::codec::encode_owned(&mut accounting, |observe, error| {
+            crate::kernel::encode_file_metadata(metadata, observe, error)
+        })
+        .map_err(WorkspaceError::engine)?;
+        let object = self
+            .put_encoded_with_accounting(
                 ObjectKind::Metadata,
                 encoded,
-                WorkCounters::default(),
-                WorkBudget::UNBOUNDED,
+                &mut accounting,
                 &cancellation,
             )
             .await
@@ -111,31 +98,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
-    /// Reads metadata for an already authenticated record.
-    pub async fn read_record_metadata<W: FsWork>(
-        &self,
-        record: FileRecord,
-        budget: W,
-        cancellation: &CancellationToken,
-    ) -> W::Output<FileMetadata, FsError> {
-        let mut accounting = budget.accounting(cancellation);
-        let result = async {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(original) = accounting.native_work() {
-                self.validate_native_work(original)?;
-            }
-            read_record_metadata_to_file_root_with_accounting(
-                &self.volume,
-                record,
-                &mut accounting,
-                cancellation,
-            )
-            .await
-        }
-        .await;
-        budget.finish(result, &accounting)
-    }
-
     /// Reads complete canonical metadata for one exact path.
     pub async fn read_metadata<W: FsWork>(
         &self,

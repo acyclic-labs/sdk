@@ -15,7 +15,6 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 
@@ -23,35 +22,25 @@ mod authority;
 mod copying;
 mod effects;
 mod extension_types;
-mod inventory;
-mod native_custody;
-mod native_key;
 mod ownership;
 mod records;
 mod reducer;
 mod registry;
-mod resource_metadata;
 mod snapshot;
 #[cfg(test)]
 mod tests;
 pub(in crate::core) use crate::fork::copy_seed;
-pub(in crate::core) use copying::*;
 pub(crate) use copying::{
     copy_authority, copy_boxed, copy_capabilities, copy_configuration, copy_copy_vector,
     copy_effect, copy_event, copy_file, copy_interaction_outcome, copy_iter, copy_owned,
     copy_provider, copy_reference, copy_resolution, copy_resource, copy_text, copy_ticket,
     copy_value, copy_vector, reserve_copy_vector,
 };
-pub(crate) use inventory::inspect_metadata;
-use native_custody::NativeComponentCustody;
-use native_key::NativeComponentKey;
-pub(in crate::core) use ownership::*;
-pub(crate) use ownership::{
-    event_owned_bytes, owned_buffer, owned_capture, owned_revision, owned_seed, owned_sum,
-    owned_vector,
-};
+pub(crate) use ownership::inspect_metadata;
 #[cfg(feature = "filesystem")]
-pub(crate) use resource_metadata::resource_creation_clone_reservation;
+pub(crate) use ownership::resource_creation_clone_reservation;
+pub(in crate::core) use ownership::*;
+pub(crate) use ownership::{event_owned_bytes, owned_buffer, owned_bytes, owned_sum, owned_vector};
 pub use snapshot::Snapshot;
 
 pub use authority::{
@@ -85,4 +74,4 @@ pub(in crate::core) use records::{
 pub use reducer::Reducer;
 pub(in crate::core) use registry::ExtensionBinding;
 
-pub(in crate::core) use crate::contract::json_value_logical_owned_bytes;
+pub(in crate::core) use crate::executor::json::json_value_logical_owned_bytes;

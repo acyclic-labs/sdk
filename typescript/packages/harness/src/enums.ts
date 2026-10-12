@@ -1,10 +1,9 @@
 /** Public Harness enum spellings derived from generated Rust/protobuf types. */
 import type {
-  WasmGroupPolicy,
   WasmResourceRefWire,
   WasmVolumeRefWire,
-  AuthorityLevel as WasmAuthorityLevel,
 } from "../generated/wasm/acyclic_harness_wasm.js";
+export type { WasmGroupPolicy as GroupPolicy, AuthorityLevel } from "../generated/wasm/acyclic_harness_wasm.js";
 import {
   AggregateKind as WireAggregateKind,
   ConversationKind as WireConversationKind,
@@ -21,8 +20,6 @@ type Mismatch<Actual, Expected> = Exclude<Actual, Expected> | Exclude<Expected, 
 /** Exact string unions emitted by the Rust WASM DTO generator. */
 export type VolumeClass = WasmVolumeRefWire["class"];
 export type ResourceKind = WasmResourceRefWire["kind"];
-export type GroupPolicy = WasmGroupPolicy;
-export type AuthorityLevel = WasmAuthorityLevel;
 
 /** Lower snake-case names are derived directly from protobuf enum members. */
 export type MessageKind = PublicEnum<typeof WireConversationKind>;
@@ -46,16 +43,9 @@ export const aggregateKindToWire = Object.freeze({
   turn: WireAggregateKind.TURN,
   task: WireAggregateKind.TASK,
 } satisfies Record<AggregateKind, WireAggregateKind>);
-const aggregateKindFromWire = Object.freeze({
-  [WireAggregateKind.AGENT]: "agent",
-  [WireAggregateKind.CONVERSATION]: "conversation",
-  [WireAggregateKind.SESSION]: "session",
-  [WireAggregateKind.TURN]: "turn",
-  [WireAggregateKind.TASK]: "task",
-} as const satisfies Partial<Record<WireAggregateKind, AggregateKind>>);
-
 export function decodeAggregateKind(value: number): AggregateKind {
-  const decoded = (aggregateKindFromWire as Partial<Record<number, AggregateKind>>)[value];
-  if (decoded === undefined) throw new TypeError(`unknown aggregate kind enum value: ${value}`);
-  return decoded;
+  for (const [kind, wire] of Object.entries(aggregateKindToWire)) {
+    if (wire === value) return kind as AggregateKind;
+  }
+  throw new TypeError(`unknown aggregate kind enum value: ${value}`);
 }

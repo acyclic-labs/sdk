@@ -12,8 +12,8 @@ use acyclic_harness::{
     filesystem::{FilesystemExecutionJournal, FilesystemHost},
     interaction::{Interaction, InteractionOutcome, InteractionResponse},
     mcp::{
-        McpCatalog, McpCatalogInstallation, McpDiscoveryPolicy, McpSchemaExposure,
-        McpToolDefinition, McpToolResult, McpToolTransport,
+        McpCatalog, McpDiscoveryPolicy, McpSchemaExposure,
+        McpToolDefinition, McpToolTransport,
         http::{HttpMcpTransport, NativeMcpHttpProvider},
     },
     resources::ProviderRef,
@@ -56,25 +56,28 @@ impl ExecutionJournal for FaultJournal {
         op: OperationId,
         after: u64,
         maximum: u32,
-    ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
-        self.inner.replay(op, after, maximum)
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>> {
+        self.inner.replay(op, after, maximum, io)
     }
     fn append<'a>(
         &'a self,
         op: OperationId,
-        key: String,
-        event: ExecutionEvent,
-    ) -> BoxFuture<'a, Result<()>> {
-        self.inner.append(op, key, event)
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, ()>> {
+        self.inner.append(op, key, event, io)
     }
     fn append_if_tail<'a>(
         &'a self,
         op: OperationId,
         tail: u64,
-        key: String,
-        event: ExecutionEvent,
-    ) -> BoxFuture<'a, Result<bool>> {
-        Box::pin(async move {
+        key: &'a str,
+        event: &'a ExecutionEvent,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, bool>> {
+        acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
             let boundary = match event {
                 ExecutionEvent::ToolStarted { .. } => {
                     matches!(self.fault, Fault::ClaimBefore | Fault::ClaimAfter)
@@ -88,7 +91,7 @@ impl ExecutionJournal for FaultJournal {
             if inject && matches!(self.fault, Fault::ClaimBefore | Fault::TerminalBefore) {
                 return Err(Error::Indeterminate(op));
             }
-            let committed = self.inner.append_if_tail(op, tail, key, event).await?;
+            let committed = self.inner.append_if_tail(op, tail, key, event, io)?.await?;
             if inject {
                 return Err(Error::Indeterminate(op));
             }
@@ -98,11 +101,12 @@ impl ExecutionJournal for FaultJournal {
     fn stage<'a>(
         &'a self,
         op: OperationId,
-        key: String,
-        bytes: Vec<u8>,
+        key: &'a str,
+        bytes: &'a [u8],
         media: &'static str,
-    ) -> BoxFuture<'a, Result<FileRef>> {
-        Box::pin(async move {
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, FileRef>> {
+        acyclic_harness::conversation::BoundedContentFuture::new(io, || async move {
             if self.fault == Fault::ResultStage
                 && key.starts_with("tool:result:")
                 && !self.fired.swap(true, Ordering::SeqCst)
@@ -111,11 +115,13 @@ impl ExecutionJournal for FaultJournal {
                     "injected after remote result before local stage".into(),
                 ));
             }
-            self.inner.stage(op, key, bytes, media).await
+            self.inner.stage(op, key, bytes, media, io)?.await
         })
     }
-    fn load<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        self.inner.load(file)
+    fn load<'a>(&'a self, file: &'a FileRef,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        self.inner.load(file, io)
     }
     fn open_interaction<'a>(
         &'a self,
@@ -180,7 +186,7 @@ fn verify_transport_context(context: &ToolContext) -> Result<()> {
 
 impl McpToolTransport for ScopedHttp {
     fn call<'a>(&'a self, operation: OperationId, name: &'a str, arguments: Value,
-        context: Option<ToolContext>) -> BoxFuture<'a, Result<McpToolResult>> {
+        context: Option<ToolContext>) -> BoxFuture<'a, Result<Value>> {
         Box::pin(async move {
             let context = context.ok_or_else(|| Error::Unsupported("durable task context required".into()))?;
             if context.operation_id() != operation {
@@ -191,7 +197,7 @@ impl McpToolTransport for ScopedHttp {
         })
     }
     fn reconcile<'a>(&'a self, operation: OperationId, context: Option<ToolContext>)
-        -> BoxFuture<'a, Result<Option<McpToolResult>>> {
+        -> BoxFuture<'a, Result<Option<Value>>> {
         Box::pin(async move {
             let context = context.ok_or_else(|| Error::Unsupported("durable task context required".into()))?;
             if context.operation_id() != operation {
@@ -435,6 +441,7 @@ async fn phase(
         Some("session".into()),
         8192,
         2000,
+        None,
     )?));
     let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
     let mut tools = ToolRegistry::default();
@@ -444,19 +451,17 @@ async fn phase(
             None,
             &transport,
             &projection,
-            McpCatalogInstallation {
-                operation: OperationId::from_bytes([46; 16]),
-                interaction: InteractionId::from_bytes([47; 16]),
-                scope: &signed,
-                verifier: &issuer.verifier(&mut None).expect("verifier copy"),
-                approval: approval.as_ref(),
-                maximum_tools: 1,
-                maximum_bytes: 8192,
-            },
+            OperationId::from_bytes([46; 16]),
+            InteractionId::from_bytes([47; 16]),
+            &signed,
+            &issuer.verifier(&mut None).expect("verifier copy"),
+            approval.as_ref(),
+            1,
+            8192,
         )
         .await?;
     let definition = tools
-        .get("mcp.fixture.echo")
+        .get("mcp.fixture.echo", None, None)?
         .ok_or_else(|| Error::NotFound("fixture tool".into()))?
         .definition
         .clone();
@@ -475,14 +480,20 @@ async fn phase(
         .await?;
     let runner = DurableToolRunner::new(&tools, journal, None)?;
     runner
-        .run_with_context(
+        .run(
             task,
-            op,
-            definition,
-            json!({}),
-            ToolContext::new(std::sync::Arc::new(context), op, &(op.to_string()), None)?,
-        )
-        .await
+            &definition,
+            &acyclic_harness::tool::ToolInvocation {
+                operation_id: op,
+                call_id: op.to_string(),
+                name: definition.name.clone(),
+                arguments: json!({}),
+            },
+            &ToolContext::new(std::sync::Arc::new(context), op, &(op.to_string()), None)?,
+            None,
+            false,
+        )?
+        .await.map(|result| result.0)
 }
 
 #[tokio::test]

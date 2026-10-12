@@ -1,13 +1,5 @@
 use super::*;
 
-/// What a mounted checkout holds for a listed directory.
-pub(super) struct MountedDirectory {
-    /// Whether the checkout's directory stands in for the source's.
-    pub(super) replaces_source: bool,
-    /// Whether the checkout holds the directory at all.
-    pub(super) authored: bool,
-}
-
 pub(super) fn lazy_store_read_work() -> WorkCounters {
     WorkCounters {
         object_probes: 1,
@@ -25,10 +17,41 @@ pub(super) fn lazy_store_write_work() -> WorkCounters {
     }
 }
 
-impl From<crate::WorkError> for LazyWorkspaceError {
-    fn from(error: crate::WorkError) -> Self {
-        Self::Demand(DemandError::Work(error))
+pub(super) fn cancellation<'a>(ctx: &KernelAccounting<'a>) -> &'a CancellationToken {
+    match ctx {
+        KernelAccounting::Standalone { cancellation, .. }
+        | KernelAccounting::BorrowedStandalone { cancellation, .. } => cancellation,
+        #[cfg(not(target_arch = "wasm32"))]
+        KernelAccounting::NativeOriginal { cancellation, .. } => cancellation,
     }
+}
+
+pub(super) fn retire_node<T: MemoryLazyNode>(
+    node: (T, KernelOwnedAllocation),
+    ctx: &mut KernelAccounting<'_>,
+) -> Result<(), LazyWorkspaceError> {
+    let bytes = node.0.owned_bytes();
+    drop(node.0);
+    Ok(crate::kernel::retire_allocation(node.1, bytes, ctx)?)
+}
+
+pub(super) fn accept_receipt<T, E: Into<LazyWorkspaceError>>(
+    result: crate::MeasuredResult<OperationReceipt<T>, E>,
+    ctx: &mut KernelAccounting<'_>,
+) -> Result<T, LazyWorkspaceError> {
+    let (result, spent) = match result {
+        Ok(receipt) => (Ok(receipt.value), receipt.work),
+        Err(failure) => (Err(failure.error.into()), *failure.work),
+    };
+    let (ledger, work, budget, _) = ctx
+        .standalone_parts()
+        .ok_or(LazyWorkspaceError::Concurrent)?;
+    *work = work.with_backend(spent, ledger.live_bytes())?;
+    work.verify(budget)?;
+    if result.is_ok() {
+        ctx.check()?;
+    }
+    result
 }
 
 pub(super) fn source_kind(kind: crate::kernel::FileKind) -> SourceNodeKind {
@@ -69,25 +92,27 @@ pub(super) fn source_file_metadata(source: crate::demand::SourceMetadata) -> Fil
             .map_or(MetadataField::Unavailable, MetadataField::Value)
     };
     FileMetadata {
-        posix_mode: metadata_u32(source.posix_mode),
-        posix_uid: metadata_u32(source.posix_uid),
-        posix_gid: metadata_u32(source.posix_gid),
-        posix_flags: metadata_u64(source.posix_flags),
-        windows_attributes: metadata_u32(source.windows_attributes),
+        posix_mode: source
+            .posix_mode
+            .map_or(MetadataField::Unavailable, MetadataField::Value),
+        posix_uid: source
+            .posix_uid
+            .map_or(MetadataField::Unavailable, MetadataField::Value),
+        posix_gid: source
+            .posix_gid
+            .map_or(MetadataField::Unavailable, MetadataField::Value),
+        posix_flags: source
+            .posix_flags
+            .map_or(MetadataField::Unavailable, MetadataField::Value),
+        windows_attributes: source
+            .windows_attributes
+            .map_or(MetadataField::Unavailable, MetadataField::Value),
         created_ns: time(source.created_ns),
         modified_ns: time(source.modified_ns),
         accessed_ns: time(source.accessed_ns),
         changed_ns: time(source.changed_ns),
         ..FileMetadata::default()
     }
-}
-
-pub(super) fn metadata_u32(value: Option<u32>) -> MetadataField<u32> {
-    value.map_or(MetadataField::Unavailable, MetadataField::Value)
-}
-
-pub(super) fn metadata_u64(value: Option<u64>) -> MetadataField<u64> {
-    value.map_or(MetadataField::Unavailable, MetadataField::Value)
 }
 
 pub(super) fn path_priority(path: &str) -> u64 {
@@ -115,26 +140,11 @@ pub(super) fn parent_path(path: &str) -> Option<&str> {
     }
 }
 
-/// Joins `name`, decoded by its declared encoding, onto a portable parent path.
 pub(super) fn exactify_path_order(left: &str, right: &str) -> std::cmp::Ordering {
     left.matches('/')
         .count()
         .cmp(&right.matches('/').count())
         .then_with(|| left.cmp(right))
-}
-
-pub(crate) fn retained_directory_page_bytes<T>(
-    entries: &Vec<T>,
-    mut names: impl Iterator<Item = usize>,
-) -> Result<u64, LazyWorkspaceError> {
-    let slots = entries
-        .capacity()
-        .checked_mul(std::mem::size_of::<T>())
-        .ok_or(crate::WorkError::Overflow)?;
-    let names = names
-        .try_fold(0_usize, |total, bytes| total.checked_add(bytes))
-        .ok_or(crate::WorkError::Overflow)?;
-    Ok(slots.checked_add(names).ok_or(crate::WorkError::Overflow)? as u64)
 }
 
 pub(super) fn exactify_batch_key(
@@ -152,21 +162,21 @@ pub(super) fn exactify_batch_key(
     IdempotencyKey::from_bytes(bytes)
 }
 
-pub(super) fn accept_receipt<T, E: Into<LazyWorkspaceError>>(
-    result: crate::MeasuredResult<OperationReceipt<T>, E>,
-    accounting: &mut crate::kernel::KernelAccounting<'_>,
-) -> Result<T, LazyWorkspaceError> {
-    let (result, spent) = match result {
-        Ok(receipt) => (Ok(receipt.value), receipt.work),
-        Err(failure) => (Err(failure.error.into()), *failure.work),
-    };
-    let (allocations, work, budget, _) = accounting
-        .standalone_parts()
-        .ok_or(LazyWorkspaceError::Concurrent)?;
-    *work = work.with_backend(spent, allocations.live_bytes())?;
-    work.verify(budget)?;
-    if result.is_ok() {
-        accounting.check()?;
+impl From<crate::WorkError> for LazyWorkspaceError {
+    fn from(error: crate::WorkError) -> Self {
+        Self::Demand(DemandError::Work(error))
     }
-    result
+}
+pub(crate) fn retained_directory_page_bytes<T>(
+    entries: &Vec<T>,
+    mut names: impl Iterator<Item = usize>,
+) -> Result<u64, LazyWorkspaceError> {
+    let slots = entries
+        .capacity()
+        .checked_mul(std::mem::size_of::<T>())
+        .ok_or(crate::WorkError::Overflow)?;
+    let names = names
+        .try_fold(0usize, |total, n| total.checked_add(n))
+        .ok_or(crate::WorkError::Overflow)?;
+    Ok(slots.checked_add(names).ok_or(crate::WorkError::Overflow)? as u64)
 }

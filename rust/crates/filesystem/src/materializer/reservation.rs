@@ -1,27 +1,32 @@
 use super::*;
 use crate::{DemandError, WorkCounters};
 use acyclic_native_runtime::{NativeOperationKind, NativeReadMeter};
-use std::sync::Arc;
+use std::{io, sync::Arc};
 
 /// Completion work withheld from the original ledger.
+#[derive(Debug)]
 pub struct NativeWorkReservation {
     meter: NativeMaterializationWork,
     state: parking_lot::Mutex<Reservation>,
     metadata: Option<NativeAllocation>,
 }
-#[derive(Default)]
+
+#[derive(Debug, Default)]
 struct Reservation {
     remaining: WorkCounters,
     pending: WorkCounters,
     host_pending: WorkCounters,
 }
-impl std::fmt::Debug for NativeWorkReservation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NativeWorkReservation")
-            .field("remaining", &self.remaining_work())
-            .finish_non_exhaustive()
+
+impl Reservation {
+    fn available(&self) -> Result<WorkCounters, DemandError> {
+        Ok(self
+            .pending
+            .checked_add(self.host_pending)?
+            .remaining(self.remaining)?)
     }
 }
+
 impl NativeWorkReservation {
     pub(super) fn new(meter: NativeMaterializationWork, remaining: WorkCounters) -> Self {
         Self {
@@ -41,52 +46,29 @@ impl NativeWorkReservation {
     pub fn remaining_work(&self) -> WorkCounters {
         self.state.lock().remaining
     }
-    fn available(state: &Reservation) -> Result<WorkCounters, DemandError> {
-        Ok(state
-            .pending
-            .checked_add(state.host_pending)?
-            .remaining(state.remaining)?)
-    }
-    fn failure(&self, error: DemandError) -> std::io::Error {
+
+    fn failure(&self, error: DemandError) -> io::Error {
         self.meter
             .with_original_leaf(|state| state.record_native_io_failure(error))
     }
-    fn relay(&self, error: std::io::Error) -> NativeTreeMaterializationError {
-        self.meter.with_original_leaf(|state| {
-            let Some(cause) = state.take_native_io_failure() else {
-                return error.into();
-            };
-            let result = match &cause {
-                DemandError::Work(error) => NativeTreeMaterializationError::Work(*error),
-                DemandError::Cancelled => NativeTreeMaterializationError::Cancelled,
-                DemandError::OriginalWorkPoisoned => {
-                    NativeTreeMaterializationError::OriginalWorkPoisoned
-                }
-                DemandError::InvalidRequest => NativeTreeMaterializationError::InvalidLayout,
-                _ => error.into(),
-            };
-            state.record_native_io_failure(cause);
-            result
+    fn edit(
+        &self,
+        operation: impl FnOnce(&mut Reservation) -> Result<(), DemandError>,
+    ) -> io::Result<()> {
+        operation(&mut self.state.lock()).map_err(|error| self.failure(error))
+    }
+    fn preflight(&self, maximum: WorkCounters) -> io::Result<()> {
+        self.edit(|state| {
+            maximum.remaining(state.available()?)?;
+            Ok(())
         })
     }
-    fn host_failure(&self, error: DemandError) -> NativeTreeMaterializationError {
-        self.relay(self.failure(error))
-    }
-    fn preflight(&self, maximum: WorkCounters) -> std::io::Result<()> {
-        Self::available(&self.state.lock())
-            .and_then(|available| maximum.remaining(available).map(|_| ()).map_err(Into::into))
-            .map_err(|error| self.failure(error))
-    }
-    fn reserve(&self, maximum: WorkCounters) -> std::io::Result<()> {
-        let mut state = self.state.lock();
-        maximum
-            .remaining(Self::available(&state).map_err(|error| self.failure(error))?)
-            .map_err(|error| self.failure(error.into()))?;
-        state.pending = state
-            .pending
-            .checked_add(maximum)
-            .map_err(|error| self.failure(error.into()))?;
-        Ok(())
+    fn reserve(&self, maximum: WorkCounters) -> io::Result<()> {
+        self.edit(|state| {
+            maximum.remaining(state.available()?)?;
+            state.pending = state.pending.checked_add(maximum)?;
+            Ok(())
+        })
     }
     fn cancel(&self, maximum: WorkCounters) {
         let mut state = self.state.lock();
@@ -104,7 +86,7 @@ impl NativeWorkReservation {
         let excess = credited.remaining(actual)?;
         state.remaining = credited.remaining(state.remaining)?;
         self.meter.state(|ledger| {
-            let credited = ledger.record_native_work(credited);
+            let credited = ledger.complete(credited, credited);
             let excess = ledger.record(excess);
             credited.and(excess)
         })
@@ -118,7 +100,9 @@ impl NativeWorkReservation {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
         let mut state = self.state.lock();
-        let available = Self::available(&state).map_err(native_materialization_work_error)?;
+        let available = state
+            .available()
+            .map_err(native_materialization_work_error)?;
         self.finish(&mut state, actual.intersect_budget(available), actual)
             .map_err(native_materialization_work_error)?;
         actual.remaining(available).map(|_| ()).map_err(Into::into)
@@ -134,7 +118,7 @@ impl NativeWorkReservation {
         }
         let remaining = actual.remaining(state.remaining)?;
         self.meter.state(|ledger| {
-            ledger.with_resource_scope(None, |ledger| {
+            ledger.scope(|work| &mut work.native_resource, None, |ledger| {
                 let mut begin = || ledger.start_native_reserved_work(actual);
                 match &self.meter.resource {
                     Some(resource) => resource.start_reserved_work(actual, &mut begin),
@@ -161,25 +145,24 @@ impl NativeWorkReservation {
     pub(crate) fn started_drop_io(&mut self, actual: WorkCounters) {
         self.begin_drop(&mut self.state.lock(), actual);
     }
-    fn complete(&self, maximum: Option<WorkCounters>, actual: WorkCounters) -> std::io::Result<()> {
-        let mut state = self.state.lock();
-        let available = match maximum {
-            Some(maximum) => {
-                state.pending = maximum
-                    .remaining(state.pending)
-                    .map_err(|error| self.failure(error.into()))?;
-                maximum
+    fn complete(&self, maximum: Option<WorkCounters>, actual: WorkCounters) -> io::Result<()> {
+        self.edit(|state| {
+            let available = match maximum {
+                Some(maximum) => {
+                    state.pending = maximum.remaining(state.pending)?;
+                    maximum
+                }
+                None => state.available()?,
+            };
+            let credited = actual.intersect_budget(available);
+            let result = self.finish(state, credited, actual);
+            if credited != actual {
+                self.meter
+                    .poison(NativeTreeMaterializationError::InvalidLayout);
+                return Err(DemandError::InvalidRequest);
             }
-            None => Self::available(&state).map_err(|error| self.failure(error))?,
-        };
-        let credited = actual.intersect_budget(available);
-        let result = self.finish(&mut state, credited, actual);
-        if credited != actual {
-            self.meter
-                .poison(NativeTreeMaterializationError::InvalidLayout);
-            return Err(self.failure(DemandError::InvalidRequest));
-        }
-        result.map_err(|error| self.failure(error))
+            result
+        })
     }
     pub(crate) fn partition_work(
         &self,
@@ -189,7 +172,11 @@ impl NativeWorkReservation {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
         let mut state = self.state.lock();
-        maximum.remaining(Self::available(&state).map_err(native_materialization_work_error)?)?;
+        maximum.remaining(
+            state
+                .available()
+                .map_err(native_materialization_work_error)?,
+        )?;
         state.remaining = maximum.remaining(state.remaining)?;
         Ok(Self::new(self.meter.clone(), maximum))
     }
@@ -210,12 +197,10 @@ impl NativeWorkReservation {
         if !self.meter.shares_allocation_context(&other.meter) || !invocation || !capture {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
-        self.state.get_mut().remaining = self
-            .state
-            .get_mut()
-            .remaining
-            .checked_add(other.state.get_mut().remaining)?;
-        other.state.get_mut().remaining = WorkCounters::UNCHARGED;
+        let remaining = &mut self.state.get_mut().remaining;
+        let incoming = &mut other.state.get_mut().remaining;
+        *remaining = remaining.checked_add(*incoming)?;
+        *incoming = WorkCounters::UNCHARGED;
         Ok(())
     }
     pub(crate) fn loan<'a>(
@@ -238,15 +223,32 @@ impl NativeWorkReservation {
     pub(crate) fn runtime_meter(self: &Arc<Self>) -> Arc<dyn NativeReadMeter> {
         self.clone()
     }
+
+    fn start_transfer(
+        &self,
+        operation: NativeResourceCredit,
+        bytes: NativeResourceCredit,
+        maximum: u64,
+    ) -> io::Result<()> {
+        self.edit(|state| {
+            let actual = operation.delta(1);
+            actual
+                .checked_add(bytes.delta(maximum))?
+                .remaining(state.available()?)?;
+            self.begin(state, actual)
+        })
+    }
 }
+
 impl Drop for NativeWorkReservation {
     fn drop(&mut self) {
         let unused = self.state.get_mut().remaining;
-        if let Err(error) = self.meter.state(|state| state.refund_native_work(unused)) {
+        if let Err(error) = self.meter.state(|state| state.refund(unused)) {
             self.meter.poison(native_materialization_work_error(error));
         }
     }
 }
+
 fn io_work(actual: WorkCounters) -> WorkCounters {
     WorkCounters {
         backend_read_operations: actual.backend_read_operations,
@@ -295,22 +297,20 @@ impl NativeCleanupLoan<'_> {
 }
 
 impl NativeReadMeter for NativeWorkReservation {
-    fn check(&self) -> std::io::Result<()> {
-        Self::available(&self.state.lock())
-            .map(|_| ())
-            .map_err(|error| self.failure(error))
+    fn check(&self) -> io::Result<()> {
+        self.edit(|state| state.available().map(|_| ()))
     }
     fn allocation_owner(&self) -> Option<Arc<dyn NativeReadMeter>> {
         let owner = self.meter.runtime_meter();
         Some(owner.allocation_owner().unwrap_or(owner))
     }
-    fn reserve_operations(&self, kind: NativeOperationKind, count: u64) -> std::io::Result<()> {
+    fn reserve_operations(&self, kind: NativeOperationKind, count: u64) -> io::Result<()> {
         self.reserve(crate::demand::DemandWork::operation_credit(kind).delta(count))
     }
     fn cancel_reserved_operations(&self, kind: NativeOperationKind, count: u64) {
         self.cancel(crate::demand::DemandWork::operation_credit(kind).delta(count));
     }
-    fn record_reserved_operation(&self, kind: NativeOperationKind) -> std::io::Result<()> {
+    fn record_reserved_operation(&self, kind: NativeOperationKind) -> io::Result<()> {
         let actual = crate::demand::DemandWork::operation_credit(kind).delta(1);
         let mut state = self.state.lock();
         state.pending = actual
@@ -323,7 +323,7 @@ impl NativeReadMeter for NativeWorkReservation {
         }
         Ok(())
     }
-    fn reserve_bytes(&self, kind: NativeOperationKind, bytes: u64) -> std::io::Result<()> {
+    fn reserve_bytes(&self, kind: NativeOperationKind, bytes: u64) -> io::Result<()> {
         self.reserve(crate::demand::DemandWork::byte_credit(kind)?.delta(bytes))
     }
     fn cancel_reserved_bytes(&self, kind: NativeOperationKind, bytes: u64) {
@@ -339,59 +339,46 @@ impl NativeReadMeter for NativeWorkReservation {
         kind: NativeOperationKind,
         maximum: u64,
         actual: u64,
-    ) -> std::io::Result<()> {
+    ) -> io::Result<()> {
         let credit = crate::demand::DemandWork::byte_credit(kind)?;
         self.complete(Some(credit.delta(maximum)), credit.delta(actual))
     }
-    fn allocate(&self, bytes: u64) -> std::io::Result<()> {
+    fn allocate(&self, bytes: u64) -> io::Result<()> {
         if bytes == 0 {
             self.check()
         } else {
             Err(self.failure(DemandError::InvalidRequest))
         }
     }
-    fn reserve_allocation(&self, _: u64) -> std::io::Result<()> {
+    fn reserve_allocation(&self, _: u64) -> io::Result<()> {
         Err(self.failure(DemandError::InvalidRequest))
     }
     fn cancel_reserved_allocation(&self, _: u64) {
         self.meter
             .poison(NativeTreeMaterializationError::InvalidLayout);
     }
-    fn record_reserved_allocation(&self, _: u64) -> std::io::Result<()> {
+    fn record_reserved_allocation(&self, _: u64) -> io::Result<()> {
         Err(self.failure(DemandError::InvalidRequest))
     }
-    fn allocation_failed(&self, error: std::collections::TryReserveError) -> std::io::Error {
+    fn allocation_failed(&self, error: std::collections::TryReserveError) -> io::Error {
         self.failure(DemandError::Allocation(error))
     }
-    fn allocate_refcount_header(&self) -> std::io::Result<()> {
-        Err(std::io::ErrorKind::Unsupported.into())
+    fn allocate_refcount_header(&self) -> io::Result<()> {
+        Err(io::ErrorKind::Unsupported.into())
     }
-    fn adopt(&self, bytes: u64) -> std::io::Result<()> {
+    fn adopt(&self, bytes: u64) -> io::Result<()> {
         if bytes == 0 {
             self.check()
         } else {
-            Err(std::io::ErrorKind::Unsupported.into())
+            Err(io::ErrorKind::Unsupported.into())
         }
     }
-    fn record_completed_adoption(&self, bytes: u64) -> (u64, std::io::Result<()>) {
+    fn record_completed_adoption(&self, bytes: u64) -> (u64, io::Result<()>) {
         self.meter.with_original_leaf(|state| {
-            let (allocations, counters, budget, _) = state.allocation_parts();
-            if let Err(error) = allocations.record_owned_bytes(bytes, counters) {
-                return (
-                    0,
-                    Err(state
-                        .record_native_io_failure(error.into_work_or(DemandError::InvalidRequest))),
-                );
-            }
-            let original = counters.verify(budget).map_err(DemandError::from);
-            let scoped = self.meter.resource.as_ref().map_or(Ok(()), |resource| {
-                resource.completed(WorkCounters::UNCHARGED, bytes)
-            });
+            let (bytes, result) = state.record_native_owned_completed(bytes, &None);
             (
                 bytes,
-                original
-                    .and(scoped)
-                    .map_err(|error| state.record_native_io_failure(error)),
+                result.map_err(|error| state.record_native_io_failure(error)),
             )
         })
     }
@@ -400,19 +387,19 @@ impl NativeReadMeter for NativeWorkReservation {
             .expect("original owner")
             .release(bytes);
     }
-    fn admit_write_bytes(&self, bytes: usize) -> std::io::Result<()> {
+    fn admit_write_bytes(&self, bytes: usize) -> io::Result<()> {
         self.preflight(NativeResourceCredit::WriteBytes.delta(bytes as u64))
     }
-    fn admit_bytes(&self, bytes: usize) -> std::io::Result<()> {
+    fn admit_bytes(&self, bytes: usize) -> io::Result<()> {
         self.preflight(NativeResourceCredit::ReadBytes.delta(bytes as u64))
     }
-    fn record_read(&self, bytes: usize) -> std::io::Result<()> {
+    fn record_read(&self, bytes: usize) -> io::Result<()> {
         self.complete(None, NativeResourceCredit::ReadBytes.delta(bytes as u64))
     }
-    fn record_write(&self, bytes: usize) -> std::io::Result<()> {
+    fn record_write(&self, bytes: usize) -> io::Result<()> {
         self.complete(None, NativeResourceCredit::WriteBytes.delta(bytes as u64))
     }
-    fn admit_codec(&self, encoded: u64, copied: u64, hashed: u64) -> std::io::Result<()> {
+    fn admit_codec(&self, encoded: u64, copied: u64, hashed: u64) -> io::Result<()> {
         self.reserve(WorkCounters {
             bytes_encoded: encoded,
             bytes_copied: copied,
@@ -420,7 +407,7 @@ impl NativeReadMeter for NativeWorkReservation {
             ..WorkCounters::UNCHARGED
         })
     }
-    fn record_codec(&self, encoded: u64, copied: u64, hashed: u64) -> std::io::Result<()> {
+    fn record_codec(&self, encoded: u64, copied: u64, hashed: u64) -> io::Result<()> {
         let actual = WorkCounters {
             bytes_encoded: encoded,
             bytes_copied: copied,
@@ -429,14 +416,14 @@ impl NativeReadMeter for NativeWorkReservation {
         };
         self.complete(Some(actual), actual)
     }
-    fn admit_examination(&self, items: u64, copied: u64) -> std::io::Result<()> {
+    fn admit_examination(&self, items: u64, copied: u64) -> io::Result<()> {
         self.reserve(WorkCounters {
             items_examined: items,
             bytes_copied: copied,
             ..WorkCounters::UNCHARGED
         })
     }
-    fn record_examination(&self, items: u64, copied: u64) -> std::io::Result<()> {
+    fn record_examination(&self, items: u64, copied: u64) -> io::Result<()> {
         let actual = WorkCounters {
             items_examined: items,
             bytes_copied: copied,
@@ -444,62 +431,43 @@ impl NativeReadMeter for NativeWorkReservation {
         };
         self.complete(Some(actual), actual)
     }
-    fn examine(&self, items: u64, copied: u64) -> std::io::Result<()> {
+    fn examine(&self, items: u64, copied: u64) -> io::Result<()> {
         self.admit_examination(items, copied)?;
         self.record_examination(items, copied)
     }
-    fn admit_read(&self, bytes: usize) -> std::io::Result<()> {
+    fn admit_read(&self, bytes: usize) -> io::Result<()> {
         self.start_transfer(
             NativeResourceCredit::ReadOperations,
             NativeResourceCredit::ReadBytes,
             bytes as u64,
         )
     }
-    fn admit_write(&self, bytes: usize) -> std::io::Result<()> {
+    fn admit_write(&self, bytes: usize) -> io::Result<()> {
         self.start_transfer(
             NativeResourceCredit::WriteOperations,
             NativeResourceCredit::WriteBytes,
             bytes as u64,
         )
     }
-    fn admit_durability(&self) -> std::io::Result<()> {
+    fn admit_durability(&self) -> io::Result<()> {
         self.start_transfer(
             NativeResourceCredit::DurabilityOperations,
             NativeResourceCredit::Copy,
             0,
         )
     }
-    fn reserve_cleanup_write(&self) -> std::io::Result<u64> {
+    fn reserve_cleanup_write(&self) -> io::Result<u64> {
         self.reserve(NativeResourceCredit::WriteOperations.delta(1))?;
         Ok(1)
     }
     fn cancel_cleanup_write(&self, reservation: u64) {
         self.cancel(NativeResourceCredit::WriteOperations.delta(reservation));
     }
-    fn record_cleanup_write(&self, reservation: u64) -> std::io::Result<()> {
+    fn record_cleanup_write(&self, reservation: u64) -> io::Result<()> {
         if reservation != 1 {
             return Err(self.failure(DemandError::InvalidRequest));
         }
         self.record_reserved_operation(NativeOperationKind::Write)
-    }
-}
-impl NativeWorkReservation {
-    fn start_transfer(
-        &self,
-        operation: NativeResourceCredit,
-        bytes: NativeResourceCredit,
-        maximum: u64,
-    ) -> std::io::Result<()> {
-        let actual = operation.delta(1);
-        let limit = actual
-            .checked_add(bytes.delta(maximum))
-            .map_err(|error| self.failure(error.into()))?;
-        let mut state = self.state.lock();
-        limit
-            .remaining(Self::available(&state).map_err(|error| self.failure(error))?)
-            .map_err(|error| self.failure(error.into()))?;
-        self.begin(&mut state, actual)
-            .map_err(|error| self.failure(error))
     }
 }
 
@@ -508,7 +476,7 @@ impl crate::native_host::NativeHostWork for &Arc<NativeWorkReservation> {
     type Allocation = acyclic_native_runtime::ReadAllocation;
     type CleanupWrite =
         acyclic_native_runtime::NativeOperationReservation<Arc<dyn NativeReadMeter>>;
-    fn io_error_kind(error: &Self::Error) -> Option<std::io::ErrorKind> {
+    fn io_error_kind(error: &Self::Error) -> Option<io::ErrorKind> {
         match error {
             Self::Error::Io(error) => Some(error.kind()),
             _ => None,
@@ -521,52 +489,48 @@ impl crate::native_host::NativeHostWork for &Arc<NativeWorkReservation> {
         Self::Error::InvalidLayout
     }
     fn check(&self) -> Result<(), Self::Error> {
-        NativeReadMeter::check(self.as_ref()).map_err(|error| self.relay(error))
+        NativeReadMeter::check(self.as_ref()).map_err(|error| self.meter.runtime_error(error))
     }
     fn admit(&mut self, delta: WorkCounters) -> Result<(), Self::Error> {
-        let mut state = self.state.lock();
-        delta.remaining(
-            NativeWorkReservation::available(&state).map_err(|error| self.host_failure(error))?,
-        )?;
-        state.host_pending = state.host_pending.checked_add(delta)?;
-        Ok(())
+        self.edit(|state| {
+            delta.remaining(state.available()?)?;
+            state.host_pending = state.host_pending.checked_add(delta)?;
+            Ok(())
+        })
+        .map_err(|error| self.meter.runtime_error(error))
     }
     fn record(&mut self, actual: WorkCounters) -> Result<(), Self::Error> {
-        let mut state = self.state.lock();
-        state.host_pending = actual
-            .remaining(state.host_pending)
-            .map_err(|error| self.host_failure(error.into()))?;
-        let starts = io_work(actual);
-        self.begin(&mut state, starts)
-            .map_err(|error| self.host_failure(error))?;
-        let completed = starts.remaining(actual)?;
-        self.finish(&mut state, completed, completed)
-            .map_err(|error| self.host_failure(error))
+        self.edit(|state| {
+            state.host_pending = actual.remaining(state.host_pending)?;
+            let starts = io_work(actual);
+            self.begin(state, starts)?;
+            let completed = starts.remaining(actual)?;
+            self.finish(state, completed, completed)
+        })
+        .map_err(|error| self.meter.runtime_error(error))
     }
     fn started_io(&mut self, actual: WorkCounters) -> Result<(), Self::Error> {
-        let mut state = self.state.lock();
-        match actual.remaining(state.host_pending) {
-            Ok(pending) => state.host_pending = pending,
-            Err(_) => {
-                actual.remaining(
-                    NativeWorkReservation::available(&state)
-                        .map_err(|error| self.host_failure(error))?,
-                )?;
+        self.edit(|state| {
+            match actual.remaining(state.host_pending) {
+                Ok(pending) => state.host_pending = pending,
+                Err(_) => {
+                    actual.remaining(state.available()?)?;
+                }
             }
-        }
-        self.begin(&mut state, actual)
-            .map_err(|error| self.host_failure(error))
+            self.begin(state, actual)
+        })
+        .map_err(|error| self.meter.runtime_error(error))
     }
     fn claim(&mut self, bytes: u64) -> Result<Self::Allocation, Self::Error> {
         if bytes != 0 {
-            return Err(self.host_failure(DemandError::InvalidRequest));
+            return Err(Self::Error::InvalidLayout);
         }
         Ok(acyclic_native_runtime::ReadAllocation::empty(
             &self.allocation_owner().expect("original owner"),
         ))
     }
     fn reserve_opaque_decode(&mut self, _: u64) -> Result<Self::Allocation, Self::Error> {
-        Err(self.host_failure(DemandError::InvalidRequest))
+        Err(Self::Error::InvalidLayout)
     }
     fn reconcile_allocation(
         &mut self,
@@ -578,7 +542,7 @@ impl crate::native_host::NativeHostWork for &Arc<NativeWorkReservation> {
                 usize::try_from(actual).map_err(|_| crate::WorkError::Overflow)?,
                 self.as_ref(),
             )
-            .map_err(|error| self.relay(error))
+            .map_err(|error| self.meter.runtime_error(error))
     }
     fn release(&mut self, allocation: Self::Allocation) -> Result<(), Self::Error> {
         drop(allocation);
@@ -590,7 +554,7 @@ impl crate::native_host::NativeHostWork for &Arc<NativeWorkReservation> {
             NativeOperationKind::Write,
             1,
         )
-        .map_err(|error| self.relay(error))
+        .map_err(|error| self.meter.runtime_error(error))
     }
     fn cancel_cleanup_write(&mut self, reservation: Self::CleanupWrite) {
         drop(reservation);
@@ -601,6 +565,9 @@ impl crate::native_host::NativeHostWork for &Arc<NativeWorkReservation> {
         operation: impl FnOnce() -> T,
     ) -> (T, Result<(), Self::Error>) {
         let (result, recorded) = reservation.attempt(operation);
-        (result, recorded.map_err(|error| self.relay(error)))
+        (
+            result,
+            recorded.map_err(|error| self.meter.runtime_error(error)),
+        )
     }
 }

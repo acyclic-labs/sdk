@@ -22,7 +22,7 @@ impl DurableToolRunner {
                     "scope lacks tool call grant",
                 ));
             }
-            crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(&definition.input_schema, &invocation.arguments, "tool input", work))?;
+            crate::executor::with_history_io(io, |work| crate::executor::validate_json_schema_value(&definition.input_schema, &invocation.arguments, "tool input", work))?;
             tool.executor
                 .authorize_with_native_context(context, invocation, work)?;
             drop(grant);
@@ -36,7 +36,7 @@ impl DurableToolRunner {
         if !scope.grants().contains(&required) {
             return Err(Error::Unauthorized(format!("scope lacks {required}")));
         }
-        crate::contract::validate_json_schema_value(&definition.input_schema, &invocation.arguments, "tool input", &mut None)?;
+        crate::executor::validate_json_schema_value(&definition.input_schema, &invocation.arguments, "tool input", &mut None)?;
         tool.executor.authorize_with_context(context, invocation)?;
         match context
             .task()
@@ -141,16 +141,7 @@ impl DurableToolRunner {
         event: &ExecutionEvent,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-            return self
-                .journal
-                .append_with_native_work(operation_id, key, event, work)?
-                .await;
-        }
-        self.journal
-            .append(operation_id, key.into(), event.clone())
-            .await
+        self.journal.append(operation_id, key, event, io)?.await
     }
 
     pub(super) async fn append_tail(
@@ -161,16 +152,7 @@ impl DurableToolRunner {
         event: &ExecutionEvent,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<bool> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-            return self
-                .journal
-                .append_if_tail_with_native_work(operation_id, tail, key, event, work)?
-                .await;
-        }
-        self.journal
-            .append_if_tail(operation_id, tail, key.into(), event.clone())
-            .await
+        self.journal.append_if_tail(operation_id, tail, key, event, io)?.await
     }
 
     pub(super) async fn invoke(

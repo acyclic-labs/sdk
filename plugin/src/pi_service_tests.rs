@@ -29,7 +29,7 @@ async fn prepare(
     crate::service_process::ServiceLock,
     ServiceResources,
     AdapterState,
-    crate::pi_runtime::PiTaskRuntime<LocalStream>,
+    crate::pi_runtime::PiTaskRuntime,
 ) {
     let (lock, resources) = resources(data).await;
     let session = resources.session_directory("pi-root-input");
@@ -559,7 +559,7 @@ fn scoped_response_reuses_original_identity_and_exhausted_quota() {
         .claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)
         .unwrap();
     blocker
-        .resize_retained(work.remaining().unwrap().peak_allocation_bytes)
+        .resize(work.remaining().unwrap().peak_allocation_bytes)
         .unwrap();
     assert!(
         crate::service_session::guarded_scoped_reply(

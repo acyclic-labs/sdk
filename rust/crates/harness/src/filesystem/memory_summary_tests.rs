@@ -173,21 +173,26 @@ async fn sealed_summary_preparation(
     host.start_task(&root_lease, None).await?;
     let prep_op = OperationId::new();
     let prep_task = crate::TaskId::from_bytes(prep_op.into_bytes());
-    let (resources, proofs) = preparer.creation_allocations(fork, prep_task, None)?;
+    let proofs = preparer.creation_allocations(fork, prep_task, None)?;
     let child = admission(OperationId::new(), Some(root), serde_json::json!({})).with_resource_proofs(proofs)?;
     let command_payload = payloads.stage(fork.operation_id, "summary-fork-request",
         &crate::contract::canonical_json_bytes(fork)?, None)?.await?;
     let request = crate::resource_preparation::ResourcePreparationRequest {
-        provider: storage.volume.provider().clone(), child,
-        resources, creation_grant: "fork:publish".into(),
-        maximum_resources: 2, maximum_work, maximum_bytes,
-        payload: serde_json::to_value(fork).map_err(|error| Error::Invalid(error.to_string()))?,
-        command: Some(crate::workflow::WorkflowCommand {
+provider: storage.volume.provider().clone(),
+child,
+creation_grant: "fork:publish".into(),
+maximum_resources: 2,
+maximum_work,
+maximum_bytes,
+payload: serde_json::to_value(fork).map_err(|error| Error::Invalid(error.to_string()))?,
+command: Some(crate::workflow::WorkflowCommand {
             operation_id: fork.operation_id, kind: crate::filesystem::FORK_PREPARE_TASK_COMMAND_KIND.into(),
             payload: command_payload,
         }),
-        source_checkpoint: None, input_files: Vec::new(), read_authorization: fork.authorized_source.clone(),
-    };
+source_checkpoint: None,
+input_files: Vec::new(),
+read_authorization: fork.authorized_source.clone(),
+};
     assert!(matches!(host.admit_owned(admission(prep_op, Some(root),
         serde_json::to_value(&request).map_err(|error| Error::Invalid(error.to_string()))?),
         (&root_lease.reservation).into()).await?, crate::Admission::Accepted(id) if id == prep_task));
@@ -494,7 +499,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         .chain(source.metadata.values())
         .map(|file| {
             Ok((
-                hex::encode(crate::contract::canonical_json_digest(file)?),
+                hex::encode(crate::executor::json::canonical_json_digest(file, u64::MAX, &mut None)?),
                 file.clone(),
             ))
         })
@@ -512,7 +517,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         assert_eq!(copy.descriptor(), original.descriptor());
         assert_eq!(
             storage.host.read_pinned_io(copy, 262_144, None).await?.as_ref(),
-            storage.journal.load(original).await?.as_ref()
+            storage.journal.load(original, None)?.await?.as_ref()
         );
     }
     let seed = report.into_seed(&mut None)?;
@@ -637,7 +642,7 @@ async fn assert_summary_child_import(
         .as_ref()
         .ok_or_else(|| Error::Invalid("no Summary capture".into()))?;
     let denied = issuer.issue("denied", &scope.capabilities().without(&Capabilities::new([
-            capture.context.read_capability()?,
+            capture.context.read_capability(&mut None)?,
             seed.child_private_volume
                 .capability(VolumeOperation::Read, &mut None)?,
         ])), Some(seed.child_agent), None, &mut None).expect("scope proof");

@@ -1,78 +1,5 @@
 use super::*;
 
-pub(in crate::executor) async fn stock_append(
-    journal: &dyn ExecutionJournal,
-    operation: OperationId,
-    key: &str,
-    event: &ExecutionEvent,
-    io: Option<&PreparationIo>,
-) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io
-        && let Some(work) = io.original_native_work()
-    {
-        return journal
-            .append_with_native_work(operation, key, event, work)?
-            .await;
-    }
-    journal
-        .append(operation, key.to_owned(), event.clone())
-        .await
-}
-
-pub(in crate::executor) async fn stock_append_if_tail(
-    journal: &dyn ExecutionJournal,
-    operation: OperationId,
-    tail: u64,
-    key: &str,
-    event: &ExecutionEvent,
-    io: Option<&PreparationIo>,
-) -> Result<bool> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io
-        && let Some(work) = io.original_native_work()
-    {
-        return journal
-            .append_if_tail_with_native_work(operation, tail, key, event, work)?
-            .await;
-    }
-    journal
-        .append_if_tail(operation, tail, key.to_owned(), event.clone())
-        .await
-}
-
-pub(in crate::executor) async fn stage_media_bytes(
-    journal: &dyn ExecutionJournal,
-    operation: OperationId,
-    key: &str,
-    bytes: &[u8],
-    media: &'static str,
-    io: Option<&PreparationIo>,
-) -> Result<FileRef> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io
-        && let Some(work) = io.original_native_work()
-    {
-        let (reference, custody) = journal
-            .stage_with_native_work(operation, key, bytes, media, work)?
-            .await?;
-        io.absorb_native_custody(custody)?;
-        return Ok(reference);
-    }
-    #[cfg(feature = "filesystem")]
-    if let Some(io) = io {
-        io.retain_owned(bytes.len() as u64)?;
-        io.allocation_attempt(bytes.len() as u64)?;
-        io.charge(acyclic_fs::WorkCounters {
-            bytes_copied: bytes.len() as u64,
-            ..Default::default()
-        })?;
-    }
-    journal
-        .stage(operation, key.to_owned(), bytes.to_vec(), media)
-        .await
-}
-
 pub(in crate::executor) async fn stage_bytes(
     journal: &dyn ExecutionJournal,
     operation: OperationId,
@@ -99,10 +26,11 @@ pub(in crate::executor) async fn stage_bytes(
         })?;
     }
     copied = with_history_io(io, |work| {
-        crate::contract::preparation_format(format_args!("{key}:{}", identity.to_hex()), work)
+        crate::executor::preparation_format(format_args!("{key}:{}", identity.to_hex()), work)
     })?;
-    let reference =
-        stage_media_bytes(journal, operation, &copied, bytes, "application/json", io).await?;
+    let reference = journal
+        .stage(operation, &copied, bytes, "application/json", io)?
+        .await?;
     if reference.volume().class() != VolumeClass::AgentPrivate
         || reference.descriptor().media_type() != "application/json"
         || reference.descriptor().byte_length() != bytes.len() as u64
@@ -329,7 +257,7 @@ pub(in crate::executor) fn native_output_payload_bytes(output: &TurnOutput) -> R
     let mut bytes = native_size_add(output.text.capacity() as u64, slots)?;
     bytes = native_size_add(
         bytes,
-        crate::contract::json_value_logical_owned_bytes(&output.metadata)?,
+        crate::executor::json::json_value_logical_owned_bytes(&output.metadata)?,
     )?;
     for attachment in &output.attachments {
         bytes = native_size_add(bytes, attachment.file.logical_owned_bytes()?)?;
@@ -342,14 +270,14 @@ pub(in crate::executor) fn native_output_payload_bytes(output: &TurnOutput) -> R
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(in crate::executor) fn native_progress_owned_bytes(
-    progress: &StockTurnProgress,
+    progress: &ExecutionProgress<TurnOutput>,
 ) -> Result<u64> {
-    let root = std::mem::size_of::<StockTurnProgress>() as u64;
+    let root = std::mem::size_of::<ExecutionProgress<TurnOutput>>() as u64;
     match progress {
-        StockTurnProgress::Ready(output) => {
+        ExecutionProgress::Ready(output) => {
             native_size_add(root, native_output_payload_bytes(output)?)
         }
-        StockTurnProgress::Pending(_) | StockTurnProgress::Rejected(_) => Ok(root),
+        ExecutionProgress::Pending(_) | ExecutionProgress::Rejected(_) => Ok(root),
     }
 }
 

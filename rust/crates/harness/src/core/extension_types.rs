@@ -1,4 +1,3 @@
-//! extension types semantics.
 use super::*;
 /// Explicit treatment of one extension's state at a child fork.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -136,7 +135,7 @@ impl ExtensionAdmission {
             ownership::owned_vector(&self.selected, |extension| {
                 Ok(extension.name.capacity() as u64)
             })?,
-            ownership::owned_vector(&self.configurations, ownership::owned_configuration)?,
+            ownership::owned_vector(&self.configurations, ownership::owned_bytes)?,
         ])
     }
 

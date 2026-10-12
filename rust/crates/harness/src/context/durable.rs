@@ -105,14 +105,18 @@ impl DurableContextProvider {
                 "context payload exceeds file limit".into(),
             ));
         }
-        let digest = crate::contract::canonical_json_digest(&(
-            "harness:context-payload:v1",
-            self.path.as_str(),
-            &self.source,
-            &self.source_revision,
-            revision,
-            key,
-        ))?;
+        let digest = crate::executor::json::canonical_json_digest(
+            &(
+                "harness:context-payload:v1",
+                self.path.as_str(),
+                &self.source,
+                &self.source_revision,
+                revision,
+                key,
+            ),
+            u64::MAX,
+            &mut None,
+        )?;
         let mut identity = [0; 16];
         for (destination, byte) in identity.iter_mut().zip(digest.iter()) {
             *destination = *byte;

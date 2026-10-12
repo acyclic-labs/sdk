@@ -1,4 +1,10 @@
 use super::*;
+use crate::{
+    AuthorityStoreError, FsError, FsResult, ObjectStoreError, OperationFailure, OperationReceipt,
+    WorkError,
+};
+#[cfg(not(target_arch = "wasm32"))]
+use acyclic_stream::{CommitOutcome, CommitRequest, NativeStreamResult, StreamProvider};
 
 /// Work shared by authority operations in one budget or native ledger.
 pub struct AuthorityWork<'a> {
@@ -13,6 +19,7 @@ pub struct AuthorityWork<'a> {
     pub original: Option<&'a crate::NativeMaterializationWork>,
     pub(crate) allocations: crate::kernel::allocation::AllocationLedger,
     pub(crate) opaque_live_upper_bytes: u64,
+    pub(crate) read_observation: Option<(&'a crate::kernel::ProofDataCustody, u64)>,
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) request_allocation: Option<crate::NativeAllocation>,
 }
@@ -26,6 +33,7 @@ impl<'a> AuthorityWork<'a> {
             cancellation,
             allocations: Default::default(),
             opaque_live_upper_bytes: 0,
+            read_observation: None,
             #[cfg(not(target_arch = "wasm32"))]
             request_allocation: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -45,6 +53,25 @@ impl<'a> AuthorityWork<'a> {
         }
     }
 
+    pub(crate) fn is_native(&self) -> bool {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            self.original.is_some()
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            false
+        }
+    }
+
+    pub(super) fn object_fallback(&self) -> Result<(), ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.original.is_some() {
+            return Err(ObjectStoreError::NativeUnavailable);
+        }
+        Ok(())
+    }
+
     /// Returns actual completed work.
     pub fn spent(&self) -> WorkCounters {
         #[cfg(not(target_arch = "wasm32"))]
@@ -55,7 +82,7 @@ impl<'a> AuthorityWork<'a> {
     }
 
     /// Returns the remaining operation budget.
-    pub fn remaining(&self) -> Result<WorkBudget, crate::AuthorityStoreError> {
+    pub fn remaining(&self) -> Result<WorkBudget, AuthorityStoreError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = self.original {
             return original.remaining().map_err(Into::into);
@@ -66,7 +93,7 @@ impl<'a> AuthorityWork<'a> {
             .peak_allocation_bytes
             .checked_sub(self.allocations.live_bytes())
             .and_then(|bytes| bytes.checked_sub(self.opaque_live_upper_bytes))
-            .ok_or(crate::WorkError::Overflow)?;
+            .ok_or(WorkError::Overflow)?;
         Ok(remaining)
     }
 
@@ -74,19 +101,60 @@ impl<'a> AuthorityWork<'a> {
     pub fn receipt<T, E>(
         &self,
         result: Result<T, E>,
-    ) -> crate::performance::MeasuredResult<crate::performance::OperationReceipt<T>, E> {
+    ) -> crate::MeasuredResult<OperationReceipt<T>, E> {
         result
-            .map(|value| crate::performance::OperationReceipt {
+            .map(|value| OperationReceipt {
                 value,
                 work: self.spent(),
             })
-            .map_err(|error| crate::performance::OperationFailure::new(error, self.spent()))
+            .map_err(|error| OperationFailure::new(error, self.spent()))
     }
 
-    pub(crate) fn check(&self) -> Result<(), crate::AuthorityStoreError> {
+    /// Returns the read budget after accounting for resident cache data.
+    pub fn read_budget(&mut self) -> Result<WorkBudget, WorkError> {
+        let mut remaining = self.work.remaining(self.budget)?;
+        if let Some((_, standing)) = self.read_observation {
+            let Some(peak) = remaining.peak_allocation_bytes.checked_sub(standing) else {
+                self.read_observation = None;
+                return Err(WorkError::BudgetExceeded {
+                    counter: "peak_allocation_bytes",
+                    observed: standing,
+                    maximum: remaining.peak_allocation_bytes,
+                });
+            };
+            remaining.peak_allocation_bytes = peak;
+        }
+        Ok(remaining)
+    }
+
+    pub(crate) fn read_receipt(
+        &self,
+        result: Result<ObjectRead, ObjectStoreError>,
+    ) -> ObjectResult<ObjectRead> {
+        let mut work = self.spent();
+        if let Some((observation, standing)) = self.read_observation {
+            observation
+                .record_completed_leaf_work(work)
+                .map_err(|error| crate::ObjectFailure::new(error.into(), work))?;
+            if standing != 0 {
+                work = WorkCounters::UNCHARGED
+                    .with_backend(work, standing)
+                    .map_err(|error| crate::ObjectFailure::new(error.into(), work))?;
+                if result.is_ok() {
+                    work.verify(self.budget)
+                        .map_err(|error| crate::ObjectFailure::new(error.into(), work))?;
+                }
+            }
+        }
+        result
+            .map(|value| crate::OperationReceipt { value, work })
+            .map_err(|error| crate::ObjectFailure::new(error, work))
+    }
+
+    pub(crate) fn check(&self) -> Result<(), AuthorityStoreError> {
         self.cancellation
             .check()
-            .map_err(|_| crate::AuthorityStoreError::Cancelled)?;
+            .map_err(|_| AuthorityStoreError::Cancelled)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = self.original {
             return original.admit(WorkCounters::UNCHARGED).map_err(Into::into);
@@ -96,7 +164,7 @@ impl<'a> AuthorityWork<'a> {
             .allocations
             .live_bytes()
             .checked_add(self.opaque_live_upper_bytes)
-            .ok_or(crate::WorkError::Overflow)?;
+            .ok_or(WorkError::Overflow)?;
         self.work
             .admit(
                 &WorkCounters {
@@ -108,7 +176,7 @@ impl<'a> AuthorityWork<'a> {
             .map_err(Into::into)
     }
 
-    pub(crate) fn record(&mut self, delta: WorkCounters) -> Result<(), crate::AuthorityStoreError> {
+    pub(crate) fn record(&mut self, delta: WorkCounters) -> Result<(), AuthorityStoreError> {
         #[cfg(not(target_arch = "wasm32"))]
         if self.original.is_some() {
             return Ok(());
@@ -118,7 +186,7 @@ impl<'a> AuthorityWork<'a> {
     }
 
     /// Records the completed provider prefix and returns its value.
-    pub fn accept<T, E: From<crate::WorkError>>(
+    pub fn accept<T, E: From<WorkError>>(
         &mut self,
         result: crate::MeasuredResult<crate::OperationReceipt<T>, E>,
     ) -> Result<T, E> {
@@ -126,13 +194,9 @@ impl<'a> AuthorityWork<'a> {
             Ok(receipt) => receipt.work,
             Err(failure) => *failure.work,
         };
-        #[cfg(not(target_arch = "wasm32"))]
-        if self.original.is_some() {
-            return result
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error);
+        if !self.is_native() {
+            self.work = self.work.checked_add(delta).map_err(E::from)?;
         }
-        self.work = self.work.checked_add(delta).map_err(E::from)?;
         result
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)
@@ -140,17 +204,19 @@ impl<'a> AuthorityWork<'a> {
 }
 
 /// Publication failed in the authority provider or its owner guard.
-#[derive(Debug)]
+#[derive(Debug, thiserror::Error)]
 pub enum AuthorityError<E> {
     /// The authority provider rejected the operation.
-    Authority(crate::AuthorityStoreError),
+    #[error(transparent)]
+    Authority(AuthorityStoreError),
     /// The owner guard rejected the operation.
+    #[error(transparent)]
     Owner(E),
 }
 
 impl<E> AuthorityError<E> {
     /// Preserves owner errors while converting provider failures.
-    pub fn into_error(self, convert: impl FnOnce(crate::AuthorityStoreError) -> E) -> E {
+    pub fn into_error(self, convert: impl FnOnce(AuthorityStoreError) -> E) -> E {
         match self {
             Self::Authority(error) => convert(error),
             Self::Owner(error) => error,
@@ -158,8 +224,8 @@ impl<E> AuthorityError<E> {
     }
 }
 
-impl<E> From<crate::AuthorityStoreError> for AuthorityError<E> {
-    fn from(error: crate::AuthorityStoreError) -> Self {
+impl<E> From<AuthorityStoreError> for AuthorityError<E> {
+    fn from(error: AuthorityStoreError) -> Self {
         Self::Authority(error)
     }
 }
@@ -183,26 +249,20 @@ pub trait AuthorityGuard: ProviderTask {
 
     /// Seals the provider's actual native commit attempt.
     #[cfg(not(target_arch = "wasm32"))]
-    fn native_commit<P: acyclic_stream::StreamProvider>(
+    fn native_commit<P: StreamProvider>(
         &mut self,
         provider: &P,
-        request: acyclic_stream::CommitRequest,
+        request: CommitRequest,
         deadline: Option<u64>,
         work: &mut AuthorityWork<'_>,
-    ) -> impl Future<
-        Output = acyclic_stream::NativeStreamResult<
-            acyclic_stream::CommitOutcome,
-            AuthorityError<Self::Error>,
-        >,
-    > + Send {
+    ) -> impl Future<Output = NativeStreamResult<CommitOutcome, AuthorityError<Self::Error>>> + Send
+    {
         async move {
             if let Err(error) = self.seal(work).await {
                 return Ok(Err(error));
             }
             let Some(original) = work.original else {
-                return Ok(Err(
-                    crate::AuthorityStoreError::NativeOriginalUnsupported.into()
-                ));
+                return Ok(Err(AuthorityStoreError::NativeOriginalUnsupported.into()));
             };
             let meter = original.state.clone();
             let result = match deadline {
@@ -219,7 +279,7 @@ pub trait AuthorityGuard: ProviderTask {
 }
 
 impl AuthorityGuard for () {
-    type Error = crate::AuthorityStoreError;
+    type Error = AuthorityStoreError;
     async fn seal(&mut self, _: &mut AuthorityWork<'_>) -> Result<(), AuthorityError<Self::Error>> {
         Ok(())
     }
@@ -228,34 +288,23 @@ impl AuthorityGuard for () {
 impl<F, Fut> AuthorityGuard for &mut F
 where
     F: FnMut(WorkBudget) -> Fut + ProviderTask,
-    Fut: Future<Output = crate::FsResult<()>> + ProviderTask,
+    Fut: Future<Output = FsResult<()>> + ProviderTask,
 {
-    type Error = crate::FsError;
+    type Error = FsError;
     async fn seal(
         &mut self,
         work: &mut AuthorityWork<'_>,
     ) -> Result<(), AuthorityError<Self::Error>> {
         #[cfg(not(target_arch = "wasm32"))]
         if work.original.is_some() {
-            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
+            return Err(AuthorityStoreError::NativeOriginalUnsupported.into());
         }
         let result = self(work.remaining()?).await;
-        match result {
-            Ok(receipt) => {
-                work.record(receipt.work)?;
-                work.work
-                    .verify(work.budget)
-                    .map_err(crate::AuthorityStoreError::from)?;
-                Ok(())
-            }
-            Err(failure) => match work.work.checked_add(*failure.work) {
-                Ok(combined) => {
-                    work.work = combined;
-                    Err(AuthorityError::Owner(failure.error))
-                }
-                Err(error) => Err(AuthorityError::Owner(crate::FsError::from(error))),
-            },
-        }
+        work.accept(result).map_err(AuthorityError::Owner)?;
+        work.work
+            .verify(work.budget)
+            .map_err(AuthorityStoreError::from)?;
+        Ok(())
     }
 }
 
@@ -272,23 +321,21 @@ where
 {
     type Error = E;
     async fn seal(&mut self, work: &mut AuthorityWork<'_>) -> Result<(), AuthorityError<E>> {
-        let Some(original) = work.original else {
-            return Err(crate::AuthorityStoreError::NativeOriginalUnsupported.into());
-        };
+        let original = work
+            .original
+            .ok_or(AuthorityStoreError::NativeOriginalUnsupported)?;
         (self.0)(original).await.map_err(AuthorityError::Owner)
     }
 
-    async fn native_commit<P: acyclic_stream::StreamProvider>(
+    async fn native_commit<P: StreamProvider>(
         &mut self,
         provider: &P,
-        request: acyclic_stream::CommitRequest,
+        request: CommitRequest,
         deadline: Option<u64>,
         work: &mut AuthorityWork<'_>,
-    ) -> acyclic_stream::NativeStreamResult<acyclic_stream::CommitOutcome, AuthorityError<E>> {
+    ) -> NativeStreamResult<CommitOutcome, AuthorityError<E>> {
         let Some(original) = work.original else {
-            return Ok(Err(
-                crate::AuthorityStoreError::NativeOriginalUnsupported.into()
-            ));
+            return Ok(Err(AuthorityStoreError::NativeOriginalUnsupported.into()));
         };
         let meter = original.state.clone();
         let original = original.clone();

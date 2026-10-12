@@ -13,7 +13,7 @@ pub(in crate::executor) fn stock_tool_definitions(
         let mut selected = Vec::new();
         for definition in definitions {
             let key = with_history_io(Some(io), |work| {
-                crate::contract::preparation_format(
+                crate::executor::preparation_format(
                     format_args!("tool:call:{}", definition.name),
                     work,
                 )
@@ -82,14 +82,14 @@ pub(in crate::executor) fn stock_tool_lookup<'a>(
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if io.and_then(PreparationIo::original_native_work).is_some() {
         return registry
-            .get(name, io)?
+            .get(name, None, io)?
             .ok_or_else(|| crate::Error::NativeBoundary {
                 code: crate::wire::ErrorCode::NotFound,
                 reason: "tool is not bound to this stock composition",
             });
     }
     registry
-        .get(name, io)?
+        .get(name, None, io)?
         .ok_or_else(|| Error::NotFound(format!("tool {name}")))
 }
 
@@ -261,18 +261,15 @@ impl StockExecution<'_> {
         invocation: &ToolInvocation,
         definition: &crate::tool::ToolDefinition,
         started: bool,
-    ) -> Result<Option<ToolCallProgress>> {
-        let Some((native, _)) = self.native else {
+    ) -> Result<Option<ExecutionProgress<()>>> {
+        let Some(work) = self.native_work() else {
             return Ok(None);
         };
-        let context = native.context();
+        let (context, _) = self.context.ok_or(crate::Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Storage,
+            reason: "stock policy has no issued task",
+        })?;
         let io = self.io.expect("native execution ledger");
-        let work = io
-            .original_native_work()
-            .ok_or_else(|| crate::Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Storage,
-                reason: "stock policy has no original work",
-            })?;
         for (_, policy) in context
             .stock_tool_policy_binding()
             .into_iter()
@@ -308,17 +305,14 @@ impl StockExecution<'_> {
             );
             let approval = stock_task_interaction_id(task, approval_operation, Some(io))?;
             journal
-                .open_interaction_with_native_work(approval, &request, work)?
+                .open_interaction(approval, &request, Some(io))?
                 .await?;
-            let (outcome, custody) = journal
-                .interaction_outcome_with_native_work(approval, work)?
-                .await?;
-            io.absorb_native_custody(custody)?;
+            let outcome = journal.interaction_outcome(approval, Some(io))?.await?;
             let Some(outcome) = outcome else {
                 return if started {
                     Err(Error::Indeterminate(invocation.operation_id))
                 } else {
-                    Ok(Some(ToolCallProgress::Pending(invocation.operation_id)))
+                    Ok(Some(ExecutionProgress::Pending(invocation.operation_id)))
                 };
             };
             if matches!(outcome, InteractionOutcome::Answered { .. }) {
@@ -330,7 +324,7 @@ impl StockExecution<'_> {
             match check_tool_approval(outcome) {
                 Ok(()) => {}
                 Err(Error::InteractionRejected(reason)) if !started => {
-                    return Ok(Some(ToolCallProgress::Rejected(reason)));
+                    return Ok(Some(ExecutionProgress::Rejected(reason)));
                 }
                 Err(Error::InteractionRejected(_)) => {
                     return Err(Error::Indeterminate(invocation.operation_id));
@@ -353,14 +347,14 @@ pub(in crate::executor) fn stock_validate_invocation(
     if let Some(io) = io
         && io.original_native_work().is_some()
     {
-        crate::contract::json_owned_value_shape_bounded(
+        crate::executor::json::json_owned_value_shape_bounded(
             &invocation.arguments,
-            crate::contract::JsonBounds {
+            crate::executor::json::JsonBounds {
                 maximum_bytes: u64::MAX,
                 maximum_items: io.remaining()?.items_examined,
                 maximum_depth: 256,
             },
-            crate::contract::JsonValueSchema::None,
+            crate::executor::json::JsonValueSchema::None,
             &mut |next| io.codec_charge(next, false),
         )?;
         return Ok(());
@@ -376,7 +370,7 @@ pub(in crate::executor) async fn stock_tool_rejection(
     call: &str,
     kind: ToolFailureKind,
     error: Error,
-) -> Result<ToolCallProgress> {
+) -> Result<ExecutionProgress<()>> {
     if stock_native_failure(&error) {
         return Err(error);
     }
@@ -384,7 +378,7 @@ pub(in crate::executor) async fn stock_tool_rejection(
         .record_tool_failure(journal, operation, step, call, kind)
         .await?;
     Err(stock_boundary(
-        session.io(),
+        session.io,
         crate::wire::ErrorCode::Invalid,
         kind.message(),
     ))

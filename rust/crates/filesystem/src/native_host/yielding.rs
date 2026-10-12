@@ -67,7 +67,7 @@ impl YieldingFile {
             let event =
                 unsafe { CreateEventW(None, true, false, None) }.map_err(io::Error::other)?;
             let bytes = std::mem::size_of::<OplockRequest>() as u64;
-            if let Err(error) = work.allocate(bytes) {
+            if let Err(error) = work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED) {
                 unsafe {
                     let _ = CloseHandle(event);
                 }
@@ -152,9 +152,9 @@ impl YieldingFile {
     ) -> Result<Self, DemandError> {
         let file_bytes = std::mem::size_of::<File>() as u64;
         let held_bytes = std::mem::size_of::<YieldingHeld>() as u64;
-        work.allocate(file_bytes)?;
+        work.claim_allocation(file_bytes, u64::from((file_bytes) != 0), crate::WorkCounters::UNCHARGED)?;
         let file = std::sync::Arc::new(file);
-        if let Err(error) = work.allocate(held_bytes) {
+        if let Err(error) = work.claim_allocation(held_bytes, u64::from((held_bytes) != 0), crate::WorkCounters::UNCHARGED) {
             drop(file);
             work.release(file_bytes)?;
             return Err(error);

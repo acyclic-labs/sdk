@@ -1,19 +1,18 @@
 //! Finite work and owned-byte limits for filesystem preparation.
 use super::*;
 use crate::conversation::FileRef;
+use acyclic_fs::kernel::{allocation::AllocationLedger, KernelAccounting, KernelOwnedAllocation};
 use acyclic_fs::{
     CancellationToken, OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkspaceError,
 };
 use std::sync::Mutex;
 mod codec;
 mod history;
-mod metadata;
 mod quota;
 mod records;
 mod sdk;
 #[cfg(test)]
 mod tests;
-pub(in crate::filesystem) use metadata::*;
 use quota::finish_decode;
 use quota::finish_encoding;
 #[cfg(not(target_arch = "wasm32"))]
@@ -24,8 +23,9 @@ use records::{decode_allowance_error, decode_allowance_with_code};
 #[cfg(not(target_arch = "wasm32"))]
 pub(in crate::filesystem) use sdk::publish_native;
 pub(in crate::filesystem) use sdk::{
-    apply_generation, apply_generation_task_guarded, create, fork, generation, generation_ref,
-    open, operation_generation, publish_generation, read, resolve, retain,
+    apply_generation, apply_generation_task_guarded, content_workspace, create, fork, generation,
+    generation_ref, mutation, open, operation_generation, operation_key, publish_generation, read,
+    resolve, retain, volume_storage_name,
 };
 
 /// Work and retained ownership for one preparation attempt.
@@ -35,7 +35,7 @@ pub enum PreparationIo {
         /// Limits for this attempt.
         budget: WorkBudget,
         /// Spent work and live owned bytes.
-        work: Mutex<(WorkCounters, u64)>,
+        work: Mutex<(WorkCounters, AllocationLedger)>,
         /// Cancellation for this attempt.
         cancellation: CancellationToken,
     },
@@ -72,7 +72,7 @@ impl PreparationIo {
             .map_err(|cause| Error::Storage(cause.to_string()))?;
         Ok(Self::Owned {
             budget,
-            work: Mutex::new((WorkCounters::default(), 0)),
+            work: Mutex::new((WorkCounters::default(), AllocationLedger::default())),
             cancellation: cancellation.clone(),
         })
     }
@@ -82,7 +82,7 @@ impl PreparationIo {
             .map_err(|cause| Error::Storage(cause.to_string()))?;
         Ok(Self::Owned {
             budget: WorkBudget::UNBOUNDED,
-            work: Mutex::new((WorkCounters::default(), 0)),
+            work: Mutex::new((WorkCounters::default(), AllocationLedger::default())),
             cancellation: cancellation.clone(),
         })
     }
@@ -110,7 +110,7 @@ impl PreparationIo {
         let mut custody = custody
             .into_inner()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Err(cause) = custody.substitute(retained) {
+        if let Err(cause) = custody.resize(retained) {
             return Err(Error::NativeWork {
                 cause,
                 custody: Some(custody),
@@ -177,7 +177,7 @@ impl PreparationIo {
         })
     }
     pub(crate) fn invalid(&self, reason: &'static str) -> Error {
-        failure(Some(self), crate::wire::ErrorCode::Invalid, reason)
+        stock_boundary(Some(self), crate::wire::ErrorCode::Invalid, reason)
     }
     pub(crate) fn receipt(&self) -> WorkCounters {
         match self {
@@ -194,7 +194,7 @@ impl PreparationIo {
         match self {
             Self::Owned { work, .. } => work
                 .lock()
-                .map(|state| state.1)
+                .map(|state| state.1.live_bytes())
                 .map_err(|_| self.invalid("preparation accounting is poisoned")),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { custody, .. } => Ok(custody
@@ -203,149 +203,115 @@ impl PreparationIo {
                 .bytes()),
         }
     }
-    fn preflight_workspace(
+    fn account<T>(
         &self,
-        mut next: WorkCounters,
-    ) -> std::result::Result<(), WorkspaceError> {
-        self.cancellation().check()?;
+        operation: impl FnOnce(&mut KernelAccounting<'_>) -> std::result::Result<T, acyclic_fs::FsError>,
+    ) -> std::result::Result<T, acyclic_fs::FsError> {
         match self {
-            Self::Owned { budget, work, .. } => {
-                let state = work.lock().map_err(|_| {
-                    WorkspaceError::Engine("preparation accounting is poisoned".into())
-                })?;
-                next.peak_allocation_bytes = next
-                    .peak_allocation_bytes
-                    .checked_add(state.1)
-                    .ok_or(acyclic_fs::WorkError::Overflow)?;
-                state.0.checked_add(next)?.verify(*budget)?;
-                Ok(())
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Native { work, .. } => work.admit(next).map_err(|cause| {
-                WorkspaceError::Filesystem(acyclic_fs::FsError::NativeKernel(cause))
-            }),
-        }
-    }
-    pub(crate) fn preflight(&self, next: WorkCounters) -> Result<()> {
-        self.check_cancellation()?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = self.original_native_work() {
-            return work.admit(next).map_err(Into::into);
-        }
-        self.preflight_workspace(next).map_err(Into::into)
-    }
-    fn spent_workspace(&self, mut next: WorkCounters) -> std::result::Result<(), WorkspaceError> {
-        match self {
-            Self::Owned { work, .. } => {
-                let mut state = work.lock().map_err(|_| {
-                    WorkspaceError::Engine("preparation accounting is poisoned".into())
-                })?;
-                next.peak_allocation_bytes = next
-                    .peak_allocation_bytes
-                    .checked_add(state.1)
-                    .ok_or(acyclic_fs::WorkError::Overflow)?;
-                state.0 = state.0.checked_add(next)?;
-                Ok(())
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Native { work, .. } => work.spent(next).map_err(|cause| {
-                WorkspaceError::Filesystem(acyclic_fs::FsError::NativeKernel(cause))
-            }),
-        }
-    }
-    pub(crate) fn spent(&self, next: WorkCounters) -> Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = self.original_native_work() {
-            return work.spent(next).map_err(Into::into);
-        }
-        self.spent_workspace(next).map_err(Into::into)
-    }
-    pub(crate) fn charge(&self, next: WorkCounters) -> Result<()> {
-        self.spent(next)?;
-        match self {
-            Self::Owned { budget, .. } => self
-                .receipt()
-                .verify(*budget)
-                .map_err(|cause| Error::Invalid(cause.to_string())),
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Native { work, .. } => work.remaining().map(|_| ()).map_err(Into::into),
-        }
-    }
-    fn remaining_workspace(&self) -> std::result::Result<WorkBudget, WorkspaceError> {
-        self.cancellation().check()?;
-        match self {
-            Self::Owned { budget, work, .. } => {
-                let state = work.lock().map_err(|_| {
-                    WorkspaceError::Engine("preparation accounting is poisoned".into())
-                })?;
-                let mut budget = state.0.remaining(*budget)?;
-                budget.peak_allocation_bytes = budget
-                    .peak_allocation_bytes
-                    .checked_sub(state.1)
-                    .ok_or(acyclic_fs::WorkError::Overflow)?;
-                Ok(budget)
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Native { work, .. } => work.remaining().map_err(|cause| {
-                WorkspaceError::Filesystem(acyclic_fs::FsError::NativeKernel(cause))
-            }),
-        }
-    }
-    pub(crate) fn remaining(&self) -> Result<WorkBudget> {
-        self.check_cancellation()?;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = self.original_native_work() {
-            return work.remaining().map_err(Into::into);
-        }
-        self.remaining_workspace().map_err(Into::into)
-    }
-    pub(crate) fn retain_owned(&self, bytes: u64) -> Result<()> {
-        self.check_cancellation()?;
-        match self {
-            Self::Owned { budget, work, .. } => {
+            Self::Owned {
+                budget,
+                work,
+                cancellation,
+            } => {
                 let mut state = work
                     .lock()
-                    .map_err(|_| self.invalid("preparation accounting is poisoned"))?;
-                let live = state
-                    .1
-                    .checked_add(bytes)
-                    .ok_or_else(|| self.invalid("preparation ownership overflow"))?;
-                let next = state
-                    .0
-                    .checked_add(WorkCounters {
-                        peak_allocation_bytes: live,
-                        ..Default::default()
-                    })
-                    .map_err(WorkspaceError::from)?;
-                next.verify(*budget).map_err(WorkspaceError::from)?;
-                state.0 = next;
-                state.1 = live;
-                Ok(())
+                    .map_err(|_| acyclic_fs::FsError::PendingMutationAllocationFailed)?;
+                let (spent, allocations) = &mut *state;
+                operation(&mut KernelAccounting::borrowed_standalone(
+                    allocations,
+                    spent,
+                    *budget,
+                    cancellation,
+                ))
             }
             #[cfg(not(target_arch = "wasm32"))]
-            Self::Native { custody, .. } => {
-                let mut custody = custody
-                    .lock()
-                    .map_err(|_| self.invalid("preparation accounting is poisoned"))?;
-                let live = custody
-                    .bytes()
-                    .checked_add(bytes)
-                    .ok_or_else(|| self.invalid("preparation ownership overflow"))?;
-                custody.resize_retained(live).map_err(Into::into)
-            }
+            Self::Native { work, .. } => operation(&mut KernelAccounting::NativeOriginal {
+                work,
+                cancellation: work.cancellation(),
+            }),
         }
     }
-    pub(crate) fn release(&self, bytes: u64) -> Result<()> {
+    pub(crate) fn preflight(
+        &self,
+        mut next: WorkCounters,
+    ) -> std::result::Result<(), acyclic_fs::FsError> {
+        self.account(|accounting| {
+            if let Some((allocations, _, _, _)) = accounting.standalone_parts() {
+                next.peak_allocation_bytes = next
+                    .peak_allocation_bytes
+                    .checked_add(allocations.live_bytes())
+                    .ok_or(acyclic_fs::WorkError::Overflow)?;
+            }
+            accounting.admit(next)
+        })
+    }
+    pub(crate) fn spent(
+        &self,
+        mut next: WorkCounters,
+    ) -> std::result::Result<(), acyclic_fs::FsError> {
+        self.account(|accounting| {
+            if let Some((allocations, work, _, _)) = accounting.standalone_parts() {
+                next.peak_allocation_bytes = next
+                    .peak_allocation_bytes
+                    .checked_add(allocations.live_bytes())
+                    .ok_or(acyclic_fs::WorkError::Overflow)?;
+                *work = work.checked_add(next)?;
+                Ok(())
+            } else {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Self::Native { work, .. } = self {
+                    return work.spent(next).map_err(Into::into);
+                }
+                unreachable!()
+            }
+        })
+    }
+    pub(crate) fn charge(
+        &self,
+        mut next: WorkCounters,
+    ) -> std::result::Result<(), acyclic_fs::FsError> {
+        self.account(|accounting| {
+            if let Some((allocations, _, _, _)) = accounting.standalone_parts() {
+                next.peak_allocation_bytes = next
+                    .peak_allocation_bytes
+                    .checked_add(allocations.live_bytes())
+                    .ok_or(acyclic_fs::WorkError::Overflow)?;
+            }
+            accounting.charge(next)
+        })
+    }
+    pub(crate) fn remaining(&self) -> std::result::Result<WorkBudget, acyclic_fs::FsError> {
+        self.account(|accounting| accounting.remaining())
+    }
+    pub(crate) fn retain_owned(&self, bytes: u64) -> std::result::Result<(), acyclic_fs::FsError> {
+        let claim = self.account(|accounting| accounting.claim_owned(bytes, 0))?;
+        #[cfg(not(target_arch = "wasm32"))]
+        if let KernelOwnedAllocation::NativeOriginal(mut claim) = claim {
+            let Self::Native { custody, .. } = self else {
+                unreachable!()
+            };
+            custody
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .absorb(&mut claim)?;
+        }
+        #[cfg(target_arch = "wasm32")]
+        let _ = claim;
+        Ok(())
+    }
+    pub(crate) fn release(&self, bytes: u64) -> std::result::Result<(), acyclic_fs::FsError> {
         match self {
-            Self::Owned { work, .. } => {
+            Self::Owned {
+                budget,
+                work,
+                cancellation,
+            } => {
                 let mut state = work
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
-                state.1 = state
-                    .1
-                    .checked_sub(bytes)
-                    .ok_or_else(|| self.invalid("preparation ownership underflow"))?;
-                Ok(())
+                let (spent, allocations) = &mut *state;
+                KernelAccounting::borrowed_standalone(allocations, spent, *budget, cancellation)
+                    .release_owned(&mut KernelOwnedAllocation::Standalone, bytes)
             }
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { custody, .. } => custody
@@ -449,3 +415,70 @@ impl PreparationIo {
             .map_err(|error| OperationFailure::new(error, self.receipt()))
     }
 }
+
+pub(in crate::filesystem) use codec::{clone_bytes, hex_key};
+impl PreparationIo {
+    pub(crate) fn reserve<T>(
+        values: &mut Vec<T>,
+        capacity: usize,
+        io: Option<&PreparationIo>,
+    ) -> Result<()> {
+        if capacity <= values.capacity() {
+            return Ok(());
+        }
+        (capacity - values.capacity())
+            .checked_mul(std::mem::size_of::<T>())
+            .ok_or_else(|| {
+                stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Invalid,
+                    "vector capacity overflow",
+                )
+            })?;
+        let Some(io) = io else {
+            return values
+                .try_reserve_exact(capacity - values.len())
+                .map_err(Error::Allocation);
+        };
+        use crate::store::history::HistoryIo as _;
+        let copied = (values.len() * std::mem::size_of::<T>()) as u64;
+        let mut observer = io.history_io();
+        observer.admit_copy(copied)?;
+        crate::store::history::reserve(values, capacity, &mut observer)?;
+        observer.copy_bytes(copied)
+    }
+}
+impl PreparationIo {
+    pub(crate) fn capability<T: Serialize>(&self, value: &T, prefix: &str) -> Result<String> {
+        let hash = crate::executor::preparation_digest(value, Some(self))?;
+        let encoding = WorkCounters {
+            bytes_encoded: if self.original_native_work().is_some() {
+                64
+            } else {
+                0
+            },
+            ..Default::default()
+        };
+        self.preflight(encoding)?;
+        let hex = blake3::Hash::from_bytes(hash).to_hex();
+        self.charge(encoding)?;
+        crate::executor::with_history_io(Some(self), |work| {
+            crate::executor::preparation_format(format_args!("{prefix}{hex}"), work)
+        })
+    }
+    pub(crate) fn contains_capability<T: Serialize>(
+        &self,
+        grants: &crate::Capabilities,
+        value: &T,
+        prefix: &str,
+    ) -> Result<bool> {
+        let text = self.capability(value, prefix)?;
+        let held = self.guard_owned(text.capacity() as u64)?;
+        let granted = grants.contains(&text);
+        drop(text);
+        drop(held);
+        Ok(granted)
+    }
+}
+
+use crate::executor::stock_boundary;

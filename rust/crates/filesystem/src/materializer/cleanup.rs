@@ -1,15 +1,11 @@
 use super::*;
 use std::sync::Arc;
 
+#[derive(Debug)]
 pub(crate) struct NativeCleanupWrite {
     pub(super) meter: NativeMaterializationWork,
     pub(super) additional_resource: Option<Arc<NativeResourceAllowance>>,
     pub(super) reserved: bool,
-}
-impl std::fmt::Debug for NativeCleanupWrite {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NativeCleanupWrite").finish_non_exhaustive()
-    }
 }
 impl NativeCleanupWrite {
     pub(crate) fn bind_current_work(
@@ -54,7 +50,7 @@ impl NativeCleanupWrite {
         let recorded = self
             .meter
             .state(|state| {
-                let original = state.complete(NativeResourceCredit::WriteOperations, 1, 1);
+                let original = state.complete(NativeResourceCredit::WriteOperations.delta(1), NativeResourceCredit::WriteOperations.delta(1));
                 let current = self
                     .additional_resource
                     .as_ref()
@@ -75,7 +71,7 @@ impl Drop for NativeCleanupWrite {
     fn drop(&mut self) {
         if self.reserved {
             self.meter.state(|state| {
-                let original = state.refund(NativeResourceCredit::WriteOperations, 1);
+                let original = state.refund(NativeResourceCredit::WriteOperations.delta(1));
                 let current = self
                     .additional_resource
                     .as_ref()

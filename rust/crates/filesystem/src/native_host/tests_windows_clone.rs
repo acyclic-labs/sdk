@@ -401,7 +401,7 @@ fn held_windows_metadata_rejects_unrepresentable_fields_and_path_escape() -> std
             },
             &mut work
         ),
-        Err(crate::DemandError::WindowsMetadata(NativeMetadataError(_)))
+        Err(crate::DemandError::NativeMetadata(NativeMetadataError(_)))
     ));
     assert!(matches!(
         apply_windows_metadata(
@@ -417,7 +417,7 @@ fn held_windows_metadata_rejects_unrepresentable_fields_and_path_escape() -> std
             },
             &mut work
         ),
-        Err(crate::DemandError::WindowsMetadata(NativeMetadataError(_)))
+        Err(crate::DemandError::NativeMetadata(NativeMetadataError(_)))
     ));
     assert!(
         with_wide_path(Path::new("../outside"), &mut work, |path, work| root
@@ -591,7 +591,7 @@ async fn capability_opened_overlapped_file_runs_native_io_without_reopen() -> st
     );
     Ok(())
 }
-fn sparse_file(root: &HostRoot, path: &Path, length: u64) -> std::io::Result<cap_std::fs::File> {
+fn sparse_file(root: &HostRoot, path: &Path, length: u64) -> std::io::Result<std::fs::File> {
     let file = with_wide_path(path, &mut ordinary_work(), |path, work| {
         root.create_file(
             path,

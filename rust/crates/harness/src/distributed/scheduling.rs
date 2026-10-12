@@ -11,7 +11,7 @@ pub struct Worker {
     /// Stable worker identity.
     pub id: String,
     /// Currently available logical capacity.
-    pub available: ResourceSnapshot,
+    pub available: ResourceRequest,
     /// Labels available for exact-match operation placement.
     #[serde(default)]
     pub labels: BTreeMap<String, String>,
@@ -78,7 +78,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         if !scope.capabilities().contains("operation:observe")
             || !scope.capabilities().contains("operation:declare")
         {
-            return Err(coordinator_boundary(
+            return Err(guarded_boundary(
                 work,
                 wire::ErrorCode::Unauthorized,
                 "owned pull requires operation:declare and operation:observe",
@@ -98,7 +98,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let owner = authorization.map(|(owner, _)| owner);
         self.refresh(work).await?;
         if worker.id.trim().is_empty() {
-            return Err(coordinator_boundary(
+            return Err(guarded_boundary(
                 work,
                 wire::ErrorCode::Invalid,
                 "worker identity is empty",
@@ -110,7 +110,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 .operation(target)
                 .filter(|state| owner.is_some_and(|owner| state.spec.owner.authority() == owner))
                 .ok_or_else(|| {
-                    coordinator_boundary(
+                    guarded_boundary(
                         work,
                         wire::ErrorCode::NotFound,
                         "owned pull target is absent",
@@ -191,14 +191,14 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             self.authorize_owner(owner, verifier, operation_id, custody.work())?;
         }
         let state = self.scheduler.operation(operation_id).ok_or_else(|| {
-            coordinator_boundary(
+            guarded_boundary(
                 custody.work(),
                 wire::ErrorCode::NotFound,
                 "selected owned operation is absent",
             )
         })?;
         let operation_revision = state.revision.checked_add(1).ok_or_else(|| {
-            coordinator_boundary(
+            guarded_boundary(
                 custody.work(),
                 wire::ErrorCode::Storage,
                 "operation revision exhausted",

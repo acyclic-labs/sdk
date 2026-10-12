@@ -4,14 +4,14 @@ use super::*;
 #[must_use]
 pub struct NativeMountWorkScope {
     pub(super) context: Arc<DarwinMountContext>,
-    meter: crate::NativeMaterializationWork,
+    meter: Work,
     generation: u64,
 }
 
 impl NativeMountWorkScope {
     pub(super) fn new(
         context: Arc<DarwinMountContext>,
-        meter: &crate::NativeMaterializationWork,
+        meter: &Work,
     ) -> Result<Self, NativeMountError> {
         let generation = context
             .startup_meter
@@ -41,35 +41,23 @@ impl Drop for NativeMountWorkScope {
     }
 }
 
-fn same_view(
-    left: &crate::NativeMaterializationWork,
-    right: &crate::NativeMaterializationWork,
-) -> bool {
-    left.shares_allocation_context(right)
-        && left.capture_origin.as_ref().map(Weak::as_ptr) == right.capture_origin.as_ref().map(Weak::as_ptr)
-        && left.invocation.as_ref().map(Arc::as_ptr)
-            == right.invocation.as_ref().map(Arc::as_ptr)
-        && left.execution.as_ref().map(Arc::as_ptr)
-            == right.execution.as_ref().map(Arc::as_ptr)
-}
-
 pub(super) fn original_work(
     source: &dyn MountFilesystem,
-    candidate: Option<&crate::NativeMaterializationWork>,
-) -> Result<Option<crate::NativeMaterializationWork>, NativeMountError> {
+    candidate: Option<&Work>,
+) -> Result<Option<Work>, NativeMountError> {
     let original = source.native_original_work()?;
     if let Some(original) = &original {
-        if candidate.is_some_and(|candidate| !same_view(original, candidate)) {
+        if candidate.is_some_and(|candidate| !same_work(original, candidate)) {
             return Err(NativeMountError::ControlPending);
         }
-        original.admit(crate::WorkCounters::UNCHARGED)?;
+        original.admit(WorkCounters::UNCHARGED)?;
     }
     Ok(original)
 }
 
 pub(super) fn verify_guard(
     guard: Option<&Arc<dyn crate::native_mount::NativeMountCallbackGuard>>,
-    work: Option<&crate::NativeMaterializationWork>,
+    work: Option<&Work>,
 ) -> Result<(), NativeMountError> {
     if let Some(guard) = guard {
         crate::native_mount::adapter::CallbackRuntime::existing()?.verify_native_callback_guard(
@@ -81,9 +69,7 @@ pub(super) fn verify_guard(
 }
 
 impl DarwinMountContext {
-    pub(super) fn callback_meter(
-        &self,
-    ) -> Result<Option<crate::NativeMaterializationWork>, NativeMountError> {
+    pub(super) fn callback_meter(&self) -> Result<Option<Work>, NativeMountError> {
         let active = self
             .startup_meter
             .lock()
@@ -92,12 +78,12 @@ impl DarwinMountContext {
         let selected = active.or_else(|| self.source_original_work.clone());
         let current = original_work(self.source.as_ref(), selected.as_ref())?;
         match (&self.source_original_work, &current) {
-            (Some(installed), Some(current)) if same_view(installed, current) => {}
+            (Some(installed), Some(current)) if same_work(installed, current) => {}
             (None, None) => {}
             _ => return Err(NativeMountError::ControlPending),
         }
         if let Some(work) = &selected {
-            work.admit(crate::WorkCounters::UNCHARGED)?;
+            work.admit(WorkCounters::UNCHARGED)?;
         }
         let guard = self.source.native_callback_guard();
         match (&self.callback_guard, &guard) {

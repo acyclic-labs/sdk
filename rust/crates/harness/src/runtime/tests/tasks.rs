@@ -62,13 +62,9 @@ async fn live_task_model_override_is_scoped_and_durable_direct_call_is_rejected(
         owned_interactions: None,
         owned_mailbox: None,
         output_content: None,
-        #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-        native_root_output: std::sync::OnceLock::new(),
         model_steps: Arc::new((AtomicUsize::new(0), None)),
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         native_metadata_source: None,
-        #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-        working_view: std::sync::OnceLock::new(),
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         native_custody: None,
     };
@@ -526,7 +522,7 @@ fn private_root_directory_grant_reads_descendants_without_write_authority() -> R
     assert!(read_granted(&grants, &file)?);
     assert!(!grants.contains(&volume.capability(VolumeOperation::Write, &mut None)?));
     for capability in [
-        file.read_capability()?,
+        file.read_capability( &mut None)?,
         volume.capability(VolumeOperation::Read, &mut None)?,
         volume.directory_read_capability("notes", &mut None)?,
         volume.directory_read_capability("notes/nested", &mut None)?,

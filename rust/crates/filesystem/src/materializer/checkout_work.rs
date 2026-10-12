@@ -11,16 +11,16 @@ impl NativeMaterializationWork {
     pub(crate) fn checkout_control_sink(
         &self,
         producer: &Arc<crate::kernel::ProofDataCustody>,
-    ) -> Result<crate::demand::NativeCheckoutControlWitness, NativeTreeMaterializationError> {
+    ) -> Result<std::sync::Arc<crate::kernel::ProofDataCustody>, NativeTreeMaterializationError> {
         self.state
-            .checkout_control_witness(producer)
+            .checkout_control_sink(producer)
             .ok_or(NativeTreeMaterializationError::InvalidLayout)
     }
     pub(crate) fn register_native_checkout_control(
         &self,
         producer: &Arc<crate::kernel::ProofDataCustody>,
         header: &mut NativeAllocation,
-    ) -> Result<crate::demand::NativeCheckoutControlWitness, NativeTreeMaterializationError> {
+    ) -> Result<std::sync::Arc<crate::kernel::ProofDataCustody>, NativeTreeMaterializationError> {
         self.state
             .register_native_checkout_control(self, producer, header)
     }
@@ -48,7 +48,8 @@ impl NativeMaterializationWork {
             &crate::CancellationToken,
         ) -> Result<T, E>,
     ) -> Result<(T, NativeAllocation), E> {
-        let (result, bytes, cleanup) = self
+        // Returned values may lock the ledger when dropped.
+        let (result, bytes) = self
             .state(|state| {
                 state
                     .reconcile_native_controls()
@@ -56,25 +57,26 @@ impl NativeMaterializationWork {
                 let (allocations, counters, budget, cancellation) = state.allocation_parts();
                 let before = allocations.live_bytes();
                 let result = operation(allocations, counters, budget, cancellation);
-                let bytes = allocations.live_bytes().checked_sub(before);
-                let cleanup = bytes
-                    .filter(|_| result.is_err())
-                    .map(|bytes| allocations.release(bytes));
-                Ok::<_, NativeTreeMaterializationError>((result, bytes, cleanup))
+                let bytes = allocations
+                    .live_bytes()
+                    .checked_sub(before)
+                    .ok_or(NativeTreeMaterializationError::Work(
+                        crate::WorkError::Overflow,
+                    ))
+                    .and_then(|bytes| {
+                        if result.is_err() {
+                            allocations.release(bytes).map_err(|error| {
+                                error.into_work_or(NativeTreeMaterializationError::Work(
+                                    crate::WorkError::Overflow,
+                                ))
+                            })?;
+                        }
+                        Ok(bytes)
+                    });
+                Ok::<_, NativeTreeMaterializationError>((result, bytes))
             })
             .map_err(E::from)?;
-        let bytes = bytes.ok_or_else(|| {
-            E::from(NativeTreeMaterializationError::Work(
-                crate::WorkError::Overflow,
-            ))
-        })?;
-        if let Some(cleanup) = cleanup {
-            cleanup.map_err(|error| {
-                E::from(error.into_work_or(NativeTreeMaterializationError::Work(
-                    crate::WorkError::Overflow,
-                )))
-            })?;
-        }
+        let bytes = bytes.map_err(E::from)?;
         result.map(|value| {
             (
                 value,

@@ -270,8 +270,8 @@ pub(crate) fn read_source_link_held<W: SourceDemandReadWork>(
 ) -> Result<acyclic_stream::OwnedBytes, DemandError> {
     let original = work
         .native_source_work()
-        .ok_or(DemandError::NativeWorkUnavailable)?
-        .materialization_work()?;
+        .ok_or(DemandError::NativeWorkUnavailable)?;
+    NativeHostWork::check(&original)?;
     let ownership = crate::demand::SourcePayloadOwnership::new(work)?;
     #[cfg(unix)]
     require_leaf(name)?;

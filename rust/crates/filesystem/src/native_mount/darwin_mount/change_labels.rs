@@ -29,38 +29,18 @@ impl ChangeLabels {
 
     pub(super) fn issued(
         &self,
-        work: &crate::NativeMaterializationWork,
+        work: &Work,
     ) -> Result<Option<DarwinOwned<Vec<(DarwinOwned<MountPath>, MountLookup)>>>, NativeMountError>
     {
         let labels = self.labels.lock().unwrap_or_else(PoisonError::into_inner);
-        work.charge(scan_work(labels.capacity() as u64))?;
+
         if labels.len() > MAXIMUM_VERIFIED_LABELS {
             return Ok(None);
         }
-        let bytes = labels
-            .len()
-            .checked_mul(std::mem::size_of::<(DarwinOwned<MountPath>, MountLookup)>())
-            .ok_or(crate::WorkError::Overflow)? as u64;
-        let mut rows = owned(work, bytes, || {
-            let mut rows = Vec::new();
-            rows.try_reserve_exact(labels.len())?;
-            Ok(rows)
-        })?;
-        if let Some(allocation) = &mut rows.allocation {
-            allocation.reconcile_capacity(
-                rows.value
-                    .capacity()
-                    .checked_mul(std::mem::size_of::<(DarwinOwned<MountPath>, MountLookup)>())
-                    .ok_or(crate::WorkError::Overflow)? as u64,
-            )?;
-        }
+        let mut rows = vector(work, labels.len())?;
         for issued in labels.values() {
             let path = clone_path(&issued.path, work)?;
-            copying(
-                work,
-                copy_work(std::mem::size_of::<(DarwinOwned<MountPath>, MountLookup)>() as u64),
-                || rows.push((path, issued.lookup)),
-            )?;
+            rows.push((path, issued.lookup));
         }
         Ok(Some(rows))
     }
@@ -79,7 +59,7 @@ impl DarwinMountContext {
         path: &MountPath,
         lookup: MountLookup,
         stamp: Option<CacheStamp>,
-        work: &crate::NativeMaterializationWork,
+        work: &Work,
     ) -> Result<u64, NativeMountError> {
         let Some(stamp) = stamp else {
             return Ok(self.changes.fresh());
@@ -90,7 +70,7 @@ impl DarwinMountContext {
             .labels
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        work.charge(scan_work(labels.capacity() as u64))?;
+
         if let Some(issued) = labels.get_mut(&lookup.node.file_id)
             && issued.binding == binding
         {
@@ -114,22 +94,16 @@ impl DarwinMountContext {
         }
         let path = clone_path(path, work)?;
         let label = self.changes.fresh();
-        copying(
-            work,
-            copy_work(std::mem::size_of::<IssuedLabel>() as u64),
-            || {
-                labels.insert(
-                    lookup.node.file_id,
-                    IssuedLabel {
-                        label,
-                        stamp,
-                        binding,
-                        path,
-                        lookup,
-                    },
-                )
+        labels.insert(
+            lookup.node.file_id,
+            IssuedLabel {
+                label,
+                stamp,
+                binding,
+                path,
+                lookup,
             },
-        )?;
+        );
         Ok(label)
     }
 }

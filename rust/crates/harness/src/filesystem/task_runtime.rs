@@ -13,7 +13,7 @@ use crate::{
     distributed::DistributedCoordinator,
     durable_host::CoordinatorTaskHost,
     durable_tool::ResumableToolRegistry,
-    executor::{ExecutionJournal, StockExecutor, StockTurnProgress, TurnInput, TurnOutput},
+    executor::{ExecutionJournal, StockExecutor, ExecutionProgress, TurnInput, TurnOutput},
     interaction::Interaction,
     model::{Model, ModelProvider},
     runtime::{
@@ -72,7 +72,7 @@ pub trait TaskCommandHost: acyclic_stream::ProviderPlatform {
     #[cfg(not(target_arch = "wasm32"))]
     fn execute_with_native_work<'a>(
         &'a self,
-        _context: Arc<crate::runtime::NativeTaskContext>,
+        _context: Arc<crate::runtime::TaskContext>,
         _fence: LeaseFence,
         _command: WorkflowCommand,
         _payload: Value,
@@ -88,7 +88,7 @@ pub trait TaskCommandHost: acyclic_stream::ProviderPlatform {
     #[cfg(not(target_arch = "wasm32"))]
     fn reconcile_with_native_work<'a>(
         &'a self,
-        _context: Arc<crate::runtime::NativeTaskContext>,
+        _context: Arc<crate::runtime::TaskContext>,
         _fence: LeaseFence,
         _command: WorkflowCommand,
         _payload: Value,
@@ -232,7 +232,7 @@ impl WorkerTurn {
 pub(super) enum WorkerContext {
     Ordinary(TaskContext),
     #[cfg(not(target_arch = "wasm32"))]
-    Native(Arc<crate::runtime::NativeTaskContext>),
+    Native(Arc<crate::runtime::TaskContext>),
 }
 
 impl WorkerContext {
@@ -240,7 +240,7 @@ impl WorkerContext {
         match self {
             Self::Ordinary(context) => context,
             #[cfg(not(target_arch = "wasm32"))]
-            Self::Native(context) => context.context(),
+            Self::Native(context) => context,
         }
     }
 }
@@ -420,7 +420,7 @@ where
                 .original_native_work()
                 .ok_or_else(|| io.invalid("native runtime configuration has no original work"))?;
             let io = super::PreparationIo::from_native_work(work)?;
-            volume.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
+            volume.validate(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?))?;
             if maximum_payload_bytes == 0 {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Invalid,
@@ -450,7 +450,7 @@ where
                 &stream,
                 reader.clone(),
                 Some(payloads.clone()),
-                &mut Some(&mut crate::store::history::native_work_io(work)?),
+                &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
             )
             .await?;
             let mut host = CoordinatorTaskHost::new_with_native_work(
@@ -473,22 +473,23 @@ where
                 host = host.with_policy(policy.clone(), Some(work))?;
             }
             let host = host.into_native_shared(work)?;
-            let harness = AgentHarness::with_policy_with_native_work(
-                tasks,
-                tools,
-                resumable_tools,
-                scope,
+            let copied_tools = tools.clone_with_native_work(work)?;
+            io.absorb_native_custody(copied_tools.1)?;
+            let copied_resumable = resumable_tools.clone_with_native_work(work)?;
+            io.absorb_native_custody(copied_resumable.1)?;
+            let copied_scope = scope.clone_with_native_work(work)?;
+            io.absorb_native_custody(copied_scope.1)?;
+            let harness = crate::runtime::Bindings {
+                tasks: tasks.clone_with_native_work(work)?,
+                tools: copied_tools.0,
+                resumable_tools: copied_resumable.0,
+                scope: copied_scope.0,
                 concurrency,
-                Some(host.clone()),
-                None,
-                Some(ContentBindings {
-                    reader,
-                    writer: None,
-                }),
-                None,
-                policy.clone(),
-                work,
-            )?;
+                durable_host: Some(host.clone()),
+                content: Some(ContentBindings { reader, writer: None }),
+                policy: policy.clone(),
+                ..crate::runtime::Bindings::local()
+            }.build(Some(&io))?;
             io.retain_owned(std::mem::size_of::<Self>() as u64)?;
             let volume = volume.copy(&mut Some(&mut io.history_io()))?;
             let verifier = verifier.copy(&mut Some(&mut io.history_io()))?;
@@ -582,7 +583,7 @@ where
             policy: policy.clone(),
             ..crate::runtime::Bindings::local()
         }
-        .build()?;
+        .build(None)?;
         Self::from_host(
             stream,
             harness,
@@ -651,7 +652,7 @@ where
                 code: crate::wire::ErrorCode::Invalid,
                 reason: "native runtime configuration has no original work",
             })?;
-            volume.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
+            volume.validate(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?))?;
         } else {
             volume.validate(&mut None)?;
         }
@@ -816,18 +817,18 @@ where
         }
         #[cfg(not(target_arch = "wasm32"))]
         let (operation, digest) = match io {
-            Some(io) => crate::runtime::tool_approval_binding_with_native_work(
+            Some(io) => crate::runtime::tool_approval_binding(
                 task,
                 &identity,
                 definition,
                 invocation,
-                io.original_native_work().expect("native approval IO"),
+                Some(io.original_native_work().expect("native approval IO")),
             )?,
-            None => crate::runtime::tool_approval_binding(task, &identity, definition, invocation)?,
+            None => crate::runtime::tool_approval_binding(task, &identity, definition, invocation, None)?,
         };
         #[cfg(target_arch = "wasm32")]
         let (operation, digest) =
-            crate::runtime::tool_approval_binding(task, &identity, definition, invocation)?;
+            crate::runtime::tool_approval_binding(task, &identity, definition, invocation, None)?;
         if let Some(io) = io {
             let hashed = acyclic_fs::WorkCounters {
                 bytes_hashed: b"harness/v2/task-interaction\0".len() as u64 + 32,
@@ -1197,7 +1198,7 @@ where
                         "approval tool differs from model request",
                     ));
                 }
-                let grant = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("tool:call:{}", pinned.name), work))?;
+                let grant = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("tool:call:{}", pinned.name), work))?;
                 let grant_hold = io
                     .map(|io| io.guard_owned(grant.capacity() as u64))
                     .transpose()?;
@@ -1291,7 +1292,7 @@ where
         io: Option<&super::PreparationIo>,
     ) -> Result<&ToolDefinition> {
         self.tools
-            .get_version(name, revision, io)?
+            .get(name, Some(revision), io)?
             .map(|tool| &tool.definition)
             .ok_or_else(|| {
                 super::interaction_host::interaction_boundary(
@@ -1344,7 +1345,7 @@ where
         task: TaskId,
         fence: &LeaseFence,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Arc<crate::runtime::NativeTaskContext>> {
+    ) -> Result<Arc<crate::runtime::TaskContext>> {
         self.task_context_for_original_owner_with_native_work(task, fence, false, work)
             .await
     }
@@ -1353,7 +1354,7 @@ where
     pub(super) async fn readonly_fork_preparation_with_native_work(
         &self,
         task: TaskId,
-        query: &Arc<crate::runtime::NativeTaskContext>,
+        query: &Arc<crate::runtime::TaskContext>,
         admitted: &crate::resource_preparation::ResourcePreparationRequest,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Option<Arc<crate::resource_preparation::TaskResourcePreparation>>> {
@@ -1421,7 +1422,7 @@ where
         fence: &LeaseFence,
         allow_settlement: bool,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Arc<crate::runtime::NativeTaskContext>> {
+    ) -> Result<Arc<crate::runtime::TaskContext>> {
         let owner = self
             .host
             .journal_owner_with_native_work(task, fence, work)
@@ -1429,7 +1430,7 @@ where
         owner
             .verify(
                 allow_settlement,
-                &mut Some(&mut crate::store::history::native_work_io(work)?),
+                &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
             )
             .await?;
         let owner = owner.into_native_shared(work)?;
@@ -1729,7 +1730,8 @@ where
     pub async fn open_task(&self, task: TaskId, fence: LeaseFence) -> Result<ResumableTaskSession> {
         let journal = self.workflow_journal(task, fence.clone()).await?;
         self.harness
-            .open_registered_task(task, fence, journal)
+            .open_registered_task(task, &fence, journal,
+                #[cfg(not(target_arch = "wasm32"))] None)
             .await
     }
 
@@ -1739,10 +1741,10 @@ where
         &self,
         task: TaskId,
         fence: &LeaseFence,
-        context: Arc<crate::runtime::NativeTaskContext>,
+        context: Arc<crate::runtime::TaskContext>,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<ResumableTaskSession> {
-        if !context.context().original_task_binding_matches(task, fence) {
+        if !context.original_task_binding_matches(task, fence) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native task context differs from original task lease",
@@ -1752,7 +1754,7 @@ where
             .workflow_journal_with_native_work(task, fence, work)
             .await?;
         self.harness
-            .open_registered_task_with_native_work(task, fence, journal, context, work)
+            .open_registered_task(task, fence, journal, Some(context))
             .await
     }
 
@@ -1847,7 +1849,7 @@ where
                         code: crate::wire::ErrorCode::Unsupported,
                         reason: "worker pull requires original native work",
                     })?;
-                    let mut operation_io = crate::store::native_work_io(work)?;
+                    let mut operation_io = crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?;
                     crate::store::HistoryIo::retain_owned(
                         &mut operation_io,
                         std::mem::size_of::<crate::distributed::WorkPull>()
@@ -1862,7 +1864,7 @@ where
                             &mut Some(&mut operation_io),
                         )
                         .await?;
-                    io.absorb_native_custody(operation_io.into_custody())?;
+                    io.absorb_native_custody(operation_io.into_custody()?)?;
                     return Ok(pull);
                 }
                 self.host
@@ -1982,7 +1984,7 @@ where
                     "native wake requires original observer",
                 )
             })?;
-            let mut operation_io = crate::store::native_work_io(work)?;
+            let mut operation_io = crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?;
             crate::store::HistoryIo::retain_owned(
                 &mut operation_io,
                 std::mem::size_of::<Option<crate::scheduler::WorkflowSuspension>>() as u64,
@@ -1991,7 +1993,7 @@ where
                 .host
                 .workflow_suspension(task, &mut Some(&mut operation_io))
                 .await?;
-            io.absorb_native_custody(operation_io.into_custody())?;
+            io.absorb_native_custody(operation_io.into_custody()?)?;
             slot
         } else {
             self.host.workflow_suspension(task, &mut None).await?
@@ -2066,7 +2068,7 @@ where
         if retained.operation_id != admission.operation_id
             || retained.request_digest
                 != crate::executor::with_history_io(io, |work|
-                    crate::contract::canonical_json_digest_with_work(&admission,
+                    crate::executor::json::canonical_json_digest(&admission,
                         if io.is_some() { acyclic_stream::MAX_RECORD_BYTES as u64 } else { u64::MAX }, work))?
             || retained.initial.machine != admission.machine
         {
@@ -2173,7 +2175,7 @@ where
                     task,
                     slot.revision,
                     waiting,
-                    &mut Some(&mut crate::store::history::native_work_io(work)?),
+                    &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
                 )
                 .await?;
         } else {
@@ -2221,7 +2223,7 @@ where
                         Some(command),
                         None,
                         None,
-                        &mut Some(&mut crate::store::history::native_work_io(work)?),
+                        &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
                     )
                     .await
             };
@@ -2624,14 +2626,13 @@ where
                         code: crate::wire::ErrorCode::Unsupported,
                         reason: "native dispatch requires original work",
                     })?;
-                    if !shared.context().original_task_binding_matches(task, fence) {
+                    if !shared.original_task_binding_matches(task, fence) {
                         return Err(Error::NativeBoundary {
                             code: crate::wire::ErrorCode::Unauthorized,
                             reason: "native command context differs from original task lease",
                         });
                     }
                     let body = shared
-                        .context()
                         .read_file_with_native_work(&command.payload, work)
                         .await?;
                     let payload = crate::filesystem::retain_decoded(io.decode(
@@ -2729,46 +2730,27 @@ where
         task: TaskId,
         fence: &LeaseFence,
         operation: OperationId,
-        context: &Arc<crate::runtime::NativeTaskContext>,
+        context: &Arc<crate::runtime::TaskContext>,
         model: &Model,
         provider: Arc<dyn ModelProvider>,
         pipeline: &ContextPipeline,
         journal: &Arc<FilesystemExecutionJournal<P, A, O>>,
         work: &acyclic_fs::NativeMaterializationWork,
+        compaction: &crate::context::CompactionPolicy,
+        max_output_tokens: Option<u32>,
     ) -> Result<crate::executor::NativeStockExecutor> {
-        if !context.context().original_task_binding_matches(task, fence) {
+        if !context.original_task_binding_matches(task, fence) || !context.native_metadata_matches(work) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "stock model differs from original task binding",
             });
         }
-        let executor = crate::executor::StockExecutor::new_with_native_work(
-            model,
-            provider,
-            pipeline,
-            &self.tools,
-            work,
-        )?
-        .with_limits(context.context().scope().limits())
-        .with_task_context_with_native_work(
-            Arc::clone(context),
-            operation,
-            self.host.clone(),
-            task,
-            fence,
-            work,
-        )?
-        .with_tool_authority_with_native_work(
-            context.context().scope(),
-            self.policy.clone(),
-            work,
-        )?;
-        if self.interaction_owner.is_some() {
-            journal.supports_native_interactions(work)?;
-            executor.with_native_interactions(journal.clone(), work)
-        } else {
-            Ok(executor)
-        }
+        crate::executor::NativeStockExecutor::new(
+            model, provider, pipeline, &self.tools, Arc::clone(context), operation,
+            self.host.clone(), task, fence, self.policy.clone(),
+            self.interaction_owner.as_ref().map(|_| journal.clone() as Arc<dyn crate::runtime::InteractionRouter>),
+            compaction, max_output_tokens,
+        )
     }
 
     /// Constructs stock execution with the task-owned journal and optional output volume.
@@ -2947,7 +2929,7 @@ where
         self.execute_progress(input).await?.into_output()
     }
 
-    pub(crate) async fn execute_progress(&self, input: TurnInput) -> Result<StockTurnProgress> {
+    pub(crate) async fn execute_progress(&self, input: TurnInput) -> Result<ExecutionProgress<TurnOutput>> {
         self.validate_input(&input)?;
         deadline::run(
             &self.host,
@@ -2980,7 +2962,7 @@ where
     pub(crate) async fn reconcile_progress(
         mut self,
         input: TurnInput,
-    ) -> Result<StockTurnProgress> {
+    ) -> Result<ExecutionProgress<TurnOutput>> {
         self.validate_input(&input)?;
         self.host
             .verify_execution_owner(self.task, self.fence.clone())

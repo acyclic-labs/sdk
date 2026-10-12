@@ -6,16 +6,15 @@ async fn missing_scalar_and_batch_reads_release_every_flight_for_retry()
     let inner = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
     let (present_id, present_bytes) = object(b"present");
-    (async {
-        let authority_input_1 = present_bytes.clone();
-
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = inner
-            .put(present_id, authority_input_1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
-    })
-    .await?;
+    ({
+        inner
+            .put(
+                present_id,
+                present_bytes.clone(),
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+            )
+            .await
+    })?;
     let (missing_id, _) = object(b"absent");
     let cached = CachedObjectStore::new(inner, options(4, 64))?;
 
@@ -55,13 +54,14 @@ async fn missing_scalar_and_batch_reads_release_every_flight_for_retry()
         .is_err()
     );
     assert_eq!(cached.stats()?.in_flight, 0);
-    let retry = (async {
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = cached.read(present_id, 7, &mut __object_work).await;
-        __object_work.receipt(__object_result)
-    })
-    .await?;
-    assert_eq!(retry.value.bytes, present_bytes);
+    let retry = (cached
+        .read(
+            present_id,
+            7,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await)?;
+    assert_eq!(retry.bytes, present_bytes);
 
     let empty = (async {
         let authority_input_0 = &[];
@@ -87,16 +87,15 @@ async fn concurrent_reads_share_one_backend_request_and_dropped_leaders_recover(
     let inner = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
     let (object_id, bytes) = object(b"single-flight");
-    (async {
-        let authority_input_1 = bytes.clone();
-
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = inner
-            .put(object_id, authority_input_1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
-    })
-    .await?;
+    ({
+        inner
+            .put(
+                object_id,
+                bytes.clone(),
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+            )
+            .await
+    })?;
     let gate = Arc::new(Gate::new());
     let reads = Arc::new(AtomicUsize::new(0));
     let cached = CachedObjectStore::new(
@@ -152,17 +151,15 @@ async fn concurrent_scalar_and_batch_reads_share_success_and_retry_lost_results(
         let cancellation = CancellationToken::new();
         let (identity, bytes) = body;
         if object_id == 0 {
-            (async {
-                let authority_input_1 = bytes.clone();
-
-                let mut __object_work =
-                    crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-                let __object_result = inner
-                    .put(identity, authority_input_1, &mut __object_work)
-                    .await;
-                __object_work.receipt(__object_result)
-            })
-            .await?;
+            ({
+                inner
+                    .put(
+                        identity,
+                        bytes.clone(),
+                        &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+                    )
+                    .await
+            })?;
         }
         let gate = Arc::new(Gate::new());
         let reads = Arc::new(AtomicUsize::new(0));
@@ -180,12 +177,14 @@ async fn concurrent_scalar_and_batch_reads_share_success_and_retry_lost_results(
         }];
         let (scalar, batch) = (async {
             let scalar = async {
-                let authority_input_1 = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
-
                 let mut __object_work =
                     crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
                 let __object_result = cached
-                    .read(identity, authority_input_1, &mut __object_work)
+                    .read(
+                        identity,
+                        u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+                        &mut __object_work,
+                    )
                     .await;
                 __object_work.receipt(__object_result)
             };
@@ -235,16 +234,15 @@ async fn abandoned_scalar_and_batch_followers_retry_through_one_fresh_leader()
         } else {
             b"scalar-retry"
         });
-        (async {
-            let authority_input_1 = bytes.clone();
-
-            let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let __object_result = inner
-                .put(object_id, authority_input_1, &mut __object_work)
-                .await;
-            __object_work.receipt(__object_result)
-        })
-        .await?;
+        ({
+            inner
+                .put(
+                    object_id,
+                    bytes.clone(),
+                    &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+                )
+                .await
+        })?;
         let cached = CachedObjectStore::new(inner, options(4, 64))?;
         let abandoned = Arc::new(Flight::new(1));
         abandoned.finish(None);
@@ -253,11 +251,12 @@ async fn abandoned_scalar_and_batch_followers_retry_through_one_fresh_leader()
             state.flights.insert(object_id, Arc::clone(&abandoned));
         }
 
+        let maximum_bytes = u64::try_from(bytes.len())?;
         if batch {
             let receipt = (async {
                 let authority_input_0 = &[ObjectReadRequest {
                     object_id,
-                    maximum_bytes: u64::try_from(bytes.len())?,
+                    maximum_bytes,
                 }];
 
                 let mut __object_work =
@@ -272,12 +271,10 @@ async fn abandoned_scalar_and_batch_followers_retry_through_one_fresh_leader()
             assert_eq!(receipt.value[0].bytes, bytes);
         } else {
             let receipt = (async {
-                let authority_input_1 = u64::try_from(bytes.len())?;
-
                 let mut __object_work =
                     crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
                 let __object_result = cached
-                    .read(object_id, authority_input_1, &mut __object_work)
+                    .read(object_id, maximum_bytes, &mut __object_work)
                     .await;
                 __object_work.receipt(__object_result)
             })

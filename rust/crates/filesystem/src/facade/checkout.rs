@@ -4,7 +4,6 @@ use super::*;
 pub struct Checkout<A, O> {
     pub(super) volume: Volume<A, O>,
     pub(super) generation_root: ObjectId,
-    pub(super) base_file_table: ObjectId,
     pub(super) base_root: GenerationRoot,
     /// The base generation and the working tree, which a running collection
     pub(super) root: crate::collection::CheckoutRoots,
@@ -29,63 +28,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         budget: W,
         cancellation: &CancellationToken,
     ) -> W::Output<Checkout<A, O>, FsError> {
-        let span = crate::obs::span!(
-            INFO,
-            "acyclic.fs.checkout",
-            outcome = crate::obs::Empty,
-            error.kind = crate::obs::Empty,
-            work.items = crate::obs::Empty,
-            work.bytes = crate::obs::Empty,
-            work.durability = crate::obs::Empty,
-            volume_id = crate::obs::hex(&self.id.into_bytes())
-        );
         let mut accounting = budget.accounting(cancellation);
-        let result = crate::obs::in_span(&span, async {
+        let result = async {
             accounting.check()?;
             validate_checkout(mode, self.config).map_err(|failure| failure.error)?;
-            let (generation_root, mut authority_head) = {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(original) = accounting.native_work() {
-                    let (root, head, _) = self
-                        .resolve_checkout_generation(selector, mode, original, cancellation)
-                        .await?;
-                    (root, head)
-                } else {
-                    let resolved = self
-                        .resolve_checkout_generation(
-                            selector,
-                            mode,
-                            accounting.remaining()?,
-                            cancellation,
-                        )
-                        .await;
-                    let work = match &resolved {
-                        Ok(receipt) => receipt.work,
-                        Err(failure) => *failure.work,
-                    };
-                    merge_creation_backend_work(&mut accounting, work)?;
-                    let (root, head, _) = resolved.map_err(|failure| failure.error)?.value;
-                    (root, head)
-                }
-                #[cfg(target_arch = "wasm32")]
-                {
-                    let resolved = self
-                        .resolve_checkout_generation(
-                            selector,
-                            mode,
-                            accounting.remaining()?,
-                            cancellation,
-                        )
-                        .await;
-                    let work = match &resolved {
-                        Ok(receipt) => receipt.work,
-                        Err(failure) => *failure.work,
-                    };
-                    merge_creation_backend_work(&mut accounting, work)?;
-                    let (root, head, _) = resolved.map_err(|failure| failure.error)?.value;
-                    (root, head)
-                }
-            };
+            let (generation_root, mut authority_head) = self
+                .resolve_checkout_generation(selector, mode, &mut accounting, cancellation)
+                .await?;
             let before = readonly_standalone_live(&accounting);
             let (root, allocation) = read_generation_root_with_accounting(
                 &self.fs.inner.objects,
@@ -228,7 +177,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
             Ok(Checkout {
                 volume: self.clone(),
                 generation_root,
-                base_file_table: root.file_table,
                 base_root,
                 root,
                 authority_head,
@@ -241,12 +189,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
                 proof_owned_bytes,
                 mode,
             })
-        })
+        }
         .await;
-        let result = measured(result, &accounting)
-            .observe_on(&span, "checkout")
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error);
         budget.finish(result, &accounting)
     }
 }
@@ -285,7 +229,7 @@ impl<A, O> Checkout<A, O> {
     /// Whether the private candidate differs from its immutable base.
     #[must_use]
     pub fn has_pending_mutations(&self) -> bool {
-        self.root.file_table != self.base_file_table || self.prepared_merge_parent.is_some()
+        self.root.file_table != self.base_root.file_table || self.prepared_merge_parent.is_some()
     }
 
     /// Whether reads retain exact observations for safe rebase and commit.
@@ -325,7 +269,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         .map_err(|failure| merge_simultaneous_failure(work, *failure.work, live, failure.error))?;
         work = merge_simultaneous_work(work, prepared.work, live, budget)?;
         self.install_root_replacement(self.root.base(), root, prepared.value);
-        self.base_file_table = self.root.file_table;
         self.generation_root = self.root.base();
         self.live_operation_id = None;
         self.prepared_merge_parent = None;
@@ -350,11 +293,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 FsError::PendingMutationsRequireRebase,
             ));
         }
-        let (generation_root, head, mut work) = self
+        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+        let result = self
             .volume
-            .resolve_head_generation(budget, cancellation)
-            .await
-            .map(|receipt| receipt.value)?;
+            .resolve_head_generation(&mut accounting, cancellation)
+            .await;
+        let (generation_root, head) =
+            result.map_err(|error| OperationFailure::new(error, accounting.spent()))?;
+        let mut work = accounting.spent();
         if generation_root == self.generation_root {
             self.authority_head = Some(head);
             return Ok(OperationReceipt {
@@ -386,7 +332,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         work = merge_simultaneous_work(work, prepared.work, live, budget)?;
         self.generation_root = generation_root;
         self.install_root_replacement(generation_root, root, prepared.value);
-        self.base_file_table = self.root.file_table;
         self.authority_head = Some(head);
         self.dependencies.proof().clear();
         Ok(OperationReceipt {

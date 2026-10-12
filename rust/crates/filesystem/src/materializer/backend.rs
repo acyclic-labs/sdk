@@ -72,43 +72,31 @@ impl NativeTreeMaterializationBackend {
     pub fn operation_directory_path(&self) -> &Path {
         &self.operation
     }
-    #[cfg(any(all(feature = "local", feature = "native-mount"), test))]
-    pub(super) fn plan_paths(
-        &self,
-        operation_id: OperationId,
-        from: GenerationId,
-        to: GenerationId,
-        paths: impl IntoIterator<Item = String>,
-    ) -> Result<MaterializationPlan, NativeTreeMaterializationError> {
-        let mut edits = Vec::new();
-        for path in paths {
-            validate_materialization_path(&path)
-                .map_err(|()| NativeTreeMaterializationError::InvalidLayout)?;
-            let edit = if native_entry_exists(&(&self.held_target, Path::new(&path)), &self.work)? {
-                MaterializationEdit::Install {
-                    path,
-                    image: vec![1],
-                }
-            } else {
-                MaterializationEdit::Remove { path }
-            };
-            edits.push(edit);
-        }
-        let plan = MaterializationPlan {
-            operation_id,
-            intent: MaterializationIntent::GenerationTransition { from, to },
-            edits,
-        };
-        if !validate_plan(
-            &plan,
-            Vec::with_capacity(plan.edits.len().saturating_mul(2)),
-            || Ok::<_, ()>(()),
+    async fn run<T: Send + 'static>(
+        self: &Arc<Self>,
+        edit: &MaterializationEdit,
+        image: &[u8],
+        action: impl FnOnce(
+            &Self,
+            &MaterializationEdit,
+            &[u8],
+        ) -> Result<T, NativeTreeMaterializationError>
+        + Send
+        + 'static,
+    ) -> Result<T, NativeTreeMaterializationError> {
+        let mut input = self.work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
+        let edit = duplicate_edit(edit, &mut input)?;
+        let image = copy_image(image, &mut input)?;
+        let backend = self.clone();
+        acyclic_native_runtime::run_blocking_io(
+            move || {
+                let _input = input;
+                action(&backend, &edit, &image)
+            },
+            Some((self.work.runtime_meter(), true)),
         )
-        .unwrap_or(false)
-        {
-            return Err(NativeTreeMaterializationError::InvalidLayout);
-        }
-        Ok(plan)
+        .map_err(|error| self.work.runtime_error(error))?
+        .await?
     }
     fn paths<'a>(
         &'a self,
@@ -164,45 +152,31 @@ impl MaterializationBackend for Arc<NativeTreeMaterializationBackend> {
         }))
     }
     async fn settle_observed(&self, edit: &MaterializationEdit) -> Result<(), Self::Error> {
-        let backend = self.clone();
-        let mut allocation = self.work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-        let edit = duplicate_edit(edit, &mut allocation)?;
-        acyclic_native_runtime::run_blocking_io(
-            move || {
-                let _allocation = allocation;
-                let path = Path::new(edit_path(&edit));
-                for root in [
-                    &backend.held_root,
-                    &backend.held_target,
-                    &backend.held_backup,
-                ] {
-                    let parent = { #[cfg(unix)] { root.open_dir_held(path.parent()
-                            .ok_or(NativeTreeMaterializationError::InvalidLayout)?, &mut &backend.work) } #[cfg(windows)] { crate::native_host::with_wide_path(path.parent()
-                            .ok_or(NativeTreeMaterializationError::InvalidLayout)?, &mut &backend.work, |path, work| root.open_dir_held(path, work)) } }?;
-                    crate::native_host::sync_directory_held(&parent, &mut &backend.work)?;
-                }
-                Ok::<_, NativeTreeMaterializationError>(())
-            },
-            Some((self.work.runtime_meter(), true)),
-        )
-        .map_err(|error| self.work.runtime_error(error))?
-        .await?
+        self.run(edit, &[], |backend, edit, _image| {
+            let path = Path::new(edit_path(&edit));
+            for root in [
+                &backend.held_root,
+                &backend.held_target,
+                &backend.held_backup,
+            ] {
+                let parent = { #[cfg(unix)] { root.open_dir_held(path.parent()
+                        .ok_or(NativeTreeMaterializationError::InvalidLayout)?, &mut &backend.work) } #[cfg(windows)] { crate::native_host::with_wide_path(path.parent()
+                        .ok_or(NativeTreeMaterializationError::InvalidLayout)?, &mut &backend.work, |path, work| root.open_dir_held(path, work)) } }?;
+                crate::native_host::sync_directory_held(&parent, &mut &backend.work)?;
+            }
+            Ok::<_, NativeTreeMaterializationError>(())
+        })
+        .await
     }
 
     async fn capture(
         &self,
         edit: &MaterializationEdit,
     ) -> Result<MaterializationPreimage, Self::Error> {
-        let backend = self.clone();
-        let mut input = self.work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-        let edit = duplicate_edit(edit, &mut input)?;
-        acyclic_native_runtime::run_blocking_io(
-            move || {
-                let _input = input;
-                let edit = &edit;
+        self.run(edit, &[], |backend, edit, _image| {
                 let path = edit_path(edit);
                 let (live, target, backup) = backend.paths(path);
-                if native_entry_exists(&backup, &backend.work)? {
+                if host_stat(backup.0, backup.1, &backend.work)?.is_some() {
                     return Err(NativeTreeMaterializationError::UnexpectedBackup);
                 }
                 let before = native_entry_fingerprint_for_edit(&live, edit, &backend.work)?;
@@ -234,11 +208,7 @@ impl MaterializationBackend for Arc<NativeTreeMaterializationBackend> {
                     image: image.0,
                     custody: Some(image.1),
                 })
-            },
-            Some((self.work.runtime_meter(), true)),
-        )
-        .map_err(|error| self.work.runtime_error(error))?
-        .await?
+        }).await
     }
 
     async fn observe(
@@ -246,70 +216,48 @@ impl MaterializationBackend for Arc<NativeTreeMaterializationBackend> {
         edit: &MaterializationEdit,
         preimage: &MaterializationPreimage,
     ) -> Result<MaterializationObservation, Self::Error> {
-        let backend = self.clone();
-        let mut input = self.work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-        let edit = duplicate_edit(edit, &mut input)?;
-        let preimage = MaterializationPreimage {
-            image: copy_image(&preimage.image, &mut input)?,
-            custody: None,
-        };
-        acyclic_native_runtime::run_blocking_io(
-            move || {
-                let _input = input;
-                let edit = &edit;
-                let preimage = &preimage;
-                let (before, after) = decode_native_witness(&preimage.image)?;
-                let path = edit_path(edit);
-                let (live, target, backup) = backend.paths(path);
-                let current = native_entry_fingerprint_for_edit(&live, edit, &backend.work)?;
-                let target_current = if matches!(edit, MaterializationEdit::Install { .. }) {
-                    native_entry_fingerprint(&target, &backend.work)?
-                } else {
-                    None
-                };
-                let backup_current = native_entry_fingerprint(&backup, &backend.work)?;
-                let backup_exists = backup_current.is_some();
-                if current == before
-                    && current == after
-                    && target_current.is_none()
-                    && backup_exists
-                {
-                    return Ok(MaterializationObservation::Postimage);
+        self.run(edit, &preimage.image, |backend, edit, image| {
+            let (before, after) = decode_native_witness(image)?;
+            let path = edit_path(edit);
+            let (live, target, backup) = backend.paths(path);
+            let current = native_entry_fingerprint_for_edit(&live, edit, &backend.work)?;
+            let target_current = if matches!(edit, MaterializationEdit::Install { .. }) {
+                native_entry_fingerprint(&target, &backend.work)?
+            } else {
+                None
+            };
+            let backup_current = native_entry_fingerprint(&backup, &backend.work)?;
+            let backup_exists = backup_current.is_some();
+            if current == before && current == after && target_current.is_none() && backup_exists {
+                return Ok(MaterializationObservation::Postimage);
+            }
+            if current == before {
+                if matches!(edit, MaterializationEdit::Install { .. }) && target_current != after {
+                    return Ok(MaterializationObservation::Diverged);
                 }
-                if current == before {
-                    if matches!(edit, MaterializationEdit::Install { .. })
-                        && target_current != after
-                    {
-                        return Ok(MaterializationObservation::Diverged);
-                    }
-                    return Ok(MaterializationObservation::Preimage);
+                return Ok(MaterializationObservation::Preimage);
+            }
+            if current == after {
+                if target_current.is_some() && target_current != after {
+                    return Ok(MaterializationObservation::Diverged);
                 }
-                if current == after {
-                    if target_current.is_some() && target_current != after {
-                        return Ok(MaterializationObservation::Diverged);
-                    }
-                    return Ok(MaterializationObservation::Postimage);
-                }
+                return Ok(MaterializationObservation::Postimage);
+            }
 
-                // A crash may land between the two renames used for an install. The
-                // durable backup proves the old binding was moved by this operation;
-                // the still-present staged target means forward application can resume.
-                if current.is_none()
-                    && backup_current == before
-                    && matches!(edit, MaterializationEdit::Install { .. })
-                {
-                    return if target_current.is_none() || target_current == after {
-                        Ok(MaterializationObservation::Interrupted)
-                    } else {
-                        Ok(MaterializationObservation::Diverged)
-                    };
-                }
-                Ok(MaterializationObservation::Diverged)
-            },
-            Some((self.work.runtime_meter(), true)),
-        )
-        .map_err(|error| self.work.runtime_error(error))?
-        .await?
+            // The backup witnesses an install interrupted between its renames.
+            if current.is_none()
+                && backup_current == before
+                && matches!(edit, MaterializationEdit::Install { .. })
+            {
+                return if target_current.is_none() || target_current == after {
+                    Ok(MaterializationObservation::Interrupted)
+                } else {
+                    Ok(MaterializationObservation::Diverged)
+                };
+            }
+            Ok(MaterializationObservation::Diverged)
+        })
+        .await
     }
 
     async fn apply(
@@ -317,108 +265,91 @@ impl MaterializationBackend for Arc<NativeTreeMaterializationBackend> {
         edit: &MaterializationEdit,
         preimage: &MaterializationPreimage,
     ) -> Result<(), Self::Error> {
-        let backend = self.clone();
-        let mut input = self.work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-        let edit = duplicate_edit(edit, &mut input)?;
-        let preimage = MaterializationPreimage {
-            image: copy_image(&preimage.image, &mut input)?,
-            custody: None,
-        };
-        acyclic_native_runtime::run_blocking_io(
-            move || {
-                let _input = input;
-                let edit = &edit;
-                let preimage = &preimage;
-                let path = edit_path(edit);
-                let (live, target, backup) = backend.paths(path);
-                let (before, after) = decode_native_witness(&preimage.image)?;
-                if let MaterializationEdit::SetMetadata { image, .. } = edit {
-                    let current = native_entry_fingerprint_for_edit(&live, edit, &backend.work)?;
-                    if current == after {
-                        return Ok(());
-                    }
-                    if current != before {
-                        return Err(NativeTreeMaterializationError::ExternalMutation);
-                    }
-                    return apply_native_metadata(
-                        &live,
-                        &decode_native_metadata(image)?,
-                        before,
-                        &backend.work,
-                    );
-                }
-                let target_expected = matches!(edit, MaterializationEdit::Install { .. });
-                let backup_exists = native_entry_exists(&backup, &backend.work)?;
-                let target_fingerprint = native_entry_fingerprint(&target, &backend.work)?;
-                let target_exists = target_fingerprint.is_some();
-                let live_fingerprint = native_entry_fingerprint(&live, &backend.work)?;
-                let live_exists = live_fingerprint.is_some();
-                if !backup_exists && !target_exists && live_fingerprint == after {
+        self.run(edit, &preimage.image, |backend, edit, image| {
+            let path = edit_path(edit);
+            let (live, target, backup) = backend.paths(path);
+            let (before, after) = decode_native_witness(image)?;
+            if let MaterializationEdit::SetMetadata { image, .. } = edit {
+                let current = native_entry_fingerprint_for_edit(&live, edit, &backend.work)?;
+                if current == after {
                     return Ok(());
                 }
-                if backup_exists && !target_exists && live_fingerprint == after {
-                    return Ok(());
-                }
-                if backup_exists && live_fingerprint.is_some() && live_fingerprint != after {
+                if current != before {
                     return Err(NativeTreeMaterializationError::ExternalMutation);
                 }
-                if !backup_exists && live_fingerprint != before {
-                    return Err(NativeTreeMaterializationError::ExternalMutation);
+                return apply_native_metadata(
+                    &live,
+                    &decode_native_metadata(image)?,
+                    before,
+                    &backend.work,
+                );
+            }
+            let target_expected = matches!(edit, MaterializationEdit::Install { .. });
+            let backup_exists = host_stat(backup.0, backup.1, &backend.work)?.is_some();
+            let target_fingerprint = native_entry_fingerprint(&target, &backend.work)?;
+            let target_exists = target_fingerprint.is_some();
+            let live_fingerprint = native_entry_fingerprint(&live, &backend.work)?;
+            let live_exists = live_fingerprint.is_some();
+            if !target_exists && live_fingerprint == after {
+                return Ok(());
+            }
+            if backup_exists && live_fingerprint.is_some() && live_fingerprint != after {
+                return Err(NativeTreeMaterializationError::ExternalMutation);
+            }
+            if !backup_exists && live_fingerprint != before {
+                return Err(NativeTreeMaterializationError::ExternalMutation);
+            }
+            if target_expected && target_fingerprint != after {
+                return Err(NativeTreeMaterializationError::ExternalMutation);
+            }
+            if backup_exists {
+                if target_expected && target_exists {
+                    remove_native_entry_durable(&live, &backend.work)?;
+                    durable_native_rename(&target, &live, &backend.work)?;
+                } else if target_expected && !live_exists {
+                    return Err(NativeTreeMaterializationError::MissingEntry);
+                } else if !target_expected {
+                    remove_native_entry_durable(&live, &backend.work)?;
                 }
-                if target_expected && target_fingerprint != after {
-                    return Err(NativeTreeMaterializationError::ExternalMutation);
+                return Ok(());
+            }
+            if live_exists {
+                let parent = backup
+                    .1
+                    .parent()
+                    .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+                crate::native_host::create_directories_held(
+                    &backup.0.directory,
+                    parent,
+                    &mut &backend.work,
+                )?;
+                durable_native_rename(&live, &backup, &backend.work)?;
+            }
+            if target_expected {
+                if !target_exists {
+                    return Err(NativeTreeMaterializationError::MissingEntry);
                 }
-                if backup_exists {
-                    if target_expected && target_exists {
-                        remove_native_entry_durable(&live, &backend.work)?;
-                        durable_native_rename(&target, &live, &backend.work)?;
-                    } else if target_expected && !live_exists {
-                        return Err(NativeTreeMaterializationError::MissingEntry);
-                    } else if !target_expected {
-                        remove_native_entry_durable(&live, &backend.work)?;
+                let parent = live
+                    .1
+                    .parent()
+                    .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
+                crate::native_host::create_directories_held(
+                    &live.0.directory,
+                    parent,
+                    &mut &backend.work,
+                )?;
+                if let Err(error) = durable_native_rename(&target, &live, &backend.work) {
+                    if host_stat(backup.0, backup.1, &backend.work)?.is_some()
+                        && !host_stat(live.0, live.1, &backend.work)?.is_some()
+                    {
+                        durable_native_rename(&backup, &live, &backend.work)?;
                     }
-                    return Ok(());
+                    return Err(error);
                 }
-                if live_exists {
-                    let parent = backup
-                        .1
-                        .parent()
-                        .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
-                    crate::native_host::create_directories_held(
-                        &backup.0.directory,
-                        parent,
-                        &mut &backend.work,
-                    )?;
-                    durable_native_rename(&live, &backup, &backend.work)?;
-                }
-                if target_expected {
-                    if !target_exists {
-                        return Err(NativeTreeMaterializationError::MissingEntry);
-                    }
-                    let parent = live
-                        .1
-                        .parent()
-                        .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
-                    crate::native_host::create_directories_held(
-                        &live.0.directory,
-                        parent,
-                        &mut &backend.work,
-                    )?;
-                    if let Err(error) = durable_native_rename(&target, &live, &backend.work) {
-                        if native_entry_exists(&backup, &backend.work)?
-                            && !native_entry_exists(&live, &backend.work)?
-                        {
-                            durable_native_rename(&backup, &live, &backend.work)?;
-                        }
-                        return Err(error);
-                    }
-                }
-                Ok(())
-            },
-            Some((self.work.runtime_meter(), true)),
-        )
-        .map_err(|error| self.work.runtime_error(error))?
-        .await?
+            }
+            Ok(())
+        })
+        .await
     }
 
     async fn restore(
@@ -426,58 +357,47 @@ impl MaterializationBackend for Arc<NativeTreeMaterializationBackend> {
         edit: &MaterializationEdit,
         preimage: &MaterializationPreimage,
     ) -> Result<(), Self::Error> {
-        let backend = self.clone();
-        let mut input = self.work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
-        let edit = duplicate_edit(edit, &mut input)?;
-        let preimage = MaterializationPreimage {
-            image: copy_image(&preimage.image, &mut input)?,
-            custody: None,
-        };
-        acyclic_native_runtime::run_blocking_io(
-            move || {
-                let _input = input;
-                let edit = &edit;
-                let preimage = &preimage;
-                let path = edit_path(edit);
-                let (live, _, backup) = backend.paths(path);
-                let (before, after) = decode_native_witness(&preimage.image)?;
-                let current = native_entry_fingerprint_for_edit(&live, edit, &backend.work)?;
-                if matches!(edit, MaterializationEdit::SetMetadata { .. }) {
-                    if current == before {
-                        return Ok(());
-                    }
-                    if current != after {
-                        return Err(NativeTreeMaterializationError::ExternalMutation);
-                    }
-                    let metadata = decode_native_preimage_metadata(&preimage.image)?
-                        .ok_or(NativeTreeMaterializationError::InvalidLayout)?;
-                    return apply_native_metadata(&live, &metadata, after, &backend.work);
-                }
-                let backup_current = native_entry_fingerprint(&backup, &backend.work)?;
-                let backup_exists = backup_current.is_some();
-                if backup_exists && backup_current != before {
-                    return Err(NativeTreeMaterializationError::ExternalMutation);
-                }
-                if current == before && !backup_exists {
+        self.run(edit, &preimage.image, |backend, edit, image| {
+            let path = edit_path(edit);
+            let (live, _, backup) = backend.paths(path);
+            let (before, after) = decode_native_witness(image)?;
+            let current = native_entry_fingerprint_for_edit(&live, edit, &backend.work)?;
+            if matches!(edit, MaterializationEdit::SetMetadata { .. }) {
+                if current == before {
                     return Ok(());
                 }
-                if current != after && !(current.is_none() && backup_exists) {
+                if current != after {
                     return Err(NativeTreeMaterializationError::ExternalMutation);
                 }
-                match before {
-                    None => remove_native_entry_durable(&live, &backend.work),
-                    Some(_) if backup_exists => {
-                        remove_native_entry_durable(&live, &backend.work)?;
-                        durable_native_rename(&backup, &live, &backend.work)
-                    }
-                    Some(expected) if current == Some(expected) => Ok(()),
-                    Some(_) => Err(NativeTreeMaterializationError::MissingEntry),
+                let metadata = decode_native_metadata(
+                    image
+                        .get(67..)
+                        .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
+                )?;
+                return apply_native_metadata(&live, &metadata, after, &backend.work);
+            }
+            let backup_current = native_entry_fingerprint(&backup, &backend.work)?;
+            let backup_exists = backup_current.is_some();
+            if backup_exists && backup_current != before {
+                return Err(NativeTreeMaterializationError::ExternalMutation);
+            }
+            if current == before && !backup_exists {
+                return Ok(());
+            }
+            if current != after && !(current.is_none() && backup_exists) {
+                return Err(NativeTreeMaterializationError::ExternalMutation);
+            }
+            match before {
+                None => remove_native_entry_durable(&live, &backend.work),
+                Some(_) if backup_exists => {
+                    remove_native_entry_durable(&live, &backend.work)?;
+                    durable_native_rename(&backup, &live, &backend.work)
                 }
-            },
-            Some((self.work.runtime_meter(), true)),
-        )
-        .map_err(|error| self.work.runtime_error(error))?
-        .await?
+                Some(expected) if current == Some(expected) => Ok(()),
+                Some(_) => Err(NativeTreeMaterializationError::MissingEntry),
+            }
+        })
+        .await
     }
 }
 
@@ -508,7 +428,7 @@ pub(super) fn durable_native_rename(
         ), &mut &*work, |name, work| crate::native_host::with_wide_path(Path::new(
             to.1.file_name()
                 .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
-        ), work, |target, work| crate::native_host::rename_held(&source, name, &target, target, acyclic_native_runtime::RenameMode::NoReplace, None, work))) } }?;
+        ), work, |target_name, work| crate::native_host::rename_held(&source, name, &target, target_name, acyclic_native_runtime::RenameMode::NoReplace, None, work))) } }?;
     crate::native_host::sync_directory_held(&source, &mut &*work)?;
     crate::native_host::sync_directory_held(&target, &mut &*work)
 }
@@ -546,16 +466,17 @@ pub(super) fn edit_path(edit: &MaterializationEdit) -> &str {
         MaterializationEdit::Rename { from, .. } => from,
     }
 }
-pub(super) fn native_entry_exists(
-    entry: &(&HostRoot, &Path),
+pub(super) fn host_stat(
+    root: &crate::native_host::HostRoot,
+    path: &Path,
     work: &NativeMaterializationWork,
-) -> Result<bool, NativeTreeMaterializationError> {
-    match { #[cfg(unix)] { entry.0.stat(entry.1, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(entry.1, &mut &*work, |path, work| entry.0.stat(path, work)) } } {
-        Ok(_) => Ok(true),
+) -> Result<Option<crate::native_host::HostStat>, NativeTreeMaterializationError> {
+    match { #[cfg(unix)] { root.stat(path, &mut &*work) } #[cfg(windows)] { crate::native_host::with_wide_path(path, &mut &*work, |path, work| root.stat(path, work)) } } {
+        Ok(stat) => Ok(Some(stat)),
         Err(NativeTreeMaterializationError::Io(error))
             if error.kind() == std::io::ErrorKind::NotFound =>
         {
-            Ok(false)
+            Ok(None)
         }
         Err(error) => Err(error),
     }

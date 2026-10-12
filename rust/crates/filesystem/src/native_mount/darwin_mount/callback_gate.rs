@@ -1,16 +1,12 @@
 use super::*;
 
-/// Native callbacks in flight, in two generations, so a barrier can wait for every callback that began before it without holding up later ones.
 pub(super) struct CallbackGate {
     pub(super) generation: AtomicU64,
-    /// Callbacks in flight that entered in an even or odd generation.
     pub(super) even: AtomicU64,
     pub(super) odd: AtomicU64,
-    /// Serializes barriers, so each drains a generation before the next one reuses its slot.
     pub(super) draining: Mutex<Option<u64>>,
 }
 
-/// One callback's place in its generation, left when dropped.
 pub(super) struct CallbackPass<'a>(&'a AtomicU64);
 
 impl CallbackGate {
@@ -43,12 +39,8 @@ impl CallbackGate {
         }
     }
 
-    /// Returns once every callback that entered before this call has left.
-    pub(super) fn drain(
-        &self,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeMountError> {
-        work.admit(crate::WorkCounters::UNCHARGED)?;
+    pub(super) fn drain(&self, work: &Work) -> Result<(), NativeMountError> {
+        work.admit(WorkCounters::UNCHARGED)?;
         let mut pending = self.draining.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(generation) = *pending {
             self.wait_generation(generation, work)?;
@@ -61,11 +53,7 @@ impl CallbackGate {
         Ok(())
     }
 
-    fn wait_generation(
-        &self,
-        generation: u64,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeMountError> {
+    fn wait_generation(&self, generation: u64, work: &Work) -> Result<(), NativeMountError> {
         let active = self.slot(generation);
         loop {
             work.charge(scan_work(1))?;

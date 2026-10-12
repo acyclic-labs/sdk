@@ -75,7 +75,7 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_listxattr(
         if !context.may_have_named_attributes(&path, work)? {
             return copy_variable_result(&[], list, length, work);
         }
-        let mut cursor: Option<(Vec<u8>, crate::NativeAllocation)> = None;
+        let mut cursor: Option<(Vec<u8>, NativeAllocation)> = None;
         let mut encoded = DarwinOwned::empty(Vec::new());
         loop {
             let mut page = context.source.list_attributes_with_meter(
@@ -93,12 +93,11 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_listxattr(
                     .len()
                     .checked_add(name.len())
                     .and_then(|n| n.checked_add(1))
-                    .ok_or(crate::WorkError::Overflow)?;
+                    .ok_or(WorkError::Overflow)?;
                 grow_bytes(&mut encoded, required, work)?;
-                copying(work, copy_work(name.len() as u64 + 1), || {
-                    encoded.extend_from_slice(name);
-                    encoded.push(0);
-                })?;
+                work.charge(copy_work(name.len() as u64 + 1))?;
+                encoded.extend_from_slice(name);
+                encoded.push(0);
             }
             let Some(next) = page.0.next_cursor.take() else {
                 break;
@@ -127,122 +126,5 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_removexattr(
         let (path, name) = (mount_path(path, work)?, c_bytes(name, work)?);
         context.mutate(|| context.source.remove_attribute(&path, name, work), work)?;
         Ok(0)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_lseek(
-    address: usize,
-    path: *const c_char,
-    handle: u64,
-    offset: i64,
-    whence: c_int,
-) -> i64 {
-    let span = callback_span!(TRACE, lseek, fh = handle, offset = offset);
-    ffi(address, &span, false, |context, work| {
-        let offset = u64::try_from(offset).map_err(|_| driver_errno(libc::EINVAL))?;
-        let target = match whence {
-            libc::SEEK_DATA => MountSeekTarget::Data,
-            libc::SEEK_HOLE => MountSeekTarget::Hole,
-            _ => return Err(driver_errno(libc::EINVAL)),
-        };
-        let file = context.file_target(&*mount_path(path, work)?, handle, work)?;
-        let offset = file
-            .file
-            .0
-            .seek_with_meter(offset, target, work)?
-            .ok_or_else(|| driver_errno(libc::ENXIO))?;
-        i64::try_from(offset).map_err(|_| driver_errno(libc::EOVERFLOW))
-    })
-}
-
-#[unsafe(no_mangle)]
-pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_fallocate(
-    address: usize,
-    path: *const c_char,
-    handle: u64,
-    mode: c_int,
-    offset: i64,
-    length: i64,
-) -> c_int {
-    let span = callback_span!(TRACE, fallocate, fh = handle, offset = offset, len = length);
-    ffi(address, &span, true, |context, work| {
-        let offset = u64::try_from(offset).map_err(|_| driver_errno(libc::EINVAL))?;
-        let length = u64::try_from(length).map_err(|_| driver_errno(libc::EINVAL))?;
-        let (operation, permitted) = if mode & FALLOC_FL_PUNCH_HOLE != 0 {
-            (
-                MountRangeAllocation::PunchHole,
-                FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
-            )
-        } else if mode & FALLOC_FL_ZERO_RANGE != 0 {
-            (
-                MountRangeAllocation::ZeroRange {
-                    extend: mode & FALLOC_FL_KEEP_SIZE == 0,
-                },
-                FALLOC_FL_ZERO_RANGE | FALLOC_FL_KEEP_SIZE,
-            )
-        } else {
-            (
-                MountRangeAllocation::Preallocate {
-                    keep_size: mode & FALLOC_FL_KEEP_SIZE != 0,
-                },
-                FALLOC_FL_KEEP_SIZE,
-            )
-        };
-        if mode & !permitted != 0 {
-            return Err(driver_errno(libc::EOPNOTSUPP));
-        }
-        context.mutate_file(
-            &*mount_path(path, work)?,
-            handle,
-            |file| file.allocate_range_with_meter(offset, length, operation, work),
-            work,
-        )?;
-        Ok(0)
-    })
-}
-
-#[unsafe(no_mangle)]
-pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_copy_file_range(
-    address: usize,
-    source_path: *const c_char,
-    source_handle: u64,
-    source_offset: i64,
-    destination_path: *const c_char,
-    destination_handle: u64,
-    destination_offset: i64,
-    length: usize,
-    flags: c_int,
-) -> i64 {
-    let span = callback_span!(TRACE, copy_file_range, fh = source_handle);
-    ffi(address, &span, true, |context, work| {
-        if flags != 0 {
-            return Err(driver_errno(libc::EINVAL));
-        }
-        let source_offset = u64::try_from(source_offset).map_err(|_| driver_errno(libc::EINVAL))?;
-        let destination_offset =
-            u64::try_from(destination_offset).map_err(|_| driver_errno(libc::EINVAL))?;
-        let length = u64::try_from(length).map_err(|_| driver_errno(libc::EOVERFLOW))?;
-        let source = context.file_target(&*mount_path(source_path, work)?, source_handle, work)?;
-        let length = context.mutate_file(
-            &*mount_path(destination_path, work)?,
-            destination_handle,
-            |destination| {
-                let source = source.file.0.lookup_with_meter(work)?;
-                let destination = destination.lookup_with_meter(work)?;
-                let length = length.min(source.node.logical_bytes.saturating_sub(source_offset));
-                context.source.clone_range_by_id(
-                    source.node.file_id,
-                    source_offset,
-                    destination.node.file_id,
-                    destination_offset,
-                    length,
-                    work,
-                )?;
-                Ok(length)
-            },
-            work,
-        )?;
-        i64::try_from(length).map_err(|_| driver_errno(libc::EOVERFLOW))
     })
 }

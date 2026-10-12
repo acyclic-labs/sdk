@@ -1,149 +1,7 @@
 use super::*;
 use crate::conversation::FileDescriptor;
+use crate::resources::ProviderRef;
 use serde_json::json;
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(in crate::core) fn original_proof_budget() -> acyclic_fs::WorkBudget {
-    acyclic_fs::WorkBudget {
-        allocation_operations: 4096,
-        peak_allocation_bytes: 16_777_216,
-        bytes_copied: 16_777_216,
-        bytes_encoded: 16_777_216,
-        bytes_hashed: 16_777_216,
-        source_bytes_read: 16_777_216,
-        items_examined: 16_777_216,
-        ..acyclic_fs::WorkBudget::default()
-    }
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(in crate::core) fn native_snapshot_round_trip(
-    reducer: &Reducer,
-    issuer: &AuthorityIssuer,
-    maximum_events: usize,
-) -> Result<()> {
-    use acyclic_fs::{CancellationToken, NativeMaterializationWork};
-    let source = NativeMaterializationWork::new(original_proof_budget(), &CancellationToken::new())
-        .map_err(Error::from)?;
-    let held = reducer
-        .snapshot(
-            maximum_events,
-            &mut Some(&mut crate::store::history::native_work_io(&source).map_err(Error::from)?),
-        )?
-        .0;
-    let copy = NativeMaterializationWork::new(original_proof_budget(), &CancellationToken::new())
-        .map_err(Error::from)?;
-    let mut io = crate::store::history::native_work_io(&copy).map_err(Error::from)?;
-    let input = held.copy(&mut Some(&mut io))?;
-    drop(io);
-    let copy_receipt = copy.receipt();
-    let metadata =
-        NativeMaterializationWork::new(original_proof_budget(), &CancellationToken::new())
-            .map_err(Error::from)?;
-    let mut io = crate::store::history::native_work_io(&metadata).map_err(Error::from)?;
-    let verifier = issuer.verifier(&mut Some(&mut io))?;
-    let mut restored =
-        Reducer::restore(input, verifier, reducer.schemas.clone(), &mut Some(&mut io))?;
-    drop(io);
-    restored.set_resident_event_limit(maximum_events)?;
-    assert_eq!(&restored, reducer);
-    assert_eq!(copy.receipt(), copy_receipt);
-    let available = original_proof_budget().peak_allocation_bytes
-        - NativeMaterializationWork::accounting_state_bytes();
-    assert!(copy.admit_retained(available).is_err());
-    assert!(metadata.admit_retained(available).is_err());
-    drop(restored);
-    copy.admit_retained(available).map_err(Error::from)?;
-    metadata.admit_retained(available).map_err(Error::from)?;
-    assert!(source.admit_retained(available).is_err());
-    drop(held);
-    source.admit_retained(available).map_err(Error::from)?;
-    Ok(())
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(in crate::core) fn native_component_event(
-    reference: &mut Reducer,
-    action: Action,
-) -> Result<Event> {
-    let mut id = [0_u8; 16];
-    id[..8].copy_from_slice(&(reference.revision() + 1).to_le_bytes());
-    let ApplyResult::Applied { event } = reference.apply(command(
-        OperationId::from_bytes(id),
-        reference.revision(),
-        action,
-    ))?
-    else {
-        panic!("fresh model event replayed")
-    };
-    reference.mark_indexed_terminal_effect_with_work(&event, &mut None)?;
-    Ok(event)
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(in crate::core) fn native_component_apply(
-    state: &mut Reducer,
-    event: Event,
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<()> {
-    let mut io = crate::store::history::native_work_io(work).map_err(Error::from)?;
-    let ApplyResult::Applied { event } = state.apply_committed(event, &mut Some(&mut io))? else {
-        panic!("fresh model application replayed")
-    };
-    state.mark_indexed_terminal_effect_with_work(&event, &mut Some(&mut io))?;
-    Ok(())
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(in crate::core) fn native_component_fixture(
-    work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<(Reducer, Reducer)> {
-    let owner = issuer();
-    let registry = schemas();
-    let mut reference = Reducer::new(
-        owner.audience.clone(),
-        owner.verifier(&mut None)?,
-        registry.clone(),
-    );
-    reference.set_resident_event_limit(1)?;
-    let mut io = crate::store::history::native_work_io(work).map_err(Error::from)?;
-    let mut state = reference.copy(&mut Some(&mut io))?;
-    drop(io);
-    state.set_resident_event_limit(1)?;
-    let event = native_component_event(
-        &mut reference,
-        Action::AppendCustom {
-            schema: "example.message".into(),
-            version: 1,
-            content: request_file(br#"{"text":"original primed entry"}"#)?,
-        },
-    )?;
-    native_component_apply(&mut state, event, work)?;
-    assert_eq!(state, reference);
-    Ok((state, reference))
-}
-
-#[derive(Clone, Debug)]
-pub(super) enum Step {
-    Lifecycle(usize),
-    Custom(u8),
-    Bind(u8),
-    Resubmit(usize),
-    ConflictingIntent(usize),
-    StaleRevision,
-}
-
-pub(in crate::core) fn step() -> impl proptest::strategy::Strategy<Value = Step> {
-    use proptest::prelude::*;
-    prop_oneof![
-        (0..6_usize).prop_map(Step::Lifecycle),
-        any::<u8>().prop_map(Step::Custom),
-        any::<u8>().prop_map(Step::Bind),
-        any::<usize>().prop_map(Step::Resubmit),
-        any::<usize>().prop_map(Step::ConflictingIntent),
-        Just(Step::StaleRevision)
-    ]
-}
 
 pub(in crate::core) fn operation(value: u8) -> OperationId {
     OperationId::from_bytes([value; 16])
@@ -151,13 +9,9 @@ pub(in crate::core) fn operation(value: u8) -> OperationId {
 
 pub(in crate::core) fn request_file(bytes: &[u8]) -> Result<FileRef> {
     use crate::conversation::VolumeClass;
+    let provider = ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?;
     let volume = VolumeRef::new(
-        crate::resources::ProviderRef::new(
-            "test".into(),
-            "filesystem".into(),
-            "2".into(),
-            &mut None,
-        )?,
+        provider,
         "effects".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(AgentId::from_bytes([8; 16])),
@@ -215,11 +69,8 @@ pub(in crate::core) fn schemas() -> SchemaRegistry {
 
 pub(in crate::core) fn reducer_fixture() -> Reducer {
     let owner = issuer();
-    Reducer::new(
-        owner.audience.clone(),
-        owner.verifier(&mut None).expect("fixture verifier"),
-        schemas(),
-    )
+    let verifier = owner.verifier(&mut None).expect("fixture verifier");
+    Reducer::new(owner.audience, verifier, schemas())
 }
 
 pub(in crate::core) fn command(
@@ -271,11 +122,24 @@ pub(in crate::core) fn command(
     }
 }
 
+fn apply(reducer: &mut Reducer, id: u8, action: Action) -> Result<ApplyResult> {
+    reducer.apply(command(operation(id), reducer.revision(), action))
+}
+
+pub(in crate::core) fn restore(reducer: &Reducer, owner: &AuthorityIssuer) -> Result<Reducer> {
+    let bytes = crate::contract::canonical_json_bytes(&reducer.snapshot(usize::MAX, &mut None)?.0)?;
+    Reducer::restore(
+        crate::contract::json_from_slice(&bytes)
+            .map_err(|error| Error::Invalid(error.to_string()))?,
+        owner.verifier(&mut None)?,
+        reducer.schemas.clone(),
+        &mut None,
+    )
+}
+
 mod authority;
 mod conversation;
 mod effects;
 mod extensions;
 mod fork;
 mod model;
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-mod native;

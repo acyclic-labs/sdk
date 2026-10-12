@@ -1,7 +1,7 @@
 //! Bounded in-memory content shared by native and WASM hosts.
 
 #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
-use crate::contract::canonical_json_digest;
+use crate::executor::json::canonical_json_digest;
 #[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
 use crate::conversation::FileDescriptor;
 use crate::conversation::{FileRef, VolumeRef, is_internal_path};
@@ -103,7 +103,7 @@ impl MemoryStore {
             descriptor.byte_length(),
             descriptor.media_type(),
             &display_name,
-        ))?;
+        ), u64::MAX, &mut None)?;
         let reference = FileRef::new(
             self.volume.clone(),
             path.to_owned(),

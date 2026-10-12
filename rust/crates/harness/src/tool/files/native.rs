@@ -59,7 +59,7 @@ pub(in crate::tool) fn bound<T: Serialize>(
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
     let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-    let diagnostic_bytes = crate::contract::sdk_json_diagnostic_bytes();
+    let diagnostic_bytes = crate::executor::json::sdk_json_diagnostic_bytes();
     io.retain_owned(diagnostic_bytes)?;
     let custody = io.into_native_custody(diagnostic_bytes)?;
     struct Counter<'a> {
@@ -97,7 +97,7 @@ pub(in crate::tool) fn bound<T: Serialize>(
         drop(encoded);
         return Err(error);
     }
-    encoded.map_err(|source| Error::NativeEncode {
+    encoded.map_err(|source| Error::NativeJson {
         code: crate::wire::ErrorCode::Invalid,
         source,
         custody: Some(custody),

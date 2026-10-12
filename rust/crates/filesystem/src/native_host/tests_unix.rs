@@ -167,7 +167,7 @@ fn held_linux_metadata_targets_inode_across_rename_and_replacement()
             },
             &mut work
         ),
-        Err(crate::DemandError::LinuxMetadata(NativeMetadataError(_)))
+        Err(crate::DemandError::NativeMetadata(NativeMetadataError(_)))
     ));
     assert_eq!(
         std::fs::metadata(&moved)?.permissions().mode() & 0o7777,

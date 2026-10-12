@@ -60,7 +60,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         cancellation: &CancellationToken,
     ) -> W::Output<bool, WorkspaceError> {
         let mut accounting = funding.accounting(cancellation);
-        let baseline = fork_selection_standalone_live(&mut accounting);
+        let baseline = readonly_standalone_live(&mut accounting);
         let result = async {
             let input_bytes = paths
                 .as_ref()
@@ -97,7 +97,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             Ok(expected.value.generation_root.digest == initial.id.digest())
         }
         .await;
-        let result = fork_selection_cleanup_standalone(&mut accounting, baseline).and(result);
+        let result = readonly_cleanup_standalone(&mut accounting, baseline, 0)
+            .map_err(WorkspaceError::from)
+            .and(result);
         funding.finish(result, &accounting)
     }
 }
@@ -112,7 +114,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         accounting: &mut KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<ObjectId, WorkspaceError> {
-        let baseline = fork_selection_standalone_live(accounting);
+        let baseline = readonly_standalone_live(accounting);
         let result = async {
             // The transferred input already exists, including spare capacities.
             // Its actual claim must survive a late budget/cancellation refusal.
@@ -478,7 +480,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .await
         }
         .await;
-        fork_selection_cleanup_standalone(accounting, baseline)?;
+        readonly_cleanup_standalone(accounting, baseline, 0)?;
         result
     }
 
@@ -505,12 +507,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         while !pending.value.is_empty() {
             fork_file_table_copy::<FileId>(1, accounting, cancellation)?;
             let id = pending.value.pop().ok_or(WorkspaceError::JoinLimit)?;
-            let position = match fork_file_table_search(
+            let position = match crate::kernel::binary_search_with_accounting(
                 &records.value,
-                id,
-                |record| record.file_id,
                 accounting,
-                cancellation,
+                |record| record.file_id.cmp(&id),
             )? {
                 Ok(_) => continue,
                 Err(position) => position,
@@ -579,12 +579,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                             return Err(WorkspaceError::JoinLimit);
                         }
                         let child = entry.file_id;
-                        match fork_file_table_search(
+                        match crate::kernel::binary_search_with_accounting(
                             &links.value,
-                            child,
-                            |binding| binding.0,
                             accounting,
-                            cancellation,
+                            |binding| binding.0.cmp(&child),
                         )? {
                             Ok(position) => {
                                 links.value[position].1 = links.value[position]
@@ -665,12 +663,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             Owned::<Vec<FileTableMutation>>::allocate(records.value.len(), accounting)?;
         for record in &records.value {
             fork_selection_items(accounting, cancellation)?;
-            let position = fork_file_table_search(
+            let position = crate::kernel::binary_search_with_accounting(
                 &links.value,
-                record.file_id,
-                |binding| binding.0,
                 accounting,
-                cancellation,
+                |binding| binding.0.cmp(&record.file_id),
             )?
             .map_err(|_| WorkspaceError::JoinLimit)?;
             fork_file_table_copy::<FileRecord>(1, accounting, cancellation)?;

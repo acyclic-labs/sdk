@@ -6,12 +6,8 @@ use super::{
 };
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork};
 use acyclic_harness::{
-    Error, OperationId, Result, TaskId,
-    conversation::FileRef,
-    core::EffectGuarantee,
-    effect_host::TaskEffectPlan,
-    filesystem::{EFFECT_TASK_COMMAND_KIND, FilesystemHost},
-    workflow::WorkflowCommand,
+    Error, OperationId, Result, TaskId, conversation::FileRef, core::EffectGuarantee,
+    effect_host::TaskEffectPlan, filesystem::EFFECT_TASK_COMMAND_KIND, workflow::WorkflowCommand,
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -33,7 +29,7 @@ pub(crate) struct PiRootPreparation {
     pub(crate) command: WorkflowCommand,
     pub(crate) plan: TaskEffectPlan,
     pub(crate) request: PiRootRequest,
-    pub(crate) context: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
+    pub(crate) context: std::sync::Arc<acyclic_harness::runtime::TaskContext>,
     pub(crate) custody: NativeAllocation,
 }
 
@@ -43,14 +39,13 @@ impl PiRootPreparation {
         private_root: &acyclic_fs::NativeHostPrivateStateRoot,
         session: &Path,
         runtime: &super::pi_native_host::PiNativeRuntime,
-        filesystem: &FilesystemHost<super::LocalAuthorityBackend, super::LocalObjectBackend>,
+        filesystem: &crate::pi_native_host::PiNativeFilesystem,
         binding: &PiTaskBinding,
         origin: super::pi_recovery::PiTaskOrigin<'_>,
-        context: Option<std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>>,
+        context: Option<std::sync::Arc<acyclic_harness::runtime::TaskContext>>,
         work: &NativeMaterializationWork,
     ) -> Result<Self> {
-        work.admit(acyclic_fs::WorkCounters::UNCHARGED)
-            .map_err(native_error)?;
+        work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
         let owner = PiOwnerConfig::load_readonly_with_native_work(private_root, session, work)?;
         runtime.verify_owner_with_native_work(&owner, work)?;
         owner.validate_root(binding, work)?;
@@ -72,7 +67,7 @@ impl PiRootPreparation {
                 original.0.into_native_shared(original.1, work)?
             }
         };
-        if context.context().durable_task_id() != Some(admitted.0.binding.task_id) {
+        if context.durable_task_id() != Some(admitted.0.binding.task_id) {
             return Err(Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "Pi root preparation context belongs to another original task",
@@ -84,9 +79,8 @@ impl PiRootPreparation {
                 "Pi root preparation requires its original host admission",
             ));
         };
-        preparation.validate(&mut Some(&mut acyclic_harness::store::native_work_io(
-            work,
-        )?))?;
+        preparation.validate(&mut Some(&mut acyclic_harness::store::HistoryWork::new(
+            acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)))?;
         if preparation.kind != EFFECT_TASK_COMMAND_KIND
             || preparation.operation_id != preparation_operation(owner.policy().root_task, work)?
         {
@@ -112,16 +106,12 @@ impl PiRootPreparation {
 }
 
 /// Protected bootstrap only: pins stock schemas and original operation keys.
-pub(crate) async fn stage_root_command<A, O>(
+pub(crate) async fn stage_root_command(
     owner: &PiOwnerConfig,
-    filesystem: &FilesystemHost<A, O>,
+    filesystem: &crate::pi_native_host::PiNativeFilesystem,
     request: &PiRootRequest,
     work: &NativeMaterializationWork,
-) -> Result<(WorkflowCommand, NativeAllocation)>
-where
-    A: acyclic_fs::AsyncAuthorityStore,
-    O: acyclic_fs::AsyncObjectStore,
-{
+) -> Result<(WorkflowCommand, NativeAllocation)> {
     let operation_id = preparation_operation(owner.policy().root_task, work)?;
     let request_reference = stage_root_request(owner, filesystem, request, work).await?;
     let schema = PiRootAllocation::schema(&request.binding, work)?;
@@ -135,13 +125,11 @@ where
     .await?;
     drop(schema.0);
     drop(schema.1);
-    let plan_custody = work
-        .claim(
-            (ROOT_ALLOCATION_PROVIDER.len() + ROOT_ALLOCATION_EFFECT.len()) as u64,
-            0,
-            acyclic_fs::WorkCounters::UNCHARGED,
-        )
-        .map_err(native_error)?;
+    let plan_custody = work.claim(
+        (ROOT_ALLOCATION_PROVIDER.len() + ROOT_ALLOCATION_EFFECT.len()) as u64,
+        0,
+        acyclic_fs::WorkCounters::UNCHARGED,
+    )?;
     let plan = TaskEffectPlan {
         provider: ROOT_ALLOCATION_PROVIDER.to_owned(),
         guarantee: EffectGuarantee::AtMostOnce,
@@ -166,11 +154,11 @@ where
         .bytes()
         .checked_add(EFFECT_TASK_COMMAND_KIND.len() as u64)
         .ok_or_else(|| {
-            native_error(acyclic_fs::NativeTreeMaterializationError::Work(
+            acyclic_harness::Error::from(acyclic_fs::NativeTreeMaterializationError::Work(
                 acyclic_fs::WorkError::Overflow,
             ))
         })?;
-    payload.1.resize_retained(retained).map_err(native_error)?;
+    payload.1.resize(retained)?;
     Ok((
         WorkflowCommand {
             operation_id,
@@ -191,8 +179,7 @@ pub(crate) fn preparation_operation(
     work.charge(acyclic_fs::WorkCounters {
         bytes_hashed: PREPARATION_OPERATION_DOMAIN.len() as u64 + 16,
         ..acyclic_fs::WorkCounters::UNCHARGED
-    })
-    .map_err(native_error)?;
+    })?;
     let mut digest = blake3::Hasher::new();
     digest.update(PREPARATION_OPERATION_DOMAIN);
     digest.update(&task.into_bytes());
@@ -219,23 +206,12 @@ fn validate_request(
     Ok(())
 }
 
-fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
-    Error::NativeWork {
-        cause,
-        custody: None,
-    }
-}
-
-pub(crate) async fn stage_root_request<A, O>(
+pub(crate) async fn stage_root_request(
     owner: &PiOwnerConfig,
-    filesystem: &FilesystemHost<A, O>,
+    filesystem: &crate::pi_native_host::PiNativeFilesystem,
     request: &PiRootRequest,
     work: &NativeMaterializationWork,
-) -> Result<(FileRef, NativeAllocation)>
-where
-    A: acyclic_fs::AsyncAuthorityStore,
-    O: acyclic_fs::AsyncObjectStore,
-{
+) -> Result<(FileRef, NativeAllocation)> {
     validate_request(owner, request, work)?;
     super::pi_root_provider::stage_pi_root_input_with_native_work(
         owner, filesystem, "root", request, work,

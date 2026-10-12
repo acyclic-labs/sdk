@@ -37,7 +37,7 @@ where
     ) -> Result<Vec<(ExecutionRecord, Option<ModelEvent>)>> {
         self.require_operation(operation_id, io)?;
         if maximum == 0 {
-            return Err(crate::filesystem::fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "execution replay page bound is invalid",
@@ -47,7 +47,7 @@ where
         let vector_bytes = capacity
             .checked_mul(std::mem::size_of::<(ExecutionRecord, Option<ModelEvent>)>())
             .ok_or_else(|| {
-                crate::filesystem::fork_preparer_io::failure(
+                stock_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,
                     "execution replay vector ownership overflow",
@@ -59,7 +59,7 @@ where
         }
         let mut result: Vec<(ExecutionRecord, Option<ModelEvent>)> = Vec::with_capacity(capacity);
         let _path_hold;
-        let path = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("harness/v2/execution/{operation_id}"), work))?;
+        let path = crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("harness/v2/execution/{operation_id}"), work))?;
         _path_hold = io
             .map(|io| io.guard_owned(path.capacity() as u64))
             .transpose()?;
@@ -149,7 +149,7 @@ where
                 ));
             }
             let sequence = after.checked_add(result.len() as u64).ok_or_else(|| {
-                crate::filesystem::fork_preparer_io::failure(
+                stock_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,
                     "execution replay sequence overflow",
@@ -194,7 +194,7 @@ where
                 ));
             }
             for (previous, _) in &result {
-                crate::filesystem::fork_preparer_io::item(io, 0)?;
+                crate::model::charge_items(io, 1)?;
                 if previous.idempotency_key == observation.retry_digest {
                     return Err(canonical_boundary(
                         io,
@@ -214,7 +214,7 @@ where
                 match (io, before_model) {
                     (Some(io), Some(before)) => Some(io.guard_owned(
                         io.owned_bytes()?.checked_sub(before).ok_or_else(|| {
-                            crate::filesystem::fork_preparer_io::failure(
+                            stock_boundary(
                                 Some(io),
                                 crate::wire::ErrorCode::Invalid,
                                 "model observation custody underflow",
@@ -234,7 +234,7 @@ where
                 ExecutionRecord {
                     operation_id,
                     sequence: record.sequence.checked_add(1).ok_or_else(|| {
-                        crate::filesystem::fork_preparer_io::failure(
+                        stock_boundary(
                             io,
                             crate::wire::ErrorCode::Invalid,
                             "execution replay sequence overflow",
@@ -284,7 +284,7 @@ where
             .capacity()
             .checked_mul(std::mem::size_of::<(ExecutionRecord, Option<ModelEvent>)>())
             .ok_or_else(|| {
-                crate::filesystem::fork_preparer_io::failure(
+                stock_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,
                     "execution replay vector ownership overflow",
@@ -295,7 +295,7 @@ where
             .len()
             .checked_mul(std::mem::size_of::<ExecutionRecord>())
             .ok_or_else(|| {
-                crate::filesystem::fork_preparer_io::failure(
+                stock_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,
                     "execution replay vector ownership overflow",
@@ -313,3 +313,5 @@ where
         Ok(records)
     }
 }
+
+use crate::executor::{stock_boundary};

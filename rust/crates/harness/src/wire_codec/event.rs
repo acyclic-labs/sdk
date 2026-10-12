@@ -16,7 +16,7 @@ pub(crate) fn encode_event(
     );
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let encoded = encoded.map_err(|mut error| {
-        if let Error::NativeEncode { custody, .. } = &mut error
+        if let Error::NativeJson { custody, .. } = &mut error
             && custody.is_none()
             && native
         {
@@ -164,23 +164,23 @@ pub(crate) fn decode_event(
     let scope = envelope.scope.take().ok_or_else(|| {
         event_boundary(native, wire::ErrorCode::Storage, "event scope is missing")
     })?;
-    let bounds = crate::contract::JsonBounds {
+    let bounds = crate::executor::json::JsonBounds {
         maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
         maximum_items: acyclic_stream::MAX_RECORD_BYTES as u64 + 1,
         maximum_depth: 256,
     };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let payload: EventPayload = if native {
-        let decoded = crate::contract::json_from_slice_bounded(
+        let decoded = crate::executor::json::json_from_slice_bounded(
             std::marker::PhantomData,
             &envelope.canonical_payload_json,
             bounds,
             0,
             Some(wire::ErrorCode::Storage),
-            Some(crate::contract::JsonValueSchema::EventPayload),
+            Some(crate::executor::json::JsonValueSchema::EventPayload),
             &mut |charge| match charge {
-                crate::contract::JsonCodecCharge::Admission { value_shape, .. } => {
-                    let witness = crate::contract::json_decode_owned_bytes(
+                crate::executor::json::JsonCodecCharge::Admission { value_shape, .. } => {
+                    let witness = crate::executor::json::json_decode_owned_bytes(
                         value_shape,
                         false,
                         Some(wire::ErrorCode::Storage),
@@ -202,7 +202,7 @@ pub(crate) fn decode_event(
             },
         );
         decoded.map_err(|mut error| {
-            if let Error::NativeDecode { custody, .. } = &mut error
+            if let Error::NativeJson { custody, .. } = &mut error
                 && custody.is_none()
             {
                 // Only split the already admitted original claim: a new quota check must never replace the actual foreign Serde cause.
@@ -326,12 +326,12 @@ pub(crate) fn decode_event(
 
 fn decode_portable_event_payload(
     bytes: &[u8],
-    bounds: crate::contract::JsonBounds,
+    bounds: crate::executor::json::JsonBounds,
     carrier: u64,
     quota: &mut admission::Quota<'_, '_>,
 ) -> Result<EventPayload> {
-    crate::contract::event_payload_json_admission(bytes, bounds, &mut |charge| match charge {
-        crate::contract::JsonCodecCharge::Admission {
+    crate::executor::json::event_payload_json_admission(bytes, bounds, &mut |charge| match charge {
+        crate::executor::json::JsonCodecCharge::Admission {
             maximum_owned_bytes,
             ..
         } => {

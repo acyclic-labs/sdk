@@ -15,7 +15,7 @@ async fn conversation_head_pins_racing_append_and_rejects_corrupt_atomic_proof()
             &Capabilities::new([
                 "conversation:bind".to_owned(),
                 "conversation:append".to_owned(),
-                file.read_capability()?,
+                file.read_capability( &mut None)?,
             ]),
             Some(agent),
             None,
@@ -171,7 +171,7 @@ async fn indexed_conversation_lookup_is_atomic_bounded_and_pinned_after_eviction
                 "conversation:bind".to_owned(),
                 "conversation:append".to_owned(),
                 "conversation:select_context".to_owned(),
-                file.read_capability()?,
+                file.read_capability( &mut None)?,
             ]),
             Some(agent),
             None,
@@ -684,13 +684,13 @@ async fn indexed_conversation_lookup_is_atomic_bounded_and_pinned_after_eviction
         .await?;
         provider.observation_reads.store(0, Ordering::SeqCst);
         journal
-            .verify_selected_context(selection_operation, &selected)
+            .verify_selected_context(selection_operation, &selected, None)?
             .await?;
         let mut altered = selected.clone();
         altered.messages.pop();
         assert!(matches!(
             journal
-                .verify_selected_context(selection_operation, &altered)
+                .verify_selected_context(selection_operation, &altered, None)?
                 .await,
             Err(Error::Conflict(_))
         ));
@@ -699,7 +699,7 @@ async fn indexed_conversation_lookup_is_atomic_bounded_and_pinned_after_eviction
         provider.observation_reads.store(0, Ordering::SeqCst);
         assert!(matches!(
             journal
-                .verify_selected_context(selection_operation, &wrong_selection)
+                .verify_selected_context(selection_operation, &wrong_selection, None)?
                 .await,
             Err(Error::Conflict(_))
         ));

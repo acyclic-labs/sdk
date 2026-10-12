@@ -354,7 +354,14 @@ pub(super) fn write_ordinary(
                     std::path::Path::new(name),
                     work,
                     |to_name, _| {
-                        crate::native_host::rename_held(from, from_name, &directory, to_name, acyclic_native_runtime::RenameMode::Replace, None, &mut crate::demand::NativeSourceWork::from_native_materialization_work(
+                        crate::native_host::rename_held(
+                            from,
+                            from_name,
+                            &directory,
+                            to_name,
+                            acyclic_native_runtime::RenameMode::Replace,
+                            None,
+                            &mut crate::NativeMaterializationWork::clone(
                                 projection.work,
                             ))
                         .map_err(crate::materializer::native_materialization_work_error)

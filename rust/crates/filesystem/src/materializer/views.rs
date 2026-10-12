@@ -6,12 +6,6 @@ pub(crate) struct NativeInvocationView {
     pub(super) self_ref: Weak<Self>,
     pub(super) metadata: NativeAllocation,
 }
-impl std::fmt::Debug for NativeInvocationView {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NativeInvocationView")
-            .finish_non_exhaustive()
-    }
-}
 impl NativeInvocationView {
     pub(crate) fn check(&self) -> Result<(), crate::DemandError> {
         self.cancellation
@@ -34,20 +28,13 @@ impl NativeInvocationView {
     ) -> T {
         self.metadata
             .work()
-            .state(|state| state.with_invocation_scope(Some(self.self_ref.clone()), operation))
+            .state(|state| state.scope(|work| &mut work.native_invocation, Some(self.self_ref.clone()), operation))
     }
 }
 #[cfg(feature = "native-mount")]
 pub(crate) struct NativeSourceExecutionView {
     pub(super) lease: crate::native_mount::NativeSourceIoLease,
     pub(super) metadata: NativeAllocation,
-}
-#[cfg(feature = "native-mount")]
-impl std::fmt::Debug for NativeSourceExecutionView {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NativeSourceExecutionView")
-            .finish_non_exhaustive()
-    }
 }
 #[cfg(feature = "native-mount")]
 impl NativeSourceExecutionView {

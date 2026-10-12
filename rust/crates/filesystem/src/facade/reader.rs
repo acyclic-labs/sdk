@@ -87,51 +87,6 @@ impl<A, O> Checkout<A, O> {
         })
     }
 
-    /// Clones only the registered original readonly roots and their exact hold.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn pinned_reader_with_native_work(
-        &self,
-        work: &NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<PinnedReader<A, O>, FsError> {
-        if self.tracks_observations() {
-            return Err(FsError::MutationNotAllowed);
-        }
-        cancellation.check()?;
-        work.admit(WorkCounters::UNCHARGED)?;
-        if !self
-            .dependencies
-            .data_custody
-            .is_native_original(&work.state)
-            || !work.owns_native_checkout_token(&self.dependencies.data_custody)
-            || !self.root.same_original_scope(&work.state)
-        {
-            return Err(FsError::NativeKernel(
-                NativeTreeMaterializationError::InvalidLayout,
-            ));
-        }
-        let mut accounting = KernelAccounting::native(work, cancellation);
-        let roots = self
-            .root
-            .replicate_with_accounting(&mut accounting, Some(&self.dependencies.data_custody))?;
-        cancellation.check()?;
-        let allocation = {
-            let claim_bytes =
-                size_of::<(crate::collection::CheckoutRoots, NativeAllocation)>() as u64;
-            work.claim(
-                claim_bytes,
-                u64::from(claim_bytes != 0),
-                crate::WorkCounters::UNCHARGED,
-            )
-        }?;
-        let root = PinnedReaderRoot::NativeCheckout(Arc::new((roots, allocation)));
-        Ok(PinnedReader {
-            volume: self.volume.clone(),
-            generation_root: self.generation_root,
-            root,
-        })
-    }
-
     /// Consumes an original-native checkout into a cheap cloneable readonly
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn into_pinned_reader_with_native_work(

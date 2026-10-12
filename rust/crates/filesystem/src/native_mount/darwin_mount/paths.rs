@@ -1,182 +1,107 @@
 use super::*;
 
+fn build_path<'a>(
+    parts: impl Iterator<Item = &'a [u8]> + Clone,
+    work: &Work,
+) -> Result<DarwinOwned<MountPath>, NativeMountError> {
+    let count = parts.clone().try_fold(0_usize, |count, _| {
+        work.charge(scan_work(1))?;
+        count
+            .checked_add(1)
+            .ok_or_else(|| NativeMountError::from(WorkError::Overflow))
+    })?;
+    let components = vector::<Vec<u8>>(work, count)?;
+    let mut path = DarwinOwned {
+        value: MountPath {
+            components: components.value,
+        },
+        allocation: components.allocation,
+    };
+    for part in parts {
+        let mut name = vector::<u8>(work, part.len())?;
+        work.charge(copy_work(part.len() as u64))?;
+        name.extend_from_slice(part);
+        path.allocation
+            .as_mut()
+            .expect("funded components")
+            .absorb(name.allocation.as_mut().expect("funded name"))?;
+        path.components.push(std::mem::take(&mut name.value));
+    }
+    Ok(path)
+}
+
 pub(super) fn clone_path(
     path: &MountPath,
-    work: &crate::NativeMaterializationWork,
+    work: &Work,
 ) -> Result<DarwinOwned<MountPath>, NativeMountError> {
-    let slots = path
-        .components()
-        .len()
-        .checked_mul(std::mem::size_of::<Vec<u8>>())
-        .ok_or(crate::WorkError::Overflow)? as u64;
-    let bytes = path
-        .components()
-        .iter()
-        .try_fold(slots, |bytes, component| {
-            work.charge(scan_work(1))?;
-            bytes
-                .checked_add(component.len() as u64)
-                .ok_or_else(|| NativeMountError::from(crate::WorkError::Overflow))
-        })?;
-    owned(work, bytes, || {
-        copying(work, copy_work(bytes), || path.clone())
-    })
+    build_path(path.components().iter().map(Vec::as_slice), work)
 }
 
 pub(super) fn child_path(
     path: &MountPath,
     name: &[u8],
-    work: &crate::NativeMaterializationWork,
+    work: &Work,
 ) -> Result<DarwinOwned<MountPath>, NativeMountError> {
-    let count = path.components().len();
-    let slots = count
-        .checked_add(
-            count
-                .checked_mul(2)
-                .ok_or(crate::WorkError::Overflow)?
-                .max(4),
-        )
-        .and_then(|n| n.checked_mul(std::mem::size_of::<Vec<u8>>()))
-        .ok_or(crate::WorkError::Overflow)? as u64;
-    let bytes = path
-        .components()
-        .iter()
-        .try_fold(slots, |bytes, component| {
-            bytes
-                .checked_add(component.len() as u64)
-                .ok_or(crate::WorkError::Overflow)
-        })?
-        .checked_add(name.len() as u64)
-        .ok_or(crate::WorkError::Overflow)?;
-    let copied = bytes
-        .checked_sub(slots)
-        .and_then(|names| {
-            count
-                .checked_mul(2)
-                .and_then(|n| n.checked_add(1))
-                .and_then(|n| n.checked_mul(std::mem::size_of::<Vec<u8>>()))
-                .and_then(|slots| names.checked_add(slots as u64))
-        })
-        .ok_or(crate::WorkError::Overflow)?;
-    let mut child = owned(work, bytes, || {
-        copying(
-            work,
-            crate::WorkCounters {
-                items_examined: count as u64,
-                bytes_copied: copied,
-                ..crate::WorkCounters::UNCHARGED
-            },
-            || path.child(name.to_vec()),
-        )
-    })?;
-    let retained = child
-        .components
-        .capacity()
-        .checked_mul(std::mem::size_of::<Vec<u8>>())
-        .ok_or(crate::WorkError::Overflow)? as u64;
-    let retained = child
-        .components
-        .iter()
-        .try_fold(retained, |bytes, component| {
-            bytes
-                .checked_add(component.capacity() as u64)
-                .ok_or(crate::WorkError::Overflow)
-        })?;
-    child
-        .allocation
-        .as_mut()
-        .expect("funded child")
-        .reconcile_capacity(retained)?;
-    Ok(child)
+    build_path(
+        path.components()
+            .iter()
+            .map(Vec::as_slice)
+            .chain(std::iter::once(name)),
+        work,
+    )
 }
 
 pub(super) fn native_name(
     name: &[u8],
-    work: &crate::NativeMaterializationWork,
+    work: &Work,
 ) -> Result<DarwinOwned<CString>, NativeMountError> {
     work.charge(scan_work(name.len() as u64))?;
     if name.contains(&0) {
         return Err(driver_errno(libc::EIO));
     }
-    let bytes = name
-        .len()
-        .checked_add(1)
-        .ok_or(crate::WorkError::Overflow)? as u64;
-    let mut value = owned(work, bytes, || {
-        let mut value = Vec::new();
-        value.try_reserve_exact(bytes as usize)?;
-        Ok(value)
-    })?;
-    let extra = (value.capacity() as u64)
-        .checked_sub(bytes)
-        .ok_or(crate::WorkError::Overflow)?;
-    value.claim_more(extra, work)?;
-    copying(work, copy_work(bytes), || {
-        value.extend_from_slice(name);
-        value.push(0);
-    })?;
-    Ok(value.map(|value| CString::from_vec_with_nul(value).expect("validated native name")))
+    let bytes = name.len().checked_add(1).ok_or(WorkError::Overflow)? as u64;
+    let mut value = vector(work, bytes as usize)?;
+    work.charge(copy_work(bytes))?;
+    value.extend_from_slice(name);
+    value.push(0);
+    let DarwinOwned { value, allocation } = value;
+    Ok(DarwinOwned {
+        value: CString::from_vec_with_nul(value).expect("validated native name"),
+        allocation,
+    })
 }
 
 pub(super) fn mount_path(
     path: *const c_char,
-    work: &crate::NativeMaterializationWork,
+    work: &Work,
 ) -> Result<DarwinOwned<MountPath>, NativeMountError> {
     let bytes = c_bytes(path, work)?;
     if bytes.first().copied() != Some(b'/') {
         return Err(driver_errno(libc::EINVAL));
     }
     work.charge(scan_work(bytes.len() as u64))?;
-    let count = bytes
+    let parts = bytes
         .split(|byte| *byte == b'/')
-        .filter(|part| !part.is_empty())
-        .count();
-    let slots = count
-        .checked_mul(std::mem::size_of::<Vec<u8>>())
-        .ok_or(crate::WorkError::Overflow)? as u64;
-    let mut path = owned(work, slots, || {
-        let mut components = Vec::new();
-        components.try_reserve_exact(count)?;
-        Ok(MountPath { components })
-    })?;
-    work.charge(scan_work(bytes.len() as u64))?;
-    for component in bytes
-        .split(|byte| *byte == b'/')
-        .filter(|part| !part.is_empty())
-    {
-        if component == b"." || component == b".." {
-            return Err(driver_errno(libc::EPERM));
-        }
-        path.claim_more(component.len() as u64, work)?;
-        let mut name = Vec::new();
-        name.try_reserve_exact(component.len())?;
-        path.claim_more((name.capacity() - component.len()) as u64, work)?;
-        copying(work, copy_work(component.len() as u64), || {
-            name.extend_from_slice(component);
-            path.components.push(name);
-        })?;
+        .filter(|part| !part.is_empty());
+    if parts.clone().any(|part| part == b"." || part == b"..") {
+        return Err(driver_errno(libc::EPERM));
     }
-    Ok(path)
+    work.charge(scan_work(bytes.len() as u64))?;
+    build_path(parts, work)
 }
 
-pub(super) fn c_bytes<'a>(
-    value: *const c_char,
-    work: &crate::NativeMaterializationWork,
-) -> Result<&'a [u8], NativeMountError> {
+pub(super) fn c_bytes<'a>(value: *const c_char, work: &Work) -> Result<&'a [u8], NativeMountError> {
     if value.is_null() {
         return Err(driver_errno(libc::EINVAL));
     }
-    let mut length = 0usize;
-    loop {
-        work.charge(scan_work(1))?;
-        // SAFETY: the bridge retains each terminated string through its callback.
-        if unsafe { value.add(length).read() } == 0 {
-            break;
-        }
-        length = length.checked_add(1).ok_or(crate::WorkError::Overflow)?;
-    }
-    // SAFETY: the bounded scan read this initialized prefix before its terminator.
-    Ok(unsafe { std::slice::from_raw_parts(value.cast(), length) })
+    // SAFETY: the bridge retains terminated strings through the callback.
+    let bytes = unsafe { CStr::from_ptr(value) }.to_bytes();
+    work.charge(scan_work(
+        (bytes.len() as u64)
+            .checked_add(1)
+            .ok_or(WorkError::Overflow)?,
+    ))?;
+    Ok(bytes)
 }
 
 pub(super) fn bounded_length(length: usize) -> Result<u32, i32> {
@@ -190,7 +115,7 @@ pub(super) fn copy_variable_result(
     bytes: &[u8],
     output: *mut c_char,
     length: usize,
-    work: &crate::NativeMaterializationWork,
+    work: &Work,
 ) -> Result<c_int, NativeMountError> {
     if length == 0 {
         return c_int::try_from(bytes.len()).map_err(|_| driver_errno(libc::EOVERFLOW));
@@ -199,9 +124,8 @@ pub(super) fn copy_variable_result(
         return Err(driver_errno(libc::ERANGE));
     }
     // SAFETY: `output` is a non-null bridge buffer of `length` bytes and `bytes` fits in it (checked above).
-    copying(work, copy_work(bytes.len() as u64), || unsafe {
-        ptr::copy_nonoverlapping(bytes.as_ptr(), output.cast(), bytes.len())
-    })?;
+    work.charge(copy_work(bytes.len() as u64))?;
+    unsafe { ptr::copy_nonoverlapping(bytes.as_ptr(), output.cast(), bytes.len()) };
     c_int::try_from(bytes.len()).map_err(|_| driver_errno(libc::EOVERFLOW))
 }
 

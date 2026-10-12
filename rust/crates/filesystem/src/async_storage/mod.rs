@@ -16,8 +16,9 @@ use std::future::Future;
 use std::mem::size_of;
 use std::sync::Arc;
 
+#[macro_use]
+mod contract;
 mod cache;
-pub(crate) use cache::observe_read;
 pub use cache::{DecodedCacheAdmission, DecodedCacheKey, DecodedCacheValue};
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use cache::{native_read_batch, owned_read};

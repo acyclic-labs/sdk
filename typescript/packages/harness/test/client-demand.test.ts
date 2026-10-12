@@ -116,7 +116,7 @@ test("shared selective hydration isolates caller abort, fences stale completion 
   transient.dispose();
   class CompletionScheduler extends RequestScheduler {
     after: (() => void) | undefined;
-    override schedule<Value>(bytes: number, work: (signal: AbortSignal, bytes: number) => Promise<Value>,
+    override schedule<Value>(bytes: number, work: (signal: AbortSignal) => Promise<Value>,
       signal?: AbortSignal, capture?: () => void): Promise<Value> {
       const promise = super.schedule(bytes, work, signal, capture);
       void promise.then(() => this.after?.(), () => {});

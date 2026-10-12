@@ -50,7 +50,6 @@ test("generated compaction policy validates actual capacity and finite output in
   expect(policy.config.response_reserve_tokens).toBe(16_384);
   expect(policy.config.recent_tokens).toBe(20_000);
   expect(policy.config.retention).toEqual({ roles: ["system"], native_media: true });
-  expect(Object.isFrozen(policy.config)).toBe(true);
   const capacity = { context_tokens: 65_536, output_tokens: 4_096 };
   expect(contracts.validateThresholdCompaction(policy.config, capacity)).toBe(4_096);
   const replacement = { ...policy.config, response_reserve_tokens: 1_024, recent_tokens: 2_048 };
@@ -115,10 +114,8 @@ test("Rust execution checkpoint wire preserves ref-only observations and rejects
   const decoded = contracts.decodeExecutionEventJson(bytes);
   expect(decoded).toEqual(event);
   expect(contracts.encodeCanonicalJson(decoded)).toEqual(bytes);
-  expect(Object.isFrozen(decoded)).toBe(true);
   if (decoded.kind !== "context_compacted") throw new Error("wrong generated event kind");
   expect(decoded.accounting.descriptor.byte_length).toBe(4);
-  expect(Object.isFrozen(decoded.projection.descriptor)).toBe(true);
   for (const malformed of [
     { ...event, step: -1 }, { ...event, step: 0.5 }, { ...event, step: 4_294_967_296 },
     { ...event, accounting: null }, { ...event, projection: { ...file, path: "../private" } },

@@ -32,7 +32,7 @@ impl<A, O> FilesystemContentPublisher<A, O> {
         io: Option<&PreparationIo>,
     ) -> Result<Arc<Self>> {
         if maximum_bytes == 0 || maximum_bytes == u64::MAX {
-            return Err(super::fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "content publication limit must be positive and finite",
@@ -87,7 +87,7 @@ where
     }
 
     fn supports_stage(&self, io: Option<&PreparationIo>) -> Result<()> {
-        super::fork_preparer_io::item(io, 0)?;
+        crate::model::charge_items(io, 1)?;
         let mut history = io.map(PreparationIo::history_io);
         self.volume.validate(
             &mut history
@@ -198,7 +198,7 @@ where
             if let Some(io) = io {
                 io.charge(hashing)?;
             }
-            let retry = IdempotencyKey::new(crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("filesystem-upload:{operation_id}:{}", digest.to_hex()), work))?)?;
+            let retry = IdempotencyKey::new(crate::executor::with_history_io(io, |work| crate::executor::preparation_format(format_args!("filesystem-upload:{operation_id}:{}", digest.to_hex()), work))?)?;
             let retry_hold = io
                 .map(|io| io.guard_owned(retry.as_str().len() as u64))
                 .transpose()?;
@@ -304,7 +304,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 crate::conversation::inspect_native_metadata(work, version.len())?;
             }
             if version.len() != 64 || !version.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                return Err(super::fork_preparer_io::failure(
+                return Err(stock_boundary(
                     io,
                     crate::wire::ErrorCode::Invalid,
                     "file version is not a Filesystem generation",
@@ -446,7 +446,7 @@ pub(super) fn once_key(
     use std::fmt::Write as _;
     let mut key = String::with_capacity(length);
     write!(&mut key, "filesystem-single-file:{operation}").map_err(|_| {
-        super::fork_preparer_io::failure(
+        stock_boundary(
             io,
             crate::wire::ErrorCode::Invalid,
             "original publication identity encoding failed",
@@ -488,7 +488,7 @@ fn replacement_key(
         blake3::hash(path.as_bytes()).to_hex()
     )
     .map_err(|_| {
-        super::fork_preparer_io::failure(
+        stock_boundary(
             io,
             crate::wire::ErrorCode::Invalid,
             "original replacement identity encoding failed",
@@ -518,7 +518,7 @@ fn validate_publication(
         crate::conversation::validate_content_path(path, work)
     })?;
     if bytes.len() as u64 > maximum_bytes || bytes.len() as u64 > 9_007_199_254_740_991 {
-        return Err(super::fork_preparer_io::failure(
+        return Err(stock_boundary(
             io,
             crate::wire::ErrorCode::Invalid,
             "content size limit mismatch",
@@ -529,7 +529,7 @@ fn validate_publication(
         || path == "turns/.canonical"
         || path.starts_with("turns/.canonical/")
     {
-        return Err(super::fork_preparer_io::failure(
+        return Err(stock_boundary(
             io,
             crate::wire::ErrorCode::Invalid,
             "internal storage paths are reserved",
@@ -539,7 +539,7 @@ fn validate_publication(
         || display_name.len() > crate::conversation::MAX_LABEL_BYTES
         || display_name.chars().any(char::is_control)
     {
-        return Err(super::fork_preparer_io::failure(
+        return Err(stock_boundary(
             io,
             crate::wire::ErrorCode::Invalid,
             "file display name is invalid",
@@ -552,7 +552,7 @@ fn validate_publication(
             !character.is_ascii_alphanumeric() && !matches!(character, '/' | '-' | '+' | '.' | '_')
         })
     {
-        return Err(super::fork_preparer_io::failure(
+        return Err(stock_boundary(
             io,
             crate::wire::ErrorCode::Invalid,
             "media type is invalid",
@@ -560,3 +560,5 @@ fn validate_publication(
     }
     Ok(())
 }
+
+use crate::executor::{stock_boundary};

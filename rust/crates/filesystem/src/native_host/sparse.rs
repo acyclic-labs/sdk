@@ -171,7 +171,7 @@ pub(super) fn clone_windows_file<W: SourceDemandReadWork>(
     };
     const CLONE_CHUNK: u64 = 1024 * 1024 * 1024;
     for alignment in [4 * 1024, 64 * 1024] {
-        work.charge(ITEM)?;
+        work.started_io(ITEM)?;
         let cloned: Result<(), DemandError> = (|| {
             let clone_length = length / alignment * alignment;
             if clone_length == 0 {
@@ -181,7 +181,7 @@ pub(super) fn clone_windows_file<W: SourceDemandReadWork>(
                 )
                 .into());
             }
-            work.charge(WRITE)?;
+            work.started_io(WRITE)?;
             // SAFETY: live synchronous target handle; this control has no buffers.
             unsafe {
                 DeviceIoControl(
@@ -199,7 +199,7 @@ pub(super) fn clone_windows_file<W: SourceDemandReadWork>(
             truncate_file(target, length, work)?;
             let mut offset = 0;
             while offset < clone_length {
-                work.charge(ITEM)?;
+                work.started_io(ITEM)?;
                 let count = (clone_length - offset).min(CLONE_CHUNK);
                 let duplicate = DUPLICATE_EXTENTS_DATA {
                     FileHandle: HANDLE(source.as_raw_handle()),
@@ -209,7 +209,7 @@ pub(super) fn clone_windows_file<W: SourceDemandReadWork>(
                         .map_err(|_| crate::WorkError::Overflow)?,
                     ByteCount: i64::try_from(count).map_err(|_| crate::WorkError::Overflow)?,
                 };
-                work.charge(WRITE)?;
+                work.started_io(WRITE)?;
                 // SAFETY: both held handles and complete fixed-size input remain live.
                 unsafe {
                     DeviceIoControl(
@@ -234,7 +234,7 @@ pub(super) fn clone_windows_file<W: SourceDemandReadWork>(
                 let result: Result<(), DemandError> = (|| {
                     let mut buffer = [0_u8; 64 * 1024];
                     for range in &ranges {
-                        work.charge(ITEM)?;
+                        work.started_io(ITEM)?;
                         let size = usize::try_from(range.length)
                             .map_err(|_| crate::WorkError::Overflow)?;
                         let buffer = buffer.get_mut(..size).ok_or(DemandError::InvalidRequest)?;
@@ -329,7 +329,7 @@ pub(super) fn windows_copy_tail<W: SourceDemandReadWork>(
     }
     let mut consumed = 0;
     while consumed < buffer.len() {
-        work.charge(WRITE)?;
+        work.started_io(WRITE)?;
         match target.seek_write(
             &buffer[consumed..],
             offset

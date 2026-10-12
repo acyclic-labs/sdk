@@ -57,18 +57,18 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             .root()
             .expect("lazy content belongs to an original Root");
         let source = root.native_source.as_ref().ok_or_else(|| {
-            bounded_io::failure(
+            stock_boundary(
                 Some(io),
                 crate::wire::ErrorCode::Unauthorized,
                 "Root source lacks its retained lazy backing",
             )
         })?;
         let hold;
-        let absolute = crate::executor::with_history_io(Some(io), |work| crate::contract::preparation_format(format_args!("/{path}"), work))?;
+        let absolute = crate::executor::with_history_io(Some(io), |work| {
+            crate::executor::preparation_format(format_args!("/{path}"), work)
+        })?;
         hold = io.guard_owned(absolute.capacity() as u64)?;
-        let bytes = io
-            .finish_future(source.backing.read(snapshot, &absolute, maximum, io)?)
-            .await;
+        let bytes = source.backing.read(snapshot, &absolute, maximum, io)?.await;
         drop(absolute);
         drop(hold);
         bytes
@@ -218,7 +218,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             .as_ref()
             .ok_or_else(|| io.invalid("Root directory lacks its retained lazy backing"))?;
         let absolute_hold;
-        let absolute = crate::executor::with_history_io(Some(io), |work| crate::contract::preparation_format(format_args!("/{path}"), work))?;
+        let absolute = crate::executor::with_history_io(Some(io), |work| {
+            crate::executor::preparation_format(format_args!("/{path}"), work)
+        })?;
         absolute_hold = io.guard_owned(absolute.capacity() as u64)?;
         let bound = (maximum as usize)
             .checked_add(1)
@@ -272,12 +274,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 }
                 if entries.len() == entries.capacity() {
                     let capacity = entries.capacity().saturating_mul(2).max(4).min(bound);
-                    bounded_io::reserve(&mut entries, capacity, Some(io))?;
+                    crate::filesystem::PreparationIo::reserve(&mut entries, capacity, Some(io))?;
                 }
                 entries.insert(
                     position,
                     crate::conversation::PrivateDirectoryEntry {
-                        name: bounded_io::clone_text(name.as_ref(), Some(io))?,
+                        name: stock_string_copy(name.as_ref(), Some(io))?,
                         kind,
                     },
                 );
@@ -305,3 +307,5 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         Ok(page)
     }
 }
+
+use crate::executor::{stock_boundary, stock_string_copy};

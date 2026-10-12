@@ -1,6 +1,13 @@
 use super::*;
 
-/// The object an [`object_key`] names.
+pub(crate) fn object_key(object_id: ObjectId) -> String {
+    format!(
+        "fs/v1/{}/{}",
+        object_id.kind.canonical_tag(),
+        hex::encode(object_id.digest.as_bytes())
+    )
+}
+
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 pub(crate) fn object_id_from_key(key: &str) -> Option<ObjectId> {
     let (tag, digest) = key.strip_prefix("fs/v1/")?.split_once('/')?;
@@ -13,15 +20,6 @@ pub(crate) fn object_id_from_key(key: &str) -> Option<ObjectId> {
     (object_key(object) == key).then_some(object)
 }
 
-pub(crate) fn object_key(object_id: ObjectId) -> String {
-    format!(
-        "fs/v1/{}/{}",
-        object_id.kind.canonical_tag(),
-        hex::encode(object_id.digest.as_bytes())
-    )
-}
-
-/// The authority a direct child of `fs/authorities` names.
 pub(super) fn authority_child(
     child: &acyclic_stream::StreamPath,
 ) -> Result<AuthorityId, AuthorityStoreError> {
@@ -43,17 +41,6 @@ pub(super) fn authority_child(
         )
     })?;
     Ok(AuthorityId::from_bytes(bytes))
-}
-
-pub(super) fn stream_path(
-    authority: AuthorityId,
-    suffix: &str,
-) -> Result<acyclic_stream::StreamPath, AuthorityStoreError> {
-    acyclic_stream::StreamPath::new(format!(
-        "fs/authorities/{}{suffix}",
-        hex::encode(authority.into_bytes())
-    ))
-    .map_err(map_stream_error)
 }
 
 pub(super) fn decode_publication_gate(
@@ -87,6 +74,54 @@ pub(super) fn stream_key(
     acyclic_stream::IdempotencyKey::new(Bytes::from(value)).map_err(map_stream_error)
 }
 
+pub(super) fn map_stream_error(error: acyclic_stream::StreamError) -> AuthorityStoreError {
+    match error {
+        acyclic_stream::StreamError::NotFound => AuthorityStoreError::Missing,
+        acyclic_stream::StreamError::Capacity => {
+            AuthorityStoreError::Rejected("Stream capacity exhausted".to_owned())
+        }
+        other => AuthorityStoreError::Rejected(other.to_string()),
+    }
+}
+
+pub(super) fn authority_read_work(records: u64) -> WorkCounters {
+    WorkCounters {
+        authority_records_read: records,
+        backend_read_operations: records,
+        ..WorkCounters::default()
+    }
+}
+
+pub(super) fn record_bytes<'a, const N: usize>(
+    bytes: &'a [u8],
+    domain: &[u8],
+) -> Option<&'a [u8; N]> {
+    bytes.strip_prefix(domain)?.try_into().ok()
+}
+pub(super) fn stream_path(
+    authority: AuthorityId,
+    suffix: &str,
+) -> Result<StreamPath, AuthorityStoreError> {
+    StreamPath::new(format!(
+        "fs/authorities/{}{suffix}",
+        hex::encode(authority.into_bytes())
+    ))
+    .map_err(map_stream_error)
+}
+pub(super) fn decode_lineage_generation(bytes: &[u8]) -> Result<GenerationId, AuthorityStoreError> {
+    record_bytes::<32>(bytes, LINEAGE_DOMAIN)
+        .map(|bytes| GenerationId::new(Digest::from_bytes(*bytes)))
+        .ok_or(AuthorityStoreError::CorruptStatic(
+            "invalid Stream generation-lineage record",
+        ))
+}
+pub(super) fn decode_lineage_tail(bytes: &[u8]) -> Result<u64, AuthorityStoreError> {
+    record_bytes::<8>(bytes, LINEAGE_TAIL_DOMAIN)
+        .map(|bytes| u64::from_le_bytes(*bytes))
+        .ok_or(AuthorityStoreError::CorruptStatic(
+            "invalid Stream generation locator",
+        ))
+}
 pub(super) fn generation_from_payload(
     authority_id: AuthorityId,
     sequence: Sequence,
@@ -144,51 +179,6 @@ pub(super) fn generation_from_payload(
     }
     Ok(Some(GenerationId::new(digest)))
 }
-
-pub(super) fn record_bytes<'a, const N: usize>(
-    encoded: &'a [u8],
-    domain: &[u8],
-) -> Option<&'a [u8; N]> {
-    encoded.strip_prefix(domain)?.try_into().ok()
-}
-
-pub(super) fn decode_lineage_generation(
-    encoded: &[u8],
-) -> Result<GenerationId, AuthorityStoreError> {
-    record_bytes::<32>(encoded, LINEAGE_DOMAIN)
-        .map(|digest| GenerationId::new(Digest::from_bytes(*digest)))
-        .ok_or_else(|| {
-            AuthorityStoreError::Corrupt("invalid Stream generation-lineage record".to_owned())
-        })
-}
-
-pub(super) fn decode_lineage_tail(encoded: &[u8]) -> Result<u64, AuthorityStoreError> {
-    record_bytes::<8>(encoded, LINEAGE_TAIL_DOMAIN)
-        .map(|bytes| u64::from_le_bytes(*bytes))
-        .ok_or_else(|| AuthorityStoreError::Corrupt("invalid Stream generation locator".to_owned()))
-}
-
-pub(super) fn decode_epoch(
-    encoded: &[u8],
-    domain: &[u8],
-    native: bool,
-) -> Result<Epoch, AuthorityStoreError> {
-    let bytes = record_bytes::<8>(encoded, domain).ok_or_else(|| {
-        if native {
-            AuthorityStoreError::CorruptStatic("invalid Stream epoch record")
-        } else {
-            AuthorityStoreError::Corrupt("invalid Stream epoch record".to_owned())
-        }
-    })?;
-    Epoch::new(u64::from_le_bytes(*bytes)).map_err(|error| {
-        if native {
-            AuthorityStoreError::CorruptStatic("zero Stream epoch")
-        } else {
-            AuthorityStoreError::Corrupt(error.to_string())
-        }
-    })
-}
-
 pub(super) async fn read_one<P: acyclic_stream::StreamProvider>(
     provider: &P,
     path: acyclic_stream::StreamPath,
@@ -216,14 +206,12 @@ pub(super) async fn read_one<P: acyclic_stream::StreamProvider>(
     }
     Ok(record)
 }
-
 pub(super) fn decode_record<'a>(
     record: &'a acyclic_stream::Record,
 ) -> Result<crate::streams_record::BorrowedStreamsDurableRecord<'a>, AuthorityStoreError> {
     StreamsDurableRecord::decode_borrowed(&record.value, STREAM_RECORD_LIMIT)
         .map_err(|error| AuthorityStoreError::Corrupt(error.to_string()))
 }
-
 pub(super) fn validate_record(
     authority: AuthorityId,
     record: &acyclic_stream::Record,
@@ -249,22 +237,4 @@ pub(super) fn validate_record(
         ));
     }
     Ok(())
-}
-
-pub(super) fn map_stream_error(error: acyclic_stream::StreamError) -> AuthorityStoreError {
-    match error {
-        acyclic_stream::StreamError::NotFound => AuthorityStoreError::Missing,
-        acyclic_stream::StreamError::Capacity => {
-            AuthorityStoreError::Rejected("Stream capacity exhausted".to_owned())
-        }
-        other => AuthorityStoreError::Rejected(other.to_string()),
-    }
-}
-
-pub(super) fn authority_read_work(records: u64) -> WorkCounters {
-    WorkCounters {
-        authority_records_read: records,
-        backend_read_operations: records,
-        ..WorkCounters::default()
-    }
 }

@@ -30,7 +30,7 @@ pub fn task_effect_id(
     command: OperationId,
     work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
 ) -> Result<EffectId> {
-    let digest = crate::contract::canonical_json_digest_with_work(
+    let digest = crate::executor::json::canonical_json_digest(
         &("harness/v2/task-effect", task, command),
         acyclic_stream::MAX_RECORD_BYTES as u64,
         work,

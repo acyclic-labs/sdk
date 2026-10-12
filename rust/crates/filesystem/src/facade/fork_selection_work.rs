@@ -1,11 +1,5 @@
 use super::*;
 
-pub(super) fn fork_selection_allocation(
-    error: crate::kernel::allocation::AllocationError,
-) -> WorkspaceError {
-    crate::collection::handle_allocation_error(error).into()
-}
-
 pub(super) fn fork_selection_items(
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
@@ -44,51 +38,6 @@ pub(super) fn fork_selection_grow<T>(
         fork_file_table_copy::<T>(owner.value.len(), accounting, cancellation)?;
     }
     owner.ensure_for_push(maximum, accounting)?;
-    Ok(())
-}
-
-pub(super) fn fork_file_table_search<T>(
-    values: &[T],
-    id: FileId,
-    mut key: impl FnMut(&T) -> FileId,
-    accounting: &mut KernelAccounting<'_>,
-    cancellation: &CancellationToken,
-) -> Result<Result<usize, usize>, WorkspaceError> {
-    let mut start = 0;
-    let mut end = values.len();
-    while start < end {
-        fork_selection_items(accounting, cancellation)?;
-        let middle = start + (end - start) / 2;
-        match key(&values[middle]).cmp(&id) {
-            std::cmp::Ordering::Less => start = middle + 1,
-            std::cmp::Ordering::Equal => return Ok(Ok(middle)),
-            std::cmp::Ordering::Greater => end = middle,
-        }
-    }
-    Ok(Err(start))
-}
-
-pub(super) fn fork_selection_standalone_live(accounting: &mut KernelAccounting<'_>) -> Option<u64> {
-    accounting
-        .standalone_parts()
-        .map(|(ledger, _, _, _)| ledger.live_bytes())
-}
-
-pub(super) fn fork_selection_cleanup_standalone(
-    accounting: &mut KernelAccounting<'_>,
-    baseline: Option<u64>,
-) -> Result<(), WorkspaceError> {
-    if let Some(baseline) = baseline {
-        let (ledger, _, _, _) = accounting.standalone_parts().ok_or(WorkError::Overflow)?;
-        ledger
-            .release(
-                ledger
-                    .live_bytes()
-                    .checked_sub(baseline)
-                    .ok_or(WorkError::Overflow)?,
-            )
-            .map_err(fork_selection_allocation)?;
-    }
     Ok(())
 }
 

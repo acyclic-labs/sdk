@@ -112,11 +112,11 @@ impl NativeHostWork for DemandWork {
         self.charge(delta)
     }
     fn claim(&mut self, bytes: u64) -> Result<u64, Self::Error> {
-        self.allocate(bytes)?;
+        self.claim_allocation(bytes, u64::from(bytes != 0), crate::WorkCounters::UNCHARGED)?;
         Ok(bytes)
     }
     fn reserve_opaque_decode(&mut self, logical_max: u64) -> Result<Self::Allocation, Self::Error> {
-        self.adopt(logical_max)?;
+        self.claim_allocation(logical_max, 0, crate::WorkCounters::UNCHARGED)?;
         Ok(logical_max)
     }
     fn reconcile_allocation(
@@ -130,17 +130,11 @@ impl NativeHostWork for DemandWork {
         DemandWork::release(self, bytes)
     }
     fn reserve_cleanup_write(&mut self) -> Result<u64, Self::Error> {
-        self.reserve(
-            crate::materializer::NativeResourceCredit::WriteOperations,
-            1,
-        )
+        self.reserve(crate::materializer::NativeResourceCredit::WriteOperations.delta(1))
         .map(|()| 1)
     }
     fn cancel_cleanup_write(&mut self, reservation: u64) {
-        self.refund(
-            crate::materializer::NativeResourceCredit::WriteOperations,
-            reservation,
-        )
+        self.refund(crate::materializer::NativeResourceCredit::WriteOperations.delta(reservation))
         .expect("original reservation is balanced");
     }
     fn attempt_cleanup_write<T>(
@@ -148,11 +142,7 @@ impl NativeHostWork for DemandWork {
         reservation: u64,
         operation: impl FnOnce() -> T,
     ) -> (T, Result<(), Self::Error>) {
-        let recorded = self.complete(
-            crate::materializer::NativeResourceCredit::WriteOperations,
-            reservation,
-            1,
-        );
+        let recorded = self.complete(crate::materializer::NativeResourceCredit::WriteOperations.delta(reservation), crate::materializer::NativeResourceCredit::WriteOperations.delta(1));
         (operation(), recorded)
     }
 }

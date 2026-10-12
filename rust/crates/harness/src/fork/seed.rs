@@ -3,7 +3,7 @@ use super::*;
 pub(crate) fn copy_seed(source: &ForkSeed, quota: &mut CodecQuota<'_, '_>) -> Result<ForkSeed> {
     crate::core::copy_owned(source, quota, |source, work| {
         source.validate(work)?;
-        crate::core::owned_seed(source)
+        crate::core::owned_bytes(source)
     })
 }
 /// Immutable, validated child environment published by the parent aggregate.
@@ -188,7 +188,12 @@ impl ForkSeed {
             work.checkpoint()?;
             resource.validate(work.work())?;
             for revision in [&resource.source, &resource.revision] {
-                crate::contract::json_byte_length(revision, crate::store::default_projection_read_limits().maximum_bytes, work.work()).map(|_| ())?;
+                crate::executor::json::json_byte_length(
+                    revision,
+                    crate::store::default_projection_read_limits().maximum_bytes,
+                    work.work(),
+                )
+                .map(|_| ())?;
             }
             for previous in &self.resources[..index] {
                 work.checkpoint()?;
@@ -227,7 +232,12 @@ impl ForkSeed {
         for (index, omission) in self.omissions.iter().enumerate() {
             work.checkpoint()?;
             omission.validate(work.work())?;
-            crate::contract::json_byte_length(&omission.selection.revision, crate::store::default_projection_read_limits().maximum_bytes, work.work()).map(|_| ())?;
+            crate::executor::json::json_byte_length(
+                &omission.selection.revision,
+                crate::store::default_projection_read_limits().maximum_bytes,
+                work.work(),
+            )
+            .map(|_| ())?;
             for previous in self.resources.iter().map(|capture| &capture.source).chain(
                 self.omissions[..index]
                     .iter()
@@ -245,7 +255,12 @@ impl ForkSeed {
         for (index, manifest) in self.attachment_manifests.iter().enumerate() {
             work.checkpoint()?;
             manifest.validate(work.work())?;
-            crate::contract::json_byte_length(manifest, crate::store::default_projection_read_limits().maximum_bytes, work.work()).map(|_| ())?;
+            crate::executor::json::json_byte_length(
+                manifest,
+                crate::store::default_projection_read_limits().maximum_bytes,
+                work.work(),
+            )
+            .map(|_| ())?;
             manifest_bytes = manifest_bytes
                 .checked_add(manifest.descriptor().byte_length())
                 .ok_or_else(|| work.invalid("fork attachment manifest bytes overflow"))?;
@@ -342,7 +357,12 @@ impl ForkSeed {
             work.checkpoint()?;
             grant.validate(work.work())?;
             for file in std::iter::once(&grant.file).chain(grant.attachment_manifest.iter()) {
-                crate::contract::json_byte_length(file, crate::store::default_projection_read_limits().maximum_bytes, work.work()).map(|_| ())?;
+                crate::executor::json::json_byte_length(
+                    file,
+                    crate::store::default_projection_read_limits().maximum_bytes,
+                    work.work(),
+                )
+                .map(|_| ())?;
             }
             if grant.reader != self.child_agent && !attached.contains(&grant.reader) {
                 return Err(work.invalid("reference reader is not attached to fork"));
@@ -442,7 +462,7 @@ impl ForkSeed {
         }
         // Inherited files are pinned child-owned content.
         for file in &self.inherited_context {
-            values.push(file.read_capability()?);
+            values.push(file.read_capability(&mut None)?);
         }
         Ok(Capabilities::new(values))
     }

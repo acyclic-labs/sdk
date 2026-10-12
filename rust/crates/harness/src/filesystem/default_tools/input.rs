@@ -58,10 +58,7 @@ where
                         intent,
                         command: WorkflowCommand {
                             operation_id: derived(invocation.operation_id, "source-stage", io)?,
-                            kind: crate::filesystem::fork_preparer_io::clone_text(
-                                FORK_SOURCE_STAGE,
-                                io,
-                            )?,
+                            kind: stock_string_copy(FORK_SOURCE_STAGE, io)?,
                             payload,
                         },
                     },
@@ -311,10 +308,7 @@ where
                 binding.child,
                 WorkflowCommand {
                     operation_id: context.operation_id(),
-                    kind: crate::filesystem::fork_preparer_io::clone_text(
-                        FORK_PREPARE_TASK_COMMAND_KIND,
-                        io,
-                    )?,
+                    kind: stock_string_copy(FORK_PREPARE_TASK_COMMAND_KIND, io)?,
                     payload,
                 },
                 binding.limits,
@@ -448,7 +442,7 @@ where
         };
         validate_plan(&plan, arguments, io)?;
         if !io.is_some_and(|io| io.original_native_work().is_some()) {
-            crate::contract::json_byte_length(&plan, self.maximum_request_bytes
+            crate::executor::json::json_byte_length(&plan, self.maximum_request_bytes
                     .min(context.scope().limits().file_bytes), &mut None).map(|_| ())?;
         }
         Ok(plan)
@@ -496,8 +490,10 @@ where
         drop(payload_hold);
         Ok(WorkflowCommand {
             operation_id,
-            kind: crate::filesystem::fork_preparer_io::clone_text(command_kind(stage_kind), io)?,
+            kind: stock_string_copy(command_kind(stage_kind), io)?,
             payload: file,
         })
     }
 }
+
+use crate::executor::{stock_string_copy};

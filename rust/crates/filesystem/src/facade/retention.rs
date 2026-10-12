@@ -41,7 +41,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let Owned { value: label, allocation, bytes } = label;
             let fact = Owned::new(RetentionCreated { volume_id: volume.id, kind, label, generation_root, config: volume.config }, allocation, bytes);
             let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| crate::kernel::encode_retention_created(&fact.value, observe, allocation_error))?;
-            let commit = creation_commit_with_accounting(OperationId::from_bytes(authority_id.into_bytes()), encoded, accounting)?;
+            let commit = creation_commit(OperationId::from_bytes(authority_id.into_bytes()), encoded, accounting)?;
             fact.retire(accounting)?;
             let cached_bytes = publication.as_ref().map_or(0, VerifiedPublication::retained_bytes);
             let cached = if let Some(publication) = publication {
@@ -117,7 +117,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .find_operation(authority_id, operation_id, &mut work)
             .await;
         record_authority_work(accounting, &work)?;
-        let (record, _allocation) = result?;
+        let record = result?;
         Ok(record.map(|record| (record.sequence, record.fingerprint)))
     }
     pub(super) async fn retention_publication_with_accounting(

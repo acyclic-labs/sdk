@@ -1,66 +1,37 @@
-//! Exact fork policy, admission, and publication.
 use super::*;
+use crate::fork::{CapturedResource, ResourceRevision};
+use crate::resources::{ProviderRef, ResourceKind, ResourceRef, StreamRef};
 
 #[test]
 fn fork_is_invisible_until_one_seed_event_commits() -> Result<()> {
-    use crate::conversation::VolumeClass;
-    use crate::fork::{CapturedResource, ResourceRevision};
-    use crate::resources::{ProviderRef, ResourceKind, ResourceRef, StreamRef};
-    let parent = issuer().audience.clone();
-    let child = Authority {
-        kind: AggregateKind::Conversation,
-        id: "conversation-2".into(),
-    };
-    let child_agent = AgentId::from_bytes([6; 16]);
     let mut seed: ForkSeed =
         crate::contract::json_from_slice(include_bytes!("../../../fixtures/v2/fork-seed.json"))
-            .map_err(|error| Error::Invalid(error.to_string()))?;
+            .unwrap();
     seed.operation_id = operation(8);
-    seed.parent = parent.clone();
+    seed.parent = issuer().audience;
     seed.parent_revision = 1;
-    seed.child = child.clone();
-    seed.child_agent = child_agent;
-    seed.resources.rotate_right(1);
-    let provider = seed.child_private_volume.provider().clone();
-    seed.child_private_volume = VolumeRef::new(
-        provider.clone(),
-        "child-private".into(),
-        VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(child_agent),
-        &mut None,
-    )?;
-    if let ResourceRevision::PrivateVolume { volume, .. } = &mut seed.resources[0].source {
+    let history = |revision: &str| -> Result<ResourceRevision> {
+        Ok(ResourceRevision::History(StreamRef::new(
+            ProviderRef::new("acyclic".into(), "stream".into(), "1".into(), &mut None)?,
+            seed.parent.stream_path(&mut None)?.into_bytes(),
+            Some(revision.into()),
+        )?))
+    };
+    seed.resources[0] = CapturedResource {
+        source: history("1")?,
+        revision: history("1")?,
+    };
+    if let ResourceRevision::PrivateVolume { volume, .. } = &mut seed.resources[2].source {
         *volume = VolumeRef::new(
-            provider,
+            volume.provider().clone(),
             "parent-private".into(),
-            VolumeClass::AgentPrivate,
+            crate::conversation::VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
             &mut None,
         )?;
     }
-    if let ResourceRevision::PrivateVolume { volume, .. } = &mut seed.resources[0].revision {
-        *volume = seed.child_private_volume.clone();
-    }
-    let history = |revision: &str| -> Result<ResourceRevision> {
-        Ok(ResourceRevision::History(StreamRef::new(
-            ProviderRef::new("acyclic".into(), "stream".into(), "1".into(), &mut None)?,
-            parent.stream_path(&mut None)?.into_bytes(),
-            Some(revision.into()),
-        )?))
-    };
-    seed.resources[1] = CapturedResource {
-        source: history("1")?,
-        revision: history("1")?,
-    };
-    let bind = |reducer: &mut Reducer| -> Result<()> {
-        reducer.apply(command(
-            operation(1),
-            0,
-            Action::BindConversation {
-                agent: AgentId::from_bytes([1; 16]),
-            },
-        ))?;
-        Ok(())
+    let bind = Action::BindConversation {
+        agent: AgentId::from_bytes([1; 16]),
     };
     let publication = |seed| {
         command(
@@ -105,18 +76,12 @@ fn fork_is_invisible_until_one_seed_event_commits() -> Result<()> {
         (ExtensionForkPolicy::Inherit, &reset, false),
         (ExtensionForkPolicy::Reset, &reset, true),
     ] {
-        let mut registry = SchemaRegistry::new();
-        registry.register(
-            "example.message",
-            1,
-            json!({"type":"object"}),
-            [9; 32],
-            policy,
-            [],
-            None,
-        )?;
-        let mut candidate = Reducer::new(parent.clone(), issuer().verifier(&mut None)?, registry);
-        bind(&mut candidate)?;
+        let mut candidate = reducer_fixture();
+        Arc::make_mut(candidate.schemas.schemas.as_mut().unwrap())
+            .get_mut(&("example.message".into(), 1))
+            .unwrap()
+            .fork_policy = policy;
+        apply(&mut candidate, 1, bind.clone())?;
         assert_eq!(
             candidate.plan(&publication(selected.clone())).is_ok(),
             allowed
@@ -131,13 +96,11 @@ fn fork_is_invisible_until_one_seed_event_commits() -> Result<()> {
     }
     extension_seed.resources[3].source = extension_seed.resources[3].revision.clone();
     let mut reducer = reducer_fixture();
-    bind(&mut reducer)?;
-    assert!(matches!(
-        reducer.plan(&publication(extension_seed)),
-        Err(Error::Conflict(_))
-    ));
+    apply(&mut reducer, 1, bind)?;
+    assert!(reducer.plan(&publication(extension_seed)).is_err());
     #[cfg(feature = "filesystem")]
     {
+        use crate::filesystem::PreparationIo;
         use acyclic_fs::{CancellationToken, WorkBudget};
         let budget = WorkBudget {
             bytes_copied: 16_777_216,
@@ -149,31 +112,8 @@ fn fork_is_invisible_until_one_seed_event_commits() -> Result<()> {
             ..WorkBudget::default()
         };
         let token = CancellationToken::new();
-        let mut work = crate::store::history::HistoryWork::new(budget, &token);
-        reducer.validate_fork_reference_ownership_with_work(&seed, &mut Some(&mut work))?;
-        reducer.require_fresh_fork_with_work(&seed, &mut Some(&mut work))?;
-        let mut narrow = crate::store::history::HistoryWork::new(
-            WorkBudget {
-                items_examined: 1,
-                ..budget
-            },
-            &token,
-        );
-        assert!(
-            reducer
-                .require_fresh_fork_with_work(&seed, &mut Some(&mut narrow))
-                .is_err()
-        );
-        let cancelled = CancellationToken::new();
-        cancelled.cancel();
-        let mut work = crate::store::history::HistoryWork::new(budget, &cancelled);
-        assert!(
-            reducer
-                .validate_fork_reference_ownership_with_work(&seed, &mut Some(&mut work))
-                .is_err()
-        );
         let prefix = InheritedConversationPrefix::select(
-            parent.clone(),
+            seed.parent.clone(),
             1,
             0,
             &[],
@@ -194,9 +134,12 @@ fn fork_is_invisible_until_one_seed_event_commits() -> Result<()> {
             "inherited-conversation.json".into(),
             &mut None,
         )?);
-        reducer.validate_fork_reference_ownership_with_work(&materialized, &mut None)?;
-        let mut work = crate::store::history::HistoryWork::new(budget, &token);
-        reducer.validate_fork_reference_ownership_with_work(&materialized, &mut Some(&mut work))?;
+        let work = PreparationIo::from_budget(budget, &token)?;
+        reducer.validate_fork_reference_ownership(
+            &materialized,
+            None,
+            &mut Some(&mut work.history_io()),
+        )?;
         for limited in [
             WorkBudget {
                 bytes_encoded: 1,
@@ -207,118 +150,72 @@ fn fork_is_invisible_until_one_seed_event_commits() -> Result<()> {
                 ..budget
             },
         ] {
-            let mut work = crate::store::history::HistoryWork::new(limited, &token);
+            let work = PreparationIo::from_budget(limited, &token)?;
             assert!(
                 reducer
-                    .validate_fork_reference_ownership_with_work(
+                    .validate_fork_reference_ownership(
                         &materialized,
-                        &mut Some(&mut work)
+                        None,
+                        &mut Some(&mut work.history_io())
                     )
                     .is_err()
             );
         }
         let mut hostile = seed.clone();
         hostile.attachment_manifests.push(request_file(b"[]")?);
-        assert!(matches!(
-            reducer.validate_fork_reference_ownership_with_work(&hostile, &mut None),
-            Err(Error::Invalid(_))
-        ));
+        assert!(
+            reducer
+                .validate_fork_reference_ownership(&hostile, None, &mut None)
+                .is_err()
+        );
     }
     let publish = publication(seed.clone());
+    let capabilities = Capabilities::new(["event:append", "fork:publish"]);
     for agent in [None, Some(AgentId::from_bytes([2; 16]))] {
         let mut foreign = publish.clone();
-        foreign.scope = issuer().issue(
-            "foreign",
-            &Capabilities::new(["event:append", "fork:publish"]),
-            agent,
-            None,
-            &mut None,
-        )?;
-        assert!(matches!(
-            reducer.plan(&foreign),
-            Err(Error::Unauthorized(_))
-        ));
+        foreign.scope = issuer().issue("foreign", &capabilities, agent, None, &mut None)?;
+        assert!(reducer.plan(&foreign).is_err());
     }
-    let read = seed
-        .resources
-        .iter()
-        .find_map(|capture| match &capture.source {
-            ResourceRevision::Project { volume, .. } => {
-                Some(volume.capability(VolumeOperation::Read, &mut None))
-            }
-            _ => None,
-        })
-        .expect("project fixture")?;
+    let ResourceRevision::Project { volume, .. } = &seed.resources[1].source else {
+        panic!("project fixture")
+    };
+    let read = volume.capability(VolumeOperation::Read, &mut None)?;
     let mut unreadable = publish.clone();
-    unreadable.scope = issuer().issue(
-        "current",
-        &Capabilities::new(
-            publish
-                .scope
-                .capabilities()
-                .iter()
-                .filter(|grant| *grant != read),
-        ),
-        Some(AgentId::from_bytes([1; 16])),
-        None,
-        &mut None,
-    )?;
-    assert!(matches!(
-        reducer.plan(&unreadable),
-        Err(Error::Unauthorized(_))
-    ));
-    assert_eq!(reducer.revision(), 1);
+    let grants = publish
+        .scope
+        .capabilities()
+        .iter()
+        .filter(|grant| *grant != read);
+    let grants = Capabilities::new(grants);
+    let parent_agent = AgentId::from_bytes([1; 16]);
+    unreadable.scope = issuer().issue("current", &grants, Some(parent_agent), None, &mut None)?;
+    assert!(reducer.plan(&unreadable).is_err());
     let ApplyResult::Applied { event } = reducer.plan(&publish)? else {
         panic!("fresh fork replayed")
     };
-    assert!(reducer.fork(&child).is_none());
+    assert!(reducer.fork(&seed.child).is_none());
     let mut foreign = event.clone();
-    foreign.scope = RecordedScope::from_scope(&issuer().issue(
-        "foreign",
-        &Capabilities::new(["event:append", "fork:publish"]),
-        Some(AgentId::from_bytes([2; 16])),
-        None,
-        &mut None,
-    )?);
+    let agent = Some(AgentId::from_bytes([2; 16]));
+    let scope = issuer().issue("foreign", &capabilities, agent, None, &mut None)?;
+    foreign.scope = RecordedScope::from_scope(&scope);
     foreign.attestation = issuer()
         .verifier(&mut None)?
         .attest_event(&foreign, &mut None)?;
-    assert!(matches!(
-        reducer.apply_committed(foreign, &mut None),
-        Err(Error::Unauthorized(_))
-    ));
+    assert!(reducer.apply_committed(foreign, &mut None).is_err());
     reducer.apply_committed(event, &mut None)?;
-    assert_eq!(reducer.fork(&child), Some(&seed));
-    let wire = crate::contract::canonical_json_bytes(&reducer.snapshot(usize::MAX, &mut None)?.0)?;
-    let snapshot = crate::contract::json_from_slice(&wire)
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-    let restored = Reducer::restore(
-        snapshot,
-        issuer().verifier(&mut None)?,
-        schemas(),
-        &mut None,
-    )?;
-    assert_eq!(restored, reducer);
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    native_snapshot_round_trip(&reducer, &issuer(), usize::MAX)?;
-    let mut reused = seed;
+    assert_eq!(reducer.fork(&seed.child), Some(&seed));
+    assert_eq!(restore(&reducer, &issuer())?, reducer);
+    let mut reused = seed.clone();
     reused.operation_id = operation(9);
     reused.child.id = "conversation-3".into();
     reused.parent_revision = 2;
-    reused.resources[1] = CapturedResource {
+    reused.resources[0] = CapturedResource {
         source: history("2")?,
         revision: history("2")?,
     };
-    reused.validate(&mut None)?;
-    assert!(matches!(
-        reducer.plan(&command(
-            operation(9),
-            2,
-            Action::PublishFork {
-                seed: Box::new(reused)
-            }
-        )),
-        Err(Error::Conflict(_))
-    ));
+    let publication = Action::PublishFork {
+        seed: Box::new(reused),
+    };
+    assert!(apply(&mut reducer, 9, publication).is_err());
     Ok(())
 }

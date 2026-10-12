@@ -592,10 +592,10 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             let attached = AgentId::from_bytes([201; 16]);
             let readable = seed.reference_capabilities(attached)?;
             assert_eq!(seed.attachment_manifests.len(), 1);
-            assert!(readable.contains(&previous_file.read_capability()?));
-            assert!(readable.contains(&previous_attachment.read_capability()?));
-            assert!(readable.contains(&inherited.read_capability()?));
-            assert!(readable.contains(&seed.attachment_manifests[0].read_capability()?));
+            assert!(readable.contains(&previous_file.read_capability( &mut None)?));
+            assert!(readable.contains(&previous_attachment.read_capability( &mut None)?));
+            assert!(readable.contains(&inherited.read_capability( &mut None)?));
+            assert!(readable.contains(&seed.attachment_manifests[0].read_capability( &mut None)?));
             assert!(!readable.contains(&child_private.capability(VolumeOperation::Write, &mut None)?));
             assert!(
                 seed.shared_capabilities(attached)?
@@ -727,9 +727,9 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 .await?;
             let inherited_reader = AgentId::from_bytes([201; 16]);
             let capabilities = seed.reference_capabilities(inherited_reader)?;
-            assert!(capabilities.contains(&previous_file.read_capability()?));
-            assert!(capabilities.contains(&inherited.read_capability()?));
-            assert!(capabilities.contains(&root_attachment.read_capability()?));
+            assert!(capabilities.contains(&previous_file.read_capability( &mut None)?));
+            assert!(capabilities.contains(&inherited.read_capability( &mut None)?));
+            assert!(capabilities.contains(&root_attachment.read_capability( &mut None)?));
             assert!(
                 seed.shared_capabilities(inherited_reader)?
                     .contains(&shared.capability(VolumeOperation::Read, &mut None)?)

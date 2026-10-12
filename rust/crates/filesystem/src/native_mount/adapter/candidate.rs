@@ -1,6 +1,7 @@
 pub(super) struct CheckoutCandidate<A, O> {
     pub(super) base: Checkout<A, O>,
     pub(super) checkout: Checkout<A, O>,
+    pub(super) operation: Option<OperationId>,
 }
 
 /// Paths whose bindings a candidate was prepared to change.
@@ -23,7 +24,7 @@ impl InstallScope<'_> {
 }
 
 impl InputBuffers<'_, '_> {
-    fn clone_namespace(
+    pub(super) fn clone_namespace(
         &mut self,
         names: &[LogicalName],
         limits: VolumeLimits,
@@ -51,22 +52,12 @@ impl InputBuffers<'_, '_> {
                 .map_err(MountSourceError::Filesystem)?
                 .record
         } else {
-            let (budget, live) = self.carrier.with_work(|work| {
-                Ok::<_, MountSourceError>((
-                    work.remaining().map_err(super::lazy::mount_demand_error)?,
-                    work.live_allocation_bytes(),
-                ))
-            })?;
+            let (budget, live) = self.carrier.remaining()?;
             let result = checkout.inspector(budget, cancellation);
             let mut checkout = self
                 .carrier
                 .accept_with_prior_live(result, live, fs_error)?;
-            let (budget, live) = self.carrier.with_work(|work| {
-                Ok::<_, MountSourceError>((
-                    work.remaining().map_err(super::lazy::mount_demand_error)?,
-                    work.live_allocation_bytes(),
-                ))
-            })?;
+            let (budget, live) = self.carrier.remaining()?;
             let result = checkout.lookup_no_follow(path, budget, cancellation).await;
             self.carrier
                 .accept_with_prior_live(result, live, fs_error)?
@@ -89,12 +80,7 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
             .await
             .map_err(MountSourceError::Filesystem)?
     } else {
-        let (budget, live) = carrier.with_work(|work| {
-            Ok::<_, MountSourceError>((
-                work.remaining().map_err(super::lazy::mount_demand_error)?,
-                work.live_allocation_bytes(),
-            ))
-        })?;
+        let (budget, live) = carrier.remaining()?;
         let result = base
             .candidate_diff(
                 candidate,
@@ -126,7 +112,7 @@ pub(super) async fn installed_changes<A: AsyncAuthorityStore, O: AsyncObjectStor
                     .sum::<u64>();
             inputs
                 .carrier
-                .with_work(|work| work.adopt(bytes))
+                .with_work(|work| work.claim_allocation(bytes, 0, crate::WorkCounters::UNCHARGED))
                 .map_err(super::lazy::mount_demand_error)?;
             inputs.bytes = bytes;
         }

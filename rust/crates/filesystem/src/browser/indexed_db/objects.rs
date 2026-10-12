@@ -53,17 +53,12 @@ impl AsyncObjectStore for IndexedDbObjectStore {
         existing
             .try_reserve_exact(writes.len())
             .map_err(|e| object_error(backend(e)))?;
-        let tx = transaction(
-            &self.database,
-            &[OBJECTS, OBJECT_METADATA],
-            TransactionMode::Readwrite,
-        )
-        .map_err(|e| object_error(backend(e)))?;
-        let mut added = false;
+        let tx = transaction(&self.database, &[OBJECTS], TransactionMode::Readwrite)
+            .map_err(|e| object_error(backend(e)))?;
         for write in writes {
             let key = Self::key(write.object_id);
             let length = write.bytes.len() as u64;
-            let stored = Self::length(&io, &tx, &key).await?;
+            let stored = Self::object(io, &tx, &key).await?;
             let copy = WorkCounters {
                 bytes_copied: length * 2,
                 allocation_operations: 2 * u64::from(length != 0),
@@ -71,25 +66,23 @@ impl AsyncObjectStore for IndexedDbObjectStore {
                 ..Default::default()
             };
             if let Some(stored) = stored {
-                if stored != length {
+                if stored.size() != length as f64 {
                     return Err((ObjectStoreError::Corrupt));
                 }
                 work::charge(
                     io,
                     WorkCounters {
-                        backend_read_operations: 1,
                         object_bytes_read: length,
                         ..copy
                     },
                 )
                 .map_err(object_error)?;
-                let blob = io.blob(&tx, OBJECTS, &key).await.map_err(object_error)?;
-                existing.push((blob, &write.bytes));
+                existing.push((stored, &write.bytes));
             } else {
                 work::charge(
                     io,
                     WorkCounters {
-                        backend_write_operations: 2,
+                        backend_write_operations: 1,
                         object_bytes_written: length,
                         ..copy
                     },
@@ -103,18 +96,9 @@ impl AsyncObjectStore for IndexedDbObjectStore {
                 io.insert(&tx, OBJECTS, &key, blob.into())
                     .await
                     .map_err(object_error)?;
-                io.insert(
-                    &tx,
-                    OBJECT_METADATA,
-                    &key,
-                    JsValue::from_str(&length.to_string()),
-                )
-                .await
-                .map_err(object_error)?;
-                added = true;
             }
         }
-        if added {
+        if existing.len() != writes.len() {
             io.commit(tx).await.map_err(object_error)?;
         } else {
             drop(tx);
@@ -151,21 +135,17 @@ impl AsyncObjectStore for IndexedDbObjectStore {
             },
         )
         .map_err(object_error)?;
-        let tx = transaction(
-            &self.database,
-            &[OBJECTS, OBJECT_METADATA],
-            TransactionMode::Readonly,
-        )
-        .map_err(|e| object_error(backend(e)))?;
+        let tx = transaction(&self.database, &[OBJECTS], TransactionMode::Readonly)
+            .map_err(|e| object_error(backend(e)))?;
         let key = Self::key(id);
-        let length = Self::length(&io, &tx, &key)
+        let blob = Self::object(io, &tx, &key)
             .await?
             .ok_or_else(|| (ObjectStoreError::Missing))?;
+        let length = blob.size() as u64;
         self.bound(length, maximum)?;
         work::charge(
             io,
             WorkCounters {
-                backend_read_operations: 1,
                 object_bytes_read: length,
                 bytes_hashed: length + OBJECT_DIGEST_ENVELOPE_BYTES,
                 bytes_copied: length * 2,
@@ -175,7 +155,6 @@ impl AsyncObjectStore for IndexedDbObjectStore {
             },
         )
         .map_err(object_error)?;
-        let blob = io.blob(&tx, OBJECTS, &key).await.map_err(object_error)?;
         drop(tx);
         let value = Self::read_blob(&io, id, &blob, length).await?;
         Ok(value)
@@ -222,12 +201,8 @@ impl AsyncObjectStore for IndexedDbObjectStore {
         handles
             .try_reserve_exact(requests.len())
             .map_err(|e| object_error(backend(e)))?;
-        let tx = transaction(
-            &self.database,
-            &[OBJECTS, OBJECT_METADATA],
-            TransactionMode::Readonly,
-        )
-        .map_err(|e| object_error(backend(e)))?;
+        let tx = transaction(&self.database, &[OBJECTS], TransactionMode::Readonly)
+            .map_err(|e| object_error(backend(e)))?;
         for request in requests {
             work::charge(
                 io,
@@ -241,16 +216,12 @@ impl AsyncObjectStore for IndexedDbObjectStore {
             )
             .map_err(object_error)?;
             let key = Self::key(request.object_id);
-            let length = Self::length(&io, &tx, &key)
+            let blob = Self::object(io, &tx, &key)
                 .await?
                 .ok_or_else(|| (ObjectStoreError::Missing))?;
+            let length = blob.size() as u64;
             self.bound(length, request.maximum_bytes)?;
-            work::charge(io, authority_fixed_read_work(0)).map_err(object_error)?;
-            handles.push((
-                request.object_id,
-                io.blob(&tx, OBJECTS, &key).await.map_err(object_error)?,
-                length,
-            ));
+            handles.push((request.object_id, blob, length));
         }
         drop(tx);
         for (id, blob, length) in handles {

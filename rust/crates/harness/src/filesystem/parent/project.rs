@@ -167,7 +167,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                             "volume:read:",
                         )?)
                 {
-                    return Err(fork_preparer_io::failure(
+                    return Err(stock_boundary(
                         Some(&io),
                         crate::wire::ErrorCode::Unauthorized,
                         "project import source is not currently readable by this parent",
@@ -346,7 +346,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let (outcome, custody) = if selections.is_empty() {
                 plan.plan
                     .apply_with_native_work(
-                        options,
+                        options, &[],
                         acyclic_fs::PublicationPermit::Unrestricted,
                         work,
                         work.cancellation(),
@@ -371,7 +371,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         let options = Self::merge_options(plan, project_join_key(operation_id, None)?);
         let outcome = if selections.is_empty() {
             plan.plan
-                .apply(options, acyclic_fs::PublicationPermit::Unrestricted)
+                .apply(options, std::collections::BTreeMap::new(), acyclic_fs::PublicationPermit::Unrestricted)
                 .await
                 .map_err(map_error)?
         } else {
@@ -424,10 +424,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let root = std::mem::size_of::<serde_json::Value>() as u64;
             io.retain_owned(root)?;
             let root_hold = io.guard_owned(root)?;
-            let diagnostics = io.reserve_decode(crate::contract::sdk_json_diagnostic_bytes())?;
-            let statement = match crate::contract::json_value_bounded(
+            let diagnostics = io.reserve_decode(crate::executor::json::sdk_json_diagnostic_bytes())?;
+            let statement = match crate::executor::json::json_value_bounded(
                 &_witness,
-                crate::contract::JsonBounds {
+                crate::executor::json::JsonBounds {
                     maximum_bytes: maximum_witness_bytes,
                     maximum_items: io.remaining()?.items_examined,
                     maximum_depth: 8,
@@ -435,14 +435,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 Some(crate::wire::ErrorCode::Storage),
                 &mut |charge| io.codec_charge(charge, false),
             ) {
-                Err(Error::NativeEncode {
+                Err(Error::NativeJson {
                     code,
                     source,
                     custody: None,
                 }) => {
                     let custody = io.take_native_custody(diagnostics.bytes())?;
                     diagnostics.into_retained();
-                    return Err(Error::NativeEncode {
+                    return Err(Error::NativeJson {
                         code,
                         source,
                         custody: Some(custody),
@@ -468,11 +468,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             )?;
             let operation_bytes = filesystem_key.into_bytes();
             let mut provider_operation_id = Vec::new();
-            fork_preparer_io::reserve(
-                &mut provider_operation_id,
-                operation_bytes.len(),
-                Some(&io),
-            )?;
+            crate::filesystem::PreparationIo::reserve(&mut provider_operation_id, operation_bytes.len(), Some(&io))?;
             let copy = acyclic_fs::WorkCounters {
                 bytes_copied: operation_bytes.len() as u64,
                 ..Default::default()
@@ -481,7 +477,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             io.charge(copy)?;
             provider_operation_id.extend_from_slice(&operation_bytes);
             let provider = self.host.provider.clone_with_io(&io)?;
-            let format = fork_preparer_io::clone_text(FILESYSTEM_JOIN_PROOF_FORMAT, Some(&io))?;
+            let format = stock_string_copy(FILESYSTEM_JOIN_PROOF_FORMAT, Some(&io))?;
             let mut observer = io.history_io();
             let mut history_work = Some(&mut observer as &mut dyn crate::store::history::HistoryIo);
             let mut quota = crate::wire_codec::CodecQuota::new(&mut history_work, 0)?;
@@ -556,7 +552,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     ) -> Result<MergePlan> {
         self.require_merge_plan(plan)?;
         plan.plan
-            .describe_conflicts(conflicts, truncated)
+            .describe_conflicts(conflicts.to_vec(), truncated)
             .await
             .map_err(map_error)
     }
@@ -602,3 +598,5 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         }
     }
 }
+
+use crate::executor::{stock_boundary, stock_string_copy};

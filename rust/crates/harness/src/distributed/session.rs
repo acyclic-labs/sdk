@@ -50,7 +50,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         authorize_operation_scope(owner, scope, verifier, capability::OPERATION_DECLARE, work)?;
         spec.verify_owner(owner, verifier, work)?;
         if spec.parent.is_some() {
-            return Err(coordinator_boundary(
+            return Err(guarded_boundary(
                 work,
                 wire::ErrorCode::Invalid,
                 "session declaration must be a root",
@@ -111,7 +111,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                     .validate_session(spec, &limits, request.work())?;
             }
             revision = revision.checked_add(1).ok_or_else(|| {
-                coordinator_boundary(
+                guarded_boundary(
                     request.work(),
                     wire::ErrorCode::Invalid,
                     "coordinator revision exhausted",
@@ -148,7 +148,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             request.adopt(retained)?;
             records[index] = record;
             committed_at_ms = committed_at_ms.checked_add(1).ok_or_else(|| {
-                coordinator_boundary(
+                guarded_boundary(
                     request.work(),
                     wire::ErrorCode::Invalid,
                     "coordinator commit time exhausted",
@@ -177,7 +177,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         let receipt = match appended {
             Ok(AppendOutcome::Committed(receipt)) => {
                 if receipt.end.checked_sub(receipt.start) != Some(2) || receipt.tail < receipt.end {
-                    return Err(coordinator_boundary(
+                    return Err(guarded_boundary(
                         request.work(),
                         wire::ErrorCode::Storage,
                         "invalid session append receipt",
@@ -186,14 +186,14 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 Some(receipt)
             }
             Ok(AppendOutcome::TailConflict { .. }) => None,
-            Err(error) if coordinator_retry_conflict(&error) => None,
+            Err(error) if error.code() == wire::ErrorCode::Conflict => None,
             Err(error) => return Err(error),
         };
         self.refresh(request.work()).await?;
         let Some((revision, commit_id)) =
             self.session_intent(&keys, &events, request.work()).await?
         else {
-            return Err(coordinator_boundary(
+            return Err(guarded_boundary(
                 request.work(),
                 wire::ErrorCode::Conflict,
                 "session append conflicted without its complete intent",
@@ -202,7 +202,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         if let Some(receipt) = &receipt
             && (commit_id != receipt.commit_id || revision.checked_sub(2) != Some(receipt.start))
         {
-            return Err(coordinator_boundary(
+            return Err(guarded_boundary(
                 request.work(),
                 wire::ErrorCode::Storage,
                 "session append receipt differs from its committed envelope",
@@ -230,13 +230,13 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             }
             if &existing != event
                 || digest
-                    != crate::contract::canonical_json_digest_with_work(
+                    != crate::executor::json::canonical_json_digest(
                         event,
                         acyclic_stream::MAX_RECORD_BYTES as u64,
                         custody.work(),
                     )?
             {
-                return Err(coordinator_boundary(
+                return Err(guarded_boundary(
                     custody.work(),
                     wire::ErrorCode::Conflict,
                     "session retry identity reused",
@@ -251,7 +251,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             {
                 Ok(Some((revision, second)))
             }
-            _ => Err(coordinator_boundary(
+            _ => Err(guarded_boundary(
                 work,
                 wire::ErrorCode::Conflict,
                 "session declaration is not atomic",

@@ -282,8 +282,8 @@ impl super::PreparationRecord for NativeProcessRequest {
         typed + 2 * content
     }
 
-    fn json_value_schema() -> crate::contract::JsonValueSchema {
-        crate::contract::JsonValueSchema::NativeProcessRequest
+    fn json_value_schema() -> crate::executor::json::JsonValueSchema {
+        crate::executor::json::JsonValueSchema::NativeProcessRequest
     }
 }
 
@@ -337,7 +337,7 @@ impl NativeProcessRequest {
         }
         let value = (NATIVE_PROCESS_EFFECT_KIND, task, command, self);
         let Some(io) = io else {
-            return crate::contract::canonical_json_digest(&value);
+            return crate::executor::json::canonical_json_digest(&value, u64::MAX, &mut None);
         };
         let guard;
         let encoded = io.encode(&value, io.remaining()?.bytes_encoded, true)?;

@@ -37,7 +37,7 @@ use acyclic_harness::runtime::{
     RuntimeScope, TaskContext, TaskDefinition, TaskRegistry, TaskRunLimits,
     ToolContext, ToolPolicy, ToolPolicyDecision,
 };
-use acyclic_harness::scheduler::{LeaseFence, ResourceSnapshot, SchedulerEvent, SessionLimits};
+use acyclic_harness::scheduler::{LeaseFence, ResourceRequest, SchedulerEvent, SessionLimits};
 use acyclic_harness::tool::{
     Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry, ToolResult,
 };
@@ -890,7 +890,7 @@ async fn worker_restart_with_options(
     let task = TaskId::from_bytes(operation.into_bytes());
     let worker = Worker {
         id: "worker".into(),
-        available: ResourceSnapshot::default(),
+        available: ResourceRequest::default(),
         labels: BTreeMap::new(),
     };
     let mut old_lease: Option<acyclic_harness::distributed::WorkLease> = None;
@@ -1999,7 +1999,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         let described = controller.describe_project_merge_conflicts(&plan, &conflicts, truncated).await?;
         let state = json!({"policy":"review", "revision":"7", "plan":acyclic_fs::encode_merge_plan(&described)
             .map_err(|e| Error::Invalid(e.to_string()))?});
-        admission = WorkflowAdmission { operation_id: operation, request_digest: acyclic_harness::contract::canonical_json_digest(&state)?,
+        admission = WorkflowAdmission { operation_id: operation, request_digest: acyclic_harness::contract::canonical_json_digest(&state, u64::MAX, &mut None)?,
             initial: MachineCheckpoint { machine: MachineIdentity { name: "test.custom-merge".into(), version: "7".into(), digest: [145; 32] },
                 revision: 0, state } };
         let journal = FilesystemWorkflowJournal::new(Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await
@@ -2013,7 +2013,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
         let input = json!(acyclic_fs::encode_merge_candidate(&candidate).map_err(|e| Error::Invalid(e.to_string()))?);
         let state = json!({"candidate":input});
         resolution_record = WorkflowRecord { operation_id: OperationId::from_bytes([146; 16]),
-            idempotency_key: IdempotencyKey::new("driver-result")?, input_digest: acyclic_harness::contract::canonical_json_digest(&input)?,
+            idempotency_key: IdempotencyKey::new("driver-result")?, input_digest: acyclic_harness::contract::canonical_json_digest(&input, u64::MAX, &mut None)?,
             prior: admission.initial.clone(), input,
             transition: MachineTransition { state: state.clone(), commands: Vec::new(), status: MachineStatus::Suspended },
             next: MachineCheckpoint { machine: admission.initial.machine.clone(), revision: 1, state } };
@@ -2147,7 +2147,7 @@ async fn stock_restart_with_publication_fault(
     let step = OperationId::from_bytes([4; 16]);
     let worker = Worker {
         id: "worker".into(),
-        available: ResourceSnapshot::default(),
+        available: ResourceRequest::default(),
         labels: BTreeMap::new(),
     };
     let mut previous_lease: Option<acyclic_harness::distributed::WorkLease> = None;
@@ -2555,7 +2555,9 @@ async fn stock_restart_with_publication_fault(
             assert!(session.latest_transition().await?.is_none());
             let invalid_input = json!("bad");
             let prior = session.checkpoint().clone();
-            let (next, transition) = machines.step(&prior, &invalid_input)?;
+            let (next, transition, _, _) = machines.step(
+                &prior, std::borrow::Cow::Borrowed(&invalid_input), None,
+            )?;
             let invalid_record = WorkflowRecord {
                 operation_id: OperationId::from_bytes([8; 16]),
                 idempotency_key: IdempotencyKey::new("direct-invalid-output")?,
@@ -2692,7 +2694,7 @@ async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_
         requests: Mutex::new(Vec::new()), approval_tool: false, observed_events: 1,
         output_tokens: AtomicU64::new(0), generated: AtomicUsize::new(0), reconciled: AtomicUsize::new(0),
     });
-    let worker = Worker { id: "stock-mail".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new() };
+    let worker = Worker { id: "stock-mail".into(), available: ResourceRequest::default(), labels: BTreeMap::new() };
     let mut retained_lease = None;
     let mut admitted_model = None;
     let mut selected = None;

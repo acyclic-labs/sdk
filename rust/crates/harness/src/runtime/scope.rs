@@ -1,7 +1,6 @@
 use super::*;
 
 /// Task-local execution bounds pinned separately from content/render limits.
-
 #[derive(Clone, Copy, Default, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskRunLimits {
@@ -85,7 +84,6 @@ impl TaskRunLimits {
 }
 
 /// Effective runtime authority and bounds; child scopes may only narrow them.
-
 #[derive(Default)]
 pub struct RuntimeScope {
     pub(super) grants: Capabilities,
@@ -233,7 +231,7 @@ impl RuntimeScope {
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
-        let grants = self.grants.clone_with_native_work(work)?;
+        let grants = crate::Capabilities::copy(self.grants.iter(), work)?;
         self.clone_native_metadata(grants, self.limits, self.extensions_sealed, work)
     }
 
@@ -262,7 +260,7 @@ impl RuntimeScope {
                 .work()
                 .as_deref_mut()
                 .expect("proof vector copy observer")
-                .codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                .codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
             let (copied, retained) = proof.copy(quota.work())?;
             quota.adopt(retained)?;
             Ok(copied)
@@ -472,7 +470,7 @@ impl RuntimeScope {
             if work
                 .as_deref()
                 .is_some_and(|io| io.original_native_work().is_some())
-                && !access.has_native_custody()
+                && !access.native_custody.is_none()
             {
                 return Err(scope_metadata_boundary(
                     work,
@@ -514,7 +512,7 @@ impl RuntimeScope {
         }
         for grant in admission.grants.iter() {
             if let Some(io) = work.as_deref_mut() {
-                io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
             }
             if !self.grants.contains(grant)
                 && !access
@@ -659,7 +657,7 @@ impl RuntimeScope {
             .publication_lease
             .as_ref()
             .ok_or_else(|| Error::Unauthorized("created child parent lease is not bound".into()))?;
-        lease.verify().await?;
+        lease.verify(None)?.await?;
         lease.fence()
     }
 
@@ -737,9 +735,9 @@ impl RuntimeScope {
                 })?;
             #[cfg(feature = "filesystem")]
             if let Some(io) = io {
-                return io.verify_publication_lease(lease.as_ref()).await;
+                return lease.verify(Some(io))?.await;
             }
-            lease.verify().await?;
+            lease.verify(None)?.await?;
         }
         let _ = io;
         Ok(())
@@ -774,8 +772,8 @@ impl RuntimeScope {
             .as_ref()?
             .references
             .iter()
-            .find(|binding| &binding.file == file)
-            .map(|binding| &binding.reader)
+            .find(|(reference, _)| reference == file)
+            .map(|(_, reader)| reader)
     }
 
     #[cfg(feature = "filesystem")]

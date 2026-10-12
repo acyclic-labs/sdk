@@ -7,13 +7,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         name: impl AsRef<str>,
         idempotency_key: crate::IdempotencyKey,
     ) -> Result<crate::workspace::WorkspaceDelete, WorkspaceError> {
-        let span = crate::obs::span!(
-            INFO,
-            "acyclic.fs.delete_workspace",
-            outcome = crate::obs::Empty,
-            error.kind = crate::obs::Empty
-        );
-        let result = crate::obs::in_span(&span, async move {
+        let result = (async move {
             let (_, id) = self
                 .workspace_name_identity(name, WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .map_err(|failure| failure.error)?
@@ -36,7 +30,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 .await
         })
         .await;
-        crate::obs::outcome_on(&span, result)
+        result
     }
 
     pub(crate) async fn delete_workspace_volume(
@@ -46,17 +40,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> Result<crate::workspace::WorkspaceDelete, WorkspaceError> {
         let cancellation = CancellationToken::new();
         let authority_id = volume_authority_id(volume.id);
-        let head = match ({
-            let mut authority = crate::AuthorityWork::new((WorkBudget::UNBOUNDED), (&cancellation));
-            let result = self
-                .inner
-                .authority
-                .head((authority_id), &mut authority)
-                .await;
-            authority.receipt(result)
-        }) {
-            Ok(head) => head.value,
-            Err(failure) if matches!(failure.error, AuthorityStoreError::Retired) => {
+        let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let head = match self.inner.authority.head(authority_id, &mut work).await {
+            Ok(head) => head,
+            Err(AuthorityStoreError::Retired) => {
                 return Ok(crate::workspace::WorkspaceDelete::AlreadyDeleted);
             }
             Err(failure) => return Err(WorkspaceError::engine(failure)),
@@ -64,27 +51,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         if head.sequence == Sequence::GENESIS {
             return Err(WorkspaceError::engine(FsError::EmptyAuthority));
         }
-        let latest = ({
-            let mut authority = crate::AuthorityWork::new((WorkBudget::UNBOUNDED), (&cancellation));
-            let result = self
-                .inner
-                .authority
-                .replay(
-                    (authority_id),
-                    (Sequence::new(head.sequence.get().saturating_sub(1))),
-                    (ReplayLimit {
-                        records: 1,
-                        payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES,
-                    }),
-                    &mut authority,
-                )
-                .await
-                .map(|(value, _allocation)| value);
-            authority.receipt(result)
-        })
-        .map_err(WorkspaceError::engine)?;
+        let latest = self
+            .inner
+            .authority
+            .replay(
+                authority_id,
+                Sequence::new(head.sequence.get().saturating_sub(1)),
+                ReplayLimit {
+                    records: 1,
+                    payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES,
+                },
+                &mut work,
+            )
+            .await
+            .map_err(WorkspaceError::engine)?
+            .0;
         let latest = latest
-            .value
             .first()
             .ok_or_else(|| WorkspaceError::engine(FsError::InvalidAuthorityHistory))?;
         if let Ok(deleted) = decode_workspace_deleted(&latest.payload, MAXIMUM_VOLUME_EVENT_BYTES) {
@@ -102,45 +84,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation),
         )
         .map_err(WorkspaceError::engine)?;
-        let encoded = crate::kernel::encode::<FsError>(
-            WorkBudget::UNBOUNDED,
-            Some(&cancellation),
-            0,
-            |observe| {
-                crate::kernel::encode_workspace_deleted(
-                    volume.id,
-                    observe,
-                    FsError::EncodedAllocationFailed,
-                )
-            },
-        )
-        .map_err(|failure| WorkspaceError::engine(failure.error))?;
-        let encoded = creation_commit(operation_id, encoded, WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|failure| WorkspaceError::engine(failure.error))?;
-        let (commit, _) = encoded.value;
-        let appended = ({
-            let mut authority = crate::AuthorityWork::new((WorkBudget::UNBOUNDED), (&cancellation));
-            let result = self
-                .inner
-                .authority
-                .compare_and_append(
-                    crate::GuardedAppend {
-                        authority_id: (authority_id),
-                        epoch: (head.epoch),
-                        expected: (head),
-                        commit: (commit),
-                        permit: crate::PublicationPermit::Unrestricted,
-                    },
-                    &mut authority,
-                    None::<&mut ()>,
-                )
-                .await
-                .map_err(|error| error.into_error(std::convert::identity))
-                .map(|(value, _allocation)| value);
-            authority.receipt(result)
-        })
-        .map_err(WorkspaceError::engine)?;
-        Ok(match appended.value {
+        let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+        let encoded =
+            crate::kernel::codec::encode_owned(&mut accounting, |observe, allocation_error| {
+                crate::kernel::encode_workspace_deleted(volume.id, observe, allocation_error)
+            })
+            .map_err(WorkspaceError::engine)?;
+        let commit = creation_commit(operation_id, encoded, &mut accounting)
+            .map_err(WorkspaceError::engine)?;
+        let appended = self
+            .inner
+            .authority
+            .compare_and_append(
+                crate::GuardedAppend {
+                    authority_id,
+                    epoch: head.epoch,
+                    expected: head,
+                    commit,
+                    permit: crate::PublicationPermit::Unrestricted,
+                },
+                &mut work,
+                None::<&mut ()>,
+            )
+            .await
+            .map_err(|error| WorkspaceError::engine(error.into_error(std::convert::identity)))?;
+        Ok(match appended {
             AppendOutcome::Committed(_) | AppendOutcome::AlreadyCommitted(_) => {
                 self.retire_deleted_authority(authority_id, &cancellation)
                     .await?;
@@ -155,22 +123,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         })
     }
 
-    /// Releases the authority of a workspace whose tombstone is durable:
+    /// Releases an authority after its durable workspace tombstone.
     pub(super) async fn retire_deleted_authority(
         &self,
         authority_id: crate::AuthorityId,
         cancellation: &CancellationToken,
     ) -> Result<(), WorkspaceError> {
-        ({
-            let mut authority = crate::AuthorityWork::new((WorkBudget::UNBOUNDED), (cancellation));
-            let result = self
-                .inner
-                .authority
-                .retire_authority((authority_id), &mut authority)
-                .await;
-            authority.receipt(result)
-        })
-        .map_err(WorkspaceError::engine)?;
+        let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, cancellation);
+        self.inner
+            .authority
+            .retire_authority(authority_id, &mut work)
+            .await
+            .map_err(WorkspaceError::engine)?;
         Ok(())
     }
 }

@@ -152,76 +152,91 @@ impl ExecutionJournal for RecordingTurnJournal {
         _: crate::OperationId,
         _: u64,
         _: u32,
-    ) -> BoxFuture<'a, Result<Vec<crate::executor::ExecutionRecord>>> {
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<crate::executor::ExecutionRecord>>> {
+        if io.is_some() {
+            return Err(crate::Error::Unsupported("finite test journal IO is unavailable".into()));
+        }
         self.replays
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        async { Ok(Vec::new()) }.boxed()
+        crate::conversation::BoundedContentFuture::new(io, || async { Ok(Vec::new()) })
     }
 
     fn append<'a>(
         &'a self,
         _: crate::OperationId,
-        _: String,
-        event: crate::executor::ExecutionEvent,
-    ) -> BoxFuture<'a, Result<()>> {
-        async move {
+        _: &'a str,
+        event: &'a crate::executor::ExecutionEvent,
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        if io.is_some() { return Err(crate::Error::Unsupported("finite test journal append is unavailable".into())); }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
             self.events
                 .lock()
                 .map_err(|_| Error::Storage("journal lock poisoned".into()))?
-                .push(event);
+                .push(event.clone());
             Err(Error::Unsupported(
                 "stock journal dispatch forbidden".into(),
             ))
-        }
-        .boxed()
+        })
     }
 
     fn stage<'a>(
         &'a self,
         operation: crate::OperationId,
-        key: String,
-        bytes: Vec<u8>,
+        key: &'a str,
+        bytes: &'a [u8],
         media_type: &'static str,
-    ) -> BoxFuture<'a, Result<crate::conversation::FileRef>> {
-        async { Err(Error::Unsupported("unused test journal".into())) }.boxed()
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, crate::conversation::FileRef>> {
+        crate::conversation::BoundedContentFuture::new(io, || async { Err(Error::Unsupported("unused test journal".into())) })
     }
 
     fn load<'a>(
         &'a self,
         file: &'a crate::conversation::FileRef,
-    ) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        async { Err(Error::Unsupported("unused test journal".into())) }.boxed()
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        if io.is_some() {
+            return Err(crate::Error::Unsupported("finite test journal IO is unavailable".into()));
+        }
+        crate::conversation::BoundedContentFuture::new(io, || async { Err(Error::Unsupported("unused test journal".into())) })
     }
 
     fn verify_input_file<'a>(
         &'a self,
         _: &'a crate::conversation::FileRef,
-    ) -> BoxFuture<'a, Result<()>> {
-        async { Ok(()) }.boxed()
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || async { Ok(()) })
     }
 
     fn verify_selected_context<'a>(
         &'a self,
         _: crate::OperationId,
         _: &'a crate::projection::SelectedModelContext,
-    ) -> BoxFuture<'a, Result<()>> {
-        async { Ok(()) }.boxed()
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || async { Ok(()) })
     }
 
     fn open_interaction<'a>(
         &'a self,
-        id: crate::InteractionId,
-        interaction: crate::interaction::Interaction,
-    ) -> BoxFuture<'a, Result<()>> {
-        async { Err(Error::Unsupported("unused test journal".into())) }.boxed()
+        _id: crate::InteractionId,
+        _interaction: &'a crate::interaction::Interaction,
+        _io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        Err(Error::Unsupported("unused test journal".into()))
     }
 
     fn interaction_outcome<'a>(
         &'a self,
-        id: crate::InteractionId,
-    ) -> BoxFuture<'a, Result<Option<crate::interaction::InteractionOutcome>>> {
-        async { Err(Error::Unsupported("unused test journal".into())) }.boxed()
+        _id: crate::InteractionId,
+        _io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Option<crate::interaction::InteractionOutcome>>> {
+        Err(Error::Unsupported("unused test journal".into()))
     }
+
 }
 
 struct RecordingExecutor {
