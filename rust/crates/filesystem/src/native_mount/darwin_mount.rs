@@ -4454,14 +4454,6 @@ impl DarwinMountContext {
         self.run_request(|work| self.lookup_measured(path, work))
     }
 
-    fn remember_current_lookup(&self, path: &MountPath, lookup: Option<MountLookup>) -> Result<(), i32> {
-        self.run_request(|work| self.remember_current_lookup_measured(path, lookup, work))
-    }
-
-    fn remember_lookup(&self, path: &MountPath, lookup: Option<MountLookup>, stamp: CacheStamp) -> Result<(), i32> {
-        self.run_request(|work| self.remember_lookup_measured(path, lookup, stamp, work))
-    }
-
     fn open(&self, path: &MountPath, state: InitialHandleState) -> Result<u64, i32> {
         self.run_request(|work| self.open_measured(path, state, work))
     }
@@ -4472,10 +4464,6 @@ impl DarwinMountContext {
 
     fn unlink(&self, path: &MountPath, lookup: MountLookup, unlink: impl FnOnce() -> Result<(), MountSourceError>) -> Result<(), i32> {
         self.run_write_request(|work| self.unlink_measured(path, lookup, unlink, work))
-    }
-
-    fn file_target(&self, path: &MountPath, handle: u64) -> Result<FileTarget, i32> {
-        self.run_request(|work| self.file_target_measured(path, handle, work))
     }
 
     fn file_or_open(&self, path: &MountPath, handle: u64) -> Result<DarwinSourceFile, i32> {
@@ -4490,16 +4478,8 @@ impl DarwinMountContext {
         self.run_request(|work| self.attributes_measured(path, handle, work))
     }
 
-    fn attributes_from_lookup(&self, path: &MountPath, lookup: MountLookup, stamp: Option<CacheStamp>) -> Result<NativeStat, i32> {
-        self.run_request(|work| self.attributes_from_lookup_measured(path, lookup, stamp, work))
-    }
-
     fn may_have_named_attributes(&self, path: &MountPath) -> Result<bool, i32> {
         self.run_request(|work| self.may_have_named_attributes_measured(path, work))
-    }
-
-    fn mutate_metadata(&self, path: &MountPath, handle: u64, mutate: impl FnOnce(&mut FileMetadata) -> Result<(), i32>) -> Result<(), i32> {
-        self.run_write_request(|work| self.mutate_metadata_measured(path, handle, mutate, work))
     }
 
     fn flush_on_close(&self, handle: u64) -> Result<(), i32> {

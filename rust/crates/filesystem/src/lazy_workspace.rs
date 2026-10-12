@@ -7065,29 +7065,6 @@ where
         original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
     ) -> Result<acyclic_stream::OwnedBytes,
         (LazyWorkspaceError, Option<crate::NativeAllocation>)> {
-        self.read_at_snapshot_body_with_work(
-            snapshot, path, maximum_bytes, false, original, cancellation,
-        ).await
-    }
-
-    /// Reads the exact opaque frozen symbolic-link target without following it.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn read_link_at_snapshot_with_work(
-        &self, snapshot: LazySnapshotRef, path: &str, maximum_bytes: u64,
-        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<acyclic_stream::OwnedBytes,
-        (LazyWorkspaceError, Option<crate::NativeAllocation>)> {
-        self.read_at_snapshot_body_with_work(
-            snapshot, path, maximum_bytes, true, original, cancellation,
-        ).await
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn read_at_snapshot_body_with_work(
-        &self, snapshot: LazySnapshotRef, path: &str, maximum_bytes: u64, symbolic_link: bool,
-        original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<acyclic_stream::OwnedBytes,
-        (LazyWorkspaceError, Option<crate::NativeAllocation>)> {
         let frame = LazyTreapWork::native_with_work(original, cancellation)
             .map_err(|error| (error, None))?;
         in_heap_lazy_with_work(&frame, || async {
@@ -7102,7 +7079,7 @@ where
             if source_required && self.source.reference() != snapshot.source {
                 return Err(LazyWorkspaceError::StaleSource);
             }
-            let read = if !symbolic_link {
+            let read = {
                 let stat = frozen.resolved.lookup.stat();
                 if stat.kind != SourceNodeKind::RegularFile {
                     return Err(LazyWorkspaceError::NotRegularFile);
@@ -7112,11 +7089,6 @@ where
                 self.read_resolved_range_with_work(
                     &frozen.resolved.lookup, frozen.resolved.source, Some(&frozen.reader), frozen.record,
                     path, 0, length, original, cancellation,
-                ).await
-            } else {
-                self.read_resolved_link_with_work(
-                    &frozen.resolved.lookup, frozen.resolved.source, Some(&frozen.reader), frozen.record,
-                    path, maximum_bytes, original, cancellation,
                 ).await
             };
             // The source request namespace has physically died; every byte

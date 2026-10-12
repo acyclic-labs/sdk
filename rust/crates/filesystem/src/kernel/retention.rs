@@ -109,42 +109,14 @@ pub fn retention_authority_id(
 pub fn encode_retention_created(
     value: &RetentionCreated,
 ) -> Result<Vec<u8>, RetentionCreatedError> {
-    encode_retention_created_with_permit(value, WorkBudget::UNBOUNDED, None, 0)
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-}
-
-/// Encodes the same retention fact after finite allocation and write admission.
-/// The caller's owned label is adopted through `live_owned_bytes`, never copied as input.
-///
-/// # Errors
-/// Retains the actual completed prefix on every failure.
-pub fn encode_retention_created_measured(
-    value: &RetentionCreated,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-    live_owned_bytes: u64,
-) -> MeasuredResult<OperationReceipt<Vec<u8>>, RetentionCreatedError> {
-    encode_retention_created_with_permit(value, budget, Some(cancellation), live_owned_bytes)
-}
-
-fn encode_retention_created_with_permit(
-    value: &RetentionCreated,
-    budget: WorkBudget,
-    cancellation: Option<&CancellationToken>,
-    live_owned_bytes: u64,
-) -> MeasuredResult<OperationReceipt<Vec<u8>>, RetentionCreatedError> {
     let mut work = WorkCounters::UNCHARGED;
     let mut allocations = AllocationLedger::default();
-    let result = (|| {
-        if let Some(token) = cancellation { token.check()?; }
-        validate(value)?;
-        allocations.claim_bytes(live_owned_bytes, 0, &mut work, budget)
-            .map_err(|error| error.into_work_or(RetentionCreatedError::Decode(CanonicalDecodeError::AllocationFailed)))?;
-        encode_retention_created_on_ledger(value, &mut allocations, &mut work, budget, cancellation)
-    })();
-    result.map(|value| OperationReceipt { value, work })
-        .map_err(|error| OperationFailure::new(error, work))
+    validate(value)?;
+    allocations.claim_bytes(0, 0, &mut work, WorkBudget::UNBOUNDED)
+        .map_err(|error| error.into_work_or(RetentionCreatedError::Decode(CanonicalDecodeError::AllocationFailed)))?;
+    encode_retention_created_on_ledger(
+        value, &mut allocations, &mut work, WorkBudget::UNBOUNDED, None,
+    )
 }
 
 /// Funds the identical retention writer on the original accounting ledger.
