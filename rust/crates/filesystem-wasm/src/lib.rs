@@ -5058,14 +5058,7 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .write_named_attribute(
-                        path,
-                        name,
-                        bytes::Bytes::from(bytes),
-                        mode,
-                        acyclic_fs::performance::BOUNDARY_BUDGET,
-                        &cancellation,
-                    )
+                    .change_named_attribute(path, &name, Some((bytes.as_slice(), mode)), acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -5092,7 +5085,7 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .remove_named_attribute(path, name, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
+                    .change_named_attribute(path, &name, None, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?
             });

@@ -3024,20 +3024,20 @@ impl DiskutilProcess {
     fn observe(&mut self, meter: &Arc<DetachReadMeter>) -> Result<Option<std::process::ExitStatus>, NativeMountError> {
         if let Some(credit) = &self.owned_credit {
             return self.tree.as_mut().expect("retained process tree")
-                .try_wait_measured(credit.runtime_meter_owner().as_ref())
+                .try_wait(Some(credit.runtime_meter_owner().as_ref()))
                 .map_err(|error| NativeMountError::from(credit.original_work().runtime_error(error)));
         }
-        meter.with_meter(|native| self.tree.as_mut().expect("retained process tree").try_wait_measured(native))
+        meter.with_meter(|native| self.tree.as_mut().expect("retained process tree").try_wait(Some(native)))
             .map_err(|error| darwin_stop_work_error(meter.native_error(error)))
     }
 
     fn terminate(&mut self, meter: &Arc<DetachReadMeter>) -> Result<(), NativeMountError> {
         if let Some(credit) = &self.owned_credit {
             return self.tree.as_mut().expect("retained process tree")
-                .terminate_measured(credit.runtime_meter_owner().as_ref())
+                .terminate(Some(credit.runtime_meter_owner().as_ref()))
                 .map_err(|error| NativeMountError::from(credit.original_work().runtime_error(error)));
         }
-        meter.with_meter(|native| self.tree.as_mut().expect("retained process tree").terminate_measured(native))
+        meter.with_meter(|native| self.tree.as_mut().expect("retained process tree").terminate(Some(native)))
             .map_err(|error| darwin_stop_work_error(meter.native_error(error)))
     }
 }
@@ -3180,7 +3180,7 @@ impl DarwinRecoveryControl {
         }
         if let Some(child) = &mut self.0.diskutil {
             let result = child.tree.as_mut().ok_or(NativeMountError::ControlPending)?
-                .terminate_measured(original.runtime_meter())
+                .terminate(Some(original.runtime_meter()))
                 .map_err(|error| NativeMountError::from(original.runtime_error(error)));
             if let Err(error) = result { return Err(failure.unwrap_or(error)); }
             drop(self.0.diskutil.take());

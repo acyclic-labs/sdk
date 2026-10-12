@@ -1413,7 +1413,7 @@ impl ExtensionAdmission {
             {
                 return Err(boundary_error(work, Invalid, "extension configuration is invalid"));
             }
-            configuration.content.validate_with_work(work)?;
+            configuration.content.validate(work)?;
             let position = self.selected.iter().position(|extension| extension == &configuration.extension);
             if position.is_none_or(|position| last_position.is_some_and(|last| position <= last)) {
                 return Err(boundary_error(work, Conflict,
@@ -1757,7 +1757,7 @@ impl SchemaRegistry {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
         extension.validate()?;
-        content.validate()?;
+        crate::executor::with_history_io(io, |work| content.validate(work))?;
         if content.descriptor().media_type() != "application/json" {
             return Err(Error::Invalid("extension configuration is invalid".into()));
         }
@@ -2069,7 +2069,7 @@ impl Reducer {
         self.authority_verifier.verify_audience(&self.authority, &mut None)?;
         self.authority_verifier.verify(scope, &mut None)?;
         require_capability(scope, capability::EXTENSION_MIGRATE)?;
-        ContentGrant::verify(
+        ContentGrant::authorize_volume(
             &self.authority_verifier,
             scope,
             destination,
@@ -2467,7 +2467,7 @@ impl Reducer {
                         content.volume(), VolumeOperation::Write, work,
                     )?;
                 } else {
-                    ContentGrant::verify(
+                    ContentGrant::authorize_volume(
                         &self.authority_verifier, &command.scope, content.volume(), VolumeOperation::Write,
                         acyclic_stream::MAX_RECORD_BYTES as u64, work,
                     )?;

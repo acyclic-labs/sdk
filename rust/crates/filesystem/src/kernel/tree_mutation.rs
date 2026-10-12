@@ -160,7 +160,7 @@ pub enum TreeMutation {
 }
 
 impl persistent_btree::Mutation<TreeFormat> for TreeMutation {
-    type Error = TreeSemanticError;
+    type Error = TreeMutationError;
 
     fn key(&self) -> &LogicalName {
         match self {
@@ -175,19 +175,19 @@ impl persistent_btree::Mutation<TreeFormat> for TreeMutation {
 
     fn replacement<'a>(&'a self, current: Option<&TreeEntry>) -> Result<Option<&'a TreeEntry>, Self::Error> {
         match self {
-            Self::Insert(_) if current.is_some() => Err(TreeSemanticError::AlreadyExists),
+            Self::Insert(_) if current.is_some() => Err(TreeMutationError::AlreadyExists),
             Self::Insert(entry) => Ok(Some(entry)),
-            Self::Remove { .. } | Self::Replace { .. } if current.is_none() => Err(TreeSemanticError::Missing),
+            Self::Remove { .. } | Self::Replace { .. } if current.is_none() => Err(TreeMutationError::Missing),
             Self::Remove { expected_file_id, .. } => {
-                let existing = current.ok_or(TreeSemanticError::Missing)?;
+                let existing = current.ok_or(TreeMutationError::Missing)?;
                 if expected_file_id.is_some_and(|expected| existing.file_id != expected) {
-                    return Err(TreeSemanticError::FileIdentityConflict);
+                    return Err(TreeMutationError::FileIdentityConflict);
                 }
                 Ok(None)
             }
             Self::Replace { entry, expected_file_id } => {
-                let existing = current.ok_or(TreeSemanticError::Missing)?;
-                if existing.file_id != *expected_file_id { return Err(TreeSemanticError::FileIdentityConflict); }
+                let existing = current.ok_or(TreeMutationError::Missing)?;
+                if existing.file_id != *expected_file_id { return Err(TreeMutationError::FileIdentityConflict); }
                 Ok(Some(entry))
             }
         }
@@ -249,7 +249,7 @@ pub(super) fn project_tree_error(error: crate::FsError) -> TreeMutationError {
     }
 }
 
-fn map_error(error: persistent_btree::Error<TreeSemanticError>) -> TreeMutationError {
+fn map_error(error: persistent_btree::Error<TreeMutationError>) -> TreeMutationError {
     match error {
         persistent_btree::Error::Empty => TreeMutationError::Empty,
         persistent_btree::Error::TooManyMutations => TreeMutationError::TooManyMutations,
@@ -266,21 +266,11 @@ fn map_error(error: persistent_btree::Error<TreeSemanticError>) -> TreeMutationE
         persistent_btree::Error::AllocationFailed | persistent_btree::Error::Allocation(_) => {
             TreeMutationError::AllocationFailed
         }
-        persistent_btree::Error::Semantic(error) => error.into(),
+        persistent_btree::Error::Semantic(error) => error,
         persistent_btree::Error::Storage(error) => TreeMutationError::Storage(error),
         persistent_btree::Error::Decode(error) => TreeMutationError::Decode(error),
         persistent_btree::Error::Work(error) => TreeMutationError::Work(error),
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-pub(crate) enum TreeSemanticError {
-    #[error("tree mutation name already exists")]
-    AlreadyExists,
-    #[error("tree mutation name is absent")]
-    Missing,
-    #[error("tree mutation file identity precondition failed")]
-    FileIdentityConflict,
 }
 
 /// Persistent directory mutation failures.
@@ -334,16 +324,6 @@ pub enum TreeMutationError {
     /// Exact work exceeded or overflowed its budget.
     #[error(transparent)]
     Work(#[from] WorkError),
-}
-
-impl From<TreeSemanticError> for TreeMutationError {
-    fn from(value: TreeSemanticError) -> Self {
-        match value {
-            TreeSemanticError::AlreadyExists => Self::AlreadyExists,
-            TreeSemanticError::Missing => Self::Missing,
-            TreeSemanticError::FileIdentityConflict => Self::FileIdentityConflict,
-        }
-    }
 }
 
 #[cfg(all(test, feature = "memory"))]

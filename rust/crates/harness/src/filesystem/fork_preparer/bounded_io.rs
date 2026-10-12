@@ -271,7 +271,7 @@ impl PreparationIo {
         request: &crate::resource_preparation::ResourcePreparationRequest,
         cancellation: &CancellationToken,
     ) -> Result<Self> {
-        request.validate()?;
+        request.validate(&mut None)?;
         Self::from_budget(acyclic_fs::performance::work_budget(request.maximum_work, request.maximum_bytes), cancellation)
     }
 
@@ -745,13 +745,10 @@ impl PreparationIo {
                 }
                 next => self.codec_charge(next, false),
             };
-        #[cfg(not(target_arch = "wasm32"))]
-        let result: Result<T> = if self.original_native_work().is_some() {
-            crate::contract::json_from_slice_bounded_native_trusted(bytes, bounds, owned,
-                crate::wire::ErrorCode::Storage, T::json_value_schema(), &mut charge)
-        } else { crate::contract::json_from_slice_bounded_trusted(bytes, bounds, owned, &mut charge) };
-        #[cfg(target_arch = "wasm32")]
-        let result: Result<T> = crate::contract::json_from_slice_bounded_trusted(bytes, bounds, owned, &mut charge);
+        let result: Result<T> = crate::contract::json_from_slice_bounded(
+            std::marker::PhantomData::<T>, bytes, bounds, owned, native_code,
+            Some(T::json_value_schema()), &mut charge,
+        );
         let mut decoded = finish_decode(self, result, reservation, diagnostic_bytes)?;
         decoded.1.substitute(decoded.0.logical_owned_bytes()?)?;
         Ok(retain_decoded(decoded))
@@ -905,7 +902,7 @@ impl PreparationIo {
         let mut reservation = None;
         let mut diagnostic_bytes = 0;
         let result = crate::contract::json_from_value_bounded(
-            std::borrow::Cow::Borrowed(source), bounds, 0, Some(code), Some(schema), &mut |next| match next {
+            std::borrow::Cow::Borrowed(source), bounds, 0, code, schema, &mut |next| match next {
                 crate::contract::JsonCodecCharge::Admission { value_shape, .. } => {
                     let allowance = match profile {
                         Some(profile) => profile(value_shape, 0, value_shape.input_bytes(), Some(code))?,

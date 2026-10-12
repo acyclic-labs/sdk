@@ -50,7 +50,9 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
         host.provider.validate_with_native_work(work)?;
         let mut custody = work.retain_owned(std::mem::size_of::<Self>() as u64)
             .map_err(Error::from)?;
-        let (issuer, mut issuer_custody) = issuer.clone_with_native_work(work)?;
+        let mut observer = crate::store::history::native_work_io(work)?;
+        let issuer = issuer.copy(&mut Some(&mut observer))?;
+        let mut issuer_custody = observer.into_custody();
         custody.absorb(&mut issuer_custody)
             .map_err(|cause| Error::NativeWork { cause, custody: Some(issuer_custody) })?;
         Ok(Self {
@@ -79,7 +81,9 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
     ) -> Result<()> {
         work.remaining()?;
         let verifier_custody;
-        let (verifier, custody) = self.issuer.verifier_with_native_work(work)?;
+        let mut observer = crate::store::history::native_work_io(work)?;
+        let verifier = self.issuer.verifier(&mut Some(&mut observer))?;
+        let custody = observer.into_custody();
         verifier_custody = custody;
         let configured = proof.creator == verifier;
         drop(verifier);
@@ -200,7 +204,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         }
         crate::NativeFutureBundle::new(work, || async move {
             let creator_custody;
-            let (creator, custody) = self.issuer.verifier_with_native_work(work)?;
+            let mut observer = crate::store::history::native_work_io(work)?;
+            let creator = self.issuer.verifier(&mut Some(&mut observer))?;
+            let custody = observer.into_custody();
             creator_custody = custody;
             owner.authenticate_root_bootstrap_creator_with_native_work(&creator, work).await?;
             drop(creator);
