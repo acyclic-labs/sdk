@@ -113,7 +113,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
         -> acyclic_stream::BoxProviderFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<acyclic_fs::LazyDirectoryPage>, Error>>
     {
         Box::pin(async move {
-            self.lazy.list_directory_at_snapshot_measured(snapshot, path, cursor, maximum, budget, cancellation).await
+            self.lazy.list_directory_at_snapshot(snapshot, path, cursor, maximum, budget, cancellation, None).await
                 .map_err(|failure| failure.map_error(root_source_error))
         })
     }

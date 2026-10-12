@@ -1023,7 +1023,7 @@ where
                     session.revalidate_with_meter(native_work)?;
                 }
             }
-            self.source.selected_import_snapshot_with_meter(operation, native_work, cancellation)
+            self.source.selected_import_snapshot(operation, native_work, cancellation)
                 .await.map_err(NativeMountError::from)
         }.await;
         if result.is_err() { self.retain_failed_session(); }
@@ -1135,11 +1135,11 @@ where
             with_live_session(&self.session, |session| session.revalidate_with_meter(native_work))
                 .map_err(|cause| (cause, None))?;
             if qualify_readonly {
-                let snapshot = self.source.publication_snapshot_with_native_work(native_work, cancellation)
+                let snapshot = self.source.publication_snapshot(super::adapter::NativeDemandCarrier::Native(native_work), cancellation)
                     .await.map_err(|(cause, accounting)| (MountLifecycleError::Source(cause), accounting))?;
                 Ok(MountedSnapshotCapture::Qualified(snapshot))
             } else {
-                self.source.snapshot_with_native_work(native_work, cancellation)
+                self.source.snapshot(super::adapter::NativeDemandCarrier::Native(native_work), cancellation)
                     .await.map(MountedSnapshotCapture::Original)
                     .map_err(|cause| (MountLifecycleError::Source(cause), None))
             }
@@ -1157,7 +1157,7 @@ where
         frozen: crate::LazySnapshotRef,
         native_work: &super::NativeMountMeterWork,
     ) -> Result<(), MountLifecycleError> {
-        self.source.validate_snapshot_with_native_work(
+        self.source.lazy.validate_snapshot_with_native_work(
             frozen, &native_work.native_materialization_work(),
         ).await.map_err(MountLifecycleError::Lazy)
     }
@@ -1172,8 +1172,8 @@ where
         path: &str,
         native_work: &super::NativeMountMeterWork,
     ) -> Result<(crate::LazyLookup, crate::NativeAllocation), MountLifecycleError> {
-        self.source.lookup_at_snapshot_with_work(
-            frozen, path, &native_work.native_materialization_work(),
+        self.source.lazy.lookup_at_snapshot_with_work(
+            frozen, path, &native_work.native_materialization_work(), native_work.native_materialization_work().cancellation(),
         ).await.map_err(MountLifecycleError::from)
     }
 
@@ -2488,8 +2488,8 @@ mod tests {
         })?;
         assert_eq!(source_ack, Some(qualified_ack));
         assert!(qualified_ack.operation().is_some());
-        let acknowledged = mount.source.snapshot_with_native_work(
-            &publication_native, &publication_cancellation,
+        let acknowledged = mount.source.snapshot(
+            super::super::adapter::NativeDemandCarrier::Native(&publication_native), &publication_cancellation,
         ).await?;
         assert_eq!(
             qualified_ack.snapshot().lazy_snapshot_with_native_work(&publication_work, &publication_cancellation)?,
