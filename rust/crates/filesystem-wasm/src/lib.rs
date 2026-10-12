@@ -6100,9 +6100,9 @@ mod bindings {
             truncated: false,
         };
         match outcome {
-            JoinOutcome::Applied(value) => generation("applied", value.into_generation()),
+            JoinOutcome::Applied(value) => generation("applied", value.generation),
             JoinOutcome::AlreadyApplied(value) => {
-                generation("already-applied", value.into_generation())
+                generation("already-applied", value.generation)
             }
             JoinOutcome::NoChanges(value) => generation("no-changes", value),
             JoinOutcome::StaleTarget(value) => generation("stale-target", value),

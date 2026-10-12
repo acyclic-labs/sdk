@@ -879,7 +879,7 @@ where
         let outcome = outcome?;
         match outcome {
             JoinOutcome::Applied(generation) | JoinOutcome::AlreadyApplied(generation) => {
-                Ok(generation.generation().id())
+                Ok(generation.generation.id())
             }
             JoinOutcome::NoChanges(generation) => Ok(generation.id()),
             _ => Err(WorkspaceMultiRootPublisherError::Candidate(
@@ -1134,11 +1134,11 @@ where
             .await?
         {
             JoinOutcome::Applied(generation) => {
-                MultiRootPublishRoot::Published(generation.generation().id())
+                MultiRootPublishRoot::Published(generation.generation.id())
             }
             JoinOutcome::NoChanges(generation) => MultiRootPublishRoot::Published(generation.id()),
             JoinOutcome::AlreadyApplied(generation) => {
-                MultiRootPublishRoot::AlreadyPublished(generation.generation().id())
+                MultiRootPublishRoot::AlreadyPublished(generation.generation.id())
             }
             JoinOutcome::StaleTarget(_)
             | JoinOutcome::Fenced

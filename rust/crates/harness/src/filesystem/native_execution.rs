@@ -465,7 +465,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             let acquired = if recover {
                 workspace.publication_reservation_with_native_work(original_operation, work, cancellation).await
             } else {
-                workspace.reserve_publication_with_native_work(original_operation, work, cancellation).await.map(Some)
+                workspace.reserve_publication(original_operation, work, cancellation).await.map(Some).map_err(|error| (error, None))
             };
             reservation = acquired.map_err(|(cause, custody)| Error::NativeWorkspace { source: cause, custody })?;
             self.verify_with_native_work(false, work).await?;
@@ -668,8 +668,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> NativePubl
         let result = match crate::NativeFutureBundle::new(work, || async {
             self.binding.verify(owner, work)?;
             owner.verify_with_native_work(true, work).await?;
-            self.workspace.release_publication_with_native_work(self.reservation, work, cancellation)
-                .await.map_err(|(cause, custody)| Error::NativeWorkspace { source: cause, custody })?;
+            self.workspace.release_publication(self.reservation, work, cancellation)
+                .await.map_err(|source| Error::NativeWorkspace { source, custody: None })?;
             released = true;
             owner.verify_with_native_work(true, work).await?;
             self.binding.verify(owner, work)
