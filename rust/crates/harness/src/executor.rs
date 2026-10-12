@@ -35,7 +35,7 @@ pub(crate) use native_stock::{stock_vec_push, stock_key, stock_string_push,
 pub use native_stock::NativeStockExecutor;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use native_stock::{
-    native_boundary, replay_execution_with_native_work, stage_json_with_native_work, load_json_with_native_work,
+    replay_execution_with_native_work, stage_json_with_native_work, load_json_with_native_work,
     retained_model_step_with_native_work, completed_tool_projection_with_native_work,
 };
 
@@ -434,7 +434,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         &'a self, _operation: OperationId, _after: u64, _maximum: u32,
         _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Vec<ExecutionRecord>, acyclic_fs::NativeAllocation)>> {
-        Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native execution replay is unavailable"))
+        Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native execution replay is unavailable" })
     }
 
     /// Appends borrowed paid metadata; a custom journal must explicitly audit this producer.
@@ -443,7 +443,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         &'a self, _operation: OperationId, _key: &'a str, _event: &'a ExecutionEvent,
         _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native execution append is unavailable"))
+        Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native execution append is unavailable" })
     }
 
     /// Claims exactly the same journal tail; false preserves lost-claim semantics.
@@ -452,7 +452,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         &'a self, _operation: OperationId, _tail: u64, _key: &'a str, _event: &'a ExecutionEvent,
         _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, bool>> {
-        Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native atomic execution append is unavailable"))
+        Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native atomic execution append is unavailable" })
     }
 
     /// Stages borrowed immutable bytes before copying keys, metadata or provider input.
@@ -461,7 +461,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         &'a self, _operation: OperationId, _key: &'a str, _bytes: &'a [u8], _media: &'static str,
         _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
-        Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native execution staging is unavailable"))
+        Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native execution staging is unavailable" })
     }
 
     /// Resolves exact journal-owner bytes without substituting a remaining budget.
@@ -469,7 +469,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     fn load_with_native_work<'a>(
         &'a self, _reference: &'a FileRef, _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
-        Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native execution payload resolution is unavailable"))
+        Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native execution payload resolution is unavailable" })
     }
 
     /// Verifies the original user file authority before native turn admission.
@@ -477,7 +477,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     fn verify_input_file_with_native_work<'a>(
         &'a self, _reference: &'a FileRef, _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native turn file verification is unavailable"))
+        Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native turn file verification is unavailable" })
     }
 
     /// Verifies data and original option bindings through the audited native engine.
@@ -485,7 +485,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     fn verify_model_content_with_native_work<'a>(
         &'a self, _content: &'a ModelContent, _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native model content verification is unavailable"))
+        Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native model content verification is unavailable" })
     }
 
     /// Verifies the previously committed canonical selection under its original owner.
@@ -494,7 +494,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         &'a self, _operation: OperationId, _selected: &'a SelectedModelContext,
         _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native selected context verification is unavailable"))
+        Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native selected context verification is unavailable" })
     }
 
     /// Opens the same admitted durable interaction without reconstructing authority.
@@ -503,7 +503,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         &'a self, _id: InteractionId, _interaction: &'a Interaction,
         _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native execution interaction opening is unavailable"))
+        Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native execution interaction opening is unavailable" })
     }
 
     /// Reads the original outcome with custody through its actual last use.
@@ -511,7 +511,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     fn interaction_outcome_with_native_work<'a>(
         &'a self, _id: InteractionId, _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (Option<InteractionOutcome>, acyclic_fs::NativeAllocation)>> {
-        Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native execution interaction outcome is unavailable"))
+        Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native execution interaction outcome is unavailable" })
     }
 }
 
@@ -766,7 +766,7 @@ pub trait Executor: acyclic_stream::ProviderPlatform {
         _journal: &'a dyn ExecutionJournal, _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (TurnOutput, acyclic_fs::NativeAllocation)>> {
         _work.remaining()?;
-        Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native executor is unavailable"))
+        Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "native executor is unavailable" })
     }
 }
 
@@ -1349,8 +1349,7 @@ impl StockExecution<'_> {
                 || context.scope().run_limits() != self.stock.tool_scope.run_limits()
                 || context.scope().extensions() != self.stock.tool_scope.extensions()
                 || self.stock.task.as_ref().is_some_and(|(_, task, fence)| !context.original_task_binding_matches(*task, fence)) {
-                return Err(native_boundary(crate::wire::ErrorCode::Unauthorized,
-                    "stock task context differs from execution binding"));
+                return Err(crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "stock task context differs from execution binding" });
             }
             return Ok(());
         }
@@ -1375,8 +1374,7 @@ impl StockExecution<'_> {
     ) -> Result<Option<crate::runtime::ToolContext>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = self.native {
-            let work = self.native_work().ok_or_else(|| native_boundary(crate::wire::ErrorCode::Storage,
-                "native tool context has no original work"))?;
+            let work = self.native_work().ok_or_else(|| crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, reason: "native tool context has no original work" })?;
             let mut tool_context = crate::runtime::ToolContext::new_with_native_work(
                 Arc::clone(native.context), invocation.operation_id, &invocation.call_id, work,
             )?.with_native_scope(&self.stock.tool_scope, self.stock.limits, work)?;
@@ -6276,9 +6274,9 @@ mod tests {
             requests.get(1).map(|request| request
                 .messages
                 .iter()
-                .map(|message| message.role.as_str())
+                .map(|message| message.role)
                 .collect::<Vec<_>>()),
-            Some(vec!["user", "assistant", "tool"])
+            Some(vec![ModelRole::User, ModelRole::Assistant, ModelRole::Tool])
         );
         Ok(())
     }
