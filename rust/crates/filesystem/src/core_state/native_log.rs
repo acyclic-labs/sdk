@@ -23,18 +23,12 @@ impl CoreLog {
         self.adopt_native(work)?;
         {
             let residents = self.residents();
-            for record in &residents.0 {
-                work.charge(crate::WorkCounters {
-                    items_examined: 1,
-                    ..Default::default()
-                })?;
-                if record.key == key {
-                    return record
-                        .value
-                        .as_ref()
-                        .map(|value| native_records::clone_native_record_value(value, work, cxl))
-                        .transpose();
-                }
+            if let Some(index) = residents.position(key, Some(work))? {
+                return residents.0[index]
+                    .value
+                    .as_ref()
+                    .map(|value| native_records::clone_native_record_value(value, work, cxl))
+                    .transpose();
             }
         }
         let paths = key.paths(root)?;
@@ -67,17 +61,7 @@ impl CoreLog {
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(Option<usize>, bool), LocalCoreStateStoreError> {
         let mut residents = self.residents();
-        let mut found = None;
-        for (index, record) in residents.0.iter().enumerate() {
-            work.charge(crate::WorkCounters {
-                items_examined: 1,
-                ..Default::default()
-            })?;
-            if record.key == key {
-                found = Some(index);
-                break;
-            }
-        }
+        let found = residents.position(key, Some(work))?;
         if found.is_none() {
             let needed = residents.0.len() + 1;
             let Residents(values, slots) = &mut *residents;

@@ -234,7 +234,7 @@ impl PiRootProvider {
     ) -> Result<(T, NativeAllocation)> {
         read_root_artifact_with_native_work(
             &self.owner,
-            self.preparation.context.context(),
+            self.preparation.context.as_ref(),
             reference,
             work,
         )

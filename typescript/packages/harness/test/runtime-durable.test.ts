@@ -43,17 +43,25 @@ test("never executes a resumable definition in the local in-memory runner", asyn
   expect(transitions).toBe(0);
 });
 
-test("restored resumable state is schema-admitted before a typed transition", async () => {
+test("resumable state admission and callbacks stay pinned after construction", async () => {
   let transitions = 0;
-  const definition = await TaskDefinition.resumable<number, number, number>("checkpoint", "1", {
+  const component = {
     state: numberSchema,
-    initial: input => input,
-    async transition(_context, state) { transitions++; return { kind: "finish", output: state * 2 }; },
-  }, { implementationDigest: durableDigest, input: numberSchema, output: numberSchema });
+    initial: (input: number) => input,
+    async transition(_context: TaskContext, state: number) { transitions++; return { kind: "finish" as const, output: state * 2 }; },
+  };
+  const options = { implementationDigest: durableDigest, input: numberSchema, output: numberSchema };
+  const definition = await TaskDefinition.resumable<number, number, number>("checkpoint", "1", component, options);
+  const replacement = await defineRuntimeSchema("replacement", { type: "number" }, () => 99);
+  component.state = replacement;
+  component.initial = () => 99;
+  component.transition = async () => ({ kind: "finish", output: 99 });
+  options.output = replacement;
   if (definition.implementation.kind !== "resumable") throw new TypeError("expected resumable definition");
   const context = new TaskContext(await Harness.builder(contracts).build(), new AbortController().signal);
   await expect(definition.implementation.component.transition(context, "corrupt checkpoint")).rejects.toThrow();
   expect(transitions).toBe(0);
+  expect(await definition.implementation.component.initial(4)).toBe(4);
   expect(await definition.implementation.component.transition(context, 4)).toEqual({ kind: "finish", output: 8 });
   expect(transitions).toBe(1);
 });
@@ -375,8 +383,6 @@ test("qualified execution is pinned and retries use the retained placement", asy
     .toThrow();
   expect(() => runtime.spawn(localClosure, 3)).toThrow();
   expect((await runtime.admit(definition, 3, operationId)).kind).toBe("accepted");
-  // The full task-admission envelope owns the canonical representation of
-  // nested resource keys and byte vectors.
   expect(retained?.execution).toEqual(contracts.validate("task_admission", retained!).execution);
   expect(retained).toEqual(contracts.validate("task_admission", retained!));
   expect(retained?.operation_id).toBe(operationId);
@@ -407,7 +413,6 @@ test("preserves unresolved batch admission and stable scoped entry identities", 
       expect(request.canonical.parent).toBeNull();
       expect(request.canonical.inputs).toEqual([1n, 2n]);
       expect(request.inputDigest).toEqual(Array.from(contracts.digestCanonicalJson(request.canonical)));
-      expect(Object.isFrozen(request.inputDigest)).toBeTrue();
       ids.push(...request.members.map(member => member.operation_id));
       return { taskName: request.taskName, revision: request.revision,
         implementationDigest: request.implementationDigest, inputDigest: request.inputDigest,

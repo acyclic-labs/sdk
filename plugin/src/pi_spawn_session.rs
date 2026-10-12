@@ -8,7 +8,7 @@ use acyclic_harness::{
     conversation::ContentResidencyVerifier,
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
     filesystem::{PreparationIo, TaskCommandProgress},
-    runtime::NativeTaskContext,
+    runtime::TaskContext,
     workflow::WorkflowCommand,
 };
 use serde::de::DeserializeOwned;
@@ -223,7 +223,7 @@ impl PiSession {
                 )
             })?;
             if live.prepared.binding != *self.binding(caller)?
-                || live.context.context().durable_task_id() != Some(caller)
+                || live.context.durable_task_id() != Some(caller)
             {
                 return Err(acyclic_harness::Error::Invalid(
                     "Pi recursive spawn changed its original caller binding".to_owned(),
@@ -939,7 +939,7 @@ impl PiSession {
         &self,
         owner: &pi_owner::PiOwnerConfig,
         native: Arc<pi_native_host::PiNativeCommandHost>,
-        context: &Arc<NativeTaskContext>,
+        context: &Arc<TaskContext>,
         command: WorkflowCommand,
         reconcile: bool,
         task: TaskId,
@@ -951,7 +951,7 @@ impl PiSession {
         Option<pi_fork::PreparedPiFork>,
     )> {
         let fork = self.command_host(work, Some(native))?;
-        let fence = context.context().owned_task_fence()?;
+        let fence = context.owned_task_fence()?;
         let (payload, mut input_custody) =
             pi_root_provider::guarded_pi_value(input, owner.policy().maximum_payload_bytes, work)?;
         let progress = fork
