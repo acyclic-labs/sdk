@@ -39,7 +39,7 @@ impl PinnedContextStage {
         reference.descriptor().verify(&bytes, &mut None)?;
         let context: Context = crate::contract::json_from_slice(&bytes)
             .map_err(|error| Error::Invalid(format!("context snapshot is invalid: {error}")))?;
-        super::validate_projected_context_with_io(&context, limits, None)?;
+        super::validate_projected_context(&context, limits, None)?;
         if context.current_input_index.is_some() {
             return Err(Error::Invalid(
                 "context snapshot still marks a historical input as active".into(),
@@ -99,7 +99,7 @@ impl ContextStage for PinnedContextStage {
         crate::contract::validate_component_label(&self.name, "context snapshot")?;
         crate::contract::validate_component_label(&self.revision, "context snapshot revision")?;
         validate_reference(&self.reference, self.limits)?;
-        super::validate_projected_context_with_io(&self.context, self.limits, None)
+        super::validate_projected_context(&self.context, self.limits, None)
     }
 
     fn contract(&self) -> Value {
@@ -119,7 +119,7 @@ impl ContextStage for PinnedContextStage {
         limits: Limits,
     ) -> BoxFuture<'a, Result<Context>> {
         Box::pin(async move {
-            let limits = super::restrict_context_limits(self.limits, limits)?;
+            let limits = super::restrict_context_limits(self.limits, limits, None)?;
             validate_reference(&self.reference, limits)?;
             let composed =
                 super::selection::place_snapshot(context, &self.context, self.placement, limits)?;
@@ -144,7 +144,7 @@ impl ContextStage for PinnedContextStage {
             return Err(crate::executor::native_boundary(crate::wire::ErrorCode::Unsupported,
                 "context snapshot reader has no original native capability"));
         }
-        super::validate_projected_context_with_io(&self.context, self.limits, Some(&crate::executor::PreparationIo::from_native_work(work)?))
+        super::validate_projected_context(&self.context, self.limits, Some(&crate::executor::PreparationIo::from_native_work(work)?))
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -168,7 +168,7 @@ impl ContextStage for PinnedContextStage {
     ) -> Result<crate::NativeFutureBundle<'a, (Context, acyclic_fs::NativeAllocation)>> {
         self.validate_native(work)?;
         crate::NativeFutureBundle::new(work, || async move {
-            let limits = super::restrict_context_limits_native(self.limits, limits, work)?;
+            let limits = super::restrict_context_limits(self.limits, limits, Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
             validate_reference_native(&self.reference, limits, work)?;
             let composed = super::selection::place_snapshot_native(
                 context, &self.context, self.placement, limits, work)?;

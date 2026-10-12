@@ -9,6 +9,7 @@ pub(crate) mod operations;
 #[cfg(feature = "filesystem")]
 mod guarded;
 pub use history::*;
+pub use effects::effect_events;
 
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
@@ -1189,11 +1190,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }
     }
 
-    fn apply_published_event(&mut self, event: &crate::core::Event) -> Result<ApplyResult> {
-        let result = self.reducer.apply_committed(event.clone())?;
-        self.reducer.mark_indexed_terminal_effect_with_work(event, &mut None)?;
-        Ok(result)
-    }
 
     /// Configures the event/retry cache; canonical Stream history and live projections remain authoritative.
     pub fn with_resident_event_limit(mut self, maximum: usize) -> Result<Self> {
@@ -1542,49 +1538,109 @@ impl<P: StreamProvider> StreamAggregate<P> {
         if work.is_some() {
             return Err(Error::Unsupported("aggregate work observers require filesystem support".into()));
         }
-        crate::obs::outcome(self.execute_untraced(command).await)
+        crate::obs::outcome(async {
+            if let Some((result, _)) = self.replay(&command, true, 2 * acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).await? {
+                if let Action::PublishFork { seed } = &command.action {
+                    self.release_replayed_fork_fence(seed).await?;
+                }
+                return Ok(result);
+            }
+            let idempotency_key =
+                stream_idempotency_key_with_work(self.stream.path().as_str(), &command.idempotency_key, &mut None)?;
+            let fresh_migration = matches!(&command.action, Action::MigrateExtensionState { .. })
+                && self
+                    .reducer
+                    .operation_revision(command.operation_id)
+                    .is_none();
+            let planned = self.plan_command(&command, fresh_migration).await?;
+            let ApplyResult::Applied { event } = planned else {
+                if let crate::core::Action::PublishFork { seed } = &command.action {
+                    self.release_replayed_fork_fence(seed).await?;
+                }
+                return Ok(planned);
+            };
+            if !fresh_migration {
+                self.validate_admission_content(&command.action).await?;
+            }
+            self.validate_causal_reference(event.causal_parent.as_ref(), &mut None)
+                .await?;
+            let publication = checkpoints::publication_with_work(&self.client, &self.reducer, &event, &mut None).await?;
+            let request = publication.request(&self.client, idempotency_key).await?;
+            let fork_guard = if let crate::core::Action::PublishFork { seed } = &command.action {
+                let verifier = self
+                    .fork_verifier
+                    .as_ref()
+                    .ok_or_else(|| Error::Unsupported("fork seed verifier is not bound".into()))?;
+                Some(verifier.activate(seed).await?)
+            } else {
+                None
+            };
+            let append = self.client.provider.commit(request).await;
+            let outcome = match append {
+                Ok(outcome) => outcome,
+                Err(StreamError::Unavailable) => {
+                    return match self.reconcile_inner(&command).await {
+                        Ok(Some(result)) => {
+                            if let Some(guard) = fork_guard {
+                                guard
+                                    .release()
+                                    .await
+                                    .map_err(|_| Error::Indeterminate(command.operation_id))?;
+                            }
+                            Ok(result)
+                        }
+                        Ok(None) | Err(Error::Storage(_)) => {
+                            Err(Error::Indeterminate(command.operation_id))
+                        }
+                        Err(error) => Err(error),
+                    };
+                }
+                Err(StreamError::IdempotencyMismatch) => {
+                    if let Some(guard) = fork_guard {
+                        guard
+                            .release()
+                            .await
+                            .map_err(|_| Error::Indeterminate(command.operation_id))?;
+                    }
+                    return Err(Error::Conflict(
+                        "retry identity is already bound to another append".into(),
+                    ));
+                }
+                Err(error) => {
+                    if let Some(guard) = fork_guard {
+                        guard
+                            .release()
+                            .await
+                            .map_err(|_| Error::Indeterminate(command.operation_id))?;
+                    }
+                    return Err(Error::Storage(error.to_string()));
+                }
+            };
+            let result = match outcome {
+                CommitOutcome::Committed(envelope) => {
+                    if publication.verify(&envelope).is_err() {
+                        return Err(Error::Indeterminate(publication.operation_id));
+                    }
+                    match self.reducer.apply_committed(event.clone()).and_then(|result|
+                        self.reducer.mark_indexed_terminal_effect_with_work(&event, &mut None).map(|()| result)) {
+                        Ok(result) => Ok(result),
+                        Err(_) => return Err(Error::Indeterminate(command.operation_id)),
+                    }
+                }
+                CommitOutcome::Conflict(_) => Err(Error::Conflict(
+                    "aggregate tail or operation identity changed".into(),
+                )),
+            };
+            if let Some(guard) = fork_guard {
+                guard
+                    .release()
+                    .await
+                    .map_err(|_| Error::Indeterminate(command.operation_id))?;
+            }
+            result
+        }.await)
     }
 
-    async fn execute_untraced(&mut self, command: Command) -> Result<ApplyResult> {
-        if let Some((result, _)) = self.replay(&command, true, 2 * acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).await? {
-            if let Action::PublishFork { seed } = &command.action {
-                self.release_replayed_fork_fence(seed).await?;
-            }
-            return Ok(result);
-        }
-        let idempotency_key =
-            stream_idempotency_key_with_work(self.stream.path().as_str(), &command.idempotency_key, &mut None)?;
-        let fresh_migration = matches!(&command.action, Action::MigrateExtensionState { .. })
-            && self
-                .reducer
-                .operation_revision(command.operation_id)
-                .is_none();
-        let planned = self.plan_command(&command, fresh_migration).await?;
-        let ApplyResult::Applied { event } = planned else {
-            if let crate::core::Action::PublishFork { seed } = &command.action {
-                self.release_replayed_fork_fence(seed).await?;
-            }
-            return Ok(planned);
-        };
-        if !fresh_migration {
-            self.validate_admission_content(&command.action).await?;
-        }
-        self.validate_causal_reference(event.causal_parent.as_ref(), &mut None)
-            .await?;
-        let publication = checkpoints::publication_with_work(&self.client, &self.reducer, &event, &mut None).await?;
-        let request = publication.request(&self.client, idempotency_key).await?;
-        let fork_guard = if let crate::core::Action::PublishFork { seed } = &command.action {
-            let verifier = self
-                .fork_verifier
-                .as_ref()
-                .ok_or_else(|| Error::Unsupported("fork seed verifier is not bound".into()))?;
-            Some(verifier.activate(seed).await?)
-        } else {
-            None
-        };
-        self.append_planned_command(&command, event, publication, request, fork_guard)
-            .await
-    }
 
     async fn plan_command(&self, command: &Command, fresh_migration: bool) -> Result<ApplyResult> {
         if !fresh_migration {
@@ -1617,86 +1673,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         self.reducer.plan_indexed_with_retained_quota(command, true, &mut None).map(|(result, _)| result)
     }
 
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.harness.store.append",
-            level = "debug",
-            skip_all,
-            fields(rev = command.expected_revision, bytes = publication.bytes.len() as u64)
-        )
-    )]
-    async fn append_planned_command(
-        &mut self,
-        command: &Command,
-        event: crate::core::Event,
-        publication: operations::IndexedPublication,
-        request: acyclic_stream::CommitRequest,
-        fork_guard: Option<Box<dyn crate::fork::ForkPublicationGuard>>,
-    ) -> Result<ApplyResult> {
-        let append = self.client.provider.commit(request).await;
-        let outcome = match append {
-            Ok(outcome) => outcome,
-            Err(StreamError::Unavailable) => {
-                return match self.reconcile_inner(command).await {
-                    Ok(Some(result)) => {
-                        if let Some(guard) = fork_guard {
-                            guard
-                                .release()
-                                .await
-                                .map_err(|_| Error::Indeterminate(command.operation_id))?;
-                        }
-                        Ok(result)
-                    }
-                    Ok(None) | Err(Error::Storage(_)) => {
-                        Err(Error::Indeterminate(command.operation_id))
-                    }
-                    Err(error) => Err(error),
-                };
-            }
-            Err(StreamError::IdempotencyMismatch) => {
-                if let Some(guard) = fork_guard {
-                    guard
-                        .release()
-                        .await
-                        .map_err(|_| Error::Indeterminate(command.operation_id))?;
-                }
-                return Err(Error::Conflict(
-                    "retry identity is already bound to another append".into(),
-                ));
-            }
-            Err(error) => {
-                if let Some(guard) = fork_guard {
-                    guard
-                        .release()
-                        .await
-                        .map_err(|_| Error::Indeterminate(command.operation_id))?;
-                }
-                return Err(Error::Storage(error.to_string()));
-            }
-        };
-        let result = match outcome {
-            CommitOutcome::Committed(envelope) => {
-                if publication.verify(&envelope).is_err() {
-                    return Err(Error::Indeterminate(publication.operation_id));
-                }
-                match self.apply_published_event(&event) {
-                    Ok(result) => Ok(result),
-                    Err(_) => return Err(Error::Indeterminate(command.operation_id)),
-                }
-            }
-            CommitOutcome::Conflict(_) => Err(Error::Conflict(
-                "aggregate tail or operation identity changed".into(),
-            )),
-        };
-        if let Some(guard) = fork_guard {
-            guard
-                .release()
-                .await
-                .map_err(|_| Error::Indeterminate(command.operation_id))?;
-        }
-        result
-    }
 
     #[cfg(feature = "filesystem")]
     async fn validate_task_admission_content_with_work(
@@ -1814,8 +1790,132 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 
     async fn validate_admission_content(&self, action: &crate::core::Action) -> Result<()> {
-        self.validate_interaction_admission(action).await?;
-        self.validate_extension_admission_content(action).await?;
+        if let crate::core::Action::ResolveInteraction { resolution } = action
+            && matches!(resolution.outcome, InteractionOutcome::Expired)
+        {
+            let (ticket, _) = self
+                .reducer
+                .interaction(&resolution.id)
+                .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
+            let deadline = ticket
+                .deadline_unix_ms
+                .ok_or_else(|| Error::Invalid("interaction has no expiry deadline".into()))?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|error| Error::Storage(error.to_string()))?
+                .as_millis();
+            if now < u128::from(deadline) {
+                return Err(Error::Conflict(
+                    "interaction deadline has not elapsed".into(),
+                ));
+            }
+        }
+        if let crate::core::Action::OpenInteraction { ticket } = action {
+            let verifier = self.content_verifier.as_ref().ok_or_else(|| {
+                Error::Unsupported("interaction content verifier is not bound".into())
+            })?;
+            let bytes = verifier.read(&ticket.request).await?;
+            ticket.validate_request_bytes(&bytes)?;
+        }
+        if let crate::core::Action::ResolveInteraction { resolution } = action
+            && let InteractionOutcome::Answered { answer } = &resolution.outcome
+        {
+            let verifier = self.content_verifier.as_ref().ok_or_else(|| {
+                Error::Unsupported("interaction content verifier is not bound".into())
+            })?;
+            let (ticket, _) = self
+                .reducer
+                .interaction(&resolution.id)
+                .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
+            let request_bytes = verifier.read(&ticket.request).await?;
+            let request = ticket.validate_request_bytes(&request_bytes)?;
+            let answer_bytes = verifier.read(answer).await?;
+            ticket.validate_answer_bytes(&request, answer, &answer_bytes)?;
+        }
+        if let crate::core::Action::ResolveInteraction { resolution } = action
+            && let Some(detail) = &resolution.detail
+        {
+            let verifier = self.content_verifier.as_ref().ok_or_else(|| {
+                Error::Unsupported("interaction content verifier is not bound".into())
+            })?;
+            let (ticket, _) = self
+                .reducer
+                .interaction(&resolution.id)
+                .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
+            let request_bytes = verifier.read(&ticket.request).await?;
+            let request = ticket.validate_request_bytes(&request_bytes)?;
+            let detail_bytes = verifier.read(detail).await?;
+            ticket.validate_decision_bytes(&request, &resolution.outcome, detail, &detail_bytes)?;
+        }
+        if let crate::core::Action::AppendCustom {
+            schema,
+            version,
+            content,
+        } = action
+        {
+            let verifier = self.content_verifier.as_ref().ok_or_else(|| {
+                Error::Unsupported("extension content verifier is not bound".into())
+            })?;
+            let bytes = verifier.read(content).await?;
+            self.reducer
+                .validate_custom_bytes(schema, *version, content, &bytes)?;
+        }
+        if let crate::core::Action::MigrateExtensionState {
+            name,
+            previous,
+            to_version,
+            content,
+        } = action
+        {
+            let verifier = self.content_verifier.as_ref().ok_or_else(|| {
+                Error::Unsupported("extension content verifier is not bound".into())
+            })?;
+            let migrations = self.extension_migrations.as_ref().ok_or_else(|| {
+                Error::Unsupported("extension migration executor is not bound".into())
+            })?;
+            let (source, prior) = self
+                .reducer
+                .extension_state(name)
+                .ok_or_else(|| Error::NotFound(format!("extension state {name}")))?;
+            if source != previous {
+                return Err(Error::Conflict("extension migration source changed".into()));
+            }
+            self.limits.validate_file(&prior.content)?;
+            self.limits.validate_file(content)?;
+            let old_bytes = verified_content_bytes(verifier.as_ref(), &prior.content).await?;
+            self.reducer
+                .validate_custom_bytes(name, prior.version, &prior.content, &old_bytes)?;
+            let previous_value: Value =
+                crate::contract::json_from_slice(&old_bytes).map_err(|error| {
+                    Error::Invalid(format!("previous extension state is invalid: {error}"))
+                })?;
+            let target_digest = self
+                .reducer
+                .extension_implementation_digest(name, *to_version)?;
+            let expected = migrations.migrate(
+                name,
+                prior.version,
+                *to_version,
+                target_digest,
+                &previous_value,
+            )?;
+            let bytes = verified_content_bytes(verifier.as_ref(), content).await?;
+            self.reducer
+                .validate_custom_bytes(name, *to_version, content, &bytes)?;
+            if bytes.as_ref() != crate::contract::canonical_json_bytes(&expected)?.as_slice() {
+                return Err(Error::Conflict(
+                    "staged extension migration differs from its pinned implementation".into(),
+                ));
+            }
+        }
+        if let crate::core::Action::ConfigureExtension { extension, content } = action {
+            let verifier = self.content_verifier.as_ref().ok_or_else(|| {
+                Error::Unsupported("extension content verifier is not bound".into())
+            })?;
+            let bytes = verifier.read(content).await?;
+            self.reducer
+                .validate_configuration_bytes(extension, content, &bytes)?;
+        }
         let message = match action {
             crate::core::Action::AppendConversationMessage { message } => Some(message.as_ref()),
             crate::core::Action::PublishProjectMerge { receipt } => Some(&receipt.notice),
@@ -1888,142 +1988,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         Ok(())
     }
 
-    async fn validate_extension_admission_content(
-        &self,
-        action: &crate::core::Action,
-    ) -> Result<()> {
-        if let crate::core::Action::AppendCustom {
-            schema,
-            version,
-            content,
-        } = action
-        {
-            let verifier = self.content_verifier.as_ref().ok_or_else(|| {
-                Error::Unsupported("extension content verifier is not bound".into())
-            })?;
-            let bytes = verifier.read(content).await?;
-            self.reducer
-                .validate_custom_bytes(schema, *version, content, &bytes)?;
-        }
-        if let crate::core::Action::MigrateExtensionState {
-            name,
-            previous,
-            to_version,
-            content,
-        } = action
-        {
-            let verifier = self.content_verifier.as_ref().ok_or_else(|| {
-                Error::Unsupported("extension content verifier is not bound".into())
-            })?;
-            let migrations = self.extension_migrations.as_ref().ok_or_else(|| {
-                Error::Unsupported("extension migration executor is not bound".into())
-            })?;
-            let (source, prior) = self
-                .reducer
-                .extension_state(name)
-                .ok_or_else(|| Error::NotFound(format!("extension state {name}")))?;
-            if source != previous {
-                return Err(Error::Conflict("extension migration source changed".into()));
-            }
-            self.limits.validate_file(&prior.content, &mut None)?;
-            self.limits.validate_file(content, &mut None)?;
-            let old_bytes = verified_content_bytes(verifier.as_ref(), &prior.content, (&prior.content).descriptor().byte_length(), None).await.map(|(bytes, _)| bytes)?;
-            self.reducer
-                .validate_custom_bytes(name, prior.version, &prior.content, &old_bytes)?;
-            let previous_value: Value =
-                crate::contract::json_from_slice(&old_bytes).map_err(|error| {
-                    Error::Invalid(format!("previous extension state is invalid: {error}"))
-                })?;
-            let target_digest = self
-                .reducer
-                .extension_implementation_digest(name, *to_version)?;
-            let expected = migrations.migrate(
-                name,
-                prior.version,
-                *to_version,
-                target_digest,
-                &previous_value,
-            )?;
-            let bytes = verified_content_bytes(verifier.as_ref(), content, (content).descriptor().byte_length(), None).await.map(|(bytes, _)| bytes)?;
-            self.reducer
-                .validate_custom_bytes(name, *to_version, content, &bytes)?;
-            if bytes.as_ref() != crate::contract::canonical_json_bytes(&expected)?.as_slice() {
-                return Err(Error::Conflict(
-                    "staged extension migration differs from its pinned implementation".into(),
-                ));
-            }
-        }
-        if let crate::core::Action::ConfigureExtension { extension, content } = action {
-            let verifier = self.content_verifier.as_ref().ok_or_else(|| {
-                Error::Unsupported("extension content verifier is not bound".into())
-            })?;
-            let bytes = verifier.read(content).await?;
-            self.reducer
-                .validate_configuration_bytes(extension, content, &bytes)?;
-        }
-        Ok(())
-    }
 
-    async fn validate_interaction_admission(&self, action: &crate::core::Action) -> Result<()> {
-        if let crate::core::Action::ResolveInteraction { resolution } = action
-            && matches!(resolution.outcome, InteractionOutcome::Expired)
-        {
-            let (ticket, _) = self
-                .reducer
-                .interaction(&resolution.id)
-                .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
-            let deadline = ticket
-                .deadline_unix_ms
-                .ok_or_else(|| Error::Invalid("interaction has no expiry deadline".into()))?;
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|error| Error::Storage(error.to_string()))?
-                .as_millis();
-            if now < u128::from(deadline) {
-                return Err(Error::Conflict(
-                    "interaction deadline has not elapsed".into(),
-                ));
-            }
-        }
-        if let crate::core::Action::OpenInteraction { ticket } = action {
-            let verifier = self.content_verifier.as_ref().ok_or_else(|| {
-                Error::Unsupported("interaction content verifier is not bound".into())
-            })?;
-            let bytes = verifier.read(&ticket.request).await?;
-            ticket.validate_request_bytes(&bytes)?;
-        }
-        if let crate::core::Action::ResolveInteraction { resolution } = action
-            && let InteractionOutcome::Answered { answer } = &resolution.outcome
-        {
-            let verifier = self.content_verifier.as_ref().ok_or_else(|| {
-                Error::Unsupported("interaction content verifier is not bound".into())
-            })?;
-            let (ticket, _) = self
-                .reducer
-                .interaction(&resolution.id)
-                .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
-            let request_bytes = verifier.read(&ticket.request).await?;
-            let request = ticket.validate_request_bytes(&request_bytes)?;
-            let answer_bytes = verifier.read(answer).await?;
-            ticket.validate_answer_bytes(&request, answer, &answer_bytes)?;
-        }
-        if let crate::core::Action::ResolveInteraction { resolution } = action
-            && let Some(detail) = &resolution.detail
-        {
-            let verifier = self.content_verifier.as_ref().ok_or_else(|| {
-                Error::Unsupported("interaction content verifier is not bound".into())
-            })?;
-            let (ticket, _) = self
-                .reducer
-                .interaction(&resolution.id)
-                .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
-            let request_bytes = verifier.read(&ticket.request).await?;
-            let request = ticket.validate_request_bytes(&request_bytes)?;
-            let detail_bytes = verifier.read(detail).await?;
-            ticket.validate_decision_bytes(&request, &resolution.outcome, detail, &detail_bytes)?;
-        }
-        Ok(())
-    }
 
     /// Reconciles a possibly committed append without issuing another append.
     #[cfg_attr(

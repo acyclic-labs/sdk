@@ -352,7 +352,7 @@ impl ResourcePreparationRequest {
             authorization.validate_with_work(work)?;
         }
         if let Some(command) = &self.command {
-            command.validate_with_work(work)?;
+            command.validate(work)?;
             if command.operation_id == self.child.operation_id {
                 return Err(Self::invalid(
                     "preparation effect and intended child identities must differ", work,
@@ -1131,14 +1131,4 @@ pub(crate) trait CreatedTaskLease: acyclic_stream::ProviderPlatform {
         })
     }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn fence_with_native_work(
-        &self,
-        _work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(crate::scheduler::LeaseFence, acyclic_fs::NativeAllocation)> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "created publication lease has no original native-ledger fence",
-        })
-    }
 }

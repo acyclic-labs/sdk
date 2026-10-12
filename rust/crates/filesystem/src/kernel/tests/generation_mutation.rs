@@ -136,20 +136,17 @@ fn fixture(store: &MemoryObjectStore) -> Result<Fixture, Box<dyn std::error::Err
     let metadata = put(
         store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata_value(MetadataField::Value(1)))?,
+        encode_file_metadata(metadata_value(MetadataField::Value(1)), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let changed_metadata = put(
         store,
         ObjectKind::Metadata,
-        encode_file_metadata(metadata_value(MetadataField::Value(2)))?,
+        encode_file_metadata(metadata_value(MetadataField::Value(2)), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let empty_tree = put(
         store,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(Vec::new()),
-            limits.maximum_directory_page_entries,
-        )?,
+        encode_tree_page(&TreePage::Leaf(Vec::new()), limits.maximum_directory_page_entries, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let root_id = FileId::from_bytes([1; 16]);
     let file_id = FileId::from_bytes([2; 16]);
@@ -157,8 +154,7 @@ fn fixture(store: &MemoryObjectStore) -> Result<Fixture, Box<dyn std::error::Err
     let root_tree = put(
         store,
         ObjectKind::TreePage,
-        encode_tree_page(
-            &TreePage::Leaf(vec![
+        encode_tree_page(&TreePage::Leaf(vec![
                 TreeEntry {
                     name: name("a")?,
                     file_id,
@@ -169,15 +165,12 @@ fn fixture(store: &MemoryObjectStore) -> Result<Fixture, Box<dyn std::error::Err
                     file_id: directory_id,
                     kind: FileKind::Directory,
                 },
-            ]),
-            limits.maximum_directory_page_entries,
-        )?,
+            ]), limits.maximum_directory_page_entries, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let file_table = put(
         store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(
-            &FileTablePage::Leaf(vec![
+        encode_file_table_page(&FileTablePage::Leaf(vec![
                 FileRecord {
                     file_id: root_id,
                     kind: FileKind::Directory,
@@ -195,9 +188,7 @@ fn fixture(store: &MemoryObjectStore) -> Result<Fixture, Box<dyn std::error::Err
                         entries: empty_tree,
                     },
                 },
-            ]),
-            limits.maximum_directory_page_entries,
-        )?,
+            ]), limits.maximum_directory_page_entries, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     Ok(Fixture {
         generation: GenerationRoot {
@@ -281,7 +272,7 @@ fn append_blob_bytes(
     output: &mut Vec<u8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let encoded = ObjectStore::read(store, root, u64::MAX, WorkBudget::UNBOUNDED)?.value;
-    let page = decode_blob_page(&encoded, DecodeLimits::default())?;
+    let page = decode_blob_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
     match page.node {
         BlobNode::Leaf(chunks) => {
             for chunk in chunks {
@@ -305,7 +296,7 @@ fn collect_extents(
     output: &mut Vec<crate::kernel::Extent>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let encoded = ObjectStore::read(store, root, u64::MAX, WorkBudget::UNBOUNDED)?.value;
-    match decode_extent_page(&encoded, DecodeLimits::default())? {
+    match decode_extent_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? {
         ExtentPage::Leaf(extents) => output.extend(extents),
         ExtentPage::Internal(children) => {
             for child in children {
@@ -361,7 +352,7 @@ fn collect_file_table_records(
     records: &mut BTreeMap<FileId, FileRecord>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let encoded = ObjectStore::read(store, root, u64::MAX, WorkBudget::UNBOUNDED)?.value;
-    match decode_file_table_page(&encoded, DecodeLimits::default())? {
+    match decode_file_table_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::FileTablePage::Leaf, crate::kernel::FileTablePage::Internal, |first_file_id, page| crate::kernel::FileTableChild { first_file_id, page }, |child| &child.first_file_id)? {
         FileTablePage::Leaf(values) => {
             for record in values {
                 if records.insert(record.file_id, record).is_some() {

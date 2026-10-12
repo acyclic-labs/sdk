@@ -38,15 +38,6 @@ struct PathHistory {
     key_custody: Option<acyclic_fs::NativeAllocation>,
 }
 
-impl std::ops::Deref for PathHistory {
-    type Target = Vec<PathRevision>;
-    fn deref(&self) -> &Self::Target { &self.revisions }
-}
-
-impl std::ops::DerefMut for PathHistory {
-    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.revisions }
-}
-
 /// One entry in a bounded directory page.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct MemoryStoreEntry {
@@ -139,45 +130,19 @@ impl MemoryStore {
         let reference = FileRef::new(
             self.volume.clone(),
             path,
-            hex_bytes(&digest),
+            blake3::Hash::from_bytes(digest).to_hex().to_string(),
             descriptor,
             display_name,
         )?;
-        self.stage_reference(&reference, bytes, update_path)
-    }
-
-    /// Admits a provider-created reference while retaining the same bounded bytes, path-head, and generation semantics as WASM staging.
-    pub(crate) fn stage_reference(
-        &mut self,
-        reference: &FileRef,
-        bytes: &[u8],
-        update_path: bool,
-    ) -> Result<FileRef> {
-        self.retain_reference(reference, bytes, update_path)?;
-        Ok(reference.clone())
+        self.retain_reference(&reference, bytes, update_path, None)?;
+        Ok(reference)
     }
 
     pub(crate) fn retain_reference(
         &mut self, reference: &FileRef, bytes: &[u8], update_path: bool,
+        io: Option<&crate::executor::PreparationIo>,
     ) -> Result<()> {
-        #[cfg(feature = "filesystem")]
-        { self.retain_reference_inner(reference, bytes, update_path, None) }
-        #[cfg(not(feature = "filesystem"))]
-        { self.retain_reference_inner(reference, bytes, update_path) }
-    }
-
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn retain_reference_with_io(
-        &mut self, reference: &FileRef, bytes: &[u8], update_path: bool,
-        io: &crate::filesystem::PreparationIo,
-    ) -> Result<()> {
-        self.retain_reference_inner(reference, bytes, update_path, Some(io))
-    }
-
-    fn retain_reference_inner(
-        &mut self, reference: &FileRef, bytes: &[u8], update_path: bool,
-        #[cfg(feature = "filesystem")] io: Option<&crate::filesystem::PreparationIo>,
-    ) -> Result<()> {
+        let _ = io;
         #[cfg(feature = "filesystem")]
         if let Some(io) = io { io.remaining()?; }
         reference.validate(&mut None)?;
@@ -362,15 +327,15 @@ impl MemoryStore {
             let changed = self
                 .paths
                 .get(path)
-                .and_then(|history| history.last())
+                .and_then(|history| history.revisions.last())
                 .is_none_or(|prior| prior.file != *reference);
             if changed {
                 let generation = self.generation.checked_add(1)
                     .ok_or_else(|| Error::Invalid("content generation overflow".into()))?;
                 let growth = match self.paths.get(path) {
                     None => Some(4),
-                    Some(history) if history.capacity() == history.len() => Some(
-                        history.capacity().checked_mul(2)
+                    Some(history) if history.revisions.capacity() == history.revisions.len() => Some(
+                        history.revisions.capacity().checked_mul(2)
                             .ok_or_else(|| Error::Invalid("path history capacity overflow".into()))?.max(4),
                     ),
                     _ => None,
@@ -423,12 +388,12 @@ impl MemoryStore {
                 let history = self.paths.get_mut(path)
                     .ok_or_else(|| Error::Storage("retained path history is missing".into()))?;
                 if let Some(slots) = growth {
-                    let additional = slots - history.len();
-                    history.reserve_exact(additional);
+                    let additional = slots - history.revisions.len();
+                    history.revisions.reserve_exact(additional);
                     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                     { history.capacity_custody = capacity_custody; }
                 }
-                history.push(PathRevision {
+                history.revisions.push(PathRevision {
                     generation, file: retained_reference,
                     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                     custody,
@@ -508,7 +473,7 @@ impl MemoryStore {
         };
         let mut found = BTreeMap::<String, MemoryStoreEntryKind>::new();
         for (name, history) in &self.paths {
-            if history
+            if history.revisions
                 .first()
                 .is_some_and(|revision| revision.generation > generation)
                 || !name.starts_with(&prefix)
@@ -562,7 +527,7 @@ impl MemoryStore {
         self.paths
             .get(path)
             .and_then(|history| {
-                history
+                history.revisions
                     .iter()
                     .rev()
                     .find(|revision| revision.generation <= generation)
@@ -600,17 +565,6 @@ fn decimal_digits(mut number: u64) -> u64 {
     let mut digits = 1;
     while number >= 10 { number /= 10; digits += 1; }
     digits
-}
-
-#[cfg(any(test, all(feature = "wasm", target_arch = "wasm32")))]
-fn hex_bytes(bytes: &[u8]) -> String {
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        const HEX: &[u8; 16] = b"0123456789abcdef";
-        output.push(HEX[(byte >> 4) as usize] as char);
-        output.push(HEX[(byte & 15) as usize] as char);
-    }
-    output
 }
 
 #[cfg(test)]
@@ -669,7 +623,7 @@ mod tests {
         )?;
         assert!(
             store
-                .stage_reference(&changed_display, b"one", false)
+                .retain_reference(&changed_display, b"one", false, None)
                 .is_err()
         );
         Ok(())

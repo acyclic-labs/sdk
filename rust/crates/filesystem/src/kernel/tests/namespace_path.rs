@@ -261,7 +261,7 @@ const CURSOR_DOMAIN: &[u8] = b"bounded-path-cursor-test";
 
 fn cursor_path_bytes(path: &NamespacePath) -> Result<Vec<u8>, Box<dyn std::error::Error>> {
     let capacity = CURSOR_DOMAIN.len() + 2 + path.cursor_encoded_len()?;
-    let mut encoder = Encoder::with_exact_capacity(CURSOR_DOMAIN, 1, capacity)?;
+    let mut encoder = Encoder::with_exact_capacity(CURSOR_DOMAIN, 1, capacity, |_| Ok::<_, CanonicalDecodeError>(()), |_| CanonicalDecodeError::AllocationFailed)?;
     let mut work = WorkCounters::default();
     path.encode_cursor_into(&mut encoder, &mut work, WorkBudget::UNBOUNDED, &CancellationToken::new())?;
     assert_eq!(work.bytes_encoded, path.cursor_encoded_len()? as u64);
@@ -280,7 +280,7 @@ fn cursor_codec_preserves_opaque_names_and_actual_shared_live_peak()
     ] {
         let path = NamespacePath::new(vec![LogicalName::new(encoding, bytes, limits.maximum_component_bytes)?], limits)?;
         let encoded = cursor_path_bytes(&path)?;
-        let mut decoder = Decoder::new(&encoded, CURSOR_DOMAIN, 1, u64::MAX)?;
+        let mut decoder = Decoder::new(&encoded, CURSOR_DOMAIN, 1, u64::MAX, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
         let mut ledger = AllocationLedger::default();
         let mut work = WorkCounters::default();
         ledger.claim_bytes(37, 0, &mut work, WorkBudget::UNBOUNDED)?;
@@ -319,7 +319,7 @@ fn cursor_codec_rejects_profile_and_whole_path_bounds_before_allocation()
         (cursor_path_bytes(&native)?, FilesystemProfile::Windows,
             VolumeLimits { maximum_component_bytes: 1, ..limits }, NamespacePathError::Name(TreePageError::NameTooLarge)),
     ] {
-        let mut decoder = Decoder::new(&encoded, CURSOR_DOMAIN, 1, u64::MAX)?;
+        let mut decoder = Decoder::new(&encoded, CURSOR_DOMAIN, 1, u64::MAX, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
         let mut ledger = AllocationLedger::default();
         let mut work = WorkCounters::default();
         let error = NamespacePath::decode_cursor_with_ledger(
@@ -337,7 +337,7 @@ fn cursor_codec_rejects_profile_and_whole_path_bounds_before_allocation()
 #[test]
 fn canonical_lowercase_matches_std_contextual_unicode_model()
 -> Result<(), Box<dyn std::error::Error>> {
-    use crate::kernel::types::lowercase_unicode_with_ledger;
+    use crate::kernel::types::lowercase_unicode;
 
     let cancellation = CancellationToken::new();
     let contexts = [
@@ -361,14 +361,10 @@ fn canonical_lowercase_matches_std_contextual_unicode_model()
         assert_eq!(name.case_fold_key(), expected, "ordinary key: {text:?}");
         let mut ledger = AllocationLedger::default();
         let mut work = WorkCounters::UNCHARGED;
-        let held = lowercase_unicode_with_ledger(
-            "already-held-root", &mut ledger, &mut work, WorkBudget::UNBOUNDED, &cancellation,
-        )?;
+        let held = lowercase_unicode("already-held-root", &mut ledger, &mut work, WorkBudget::UNBOUNDED, Some(&cancellation))?;
         let held_bytes = held.capacity() as u64;
         let before = work;
-        let folded = lowercase_unicode_with_ledger(
-            &text, &mut ledger, &mut work, WorkBudget::UNBOUNDED, &cancellation,
-        )?;
+        let folded = lowercase_unicode(&text, &mut ledger, &mut work, WorkBudget::UNBOUNDED, Some(&cancellation))?;
         assert_eq!(folded, expected, "measured key: {text:?}");
         let bytes = folded.capacity() as u64;
         assert_eq!(ledger.live_bytes(), held_bytes + bytes);

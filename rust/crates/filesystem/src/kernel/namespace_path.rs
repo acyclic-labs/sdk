@@ -9,11 +9,6 @@ use thiserror::Error;
 use super::codec::{CanonicalDecodeError, Decoder, Encoder, ReadAllocationStep};
 
 /// Canonical absolute path represented as exact logical-name components.
-///
-/// An empty component vector denotes the volume root. Unlike
-/// [`PortablePath`], this type preserves raw POSIX bytes and Windows UTF-16LE
-/// names. A volume executor additionally checks that every component encoding
-/// is admitted by that volume's filesystem profile.
 #[derive(Debug)]
 pub struct NamespacePath {
     components: Vec<LogicalName>,
@@ -49,8 +44,6 @@ impl PartialOrd for NamespacePath {
     }
 }
 
-/// Pure accounting boundaries of the one canonical Unicode path producer.
-/// Reservations and byte emission happen between callbacks, never inside them.
 pub(crate) enum NamespacePathStep<'a> {
     Allocation(ReadAllocationStep),
     Admit(&'a WorkCounters),
@@ -75,11 +68,6 @@ impl NamespacePath {
     }
 
     /// Constructs one bounded absolute namespace path.
-    ///
-    /// # Errors
-    ///
-    /// Rejects excessive depth, component bytes, total bytes, or arithmetic
-    /// overflow before the path reaches a storage backend.
     pub fn new(
         components: Vec<LogicalName>,
         limits: VolumeLimits,
@@ -88,8 +76,6 @@ impl NamespacePath {
         Self::from_owned_components(components, encoded_bytes)
     }
 
-    /// Checks exact encoded component lengths without allocating names.
-    /// Native adapters use this before producing their owned native buffers.
     pub(crate) fn validate_component_lengths(
         lengths: impl IntoIterator<Item = usize>,
         limits: VolumeLimits,
@@ -112,11 +98,6 @@ impl NamespacePath {
     }
 
     /// Converts a strict UTF-8 portable path without losing information.
-    ///
-    /// # Errors
-    ///
-    /// Returns the same component and total bounds as [`Self::new`], plus a
-    /// canonical-name failure if the portable input violates the name format.
     pub fn from_portable(
         path: &PortablePath,
         limits: VolumeLimits,
@@ -125,14 +106,6 @@ impl NamespacePath {
     }
 
     /// Converts a portable path to the canonical names of one volume profile.
-    ///
-    /// The string API can address names representable as Unicode; native
-    /// capture APIs retain raw POSIX bytes or UTF-16 units outside that subset.
-    ///
-    /// # Errors
-    ///
-    /// Returns bounded-name or path errors when the encoded host names exceed
-    /// the volume limits.
     pub fn from_portable_in_profile(
         path: &PortablePath,
         profile: FilesystemProfile,
@@ -144,14 +117,7 @@ impl NamespacePath {
         ).map(|receipt| receipt.value).map_err(|failure| failure.error)
     }
 
-    /// Parses canonical Unicode through the portable validation rules and
-    /// admits every owned capacity before allocating it.
-    ///
-    /// `live_owned_bytes` is the caller's currently live storage, not its peak.
-    ///
-    /// # Errors
-    /// Returns validation, cancellation, allocation, or budget failures with
-    /// the actual prefix of work performed.
+    /// Parses canonical Unicode through the portable validation rules and admits every owned capacity before allocating it.
     pub fn parse_in_profile_measured(
         path: &str,
         profile: FilesystemProfile,
@@ -174,7 +140,6 @@ impl NamespacePath {
             .map_err(|error| OperationFailure::new(error, work))
     }
 
-    /// The allocation-free preflight shared by construction and root selection.
     pub(crate) fn validate_in_profile_with_work(
         path: &str,
         profile: FilesystemProfile,
@@ -189,8 +154,6 @@ impl NamespacePath {
         })
     }
 
-    /// Checks the same borrowed Unicode spelling on the original scope,
-    /// without allocating a path merely to validate or recognize the root.
     pub(crate) fn validate_in_profile_with_accounting(
         path: &str,
         profile: FilesystemProfile,
@@ -258,9 +221,6 @@ impl NamespacePath {
         result
     }
 
-    /// Produces the same canonical path on the original accounting owner.
-    /// Only scalar admission/commit operations may borrow its ledger; the
-    /// grammar, reserves, byte copies and UTF-16 emission execute outside it.
     pub(crate) fn parse_in_profile_with_accounting(
         path: &str,
         profile: FilesystemProfile,
@@ -275,9 +235,6 @@ impl NamespacePath {
         owned.finish(result)
     }
 
-    /// The shared producer emits accounting boundaries around real reserves
-    /// and copies. Native callers may lock their original ledger only in the
-    /// callback; the complete grammar and physical producer stay outside it.
     pub(crate) fn parse_in_profile_with_steps<E: From<NamespacePathError>>(
         path: &str,
         profile: FilesystemProfile,
@@ -316,11 +273,7 @@ impl NamespacePath {
         Self::from_owned_components(names, encoded_bytes).map_err(E::from)
     }
 
-    /// Copies exact canonical names, including opaque native code units,
-    /// under the caller's remaining budget and current live allocation.
-    ///
-    /// # Errors
-    /// Returns cancellation, allocation, or budget failures with actual work.
+    /// Copies exact canonical names, including opaque native code units, under the caller's remaining budget and current live allocation.
     pub fn clone_measured(
         &self,
         budget: WorkBudget,
@@ -332,11 +285,7 @@ impl NamespacePath {
         )
     }
 
-    /// Appends one already-validated exact native name, checking all volume
-    /// bounds before allocating the new path.
-    ///
-    /// # Errors
-    /// Returns bounds, cancellation, allocation, or budget failures.
+    /// Appends one already-validated exact native name, checking all volume bounds before allocating the new path.
     pub fn child_measured(
         &self,
         name: &LogicalName,
@@ -354,7 +303,6 @@ impl NamespacePath {
         )
     }
 
-    /// Appends with the containing operation's cumulative budget and live ledger.
     pub(crate) fn child_with_ledger(
         &self,
         name: &LogicalName,
@@ -424,7 +372,6 @@ impl NamespacePath {
         owned.finish(result)
     }
 
-    /// Copies only the selected prefix, using the same validated copy engine.
     pub(crate) fn prefix_with_ledger(
         &self,
         depth: usize,
@@ -457,9 +404,6 @@ impl NamespacePath {
         owned.finish(result)
     }
 
-    /// Copies a borrowed validated-name sequence through the same bounded
-    /// constructor. Each bounds visit is charged before its predicate so an
-    /// invalid prefix never reports work for unvisited trailing components.
     pub(crate) fn names_with_steps<E: From<NamespacePathError>>(
         names: &[LogicalName],
         limits: VolumeLimits,
@@ -630,8 +574,7 @@ impl NamespacePath {
         Self::from_owned_components(components, encoded_bytes).map_err(E::from)
     }
 
-    /// Exact cached backing capacity of the component vector and owned names.
-    /// Allocator bookkeeping and the inline path value are excluded.
+    /// Exact cached backing capacity of the component vector and owned names. Allocator bookkeeping and the inline path value are excluded.
     #[must_use]
     pub const fn logical_owned_bytes(&self) -> u64 {
         self.logical_owned_bytes
@@ -676,9 +619,6 @@ impl NamespacePath {
     }
 
     /// Returns the exact parent path, or `None` for the namespace root.
-    ///
-    /// This preserves the already-validated component representation and does
-    /// not consult a filesystem or allocate beyond cloning the parent prefix.
     #[must_use]
     pub fn parent(&self) -> Option<Self> {
         let (_, name) = self.split_last()?;
@@ -701,7 +641,6 @@ impl NamespacePath {
         })
     }
 
-    /// Appends only within the containing cursor's admitted output capacity.
     pub(crate) fn encode_cursor_into(
         &self,
         encoder: &mut Encoder,
@@ -750,9 +689,6 @@ impl NamespacePath {
         Ok(())
     }
 
-    /// Validates the entire borrowed shape before claiming owned backing.
-    /// Successful claims remain in the caller's ledger; failures retire only
-    /// this decode's claims and preserve its actual performed-work prefix.
     pub(crate) fn decode_cursor_with_ledger(
         decoder: &mut Decoder<'_>,
         profile: FilesystemProfile,
@@ -798,7 +734,7 @@ impl NamespacePath {
         steps(NamespacePathStep::Charge(&WorkCounters {
             items_examined: 1, ..WorkCounters::UNCHARGED
         }))?;
-        let count = decoder.u32().map_err(|error| E::from(NamespacePathError::Codec(error)))?;
+        let count = decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).map_err(|error| E::from(NamespacePathError::Codec(error)))?;
         if count > u32::from(limits.maximum_path_depth) {
             return Err(E::from(NamespacePathError::TooDeep));
         }
@@ -874,8 +810,6 @@ impl From<NamespacePathError> for crate::FsError {
     }
 }
 
-/// One aggregate claim follows the physically owned name/path output, rather
-/// than an independently allocated list of per-buffer guards.
 pub(super) struct NamespacePathAccounting<'a, 'b> {
     accounting: &'a mut KernelAccounting<'b>,
     allocation: KernelOwnedAllocation,
@@ -1062,33 +996,6 @@ pub(super) fn namespace_path_vec_with_steps<T, E: From<NamespacePathError>>(
     steps(NamespacePathStep::Allocation(ReadAllocationStep::Capacity {
         admitted_bytes, actual_bytes,
     }))?;
-    Ok(values)
-}
-
-pub(super) fn path_vec<T>(
-    capacity: usize,
-    ledger: &mut AllocationLedger,
-    work: &mut WorkCounters,
-    budget: WorkBudget,
-) -> Result<Vec<T>, NamespacePathError> {
-    let claimed = ledger.claim_elements::<T>(capacity, work, budget).map_err(allocation_error)?;
-    let mut values = Vec::new();
-    if values.try_reserve_exact(capacity).is_err() {
-        ledger.release(claimed).map_err(allocation_error)?;
-        return Err(NamespacePathError::AllocationFailed);
-    }
-    let actual = values.capacity().checked_mul(std::mem::size_of::<T>())
-        .ok_or(NamespacePathError::AllocationFailed)? as u64;
-    if actual > claimed {
-        if let Err(error) = ledger.claim_bytes(actual - claimed, 0, work, WorkBudget::UNBOUNDED) {
-            ledger.release(claimed).map_err(allocation_error)?;
-            return Err(allocation_error(error));
-        }
-        if let Err(error) = work.verify_ref(&budget) {
-            ledger.release(actual).map_err(allocation_error)?;
-            return Err(NamespacePathError::Work(error));
-        }
-    }
     Ok(values)
 }
 

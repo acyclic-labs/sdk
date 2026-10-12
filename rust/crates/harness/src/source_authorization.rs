@@ -313,36 +313,27 @@ impl ProjectSourceReadHandle {
     pub fn require_selection(
         &self, operation_id: OperationId, source_task: TaskId, project: &VolumeRef,
         generation: &GenerationRef, native_snapshot: Option<&Value>,
+        work: crate::NativeWork<'_>,
     ) -> Result<()> {
-        if !self.selection_matches(operation_id, source_task, project, generation, native_snapshot) {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = work {
+            work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        }
+        let record = &self.authorization;
+        if record.operation_id != operation_id || record.source_task != source_task
+            || &record.project != project || &record.generation != generation
+            || record.native_snapshot.as_ref() != native_snapshot
+        {
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if work.is_some() {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "project source read token names another selection",
+                });
+            }
             return Err(Error::Unauthorized("project source read token names another selection".into()));
         }
-        Ok(())
-    }
-
-    fn selection_matches(
-        &self, operation_id: OperationId, source_task: TaskId, project: &VolumeRef,
-        generation: &GenerationRef, native_snapshot: Option<&Value>,
-    ) -> bool {
-        let record = &self.authorization;
-        record.operation_id == operation_id && record.source_task == source_task
-            && &record.project == project && &record.generation == generation
-            && record.native_snapshot.as_ref() == native_snapshot
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn require_selection_with_native_work(
-        &self, operation_id: OperationId, source_task: TaskId, project: &VolumeRef,
-        generation: &GenerationRef, native_snapshot: Option<&Value>,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        work.remaining()?;
-        if !self.selection_matches(operation_id, source_task, project, generation, native_snapshot) {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "project source read token names another selection",
-            });
-        }
+        let _ = work;
         Ok(())
     }
 }

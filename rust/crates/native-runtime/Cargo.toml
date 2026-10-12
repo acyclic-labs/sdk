@@ -7,15 +7,9 @@ license.workspace = true
 repository.workspace = true
 publish = true
 description = "Native file and process primitives shared by Acyclic host consumers"
-readme = "README.md"
-exclude = ["benches"]
 documentation = "https://docs.rs/acyclic-native-runtime"
 keywords = ["filesystem", "io", "runtime"]
 categories = ["filesystem"]
-
-[[bench]]
-name = "native_runtime"
-harness = false
 
 [dependencies]
 bytes.workspace = true

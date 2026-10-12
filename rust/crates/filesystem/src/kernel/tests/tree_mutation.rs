@@ -54,7 +54,7 @@ fn original_mutation_write_denial_preserves_paid_orphan_prefix()
     assert_eq!(work.receipt().page_writes, 1);
     assert_eq!(work.receipt().backend_write_operations, 1);
     assert!(store.read(first_page, u64::MAX, WorkBudget::UNBOUNDED).is_ok());
-    let first_page_bytes = encode_tree_page(&TreePage::Leaf(vec![entry("a", 1, FileKind::Fifo)?]), 8)?;
+    let first_page_bytes = encode_tree_page(&TreePage::Leaf(vec![entry("a", 1, FileKind::Fifo)?]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     assert_eq!(work.receipt().bytes_encoded, first_page_bytes.len() as u64);
     drop(accounting);
     drop(store);
@@ -85,7 +85,7 @@ fn put(
     let id = tree_page_id(page, maximum_items)?;
     store.put(
         id,
-        OwnedBytes::from(encode_tree_page(page, maximum_items)?),
+        OwnedBytes::from(encode_tree_page(page, maximum_items, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)
@@ -161,7 +161,7 @@ fn touched_leaf_and_shared_root_are_rewritten_once() -> Result<(), Box<dyn std::
     let root_bytes = store
         .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
         .value;
-    let TreePage::Internal(children) = decode_tree_page(&root_bytes, DecodeLimits::default())?
+    let TreePage::Internal(children) = decode_tree_page(&root_bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::TreePage::Leaf, crate::kernel::TreePage::Internal, |first_name, page| crate::kernel::TreeChild { first_name, page }, |child| &child.first_name)?
     else {
         return Err("candidate root is not internal".into());
     };
@@ -222,7 +222,7 @@ fn overflowing_leaf_splits_and_builds_one_new_root() -> Result<(), Box<dyn std::
         .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
         .value;
     assert!(matches!(
-        decode_tree_page(&bytes, limits)?,
+        decode_tree_page(&bytes, limits, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::TreePage::Leaf, crate::kernel::TreePage::Internal, |first_name, page| crate::kernel::TreeChild { first_name, page }, |child| &child.first_name)?,
         TreePage::Internal(children) if children.len() == 2
     ));
     Ok(())
@@ -570,7 +570,7 @@ fn flatten_tree(
     root: ObjectId,
 ) -> Result<Vec<TreeEntry>, Box<dyn std::error::Error>> {
     let bytes = store.read(root, u64::MAX, WorkBudget::UNBOUNDED)?.value;
-    Ok(match decode_tree_page(&bytes, DecodeLimits::default())? {
+    Ok(match decode_tree_page(&bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::TreePage::Leaf, crate::kernel::TreePage::Internal, |first_name, page| crate::kernel::TreeChild { first_name, page }, |child| &child.first_name)? {
         TreePage::Leaf(entries) => entries,
         TreePage::Internal(children) => {
             let mut entries = Vec::new();

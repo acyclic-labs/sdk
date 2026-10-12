@@ -240,7 +240,7 @@ impl FileTool {
                 let bytes = task.read_file(&input.file).await?;
                 let source = std::str::from_utf8(&bytes)
                     .map_err(|_| Error::Invalid("patch editing requires UTF-8 content".into()))?;
-                let edited = super::patch::apply_update(source, &input.diff, limits)?;
+                let edited = super::patch::apply_update(source, &input.diff, limits, &mut super::edit::AlgorithmWork::ordinary())?;
                 let file = task
                     .stage_file_at(invocation.operation_id, &input.file, edited.as_bytes())
                     .await?;
@@ -255,7 +255,7 @@ impl FileTool {
                 let text = std::str::from_utf8(&bytes)
                     .map_err(|_| Error::Invalid("exact text edit requires UTF-8 content".into()))?;
                 let edited =
-                    super::edit::exact_replace(text, &input.old_text, &input.new_text, maximum)?;
+                    super::edit::exact_replace(text, &input.old_text, &input.new_text, maximum, &mut super::edit::AlgorithmWork::ordinary())?;
                 let file = task
                     .stage_file_at(invocation.operation_id, &input.file, edited.as_bytes())
                     .await?;
@@ -390,7 +390,7 @@ impl ToolExecutor for FileTool {
             ).await?;
             match &receipt.0 {
                 Some(file) => {
-                    let encoded = super::value_with_native_work(&native::BorrowedFileResult { file }, work)?;
+                    let encoded = super::value(&native::BorrowedFileResult { file }, work.remaining()?.bytes_encoded, work)?;
                     Ok((Some(ToolResult { value: encoded.0 }), encoded.1))
                 }
                 None => Ok((None, receipt.1)),
@@ -633,7 +633,7 @@ impl FileTool {
                     invocation.operation_id, &input.0.path, input.0.text.as_bytes(),
                     &input.0.media_type, &input.0.display_name, work,
                 ).await?;
-                let encoded = super::value_with_native_work(&native::BorrowedFileResult { file: &file.0 }, work)?;
+                let encoded = super::value(&native::BorrowedFileResult { file: &file.0 }, work.remaining()?.bytes_encoded, work)?;
                 Ok((ToolResult { value: encoded.0 }, encoded.1))
             }
             Self::Edit => {
@@ -642,14 +642,14 @@ impl FileTool {
                 let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("exact text edit requires UTF-8 content"))?;
                 let mut allocation = super::edit::AlgorithmWork::native(work, std::mem::size_of::<String>())?;
-                let edited = super::edit::exact_replace_engine(
+                let edited = super::edit::exact_replace(
                     source, &input.0.old_text, &input.0.new_text,
                     context.effective_scope().limits().file_bytes, &mut allocation,
                 )?;
                 let file = context.stage_file_at_with_native_work(
                     invocation.operation_id, &input.0.file, edited.as_bytes(), work,
                 ).await?;
-                let encoded = super::value_with_native_work(&native::BorrowedFileResult { file: &file.0 }, work)?;
+                let encoded = super::value(&native::BorrowedFileResult { file: &file.0 }, work.remaining()?.bytes_encoded, work)?;
                 Ok((ToolResult { value: encoded.0 }, encoded.1))
             }
             Self::Patch { maximum_work, maximum_hunks } => {
@@ -667,11 +667,11 @@ impl FileTool {
                 let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("patch editing requires UTF-8 content"))?;
                 let mut allocation = super::edit::AlgorithmWork::native(work, std::mem::size_of::<String>())?;
-                let edited = super::patch::apply_update_engine(source, &input.0.diff, limits, &mut allocation)?;
+                let edited = super::patch::apply_update(source, &input.0.diff, limits, &mut allocation)?;
                 let file = context.stage_file_at_with_native_work(
                     invocation.operation_id, &input.0.file, edited.as_bytes(), work,
                 ).await?;
-                let encoded = super::value_with_native_work(&native::BorrowedFileResult { file: &file.0 }, work)?;
+                let encoded = super::value(&native::BorrowedFileResult { file: &file.0 }, work.remaining()?.bytes_encoded, work)?;
                 Ok((ToolResult { value: encoded.0 }, encoded.1))
             }
         }

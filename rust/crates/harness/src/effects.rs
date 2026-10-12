@@ -145,13 +145,6 @@ impl Clone for EffectRegistry {
     }
 }
 
-/// The provider observation is dropped before its original allocation custody.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-struct NativeEffectObservation {
-    observation: EffectObservation,
-    custody: acyclic_fs::NativeAllocation,
-}
-
 /// Single admission check for a pinned successful JSON result.
 pub(crate) fn validate_result_bytes(schema: &Value, result: &FileRef, bytes: &[u8]) -> Result<()> {
     result.validate(&mut None)?;
@@ -505,7 +498,7 @@ impl EffectRegistry {
             let future = provider.dispatch_with_native_work(dispatch, native)?;
             let (observation, custody) = future.await?;
             return self.attest_native_observation(issuer, effect_id, effect,
-                NativeEffectObservation { observation, custody }, work).await;
+                (observation, custody), work).await;
         }
         if work.is_some() {
             return Err(Error::Unsupported("effect observer has no original native ledger".into()));
@@ -529,7 +522,7 @@ impl EffectRegistry {
             let future = provider.reconcile_with_native_work(attempt_id, native)?;
             return match future.await? {
                 Some((observation, custody)) => Ok(Some(self.attest_native_observation(
-                    issuer, effect_id, effect, NativeEffectObservation { observation, custody },
+                    issuer, effect_id, effect, (observation, custody),
                     work).await?)),
                 None => Ok(None),
             };
@@ -547,21 +540,21 @@ impl EffectRegistry {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     async fn attest_native_observation(
         &self, issuer: &AuthorityIssuer, effect_id: EffectId, effect: &EffectState,
-        incoming: NativeEffectObservation,
+        incoming: (EffectObservation, acyclic_fs::NativeAllocation),
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<EffectAttestation> {
         if !work.as_deref().and_then(|io| io.original_native_work())
-            .is_some_and(|native| incoming.custody.work().shares_ledger(native))
+            .is_some_and(|native| incoming.1.work().shares_ledger(native))
         {
-            let NativeEffectObservation { observation, custody } = incoming;
+            let (observation, custody) = incoming;
             drop(observation);
             return Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
                 custody: Some(custody),
             });
         }
-        let provider_bytes = incoming.observation.provider.capacity() as u64;
-        let NativeEffectObservation { observation, custody } = incoming;
+        let provider_bytes = incoming.0.provider.capacity() as u64;
+        let (observation, custody) = incoming;
         let result = self.attest_provider_observation(
             issuer, effect_id, effect, observation, work).await;
         match result {
@@ -670,15 +663,7 @@ mod tests {
             &'a self,
             reference: &'a FileRef,
         ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
-            Box::pin(async move {
-                let bytes = if reference.descriptor().media_type() == "application/schema+json" {
-                    serde_json::to_vec(&json!({"type": "object", "required": ["receipt"]}))
-                        .map_err(|error| Error::Invalid(error.to_string()))?
-                } else {
-                    br#"{"receipt":"ok"}"#.to_vec()
-                };
-                reference.descriptor().verify(&bytes, &mut None)
-            })
+            Box::pin(async move { self.read(reference).await.map(drop) })
         }
         fn read<'a>(
             &'a self,

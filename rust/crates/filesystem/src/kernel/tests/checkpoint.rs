@@ -33,7 +33,7 @@ fn put_root(
         file_table: table(table_byte),
         parents: Vec::new(),
         required_features: 0,
-    })?;
+    }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     let object = ObjectId {
         kind: ObjectKind::GenerationRoot,
         digest: object_digest(ObjectKind::GenerationRoot, &encoded),
@@ -84,7 +84,7 @@ fn changed_checkpoint_has_exact_parent_and_one_immutable_write()
     let bytes = store
         .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
         .value;
-    let root = decode_generation_root(&bytes, DecodeLimits::default())?;
+    let root = decode_generation_root(&bytes, DecodeLimits::default(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
     assert_eq!(root.file_table, table(7));
     assert_eq!(root.parents, vec![GenerationId::new(base.digest)]);
     Ok(())
@@ -253,7 +253,7 @@ fn valid_merge_checkpoint_preserves_both_exact_parent_identities()
     let encoded = store
         .read(receipt.root, u64::MAX, WorkBudget::UNBOUNDED)?
         .value;
-    let root = decode_generation_root(&encoded, DecodeLimits::default())?;
+    let root = decode_generation_root(&encoded, DecodeLimits::default(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
     assert_eq!(
         root.parents,
         vec![
