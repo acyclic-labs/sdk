@@ -306,7 +306,7 @@ impl PiSession {
         let owner = pi_owner::PiOwnerConfig::load_with_native_work(
             &resources.private_state_root, &relative_directory.0, work,
         )?;
-        owner.validate_root(binding)?;
+        owner.validate_root(binding, work)?;
         // Recovery never bootstraps a missing task provider. Original admission
         // authentication below still rejects an empty or unrelated history.
         let stream_path = directory.join("stream");
@@ -456,7 +456,7 @@ impl PiSession {
                 let driver = pi_workflow::PiWorkflowHost::new(
                     &self.relative_directory, self.runtime.clone(), self.filesystem.clone(),
                     self.stream.clone(), &self.resources, &self.state,
-                ).with_work(original_native_work.clone());
+                 original_native_work.clone());
                 let progress = driver.drive_root().await?;
                 let unresolved = match progress.0 {
                     Some(acyclic_harness::filesystem::TaskWorkerAttempt::Unresolved { lease, error }) => {
@@ -834,7 +834,7 @@ impl PiSession {
             return pi_workflow::PiWorkflowHost::new(
                 &self.relative_directory, self.runtime.clone(), self.filesystem.clone(),
                 self.stream.clone(), &self.resources, &self.state,
-            ).with_work(work).control_command_with_native_work(command.0).await;
+             work).control_command_with_native_work(command.0).await;
         }
         let binding = self.binding(caller)?;
         let host = self.runtime.runtime.task_host();

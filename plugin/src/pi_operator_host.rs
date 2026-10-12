@@ -18,23 +18,7 @@ use std::sync::Arc;
 type Journal = FilesystemExecutionJournal<LocalStream, crate::LocalAuthorityBackend, crate::LocalObjectBackend>;
 pub(crate) const PI_OPERATOR_COMMAND_KIND: &str = "acyclic.pi.operator-approval";
 
-/// Allocation-free projection of the existing immutable approval wire.
-#[derive(Clone, Copy, Serialize)]
-pub(crate) struct PiPreparedCommandRef<'a> {
-    caller: acyclic_harness::TaskId,
-    sdk_operation: &'a str,
-    source: acyclic_harness::TaskId,
-    root: Option<&'a str>,
-    directory: &'a str,
-    cursor: Option<&'a str>,
-    maximum_entries: Option<u32>,
-    destination: Option<acyclic_harness::TaskId>,
-    paths: &'a [String],
-    confirm: bool,
-    approval_digest: Option<&'a str>,
-    import_operation: Option<OperationId>,
-}
-impl<'a> From<&'a crate::pi_selected_host::PiSelectedCommand> for PiPreparedCommandRef<'a> {
+impl<'a> From<&'a crate::pi_selected_host::PiSelectedCommand> for crate::pi_selected_host::PiSelectedCommand<&'a str, &'a [String]> {
     fn from(command: &'a crate::pi_selected_host::PiSelectedCommand) -> Self {
         Self { caller: command.caller, sdk_operation: &command.sdk_operation, source: command.source,
             root: command.root.as_deref(), directory: &command.directory, cursor: command.cursor.as_deref(),
@@ -43,7 +27,7 @@ impl<'a> From<&'a crate::pi_selected_host::PiSelectedCommand> for PiPreparedComm
             import_operation: command.import_operation }
     }
 }
-impl<'a> PiPreparedCommandRef<'a> {
+impl<'a> crate::pi_selected_host::PiSelectedCommand<&'a str, &'a [String]> {
     pub(crate) fn normalized(command: &'a crate::pi_selected_host::PiSelectedCommand, root: &'a str) -> Self {
         Self { root: Some(root), approval_digest: None, import_operation: None, ..Self::from(command) }
     }
@@ -52,14 +36,14 @@ impl<'a> PiPreparedCommandRef<'a> {
 pub(crate) struct PiPreparedApprovalRef<'a> {
     pub(crate) version: u32,
     pub(crate) session: &'a str,
-    pub(crate) command: PiPreparedCommandRef<'a>,
+    pub(crate) command: crate::pi_selected_host::PiSelectedCommand<&'a str, &'a [String]>,
     pub(crate) operation: OperationId,
     pub(crate) approval_digest: &'a str,
     pub(crate) private_volume: &'a acyclic_harness::conversation::VolumeRef,
     pub(crate) source_snapshot: acyclic_fs::LazySnapshotRef,
     pub(crate) selected_snapshot: acyclic_fs::LazySnapshotRef,
     pub(crate) imported: acyclic_fs::GenerationId,
-    pub(crate) import_receipt: crate::pi_selected_host::PiSelectedImportReceiptRef<'a>,
+    pub(crate) import_receipt: crate::pi_selected_host::PiSelectedImportReceipt<&'a str, &'a acyclic_harness::conversation::VolumeRef, &'a [String]>,
     pub(crate) journal: &'a acyclic_fs::MaterializationJournal,
     pub(crate) canonical_digest_input: &'a str,
     pub(crate) root_path: &'a str,
@@ -122,7 +106,7 @@ pub(crate) async fn open_prepared_approval(runtime: &PiNativeRuntime, filesystem
     binding: &PiTaskBinding, descriptor: &PiPreparedApprovalRef<'_>, work: &NativeMaterializationWork) -> Result<()> {
     validate_descriptor(protected, descriptor, work)?;
     runtime.verify_owner_with_native_work(protected, work)?;
-    protected.validate_root(binding)?;
+    protected.validate_root(binding, work)?;
     let (task, fence) = context.context().owned_task_binding_with_native_work(work)?;
     if task != protected.policy().root_task || owner.task_id() != task
         || descriptor.session != binding.native_session_id || descriptor.private_volume != &binding.scratch.volume {
@@ -404,7 +388,7 @@ impl<'a> PiOperatorHost<'a> {
             .with_invocation_cancellation(work.cancellation()).into_native_shared(work)?;
         owner.verify_with_native_work(false, work).await?;
         let (admitted, _admission_custody) = self.selected.admission_input(root, work).await?;
-        self.protected.validate_root(&admitted.binding)?;
+        self.protected.validate_root(&admitted.binding, work)?;
         let crate::pi_task::PiTaskExecution::Host { root: original_root, .. } = admitted.execution else {
             return Err(denied("operator Root became a child admission"));
         };

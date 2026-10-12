@@ -429,11 +429,7 @@ impl<'a> PiForkHost<'a> {
                 || route.parent_agent_id != self.parent_alias(plan.commit.caller)? {
                 return Err(unauthorized("Pi existing route changed its original preparation identity"));
             }
-            // A previously saved Created route already crossed the same catalog
-            // barrier. Observe its original creator rather than reserve anew.
         } else {
-            // This ordinary admit is durable. The caller MUST save the catalog
-            // record before executing this command again; no creator runs here.
             let reservation = self.reservation_with_native_work(&plan, work)?;
             coordinator.admit_preparation(&context, &owner, &fence, &plan).await?;
             self.push_pending(reservation, work)?;

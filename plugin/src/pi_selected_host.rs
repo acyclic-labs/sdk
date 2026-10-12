@@ -22,8 +22,6 @@ pub(crate) struct PiRootSourceCut {
     pub(crate) snapshots: BTreeMap<String, LazySnapshotRef>,
 }
 
-// Closed selected-command, admission and cursor labels augment the existing
-// canonical Root/SDK leaf inventory; these are actual serde schema labels.
 const SELECTED_DIAGNOSTIC_LABEL_BYTES: u64 =
     crate::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES
     + crate::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
@@ -40,20 +38,20 @@ const SELECTED_DIAGNOSTIC_LABEL_BYTES: u64 =
         "ProjectSourceSnapshot", "project", "generation", "native_snapshot",
         "SelectedImportIntent", "source_snapshot", "destination_snapshot", "operation", "writeback",
     ]);
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct PiSelectedCommand {
+#[derive(Clone, Copy, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, bound(deserialize = "S: Deserialize<'de> + Default, P: Deserialize<'de> + Default"))]
+pub(crate) struct PiSelectedCommand<S = String, P = Vec<String>> {
     pub(crate) caller: TaskId,
-    pub(crate) sdk_operation: String,
+    pub(crate) sdk_operation: S,
     pub(crate) source: TaskId,
-    pub(crate) root: Option<String>,
-    #[serde(default)] pub(crate) directory: String,
-    pub(crate) cursor: Option<String>,
+    pub(crate) root: Option<S>,
+    #[serde(default)] pub(crate) directory: S,
+    pub(crate) cursor: Option<S>,
     pub(crate) maximum_entries: Option<u32>,
     pub(crate) destination: Option<TaskId>,
-    #[serde(default)] pub(crate) paths: Vec<String>,
+    #[serde(default)] pub(crate) paths: P,
     #[serde(default)] pub(crate) confirm: bool,
-    pub(crate) approval_digest: Option<String>,
+    pub(crate) approval_digest: Option<S>,
     pub(crate) import_operation: Option<OperationId>,
 }
 
@@ -128,8 +126,6 @@ impl<'a> PiSelectedHost<'a> {
         }
         native_owner.require_volume_grant_with_native_work(scratch,
             acyclic_harness::conversation::VolumeOperation::Write, work)?;
-        // The native dispatcher supplies the canonical, already bound Root or
-        // sealed child scratch context. Never clone or rebind that context here.
         Ok((owner, decoded.0, decoded.1))
     }
     pub(crate) async fn admission_input(&self, task: TaskId, work: &acyclic_fs::NativeMaterializationWork)
@@ -387,22 +383,16 @@ fn native_workspace_error((source, custody): (acyclic_fs::WorkspaceError, Option
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SelectedImportIntent {
-    caller: TaskId, source: TaskId, root: String, destination: VolumeRef,
+struct SelectedImportIntent<S = String, V = VolumeRef, P = Vec<String>> {
+    caller: TaskId, source: TaskId, root: S, destination: V,
     source_snapshot: LazySnapshotRef, destination_snapshot: LazySnapshotRef,
-    paths: Vec<String>, operation: OperationId, writeback: bool,
+    paths: P, operation: OperationId, writeback: bool,
 }
 
-#[derive(Clone, Copy, Serialize)]
-struct SelectedImportIntentRef<'a> {
-    caller: TaskId, source: TaskId, root: &'a str, destination: &'a VolumeRef,
-    source_snapshot: LazySnapshotRef, destination_snapshot: LazySnapshotRef,
-    paths: &'a [String], operation: OperationId, writeback: bool,
-}
 
-impl<'a> From<&'a SelectedImportIntent> for SelectedImportIntentRef<'a> {
+impl<'a> From<&'a SelectedImportIntent> for SelectedImportIntent<&'a str, &'a VolumeRef, &'a [String]> {
     fn from(value: &'a SelectedImportIntent) -> Self {
         Self { caller: value.caller, source: value.source, root: &value.root,
             destination: &value.destination, source_snapshot: value.source_snapshot,
@@ -412,34 +402,22 @@ impl<'a> From<&'a SelectedImportIntent> for SelectedImportIntentRef<'a> {
 }
 
 /// Metadata from a completed canonical SDK selected import, retained under the original immutable Pi input operation; never a replacement publication grant.
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PiSelectedImportReceipt {
+pub(crate) struct PiSelectedImportReceipt<S = String, V = VolumeRef, P = Vec<String>> {
     pub(crate) caller: TaskId,
     pub(crate) source: TaskId,
-    pub(crate) root: String,
-    pub(crate) destination: VolumeRef,
+    pub(crate) root: S,
+    pub(crate) destination: V,
     pub(crate) selected_snapshot: LazySnapshotRef,
     pub(crate) destination_snapshot: LazySnapshotRef,
     pub(crate) imported: LazySnapshotRef,
-    pub(crate) paths: Vec<String>,
+    pub(crate) paths: P,
     pub(crate) operation: OperationId,
 }
 
-#[derive(Clone, Copy, Serialize)]
-pub(crate) struct PiSelectedImportReceiptRef<'a> {
-    pub(crate) caller: TaskId,
-    pub(crate) source: TaskId,
-    pub(crate) root: &'a str,
-    pub(crate) destination: &'a VolumeRef,
-    pub(crate) selected_snapshot: LazySnapshotRef,
-    pub(crate) destination_snapshot: LazySnapshotRef,
-    pub(crate) imported: LazySnapshotRef,
-    pub(crate) paths: &'a [String],
-    pub(crate) operation: OperationId,
-}
 
-impl<'a> From<&'a PiSelectedImportReceipt> for PiSelectedImportReceiptRef<'a> {
+impl<'a> From<&'a PiSelectedImportReceipt> for PiSelectedImportReceipt<&'a str, &'a VolumeRef, &'a [String]> {
     fn from(value: &'a PiSelectedImportReceipt) -> Self {
         Self { caller: value.caller, source: value.source, root: &value.root,
             destination: &value.destination, selected_snapshot: value.selected_snapshot,
@@ -517,9 +495,6 @@ impl PiSelectedHost<'_> {
     let publication = if let Some(view) = self.native.live_view(destination) {
         view.project_publication(volume).ok_or_else(|| denied("destination lacks its ORIGINAL project publication permit"))?
     } else if destination == self.protected.policy().root_task {
-        // The ordinary Root volume factory is logical, not a native mount;
-        // its original permit is Unrestricted. The SDK per-seal owner guard
-        // below is mandatory and retains the actual original WRITE grant.
         acyclic_fs::PublicationPermit::Unrestricted
     } else { return Err(denied("destination live owner unavailable")); };
     let import_operation = if writeback { derived(operation, "writeback-import") } else { operation };
@@ -531,7 +506,7 @@ impl PiSelectedHost<'_> {
             || intent.writeback != writeback {
             return Err(denied("original selected import retry changed its sealed request"));
         }
-        (SelectedImportIntentRef::from(intent), None)
+        (SelectedImportIntent::from(intent), None)
     } else {
         if reconcile { return Ok(TaskCommandProgress::Pending); }
         let destination_cut = if destination == self.protected.policy().root_task {
@@ -549,9 +524,9 @@ impl PiSelectedHost<'_> {
             owner.verify_with_native_work(false, work).await?;
             (snapshot, custody)
         };
-        let intent = SelectedImportIntentRef { caller: input.caller, source: input.source, root: key,
+        let intent = SelectedImportIntent { caller: input.caller, source: input.source, root: key,
             destination: volume, source_snapshot: selected.snapshot(), destination_snapshot: destination_cut.0,
-            paths: &input.paths, operation: import_operation, writeback };
+            paths: input.paths.as_slice(), operation: import_operation, writeback };
         let staged = crate::pi_root_provider::stage_pi_input(&self.protected,
             &self.filesystem, import_operation, "selected-import-intent", &intent, work).await?;
         drop(staged);
@@ -597,7 +572,7 @@ impl PiSelectedHost<'_> {
         }
         result?
     };
-    let import_receipt = PiSelectedImportReceiptRef {
+    let import_receipt = PiSelectedImportReceipt {
         caller: intent.caller, source: intent.source, root: intent.root,
         destination: intent.destination, selected_snapshot: intent.source_snapshot,
         destination_snapshot: intent.destination_snapshot, imported, paths: intent.paths,
@@ -627,7 +602,7 @@ impl PiSelectedHost<'_> {
         input: &PiSelectedCommand, key: &str, volume: &VolumeRef, source_volume: &VolumeRef, imported: LazySnapshotRef,
         operation: OperationId, publication: acyclic_fs::PublicationPermit,
         verifier: &acyclic_harness::core::AuthorityVerifier, scope: &acyclic_harness::core::Scope,
-        import_receipt: PiSelectedImportReceiptRef<'_>, reconcile: bool, cancellation: &CancellationToken,
+        import_receipt: PiSelectedImportReceipt<&str, &VolumeRef, &[String]>, reconcile: bool, cancellation: &CancellationToken,
     work: &acyclic_fs::NativeMaterializationWork) -> Result<TaskCommandProgress> { let root_task = self.protected.policy().root_task;
     if input.caller != root_task || owner.task_id() != root_task
         || self.root_binding()?.project_volumes.get(key) != Some(volume)
@@ -716,7 +691,7 @@ impl PiSelectedHost<'_> {
         |path| work.display(&format_args!("{}", path.display())).map_err(native_error)).transpose()?;
     let descriptor = crate::pi_operator_host::PiPreparedApprovalRef {
         version: 1, session: &root_binding.native_session_id,
-        command: crate::pi_operator_host::PiPreparedCommandRef::normalized(input, key),
+        command: PiSelectedCommand::normalized(input, key),
         operation, approval_digest: &prepared.approval_digest,
         private_volume: &root_binding.scratch.volume,
         source_snapshot: prepared.original_snapshot(), selected_snapshot: import_receipt.selected_snapshot,

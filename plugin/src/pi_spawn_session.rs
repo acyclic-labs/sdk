@@ -19,12 +19,7 @@ struct RetainedRootSource {
     snapshot: LazySnapshotRef,
 }
 
-// Only these closed DTOs are retained here; neither contains a serde_json::Value.
-trait SpawnRetainedInput: DeserializeOwned {
-    const DIAGNOSTIC_LABEL_BYTES: u64;
-}
-impl SpawnRetainedInput for RetainedRootSource {
-    const DIAGNOSTIC_LABEL_BYTES: u64 = pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
+const SPAWN_ROOT_SOURCE_LABEL_BYTES: u64 = pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
         "RetainedRootSource", "caller", "sdk_operation", "root_key", "snapshot",
         "TaskId", "LazySnapshotRef", "id", "workspace_id", "authored_generation",
         "source", "overlay", "shadows", "LazySnapshotId", "WorkspaceId",
@@ -33,10 +28,6 @@ impl SpawnRetainedInput for RetainedRootSource {
         "a string", "a UUID string", "u64", "u8",
         "an array of length 16", "an array of length 32",
     ]);
-}
-impl SpawnRetainedInput for pi_native::PiNativeLaunchIntent {
-    const DIAGNOSTIC_LABEL_BYTES: u64 = pi_native::PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES;
-}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -140,14 +131,12 @@ impl PiSession {
             let plan = plan.as_ref().ok_or_else(|| acyclic_harness::Error::Invalid("Pi created route lost its original immutable fork plan".to_owned()))?;
             self.spawn_validate_admitted(plan, owner.policy().maximum_payload_bytes, &work).await?;
             let (launch, launch_custody): (pi_native::PiNativeLaunchIntent, NativeAllocation) = self.spawn_input(owner,
-                pi_fork::derived_with_native_work(original, "native-input", &work)?, "native-input", &work).await?.ok_or_else(|| acyclic_harness::Error::Invalid("Pi created child lost its original immutable native intent".to_owned()))?;
+                pi_fork::derived_with_native_work(original, "native-input", &work)?, "native-input", pi_native::PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES, &work).await?.ok_or_else(|| acyclic_harness::Error::Invalid("Pi created child lost its original immutable native intent".to_owned()))?;
             if launch != commit.launch {
                 return Err(acyclic_harness::Error::Invalid("Pi duplicate changed its original sealed native intent".to_owned()));
             }
             drop(launch);
             spawn_retain_custody(&mut retained_custody, launch_custody)?;
-            // A duplicate only observes. In particular it neither seeds another
-            // SDK session nor acquires a worker reservation or relaunches Pi.
             return self.spawn_observation(&commit, operations, true, false, &work, owner.policy().maximum_payload_bytes, retained_custody).await;
         }
         let pending = self.state.pending.iter().find(|pending| pending.fork_key == operations.fork.into_bytes());
@@ -184,7 +173,7 @@ impl PiSession {
             if let Some(plan) = &plan {
                 Some(plan.frozen)
             } else if let Some((observed, custody)) = self.spawn_input::<RetainedRootSource>(
-                owner, pi_fork::derived_with_native_work(original, "observe-root-source", &work)?, "root-source-observation",
+                owner, pi_fork::derived_with_native_work(original, "observe-root-source", &work)?, "root-source-observation", SPAWN_ROOT_SOURCE_LABEL_BYTES,
                 &work,
             ).await? {
                 let observed = observed;
@@ -226,9 +215,6 @@ impl PiSession {
         let (command, command_custody) = self.spawn_command(owner, original, pi_fork_host::PI_FORK_COMMAND_KIND,
             &payload, &work).await?;
 
-        // A process loss can erase a host's transient pending notification, but
-        // not its ordinary preparation admission. Rebuild catalog metadata only
-        // after observing that exact original admission, never from path/ACK.
         if !self.state.pending.iter().any(|pending| pending.fork_key == operations.fork.into_bytes()) {
             if let Some(plan) = &plan {
                 let root_waiting = if caller == owner.policy().root_task {
@@ -271,8 +257,6 @@ impl PiSession {
         let (acknowledgement, prepared) = if prepared.is_some() {
             (acknowledgement, prepared)
         } else if newly_saved || (saved_pending && acknowledgement.is_none()) {
-            // A fresh host sees the PowerLoss-saved Preparing record. Only this
-            // pass may wake the Root's exact original waiting command/creator.
             if let Some((value, custody)) = acknowledgement {
                 drop(value);
                 spawn_retain_custody(&mut retained_custody, custody)?;
@@ -312,8 +296,6 @@ impl PiSession {
             return self.spawn_observation(&commit, operations, false, true, &work, owner.policy().maximum_payload_bytes, retained_custody).await;
         };
         if let Some((acknowledgement, custody)) = acknowledgement {
-            // Reuse the genuine typed creator identity retained before the ACK
-            // projection; borrowed JSON never invokes an unfunded UUID decoder.
             let rejection = match acknowledgement.get("task").and_then(Value::as_str) {
                 None => Some("Pi fork acknowledgement has no admitted child identity"),
                 Some(acknowledged_task) if prepared.binding.task_id != task
@@ -332,8 +314,6 @@ impl PiSession {
         if let Some(live) = &live { live.owner.verify_with_native_work(false, &work).await?; }
         self.spawn_save_created(&commit, operations, &prepared, &work)?;
         native.register_prepared(prepared).await?;
-        // The stock task/effect future may block on native SessionStart, tools
-        // and mail RPC. It must never hold the session actor during that wait.
         let job = super::pi_lifecycle_session::spawn_native_job(&work, || async move {
             native.run_child(task).await
         })?;
@@ -462,8 +442,8 @@ impl PiSession {
         Ok((pi_fork::RetainedSpawnCommit { sdk_operation, alias, prompt, caller, source_task, child, launch }, invocation_custody))
     }
 
-    async fn spawn_input<T: SpawnRetainedInput>(
-        &self, owner: &pi_owner::PiOwnerConfig, operation: acyclic_harness::OperationId, label: &str,
+    async fn spawn_input<T: DeserializeOwned>(
+        &self, owner: &pi_owner::PiOwnerConfig, operation: acyclic_harness::OperationId, label: &str, schema_label_bytes: u64,
         work: &NativeMaterializationWork,
     ) -> acyclic_harness::Result<Option<(T, NativeAllocation)>> {
         let reference = pi_root_provider::observe_pi_input(
@@ -480,7 +460,7 @@ impl PiSession {
         let owned = std::mem::size_of::<T>() as u64;
         let (value, custody) = pi_root_provider::guarded_pi_decode(
             &bytes, maximum, owned, acyclic_harness::JsonValueSchema::None,
-            T::DIAGNOSTIC_LABEL_BYTES, work)?;
+            schema_label_bytes, work)?;
         drop(bytes);
         drop(bytes_custody);
         drop(reference);
@@ -506,7 +486,7 @@ impl PiSession {
         let selected = pi_selected_host::PiSelectedHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
             &self.resources, native.original_owner(), &self.state, &self.roots, native, work)?;
         let workflow = pi_workflow::PiWorkflowHost::new(&self.relative_directory, self.runtime.clone(), self.filesystem.clone(),
-            self.stream.clone(), &self.resources, &self.state).with_controls(&fork, &selected).with_work(work.clone());
+            self.stream.clone(), &self.resources, &self.state, work.clone()).with_controls(&fork, &selected);
         let reply = workflow.control_step_with_native_work(command, wake_pending).await?;
         let pending = fork.pending_to_save()?;
         let prepared = match task { Some(task) => fork.take_prepared(task)?, None => None };
