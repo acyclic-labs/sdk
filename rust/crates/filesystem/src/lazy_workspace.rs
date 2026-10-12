@@ -9250,7 +9250,7 @@ where
         &'a self, basis: Option<LazySnapshotRef>, mutations: I,
         key: IdempotencyKey, permit: crate::PublicationPermit, work: &'a LazyTreapWork<'work>,
         before_mutation: &'a mut F,
-    ) -> impl Future<Output = Result<(TransactionCommit<A, O>, Result<LazySnapshotRef, E>), E>> + Send + 'a
+    ) -> impl Future<Output = Result<(TransactionCommit<A, O>, Result<LazySnapshotRef, E>), E>> + ProviderTask + 'a
     where
         E: From<LazyWorkspaceError> + Send + 'a,
         F: LazyWriteGuard<A, O, D, S, Error = E> + 'a,
