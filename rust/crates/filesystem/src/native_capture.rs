@@ -3654,7 +3654,7 @@ async fn stage_regular_body<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager:
                 native_device_control_in_scope(file, code, input, output, meter)
             },
         ).map_err(capture_demand_error)?;
-        let positional = native_positional_file_measured(file, meter)?;
+        let positional = native_positional_file(file, &meter.native)?;
         capture_allocate(meter, std::mem::size_of::<acyclic_native_runtime::NativeFile>() as u64)?;
         let native = std::sync::Arc::new(positional);
         Ok((metadata, ranges, native))
@@ -3969,12 +3969,12 @@ async fn stage_host_ranges<A: AsyncAuthorityStore, O: AsyncObjectStore>(stager: 
 ) -> Result<Vec<(HostDataRange, StagedContent)>, CaptureError> {
     let mut staged = capture_vec(ranges.len(), meter)?;
     for range in ranges {
-        let mut bounded = NativeRangeSource::new_captured(
-            acyclic_native_runtime::AsyncRangeReader::new(
+        let mut bounded = NativeRangeSource {
+            reader: acyclic_native_runtime::AsyncRangeReader::new(
                 std::sync::Arc::clone(native), range.offset, range.length,
             ),
-            meter,
-        );
+            capture_custody: std::sync::Arc::clone(meter.custody.as_ref().expect("capture scope is live")),
+        };
         let stage_cancellation = meter.native.cancellation().clone();
         let content = capture_sdk(
             |original| stager.stage(&mut bounded, range.length, original, &stage_cancellation),
@@ -4121,33 +4121,20 @@ fn keep_sparse_range(
     Ok(true)
 }
 
-/// The native file a handle from [`HostRoot::open_file_positional`] reads through.
-#[cfg(all(test, windows))]
-#[allow(
-    unsafe_code,
-    reason = "adopts the overlapped handle into the native runtime"
-)]
-fn native_positional_file(
-    file: std::fs::File,
-) -> std::io::Result<acyclic_native_runtime::NativeFile> {
-    // SAFETY: a positional handle is opened overlapped; this fresh file object is attached to no port, and this sole duplicate carries all of its I/O.
-    unsafe { acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file, None).map_err(|(error, _)| error) }
-}
-
-
 struct NativeRangeSource {
     reader: acyclic_native_runtime::AsyncRangeReader,
     capture_custody: std::sync::Arc<crate::demand::CaptureTransientCustody>,
 }
 
 #[allow(unsafe_code, reason = "the measured host opener transfers its fresh positional handle")]
-fn native_positional_file_measured(
+fn native_positional_file(
     file: std::fs::File,
-    scope: &CaptureWorkScope,
+    original: &crate::NativeMaterializationWork,
 ) -> Result<acyclic_native_runtime::NativeFile, CaptureError> {
-    let meter = scope.native.runtime_meter_owner();
+    let meter = original.runtime_meter_owner();
     #[cfg(windows)]
     let result = unsafe {
+        // SAFETY: the fresh positional handle is overlapped and has no prior completion port.
         acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file, Some(acyclic_native_runtime::NativeFileMeter::Owned(meter)))
     };
     #[cfg(not(windows))]
@@ -4155,16 +4142,9 @@ fn native_positional_file_measured(
     result.map_err(|(error, file)| {
         // This is an ordinary std file, not an explicit SDK close operation. Retire its physical handle before projecting the original failure.
         drop(file);
-        capture_demand_error(scope.native.native_read_meter().take_native_io_failure()
+        capture_demand_error(original.native_read_meter().take_native_io_failure()
             .unwrap_or_else(|| native_demand_error(error)))
     })
-}
-
-impl NativeRangeSource {
-    fn new_captured(reader: acyclic_native_runtime::AsyncRangeReader, scope: &CaptureWorkScope) -> Self {
-        Self { reader, capture_custody: std::sync::Arc::clone(
-            scope.custody.as_ref().expect("capture scope is live")) }
-    }
 }
 
 impl crate::kernel::AsyncBlobSource for NativeRangeSource {
@@ -4262,7 +4242,7 @@ mod native_range_tests {
             .map_err(|(error, _)| error)?;
         let mut scope = CaptureWorkScope::new(&original)?;
         cancellation.cancel();
-        assert!(matches!(native_positional_file_measured(file, &scope), Err(CaptureError::Cancelled)));
+        assert!(matches!(native_positional_file(file, &scope.native), Err(CaptureError::Cancelled)));
         assert_eq!(unsafe { libc::flock(contender.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) }, 0);
         scope.release()?;
         Ok(())
@@ -4279,9 +4259,11 @@ mod native_range_tests {
         let original = crate::NativeMaterializationWork::new(budget(), &cancellation)
             .map_err(|(error, _)| error)?;
         let mut scope = CaptureWorkScope::new(&original)?;
-        let native = std::sync::Arc::new(native_positional_file_measured(fixture_file(&path)?, &scope)?);
+        let native = std::sync::Arc::new(native_positional_file(fixture_file(&path)?, &scope.native)?);
         let reader = acyclic_native_runtime::AsyncRangeReader::new(std::sync::Arc::clone(&native), 0, 8);
-        let mut source = NativeRangeSource::new_captured(reader, &scope);
+        let mut source = NativeRangeSource {
+            reader, capture_custody: std::sync::Arc::clone(scope.custody.as_ref().expect("capture scope is live")),
+        };
         std::fs::write(&path, b"abc")?;
         let mut destination = [0xa5; 8];
         assert!(matches!(source.read_with_native_work(
@@ -4306,7 +4288,7 @@ mod native_range_tests {
         let original = crate::NativeMaterializationWork::new(budget(), &cancellation)
             .map_err(|(error, _)| error)?;
         let mut scope = CaptureWorkScope::new(&original)?;
-        let native = std::sync::Arc::new(native_positional_file_measured(fixture_file(&path)?, &scope)?);
+        let native = std::sync::Arc::new(native_positional_file(fixture_file(&path)?, &scope.native)?);
         let meter = crate::native_capture::capture_runtime_meter_owner(&original,
             scope.custody.as_ref().expect("live scope"))?;
         let (started, start) = std::sync::mpsc::channel();
@@ -4356,10 +4338,11 @@ mod native_range_tests {
             let original = crate::NativeMaterializationWork::new(limit, &cancellation)
                 .expect("fund original accounting state");
             let scope = CaptureWorkScope::new(&original)?;
-            let native = std::sync::Arc::new(native_positional_file_measured(fixture_file(&path)?, &scope)?);
-            let mut source = NativeRangeSource::new_captured(
-                acyclic_native_runtime::AsyncRangeReader::new(native, 0, 3), &scope,
-            );
+            let native = std::sync::Arc::new(native_positional_file(fixture_file(&path)?, &scope.native)?);
+            let mut source = NativeRangeSource {
+                reader: acyclic_native_runtime::AsyncRangeReader::new(native, 0, 3),
+                capture_custody: std::sync::Arc::clone(scope.custody.as_ref().expect("capture scope is live")),
+            };
             let baseline = original.receipt();
             let live = original.live_allocation_bytes();
             let mut destination = [0xa5; 8];
@@ -4474,10 +4457,10 @@ mod windows_sparse_tests {
         let root = HostRoot::open(directory, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let file = root.open_file_positional_with_work(Path::new(name), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let metadata = test_host_stat(&root, Path::new(name)).map_err(std::io::Error::other)?;
-        let native = std::sync::Arc::new(native_positional_file(file.into_std())?);
         let cancellation = CancellationToken::new();
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(error, _)| std::io::Error::other(error))?;
+        let native = std::sync::Arc::new(native_positional_file(file.into_std(), &original).map_err(std::io::Error::other)?);
         let mut scope = CaptureWorkScope::new(&original)
             .map_err(|failure| std::io::Error::other(failure.error))?;
         scope.native.with_original_leaf(|work| work.adopt(reported.capacity() as u64 * std::mem::size_of::<HostDataRange>() as u64))
@@ -4559,7 +4542,9 @@ mod windows_sparse_tests {
         let root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let file = root.open_file_positional_with_work(Path::new("sparse.bin"), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let metadata = test_host_stat(&root, Path::new("sparse.bin")).map_err(std::io::Error::other)?;
-        let native = std::sync::Arc::new(native_positional_file(file.into_std())?);
+        let file_work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(error, _)| std::io::Error::other(error))?;
+        let native = std::sync::Arc::new(native_positional_file(file.into_std(), &file_work).map_err(std::io::Error::other)?);
         let scan = |budget: WorkBudget, cancellation: CancellationToken| {
             let (native, metadata) = (std::sync::Arc::clone(&native), metadata.clone());
             async move {
