@@ -467,6 +467,9 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                         4_096,
                         &parent_resolver,
                         &IdempotencyKey::new("dirty-private-prefix")?,
+                        &[], None, None, None,
+                        #[cfg(not(target_arch = "wasm32"))]
+                        None,
                     )
                     .await
                     .is_err(),
@@ -486,6 +489,9 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 4_096,
                 &parent_resolver,
                 &IdempotencyKey::new(format!("inherited-{level}"))?,
+                &[], None, None, None,
+                #[cfg(not(target_arch = "wasm32"))]
+                None,
             )
             .await?;
         if level == 1 {
@@ -503,6 +509,9 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                         4_096,
                         &parent_resolver,
                         &IdempotencyKey::new("inherited-1")?,
+                        &[], None, None, None,
+                        #[cfg(not(target_arch = "wasm32"))]
+                        None,
                     )
                     .await
                     .is_err(),
@@ -1731,7 +1740,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         if index == 1 {
             assert!(
                 ungranted_controller
-                    .prepare_project_import(&child, &root_head.generation)
+                    .prepare_project_import(&child, &root_head.generation, None)
                     .await
                     .is_err()
             );
@@ -1821,58 +1830,46 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         root_head.generation
     );
     let first = controller
-        .prepare_project_import(
-            &siblings[0],
-            &host
+        .prepare_project_import(&siblings[0], &host
                 .resolve(&workspace_ref(
                     provider.clone(),
                     &(siblings[0]).storage_name()?,
                 )?)
                 .await?
-                .generation,
-        )
+                .generation, None)
         .await?;
     let stale = controller
-        .prepare_project_import(
-            &siblings[1],
-            &host
+        .prepare_project_import(&siblings[1], &host
                 .resolve(&workspace_ref(
                     provider.clone(),
                     &(siblings[1]).storage_name()?,
                 )?)
                 .await?
-                .generation,
-        )
+                .generation, None)
         .await?;
     assert!(
         ungranted_controller
-            .apply_project_merge(&first, OperationId::from_bytes([100; 16]))
+            .apply_project_merge(&first, OperationId::from_bytes([100; 16]), BTreeMap::new())
             .await
             .is_err()
     );
     let first_outcome = controller
-        .apply_project_merge(&first, OperationId::from_bytes([101; 16]))
-        .await?;
+        .apply_project_merge(&first, OperationId::from_bytes([101; 16]), BTreeMap::new()).await?.0;
     assert!(matches!(first_outcome, JoinOutcome::Applied(_)));
     let stale_outcome = controller
-        .apply_project_merge(&stale, OperationId::from_bytes([102; 16]))
-        .await?;
+        .apply_project_merge(&stale, OperationId::from_bytes([102; 16]), BTreeMap::new()).await?.0;
     assert!(matches!(stale_outcome, JoinOutcome::StaleTarget(_)));
     let inspected = controller
-        .prepare_project_import(
-            &siblings[1],
-            &host
+        .prepare_project_import(&siblings[1], &host
                 .resolve(&workspace_ref(
                     provider.clone(),
                     &(siblings[1]).storage_name()?,
                 )?)
                 .await?
-                .generation,
-        )
+                .generation, None)
         .await?;
     let conflict = controller
-        .apply_project_merge(&inspected, OperationId::from_bytes([103; 16]))
-        .await?;
+        .apply_project_merge(&inspected, OperationId::from_bytes([103; 16]), BTreeMap::new()).await?.0;
     let JoinOutcome::Conflicted {
         conflicts,
         truncated,
@@ -1904,18 +1901,13 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         .collect();
     assert!(
         ungranted_controller
-            .apply_project_merge_sides(
-                &inspected,
-                OperationId::from_bytes([104; 16]),
-                selections.clone(),
-            )
+            .apply_project_merge(&inspected, OperationId::from_bytes([104; 16]), selections.clone())
             .await
             .is_err()
     );
     let resolved_operation = OperationId::from_bytes([106; 16]);
     let resolved = controller
-        .apply_project_merge_sides(&inspected, resolved_operation, selections)
-        .await?;
+        .apply_project_merge(&inspected, resolved_operation, selections).await?.0;
     assert!(matches!(&resolved, JoinOutcome::Applied(_)));
     let write = ContentGrant::verify(
         &parent_issuer.verifier(&mut None).expect("verifier copy"),
@@ -1938,12 +1930,12 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
     let receipt = controller.merge_receipt(
         &inspected,
         &resolved,
-        Authority {
+        &Authority {
             kind: AggregateKind::Conversation,
             id: "wide-child-2".into(),
         },
         resolved_operation,
-        ConversationMessage {
+        &ConversationMessage {
             id: Uuid::from_bytes([107; 16]),
             sequence: 1,
             kind: MessageKind::Merge,
@@ -1953,7 +1945,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
             tool_call_id: None,
             extensions: BTreeMap::new(),
         },
-    )?;
+    )?.0;
     FilesystemProjectMergeVerifier::new(host.clone())
         .verify(&receipt)
         .await?;

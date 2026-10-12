@@ -156,7 +156,7 @@ impl WasmTaskRuntime {
             }
             None
         };
-        let binding = recursive_fork_source(&self.runtime, self.filesystem.clone(), &self.stream,
+        let binding = recursive_fork_source(self.filesystem.clone(), &self.stream,
             &parent, caller_owner.issuer.verifier(&mut None).expect("verifier copy"), signed, &context, source, from_js(stream_provider)?,
             operation, &arguments,
             RecursiveForkConfig { child: config.child, child_project: config.child_project,

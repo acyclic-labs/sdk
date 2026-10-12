@@ -55,7 +55,7 @@ impl Server {
         .unwrap();
         let requests = Arc::new(Mutex::new(Vec::new()));
         let observed = requests.clone();
-        let mut replies: VecDeque<_> = replies.into();
+        let mut replies = replies.into_iter();
         let task = tokio::spawn(async move {
             loop {
                 let (mut socket, _) = listener.accept().await.unwrap();
@@ -63,7 +63,7 @@ impl Server {
                 let hold = route == held_route;
                 observed.lock().unwrap().push((route, body));
                 let Reply(status, value) = replies
-                    .pop_front()
+                    .next()
                     .unwrap_or(Reply(500, json!({"code":"unavailable"})));
                 let body = serde_json::to_vec(&value).unwrap();
                 socket.write_all(format!("HTTP/1.1 {status} Fixture\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).as_bytes()).await.unwrap();
