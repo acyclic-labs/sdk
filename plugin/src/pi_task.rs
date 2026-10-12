@@ -146,9 +146,16 @@ impl PiTaskMachine {
             bytes_hashed: source_bytes,
             ..acyclic_fs::WorkCounters::default()
         }).map_err(native_work_error)?;
-        let mut identity = MachineIdentity::new_with_native_work(
-            "acyclic.pi", "1", machine_digest(), work,
-        )?;
+        let mut identity = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(native_work_error)?;
+            let identity = MachineIdentity {
+                name: acyclic_harness::store::history::HistoryIo::clone_text(&mut io, "acyclic.pi")?,
+                version: acyclic_harness::store::history::HistoryIo::clone_text(&mut io, "1")?,
+                digest: machine_digest(),
+            };
+            identity.validate(&mut Some(&mut io))?;
+            (identity, io.into_custody())
+        };
         let mut schema = super::pi_root_provider::guarded_pi_decode(
             STATE_SCHEMA.as_bytes(), NATIVE_METADATA_MAXIMUM, std::mem::size_of::<Value>() as u64,
             acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::Root, 0, work,
@@ -327,7 +334,7 @@ const STATE_SCHEMA: &str = r#"{
 }"#;
 
 fn validate_effect_command(command: &WorkflowCommand) -> acyclic_harness::Result<()> {
-    command.validate()?;
+    command.validate(&mut None)?;
     if command.kind != EFFECT_TASK_COMMAND_KIND {
         return Err(transition_error("Pi task requires the existing effect command"));
     }
@@ -335,7 +342,7 @@ fn validate_effect_command(command: &WorkflowCommand) -> acyclic_harness::Result
 }
 
 fn validate_native_command(command: &WorkflowCommand) -> acyclic_harness::Result<()> {
-    command.validate()?;
+    command.validate(&mut None)?;
     if command.kind != EFFECT_TASK_COMMAND_KIND && command.kind != NATIVE_LAUNCH_TASK_COMMAND_KIND {
         return Err(transition_error("Pi child requires its retained native launch command"));
     }
@@ -343,7 +350,7 @@ fn validate_native_command(command: &WorkflowCommand) -> acyclic_harness::Result
 }
 
 fn validate_control_command(command: &WorkflowCommand) -> acyclic_harness::Result<()> {
-    command.validate()?;
+    command.validate(&mut None)?;
     if !matches!(command.kind.as_str(),
         "acyclic.task.admit.v1" | "acyclic.task.admit_prepared.v1" |
         "acyclic.task.observe.v1" | "acyclic.mail.send.v1" |
@@ -603,7 +610,7 @@ fn advance(
             }
             match result.value {
                 Outcome::Succeeded(result) => {
-                    result.validate()
+                    result.validate(&mut None)
                         .map_err(|error| native_validation(error, "Pi result reference is invalid"))?;
                     if allocating {
                         (PiTaskState::Hosting { allocation: result, reply: None }, None)

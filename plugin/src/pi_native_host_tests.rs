@@ -135,8 +135,14 @@ async fn cold_locator_restores_original_sealed_child_without_native_dispatch() {
         &replacement_operation, &root_key, fixture.root_handle.workspace.clone(), &query_work).await.is_err());
     let worker = Worker { id: "pi-cold-native-owner".into(),
         available: ResourceSnapshot::default(), labels: BTreeMap::new() };
-    let mut attempt = fixture.runtime.runtime.run_operation_with_native_work(&worker, task,
-        &fixture.runtime.runtime.commands(), 1, &query_work).await.unwrap();
+    let mut attempt = (async {
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&query_work)?;
+        let value = fixture.runtime.runtime.run_operation(&worker, task, &fixture.runtime.runtime.commands(), 1, Some(&io)).await?;
+        let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+            return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "worker run requires original native custody" });
+        };
+        Ok::<_, acyclic_harness::Error>((value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)))
+    }).await.unwrap();
     let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = attempt.0.take()
         else { panic!("original child workflow lease"); };
     let fence = LeaseFence::from(&lease.reservation);

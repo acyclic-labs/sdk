@@ -76,7 +76,7 @@ impl NativeGate {
     ) -> Result<PublicationPermit> {
         if let Some(reservation) = self.reservation.as_ref() {
             owner.native_view_owner().verify_with_native_work(meter).await?;
-            owner.native_view_owner().require_volume_grant_with_native_work(volume, VolumeOperation::Write, meter)?;
+            owner.native_view_owner().require_volume_grant(volume, VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::history::native_work_io(meter).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
             return Ok(reservation.0);
         }
         let recover_original = existing_only || self.requires_original_recovery;
@@ -618,7 +618,13 @@ impl PiNativeCommandHost {
         let _run = entry.run.lock().await;
         let work = self.preparation_work(&entry).await?;
         self.child_admission(task, &work).await?;
-        let observed = self.runtime.runtime.task_host().recover_work_with_native_work(task, &work).await?;
+        let observed = (async {
+            let mut io = acyclic_harness::store::history::native_work_io(&work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            acyclic_harness::store::history::HistoryIo::retain_owned(&mut io,
+                std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(std::mem::size_of::<acyclic_harness::filesystem::TaskWorkerAttempt>()) as u64)?;
+            let value = self.runtime.runtime.task_host().recover_work(task, &mut Some(&mut io)).await?;
+            Ok::<_, acyclic_harness::Error>((value, io.into_custody()))
+        }).await?;
         match observed.0 {
             WorkPull::Claimed(lease) => {
                 let attempted = self.runtime.runtime.resume_task_with_native_work(
@@ -639,9 +645,14 @@ impl PiNativeCommandHost {
                 worker = Worker {
                     id, available: ResourceSnapshot::default(), labels: BTreeMap::new(),
                 };
-                let result = self.runtime.runtime.run_operation_with_native_work(
-                    &worker, task, self, 8, &work,
-                ).await;
+                let result = (async {
+                    let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
+                    let value = self.runtime.runtime.run_operation(&worker, task, self, 8, Some(&io)).await?;
+                    let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+                        return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "worker run requires original native custody" });
+                    };
+                    Ok::<_, acyclic_harness::Error>((value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)))
+                }).await;
                 drop(worker);
                 drop(worker_custody);
                 result
@@ -655,7 +666,13 @@ impl PiNativeCommandHost {
         let _run = entry.run.lock().await;
         let work = self.preparation_work(&entry).await?;
         self.child_admission(task, &work).await?;
-        let observed = self.runtime.runtime.task_host().recover_work_with_native_work(task, &work).await?;
+        let observed = (async {
+            let mut io = acyclic_harness::store::history::native_work_io(&work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            acyclic_harness::store::history::HistoryIo::retain_owned(&mut io,
+                std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(std::mem::size_of::<acyclic_harness::filesystem::TaskWorkerAttempt>()) as u64)?;
+            let value = self.runtime.runtime.task_host().recover_work(task, &mut Some(&mut io)).await?;
+            Ok::<_, acyclic_harness::Error>((value, io.into_custody()))
+        }).await?;
         match observed.0 {
             WorkPull::Claimed(lease) => {
                 let attempted = self.runtime.runtime.resume_task_with_native_work(
@@ -1040,7 +1057,13 @@ impl PiNativeCommandHost {
                 || !handles.project_gate.is_settled() || self.live_view(task).is_some()
             { return Ok(false); }
         }
-        let observed = self.runtime.runtime.task_host().recover_work_with_native_work(task, meter).await?;
+        let observed = (async {
+            let mut io = acyclic_harness::store::history::native_work_io(meter).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            acyclic_harness::store::history::HistoryIo::retain_owned(&mut io,
+                std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(std::mem::size_of::<acyclic_harness::filesystem::TaskWorkerAttempt>()) as u64)?;
+            let value = self.runtime.runtime.task_host().recover_work(task, &mut Some(&mut io)).await?;
+            Ok::<_, acyclic_harness::Error>((value, io.into_custody()))
+        }).await?;
         let lease = match observed.0 {
             WorkPull::Claimed(lease) => lease,
             WorkPull::Unresolved { error, .. } => return Err(error),
@@ -1105,11 +1128,8 @@ impl PiNativeCommandHost {
         let result = input.binding.results.as_ref().ok_or_else(|| unauthorized("Pi approval has no original result volume"))?;
         let journal_owner = self.runtime.runtime.task_host()
             .journal_owner_with_native_work(owner.task_id(), &context.owned_task_fence()?, work).await?;
-        Journal::for_task_with_native_work(journal_owner, command, self.filesystem.clone(),
-            &self.protected.policy().journal, &storage.0.verifier, &storage.0.signed,
-            self.protected.policy().maximum_payload_bytes.min(context.scope().limits().file_bytes), work)?
-            .with_interaction_owner_with_native_work(&interaction_verifier.0, &SchemaRegistry::new(),
-                &conversation.0.2, &result.volume, work)?.into_native_shared(work)
+        Journal::for_task(journal_owner, command, context.id(), self.filesystem.clone(), &self.protected.policy().journal, &storage.0.verifier, &storage.0.signed, self.protected.policy().maximum_payload_bytes.min(context.scope().limits().file_bytes), Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?))?
+            .with_interaction_owner(&interaction_verifier.0, &SchemaRegistry::new(), &conversation.0.2, &result.volume, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?))?.into_native_shared(work)
     }
 
     fn authority(&self, context: &TaskContext, input: &PiTaskInput, journal: Arc<Journal>,
@@ -1137,11 +1157,10 @@ impl PiNativeCommandHost {
         let authorization = self.protected.conversation_authority_with_native_work(input.binding.task_id,
             input.binding.agent_id, context.scope().grants(), work)?;
         let mut registry = EffectRegistry::new(Some(work))?
-            .with_result_resolver_with_native_work(content.clone(), work)?;
+            .with_result_resolver(content.clone());
         registry.register_with_native_work(provider.clone(), work)?;
         let ((audience, issuer, scope), custody) = authorization;
-        Effects::new_with_native_work(self.stream.clone(), audience, issuer, scope,
-            SchemaRegistry::new(), content, registry, custody, work)?.into_arc_with_native_work(work)
+        Effects::new(self.stream.clone(), audience, issuer, scope, SchemaRegistry::new(), content, registry, Some(custody), Some(work))?.into_arc_with_native_work(work)
     }
 
     async fn original_effect(&self, context: &TaskContext, input: &PiTaskInput, command: OperationId,
@@ -1154,7 +1173,11 @@ impl PiNativeCommandHost {
             let value = conversation.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
-        let history = HistoryReader::new_with_native_work(&self.stream, &conversation.0.0, &verifier.0, work)?;
+        let history = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = HistoryReader::new(&self.stream, &conversation.0.0, &verifier.0, &mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         let cursor = history.0.pin_with_native_work(0, work).await?;
         let effect = acyclic_harness::effect_host::task_effect_id(
             input.binding.task_id, command, &mut Some(&mut acyclic_harness::store::history::native_work_io(work)
@@ -1299,7 +1322,7 @@ impl PiNativeCommandHost {
                 let authority = (verifier.0, scope, conversation.1);
                 let namespace = NativeVolumeNamespace::MaterializedDirectory;
                 let scratch_workspace = accept(self.filesystem.open_measured(&workspace_ref(
-                    prepared.binding.scratch.volume.provider().clone(), &prepared.binding.scratch.volume.storage_name()?)?,
+                    prepared.binding.scratch.volume.provider().clone(), &prepared.binding.scratch.volume.storage_name(&mut None)?)?,
                     remaining(work)?, cancellation).await, work)?;
                 let scratch_generation = GenerationId::new(Digest::from_bytes(
                     generation.as_resource().key().try_into().map_err(|_| unauthorized("Pi scratch generation is not canonical"))?));

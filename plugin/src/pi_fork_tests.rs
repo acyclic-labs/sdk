@@ -63,9 +63,9 @@ impl Fixture {
         let task = TaskId::from_bytes([162; 16]);
         let root = [163; 16];
         let provider = acyclic_harness::resources::ProviderRef::new("pi-fork-tests".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
-        let journal_volume = VolumeRef::new(provider.clone(), "journal", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).unwrap();
-        let scratch = VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).unwrap();
-        let project = VolumeRef::new(provider.clone(), "project", VolumeClass::Project, VolumeOwner::Project(hex::encode(root))).unwrap();
+        let journal_volume = VolumeRef::new(provider.clone(), "journal".into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None).unwrap();
+        let scratch = VolumeRef::new(provider.clone(), "scratch".into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None).unwrap();
+        let project = VolumeRef::new(provider.clone(), "project".into(), VolumeClass::Project, VolumeOwner::Project(hex::encode(root)), &mut None).unwrap();
         let grants = Capabilities::new([
             "operation:declare".to_owned(), "operation:observe".to_owned(), "operation:cancel".to_owned(),
             "operation:wake".to_owned(), "task:spawn:acyclic.pi@1".to_owned(),
@@ -73,9 +73,9 @@ impl Fixture {
             "task:spawn:acyclic.fork_preparation@1".to_owned(), "fork:publish".to_owned(), "conversation:bind".to_owned(),
             "effect:plan".to_owned(), "effect:run".to_owned(), format!("effect:provider:{ROOT_ALLOCATION_PROVIDER}"),
             format!("effect:provider:{}", crate::pi_native::PI_NATIVE_PROVIDER),
-            journal_volume.directory_read_capability(ROOT_INPUT_DIRECTORY).unwrap(),
-            scratch.capability(VolumeOperation::Read).unwrap(), scratch.capability(VolumeOperation::Write).unwrap(),
-            project.capability(VolumeOperation::Read).unwrap(), project.capability(VolumeOperation::Write).unwrap(),
+            journal_volume.directory_read_capability(ROOT_INPUT_DIRECTORY, &mut None).unwrap(),
+            scratch.capability(VolumeOperation::Read, &mut None).unwrap(), scratch.capability(VolumeOperation::Write, &mut None).unwrap(),
+            project.capability(VolumeOperation::Read, &mut None).unwrap(), project.capability(VolumeOperation::Write, &mut None).unwrap(),
         ]);
         let owner = PiOwnerConfig::new(&PiOwnerPolicy { root_task: task, agent, journal: journal_volume.clone(), grants,
             limits: Limits { file_bytes: 1_048_576, path_bytes: 4096, render_bytes: 1_048_576, ..Limits::default() },
@@ -101,7 +101,14 @@ impl Fixture {
             owner.authority_with_native_work(&startup_work).unwrap(), &startup_work).await.unwrap());
         let _root_admission = runtime.admit_root(&root_binding, &request.root, &command.0, &startup_work).await.unwrap();
         let worker = Worker { id: "pi-fork-fixture".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new() };
-        let first = runtime.runtime.run_operation_with_native_work(&worker, task, &runtime.runtime.commands(), 1, &startup_work).await.unwrap();
+        let first = (async {
+            let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&startup_work)?;
+            let value = runtime.runtime.run_operation(&worker, task, &runtime.runtime.commands(), 1, Some(&io)).await?;
+            let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+                return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "worker run requires original native custody" });
+            };
+            Ok::<_, acyclic_harness::Error>((value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)))
+        }).await.unwrap();
         let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = first.0 else { panic!("root allocation lease"); };
         let dispatch_fence = LeaseFence::from(&lease.reservation);
         let dispatch_context = runtime.runtime.task_context_with_native_work(task, &dispatch_fence, &startup_work).await.unwrap();
@@ -112,7 +119,7 @@ impl Fixture {
         Ok::<_, acyclic_harness::Error>((preparation, owner))
     }.await.unwrap();
         let journal = journal.into_native_shared(&startup_work).unwrap();
-        let content = dispatch_context.content_residency_verifier_with_native_work(journal.clone(), &startup_work).unwrap();
+        let content = acyclic_harness::runtime::content_residency_verifier(std::sync::Arc::clone(&dispatch_context), journal.clone(), Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(&startup_work).unwrap())).unwrap();
         let effect_authorization = owner.effect_authority_with_native_work(&startup_work).unwrap();
         let root_provider = crate::pi_root_provider::root_provider(owner.clone(), &resources, filesystem.clone(), stream.clone(), preparation, Some(journal), startup_work.clone()).unwrap();
         let effects = crate::pi_owner::root_effects_with_native_work(stream.clone(), effect_authorization.0,
@@ -139,7 +146,14 @@ impl Fixture {
         observed.1.absorb(&mut control.1).unwrap();
         let suspension = runtime.runtime.task_host().workflow_suspension(task).await.unwrap().unwrap();
         runtime.runtime.task_host().resume_workflow(task, suspension.revision, control.0, IdempotencyKey::new("pi-fork-test/original-parent-owner").unwrap(), None).await.unwrap();
-        let mut first = runtime.runtime.run_operation_with_native_work(&worker, task, &runtime.runtime.commands(), 1, &startup_work).await.unwrap();
+        let mut first = (async {
+            let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&startup_work)?;
+            let value = runtime.runtime.run_operation(&worker, task, &runtime.runtime.commands(), 1, Some(&io)).await?;
+            let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+                return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "worker run requires original native custody" });
+            };
+            Ok::<_, acyclic_harness::Error>((value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)))
+        }).await.unwrap();
         observed.1.absorb(&mut first.1).unwrap();
         let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = first.0 else { panic!("original parent control lease"); };
         let fence = LeaseFence::from(&lease.reservation);
@@ -179,11 +193,11 @@ impl Fixture {
             prompt: "continue the exact original task".into(), caller: task, source_task: task,
             child: PiTaskBinding { native_session_id: child_session.into(), task_id: task_id_for_admission(operations.child),
                 agent_id: operations.agent, project_volumes: BTreeMap::from([(hex::encode(root),
-                    VolumeRef::new(provider.clone(), "child-project", VolumeClass::Project, VolumeOwner::Project("child-project".into())).unwrap())]),
-                scratch: PiScratchBinding { volume: VolumeRef::new(provider.clone(), "child-scratch", VolumeClass::AgentPrivate,
-                    VolumeOwner::Agent(operations.agent)).unwrap(), allocation: PiScratchAllocation::Preparing },
-                results: Some(PiScratchBinding { volume: VolumeRef::new(provider, "native-results", VolumeClass::AgentPrivate,
-                    VolumeOwner::Agent(operations.agent)).unwrap(), allocation: PiScratchAllocation::Preparing }) },
+                    VolumeRef::new(provider.clone(), "child-project".into(), VolumeClass::Project, VolumeOwner::Project("child-project".into()), &mut None).unwrap())]),
+                scratch: PiScratchBinding { volume: VolumeRef::new(provider.clone(), "child-scratch".into(), VolumeClass::AgentPrivate,
+                    VolumeOwner::Agent(operations.agent), &mut None).unwrap(), allocation: PiScratchAllocation::Preparing },
+                results: Some(PiScratchBinding { volume: VolumeRef::new(provider, "native-results".into(), VolumeClass::AgentPrivate,
+                    VolumeOwner::Agent(operations.agent), &mut None).unwrap(), allocation: PiScratchAllocation::Preparing }) },
             launch: PiNativeLaunchIntent { child_session_id: child_session.into(), source: source_cut,
                 agent_alias: "new-child".into(),
                 invocation: PiNativeInvocation { version: PI_NATIVE_VERSION.into(), executable: std::env::current_exe().unwrap(),
@@ -277,12 +291,12 @@ impl Fixture {
         commit.launch.agent_alias = commit.alias.clone();
         commit.child.project_volumes = caller.project_volumes.keys().map(|root| (root.clone(),
             VolumeRef::new(provider.clone(), format!("{sdk_operation}-project"), VolumeClass::Project,
-                VolumeOwner::Project(sdk_operation.into())).unwrap())).collect();
+                VolumeOwner::Project(sdk_operation.into()), &mut None).unwrap())).collect();
         commit.child.scratch = PiScratchBinding { volume: VolumeRef::new(provider.clone(),
-            format!("{sdk_operation}-scratch"), VolumeClass::AgentPrivate, VolumeOwner::Agent(operations.agent)).unwrap(),
+            format!("{sdk_operation}-scratch"), VolumeClass::AgentPrivate, VolumeOwner::Agent(operations.agent), &mut None).unwrap(),
             allocation: PiScratchAllocation::Preparing };
         commit.child.results = Some(PiScratchBinding { volume: VolumeRef::new(provider,
-            format!("{sdk_operation}-results"), VolumeClass::AgentPrivate, VolumeOwner::Agent(operations.agent)).unwrap(),
+            format!("{sdk_operation}-results"), VolumeClass::AgentPrivate, VolumeOwner::Agent(operations.agent), &mut None).unwrap(),
             allocation: PiScratchAllocation::Preparing });
         commit.launch.child_session_id = commit.child.native_session_id.clone();
         commit.launch.source.parent_session_id = caller.native_session_id.clone();
@@ -364,9 +378,10 @@ pub(crate) fn policy() -> PiOwnerPolicy {
     let provider = acyclic_harness::resources::ProviderRef::new("pi-owner-test".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
     let scratch = VolumeRef::new(
         provider.clone(),
-        "scratch",
+        "scratch".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(agent),
+        &mut None,
     )
     .unwrap();
     PiOwnerPolicy {
@@ -374,9 +389,10 @@ pub(crate) fn policy() -> PiOwnerPolicy {
         agent,
         journal: VolumeRef::new(
             provider,
-            "journal",
+            "journal".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),
+            &mut None,
         )
         .unwrap(),
         grants: Capabilities::new([
@@ -385,8 +401,8 @@ pub(crate) fn policy() -> PiOwnerPolicy {
             "operation:cancel".to_owned(),
             "operation:wake".to_owned(),
             "task:spawn:acyclic.pi@1".to_owned(),
-            scratch.capability(VolumeOperation::Read).unwrap(),
-            scratch.capability(VolumeOperation::Write).unwrap(),
+            scratch.capability(VolumeOperation::Read, &mut None).unwrap(),
+            scratch.capability(VolumeOperation::Write, &mut None).unwrap(),
         ]),
         limits: Limits {
             file_bytes: 65_536,
@@ -449,13 +465,13 @@ async fn actual_fork_creation_admission_publication_and_lost_reply_reopen_preser
     let coordinator = fixture.coordinator(&crate::pi_fork::tests::work()).unwrap();
     let created = fixture.advance_with(&coordinator, &fixture.context, &fixture.journal, &fixture.fence, &plan,
         fixture.root_handle.workspace.clone(), crate::pi_root_provider::allocation_budget(), CancellationToken::new()).await.unwrap().unwrap();
-    assert_eq!(created.workspace.workspace().name().as_str(), plan.commit.child.project_volumes.values().next().unwrap().storage_name().unwrap());
+    assert_eq!(created.workspace.workspace().name().as_str(), plan.commit.child.project_volumes.values().next().unwrap().storage_name(&mut None).unwrap());
     assert_eq!(created.workspace.read("/observed.txt", 64).await.unwrap().as_ref(), b"original");
     assert!(created.workspace.read("/authored-later.txt", 64).await.is_err());
     assert_eq!(created.report.request, serde_json::from_value::<ForkRequest>(plan.request.payload.clone()).unwrap());
     assert!(matches!(created.binding.scratch.allocation, PiScratchAllocation::Created(_)));
-    assert!(!created.admission.grants.contains(&plan.source.project.capability(VolumeOperation::Write).unwrap()));
-    assert!(!created.admission.grants.contains(&plan.source.private_volume.capability(VolumeOperation::Read).unwrap()));
+    assert!(!created.admission.grants.contains(&plan.source.project.capability(VolumeOperation::Write, &mut None).unwrap()));
+    assert!(!created.admission.grants.contains(&plan.source.private_volume.capability(VolumeOperation::Read, &mut None).unwrap()));
     let child_workspace = created.workspace.workspace().id();
     let child_generation = created.native_lazy;
     drop(created); // All original successful replies may be lost by the caller.
@@ -477,11 +493,17 @@ async fn original_preparation_task_partial_checkpoint_reopens_without_early_chil
     let host = fixture.runtime.runtime.task_host();
     let worker_name = work.display("fork-partial-original").unwrap();
     let worker = Worker { id: worker_name.0, available: ResourceSnapshot::default(), labels: BTreeMap::new() };
-    let partial = fixture.runtime.runtime.run_operation_with_native_work(&worker, plan.preparation.task_id(),
-        &fixture.runtime.runtime.commands(), 1, work).await.unwrap();
+    let partial = (async {
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+        let value = fixture.runtime.runtime.run_operation(&worker, plan.preparation.task_id(), &fixture.runtime.runtime.commands(), 1, Some(&io)).await?;
+        let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+            return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "worker run requires original native custody" });
+        };
+        Ok::<_, acyclic_harness::Error>((value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)))
+    }).await.unwrap();
     assert!(matches!(partial.0, Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { .. }))));
     assert!(host.observe_admission(plan.request.child.task_id()).await.is_err());
-    assert!(fixture.resources.fs.open_workspace_with_native_work(&plan.commit.child.scratch.volume.storage_name().unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
+    assert!(fixture.resources.fs.open_workspace_with_native_work(&plan.commit.child.scratch.volume.storage_name(&mut None).unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
     let restored = fixture.advance_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal, &fixture.fence, &plan,
         fixture.root_handle.workspace.clone(), crate::pi_root_provider::allocation_budget(), CancellationToken::new()).await.unwrap().unwrap();
     assert_eq!(restored.admission, plan.request.child);
@@ -499,7 +521,7 @@ async fn cancellation_and_owner_replacement_never_admit_a_child() {
     let replacement = PiOwnerConfig::new(fixture.owner.policy(), None, &crate::pi_fork::tests::work()).unwrap();
     assert!(PiForkCoordinator::new(fixture.runtime.clone(), fixture.filesystem.clone(), fixture.stream.clone(),
         &fixture.resources, Arc::new(replacement), &crate::pi_fork::tests::work()).is_err());
-    assert!(fixture.resources.fs.open_workspace_with_native_work(&plan.commit.child.scratch.volume.storage_name().unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
+    assert!(fixture.resources.fs.open_workspace_with_native_work(&plan.commit.child.scratch.volume.storage_name(&mut None).unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
 }
 
 #[tokio::test]
@@ -514,7 +536,7 @@ async fn changed_native_plan_never_prepares_or_admits_a_child() {
             1 => changed.commit.launch.session_bytes.push_str("{}\n"),
             2 => changed.commit.child.native_session_id = "another-native-sdk-session".into(),
             _ => {
-                let foreign_write = plan.source.project.capability(VolumeOperation::Write).unwrap();
+                let foreign_write = plan.source.project.capability(VolumeOperation::Write, &mut None).unwrap();
                 changed.request.child.grants = Capabilities::new(changed.request.child.grants.iter()
                     .chain(std::iter::once(foreign_write.as_str())));
                 changed.preparation.input = serde_json::to_value(&changed.request).unwrap();
@@ -524,7 +546,7 @@ async fn changed_native_plan_never_prepares_or_admits_a_child() {
             &changed, fixture.root_handle.workspace.clone(), crate::pi_root_provider::allocation_budget(), CancellationToken::new()).await.is_err());
         assert!(fixture.runtime.runtime.task_host().observe_admission(plan.preparation.task_id()).await.is_err());
         assert!(fixture.runtime.runtime.task_host().observe_admission(plan.request.child.task_id()).await.is_err());
-        assert!(fixture.resources.fs.open_workspace_with_native_work(&plan.commit.child.scratch.volume.storage_name().unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
+        assert!(fixture.resources.fs.open_workspace_with_native_work(&plan.commit.child.scratch.volume.storage_name(&mut None).unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
     }
 }
 
@@ -542,14 +564,20 @@ async fn explicit_root_sibling_and_descendant_sources_use_operation_read_proofs_
 
     let worker = Worker { id: "actual-child-caller".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new() };
     let original = work();
-    let attempt = fixture.runtime.runtime.run_operation_with_native_work(&worker, first.binding.task_id,
-        &fixture.runtime.runtime.commands(), 1, &original).await.unwrap();
+    let attempt = (async {
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&original)?;
+        let value = fixture.runtime.runtime.run_operation(&worker, first.binding.task_id, &fixture.runtime.runtime.commands(), 1, Some(&io)).await?;
+        let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+            return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "worker run requires original native custody" });
+        };
+        Ok::<_, acyclic_harness::Error>((value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)))
+    }).await.unwrap();
     let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = attempt.0 else { panic!("original child native command owner"); };
     let fence = LeaseFence::from(&lease.reservation);
     let journal = Arc::new(fixture.runtime.runtime.task_host().journal_owner(first.binding.task_id, fence.clone()).await.unwrap());
     let context = fixture.runtime.runtime.task_context(first.binding.task_id, fence.clone()).await.unwrap();
     let original_grants = context.scope().grants().clone();
-    let source_read = root.binding.project_volumes.values().next().unwrap().capability(VolumeOperation::Read).unwrap();
+    let source_read = root.binding.project_volumes.values().next().unwrap().capability(VolumeOperation::Read, &mut None).unwrap();
     assert!(!original_grants.contains(&source_read));
 
     let mut commit = fixture.next_commit(&first.binding, root.binding.task_id, "selected-root-call");
@@ -579,7 +607,7 @@ async fn explicit_root_sibling_and_descendant_sources_use_operation_read_proofs_
         crate::pi_root_provider::allocation_budget(), CancellationToken::new()).await.unwrap().unwrap();
     assert_eq!(actual.workspace.read("/observed.txt", 64).await.unwrap().as_ref(), b"original");
     assert!(!actual.admission.grants.contains(&sibling.binding.project_volumes.values().next().unwrap()
-        .capability(VolumeOperation::Read).unwrap()));
+        .capability(VolumeOperation::Read, &mut None).unwrap()));
 
     let source = descendant.workspace.clone();
     let commit = fixture.next_commit(&root.binding, descendant.binding.task_id, "selected-descendant-call");
@@ -629,8 +657,14 @@ async fn cold_pre_first_dispatch_restores_only_under_actual_child_owner_and_exis
         fixture.stream.clone(), &fixture.resources, fixture.owner.clone(), &work).unwrap();
     let worker_name = work.display("cold-native-child-owner").unwrap();
     let worker = Worker { id: worker_name.0, available: ResourceSnapshot::default(), labels: BTreeMap::new() };
-    let attempt = fixture.runtime.runtime.run_operation_with_native_work(&worker, first.binding.task_id,
-        &fixture.runtime.runtime.commands(), 1, &work).await.unwrap();
+    let attempt = (async {
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
+        let value = fixture.runtime.runtime.run_operation(&worker, first.binding.task_id, &fixture.runtime.runtime.commands(), 1, Some(&io)).await?;
+        let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+            return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "worker run requires original native custody" });
+        };
+        Ok::<_, acyclic_harness::Error>((value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)))
+    }).await.unwrap();
     let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = attempt.0 else { panic!("actual child owner"); };
     let (reservation_id, mut custody) = work.display(&lease.reservation.id).unwrap();
     let (placement, mut placement_custody) = work.display(&lease.reservation.placement).unwrap();
@@ -668,7 +702,7 @@ async fn root_freeze_uses_actual_original_callback_context_and_watcher_epoch() {
         fixture.filesystem.clone(), fixture.stream.clone(), &context, &fixture.journal,
         &input.0, key, &fixture.root_handle, &work).await.unwrap();
     assert_eq!(frozen.0.workspace_id, fixture.root_handle.workspace.workspace().id());
-    fixture.root_handle.workspace.validate_snapshot_with_native_work(frozen.0, &work).await.unwrap();
+    fixture.root_handle.workspace.validate_snapshot(frozen.0, &acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(&work, (&work).cancellation()).unwrap()).await.unwrap();
     assert!(crate::pi_lazy_capture::freeze_root_source_with_native_work(TaskId::from_bytes([9; 16]),
         context.context(), &fixture.journal, &fixture.root_handle.physical, &fixture.root_handle.workspace, &work,
         || async { panic!("foreign root must be rejected before the original creator callback") }).await.is_err());
@@ -690,5 +724,5 @@ async fn explicit_source_without_original_session_task_proof_cannot_prepare_or_a
         &root.binding, fixture.root_handle.workspace.clone(), commit).await.is_err());
     assert!(fixture.runtime.runtime.task_host().observe_admission(task_id_for_admission(operations.preparation)).await.is_err());
     assert!(fixture.runtime.runtime.task_host().observe_admission(task_id_for_admission(operations.child)).await.is_err());
-    assert!(fixture.resources.fs.open_workspace_with_native_work(&future_project.storage_name().unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
+    assert!(fixture.resources.fs.open_workspace_with_native_work(&future_project.storage_name(&mut None).unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
 }

@@ -770,14 +770,14 @@ mod tests {
         let fixture = crate::pi_fork::tests::Fixture::new(None).await;
         let (path, original, expected) = selection(&fixture);
         let project = fixture.root_request.binding.project_volumes.values().next().unwrap();
-        let foreign = VolumeRef::new(project.provider().clone(), "not-original-source",
-            VolumeClass::Project, VolumeOwner::Project("not-original-root".into())).unwrap();
+        let foreign = VolumeRef::new(project.provider().clone(), "not-original-source".into(),
+            VolumeClass::Project, VolumeOwner::Project("not-original-root".into()), &mut None).unwrap();
         let registry = SharedRootRegistry::default();
         let work = NativeMaterializationWork::new(budget(), &CancellationToken::new()).unwrap();
         let before = work.receipt().backend_read_operations;
         let error = registry.acquire_with_native_work(path, SharedRootAdmission::Resume(original),
             &work, || async {
-                fixture.journal.require_volume_grant_with_native_work(&foreign, VolumeOperation::Read, &work)?;
+                fixture.journal.require_volume_grant(&foreign, VolumeOperation::Read, &mut Some(&mut acyclic_harness::store::history::native_work_io(&work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
                 Ok(expected)
             }).await.err().unwrap();
         assert_eq!(error.code(), acyclic_harness::wire::ErrorCode::Unauthorized);

@@ -28,14 +28,14 @@ fn source_and_session() -> (PiNativeSourceCut, Vec<u8>) {
 fn binding_and_manifest() -> (PiTaskBinding, NativeViewManifest) {
     let provider = ProviderRef::new("pi-native-test".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
     let agent = AgentId::from_bytes([31; 16]);
-    let scratch = VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).unwrap();
+    let scratch = VolumeRef::new(provider.clone(), "scratch".into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None).unwrap();
     let generation = GenerationRef::new(provider.clone(), [32; 32].into(), None).unwrap();
     let binding = PiTaskBinding { native_session_id: "child".into(), task_id: TaskId::from_bytes([33; 16]), agent_id: agent,
         project_volumes: BTreeMap::new(),
         scratch: super::super::PiScratchBinding { volume: scratch.clone(), allocation: PiScratchAllocation::Created(super::super::PiScratchCreation {
             workspace_id: [34; 16], generation: generation.clone(),
         }) },
-        results: Some(super::super::PiScratchBinding { volume: VolumeRef::new(provider, "results", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).unwrap(),
+        results: Some(super::super::PiScratchBinding { volume: VolumeRef::new(provider, "results".into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None).unwrap(),
             allocation: PiScratchAllocation::Created(super::super::PiScratchCreation { workspace_id: [38; 16], generation: generation.clone() }) }),
     };
     let manifest = NativeViewManifest { options: NativeViewOptions { root: root_path(), maximum_volumes: 2,
@@ -176,11 +176,11 @@ fn changed_session_grants_paths_models_and_executable_never_rebind() {
     let mut missing = manifest.clone(); missing.volumes.remove(0);
     assert!(input.request_with_work(&binding, &missing, &work).is_err());
     let mut foreign = manifest.clone();
-    foreign.volumes[0].volume = VolumeRef::new(binding.scratch.volume.provider().clone(), "foreign", VolumeClass::AgentPrivate, VolumeOwner::Agent(binding.agent_id)).unwrap();
+    foreign.volumes[0].volume = VolumeRef::new(binding.scratch.volume.provider().clone(), "foreign".into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(binding.agent_id), &mut None).unwrap();
     assert!(input.request_with_work(&binding, &foreign, &work).is_err());
     let mut binding = binding;
     let mut manifest = manifest;
-    let project = VolumeRef::new(binding.scratch.volume.provider().clone(), "project", VolumeClass::Project, VolumeOwner::Project("project".into())).unwrap();
+    let project = VolumeRef::new(binding.scratch.volume.provider().clone(), "project".into(), VolumeClass::Project, VolumeOwner::Project("project".into()), &mut None).unwrap();
     binding.project_volumes.insert("project".into(), project.clone());
     manifest.volumes.push(NativeVolumeMapping { volume: project, generation: manifest.volumes[0].generation.clone(),
         path: root_path().join("project"), writable: true, authority_revision: [71; 32], namespace: NativeVolumeNamespace::MaterializedDirectory });

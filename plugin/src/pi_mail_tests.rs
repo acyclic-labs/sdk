@@ -26,7 +26,7 @@ impl Fixture {
         let provider = ProviderRef::new("pi-mail".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
         let agent = AgentId::from_bytes([71;16]);
-        let volume = VolumeRef::new(provider, "journal", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
+        let volume = VolumeRef::new(provider, "journal".into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None)?;
         host.create_volume(&volume).await?;
         let issuer = AuthorityIssuer::new("pi-mail", [72;32], Authority { kind: AggregateKind::Task, id: "mail-original".into() });
         let grants = Capabilities::new([
@@ -49,7 +49,7 @@ impl Fixture {
             SessionLimits { active_tasks:8, total_tasks:8, depth:4, model_steps:8 }, 8, 65_536).await?))
     }
     async fn file(&self, operation: OperationId, path: &str, bytes: &[u8]) -> Result<FileRef> {
-        let grant = ContentGrant::verify(&self.issuer.verifier(&mut None).unwrap(), &self.signed, &self.volume, VolumeOperation::Write)?;
+        let grant = ContentGrant::verify(&self.issuer.verifier(&mut None).unwrap(), &self.signed, &self.volume, VolumeOperation::Write, u64::MAX, &mut None)?;
         self.host.put_content(&self.volume, &grant, &format!("pi-inputs/{path}"), bytes,
             "application/json", path, 65_536, &acyclic_harness::IdempotencyKey::new(format!("mail:{operation}:{path}"))?, None, None).await
     }
