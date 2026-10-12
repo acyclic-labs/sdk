@@ -137,9 +137,6 @@ async fn acquire_engine<I: RootInstrumentation>(
                 if original.is_some() && shared.source.reference().identity != retained.identity {
                     return Err(instrumentation.rejection(AcquisitionRejection::SourceIdentity, &canonical.0));
                 }
-                // Real batch data and its new producer backing remain alive
-                // through the final proof/reference comparison, not an invented
-                // Arc header allocation returned after its data already died.
                 drop(observed);
                 return Ok(shared);
             }
@@ -297,7 +294,7 @@ impl RootInstrumentation for OrdinaryRootWork<'_> {
             reserved_root_paths().map_err(|error| rejected(error, self.work))?)))
     }
     fn invalidate(&mut self, source: &LocalLazySource) -> Result<(), Self::Error> {
-        source.inner().invalidate();
+        source.inner().invalidate(&mut acyclic_fs::demand::DemandWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).map_err(|error| rejected(error, self.work))?;
         Ok(())
     }
     fn rejection(&self, rejection: AcquisitionRejection, root: &Path) -> Self::Error {
@@ -425,8 +422,6 @@ where G: FnMut() -> F + Send,
         Ok(Some(expected))
     }
     fn canonical(&mut self, root: &Path) -> RootResult<(PathBuf, Option<NativeAllocation>)> {
-        // The guard authenticated this exact SDK creator path. Do not turn an
-        // ambient alias into a new source selection with std::canonicalize.
         if !root.is_absolute() || root.components().any(|component| matches!(
             component, std::path::Component::CurDir | std::path::Component::ParentDir,
         )) {
@@ -458,13 +453,10 @@ where G: FnMut() -> F + Send,
         -> RootResult<Option<(SharedRootObservation, NativeAllocation)>> {
         let expected = self.expected.ok_or_else(|| self.rejection(AcquisitionRejection::RootIdentity, root))?;
         // Ordinary-created SDK source backing cannot be silently promoted.
-        shared.source.inner().validate_root_with_native_work(root, expected, self.work)
+        shared.source.inner().validate_root(root, expected, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(self.work))
             .map_err(native_source_error)?;
         shared.watcher.lock().map_err(|_| self.rejection(AcquisitionRejection::PoisonedWatcher, root))?
             .verify_root_identity_with_native_work(expected, self.work).map_err(native_watch_error)?;
-        // Warm lazy restore is not allowed to expose an old source cache while
-        // actual queued/dequeued hints require invalidation. Use precisely the
-        // same native transaction as explicit Root observation.
         shared.observe_native_transaction(self.work).map(Some)
     }
     fn settle_pending(&mut self, registration: &mut SharedRootRegistration, root: &Path) -> RootResult<()> {
@@ -533,7 +525,7 @@ where G: FnMut() -> F + Send,
         Ok(Arc::new(source))
     }
     fn invalidate(&mut self, source: &LocalLazySource) -> RootResult<()> {
-        source.inner().invalidate_with_native_work(self.work).map_err(native_source_error)?;
+        source.inner().invalidate(&mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(self.work)).map_err(native_source_error)?;
         Ok(())
     }
     fn rejection(&self, rejection: AcquisitionRejection, _: &Path) -> RootError {
@@ -614,9 +606,6 @@ where G: FnMut() -> F + Send,
             reason: "pending root cleanup changed its original owner allocation",
         });
     }
-    // Cleanup owns an actual failed admission's resources even if a racing
-    // replacement made its newly opened watcher differ from the intended root.
-    // Authenticate the original transaction, never adopt that replacement.
     if registration.native_identity.is_some_and(|identity| identity != expected.to_bytes()) {
         return Err(RootError::NativeBoundary {
             code: acyclic_harness::wire::ErrorCode::Conflict,
@@ -1022,7 +1011,7 @@ mod tests {
                 cancellation.cancel();
                 // Fail in the genuine native source invalidation, not an
                 // invented error or a facade around the numeric poll API.
-                physical.source.inner().invalidate_with_native_work(work).map(|_| ())
+                physical.source.inner().invalidate(&mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(work)).map(|_| ())
             }).map_err(native_watch_error)?;
             drop(observed);
             Ok(())

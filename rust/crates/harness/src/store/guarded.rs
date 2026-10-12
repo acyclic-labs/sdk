@@ -21,7 +21,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         if self.reducer.authority().kind != crate::core::AggregateKind::Conversation
             || command.causal_parent.is_some()
             || command.scope.agent() != Some(*agent)
-            || owner.authenticated_binding_agent()? != Some(*agent)
+            || owner.authenticated_binding_agent(&mut None)? != Some(*agent)
         {
             return Err(guarded_boundary(work, crate::wire::ErrorCode::Unauthorized, "ROOT binding differs from its original owner, actor or causal policy"));
         }
@@ -30,7 +30,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             .ok_or_else(|| guarded_boundary(work, crate::wire::ErrorCode::Unauthorized, "published children use their canonical child binding, not ROOT binding"))?;
         if let Some(work) = work.as_deref_mut() { work.check_cancellation()?; }
         let intent = crate::core::canonical_intent_with_work(&command, work)?;
-        owner.check_root_binding(self.reducer.authority(), command.operation_id, intent)?;
+        owner.check_root_binding(self.reducer.authority(), command.operation_id, intent, &mut None)?;
         const ROOT_CHOICE_DOMAIN: &[u8] = b"harness/v2/root-bind-choice\0";
         let audience = self.reducer.authority();
         if let Some(work) = work.as_deref_mut() {
@@ -42,7 +42,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         choice.update(b"conversation");
         choice.update(&(audience.id.len() as u64).to_le_bytes());
         choice.update(audience.id.as_bytes());
-        owner.pin_root_binding_choice(command.operation_id, intent, *choice.finalize().as_bytes())?;
+        owner.pin_root_binding_choice(command.operation_id, intent, *choice.finalize().as_bytes(), &mut None)?;
         let (original_task, admission_digest, original_fence) = owner.binding_origin();
         let proof = VerifiedRootBinding {
             original_task, admission_digest,
@@ -89,10 +89,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         #[cfg(not(target_arch = "wasm32"))]
         {
             let (proof, custody) = proof;
-            match custody {
-                Some(custody) => { owner.retain_root_binding_with_native_custody(proof, custody)?; },
-                None => owner.retain_root_binding(proof)?,
-            }
+            owner.retain_root_binding(proof, custody)?;
         }
         #[cfg(target_arch = "wasm32")]
         owner.retain_root_binding(proof)?;

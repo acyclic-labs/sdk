@@ -5,7 +5,7 @@ use acyclic_harness::{Capabilities, Error, InteractionId, OperationId, Outcome, 
     executor::{ExecutionJournal, Executor, StockExecutor, TurnInput},
     interaction::{Interaction, InteractionOutcome, InteractionResponse},
     mcp::{McpToolTransport, callbacks::{McpCallbackAdmission, McpCallbackPolicy, McpCallbackRequest, McpRuntimeCallbacks}, http::{HttpMcpTransport, NativeMcpHttpProvider}, stdio::{McpStdioMethod, McpStdioRequest}},
-    model::{Model, ModelAttempt, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
+    model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
     runtime::{AgentHarness, InteractionRouter, RuntimeScope, TaskContext, TaskDefinition, TaskRegistry, ToolContext},
     tool::ToolRegistry,
     conversation::Limits,
@@ -34,9 +34,7 @@ impl ModelProvider for ByteModel {
         let text = format!("recorded:{last:?}");
         Box::pin(futures::stream::iter([Ok(ModelEvent::Content { delta: text }), Ok(ModelEvent::Completed { metadata: json!({"finish":"stop"}) })]))
     }
-    fn reconcile<'a>(&'a self, _: ModelAttempt) -> BoxProviderFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-        Box::pin(async { Ok(None) })
-    }
+
 }
 
 struct Participant { pub(super) journal: Arc<LocalJournal>, pub(super) issuer: AuthorityIssuer }
@@ -282,7 +280,7 @@ async fn sampling_media_uses_scoped_filesystem_publication_and_native_policy() -
                 acyclic_harness::executor::ExecutionEvent::ModelStarted { request, .. } => Some(request), _ => None,
             }).ok_or_else(|| Error::NotFound("media model request".into()))?;
             let prepared: acyclic_harness::model::ModelRequest = serde_json::from_slice(&disk.load(file).await?).map_err(|error| Error::Invalid(error.to_string()))?;
-            let files = prepared.messages.last().ok_or_else(|| Error::NotFound("media input".into()))?.content.file_refs();
+            let files = prepared.messages.last().ok_or_else(|| Error::NotFound("media input".into()))?.content.file_refs().collect::<Vec<_>>();
             assert_eq!(files.len(), 2);
             let mut bytes = Vec::new();
             for file in files { bytes.push(context.read_file(file).await?); }

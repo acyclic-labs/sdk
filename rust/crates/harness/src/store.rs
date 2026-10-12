@@ -9,6 +9,7 @@ pub(crate) mod operations;
 #[cfg(feature = "filesystem")]
 mod guarded;
 pub use history::*;
+pub use effects::effect_events;
 
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
@@ -1574,7 +1575,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             } else {
                 None
             };
-            let append = self.client.commit(request).await;
+            let append = self.client.provider.commit(request).await;
             let outcome = match append {
                 Ok(outcome) => outcome,
                 Err(StreamError::Unavailable) => {
@@ -2030,7 +2031,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             return Ok(Some(result));
         }
         let key = stream_idempotency_key_with_work(self.stream.path().as_str(), &command.idempotency_key, &mut None)?;
-        let Some(observation) = self.client.inspect_idempotency(key).await? else {
+        let Some(observation) = self.client.provider.inspect_idempotency(key).await? else {
             return Ok(None);
         };
         match observation.outcome {
@@ -4547,7 +4548,7 @@ mod tests {
                 .await?;
         } else {
             let outcome = client
-                .commit(CommitRequest {
+                .provider.commit(CommitRequest {
                     conditions: vec![
                         CommitCondition::Tail {
                             path: stream.path().clone(),

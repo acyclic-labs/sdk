@@ -755,14 +755,14 @@ impl<P: acyclic_stream::StreamProvider> NativeContextVerifier<P> {
             return Err(boundary(crate::wire::ErrorCode::Invalid,
                 "content exceeds the native callback byte bound"));
         }
-        self.owner.validate_input_file_with_native_work(reference, work)?;
-        self.owner.verify_read_access_with_native_work(work).await
+        self.owner.validate_input_file(reference, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?;
+        self.owner.verify_read_access(&mut Some(&mut crate::store::history::native_work_io(work)?)).await
     }
 
     async fn authorize(&self, reference: &FileRef) -> Result<()> {
         self.original_binding()?;
-        self.owner.validate_input_file(reference)?;
-        self.owner.verify_read_access().await
+        self.owner.validate_input_file(reference, None)?;
+        self.owner.verify_read_access(&mut None).await
     }
 }
 

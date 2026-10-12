@@ -1895,7 +1895,7 @@ impl TaskAdmissionRecord {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut created = BTreeSet::new();
         for proof in &self.resource_proofs {
-            proof.validate_with_work(quota.work())?;
+            proof.validate(quota.work())?;
             let bytes = crate::store::history::canonical_bytes_with_work(
                 &proof.resource, acyclic_stream::MAX_RECORD_BYTES as u64, quota.work(),
             )?;
@@ -6972,7 +6972,7 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
     fn matches_task_binding(&self, task: TaskId, fence: &crate::scheduler::LeaseFence) -> bool;
     fn send<'a>(
         &'a self, recipient: TaskId, operation: OperationId, payload: FileRef,
-    ) -> BoxFuture<'a, Result<crate::durable_host::MailSendAck>>;
+    ) -> BoxFuture<'a, Result<crate::conversation::FileRef>>;
     fn inbox<'a>(&'a self, after: u64, maximum: usize) -> BoxFuture<'a, Result<Vec<InboxItem>>>;
     fn read_received<'a>(
         &'a self, receive_operation: OperationId, item: &'a InboxItem,
@@ -6985,7 +6985,7 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
         _operation: OperationId,
         _payload: &'a FileRef,
         _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (crate::durable_host::MailSendAck, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, (crate::conversation::FileRef, acyclic_fs::NativeAllocation)>> {
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
             reason: "owned mailbox has no original native-ledger sender",
@@ -7290,7 +7290,7 @@ impl TaskContext {
         let mut files = Vec::new();
         let mut configurations = Vec::new();
         for message in messages {
-            message.content.validate_limits(limits)?;
+            message.content.validate_limits(limits, &mut None)?;
             for file in message.content.file_refs() {
                 limits.validate_file(file)?;
                 if !read_granted(self.scope.grants(), file)? {
@@ -7308,7 +7308,7 @@ impl TaskContext {
                 binding.verify_original(
                     self.scope.extensions.as_ref(),
                     self.scope.extension_schemas.as_ref(),
-                    self.scope.extension_runtime.as_deref(),
+                    self.scope.extension_runtime.as_deref(), None,
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -7447,7 +7447,7 @@ impl TaskContext {
             };
             let Some(event) = next else { break };
             let event = event?;
-            admission.observe(&event, self.scope.limits())?;
+            admission.observe(&event, self.scope.limits(), None)?;
             let event_bytes = crate::contract::canonical_json_bytes(&event)?;
             bytes = bytes
                 .checked_add(event_bytes.len() as u64)
@@ -8674,7 +8674,7 @@ impl TaskContext {
         recipient: TaskId,
         message_id: OperationId,
         payload: FileRef,
-    ) -> Result<crate::durable_host::MailSendAck> {
+    ) -> Result<crate::conversation::FileRef> {
         payload.validate()?;
         let mailbox = self.owned_mailbox.as_ref()
             .ok_or_else(|| Error::Unauthorized("mail requires a retained task mailbox owner".into()))?;
@@ -8723,7 +8723,7 @@ impl TaskContext {
         message_id: OperationId,
         payload: &'a FileRef,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (crate::durable_host::MailSendAck, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, (crate::conversation::FileRef, acyclic_fs::NativeAllocation)>> {
         self.native_mailbox(work)?.send_with_native_work(recipient, message_id, payload, work)
     }
 
@@ -9065,7 +9065,7 @@ impl DurableBatchRequest {
         }
         let mut resources = BTreeSet::new();
         for proof in &self.scope.resource_proofs {
-            proof.validate()?;
+            proof.validate(&mut None)?;
             if !resources.insert(crate::contract::canonical_json_bytes(&proof.resource)?) {
                 return Err(Error::Invalid("batch repeats a created resource proof".into()));
             }
@@ -10332,12 +10332,7 @@ mod tests {
             })]))
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            _attempt: crate::model::ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            Box::pin(async { Ok(None) })
-        }
+
     }
 
     #[tokio::test]

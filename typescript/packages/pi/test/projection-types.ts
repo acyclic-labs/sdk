@@ -11,7 +11,7 @@ type ToolRejectsToolCalls = Assert<Extract<ToolPart, { type: "tool_call" }> exte
 type AssistantAcceptsToolCalls = Assert<Extract<AssistantPart, { type: "tool_call" }> extends never ? false : true>;
 type ToolAcceptsToolResults = Assert<Extract<ToolPart, { type: "tool_result" }> extends never ? false : true>;
 
-const customEvents = piProvider<{ model: string }, { kind: "done" }, string>({
+const customEvents = piProvider<{ model: string }, { kind: "done" }>({
   project: () => ({ model: "custom" }),
   run: async function* (request) {
     if (request.model !== "custom") throw new Error("unexpected model");

@@ -63,7 +63,7 @@ fn staged_owned_bytes(
         .map_err(|failure| match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => native.runtime_error(error).into(),
             acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-            | acyclic_stream::PreparedOwnedBytesError::NotUnique =>
+            =>
                 ObjectStoreError::Native(NativeTreeMaterializationError::InvalidLayout),
         })
 }
@@ -82,7 +82,7 @@ async fn staged_native_read(
     ).map_err(|failure| match failure.into_error() {
         acyclic_stream::PreparedOwnedBytesError::Admission(error) => native.runtime_error(error).into(),
         acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-        | acyclic_stream::PreparedOwnedBytesError::NotUnique =>
+        =>
             ObjectStoreError::Native(NativeTreeMaterializationError::InvalidLayout),
     })?;
     let (prepared, filled) = file.read_prepared_bounded_async(

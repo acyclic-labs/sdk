@@ -1022,8 +1022,8 @@ async fn report_linux_exact_materializer_costs() -> Result<(), Box<dyn std::erro
     let state = tempfile::tempdir()?;
     let fs = Fs::local(LocalOptions::new(state.path())).await?;
     let workspace = fs
-        .create_workspace("linux-exact-materializer-costs")
-        .await?;
+        .create_workspace("linux-exact-materializer-costs", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction.create_dir_all("/hot/d000").await?;
     for index in 0..100 {

@@ -283,7 +283,7 @@ async fn guarded_fork_reopen_and_child_replay_keep_original_identity_and_owner_f
     assert_eq!(reopened_child.reducer().revision(), 1);
     assert_eq!(setup.fixture.stream.bounds(seed.child.stream_path()?.as_str()).await?.tail, 1);
     setup.fixture.host.settle_task(crate::TaskId::from_bytes([84; 16]), (&setup.lease.reservation).into(),
-        crate::Outcome::Failed { message: "test closes original publication lease".into() }).await?;
+        crate::Outcome::Failed { message: "test closes original publication lease".into() }, &mut None).await?;
     assert!(reopened.publish_fork_report_measured(setup.report, setup.parent_scope, &setup.owner, budget, &cancellation).await.is_err());
     assert_eq!(setup.fixture.stream.bounds(seed.parent.stream_path()?.as_str()).await?.tail, before + 1);
     Ok(())
@@ -321,7 +321,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     let owner = fixture.host.journal_owner(
         fixture.root, (&fixture.root_lease.reservation).into(),
     ).await?;
-    let agent = owner.authenticated_binding_agent()?
+    let agent = owner.authenticated_binding_agent(&mut None)?
         .ok_or_else(|| Error::Invalid("original ROOT fixture has no authenticated agent".into()))?;
     let audience = Authority {
         kind: AggregateKind::Conversation,
@@ -691,7 +691,7 @@ async fn projection_location_mutations_never_read_chunks_and_release_original_gu
             };
             Some(records.remove(0))
         } else { None };
-        client.commit(request).await?;
+        client.provider.commit(request).await?;
         if let Some(bytes) = detached {
             client.stream(&head)?.append_at(bytes, 0).await?;
         }

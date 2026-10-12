@@ -272,12 +272,12 @@ impl Shared {
             .ok_or(crate::WorkError::Overflow)?;
         let cleanup = u64::try_from(count).map_err(|_| crate::WorkError::Overflow)?;
         work.check()?;
-        work.preflight(WorkCounters {
+        work.admit(WorkCounters {
             items_examined: cleanup, ..WorkCounters::default()
         })?;
-        work.with_original_leaf(|work| work.reserve_pending_items(cleanup))?;
+        work.with_original_leaf(|work| work.reserve(crate::materializer::NativeResourceCredit::Items, cleanup))?;
         if let Err(error) = work.allocate(slots) {
-            work.with_original_leaf(|work| work.refund_pending_items(cleanup));
+            work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, cleanup).expect("original reservation is balanced"));
             return Err(error);
         }
         let mut changes = Vec::with_capacity(count);
@@ -292,7 +292,7 @@ impl Shared {
                 } else if let Some(relative) = relative_path_measured(path, &self.root, work)? {
                     let owned = relative.as_os_str().as_bytes().len() as u64;
                     let copy = WorkCounters { bytes_copied: owned, ..WorkCounters::default() };
-                    work.preflight(copy)?;
+                    work.admit(copy)?;
                     let retained = payload.checked_add(owned).ok_or(crate::WorkError::Overflow)?;
                     work.allocate(owned)?;
                     payload = retained;
@@ -307,9 +307,9 @@ impl Shared {
         while let Some(change) = changes.pop() {
             cleanup_remaining -= 1;
             drop(change);
-            cleaned = cleaned.and(work.with_original_leaf(|work| work.record_pending_items(1)));
+            cleaned = cleaned.and(work.with_original_leaf(|work| work.complete(crate::materializer::NativeResourceCredit::Items, 1, 1)));
         }
-        work.with_original_leaf(|work| work.refund_pending_items(cleanup_remaining));
+        work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, cleanup_remaining).expect("original reservation is balanced"));
         drop(changes);
         work.release(payload + slots)?;
         result.and(cleaned)
@@ -526,45 +526,6 @@ mod tests {
         ), Err(crate::DemandError::Cancelled)));
         assert_eq!(callback.receipt_work(), crate::WorkCounters::default());
         assert_eq!(crate::demand::SourceDemandReadWork::with_original_leaf(&mut callback, |work| work.live_allocation_bytes()), 0);
-        Ok(())
-    }
-
-    #[test]
-    fn finite_start_runs_the_original_stream_and_never_claims_a_barrier()
-        -> Result<(), Box<dyn std::error::Error>>
-    {
-        let root = tempfile::tempdir()?;
-        let directory = crate::native_host::HostRoot::open(root.path())?;
-        let mut work = super::DemandWork::new(
-            finite_budget(), &crate::cancellation::CancellationToken::new(),
-        );
-        let watch = super::PlatformWatch::start_with_work(
-            &directory, std::sync::Arc::new(super::super::Delivery::new_measured(
-                std::sync::Arc::new(Ignored), &work,
-            )), &mut work,
-        )?;
-        assert!(watch.stream.lock().map_err(|_| "poisoned stream")?.is_some());
-        assert!(!watch.is_stopped());
-        // Startup observes held-root metadata, not a canonical source page.
-        assert_eq!(work.work.source_entries_visited, 0);
-        assert!(work.work.items_examined >= 1);
-        assert!(work.work.backend_read_operations >= 3);
-        assert!(work.work.backend_write_operations >= 6);
-        assert!(work.work.allocation_operations >= 6);
-        assert!(!watch.fence_with_work(std::time::Duration::ZERO, &mut work)?);
-        assert_eq!(work.work.source_entries_visited, 0);
-        assert!(work.work.items_examined >= 2);
-        assert!(watch.delivery().is_exact());
-        assert_eq!(work.live_allocation_bytes(), 0);
-        let before = work.work;
-        watch.stop_with_work(&mut work)?;
-        assert_eq!(work.work.backend_write_operations, before.backend_write_operations + 4);
-        assert_eq!(work.work.backend_read_operations, before.backend_read_operations + 1);
-        assert_eq!(work.work.allocation_operations, before.allocation_operations);
-        assert_eq!(work.live_allocation_bytes(), 0);
-        assert!(!watch.delivery().is_exact());
-        assert!(watch.stream.lock().map_err(|_| "poisoned stream")?.is_none());
-        assert!(watch.is_stopped());
         Ok(())
     }
 

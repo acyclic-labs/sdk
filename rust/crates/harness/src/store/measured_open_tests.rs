@@ -91,8 +91,7 @@ mod measured_open_tests {
         denied.allocation_operations = 0;
         provider.reset_io();
         let mut work = history::HistoryWork::new(denied, &cancellation);
-        assert!(crate::distributed::PreparedCommitRequest::new_with_digest(
-            [67; 32], &mut Some(&mut work)).is_err());
+        assert!(crate::distributed::digest_key(&[67; 32], &mut Some(&mut work)).is_err());
         let failed = work.finish(Ok(())).map_err(|failure| failure.error)?;
         assert_eq!(failed.work.allocation_operations + failed.work.bytes_copied, 0);
         assert_eq!(provider.io_snapshot().writes, 0);
@@ -102,8 +101,8 @@ mod measured_open_tests {
         allowed.authority_records_appended = allowed.authority_records_read;
         let mut work = history::HistoryWork::new(allowed, &cancellation);
         let mut observer: Option<&mut dyn history::HistoryIo> = Some(&mut work);
-        let mut prepared = crate::distributed::PreparedCommitRequest::new_with_digest(
-            [68; 32], &mut observer)?;
+        let (key, held) = crate::distributed::digest_key(&[68; 32], &mut observer)?;
+        let mut prepared = crate::distributed::PreparedCommitRequest::new(key, held, &mut observer);
         prepared.push_condition(acyclic_stream::CommitCondition::Absent {
             path: publication.path.clone(),
         })?;
@@ -448,10 +447,13 @@ mod measured_open_tests {
         assert!(receipt.work.peak_allocation_bytes > 0);
         for cut in [1, 3] {
             provider.reset_io();
-            let archived = reader.effect_events_measured(
+            let mut work = history::HistoryWork::new(budget(), &cancellation);
+            work.preflight()?;
+            let result = effect_events(&client, &issuer().verifier(),
                 &HistoryCursor { authority: authority(), after_revision: 0, through_revision: cut },
-                effect_id, default_projection_read_limits(), budget(), &cancellation,
-            ).await.map_err(|failure| failure.error)?;
+                effect_id, default_projection_read_limits(), &mut Some(&mut work),
+            ).await.map(|(events, _)| events);
+            let archived = work.finish(result).map_err(|failure| failure.error)?;
             assert_eq!(archived.value, expected.events.iter().take(cut as usize).cloned().collect::<Vec<_>>());
             assert_eq!(archived.work.items_returned, cut);
             assert_eq!(archived.work.authority_bytes_read, provider.io_snapshot().read_bytes);
@@ -463,9 +465,13 @@ mod measured_open_tests {
             let native = acyclic_fs::NativeMaterializationWork::new(budget(), &cancellation)
                 .expect("original effect reader ledger");
             provider.reset_io();
-            let (events, custody) = reader.effect_events_with_native_work(
+            let mut io = history::native_work_io(&native)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            let (events, _) = effect_events(&client, &issuer().verifier(),
                 &HistoryCursor { authority: authority(), after_revision: 0, through_revision: 3 },
-                effect_id, default_projection_read_limits(), &native).await?;
+                effect_id, default_projection_read_limits(), &mut Some(&mut io)).await?;
+            io.return_staged_output()?;
+            let custody = io.into_custody();
             assert_eq!(events, expected.events);
             assert!(native.shares_ledger(custody.work()));
             assert_eq!(native.receipt().items_returned, 3);
@@ -490,20 +496,26 @@ mod measured_open_tests {
             drop(state_custody);
         }
         provider.reset_io();
-        let absent = reader.effect_events_measured(
+        let mut work = history::HistoryWork::new(budget(), &cancellation);
+        work.preflight()?;
+        let result = effect_events(&client, &issuer().verifier(),
             &HistoryCursor { authority: authority(), after_revision: 0, through_revision: 3 },
-            EffectId::from_bytes([99; 16]), default_projection_read_limits(), budget(), &cancellation,
-        ).await.map_err(|failure| failure.error)?;
+            EffectId::from_bytes([99; 16]), default_projection_read_limits(), &mut Some(&mut work),
+        ).await.map(|(events, _)| events);
+        let absent = work.finish(result).map_err(|failure| failure.error)?;
         assert!(absent.value.is_empty());
         assert_eq!(absent.work.items_returned, 0);
         assert_eq!(absent.work.output_bytes, 0);
         assert!(absent.work.authority_records_read > 0);
         provider.reset_io();
-        let denied = reader.effect_events_measured(
+        let mut work = history::HistoryWork::new(
+            WorkBudget { backend_read_operations: 0, ..budget() }, &cancellation);
+        work.preflight()?;
+        let result = effect_events(&client, &issuer().verifier(),
             &HistoryCursor { authority: authority(), after_revision: 0, through_revision: 3 },
-            effect_id, default_projection_read_limits(),
-            WorkBudget { backend_read_operations: 0, ..budget() }, &cancellation,
-        ).await.expect_err("SDK admission must precede even the original tail request");
+            effect_id, default_projection_read_limits(), &mut Some(&mut work),
+        ).await.map(|(events, _)| events);
+        let denied = work.finish(result).expect_err("SDK admission must precede even the original tail request");
         assert_eq!(denied.work.backend_read_operations, 0);
         assert_eq!(provider.io_snapshot().reads, 0);
         assert_eq!(provider.io_snapshot().tails, 0);

@@ -53,25 +53,6 @@ impl<P: StreamProvider> HistoryReader<P> {
         Ok((event, native_io.into_custody()))
     }
 
-    /// Reads the original authenticated effect prefix at the supplied pinned cut.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub async fn effect_events_with_native_work(
-        &self,
-        cursor: &HistoryCursor,
-        effect: crate::EffectId,
-        limits: HistoryReadLimits,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Vec<Event>, acyclic_fs::NativeAllocation)> {
-        let mut native_io = super::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let (events, _) = super::super::effects::read(
-            &self.client, &self.verifier, cursor, effect, limits,
-            &mut Some(&mut native_io),
-        ).await?;
-        native_io.return_staged_output()?;
-        Ok((events, native_io.into_custody()))
-    }
-
     /// Projects the archived effect through the original bounded state engine.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub async fn effect_with_native_work(
@@ -137,23 +118,6 @@ impl<P: StreamProvider> HistoryReader<P> {
                 &self.client, self.verifier.audience(), &self.verifier, operation,
                 maximum_bytes, true, &mut Some(&mut work),
             ).await
-        }.await;
-        work.finish(result)
-    }
-
-    /// Reads one effect's authenticated transition prefix at the exact pinned cut, including issuer-authenticated absence.
-    pub async fn effect_events_measured(
-        &self, cursor: &HistoryCursor, effect: crate::EffectId,
-        limits: HistoryReadLimits, budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> MeasuredResult<OperationReceipt<Vec<Event>>, Error> {
-        let mut work = HistoryWork::new(budget, cancellation);
-        let result = async {
-            work.preflight()?;
-            super::super::effects::read(
-                &self.client, &self.verifier, cursor, effect, limits,
-                &mut Some(&mut work),
-            ).await.map(|(events, _)| events)
         }.await;
         work.finish(result)
     }

@@ -53,7 +53,7 @@ impl PiSession {
         let PluginTaskBinding::Pi(root) = &self.state.task_binding else {
             return Err(Error::Invalid("Pi native lifetime has no original root binding".to_owned()));
         };
-        protected.validate_root_with_native_work(root, work)?;
+        protected.validate_root(root, work)?;
         self.runtime.verify_owner_with_native_work(&protected, work)?;
         let host = pi_native_host::PiNativeCommandHost::new(
             self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
@@ -68,8 +68,6 @@ impl PiSession {
         query_work: &acyclic_fs::NativeMaterializationWork,
     ) -> RootResult<()> {
         let work = query_work;
-        // Authenticate the complete original graph and the actual caller before
-        // publishing cancellation or changing its route catalog.
         let _graph_receipt = pi_recovery::observe_pi_session(
             &self.runtime.runtime, &self.state, query_work).await?;
         self.binding(caller)?;
@@ -108,8 +106,6 @@ impl PiSession {
             self.slots.save_with_native_work(&self.resources.private_state_root,
                 &self.relative_directory, &self.state, Survives::PowerLoss, &work));
 
-        // Order every independent provider stop before awaiting any process
-        // future. Those futures may still be waiting on an RPC to this actor.
         for task in tasks {
             let _outcome_receipt = match self.runtime.runtime.task_host()
                 .outcome_with_native_work(*task, &work).await {
@@ -177,15 +173,13 @@ impl PiSession {
         let mut plans = BTreeMap::new();
         for route in self.state.routes.values() {
             let parent = self.alias_task(&route.parent_agent_id)?;
-            let original = pi_fork::original_operation(root_task, parent, &route.turn_id);
+            let original = pi_fork::original_operation(root_task, parent, &route.turn_id, query_work)?;
             let plan = coordinator.load_original_plan(original, budget, &cancellation)
                 .await?.ok_or_else(|| Error::Invalid("Pi Created route has no original immutable fork plan".to_owned()))?;
-            validate_created_native_route(route, parent, &plan)?;
+            validate_created_native_route(route, parent, &plan, query_work)?;
             plans.insert(plan.commit.child.task_id, (route, parent, plan));
         }
 
-        // Source selection is a separate graph from parentage. In particular,
-        // a foreign selected child is never replaced by its parent or Root.
         let _remaining_custody = pi_recovery::vector_slots::<TaskId>(plans.len(), query_work)?;
         let mut remaining = Vec::with_capacity(plans.len());
         remaining.extend(plans.keys().copied());
@@ -219,8 +213,6 @@ impl PiSession {
                 let observed = coordinator.observe_prepared(plan, source.clone(), budget,
                     cancellation.clone()).await?.ok_or_else(|| Error::Invalid("Pi Created route has no authenticated successful original creator".to_owned()))?;
                 validate_created_native_report(route, &observed)?;
-                // This retains source-only capabilities. First native dispatch
-                // must still hydrate under its actual current child owner.
                 native.register_observed_source(observed).await?;
                 let workspace = native.live_workspace(task).ok_or_else(|| Error::Invalid("Pi observed child lost its actual creator workspace".to_owned()))?;
                 child_sources.insert(task, workspace);
@@ -234,8 +226,6 @@ impl PiSession {
             }
         }
 
-        // All original source capabilities are in place before the actor is
-        // released to real native children. Reopen never waits on their tool RPC.
         for (task, (route, _, plan)) in &plans {
             if route.lifecycle.is_frozen() || self.native_jobs.contains_key(task) { continue; }
             let observed = self.runtime.runtime.task_host().recover_work_with_native_work(*task, query_work).await?;
@@ -307,11 +297,9 @@ impl PiSession {
         };
         if deactivate && authenticated {
             if let Some(native) = &native {
-                // Request disposal while the actual child still owns settlement.
-                // This is not a deletion permit and does not remove any path.
                 for task in &tasks {
                     retain_first_failure(&mut failure,
-                        native.request_scratch_disposal(*task).await);
+                        native.request_scratch_disposal(*task, &work).await);
                 }
             }
             if let Some(root) = root {
@@ -328,8 +316,6 @@ impl PiSession {
                     &self.relative_directory, &self.state, Survives::PowerLoss, &work));
         }
         if let Some(native) = &native {
-            // Never wait for a supervisor or a run mutex while another native
-            // child may still be waiting on an RPC to this actor.
             for task in &tasks {
                 if let Err(error) = native.signal_stop_child(*task, &work).await {
                     retain_first_failure(&mut failure, Err(error));
@@ -353,9 +339,6 @@ impl PiSession {
                 self.slots.save_with_native_work(&self.resources.private_state_root,
                     &self.relative_directory, &self.state, Survives::PowerLoss, &work));
         }
-        // Normal close preserves the original route/effect. Releasing a lease
-        // requires the native host's actual journal-quiescent tail CAS; an
-        // uncertain command must keep the same reservation for observation.
         finish_native_drain(failure)
     }
 
@@ -453,7 +436,7 @@ fn finish_native_drain(failure: Option<Error>) -> RootResult<()> {
 }
 
 fn validate_created_native_route(
-    route: &Route, parent: TaskId, plan: &pi_fork::PiForkPlan,
+    route: &Route, parent: TaskId, plan: &pi_fork::PiForkPlan, work: &acyclic_fs::NativeMaterializationWork,
 ) -> RootResult<()> {
     let PluginTaskBinding::Pi(binding) = &route.task_binding else {
         return Err(Error::Invalid("Pi Created route substituted another host".to_owned()));
@@ -471,7 +454,7 @@ fn validate_created_native_route(
             != original.results.as_ref().map(|result| &result.volume)
         || binding.project_volumes.len() != 1 || !binding.project_volumes.contains_key(&key)
         || route.roots.len() != 1 || !route.roots.contains_key(&key)
-        || route.context_id != pi_fork::derived(plan.original, "fork").into_bytes()
+        || route.context_id != pi_fork::derived(plan.original, "fork", &work)?.into_bytes()
         || !matches!(binding.scratch.allocation, PiScratchAllocation::Created(_))
         || binding.results.as_ref().is_none_or(|result|
             !matches!(result.allocation, PiScratchAllocation::Created(_)))
@@ -535,11 +518,8 @@ async fn original_native_first_dispatch_pending(
         stream, &conversation.0.0, &verifier.0, work)?;
     let pin = history.0.pin_with_native_work(0, work).await?;
     let effect = acyclic_harness::effect_host::task_effect_id_with_native_work(
-        task, pi_fork::derived(plan.original, "native-effect"), work,
+        task, pi_fork::derived(plan.original, "native-effect", &work)?, work,
     )?;
-    // NativeProcessProvider can write its original launch receipt only after
-    // the canonical effect intent/dispatch. Absence proves first dispatch,
-    // never authority to repeat a dispatched or indeterminate process.
     let observed = history.0.effect_with_native_work(&pin.0, effect, limits, work).await?;
     Ok(observed.0.is_none())
 }
