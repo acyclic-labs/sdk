@@ -46,7 +46,7 @@ export * from "./wire-transport.js";
 export * from "./model.js";
 export { type BatchId, type GroupId, type InputKey, type Outcome, AdmissionUncertainError, type CancelReceipt, type Admission, type Rejection, type TaskEvent, type DurableTaskDriver, type TaskDefinitionOptions, type RuntimeSchema, defineRuntimeSchema, type ResumableTransition, type ResumableTask, TaskDefinition, type TaskRef, type EffectStatus, type TaskMessage, type HostTaskAttachment, type HostBatchReplay, type HarnessRuntimeSpawner, type TaskChildrenPage, type HarnessRuntimeState, type HarnessExecutionProvider, Task } from "./task.js";
 export { type BatchAdmissionRequest, type Batch, type GroupEntry, type BatchCancellationStatus, type BatchCancellationReport, type GroupOutcome, TaskGroup, GroupError } from "./task-group.js";
-export { TaskContext, ToolContext } from "./task-context.js";
+export { TaskContext, type ToolContext } from "./task-context.js";
 export { type InteractionHandler, type PolicyDigest, type ComponentIdentity, type PolicyIdentity, policyIdentity, type Policy, type Interaction, type TypedInteractionInput, type Answer, ToolApprovalError, type Invocation, type EffectiveScope, type PolicyDecision, ExecutionScope } from "./execution-scope.js";
 export { type ContentBindings, type PrivateDirectoryPage, type PrivateDirectoryBindings, type ContentReader, type ContentMountResolver, composeContentBindings, type InheritedModelPrefix } from "./content.js";
 export { HarnessBuilder } from "./harness-builder.js";
