@@ -923,6 +923,7 @@ async fn process_fixture_with_filesystems<P, A, O>(
     auxiliary_filesystem: Fs<A, O>,
     mode: &str,
     approve: bool,
+    work: Option<&acyclic_fs::NativeMaterializationWork>,
 ) -> Result<ProcessFixture<P, A, O>>
 where
     P: StreamProvider + 'static,
@@ -930,7 +931,7 @@ where
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     process_fixture_original(
-        stream, directory, filesystem, auxiliary_filesystem, mode, approve, None,
+        stream, directory, filesystem, auxiliary_filesystem, mode, approve, work,
     ).await
 }
 
@@ -1225,17 +1226,6 @@ where
     for path in [&operation_directory, &operation_directory.join("target"), &operation_directory.join("backup")] {
         std::fs::create_dir(path).map_err(|error| Error::Storage(error.to_string()))?;
     }
-    let (preparation_root, native_root_custody) = match original_work {
-        Some(work) => {
-            let (root, custody) = NativePreparationRoot::witness(
-                &root, &operation_directory, work,
-            )?.await?;
-            (root, Some(custody))
-        }
-        None => (NativePreparationRoot::witness(
-            root.clone(), operation_directory, work, &acyclic_fs::CancellationToken::new(),
-        ).await.map_err(|(error, _)| error)?.value, None),
-    };
     let mut bindings = vec![
         PreparationSelection {
             host: files.clone(),
@@ -1321,14 +1311,26 @@ where
     let mut lazy_work = None;
     let mut project_policy = None;
     let mut project_generation = None;
-    let view = match original_work {
-        Some(work) => {
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let fallback_work;
+    let work = match original_work {
+        Some(work) => work,
+        None => {
+            fallback_work = test_work(options.budget_for_volume_count(bindings.len())?, &cancellation)?;
+            &fallback_work
+        }
+    };
+    let (preparation_root, native_root_custody) = NativePreparationRoot::witness(
+        &options.root, &operation_directory, work,
+    )?.await?;
+    let native_root_custody = Some(native_root_custody);
+    let view = {
             let context = task.task_context_with_native_work(task_id, &owner_fence, work).await?;
             let guard_bytes = borrowed.len().checked_mul(
                 std::mem::size_of::<crate::runtime::NativeVolumeCallbackGuard<P>>(),
             ).ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                 reason: "native source guard slot count overflow" })?;
-            let custody = work.claim_allocation(guard_bytes as u64, u64::from(guard_bytes != 0), acyclic_fs::WorkCounters::UNCHARGED)?;
+            let custody = work.claim_allocation(guard_bytes as u64, u64::from(guard_bytes != 0), Default::default())?;
             let mut guards = (Vec::with_capacity(borrowed.len()), custody);
             for _ in &borrowed {
                 guards.0.push(context.volume_callback_guard_with_native_work(
@@ -1354,7 +1356,7 @@ where
                 volume_work.create_owned_directory(&options.root, preparation_root.expected_identity,
                     std::path::Path::new("src"), true)?;
                 let mut allocation = volume_work.claim_allocation(std::mem::size_of::<acyclic_fs::LazyMount<
-                    A, O, acyclic_fs::NativeDemandSource, acyclic_fs::MemoryLazyWorkspaceStore>>() as u64, 1, acyclic_fs::WorkCounters::UNCHARGED)?;
+                    A, O, acyclic_fs::NativeDemandSource, acyclic_fs::MemoryLazyWorkspaceStore>>() as u64, 1, Default::default())?;
                 let mut mount = lazy.mount_with_work(&path, acyclic_fs::MountOptions::read_only()
                     .publication(acyclic_fs::MountPublication::Manual), Some(callback),
                     &volume_work, volume_work.cancellation(), Some(&volume_work))
@@ -1399,11 +1401,6 @@ where
                 )?.await?
             };
             view.into_arc_with_native_work(work)?
-        },
-        None => Arc::new(NativeVolumeView::prepare(
-            &owner, preparation_root.clone(), options, borrowed,
-            &acyclic_fs::CancellationToken::new(),
-        ).await.map_err(|(cause, _)| cause)?.value),
     };
     let mut request = NativeProcessRequest {
         executable: std::env::current_exe().map_err(|error| Error::Storage(error.to_string()))?,

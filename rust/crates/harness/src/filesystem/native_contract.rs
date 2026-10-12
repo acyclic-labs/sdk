@@ -59,7 +59,7 @@ pub enum NativeVolumeNamespace {
 }
 
 impl NativeViewOptions {
-    pub(super) fn budget_for_volume_count(&self, count: usize) -> Result<WorkBudget> {
+    pub(crate) fn budget_for_volume_count(&self, count: usize) -> Result<WorkBudget> {
         use crate::Error;
         let budget = self.work_per_volume;
         if !budget.has_finite_allowances() || count == 0 {

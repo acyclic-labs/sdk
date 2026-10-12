@@ -488,8 +488,7 @@ where
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "native output differs from admitted result owner or bound" });
             }
-            let bytes = self.authority.result_content.read_with_native_work(
-                reference, u64::from(request.maximum_result_bytes), work)?.await?;
+            let bytes = self.authority.result_content.read(reference, u64::from(request.maximum_result_bytes), Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
             let io = super::PreparationIo::from_native_work(work)?;
             let value = io.decode_preparation::<serde_json::Value>(&bytes, crate::wire::ErrorCode::Invalid)?;
             crate::contract::validate_json_schema_value(result_schema, &value.value,
