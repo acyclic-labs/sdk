@@ -5470,13 +5470,13 @@ async fn namespace_records_to_file_root_with_accounting<A: AsyncAuthorityStore, 
     if ids.is_empty() || maximum_entries == 0 { return Ok(matches); }
     let limits = volume.config.limits;
     let generation = GenerationId::new(generation_root.digest);
-    let cache_key = crate::path_index::cache_key_for_root_with_accounting(
+    let cache_key = crate::path_index::cache_key(
         generation, root.root_file_id, root.file_table, ids, accounting, cancellation,
     )?;
-    let (bytes, allocation) = volume.fs.path_index().load_with_accounting(cache_key, accounting, cancellation)?;
+    let (bytes, allocation) = volume.fs.path_index().load(cache_key, accounting, cancellation)?;
     let bytes = ReverseOwned { value: bytes, allocation };
     if let Some(payload) = bytes.value.as_ref() {
-        let (cached, allocation) = crate::path_index::GenerationPathQuery::decode_with_accounting(
+        let (cached, allocation) = crate::path_index::decode(
             payload, generation, ids, limits, accounting, cancellation,
         )?;
         let mut cached = ReverseOwned { value: cached, allocation };
@@ -5623,12 +5623,12 @@ async fn namespace_records_to_file_root_with_accounting<A: AsyncAuthorityStore, 
     let pending_bytes = workspace_vec_bytes(&pending.value);
     reverse_drop(pending, pending_bytes, accounting)?;
     reverse_sort(&mut matches.value.records, accounting)?;
-    let (bytes, allocation) = crate::path_index::encode_records_with_accounting(
+    let (bytes, allocation) = crate::path_index::encode_records(
         generation, ids, &matches.value.records.entries, accounting, cancellation,
     )?;
     let bytes = ReverseOwned { value: bytes, allocation };
     if let Some(payload) = &bytes.value {
-        volume.fs.path_index().store_with_accounting(cache_key, payload, accounting, cancellation)?;
+        volume.fs.path_index().store(cache_key, payload, accounting, cancellation)?;
     }
     let bytes_count = bytes.value.as_ref().map_or(0, workspace_vec_bytes);
     reverse_drop(bytes, bytes_count, accounting)?;
