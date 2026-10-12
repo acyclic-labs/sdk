@@ -287,7 +287,7 @@ fn darwin_verify_callback_guard(
 ) -> Result<(), NativeMountError> {
     let Some(guard) = guard else { return Ok(()); };
     let work = work.ok_or(NativeMountError::ControlPending)?;
-    super::adapter::CallbackRuntime::existing()?.verify_native_callback_guard(guard.as_ref(), work)
+    super::adapter::CallbackRuntime::existing()?.verify_callback(work, || guard.check(work))
 }
 
 fn darwin_same_native_view(left: &crate::NativeMaterializationWork, right: &crate::NativeMaterializationWork) -> bool {
@@ -1065,7 +1065,7 @@ impl DarwinMountContext {
         self.writable.then_some(()).ok_or(libc::EROFS)?;
         if let Some(guard) = &self.callback_guard {
             super::adapter::CallbackRuntime::existing()
-                .and_then(|runtime| runtime.verify_native_callback_write_guard(guard.as_ref(), work.native))
+                .and_then(|runtime| runtime.verify_callback(work.native, || guard.check_write(work.native)))
                 .map_err(|error| work.native_error(error))?;
         }
         work.check()

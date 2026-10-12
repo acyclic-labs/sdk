@@ -2449,13 +2449,6 @@ pub struct LazyMountSource<A, O, D, S> {
     native_allocation: Option<crate::NativeAllocation>,
 }
 
-impl<A, O, D, S> super::adapter::NativeSourceIoRetirement for LazyMountSource<A, O, D, S>
-where Self: Send + Sync, CheckoutMountSource<A, O>: Send + Sync {
-    fn release_native_source_io(&self) {
-        super::adapter::NativeSourceIoRetirement::release_native_source_io(self.authored.as_ref());
-    }
-}
-
 #[derive(Default)]
 struct LinkedIdentities {
     values: Vec<FileId>,
@@ -2759,8 +2752,7 @@ where
     pub(crate) fn native_source_io_lease(
         self: &Arc<Self>,
     ) -> Result<super::adapter::NativeSourceIoLease, MountSourceError> {
-        let owner: Arc<dyn super::adapter::NativeSourceIoRetirement> =
-            Arc::clone(self) as Arc<dyn super::adapter::NativeSourceIoRetirement>;
+        let owner: Arc<dyn Send + Sync> = Arc::clone(self) as Arc<dyn Send + Sync>;
         self.authored.native_source_io_lease_for_owner(owner)
     }
 
@@ -5814,7 +5806,7 @@ where
         if self.unstaged.checked_at(self.expected_source, revision) {
             return Ok(None);
         }
-        let file = super::adapter::boundary(self.authored.cancellation(), |work| self.runtime.block_on_measured(|| async { let mut carrier = super::adapter::NativeDemandCarrier::Native(work); self.authored.attached_file_by_id(self.expected_source, SourceViewGate::callback_owner(), &mut carrier).await }, work.native_read_meter().as_ref()).map_err(super::adapter::capture_io_error)?.map(|handle| handle.map(|(handle, _)| handle)))?;
+        let file = super::adapter::boundary(self.authored.cancellation(), |work| self.runtime.block_on(|| async { let mut carrier = super::adapter::NativeDemandCarrier::Native(work); self.authored.attached_file_by_id(self.expected_source, SourceViewGate::callback_owner(), &mut carrier).await }, Some(work.native_read_meter().as_ref())).map_err(super::adapter::capture_io_error)?.map(|handle| handle.map(|(handle, _)| handle)))?;
         if let Some(file) = file {
             *promoted = Some(Arc::clone(&file));
             return Ok(Some(file));

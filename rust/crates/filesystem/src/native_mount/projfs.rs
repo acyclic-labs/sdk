@@ -284,9 +284,9 @@ fn verify_callback_work(
     if let Some(guard) = runtime.callback_guard.as_ref() {
         let callbacks = super::adapter::CallbackRuntime::existing()?;
         if authored_write {
-            callbacks.verify_native_callback_write_guard(guard.as_ref(), work)?;
+            callbacks.verify_callback(work, || guard.check_write(work))?;
         } else {
-            callbacks.verify_native_callback_guard(guard.as_ref(), work)?;
+            callbacks.verify_callback(work, || guard.check(work))?;
         }
     }
     Ok(())
@@ -299,7 +299,7 @@ fn verify_source_write_work(
         .map_err(detach_work_error)?;
     if let Some(guard) = source.native_callback_guard() {
         super::adapter::CallbackRuntime::existing()?
-            .verify_native_callback_write_guard(guard.as_ref(), work)?;
+            .verify_callback(work, || guard.check_write(work))?;
     }
     Ok(())
 }
@@ -3305,7 +3305,7 @@ fn verify_projection_namespace_work(projection: Projection<'_>) -> Result<(), Na
     projection.work.admit(crate::WorkCounters::UNCHARGED)?;
     if let Some(guard) = projection.source.native_callback_guard() {
         super::adapter::CallbackRuntime::existing()?
-            .verify_native_callback_guard(guard.as_ref(), projection.work)?;
+            .verify_callback(projection.work, || guard.check(projection.work))?;
     }
     Ok(())
 }
@@ -4343,7 +4343,7 @@ fn verify_authored_capture_work(
     verify_callback_work(runtime, meter, false)?;
     if let Some(guard) = runtime.callback_guard.as_ref() {
         super::adapter::CallbackRuntime::existing()?
-            .verify_native_callback_write_guard(guard.as_ref(), meter)?;
+            .verify_callback(meter, || guard.check_write(meter))?;
     }
     Ok(())
 }

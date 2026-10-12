@@ -1899,7 +1899,7 @@ fn fuse_verify_callback_guard(
 ) -> Result<(), NativeMountError> {
     let Some(guard) = guard else { return Ok(()); };
     let work = work.ok_or(NativeMountError::ControlPending)?;
-    super::adapter::CallbackRuntime::existing()?.verify_native_callback_guard(guard.as_ref(), work)
+    super::adapter::CallbackRuntime::existing()?.verify_callback(work, || guard.check(work))
 }
 
 fn fuse_same_native_view(left: &crate::NativeMaterializationWork, right: &crate::NativeMaterializationWork) -> bool {
@@ -3597,7 +3597,7 @@ impl FuseProjection {
             (None, None) => Ok(()),
             (Some(original), Some(current)) if Arc::ptr_eq(original, &current) =>
                 super::adapter::CallbackRuntime::existing()?
-                    .verify_native_callback_write_guard(original.as_ref(), work)
+                    .verify_callback(work, || original.check_write(work))
                     .map_err(FuseRequestError::from),
             _ => Err(NativeMountError::ControlPending.into()),
         }
