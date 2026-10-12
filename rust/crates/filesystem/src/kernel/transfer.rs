@@ -2,7 +2,7 @@
 
 use super::{
     ClosureError, ClosureLimits, GenerationExportManifest, GenerationExportManifestError,
-    prove_generation_closure_async, validate_generation_export_manifest,
+    prove_generation_closure, validate_generation_export_manifest,
 };
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::{CancellationError, CancellationToken};
@@ -103,7 +103,7 @@ pub async fn build_generation_export_manifest_async<S: AsyncObjectStore>(
         .validate()
         .map_err(GenerationExportManifestError::from)
         .map_err(|error| OperationFailure::before_work(error.into()))?;
-    let proof = prove_generation_closure_async(
+    let proof = prove_generation_closure(
         store,
         generation_root,
         closure_limits,
@@ -150,7 +150,7 @@ pub async fn authenticate_generation_export_manifest_async<S: AsyncObjectStore>(
         manifest.config.limits.maximum_objects_per_generation,
     )
     .map_err(|error| OperationFailure::before_work(error.into()))?;
-    let proof = prove_generation_closure_async(
+    let proof = prove_generation_closure(
         store,
         manifest.generation_root,
         closure_limits,

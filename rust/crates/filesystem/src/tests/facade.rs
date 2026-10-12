@@ -148,115 +148,21 @@ mod heterogeneous_mount {
     }
 
     macro_rules! delegate {
-        ($self:ident, $trait:ident, $field:ident, $method:ident($($argument:expr),*)) => {
-            match $self {
-                Stores::Memory(fs) => $trait::$method(&fs.inner.$field, $($argument),*).await,
-                Stores::Local(fs) => $trait::$method(&fs.inner.$field, $($argument),*).await,
+        ($trait:ident, $field:ident, {$($extra:item)*},
+            $(fn $method:ident($($argument:ident: $type:ty),*) -> $result:ty;)*
+        ) => {
+            impl $trait for Stores {
+                $($extra)*
+                $(async fn $method(&self, $($argument: $type),*) -> $result {
+                    match self {
+                        Stores::Memory(fs) => $trait::$method(&fs.inner.$field, $($argument),*).await,
+                        Stores::Local(fs) => $trait::$method(&fs.inner.$field, $($argument),*).await,
+                    }
+                })*
             }
         };
     }
-    impl AsyncAuthorityStore for Stores {
-        async fn create_authority(
-            &self,
-            authority: AuthorityId,
-            epoch: Epoch,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> AuthorityResult<CreateAuthorityOutcome> {
-            delegate!(
-                self,
-                AsyncAuthorityStore,
-                authority,
-                create_authority(authority, epoch, budget, cancellation)
-            )
-        }
-        async fn head(
-            &self,
-            authority: AuthorityId,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> AuthorityResult<Head> {
-            delegate!(
-                self,
-                AsyncAuthorityStore,
-                authority,
-                head(authority, budget, cancellation)
-            )
-        }
-        async fn compare_and_append(
-            &self,
-            authority: AuthorityId,
-            epoch: Epoch,
-            expected: Head,
-            commit: ProposedCommit,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> AuthorityResult<AppendOutcome> {
-            delegate!(
-                self,
-                AsyncAuthorityStore,
-                authority,
-                compare_and_append(authority, epoch, expected, commit, budget, cancellation)
-            )
-        }
-        async fn replay(
-            &self,
-            authority: AuthorityId,
-            after: Sequence,
-            limit: ReplayLimit,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> AuthorityResult<Vec<crate::foundation::DurableCommit>> {
-            delegate!(
-                self,
-                AsyncAuthorityStore,
-                authority,
-                replay(authority, after, limit, budget, cancellation)
-            )
-        }
-        async fn fence(
-            &self,
-            authority: AuthorityId,
-            expected: Head,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> AuthorityResult<FenceOutcome> {
-            delegate!(
-                self,
-                AsyncAuthorityStore,
-                authority,
-                fence(authority, expected, budget, cancellation)
-            )
-        }
-        async fn find_operation(
-            &self,
-            authority: AuthorityId,
-            operation: OperationId,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> AuthorityResult<Option<crate::foundation::DurableCommit>> {
-            delegate!(
-                self,
-                AsyncAuthorityStore,
-                authority,
-                find_operation(authority, operation, budget, cancellation)
-            )
-        }
-        async fn fork_generation_authority(
-            &self,
-            source: crate::async_storage::GenerationForkSource,
-            destination: AuthorityId,
-            operation: OperationId,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> AuthorityResult<CreateAuthorityOutcome> {
-            delegate!(
-                self,
-                AsyncAuthorityStore,
-                authority,
-                fork_generation_authority(source, destination, operation, budget, cancellation)
-            )
-        }
+    delegate!(AsyncAuthorityStore, authority, {
         fn supports_generation_lineage_prefix(&self) -> bool {
             match self {
                 Self::Memory(fs) => {
@@ -267,96 +173,31 @@ mod heterogeneous_mount {
                 }
             }
         }
-    }
+    },
+        fn create_authority(authority: AuthorityId, epoch: Epoch, budget: WorkBudget, cancellation: &CancellationToken) -> AuthorityResult<CreateAuthorityOutcome>;
+        fn head(authority: AuthorityId, budget: WorkBudget, cancellation: &CancellationToken) -> AuthorityResult<Head>;
+        fn compare_and_append(authority: AuthorityId, epoch: Epoch, expected: Head, commit: ProposedCommit, budget: WorkBudget, cancellation: &CancellationToken) -> AuthorityResult<AppendOutcome>;
+        fn replay(authority: AuthorityId, after: Sequence, limit: ReplayLimit, budget: WorkBudget, cancellation: &CancellationToken) -> AuthorityResult<Vec<crate::foundation::DurableCommit>>;
+        fn fence(authority: AuthorityId, expected: Head, budget: WorkBudget, cancellation: &CancellationToken) -> AuthorityResult<FenceOutcome>;
+        fn find_operation(authority: AuthorityId, operation: OperationId, budget: WorkBudget, cancellation: &CancellationToken) -> AuthorityResult<Option<crate::foundation::DurableCommit>>;
+        fn fork_generation_authority(source: crate::async_storage::GenerationForkSource, destination: AuthorityId, operation: OperationId, budget: WorkBudget, cancellation: &CancellationToken) -> AuthorityResult<CreateAuthorityOutcome>;
+    );
 
-    impl AsyncObjectStore for Stores {
-        async fn put(
-            &self,
-            id: ObjectId,
-            bytes: OwnedBytes,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> ObjectResult<()> {
-            delegate!(
-                self,
-                AsyncObjectStore,
-                objects,
-                put(id, bytes, budget, cancellation)
-            )
-        }
-        async fn put_many(
-            &self,
-            writes: &[ObjectWrite],
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> ObjectResult<()> {
-            delegate!(
-                self,
-                AsyncObjectStore,
-                objects,
-                put_many(writes, budget, cancellation)
-            )
-        }
-        async fn read(
-            &self,
-            id: ObjectId,
-            maximum: u64,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> ObjectResult<ObjectRead> {
-            delegate!(
-                self,
-                AsyncObjectStore,
-                objects,
-                read(id, maximum, budget, cancellation)
-            )
-        }
-        async fn read_many(
-            &self,
-            requests: &[ObjectReadRequest],
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> ObjectResult<Vec<ObjectRead>> {
-            delegate!(
-                self,
-                AsyncObjectStore,
-                objects,
-                read_many(requests, budget, cancellation)
-            )
-        }
-        async fn contains(
-            &self,
-            id: ObjectId,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> ObjectResult<bool> {
-            delegate!(
-                self,
-                AsyncObjectStore,
-                objects,
-                contains(id, budget, cancellation)
-            )
-        }
-        async fn flush_before_publish(
-            &self,
-            scope: crate::PublicationScope<'_>,
-            budget: WorkBudget,
-            cancellation: &CancellationToken,
-        ) -> ObjectResult<crate::PublicationHold> {
-            delegate!(
-                self,
-                AsyncObjectStore,
-                objects,
-                flush_before_publish(scope, budget, cancellation)
-            )
-        }
+    delegate!(AsyncObjectStore, objects, {
         fn collection(&self) -> Option<&Arc<crate::Collection>> {
             match self {
                 Self::Memory(_) => None,
                 Self::Local(fs) => fs.inner.objects.collection(),
             }
         }
-    }
+    },
+        fn put(id: ObjectId, bytes: OwnedBytes, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<()>;
+        fn put_many(writes: &[ObjectWrite], budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<()>;
+        fn read(id: ObjectId, maximum: u64, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<ObjectRead>;
+        fn read_many(requests: &[ObjectReadRequest], budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<Vec<ObjectRead>>;
+        fn contains(id: ObjectId, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<bool>;
+        fn flush_before_publish(scope: crate::PublicationScope<'_>, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<crate::PublicationHold>;
+    );
 
     #[tokio::test]
     async fn mounted_view_routes_memory_and_local_objects_through_existing_traits()
@@ -6435,6 +6276,22 @@ fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
         .record
         .is_some()
     );
+    let lookup = poll_immediate(AsyncAuthorityStore::find_operation(
+        &volume.fs.inner.authority, volume_authority_id(volume_id), operation_id,
+        WorkBudget::UNBOUNDED, &cancellation,
+    ))?;
+    let mut recovered = poll_immediate(volume.checkout(
+        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
+    ))?.value;
+    let denied = poll_immediate(recovered.commit(
+        operation_id, None, None, None, crate::PublicationPermit::Unrestricted,
+        WorkBudget { items_examined: lookup.work.items_examined, ..WorkBudget::UNBOUNDED },
+        &cancellation, |_| async { Ok::<_, FsError>(FsReceipt { value: (), work: WorkCounters::UNCHARGED }) },
+    ));
+    assert!(matches!(denied, Err(OperationFailure {
+        error: FsError::Work(WorkError::BudgetExceeded { counter: "items_examined", .. }), ..
+    })));
+
     let clean_failure = poll_immediate(first.commit(OperationId::from_bytes([11; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) }))
     .err()
     .ok_or("clean checkout commit unexpectedly succeeded")?;

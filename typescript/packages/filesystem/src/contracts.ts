@@ -7,11 +7,7 @@ import {
   DEFAULT_VOLUME_LIMITS as GENERATED_VOLUME_LIMITS,
 } from "../generated/defaults.js";
 
-/**
- * The workspace and generation DTOs are emitted from the Rust WASM boundary.
- * Keep the customer-facing contracts readonly while deriving their field
- * names, optionality, and literal unions from that generated source.
- */
+/** Derives readonly customer DTOs from the generated Rust contract. */
 type ReadonlyDeep<T> = T extends (...args: never[]) => unknown
   ? T
   : T extends Uint8Array
@@ -21,24 +17,6 @@ type ReadonlyDeep<T> = T extends (...args: never[]) => unknown
     : T extends object
       ? { readonly [Key in keyof T]: ReadonlyDeep<T[Key]> }
       : T;
-
-/**
- * Project one generated browser DTO into the public API shape.  The WASM
- * boundary reports work counters as bigint so it cannot lose precision while
- * crossing the Rust boundary; the public adapters preserve those exact
- * counters as bigint values. Keeping this
- * projection here makes every result DTO inherit its fields and discriminants
- * from the generated Rust contract instead of re-declaring them in TypeScript.
- */
-type PublicWasm<T> = T extends WasmBinding.BrowserWorkCounters
-  ? WorkCounters
-  : T extends Uint8Array
-    ? Uint8Array
-    : T extends readonly (infer Value)[]
-      ? readonly PublicWasm<Value>[]
-      : T extends object
-        ? { readonly [Key in keyof T]: PublicWasm<T[Key]> }
-        : T;
 
 export type FsProfile = WasmBinding.BrowserVolumeOptions["profile"];
 export type FilePayloadKind = WasmBinding.FilePayloadKind;
@@ -416,13 +394,11 @@ export function portableVolumeOptions(
 export type CheckoutOptions = ReadonlyDeep<WasmBinding.BrowserCheckoutOptions>;
 
 /** Exact customer-side counters projected from the generated Rust DTO. */
-export type WorkCounters = Readonly<{
-  [Key in keyof WasmBinding.BrowserWorkCounters]: bigint;
-}>;
+export type WorkCounters = ReadonlyDeep<WasmBinding.BrowserWorkCounters>;
 
-export type LookupResult = PublicWasm<WasmBinding.BrowserLookupResult>;
+export type LookupResult = ReadonlyDeep<WasmBinding.BrowserLookupResult>;
 
-export type FileReadResult = PublicWasm<WasmBinding.BrowserFileReadResult>;
+export type FileReadResult = ReadonlyDeep<WasmBinding.BrowserFileReadResult>;
 
 /** One immutable file handle resolved against a pinned checkout generation. */
 export interface ResolvedFile {
@@ -472,14 +448,14 @@ export type FileExtentPlan =
       readonly work: WorkCounters;
     };
 
-export type DirectoryEntry = PublicWasm<WasmBinding.BrowserDirectoryEntryResult>;
+export type DirectoryEntry = ReadonlyDeep<WasmBinding.BrowserDirectoryEntryResult>;
 
-export type DirectoryPage = PublicWasm<WasmBinding.BrowserDirectoryPageResult>;
+export type DirectoryPage = ReadonlyDeep<WasmBinding.BrowserDirectoryPageResult>;
 
-export type MutationResult = PublicWasm<WasmBinding.BrowserMutationResult>;
+export type MutationResult = ReadonlyDeep<WasmBinding.BrowserMutationResult>;
 
 /** Immutable content-addressed candidate built without publishing authority. */
-export type CheckpointResult = PublicWasm<WasmBinding.BrowserCheckpointResult>;
+export type CheckpointResult = ReadonlyDeep<WasmBinding.BrowserCheckpointResult>;
 
 export interface MaterializeOptions {
   readonly destination: string;
@@ -565,38 +541,38 @@ export interface NativeWatcher {
 }
 
 /** Complete authenticated closure descriptor. Object identities are kind-tag + digest. */
-export type GenerationExportManifest = PublicWasm<WasmBinding.BrowserExportManifestResult>;
+export type GenerationExportManifest = ReadonlyDeep<WasmBinding.BrowserExportManifestResult>;
 
 /** One manifest-ordered, resumable immutable-object transfer page. */
-export type GenerationTransferBatch = PublicWasm<WasmBinding.GenerationTransferBatchResult>;
+export type GenerationTransferBatch = ReadonlyDeep<WasmBinding.GenerationTransferBatchResult>;
 
 /** Cursor after an idempotently imported manifest-aligned page. */
-export type GenerationTransferCursor = PublicWasm<WasmBinding.GenerationTransferCursorResult>;
+export type GenerationTransferCursor = ReadonlyDeep<WasmBinding.GenerationTransferCursorResult>;
 
-export type CommitResult = PublicWasm<WasmBinding.BrowserCommitResult>;
+export type CommitResult = ReadonlyDeep<WasmBinding.BrowserCommitResult>;
 
-export type RebaseResult = PublicWasm<WasmBinding.BrowserRebaseResult>;
+export type RebaseResult = ReadonlyDeep<WasmBinding.BrowserRebaseResult>;
 
 /** Complete path-independent file record in a generation diff. */
-export type FileRecordSnapshot = PublicWasm<WasmBinding.BrowserFileRecordResult>;
+export type FileRecordSnapshot = ReadonlyDeep<WasmBinding.BrowserFileRecordResult>;
 
-export type FileRecordReadResult = PublicWasm<WasmBinding.BrowserFileRecordReadResult>;
+export type FileRecordReadResult = ReadonlyDeep<WasmBinding.BrowserFileRecordReadResult>;
 
-export type BatchLookupEntry = PublicWasm<WasmBinding.BrowserBatchLookupEntryResult>;
+export type BatchLookupEntry = ReadonlyDeep<WasmBinding.BrowserBatchLookupEntryResult>;
 
-export type BatchLookupResult = PublicWasm<WasmBinding.BrowserBatchLookupResult>;
+export type BatchLookupResult = ReadonlyDeep<WasmBinding.BrowserBatchLookupResult>;
 
-export type DirectoryRecordEntry = PublicWasm<WasmBinding.BrowserDirectoryRecordEntryResult>;
+export type DirectoryRecordEntry = ReadonlyDeep<WasmBinding.BrowserDirectoryRecordEntryResult>;
 
-export type DirectoryRecordPage = PublicWasm<WasmBinding.BrowserDirectoryRecordPageResult>;
+export type DirectoryRecordPage = ReadonlyDeep<WasmBinding.BrowserDirectoryRecordPageResult>;
 
-export type FileRecordChange = PublicWasm<WasmBinding.BrowserFileRecordChangeResult>;
+export type FileRecordChange = ReadonlyDeep<WasmBinding.BrowserFileRecordChangeResult>;
 
-export type TreeEntrySnapshot = PublicWasm<WasmBinding.BrowserTreeEntryResult>;
+export type TreeEntrySnapshot = ReadonlyDeep<WasmBinding.BrowserTreeEntryResult>;
 
-export type DirectoryBindingChange = PublicWasm<WasmBinding.BrowserBindingChangeResult>;
+export type DirectoryBindingChange = ReadonlyDeep<WasmBinding.BrowserBindingChangeResult>;
 
-export type GenerationDiff = PublicWasm<WasmBinding.BrowserGenerationDiffResult>;
+export type GenerationDiff = ReadonlyDeep<WasmBinding.BrowserGenerationDiffResult>;
 
 export type MergeConflict =
   | { readonly kind: "file"; readonly fileId: Uint8Array }
@@ -626,21 +602,21 @@ export type MergePreparationResult =
       readonly work: WorkCounters;
     };
 
-export type LiveMutationResult = PublicWasm<WasmBinding.BrowserLiveMutationResult>;
+export type LiveMutationResult = ReadonlyDeep<WasmBinding.BrowserLiveMutationResult>;
 
-export type LiveTransactionResult = PublicWasm<WasmBinding.BrowserLiveTransactionResult>;
+export type LiveTransactionResult = ReadonlyDeep<WasmBinding.BrowserLiveTransactionResult>;
 
 export type NamedAttributeClass = WasmBinding.BrowserNamedAttributeNameResult["attributeClass"];
 
-export type MetadataResult = PublicWasm<WasmBinding.BrowserMetadataResult>;
+export type MetadataResult = ReadonlyDeep<WasmBinding.BrowserMetadataResult>;
 
-export type StatResult = PublicWasm<WasmBinding.BrowserStatResult>;
+export type StatResult = ReadonlyDeep<WasmBinding.BrowserStatResult>;
 
-export type NamedAttributeResult = PublicWasm<WasmBinding.BrowserNamedAttributeResult>;
+export type NamedAttributeResult = ReadonlyDeep<WasmBinding.BrowserNamedAttributeResult>;
 
-export type NamedAttributePage = PublicWasm<WasmBinding.BrowserNamedAttributePageResult>;
+export type NamedAttributePage = ReadonlyDeep<WasmBinding.BrowserNamedAttributePageResult>;
 
-export type NamedAttributeName = PublicWasm<WasmBinding.BrowserNamedAttributeNameResult>;
+export type NamedAttributeName = ReadonlyDeep<WasmBinding.BrowserNamedAttributeNameResult>;
 
 export type NamedAttributeWriteMode = "upsert" | "create" | "replace";
 export type EmptySpecialKind = Extract<WasmBinding.TransactionOperation, { kind: "create-special" }>["fileKind"];
@@ -648,7 +624,7 @@ export type DeviceKind = Extract<WasmBinding.TransactionOperation, { kind: "crea
 
 export type TransactionOperation = ReadonlyDeep<WasmBinding.TransactionOperation>;
 
-export type TransactionResult = PublicWasm<WasmBinding.BrowserTransactionResult>;
+export type TransactionResult = ReadonlyDeep<WasmBinding.BrowserTransactionResult>;
 
 export interface FsCheckout {
   /** Exact bounded work used to acquire this checkout handle. */
@@ -1002,13 +978,7 @@ export interface RawWorkspaceContextRegistry {
 
 export type WasmRawWorkspaceContextRegistry = RawWorkspaceContextRegistry;
 
-/*
- * wasm-bindgen owns the class and method inventory. Rust Tsify DTOs provide
- * generated declarations for the workspace and generation result family;
- * older serde values remain erased until their own DTO migration. These
- * helpers inherit concrete signatures directly from the generated binding and
- * replace only the remaining erased values whose wire shapes are in contract.
- */
+// Override only erased inputs and handles that inherit those typed inputs.
 type WasmWithArgs<Base, Args extends object> = Omit<Base, keyof Args> & {
   [Key in keyof Args & keyof Base]: Base[Key] extends (...args: infer _Args) => infer Result
     ? (...args: Args[Key] extends readonly unknown[] ? Args[Key] : never) => Result
@@ -1024,52 +994,24 @@ type WasmWithSyncResults<Base, Results extends object> = Omit<Base, keyof Result
     ? (...args: Args) => Results[Key]
     : never;
 };
-type WasmWithProperties<Base, Properties extends object> = Omit<Base, keyof Properties> & Properties;
-type WasmAssertKnownKeys<Base, Overrides extends object> =
-  Exclude<keyof Overrides, keyof Base> extends never
+type WasmAssertKnownKeys<Base, Keys extends PropertyKey> =
+  Exclude<Keys, keyof Base> extends never
     ? unknown
-    : { readonly __unknownGeneratedWasmKeys__: Exclude<keyof Overrides, keyof Base> };
+    : { readonly __unknownGeneratedWasmKeys__: Exclude<Keys, keyof Base> };
 type WasmTypedClass<
   Base,
   Args extends object = {},
   AsyncResults extends object = {},
   SyncResults extends object = {},
   Properties extends object = {},
-> = WasmWithProperties<
+> = Omit<
   WasmWithSyncResults<WasmWithAsyncResults<WasmWithArgs<Base, Args>, AsyncResults>, SyncResults>,
-  Properties
-> & WasmAssertKnownKeys<Base, Args>
-  & WasmAssertKnownKeys<Base, AsyncResults>
-  & WasmAssertKnownKeys<Base, SyncResults>
-  & WasmAssertKnownKeys<Base, Properties>;
+  keyof Properties
+> & Properties & WasmAssertKnownKeys<Base, keyof Args | keyof AsyncResults | keyof SyncResults | keyof Properties>;
 
 export type WasmRawMergeConflict = WasmBinding.MergeConflictResult;
-// Join and live-rebase share the same result envelope. Keeping the generated
-// Rust DTO union here lets the operation adapters accept each native status
-// union without recreating a handwritten overlay.
-export type WasmRawJoinResult =
-  | WasmBinding.BrowserJoinResult
-  | WasmBinding.BrowserWorkspaceRebaseResult;
-
-export interface WasmRawObjectCacheStats {
-  readonly hits: string;
-  readonly decodedHits: string;
-  readonly misses: string;
-  readonly coalescedReads: string;
-  readonly evictions: string;
-  readonly residentEntries: string;
-  readonly residentBytes: string;
-  readonly residentCanonicalObjects: string;
-  readonly residentCanonicalBytes: string;
-  readonly residentDecodedPages: string;
-  readonly residentDecodedBytes: string;
-  readonly inFlight: string;
-}
-
-export interface WasmImportManifest {
-  readonly manifestBytes: Uint8Array;
-  readonly objects: readonly Uint8Array[];
-}
+export type WasmRawObjectCacheStats = { readonly [Key in keyof ObjectCacheStats]: string };
+export type WasmImportManifest = Pick<GenerationExportManifest, "manifestBytes" | "objects">;
 
 export type WasmRawFileRecordSnapshot = WasmBinding.BrowserFileRecordResult;
 export type WasmRawGenerationDiff = WasmBinding.BrowserGenerationDiffResult;
@@ -1077,24 +1019,17 @@ export type WasmRawGenerationDiff = WasmBinding.BrowserGenerationDiffResult;
 export type WasmRawGeneration = WasmTypedClass<WasmBinding.BrowserGeneration, {
   listDirectory: [path: string, after: WorkspaceName | undefined, maximumEntries: number];
 }, {
-  listDirectory: WasmBinding.BrowserWorkspaceDirectoryPage;
   pin: WasmRawGeneration;
-  planExtents: WasmBinding.BrowserWorkspaceExtentPlan;
-  stat: WasmBinding.BrowserWorkspaceStat;
 }>;
 
 export type WasmRawChangeSet = WasmTypedClass<WasmBinding.BrowserChangeSet, {}, {
   compose: WasmRawChangeSet;
-}, {
-  changes: WasmBinding.BrowserGenerationDiffResult;
-}, {
+}, {}, {
   readonly from: WasmRawGeneration;
   readonly to: WasmRawGeneration;
 }>;
 
-export type WasmRawJoinPlan = WasmTypedClass<WasmBinding.BrowserJoinPlan, {}, {
-  apply: WasmBinding.BrowserJoinResult;
-}>;
+export type WasmRawJoinPlan = WasmBinding.BrowserJoinPlan;
 
 export type WasmRawWorkspace = WasmTypedClass<WasmBinding.BrowserWorkspace, {
   joinInto: [target: WasmRawWorkspace, options: JoinOptions];
@@ -1104,14 +1039,8 @@ export type WasmRawWorkspace = WasmTypedClass<WasmBinding.BrowserWorkspace, {
   diff: WasmRawChangeSet;
   fork: WasmRawWorkspace;
   forkAt: WasmRawWorkspace;
-  joinInto: WasmRawJoinPlan;
-  liveRebase: WasmBinding.BrowserWorkspaceRebaseResult;
   pin: WasmRawGeneration;
-  planExtents: WasmBinding.BrowserWorkspaceExtentPlan;
-  remove: WasmBinding.BrowserWorkspaceCommit;
-  stat: WasmBinding.BrowserWorkspaceStat;
   sync: WasmRawGeneration;
-  write: WasmBinding.BrowserWorkspaceCommit;
 }>;
 
 export type WasmRawTransaction = WasmBinding.BrowserTransaction;
@@ -1119,23 +1048,12 @@ export type WasmRawTransaction = WasmBinding.BrowserTransaction;
 export type WasmRawSpeculation = WasmTypedClass<WasmBinding.BrowserSpeculation, {
   observe: [observation: ResidencyObservation];
   planPromotion: [request: PromotionRequest];
-}, {
-  executeResidency: WasmBinding.BrowserResidencyExecution;
-}, {
-  observe: WasmBinding.BrowserAdmissionResult;
-  metrics: WasmBinding.BrowserSpeculationMetrics;
-  planPromotion: WasmBinding.BrowserPromotionAdmission;
-  preemptForForeground: WasmBinding.BrowserSpeculationPreemption;
-  replaceGeneration: WasmBinding.BrowserSpeculationPreemption;
 }>;
 
 export type WasmRawVolume = WasmTypedClass<WasmBinding.BrowserVolume, {
   checkout: [options: CheckoutOptions];
 }, {
   checkout: WasmRawCheckout;
-  diffGenerations: WasmRawGenerationDiff;
-}, {}, {
-  readonly acquisitionWork: WasmBinding.BrowserWorkCounters;
 }>;
 
 export type WasmRawCheckout = WasmTypedClass<
@@ -1152,66 +1070,7 @@ export type WasmRawCheckout = WasmTypedClass<
     setAttributes: [path: string, canonicalBytes: Uint8Array, logicalBytes: bigint | undefined];
     setAttributesById: [fileId: Uint8Array, canonicalBytes: Uint8Array, logicalBytes: bigint | undefined];
     writeNamedAttribute: [path: string, attributeClass: NamedAttributeClass, name: Uint8Array, bytes: Uint8Array, mode: NamedAttributeWriteMode];
-  },
-  {
-    applyTransaction: WasmBinding.BrowserTransactionResult;
-    checkpoint: WasmBinding.BrowserCheckpointResult;
-    cloneFileRange: WasmBinding.BrowserMutationResult;
-    cloneFileRangeById: WasmBinding.BrowserMutationResult;
-    commit: WasmBinding.BrowserCommitResult;
-    createDevice: WasmBinding.BrowserMutationResult;
-    createDirectory: WasmBinding.BrowserMutationResult;
-    createFile: WasmBinding.BrowserMutationResult;
-    createReparsePoint: WasmBinding.BrowserMutationResult;
-    createSpecial: WasmBinding.BrowserMutationResult;
-    createSymbolicLink: WasmBinding.BrowserMutationResult;
-    discard: WasmBinding.BrowserMutationResult;
-    exportManifest: WasmBinding.BrowserExportManifestResult;
-    hardLink: WasmBinding.BrowserMutationResult;
-    listDirectory: WasmBinding.BrowserDirectoryPageResult;
-    listDirectoryRecords: WasmBinding.BrowserDirectoryRecordPageResult;
-    listNamedAttributes: WasmBinding.BrowserNamedAttributePageResult;
-    lookupBatchNoFollow: WasmBinding.BrowserBatchLookupResult;
-    lookupNoFollow: WasmBinding.BrowserLookupResult;
-    mutateLive: WasmBinding.BrowserLiveTransactionResult;
-    planFileExtents: WasmBinding.BrowserExtentPlanResult;
-    planFileExtentsById: WasmBinding.BrowserExtentPlanResult;
-    preallocateFile: WasmBinding.BrowserMutationResult;
-    preallocateFileById: WasmBinding.BrowserMutationResult;
-    prepareMerge: WasmBinding.BrowserMergePreparationResult;
-    readFileRange: WasmBinding.BrowserFileReadResult;
-    readFileRangeById: WasmBinding.BrowserFileReadResult;
-    readFileRecordById: WasmBinding.BrowserFileRecordReadResult;
-    readMetadata: WasmBinding.BrowserMetadataResult;
-    readMetadataById: WasmBinding.BrowserMetadataResult;
-    readNamedAttribute: WasmBinding.BrowserNamedAttributeResult;
-    readReparsePoint: WasmBinding.BrowserFileReadResult;
-    readSymbolicLink: WasmBinding.BrowserFileReadResult;
-    rebaseHead: WasmBinding.BrowserRebaseResult;
-    refreshHead: WasmBinding.BrowserCheckpointResult;
-    refreshLive: WasmBinding.BrowserCheckpointResult;
-    remove: WasmBinding.BrowserMutationResult;
-    removeNamedAttribute: WasmBinding.BrowserMutationResult;
-    rename: WasmBinding.BrowserMutationResult;
-    resizeFile: WasmBinding.BrowserMutationResult;
-    resizeFileById: WasmBinding.BrowserMutationResult;
-    resolveFiles: WasmRawResolvedFiles;
-    resumeLive: WasmBinding.BrowserLiveMutationResult;
-    seekFileExtent: WasmBinding.BrowserExtentSeekResult;
-    seekFileExtentById: WasmBinding.BrowserExtentSeekResult;
-    setAttributes: WasmBinding.BrowserMutationResult;
-    setAttributesById: WasmBinding.BrowserMutationResult;
-    setMetadata: WasmBinding.BrowserMutationResult;
-    setMetadataById: WasmBinding.BrowserMutationResult;
-    statNoFollow: WasmBinding.BrowserStatResult;
-    writeFile: WasmBinding.BrowserMutationResult;
-    writeFileById: WasmBinding.BrowserMutationResult;
-    writeNamedAttribute: WasmBinding.BrowserMutationResult;
-    zeroFileRange: WasmBinding.BrowserMutationResult;
-    zeroFileRangeById: WasmBinding.BrowserMutationResult;
-  },
-  {},
-  { readonly acquisitionWork: WasmBinding.BrowserWorkCounters }
+  }
 >;
 
 export type WasmRawFs = WasmTypedClass<WasmBinding.BrowserFs, {
@@ -1227,10 +1086,6 @@ export type WasmRawFs = WasmTypedClass<WasmBinding.BrowserFs, {
   createVolume: WasmRawVolume;
   createVolumeWithId: WasmRawVolume;
   openVolume: WasmRawVolume;
-  exportObject: WasmBinding.BrowserFileReadResult;
-  importObject: WasmBinding.BrowserMutationResult;
-  exportGenerationBatch: WasmBinding.GenerationTransferBatchResult;
-  importGenerationBatch: WasmBinding.GenerationTransferCursorResult;
   restoreVolume: WasmRawVolume;
 }, {
   createSpeculation: WasmRawSpeculation;
@@ -1238,19 +1093,11 @@ export type WasmRawFs = WasmTypedClass<WasmBinding.BrowserFs, {
 }, {
   readonly capabilities: EngineCapabilities;
 }>;
-export type WasmRawResolvedFile = WasmTypedClass<WasmBinding.BrowserResolvedFile, {}, {
-  readRange: WasmBinding.BrowserFileReadResult;
-  readSymbolicLink: WasmBinding.BrowserFileReadResult;
-}>;
+export type WasmRawResolvedFile = WasmBinding.BrowserResolvedFile;
 
-export type WasmRawResolvedFiles = WasmWithProperties<WasmBinding.BrowserResolvedFiles, {
-  readonly work: WasmBinding.BrowserWorkCounters;
-}> & { take(index: number): WasmRawResolvedFile | undefined };
+export type WasmRawResolvedFiles = WasmBinding.BrowserResolvedFiles;
 
-// Native companion declarations are generated by NAPI-RS from the canonical
-// Rust binding. Keep the adapter's historical Raw aliases, but make every one
-// of them resolve to the generated declaration instead of maintaining a second
-// handwritten ABI mirror here.
+// Accept Uint8Array inputs at the generated N-API Buffer boundary.
 type NativeBoundary<T> =
   T extends Uint8Array ? Uint8Array :
   T extends Promise<infer Value> ? Promise<NativeBoundary<Value>> :
@@ -1264,10 +1111,6 @@ type NativeBoundary<T> =
 export type NativeBindings = NativeBoundary<typeof NativeBinding>;
 export type NativeRawWorkspaceLineageRecord = NativeBoundary<NativeBinding.NativeWorkspaceLineageRecord>;
 export type NativeRawWorkspaceGraph = NativeBoundary<NativeBinding.NativeWorkspaceGraph>;
-export type NativeRawOperationWindowLease = NativeBoundary<NativeBinding.NativeOperationWindowLease>;
-export type NativeRawOperationWindowPhase = NativeBoundary<NativeBinding.NativeOperationWindowPhase>;
-export type NativeRawOperationWindowClose = NativeBoundary<NativeBinding.NativeOperationWindowClose>;
-export type NativeRawOperationWindowCoordinator = NativeBoundary<NativeBinding.NativeOperationWindowCoordinator>;
 export type NativeRawWatchBatch = NativeBoundary<NativeBinding.NativeWatchBatch>;
 export type NativeRawWatcher = NativeBoundary<NativeBinding.NativeWatcher>;
 export type NativeRawCheckout = NativeBoundary<NativeBinding.NativeCheckout>;

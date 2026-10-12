@@ -1,6 +1,7 @@
 //! Default transport crosses genuine created agent namespaces without file grants.
 
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::{filesystem::{FilesystemTaskRuntime, MailReceiveTaskCommand}, scheduler::{InboxItem, LeaseFence}, workflow::WorkflowCommand};
 
 type ParcelRuntime = FilesystemTaskRuntime<MemoryStream, MemoryAuthorityBackend, MemoryObjectBackend>;

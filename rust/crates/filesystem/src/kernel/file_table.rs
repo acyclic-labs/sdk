@@ -777,28 +777,7 @@ pub struct FileRecordBatchLookup {
 }
 
 /// Looks up file records while reading every distinct file-table frontier once.
-pub fn lookup_file_records<S: crate::ImmediateObjectStore>(
-    store: &S,
-    root: ObjectId,
-    file_ids: &[FileId],
-    maximum_queries: u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<FileRecordBatchLookup, FileRecordReadFailure> {
-    persistent_batch::lookup::<S, FileTableFormat>(
-        store,
-        root,
-        file_ids,
-        maximum_queries,
-        limits,
-        budget,
-    )
-    .map(to_record_batch)
-    .map_err(map_batch_failure)
-}
-
-/// Asynchronously executes the same batch as [`lookup_file_records`].
-pub async fn lookup_file_records_async<S: AsyncObjectStore>(
+pub async fn lookup_file_records<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     file_ids: &[FileId],
@@ -923,25 +902,7 @@ pub(crate) async fn lookup_file_record_async_with_accounting<S: AsyncObjectStore
 }
 
 /// Looks up one stable file identity through the authenticated file table.
-pub fn lookup_file_record<S: crate::ImmediateObjectStore>(
-    store: &S,
-    root: ObjectId,
-    file_id: FileId,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<FileRecordLookup, FileRecordReadFailure> {
-    crate::async_storage::poll_immediate(lookup_file_record_async(
-        store,
-        root,
-        file_id,
-        limits,
-        budget,
-        &CancellationToken::new(),
-    ))
-}
-
-/// Asynchronously looks up one file record, sharing every page another reader of `store` already decoded.
-pub async fn lookup_file_record_async<S: AsyncObjectStore>(
+pub async fn lookup_file_record<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     file_id: FileId,

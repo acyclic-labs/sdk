@@ -15,7 +15,7 @@ use crate::record_store::MAXIMUM_CAS_ATTEMPTS;
 use crate::{
     AsyncAuthorityStore, AsyncObjectStore, AuthoredMutation, CancellationToken, FileId,
     ForkOptions, Fs, FsError, IdempotencyKey, OperationReceipt, TransactionCommit, WorkBudget, WorkCounters,
-    Workspace, WorkspaceDirectoryEntry, WorkspaceError, WorkspaceExtentKind, WorkspaceId,
+    Workspace, TreeEntry, WorkspaceError, WorkspaceExtentKind, WorkspaceId,
     WorkspaceStat,
 };
 use bytes::Bytes;
@@ -2794,7 +2794,7 @@ pub struct LazyDirectoryEntry {
 
 enum ExactifyEntries {
     Lazy(std::vec::IntoIter<LazyDirectoryEntry>),
-    Authored(std::vec::IntoIter<WorkspaceDirectoryEntry>),
+    Authored(std::vec::IntoIter<TreeEntry>),
 }
 
 impl Iterator for ExactifyEntries {
@@ -8289,7 +8289,7 @@ where
                             Some(accounting.clone_name(&name.name, cancellation)?)
                         } else { None };
                         let slots = crate::foundation::usize_to_u64(page.entries.capacity()
-                            .checked_mul(std::mem::size_of::<WorkspaceDirectoryEntry>()).ok_or_else(counter_overflow)?);
+                            .checked_mul(std::mem::size_of::<TreeEntry>()).ok_or_else(counter_overflow)?);
                         (ExactifyEntries::Authored(page.entries.into_iter()), slots, None, next)
                     } else {
                         accounting.release_portable_cursor(cursor.as_ref())?;
@@ -11838,7 +11838,7 @@ fn parent_path(path: &str) -> Option<&str> {
     }
 }
 
-fn authored_entry(entry: WorkspaceDirectoryEntry) -> LazyDirectoryEntry {
+fn authored_entry(entry: TreeEntry) -> LazyDirectoryEntry {
     LazyDirectoryEntry {
         name: entry.name,
         kind: source_kind(entry.kind),
@@ -13101,7 +13101,7 @@ pub(crate) fn retained_directory_page_bytes<T>(
 
 enum DirectoryAuthoredEntries {
     Mounted(Vec<crate::kernel::TreeEntry>),
-    Workspace(Vec<WorkspaceDirectoryEntry>),
+    Workspace(Vec<TreeEntry>),
     #[cfg(not(target_arch = "wasm32"))]
     Original(Vec<crate::DirectoryRecordEntry>),
 }

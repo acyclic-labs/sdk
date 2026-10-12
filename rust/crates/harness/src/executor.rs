@@ -1427,16 +1427,7 @@ impl StockExecution<'_> {
         }
         let io = self.io();
         let contracts = self.context_pipeline().contracts(io)?;
-        let tools = {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if let Some(io) = io && let Some(work) = io.original_native_work() {
-                let (tools, custody) = self.stock.tools.definitions_with_native_work(work)?;
-                io.absorb_native_custody(custody)?;
-                tools
-            } else { self.stock.tools.definitions()? }
-            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            { self.stock.tools.definitions()? }
-        };
+        let tools = self.stock.tools.definitions(io)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let binding = self.native.map(|native| (native.context.context(), native.operation));
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
@@ -4152,7 +4143,7 @@ mod tests {
                 Arc::new(source),
                 crate::context::ContextPlacement::Prepend,
             )) as Arc<dyn crate::context::ContextStage>]),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         )
         .with_limits(Limits {
             context_messages: 2,
@@ -4210,7 +4201,7 @@ mod tests {
                 Arc::new(source),
                 crate::context::ContextPlacement::Prepend,
             )) as Arc<dyn crate::context::ContextStage>]),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         );
         let input = TurnInput {
             operation_id: OperationId::new(),
@@ -4270,7 +4261,7 @@ mod tests {
                 Arc::new(source),
                 crate::context::ContextPlacement::Prepend,
             )) as Arc<dyn crate::context::ContextStage>]),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         );
         let input = TurnInput {
             operation_id: OperationId::new(),
@@ -4317,7 +4308,7 @@ mod tests {
             Model::new("synthetic", "small", "1", json!({}))?,
             provider.clone(),
             ContextPipeline::default(),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         );
         assert!(
             executor
@@ -4357,7 +4348,7 @@ mod tests {
                 Model::new("synthetic", "counter", "1", Value::Null)?,
                 provider.clone(),
                 ContextPipeline::default(),
-                ToolRegistry::new(),
+                ToolRegistry::default(),
             );
             let input = TurnInput {
                 operation_id: OperationId::new(),
@@ -4449,7 +4440,7 @@ mod tests {
                 source.clone(),
                 crate::context::ContextPlacement::Prepend,
             )) as Arc<dyn crate::context::ContextStage>]),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         );
         let input = TurnInput {
             operation_id: OperationId::new(),
@@ -4536,7 +4527,7 @@ mod tests {
                     Arc::new(context),
                     crate::context::ContextPlacement::Prepend,
                 )) as Arc<dyn crate::context::ContextStage>]),
-                ToolRegistry::new(),
+                ToolRegistry::default(),
             );
             let input = TurnInput {
                 operation_id,
@@ -4578,7 +4569,7 @@ mod tests {
                 source.clone(),
                 crate::context::ContextPlacement::Prepend,
             )) as Arc<dyn crate::context::ContextStage>]),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         );
         let input = TurnInput {
             operation_id: OperationId::new(),
@@ -4680,7 +4671,7 @@ mod tests {
             },
         )?)?;
         let harness =
-            crate::runtime::AgentHarness::new(tasks, ToolRegistry::new(), scope, 1, None)?;
+            crate::runtime::AgentHarness::new(tasks, ToolRegistry::default(), scope, 1, None)?;
         let definition = harness.task::<(), ()>("context-probe@1")?;
         assert!(matches!(
             harness.spawn(&definition, ()).await?.result().await?,
@@ -4760,7 +4751,7 @@ mod tests {
             calls: AtomicUsize::new(0),
             reconciles: AtomicUsize::new(0),
         });
-        let mut tools = ToolRegistry::new();
+        let mut tools = ToolRegistry::default();
         tools.register(Tool {
             definition: ToolDefinition {
                 name: "example.echo".into(),
@@ -4886,7 +4877,7 @@ mod tests {
             Model::new("test", "bounded-summary", "1", Value::Null)?,
             provider.clone(),
             ContextPipeline::default(),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         )
         .with_max_output_tokens(1_024)?;
         let message = |length| ModelMessage {
@@ -4965,7 +4956,7 @@ mod tests {
                 Model::new("test", "explicit-summary", "1", Value::Null)?,
                 provider.clone(),
                 ContextPipeline::default(),
-                ToolRegistry::new(),
+                ToolRegistry::default(),
             )
             .with_max_output_tokens(output)?;
             let journal = Journal::default();
@@ -5000,7 +4991,7 @@ mod tests {
             Model::new("test", "explicit-summary", "1", Value::Null)?,
             provider.clone(),
             ContextPipeline::default(),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         )
         .with_max_output_tokens(1_024)?;
         let journal = Journal::default();
@@ -5040,7 +5031,7 @@ mod tests {
             Model::new("test", "summary", "1", Value::Null)?,
             provider.clone(),
             ContextPipeline::default(),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         )
         .with_max_output_tokens(1024)?;
         let journal = Journal::default();
@@ -5098,7 +5089,7 @@ mod tests {
             Model::new("test", "summary", "1", Value::Null)?,
             provider.clone(),
             ContextPipeline::default(),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         )
         .with_max_output_tokens(1024)?;
         let journal = Journal::default();
@@ -5299,7 +5290,7 @@ mod tests {
                 source.clone(),
                 crate::context::ContextPlacement::Prepend,
             )) as Arc<dyn crate::context::ContextStage>]),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         );
         let input = TurnInput {
             operation_id: OperationId::new(),
@@ -5553,7 +5544,7 @@ mod tests {
             Model::new("test", "model", "1", Value::Null)?,
             provider.clone(),
             ContextPipeline::new([stage.clone() as Arc<dyn crate::context::ContextStage>]),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         )
         .with_max_output_tokens(8_192)?;
         let journal = Journal::default();
@@ -5633,7 +5624,7 @@ mod tests {
             model,
             provider.clone(),
             ContextPipeline::default(),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         )
         .with_inherited_prefix(root_file, journal.clone())?;
         let input = TurnInput {
@@ -5661,7 +5652,7 @@ mod tests {
             root.request().model.clone(),
             provider.clone(),
             ContextPipeline::default(),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         );
         assert!(matches!(
             unbound.execute(input, journal.as_ref()).await,
@@ -5673,7 +5664,7 @@ mod tests {
     #[tokio::test]
     async fn stock_limits_bound_admission_and_pin_replay() -> Result<()> {
         let model = Arc::new(ScriptedModel::default());
-        let mut tools = ToolRegistry::new();
+        let mut tools = ToolRegistry::default();
         tools.register(crate::tool::Tool {
             definition: crate::tool::ToolDefinition {
                 name: "example.echo".into(),
@@ -5763,7 +5754,7 @@ mod tests {
         for outcome in [InteractionOutcome::Approved, InteractionOutcome::Denied] {
             let model = Arc::new(ScriptedModel::default());
             let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
-            let mut tools = ToolRegistry::new();
+            let mut tools = ToolRegistry::default();
             tools.register(crate::tool::Tool {
                 definition: crate::tool::ToolDefinition {
                     name: "example.echo".into(),
@@ -5886,7 +5877,7 @@ mod tests {
             model
         });
         let tool = Arc::new(FakeTool(AtomicUsize::new(0)));
-        let mut tools = ToolRegistry::new();
+        let mut tools = ToolRegistry::default();
         tools.register(crate::tool::Tool {
             definition: crate::tool::ToolDefinition {
                 name: "example.echo".into(),
@@ -6069,7 +6060,7 @@ mod tests {
     async fn stock_loop_replays_without_reinvoking_models_or_tools() -> Result<()> {
         let model = Arc::new(ScriptedModel::default());
         let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
-        let mut tools = ToolRegistry::new();
+        let mut tools = ToolRegistry::default();
         tools.register(crate::tool::Tool {
             definition: crate::tool::ToolDefinition {
                 name: "example.echo".into(),
@@ -6309,7 +6300,7 @@ mod tests {
     async fn stock_turn_emits_spans_without_prompt_or_tool_fields() -> Result<()> {
         use crate::obs::capture;
         let (seen, _guard) = capture::install();
-        let mut tools = ToolRegistry::new();
+        let mut tools = ToolRegistry::default();
         tools.register(crate::tool::Tool {
             definition: crate::tool::ToolDefinition {
                 name: "example.echo".into(),
@@ -6364,7 +6355,7 @@ mod tests {
     async fn concurrent_stock_hosts_do_not_redispatch_model_or_tool() -> Result<()> {
         let model = Arc::new(ScriptedModel::default());
         let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
-        let mut tools = ToolRegistry::new();
+        let mut tools = ToolRegistry::default();
         tools.register(crate::tool::Tool {
             definition: crate::tool::ToolDefinition {
                 name: "example.echo".into(),
@@ -6417,7 +6408,7 @@ mod tests {
     async fn malformed_tool_arguments_fail_closed_before_dispatch() -> Result<()> {
         let model = Arc::new(ScriptedModel::slipping());
         let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
-        let mut tools = ToolRegistry::new();
+        let mut tools = ToolRegistry::default();
         tools.register(crate::tool::Tool {
             definition: crate::tool::ToolDefinition {
                 name: "example.echo".into(),
@@ -6468,7 +6459,7 @@ mod tests {
     async fn an_ungranted_tool_is_refused_before_its_schema_can_be_probed() -> Result<()> {
         let model = Arc::new(ScriptedModel::slipping());
         let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
-        let mut tools = ToolRegistry::new();
+        let mut tools = ToolRegistry::default();
         tools.register(crate::tool::Tool {
             definition: crate::tool::ToolDefinition {
                 name: "example.echo".into(),
@@ -6616,7 +6607,7 @@ mod tests {
         ] {
             let model = Arc::new(ScriptedModel::default());
             let tool_executor = Arc::new(FakeTool(AtomicUsize::new(0)));
-            let mut tools = ToolRegistry::new();
+            let mut tools = ToolRegistry::default();
             tools.register(crate::tool::Tool {
                 definition: crate::tool::ToolDefinition {
                     name: "example.echo".into(),
@@ -6730,11 +6721,41 @@ mod tests {
                     Ok(())
                 })
             }
+        }
+
+        impl crate::runtime::TaskStateProvider for DispatchObserver {
             fn outcome<'a>(&'a self, _: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
                 Box::pin(async { Err(Error::Unsupported("test observer".into())) })
             }
             fn cancel<'a>(&'a self, _: TaskId) -> BoxFuture<'a, Result<()>> {
                 Box::pin(async { Err(Error::Unsupported("test observer".into())) })
+            }
+
+            fn policy_identity(&self) -> Option<ComponentIdentity> {
+                None
+            }
+
+            fn observe_admission<'a>(
+                &'a self,
+                _task_id: TaskId,
+            ) -> BoxFuture<'a, Result<crate::runtime::TaskAdmissionRecord>> {
+                Box::pin(async {
+                    Err(Error::Unsupported(
+                        "full durable admission observation is not bound".into(),
+                    ))
+                })
+            }
+
+            fn resume_scope<'a>(
+                &'a self,
+                _task_id: TaskId,
+                _operation_id: OperationId,
+            ) -> BoxFuture<'a, Result<RuntimeScope>> {
+                Box::pin(async {
+                    Err(Error::Unsupported(
+                        "durable task context authentication is not bound".into(),
+                    ))
+                })
             }
         }
         let host = Arc::new(DispatchObserver {
@@ -6920,7 +6941,7 @@ mod tests {
             Model::new("example", "model", "1", Value::Null)?,
             Arc::new(ScriptedModel::default()),
             ContextPipeline::default(),
-            ToolRegistry::new(),
+            ToolRegistry::default(),
         );
         executor.limits.model_events_per_step = usize::MAX;
         executor.limits.tool_calls_per_step = usize::MAX;
@@ -7009,7 +7030,7 @@ mod tests {
         let adapter = Arc::new(FakeTool(AtomicUsize::new(0)));
         crate::tool::ToolExecutor::authorize(adapter.as_ref(), Some(&wide), &invocation)?;
         crate::contract::validate_json_byte_bound(&invocation, wide.limits().file_bytes)?;
-        let mut tools = ToolRegistry::new();
+        let mut tools = ToolRegistry::default();
         tools.register(crate::tool::Tool {
             definition: crate::tool::ToolDefinition {
                 name: "example.echo".into(),
@@ -7063,7 +7084,7 @@ mod tests {
         )?;
         let context = capture_admitted_context(scope.clone()).await?;
         let tool = crate::tool::files::write_file()?;
-        let mut tools = ToolRegistry::new();
+        let mut tools = ToolRegistry::default();
         tools.register(tool)?;
         let operation = OperationId::new();
         let invocation = ToolInvocation {

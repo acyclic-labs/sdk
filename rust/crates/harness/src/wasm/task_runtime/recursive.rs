@@ -1,5 +1,6 @@
 //! Explicit browser consumers of the ordinary authenticated recursive workflow.
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::{
     core::Snapshot,
     filesystem::{ForkToolArguments, RecursiveForkConfig,

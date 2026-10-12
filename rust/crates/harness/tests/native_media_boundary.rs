@@ -12,6 +12,7 @@ wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 mod explicit_conversion;
 
 use acyclic_fs::Fs;
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::{
     Admission, AgentId, Capabilities, Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     bundle::HarnessBuilder,
@@ -716,7 +717,7 @@ async fn exercise_live_native_boundary() -> Result<()> {
         output_schema: json!({"type":"object","required":["files"]}),
         projection_schema: json!({"type":"object","required":["kind","parts"],"properties":{"kind":{"const":"parts"},"parts":{"type":"array"}},"additionalProperties":false}),
     };
-    let mut tools = ToolRegistry::new();
+    let mut tools = ToolRegistry::default();
     tools.register(Tool {
         definition: definition.clone(),
         executor: projector.clone(),
@@ -1772,7 +1773,7 @@ where
     ))
         as Arc<dyn acyclic_harness::context::ContextStage>]);
     let tool_scope = RuntimeScope::new(Capabilities::new(["tool:call:example.convert_image"]), Limits::default())?;
-    let mut tools = ToolRegistry::new();
+    let mut tools = ToolRegistry::default();
     tools.register(tool)?;
     let executor = StockExecutor::new(
         model.clone(),
