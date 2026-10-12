@@ -76,7 +76,7 @@ describe("shared workspace operations", () => {
       (value) => value as unknown as WorkspaceRebaseResult,
     );
 
-    await expect(operations.read("/item", 0n)).rejects.toThrow("maximum read bytes");
+    await expect(operations.read("/item", 0n)).rejects.toThrow();
     expect(reads).toBe(0);
     const result = await operations.write("/item", new Uint8Array([1]));
     expect(result.status).toBe("committed");

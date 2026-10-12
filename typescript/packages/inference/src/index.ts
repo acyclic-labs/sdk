@@ -1,26 +1,17 @@
-import { clone, create, fromJson, toBinary, toJsonString, type DescMethod, type DescMessage, type MessageShape } from "@bufbuild/protobuf";
+import { clone, create, fromJson, toBinary, toJsonString, type DescMethod, type MessageShape } from "@bufbuild/protobuf";
 import { InferenceProtocolError, validateContract, validateRuntimeShape, watchRunAdvance, watchRunFinish, watchRunStart } from "./contract.js";
 import { MAXIMUM_HTTP_JSON_BYTES } from "../generated/defaults.js";
 import {
   ContextViewSchema,
-  CreateEvaluationRequestSchema,
-  CreateContextRequestSchema,
   EvaluationSpecSchema,
   EvaluationViewSchema,
-  GenerateRunRequestSchema,
-  GenerateRunResponseSchema,
   InspectContextRequestSchema,
   InspectEvaluationRequestSchema,
   InspectRunRequestSchema,
   InspectWarmRequestSchema,
-  ListModelsRequestSchema,
-  ListModelsResponseSchema,
-  MutateContextRequestSchema,
   MutationReceiptSchema,
-  ReleaseWarmRequestSchema,
   RenewWarmRequestSchema,
   RetainWarmRequestSchema,
-  RunEventSchema,
   RunViewSchema,
   WarmViewSchema,
   WatchRunRequestSchema,
@@ -64,9 +55,6 @@ export { InferenceProtocolError, type InferenceProtocolErrorCode } from "./contr
 export interface InferenceHttpRoute<Method extends DescMethod = DescMethod> {
   readonly method: Method;
   readonly path: string;
-  readonly input: Method["input"];
-  readonly output: Method["output"];
-  readonly methodKind: Method["methodKind"];
 }
 
 const inferenceServices = file_inference_v1_inference.services;
@@ -93,7 +81,7 @@ export function deriveInferenceHttpRoutes(): readonly InferenceHttpRoute[] {
     if (route === undefined || route[1] !== method.methodKind) {
       throw new Error(`inference RPC descriptor ${method.parent.typeName}.${method.name} has no matching Rust route`);
     }
-    return { method, path: route[0], input: method.input, output: method.output, methodKind: method.methodKind };
+    return { method, path: route[0] };
   }));
 }
 
@@ -280,7 +268,7 @@ async function readBoundedText(response: Response, maximumBytes: number, kind: s
   }
 }
 
-/** Largest bearer credential, in UTF-8 bytes, that an SDK client accepts; matches the Acyclic platform's maximum bearer (12 KiB). */
+/** Maximum bearer credential bytes. */
 export const MAX_BEARER_TOKEN_BYTES = 12 * 1024;
 
 /** Authenticated protobuf-JSON/NDJSON transport for the public service contract. */
@@ -289,13 +277,13 @@ export class HttpInferenceTransport implements InferenceTransport {
     readonly endpoint: string,
     readonly authorization: AuthorizationHeaders,
     readonly fetcher: typeof fetch = fetch,
-    /** Rust-derived HTTP JSON/NDJSON ceiling; protobuf wire validation remains 8 MiB. */
-    readonly maximumEventBytes = MAXIMUM_HTTP_JSON_BYTES,
+    /** UTF-8 ceiling for requests, responses and stream events. */
+    readonly maximumMessageBytes = MAXIMUM_HTTP_JSON_BYTES,
     observer?: AcyclicObserver,
   ) {
     this.#observer = resolveObserver(observer);
-    if (!Number.isSafeInteger(maximumEventBytes) || maximumEventBytes <= 0) {
-      throw new RangeError("maximumEventBytes must be a positive safe integer byte ceiling");
+    if (!Number.isSafeInteger(maximumMessageBytes) || maximumMessageBytes <= 0) {
+      throw new RangeError("maximumMessageBytes must be a positive safe integer byte ceiling");
     }
     let parsed: URL;
     try {
@@ -309,9 +297,6 @@ export class HttpInferenceTransport implements InferenceTransport {
   }
 
   readonly #observer: AcyclicObserver | undefined;
-
-  /** Shared UTF-8 ceiling for requests, unary/error responses, and each stream event. */
-  get maximumMessageBytes(): number { return this.maximumEventBytes; }
 
   listModels(): Promise<ListModelsResponse> {
     return this.#unary(routeFor(ModelsService.method.list), create(ModelsService.method.list.input));
@@ -357,9 +342,9 @@ export class HttpInferenceTransport implements InferenceTransport {
 
   async *watchRun(request: WatchRunRequest, signal?: AbortSignal): AsyncIterable<RunEvent> {
     const route = routeFor(RunsService.method.watch);
-    if (route.methodKind !== "server_streaming") throw new Error("inference watch route is not server streaming");
-    await validateRuntimeShape(route.input, request);
-    const response = await this.#request(route.path, toJsonString(route.input, request), signal);
+    if (route.method.methodKind !== "server_streaming") throw new Error("inference watch route is not server streaming");
+    await validateRuntimeShape(route.method.input, request);
+    const response = await this.#request(route.path, toJsonString(route.method.input, request), signal);
     if (response.body === null) throw new InferenceTransportError(response.status, "run watch has no body");
     const reader = response.body.getReader();
     const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -382,7 +367,7 @@ export class HttpInferenceTransport implements InferenceTransport {
             const rawLine = decodeLine(lineBuffer.subarray(0, lineLength));
             lineLength = 0;
             const line = rawLine.trim();
-            if (line.length > 0) yield fromJson(route.output, JSON.parse(line));
+            if (line.length > 0) yield fromJson(route.method.output, JSON.parse(line));
             continue;
           }
           if (lineLength >= this.maximumMessageBytes) {
@@ -397,7 +382,7 @@ export class HttpInferenceTransport implements InferenceTransport {
         }
       }
       const final = decodeLine(lineBuffer.subarray(0, lineLength)).trim();
-      if (final.length > 0) yield fromJson(route.output, JSON.parse(final));
+      if (final.length > 0) yield fromJson(route.method.output, JSON.parse(final));
       completed = true;
     } finally {
       if (!completed) await reader.cancel().catch(() => undefined);
@@ -411,10 +396,10 @@ export class HttpInferenceTransport implements InferenceTransport {
     signal?: AbortSignal,
   ): Promise<MessageShape<Method["output"]>> {
     return observed(this.#observer, "inference", route.path, async sizes => {
-      if (route.methodKind !== "unary") throw new Error(`inference route ${route.path} is not unary`);
-      await validateRuntimeShape(route.input, request);
-      const response = await this.#request(route.path, toJsonString(route.input, request), signal, sizes);
-      return fromJson(route.output, JSON.parse(await readBoundedText(response, this.maximumMessageBytes, "unary response")));
+      if (route.method.methodKind !== "unary") throw new Error(`inference route ${route.path} is not unary`);
+      await validateRuntimeShape(route.method.input, request);
+      const response = await this.#request(route.path, toJsonString(route.method.input as Method["input"], request), signal, sizes);
+      return fromJson(route.method.output as Method["output"], JSON.parse(await readBoundedText(response, this.maximumMessageBytes, "unary response")));
     });
   }
 

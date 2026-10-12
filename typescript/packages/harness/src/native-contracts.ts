@@ -12,7 +12,7 @@ import type {
   WasmMachineIdentityWire, WasmNativeLimitsWire, WasmTaskRunLimitsWire,
   WasmExecutionPlacementWire, WasmWorkflowAdmissionWire,
   WasmTaskIdentityInput, WasmTurnPreparation, WasmModelContent, WasmModelContentPart,
-  WasmModelEvent, WasmModelEventAdmission, WasmModelEventAdmissionState, WasmModelRole,
+  WasmModelEventAdmission, WasmModelEventAdmissionState, WasmModelRole,
   WasmTaskDependencyInput,
   McpCatalog, McpStdioRequest, McpCallbackRequest,
 } from "../generated/wasm/acyclic_harness_wasm.js";
@@ -351,8 +351,13 @@ export class NativeContracts {
       || !Array.isArray(admittedState.calls) || typeof admittedState.completed !== "boolean") {
       throw new TypeError("native model event admission returned an invalid state");
     }
+    let event = admitted.event as ModelEvent;
+    if (admitted.event.kind === "tool_call") {
+      const { call_id: callId, ...rest } = admitted.event;
+      event = { ...rest, callId } as ModelEvent;
+    }
     return freezeNative({
-      event: publicModelEvent(admitted.event),
+      event,
       state: { ...admittedState, calls: [...admittedState.calls] },
     });
   }
@@ -581,15 +586,6 @@ function nativeToolDefinition(
     outputSchema: definition.outputSchema,
     projectionSchema: definition.projection.schema,
   };
-}
-
-/** Map only the Rust serde spelling that is intentionally hidden by the public facade. */
-function publicModelEvent(event: WasmModelEvent): ModelEvent {
-  if (event.kind === "tool_call") {
-    const { call_id: callId, ...rest } = event;
-    return { ...rest, callId } as ModelEvent;
-  }
-  return event as ModelEvent;
 }
 
 /** Rust owns typed integer projection; JS only unwraps bytes and maps. */

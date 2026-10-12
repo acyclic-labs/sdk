@@ -171,9 +171,9 @@ function adaptCheckout(checkout: WasmRawCheckout, o: AcyclicObserver | undefined
     async preallocateFileById(fileId, offset, length, keepSize) { return copyMutation(await raw.preallocateFileById(fileId, offset, length, keepSize)); },
     async cloneFileRange(source, sourceOffset, destination, destinationOffset, length) { return copyMutation(await raw.cloneFileRange(source, sourceOffset, destination, destinationOffset, length)); },
     async cloneFileRangeById(sourceFileId, sourceOffset, destinationFileId, destinationOffset, length) { return copyMutation(await raw.cloneFileRangeById(sourceFileId, sourceOffset, destinationFileId, destinationOffset, length)); },
-    async commit(operationId, lease) { return commitResult(await raw.commit(operationId, lease)); },
-    async mutateLive(operations, operationId, maximumAttempts, maximumConflicts) { return liveTransactionResult(await raw.mutateLive(Array.from(operations), operationId, maximumAttempts, maximumConflicts)); },
-    async resumeLive(operationId, maximumAttempts, maximumConflicts) { return liveMutationResult(await raw.resumeLive(operationId, maximumAttempts, maximumConflicts)); },
+    async commit(operationId, lease) { const value = await raw.commit(operationId, lease); return copyCheckoutCommit(value, copyWork(value.work)); },
+    async mutateLive(operations, operationId, maximumAttempts, maximumConflicts) { const value = await raw.mutateLive(Array.from(operations), operationId, maximumAttempts, maximumConflicts); return copyLiveTransaction(value, copyWork(value.work)); },
+    async resumeLive(operationId, maximumAttempts, maximumConflicts) { const value = await raw.resumeLive(operationId, maximumAttempts, maximumConflicts); return copyLiveMutation(value, copyWork(value.work)); },
     async rebaseHead(maximumConflicts) { const value = await raw.rebaseHead(maximumConflicts); return copyRebaseResult(value, copyWork(value.work)); },
     async discard() { return copyMutation(await raw.discard()); },
   };
@@ -233,9 +233,6 @@ function fileExtentPlan(value: Awaited<ReturnType<WasmRawCheckout["planFileExten
 }
 function copyFileRead(value: Awaited<ReturnType<WasmRawCheckout["readFileRange"]>>): import("./contracts.js").FileReadResult { return { bytes: copyBytes(value.bytes), work: copyWork(value.work) }; }
 function copyMutation(value: Awaited<ReturnType<WasmRawCheckout["createFile"]>>): import("./contracts.js").MutationResult { return { fileId: copyOptionalBytes(value.fileId), work: copyWork(value.work) }; }
-function commitResult(value: Awaited<ReturnType<WasmRawCheckout["commit"]>>) { return copyCheckoutCommit(value, copyWork(value.work)); }
-function liveMutationResult(value: Awaited<ReturnType<WasmRawCheckout["resumeLive"]>>) { return copyLiveMutation(value, copyWork(value.work)); }
-function liveTransactionResult(value: Awaited<ReturnType<WasmRawCheckout["mutateLive"]>>) { return copyLiveTransaction(value, copyWork(value.work)); }
 
 function adaptWorkspace(handle: WasmRawWorkspace, o: AcyclicObserver | undefined): FsWorkspace {
   const raw = observeRaw(handle, o);
@@ -273,11 +270,7 @@ function adaptWorkspace(handle: WasmRawWorkspace, o: AcyclicObserver | undefined
   return workspace;
 }
 
-/**
- * Without an observer, `raw` itself. Otherwise each promise-returning method
- * reports `acyclic.fs.<method>` with the raw `work` receipt; arguments
- * (paths, contents) are never read.
- */
+/** Observe raw work receipts without reading arguments. */
 function observeRaw<T extends object>(raw: T, observer: AcyclicObserver | undefined): T {
   if (observer === undefined) return raw;
   return new Proxy(raw, {

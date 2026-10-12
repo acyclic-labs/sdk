@@ -7,11 +7,7 @@ import {
   DEFAULT_VOLUME_LIMITS as GENERATED_VOLUME_LIMITS,
 } from "../generated/defaults.js";
 
-/**
- * The workspace and generation DTOs are emitted from the Rust WASM boundary.
- * Keep the customer-facing contracts readonly while deriving their field
- * names, optionality, and literal unions from that generated source.
- */
+/** Readonly customer contracts derived from Rust DTOs. */
 type ReadonlyDeep<T> = T extends (...args: never[]) => unknown
   ? T
   : T extends Uint8Array
@@ -22,14 +18,7 @@ type ReadonlyDeep<T> = T extends (...args: never[]) => unknown
       ? { readonly [Key in keyof T]: ReadonlyDeep<T[Key]> }
       : T;
 
-/**
- * Project one generated browser DTO into the public API shape.  The WASM
- * boundary reports work counters as bigint so it cannot lose precision while
- * crossing the Rust boundary; the public adapters preserve those exact
- * counters as bigint values. Keeping this
- * projection here makes every result DTO inherit its fields and discriminants
- * from the generated Rust contract instead of re-declaring them in TypeScript.
- */
+/** Project Rust DTOs while preserving exact bigint counters. */
 type PublicWasm<T> = T extends WasmBinding.BrowserWorkCounters
   ? WorkCounters
   : T extends Uint8Array
@@ -819,12 +808,7 @@ export interface FsCheckout {
 export interface NativeMount {
   readonly id: Uint8Array;
   readonly destination: string;
-  /**
-   * Waits until the mount reflects every change to its checkout made so far,
-   * including changes made through the checkout rather than the mount. Those
-   * reach the mount on their own shortly after; call this to read one through
-   * the mount immediately.
-   */
+  /** Wait until the mount reflects all preceding checkout changes. */
   revalidate(): void;
   stop(): boolean;
 }
@@ -949,11 +933,7 @@ export interface SourceResult {
   readonly generationId: Uint8Array | undefined;
 }
 
-/*
- * Keep the module-level factory surface tied to wasm-bindgen's generated
- * exports. The only refinements here are the serde option/result types that
- * this package validates at its adapter boundary.
- */
+// Refine only serde values validated at the adapter boundary.
 type GeneratedWasmFactories = Pick<
   typeof WasmBinding,
   | "default"
@@ -1002,13 +982,7 @@ export interface RawWorkspaceContextRegistry {
 
 export type WasmRawWorkspaceContextRegistry = RawWorkspaceContextRegistry;
 
-/*
- * wasm-bindgen owns the class and method inventory. Rust Tsify DTOs provide
- * generated declarations for the workspace and generation result family;
- * older serde values remain erased until their own DTO migration. These
- * helpers inherit concrete signatures directly from the generated binding and
- * replace only the remaining erased values whose wire shapes are in contract.
- */
+// Inherit generated methods; refine remaining erased serde values.
 type WasmWithArgs<Base, Args extends object> = Omit<Base, keyof Args> & {
   [Key in keyof Args & keyof Base]: Base[Key] extends (...args: infer _Args) => infer Result
     ? (...args: Args[Key] extends readonly unknown[] ? Args[Key] : never) => Result

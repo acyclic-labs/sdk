@@ -100,12 +100,7 @@ const decodeMergeConflict = (raw: unknown) => decodeSharedMergeConflict(
   "native merge",
 );
 
-/**
- * Generated N-API declarations use Buffer while the provider adapters expose
- * the SDK's Uint8Array surface. Nullable fields are normalized at their use sites. The
- * runtime binding is the authority; this helper marks the one-way adapter
- * boundary without introducing an untyped any escape hatch.
- */
+/** Adapt generated Buffer declarations to Uint8Array; normalize nulls at use sites. */
 function nativeBoundary<T>(value: unknown): T {
   return value as T;
 }
@@ -451,9 +446,9 @@ function adaptCheckout(raw: NativeRawCheckout): FsCheckout {
     async preallocateFileById(fileId, offset, length, keepSize) { return mutationResult(await raw.preallocateFileById(fileId, offset, length, keepSize)); },
     async cloneFileRange(source, sourceOffset, destination, destinationOffset, length) { return mutationResult(await raw.cloneFileRange(source, sourceOffset, destination, destinationOffset, length)); },
     async cloneFileRangeById(sourceFileId, sourceOffset, destinationFileId, destinationOffset, length) { return mutationResult(await raw.cloneFileRangeById(sourceFileId, sourceOffset, destinationFileId, destinationOffset, length)); },
-    async commit(operationId, lease) { return commitResult(await raw.commit(operationId, lease)); },
-    async mutateLive(operations, operationId, maximumAttempts, maximumConflicts) { return liveTransactionResult(await raw.mutateLive(operations.map(nativeTransactionOperation), operationId, maximumAttempts, maximumConflicts)); },
-    async resumeLive(operationId, maximumAttempts, maximumConflicts) { return liveMutationResult(await raw.resumeLive(operationId, maximumAttempts, maximumConflicts)); },
+    async commit(operationId, lease) { const value = await raw.commit(operationId, lease); return copyCheckoutCommit(nativeBoundary<Parameters<typeof copyCheckoutCommit>[0]>(value), parseWork(value.workJson)); },
+    async mutateLive(operations, operationId, maximumAttempts, maximumConflicts) { const value = await raw.mutateLive(operations.map(nativeTransactionOperation), operationId, maximumAttempts, maximumConflicts); return copyLiveTransaction(nativeBoundary<Parameters<typeof copyLiveTransaction>[0]>(value), parseWork(value.workJson)); },
+    async resumeLive(operationId, maximumAttempts, maximumConflicts) { const value = await raw.resumeLive(operationId, maximumAttempts, maximumConflicts); return copyLiveMutation(nativeBoundary<Parameters<typeof copyLiveMutation>[0]>(value), parseWork(value.workJson)); },
     async rebaseHead(maximumConflicts) {
       const value = await raw.rebaseHead(maximumConflicts);
       return copyRebaseResult(nativeBoundary<Parameters<typeof copyRebaseResult>[0]>(value), parseWork(value.workJson));
@@ -552,8 +547,6 @@ function nativeManifest(value: GenerationExportManifest) {
   return { manifestBytes: value.manifestBytes, objects: value.objects, workJson: JSON.stringify(value.work) };
 }
 
-
-
 function copyObjectCacheStats(value: ObjectCacheStats): ObjectCacheStats {
   return { ...value };
 }
@@ -584,18 +577,6 @@ function nativeFileExtentPlan(value: Awaited<ReturnType<NativeRawCheckout["planF
     parseWork(value.workJson),
     "native binding",
   );
-}
-
-function commitResult(value: Awaited<ReturnType<NativeRawCheckout["commit"]>>) {
-  return copyCheckoutCommit(nativeBoundary<Parameters<typeof copyCheckoutCommit>[0]>(value), parseWork(value.workJson));
-}
-
-function liveMutationResult(value: Awaited<ReturnType<NativeRawCheckout["resumeLive"]>>) {
-  return copyLiveMutation(nativeBoundary<Parameters<typeof copyLiveMutation>[0]>(value), parseWork(value.workJson));
-}
-
-function liveTransactionResult(value: Awaited<ReturnType<NativeRawCheckout["mutateLive"]>>) {
-  return copyLiveTransaction(nativeBoundary<Parameters<typeof copyLiveTransaction>[0]>(value), parseWork(value.workJson));
 }
 
 function nativeTransactionOperation(value: TransactionOperation): NativeRawTransactionOperation {

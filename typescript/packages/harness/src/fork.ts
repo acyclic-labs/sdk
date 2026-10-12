@@ -8,13 +8,9 @@ import type { ResourceKind } from "./enums.js";
 export type { ResourceKind } from "./enums.js";
 import type { AgentId, Authority, OperationId, Scope, TaskId } from "./index.js";
 export {
-  MAX_FORK_AGENTS,
-  MAX_FORK_ATTACHMENT_MANIFEST_BYTES,
   MAX_FORK_INHERITED_BYTES,
   MAX_FORK_INHERITED_MESSAGES,
-  MAX_FORK_REFERENCE_BYTES,
   MAX_FORK_REFERENCES,
-  MAX_FORK_RESOURCES,
 } from "./limits-contract.js";
 
 type ResourceProvider<Kind extends ResourceKind> =
@@ -136,11 +132,7 @@ export interface ForkParentSnapshot {
   readonly revision: bigint;
 }
 
-/** Trusted parent-owned publication boundary. The provider must authenticate
- * both signed scopes, append the exact seed at the parent revision, and durably
- * bind or replay the fresh child with a causal link to that append before it
- * returns success. An uncertain reply is observed by operation ID, never
- * recaptured. The facade validates identity, not the provider's internal state. */
+/** Authenticate both scopes, atomically publish seed/child at the parent revision, and replay uncertain replies by operation ID. */
 export interface ForkPublisher {
   parent(): Authority<"conversation">;
   spawnFromReport(report: ForkReport): Promise<ForkSeed>;

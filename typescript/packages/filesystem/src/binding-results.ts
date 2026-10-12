@@ -13,11 +13,7 @@ type RawFileRecord = WasmRawFileRecordSnapshot;
 type BoundaryFileKind = WorkspaceFileKind | WasmBinding.FileKind | NativeBinding.FileKind;
 type RawTreeEntry = TreeEntrySnapshot;
 
-/**
- * File-kind values are validated and emitted as finite Rust-owned types at
- * each native/WASM boundary. Keep this projection as a type-preserving seam
- * for the shared adapters; do not duplicate the Rust domain list here.
- */
+/** Preserve the Rust-validated file-kind type. */
 export function projectFileKind(value: BoundaryFileKind): WorkspaceFileKind {
   if (!isFileKind(value)) throw new TypeError("filesystem binding returned an invalid file kind");
   return value;
