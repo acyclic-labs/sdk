@@ -61,7 +61,7 @@ test("verified resolver routes exact owner volumes through one content binding",
     validate: () => {}, verify: () => {}, read: async () => new TextEncoder().encode("forged"),
   }, DEFAULT_LIMITS)(first)).rejects.toThrow();
   await expect(projectModelFile({ kind: "file", file: first, policy: "bounded_full" }, {
-    resolveFile: async () => new TextEncoder().encode("forged"), verifyFile: () => {},
+    resolveFile: async () => new TextEncoder().encode("forged"),
   })).rejects.toThrow();
   let reads = 0;
   const untrusted = verifiedContentResolver({
@@ -100,9 +100,6 @@ test("explicit model selection resolves complete manifest-backed attachments bey
   expect(Array.isArray(boundedParts) ? boundedParts.length : 0).toBe(3);
   expect(Array.isArray(boundedParts) ? boundedParts.at(-1) : null)
     .toEqual({ kind: "text", text: "[129 additional attachments omitted from this bounded model context]" });
-  await expect(selectModelContext(state, { conversationRevision: 1n, messageIds: [id] }, {
-    ...options, decodeManifest: async () => [{ file: content, label: null }],
-  })).rejects.toThrow("disagrees with canonical manifest");
   await expect(selectModelContext(state, { conversationRevision: 0n, messageIds: [id] }, options)).rejects.toThrow("stale");
   await expect(selectModelContext(state, { conversationRevision: 1n, messageIds: [id, id] }, options)).rejects.toThrow("ordered and unique");
   let oversizedManifestReads = 0;

@@ -263,7 +263,7 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
     let config = VolumeConfig::portable(Lifecycle::Ephemeral);
     for stage in 1..=4 {
         let operation = OperationId::new();
-        let prior = Fs::memory().create_workspace_with_operation_measured(
+        let prior = Fs::memory().create_workspace_with_operation(
             "companion-fault", config, operation, budget, &CancellationToken::new(),
         ).await?;
         let fs = Fs::memory();
@@ -274,15 +274,13 @@ async fn companion_faults_preserve_creation_plus_each_real_request() -> TestResu
         ).await.err().ok_or("real companion fault did not fail attachment")?;
         assert!(matches!(failure.error.semantic_error(), LazyWorkspaceError::Store(_)));
         failure.work.verify(budget)?;
-        let workspace = fs.open_workspace("companion-fault").await?;
-        let initial = workspace.operation_generation(
-            IdempotencyKey::from_bytes(operation.into_bytes()),
-        ).await?.ok_or("companion failure lost the real committed creation")?;
+        let workspace = fs.open_workspace("companion-fault", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        let initial = workspace.operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.ok_or("companion failure lost the real committed creation")?;
         assert_eq!(initial.id(), prior.value.id());
         assert_eq!(initial.workspace_id(), prior.value.workspace_id());
         assert_eq!(store.inner.load_lazy_workspace(workspace.id()).await?.is_some(), stage == 4);
         workspace.write_text("/later.txt", "later authored head").await?;
-        let head = workspace.head().await?.id();
+        let head = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         assert_ne!(head, initial.id());
         let recovered = LazyWorkspace::attach_with_operation_measured(
             &fs, "companion-fault", source.clone(), store.clone(), config, operation,
@@ -336,7 +334,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     let original_id = original.id();
     let workspace_id = original.workspace_id();
     lazy.workspace().write_text("/later.txt", "mutable authored head").await?;
-    let head = lazy.workspace().head().await?.id();
+    let head = lazy.workspace().head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     assert_ne!(head, original_id);
     let advanced = source.invalidate();
     let rebound = lazy.rebind_source_measured(budget, &cancellation).await?;
@@ -375,7 +373,7 @@ async fn source_epoch_rebind_and_reopen_never_rewrite_original_creation() -> Tes
     assert!(matches!(rejected.error.semantic_error(), LazyWorkspaceError::StaleSource));
     rejected.work.verify(budget)?;
     assert_eq!(store.load_lazy_workspace(workspace_id).await?, Some(rebound.value));
-    assert_eq!(fs.open_workspace("epoch-attachment").await?.head().await?.id(), head);
+    assert_eq!(fs.open_workspace("epoch-attachment", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.head().await?.id(), head);
     assert_eq!(observer.0.load(Ordering::SeqCst), 0);
     Ok(())
 }

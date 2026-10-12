@@ -3,13 +3,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { test } from "bun:test";
 import { fileURLToPath } from "node:url";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { installedNativeFixture, type InstalledNativeFixture } from "./pi-native-fixture.ts";
+import { installedNativeFixture } from "./pi-native-fixture.ts";
 
 const rootOnly = "ROOT_ONLY_NATIVE_CONTEXT_0d20f1";
 const foreignTranscript = "FOREIGN_NATIVE_TRANSCRIPT_19d2ae";
-
-// Probes inspect the entire first actual model context, without slicing messages
-// around role markers or filtering parent/tool exchanges in the qualification code.
 const provider = `
 import { fauxProvider, fauxAssistantMessage, fauxToolCall } from "@earendil-works/pi-ai";
 export default function freshNativeContext(pi) {
@@ -92,7 +89,7 @@ function lastNativeReport(session: SessionManager) {
 
 test("actual first native turns are fresh by default and explicit foreign-workspace context inherits only the caller", async () => {
   const directory = mkdtempSync(fileURLToPath(new URL(".pi-context-fresh-", import.meta.url)));
-  let fixture: InstalledNativeFixture | undefined;
+  let fixture: Awaited<ReturnType<typeof installedNativeFixture>> | undefined;
   try {
     fixture = await installedNativeFixture(directory, provider, {});
     await fixture.start();

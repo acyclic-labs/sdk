@@ -9,8 +9,6 @@ import type {
   WasmModelDataPart,
   WasmToolResultContent,
   WasmModelEvent,
-  WasmModelJsonSchema,
-  WasmModelJsonValue,
   WasmModelRequestWire,
   WasmModelToolDefinitionWire,
   WasmModelWire,
@@ -20,7 +18,8 @@ import type {
   WasmToolJsonValue,
 } from "../generated/wasm/acyclic_harness_wasm.js";
 import { NativeContracts } from "./native-contracts.js";
-import { validateComponentLabel as validateComponentLabelRust } from "./rust-policy.js";
+import { validateComponentLabel } from "./rust-policy.js";
+export { validateComponentLabel } from "./rust-policy.js";
 
 /** Public model options retain the Rust model's JSON boundary while allowing provider-specific typing. */
 export type Model<Options = unknown> = Readonly<Omit<WasmModelWire, "options"> & { options: Options }>;
@@ -65,8 +64,6 @@ export interface ModelMessage<Content = ModelContent, Role extends string = Mode
 }
 export type ToolJsonValue = WasmToolJsonValue;
 export type ToolJsonSchema = WasmToolJsonSchema;
-export type ModelJsonValue = WasmModelJsonValue;
-export type ModelJsonSchema = WasmModelJsonSchema;
 export interface ToolDefinition<Input = unknown, Output = unknown, InputSchema extends ToolJsonSchema = ToolJsonSchema, OutputSchema extends ToolJsonSchema = ToolJsonSchema> {
   readonly name: string;
   readonly revision: string;
@@ -157,14 +154,8 @@ export interface ToolRef<Input, Output> {
   readonly [toolRefBrand]: (input: Input) => Output;
 }
 export type LiveTool<Input, Output> = (context: ToolContext, input: Input) => Output | Promise<Output>;
-export function validateComponentLabel(value: string, field: string): Promise<void> {
-  return validateComponentLabelRust(value, field);
-}
-export function validateToolName(name: string): Promise<void> {
-  return validateComponentLabel(name, "tool name");
-}
 export async function defineTool<Input, Output>(definition: Omit<ToolDefinition<Input, Output>, "handler">, handler: LiveTool<Input, Output>): Promise<ToolDefinition<Input, Output>> {
-  await validateToolName(definition.name);
+  await validateComponentLabel(definition.name, "tool name");
   await validateComponentLabel(definition.revision, "tool revision");
   if (typeof definition.parseInput !== "function" || typeof definition.parseOutput !== "function") {
     throw new TypeError("typed tools require input and output parsers");
@@ -174,7 +165,6 @@ export async function defineTool<Input, Output>(definition: Omit<ToolDefinition<
   }
   return Object.freeze({ ...definition, handler });
 }
-export interface ContextStage { readonly name: string; apply(input: unknown, messages: readonly ModelMessage[]): Promise<readonly ModelMessage[]> }
 export interface ContextBuilder<Input = AgentLoopInput, Message extends ModelMessage = ModelMessage> { build(input: Input, messages: readonly Message[]): Promise<readonly Message[]> }
 export interface AgentInput<Content = UserContentPart> { readonly prompt: string; readonly content?: readonly Content[] }
 /** Runtime input after an owning conversation has committed a context selection. */

@@ -82,7 +82,7 @@ impl<F> NativeCoreLogSource<F> {
         let root = self.frame.root.take().ok_or(LocalCoreStateStoreError::Integrity)?;
         let admission = match &self.frame.ownership {
             Ownership::Shared => {
-                crate::native_host::create_directories_materialization_measured(&root.path, &self.frame.work)?;
+                crate::native_host::create_directories(&root.path, &mut &self.frame.work)?;
                 let lock_path = copy_path(&root.path, Some(Path::new(OWNER_LOCK)), &self.frame.work)?;
                 let lock = materialization_open_options(&lock_path.path, &crate::native_host::NativeOpenOptions::ReadWriteCreate, &self.frame.work)?;
                 let cleanup = self.frame.work.reserve_cleanup_write()?;
