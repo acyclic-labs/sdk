@@ -12,35 +12,36 @@ async fn delayed_objects_are_invisible_until_bounded_flush()
     let (_, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let (object_id, bytes) = object(b"delayed");
-    (async {
-        let authority_input_1 = bytes.clone();
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = objects
-            .put(object_id, authority_input_1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
-    })
-    .await?;
+    ({
+        objects
+            .put(
+                object_id,
+                bytes.clone(),
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+            )
+            .await
+    })?;
     let missing_result = (async {
         let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __object_result = objects.read(object_id, 64, &mut __object_work).await;
-        __object_work.receipt(__object_result)
+        __object_result
     })
     .await;
     let Err(missing) = missing_result else {
         return Err("delayed object became visible before flush".into());
     };
-    assert!(matches!(missing.error, ObjectStoreError::Missing));
+    assert!(matches!(missing, ObjectStoreError::Missing));
     let flushed =
         (simulation.flush_object_visibility(WorkBudget::UNBOUNDED, &cancellation)).await?;
     assert_eq!(flushed.value, 1);
-    let visible = (async {
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = objects.read(object_id, 64, &mut __object_work).await;
-        __object_work.receipt(__object_result)
-    })
-    .await?;
-    assert_eq!(visible.value.bytes, bytes);
+    let visible = (objects
+        .read(
+            object_id,
+            64,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await)?;
+    assert_eq!(visible.bytes, bytes);
     Ok(())
 }
 
@@ -61,29 +62,32 @@ async fn corrupt_and_partial_reads_are_exactly_scheduled() -> Result<(), Box<dyn
     let (_, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let (object_id, bytes) = object(b"authenticated");
-    (async {
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = objects.put(object_id, bytes, &mut __object_work).await;
-        __object_work.receipt(__object_result)
-    })
-    .await?;
-    let corrupt = (async {
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = objects.read(object_id, 64, &mut __object_work).await;
-        __object_work.receipt(__object_result)
-    })
-    .await?;
+    (objects
+        .put(
+            object_id,
+            bytes,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await)?;
+    let corrupt = (objects
+        .read(
+            object_id,
+            64,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await)?;
     assert_ne!(
-        object_digest(object_id.kind, &corrupt.value.bytes),
+        object_digest(object_id.kind, &corrupt.bytes),
         object_id.digest
     );
-    let partial = (async {
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = objects.read(object_id, 64, &mut __object_work).await;
-        __object_work.receipt(__object_result)
-    })
-    .await?;
-    assert_eq!(partial.value.bytes.len(), b"authenticated".len() - 1);
+    let partial = (objects
+        .read(
+            object_id,
+            64,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await)?;
+    assert_eq!(partial.bytes.len(), b"authenticated".len() - 1);
     Ok(())
 }
 
@@ -107,29 +111,29 @@ async fn delayed_object_admission_is_idempotent_bounded_and_digest_checked()
     let cancellation = CancellationToken::new();
     let (first_id, first_bytes) = object(b"four");
     let digest_failure = (async {
-        let authority_input_1 = OwnedBytes::from_static(b"bad!");
         let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __object_result = objects
-            .put(first_id, authority_input_1, &mut __object_work)
+            .put(
+                first_id,
+                OwnedBytes::from_static(b"bad!"),
+                &mut __object_work,
+            )
             .await;
-        __object_work.receipt(__object_result)
+        __object_result
     })
     .await
     .err()
     .ok_or("digest mismatch was admitted")?;
-    assert!(matches!(
-        digest_failure.error,
-        ObjectStoreError::DigestMismatch
-    ));
-    (async {
-        let authority_input_1 = first_bytes.clone();
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = objects
-            .put(first_id, authority_input_1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
-    })
-    .await?;
+    assert!(matches!(digest_failure, ObjectStoreError::DigestMismatch));
+    ({
+        objects
+            .put(
+                first_id,
+                first_bytes.clone(),
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+            )
+            .await
+    })?;
     let repeated = (async {
         let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __object_result = objects.put(first_id, first_bytes, &mut __object_work).await;
@@ -144,12 +148,12 @@ async fn delayed_object_admission_is_idempotent_bounded_and_digest_checked()
         let __object_result = objects
             .put(second_id, second_bytes, &mut __object_work)
             .await;
-        __object_work.receipt(__object_result)
+        __object_result
     })
     .await
     .err()
     .ok_or("delayed-object bound was ignored")?;
-    assert!(matches!(bounded.error, ObjectStoreError::Rejected(_)));
+    assert!(matches!(bounded, ObjectStoreError::Rejected(_)));
     let flushed =
         (simulation.flush_object_visibility(WorkBudget::UNBOUNDED, &cancellation)).await?;
     assert_eq!(flushed.value, 1);
@@ -168,66 +172,59 @@ async fn empty_corrupt_reads_and_authority_passthroughs_remain_typed()
     let (authority, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let (empty_id, empty_bytes) = object(b"");
-    (async {
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = objects.put(empty_id, empty_bytes, &mut __object_work).await;
-        __object_work.receipt(__object_result)
-    })
-    .await?;
+    (objects
+        .put(
+            empty_id,
+            empty_bytes,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await)?;
     let corrupt = (async {
         let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __object_result = objects.read(empty_id, 0, &mut __object_work).await;
-        __object_work.receipt(__object_result)
+        __object_result
     })
     .await
     .err()
     .ok_or("empty corrupt read succeeded")?;
-    assert!(matches!(corrupt.error, ObjectStoreError::Corrupt));
+    assert!(matches!(corrupt, ObjectStoreError::Corrupt));
 
     let authority_id = AuthorityId::from_bytes([71; 16]);
-    (async {
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .create_authority(
+    (authority
+        .create_authority(
+            authority_id,
+            Epoch::GENESIS,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+            None::<&mut ()>,
+        )
+        .await
+        .map_err(|error| error.into_error(std::convert::identity)))?;
+    let missing = ({
+        authority
+            .find_operation(
                 authority_id,
-                Epoch::GENESIS,
-                &mut __authority_work,
-                None::<&mut ()>,
+                OperationId::from_bytes([72; 16]),
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
             )
             .await
-            .map_err(|error| error.into_error(std::convert::identity));
-        __authority_work.receipt(__authority_result)
-    })
-    .await?;
-    let missing = (async {
-        let authority_input_1 = OperationId::from_bytes([72; 16]);
-
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .find_operation(authority_id, authority_input_1, &mut __authority_work)
-            .await
-            .map(|(value, _allocation)| value);
-        __authority_work.receipt(__authority_result)
-    })
-    .await?;
-    assert!(missing.value.is_none());
-    let head = (async {
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority.head(authority_id, &mut __authority_work).await;
-        __authority_work.receipt(__authority_result)
-    })
-    .await?
-    .value;
-    let fenced = (async {
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .fence(authority_id, head, &mut __authority_work)
-            .await;
-        __authority_work.receipt(__authority_result)
-    })
-    .await?;
+            .map(|(value, _allocation)| value)
+    })?;
+    assert!(missing.is_none());
+    let head = (authority
+        .head(
+            authority_id,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await)?;
+    let fenced = (authority
+        .fence(
+            authority_id,
+            head,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await)?;
     assert!(matches!(
-        fenced.value,
+        fenced,
         FenceOutcome::Advanced(advanced) if advanced.epoch.get() == 2
     ));
     Ok(())
@@ -257,33 +254,30 @@ async fn poisoned_simulation_authority_and_object_surfaces_fail_closed()
     let (authority, objects) = simulation.stores();
     let cancellation = CancellationToken::new();
     let authority_failure = (async {
-        let authority_input_0 = AuthorityId::from_bytes([80; 16]);
-
         let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __authority_result = authority
-            .head(authority_input_0, &mut __authority_work)
+            .head(AuthorityId::from_bytes([80; 16]), &mut __authority_work)
             .await;
-        __authority_work.receipt(__authority_result)
+        __authority_result
     })
     .await
     .err()
     .ok_or("poisoned authority lookup unexpectedly succeeded")?;
     assert!(matches!(
-        authority_failure.error,
+        authority_failure,
         AuthorityStoreError::CorruptStatic(_)
     ));
     let object_failure = (async {
-        let authority_input_0 = object(b"poisoned").0;
         let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __object_result = objects
-            .contains(authority_input_0, &mut __object_work)
+            .contains(object(b"poisoned").0, &mut __object_work)
             .await;
-        __object_work.receipt(__object_result)
+        __object_result
     })
     .await
     .err()
     .ok_or("poisoned object lookup unexpectedly succeeded")?;
-    assert!(matches!(object_failure.error, ObjectStoreError::Corrupt));
+    assert!(matches!(object_failure, ObjectStoreError::Corrupt));
     Ok(())
 }
 

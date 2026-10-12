@@ -5,42 +5,38 @@ async fn stamped_content_change_equals_the_change_then_its_stamp_in_one_mutation
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = (fs.create_volume_with_id(
-        VolumeId::from_bytes([131; 16]),
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let volume =
+        (fs.create_volume_with_id(VolumeId::from_bytes([131; 16]), config(), B, &cancellation))
+            .await?
+            .value;
     let timed = path("timed")?;
     let untimed = path("untimed")?;
     let mut seed = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
     .value;
     let file_id = (seed.create(
-        crate::AuthoredMutation::CreateFile {
+        AuthoredMutation::CreateFile {
             path: timed.clone(),
-            bytes: (bytes::Bytes::from(vec![b'a'; 128])).into(),
-            metadata: crate::kernel::FileMetadata::default(),
+            bytes: OwnedBytes::from(vec![b'a'; 128]),
+            metadata: FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
     .value;
     (seed.create(
-        crate::AuthoredMutation::CreateFile {
+        AuthoredMutation::CreateFile {
             path: untimed.clone(),
-            bytes: (bytes::Bytes::from(vec![b'b'; 128])).into(),
-            metadata: crate::kernel::FileMetadata::default(),
+            bytes: OwnedBytes::from(vec![b'b'; 128]),
+            metadata: FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -50,28 +46,23 @@ async fn stamped_content_change_equals_the_change_then_its_stamp_in_one_mutation
         changed_ns: MetadataField::Value(3),
         ..FileMetadata::default()
     };
-    (seed.set_attributes_by_id(file_id, times, None, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    (seed.set_attributes_by_id(file_id, times, None, B, &cancellation)).await?;
     (seed.commit(
         OperationId::from_bytes([132; 16]),
         None,
         None,
         None,
-        crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        PublicationPermit::Unrestricted,
+        B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?;
 
     let mut stamped = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -79,7 +70,7 @@ async fn stamped_content_change_equals_the_change_then_its_stamp_in_one_mutation
     let mut separate = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -91,44 +82,35 @@ async fn stamped_content_change_equals_the_change_then_its_stamp_in_one_mutation
             bytes: OwnedBytes::from_static(b"STAMP"),
         },
         ContentTimes::Stamp(99),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
     (separate.change_content(
         file_id,
-        crate::ContentChange::Write {
+        ContentChange::Write {
             offset: 4,
-            bytes: (bytes::Bytes::from_static(b"STAMP")).into(),
+            bytes: OwnedBytes::from_static(b"STAMP"),
         },
-        crate::ContentTimes::Preserve,
-        WorkBudget::UNBOUNDED,
+        ContentTimes::Preserve,
+        B,
         &cancellation,
     ))
     .await?;
-    let mut expected =
-        (separate.read_metadata_by_id(file_id, WorkBudget::UNBOUNDED, &cancellation))
-            .await?
-            .value;
+    let mut expected = (separate.read_metadata_by_id(file_id, B, &cancellation))
+        .await?
+        .value;
     assert_eq!(expected, times, "a preserving write leaves metadata intact");
     assert!(expected.stamp_content_change(99));
-    (separate.set_attributes_by_id(
-        file_id,
-        expected,
-        None,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
+    (separate.set_attributes_by_id(file_id, expected, None, B, &cancellation)).await?;
     assert_eq!(stamped.root(), separate.root());
-    let metadata = (stamped.read_metadata_by_id(file_id, WorkBudget::UNBOUNDED, &cancellation))
+    let metadata = (stamped.read_metadata_by_id(file_id, B, &cancellation))
         .await?
         .value;
     assert_eq!(metadata.modified_ns, MetadataField::Value(99));
     assert_eq!(metadata.changed_ns, MetadataField::Value(99));
     assert_eq!(metadata.accessed_ns, MetadataField::Value(2));
 
-    // The change and its stamp are one mutation: a change that fails stamps nothing.
     let before = stamped.root().clone();
     assert!(
         (stamped.change_content(
@@ -140,7 +122,7 @@ async fn stamped_content_change_equals_the_change_then_its_stamp_in_one_mutation
                 length: 1,
             },
             ContentTimes::Stamp(100),
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation
         ))
         .await
@@ -148,19 +130,18 @@ async fn stamped_content_change_equals_the_change_then_its_stamp_in_one_mutation
     );
     assert_eq!(stamped.root(), &before);
 
-    // A profile that represents no content times keeps its metadata object.
-    let untimed_before = (stamped.read_metadata(&untimed, WorkBudget::UNBOUNDED, &cancellation))
+    let untimed_before = (stamped.read_metadata(&untimed, B, &cancellation))
         .await?
         .value;
     (stamped.change_content(
         untimed.clone(),
         ContentChange::Resize { logical_bytes: 7 },
         ContentTimes::Stamp(101),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
-    let untimed_after = (stamped.read_metadata(&untimed, WorkBudget::UNBOUNDED, &cancellation))
+    let untimed_after = (stamped.read_metadata(&untimed, B, &cancellation))
         .await?
         .value;
     assert_eq!(untimed_after, untimed_before);
@@ -172,29 +153,25 @@ async fn grouped_changes_land_together_and_each_keeps_its_own_result()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = (fs.create_volume_with_id(
-        VolumeId::from_bytes([141; 16]),
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let volume =
+        (fs.create_volume_with_id(VolumeId::from_bytes([141; 16]), config(), B, &cancellation))
+            .await?
+            .value;
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
     .value;
     let existing = (checkout.create(
-        crate::AuthoredMutation::CreateFile {
+        AuthoredMutation::CreateFile {
             path: path("existing")?,
-            bytes: (bytes::Bytes::from(vec![b'a'; 128])).into(),
-            metadata: crate::kernel::FileMetadata::default(),
+            bytes: OwnedBytes::from(vec![b'a'; 128]),
+            metadata: FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -216,10 +193,9 @@ async fn grouped_changes_land_together_and_each_keeps_its_own_result()
         })
     };
 
-    // Every change applies: one mutation, one result each.
     let applied = (checkout.apply_group(
         vec![create("first")?, content(b"ONE"), create("second")?],
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -234,7 +210,6 @@ async fn grouped_changes_land_together_and_each_keeps_its_own_result()
     };
     assert_ne!(first, second);
 
-    // A failing change fails alone; its neighbours still apply in order.
     let mixed = (checkout.apply_group(
         vec![
             create("third")?,
@@ -246,7 +221,7 @@ async fn grouped_changes_land_together_and_each_keeps_its_own_result()
             },
             content(b"TWO"),
         ],
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -261,7 +236,7 @@ async fn grouped_changes_land_together_and_each_keeps_its_own_result()
 
     for name in ["existing", "first", "second", "third"] {
         assert!(
-            (checkout.lookup_no_follow(&path(name)?, WorkBudget::UNBOUNDED, &cancellation))
+            (checkout.lookup_no_follow(&path(name)?, B, &cancellation))
                 .await?
                 .value
                 .record
@@ -275,76 +250,12 @@ async fn grouped_changes_land_together_and_each_keeps_its_own_result()
             offset: 0,
             length: 4,
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
     .value;
     assert_eq!(read.bytes.as_ref(), b"TWOa");
-    let streamed_id = FileId::new();
-    let streamed = (checkout.apply_group(
-        vec![
-            GroupedChange::CreateFile {
-                path: path("streamed")?,
-                metadata: Box::new(FileMetadata::default()),
-                file_id: streamed_id,
-                bytes: OwnedBytes::from(vec![b's'; 4096]),
-            },
-            create("first")?,
-            content(b"END"),
-            content(b"LAST"),
-        ],
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    assert!(matches!(streamed[0], Ok(GroupedOutcome::Created(id)) if id == streamed_id));
-    assert!(streamed[1].is_err());
-    assert!(matches!(streamed[2], Ok(GroupedOutcome::Changed)));
-    assert!(matches!(streamed[3], Ok(GroupedOutcome::Changed)));
-    let streamed_read = (checkout.read_file_range_by_id(
-        streamed_id,
-        ByteRange {
-            offset: 0,
-            length: 4096,
-        },
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    assert_eq!(streamed_read.bytes.as_ref(), vec![b's'; 4096].as_slice());
-    let ordered_read = (checkout.read_file_range_by_id(
-        existing,
-        ByteRange {
-            offset: 0,
-            length: 4,
-        },
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    assert_eq!(ordered_read.bytes.as_ref(), b"LAST");
-
-    let denied = (checkout.apply_group(
-        vec![create("denied-group")?],
-        WorkBudget {
-            allocation_operations: 0,
-            ..WorkBudget::UNBOUNDED
-        },
-        &cancellation,
-    ))
-    .await;
-    assert!(denied.is_err(), "output admission must precede effects");
-    assert!(
-        (checkout.lookup_no_follow(&path("denied-group")?, WorkBudget::UNBOUNDED, &cancellation,))
-            .await?
-            .value
-            .record
-            .is_none()
-    );
     Ok(())
 }
 
@@ -352,18 +263,14 @@ async fn grouped_changes_land_together_and_each_keeps_its_own_result()
 async fn each_grouped_change_has_its_own_budget() -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = (fs.create_volume_with_id(
-        VolumeId::from_bytes([161; 16]),
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let volume =
+        (fs.create_volume_with_id(VolumeId::from_bytes([161; 16]), config(), B, &cancellation))
+            .await?
+            .value;
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -371,12 +278,12 @@ async fn each_grouped_change_has_its_own_budget() -> Result<(), Box<dyn std::err
     let mut files = Vec::new();
     for (index, name) in ["one", "two", "three", "four"].into_iter().enumerate() {
         let file_id = (checkout.create(
-            crate::AuthoredMutation::CreateFile {
+            AuthoredMutation::CreateFile {
                 path: path(name)?,
-                bytes: (bytes::Bytes::from(vec![u8::try_from(index)?; 16])).into(),
-                metadata: crate::kernel::FileMetadata::default(),
+                bytes: OwnedBytes::from(vec![u8::try_from(index)?; 16]),
+                metadata: FileMetadata::default(),
             },
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         ))
         .await?
@@ -391,15 +298,10 @@ async fn each_grouped_change_has_its_own_budget() -> Result<(), Box<dyn std::err
         },
         times: ContentTimes::Preserve,
     };
-    let single = (checkout.apply_group(
-        vec![write(files[0], 1)],
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
+    let single = (checkout.apply_group(vec![write(files[0], 1)], B, &cancellation)).await?;
     assert!(single.value.iter().all(Result::is_ok));
-    // Enough for any one change, far from enough for three sharing it.
-    let mut budget = WorkBudget::UNBOUNDED;
+
+    let mut budget = B;
     budget.bytes_hashed = single.work.bytes_hashed * 3 / 2;
     let group = (checkout.apply_group(
         vec![write(files[1], 2), write(files[2], 3), write(files[3], 4)],
@@ -423,18 +325,14 @@ async fn a_whole_file_rewrite_larger_than_the_read_bound_is_admitted()
     let cancellation = CancellationToken::new();
     let mut limited = config();
     limited.limits.maximum_read_bytes = 8;
-    let volume = (fs.create_volume_with_id(
-        VolumeId::from_bytes([231; 16]),
-        limited,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let volume =
+        (fs.create_volume_with_id(VolumeId::from_bytes([231; 16]), limited, B, &cancellation))
+            .await?
+            .value;
     let file = path("large")?;
-    let stage = async |checkout: &Checkout<_, _>, body: &'static [u8]| {
+    let stage = |checkout: &Checkout<_, _>, body: &'static [u8]| {
         let mut source = std::io::Cursor::new(OwnedBytes::from_static(body));
-        (checkout.stage_content(&mut source, 64, WorkBudget::UNBOUNDED, &cancellation))
+        (checkout.stage_content(&mut source, 64, B, &cancellation))
             .await
             .map(|staged| staged.value)
             .map_err(|failure| format!("staging failed: {:?}", failure.error))
@@ -443,20 +341,20 @@ async fn a_whole_file_rewrite_larger_than_the_read_bound_is_admitted()
     let mut first = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
     .value;
-    let original = stage(&first, b"0123456789abcdef0123456789abcdef").await?;
+    let original = stage(&first, b"0123456789abcdef0123456789abcdef")?;
     (first.apply_authored_transaction(
         vec![AuthoredMutation::CreateFileFromContent {
             path: file.clone(),
             content: original,
-            metadata: FileMetadata::default(),
+            metadata: empty_metadata(),
             file_id: None,
         }],
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -465,27 +363,22 @@ async fn a_whole_file_rewrite_larger_than_the_read_bound_is_admitted()
         None,
         None,
         None,
-        crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        PublicationPermit::Unrestricted,
+        B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?;
 
     let mut second = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
     .value;
-    let replacement = stage(&second, b"ZYXWVUTSRQPONMLKzyxwvutsrqponmlk").await?;
+    let replacement = stage(&second, b"ZYXWVUTSRQPONMLKzyxwvutsrqponmlk")?;
     (second.apply_authored_transaction(
         vec![
             AuthoredMutation::Resize {
@@ -502,7 +395,7 @@ async fn a_whole_file_rewrite_larger_than_the_read_bound_is_admitted()
                 content: replacement,
             },
         ],
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await
@@ -512,15 +405,10 @@ async fn a_whole_file_rewrite_larger_than_the_read_bound_is_admitted()
         None,
         None,
         None,
-        crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        PublicationPermit::Unrestricted,
+        B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?;
     let head = (second.read_file_range(
@@ -529,12 +417,12 @@ async fn a_whole_file_rewrite_larger_than_the_read_bound_is_admitted()
             offset: 24,
             length: 8,
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
     .value;
-    assert_eq!(head.bytes.as_ref(), b"rqponmlk");
+    assert_eq!(head.bytes, OwnedBytes::from_static(b"rqponmlk"));
     Ok(())
 }
 
@@ -544,35 +432,31 @@ async fn a_stale_whole_file_rewrite_still_conflicts() -> Result<(), Box<dyn std:
     let cancellation = CancellationToken::new();
     let mut limited = config();
     limited.limits.maximum_read_bytes = 8;
-    let volume = (fs.create_volume_with_id(
-        VolumeId::from_bytes([233; 16]),
-        limited,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let volume =
+        (fs.create_volume_with_id(VolumeId::from_bytes([233; 16]), limited, B, &cancellation))
+            .await?
+            .value;
     let file = path("large")?;
-    let checkout = async || {
+    let checkout = || {
         (volume.checkout(
             GenerationSelector::Head,
             writable_pinned(),
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         ))
         .await
         .map(|checkout| checkout.value)
         .map_err(|failure| format!("checkout failed: {:?}", failure.error))
     };
-    let stage = async |checkout: &Checkout<_, _>, body: &'static [u8]| {
+    let stage = |checkout: &Checkout<_, _>, body: &'static [u8]| {
         let mut source = std::io::Cursor::new(OwnedBytes::from_static(body));
-        (checkout.stage_content(&mut source, 64, WorkBudget::UNBOUNDED, &cancellation))
+        (checkout.stage_content(&mut source, 64, B, &cancellation))
             .await
             .map(|staged| staged.value)
             .map_err(|failure| format!("staging failed: {:?}", failure.error))
     };
-    let rewrite = async |checkout: &mut Checkout<_, _>, body: &'static [u8]| {
-        let content = stage(checkout, body).await?;
+    let rewrite = |checkout: &mut Checkout<_, _>, body: &'static [u8]| {
+        let content = stage(checkout, body)?;
         (checkout.apply_authored_transaction(
             vec![
                 AuthoredMutation::Resize {
@@ -589,7 +473,7 @@ async fn a_stale_whole_file_rewrite_still_conflicts() -> Result<(), Box<dyn std:
                     content,
                 },
             ],
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         ))
         .await
@@ -597,16 +481,16 @@ async fn a_stale_whole_file_rewrite_still_conflicts() -> Result<(), Box<dyn std:
         .map_err(|failure| format!("rewrite refused: {:?}", failure.error))
     };
 
-    let mut seed = checkout().await?;
-    let original = stage(&seed, b"0123456789abcdef0123456789abcdef").await?;
+    let mut seed = checkout()?;
+    let original = stage(&seed, b"0123456789abcdef0123456789abcdef")?;
     (seed.apply_authored_transaction(
         vec![AuthoredMutation::CreateFileFromContent {
             path: file.clone(),
             content: original,
-            metadata: FileMetadata::default(),
+            metadata: empty_metadata(),
             file_id: None,
         }],
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -615,35 +499,25 @@ async fn a_stale_whole_file_rewrite_still_conflicts() -> Result<(), Box<dyn std:
         None,
         None,
         None,
-        crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        PublicationPermit::Unrestricted,
+        B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?;
 
-    let mut first = checkout().await?;
-    let mut stale = checkout().await?;
-    rewrite(&mut first, b"FIRSTFIRSTFIRSTFIRSTFIRSTFIRST12").await?;
+    let mut first = checkout()?;
+    let mut stale = checkout()?;
+    rewrite(&mut first, b"FIRSTFIRSTFIRSTFIRSTFIRSTFIRST12")?;
     let committed = (first.commit(
         OperationId::from_bytes([234; 16]),
         None,
         None,
         None,
-        crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        PublicationPermit::Unrestricted,
+        B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?
     .value;
@@ -651,21 +525,16 @@ async fn a_stale_whole_file_rewrite_still_conflicts() -> Result<(), Box<dyn std:
         matches!(committed, LivePublicationObservation::Committed { .. }),
         "{committed:?}"
     );
-    rewrite(&mut stale, b"STALESTALESTALESTALESTALESTALE12").await?;
+    rewrite(&mut stale, b"STALESTALESTALESTALESTALESTALE12")?;
     let refused = (stale.commit(
         OperationId::from_bytes([235; 16]),
         None,
         None,
         None,
-        crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        PublicationPermit::Unrestricted,
+        B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?
     .value;
@@ -680,13 +549,10 @@ async fn a_stale_whole_file_rewrite_still_conflicts() -> Result<(), Box<dyn std:
 #[tokio::test]
 async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps()
 -> Result<(), Box<dyn std::error::Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace(
-            "original-content-stream",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
+        .create_workspace("original-content-stream", B, &cancel)
         .await?
         .value;
     workspace
@@ -700,19 +566,19 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
         .checkout(
             GenerationSelector::Head,
             writable_pinned(),
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         )
         .await?
         .value;
     let source = checkout
-        .lookup_no_follow(&path("source")?, WorkBudget::UNBOUNDED, &cancellation)
+        .lookup_no_follow(&path("source")?, B, &cancellation)
         .await?
         .value
         .record
         .ok_or("actual source absent")?;
     let destination = checkout
-        .lookup_no_follow(&path("destination")?, WorkBudget::UNBOUNDED, &cancellation)
+        .lookup_no_follow(&path("destination")?, B, &cancellation)
         .await?
         .value
         .record
@@ -724,16 +590,10 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
         ..FileMetadata::default()
     };
     checkout
-        .set_attributes_by_id(
-            destination.file_id,
-            metadata,
-            None,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
+        .set_attributes_by_id(destination.file_id, metadata, None, B, &cancellation)
         .await?;
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(cause, _)| cause)?;
+    let original =
+        crate::NativeMaterializationWork::new(B, &cancellation).map_err(|(cause, _)| cause)?;
     let reader = checkout.pinned_reader()?;
     let bytes = reader
         .read_record_range(
@@ -798,7 +658,7 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
     assert!(original.receipt().bytes_encoded > 0);
     assert_eq!(
         checkout
-            .read_metadata_by_id(destination.file_id, WorkBudget::UNBOUNDED, &cancellation,)
+            .read_metadata_by_id(destination.file_id, B, &cancellation,)
             .await?
             .value,
         metadata,

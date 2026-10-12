@@ -12,27 +12,20 @@ async fn ambiguous_append_is_durable_and_retry_resolves_identity()
     let (authority, _) = simulation.stores();
     let cancellation = CancellationToken::new();
     let authority_id = AuthorityId::from_bytes([7; 16]);
-    let created = (async {
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .create_authority(
-                authority_id,
-                Epoch::GENESIS,
-                &mut __authority_work,
-                None::<&mut ()>,
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity));
-        __authority_work.receipt(__authority_result)
-    })
-    .await?;
-    let CreateAuthorityOutcome::Created(head) = created.value else {
+    let created = (authority
+        .create_authority(
+            authority_id,
+            Epoch::GENESIS,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+            None::<&mut ()>,
+        )
+        .await
+        .map_err(|error| error.into_error(std::convert::identity)))?;
+    let CreateAuthorityOutcome::Created(head) = created else {
         return Err("fresh simulated authority already existed".into());
     };
     let proposed = proposal(3, 4);
     let ambiguous_result = (async {
-        let authority_input_3 = proposed.clone();
-
         let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __authority_result = authority
             .compare_and_append(
@@ -40,7 +33,7 @@ async fn ambiguous_append_is_durable_and_retry_resolves_identity()
                     authority_id: authority_id,
                     epoch: Epoch::GENESIS,
                     expected: head,
-                    commit: authority_input_3,
+                    commit: proposed.clone(),
                     permit: crate::PublicationPermit::Unrestricted,
                 },
                 &mut __authority_work,
@@ -49,37 +42,32 @@ async fn ambiguous_append_is_durable_and_retry_resolves_identity()
             .await
             .map_err(|error| error.into_error(std::convert::identity))
             .map(|(value, _allocation)| value);
-        __authority_work.receipt(__authority_result)
+        __authority_result
     })
     .await;
     let Err(ambiguous) = ambiguous_result else {
         return Err("scheduled ambiguous append returned success".into());
     };
     assert!(matches!(
-        ambiguous.error,
+        ambiguous,
         AuthorityStoreError::Indeterminate { .. }
     ));
-    let retry = (async {
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .compare_and_append(
-                crate::GuardedAppend {
-                    authority_id: authority_id,
-                    epoch: Epoch::GENESIS,
-                    expected: head,
-                    commit: proposed,
-                    permit: crate::PublicationPermit::Unrestricted,
-                },
-                &mut __authority_work,
-                None::<&mut ()>,
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, _allocation)| value);
-        __authority_work.receipt(__authority_result)
-    })
-    .await?;
-    assert!(matches!(retry.value, AppendOutcome::AlreadyCommitted(_)));
+    let retry = (authority
+        .compare_and_append(
+            crate::GuardedAppend {
+                authority_id: authority_id,
+                epoch: Epoch::GENESIS,
+                expected: head,
+                commit: proposed,
+                permit: crate::PublicationPermit::Unrestricted,
+            },
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+            None::<&mut ()>,
+        )
+        .await
+        .map_err(|error| error.into_error(std::convert::identity))
+        .map(|(value, _allocation)| value))?;
+    assert!(matches!(retry, AppendOutcome::AlreadyCommitted(_)));
     Ok(())
 }
 
@@ -100,60 +88,48 @@ async fn duplicate_replay_and_fence_change_are_observable_without_hidden_repair(
     let (authority, _) = simulation.stores();
     let cancellation = CancellationToken::new();
     let authority_id = AuthorityId::from_bytes([8; 16]);
-    let created = (async {
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .create_authority(
-                authority_id,
-                Epoch::GENESIS,
-                &mut __authority_work,
-                None::<&mut ()>,
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity));
-        __authority_work.receipt(__authority_result)
-    })
-    .await?;
-    let CreateAuthorityOutcome::Created(head) = created.value else {
+    let created = (authority
+        .create_authority(
+            authority_id,
+            Epoch::GENESIS,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+            None::<&mut ()>,
+        )
+        .await
+        .map_err(|error| error.into_error(std::convert::identity)))?;
+    let CreateAuthorityOutcome::Created(head) = created else {
         return Err("fresh simulated authority already existed".into());
     };
-    let committed = (async {
-        let authority_input_3 = proposal(5, 6);
-
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
+    let committed = ({
+        authority
             .compare_and_append(
                 crate::GuardedAppend {
                     authority_id: authority_id,
                     epoch: Epoch::GENESIS,
                     expected: head,
-                    commit: authority_input_3,
+                    commit: proposal(5, 6),
                     permit: crate::PublicationPermit::Unrestricted,
                 },
-                &mut __authority_work,
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
                 None::<&mut ()>,
             )
             .await
             .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, _allocation)| value);
-        __authority_work.receipt(__authority_result)
-    })
-    .await?;
-    let AppendOutcome::Committed(commit) = committed.value else {
+            .map(|(value, _allocation)| value)
+    })?;
+    let AppendOutcome::Committed(commit) = committed else {
         return Err("first simulated append did not commit".into());
     };
     let replay = (async {
-        let authority_input_2 = ReplayLimit {
-            records: 8,
-            payload_bytes: 1_024,
-        };
-
         let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __authority_result = authority
             .replay(
                 authority_id,
                 Sequence::GENESIS,
-                authority_input_2,
+                ReplayLimit {
+                    records: 8,
+                    payload_bytes: 1_024,
+                },
                 &mut __authority_work,
             )
             .await
@@ -162,34 +138,28 @@ async fn duplicate_replay_and_fence_change_are_observable_without_hidden_repair(
     })
     .await?;
     assert_eq!(replay.value, vec![commit.clone(), commit.clone()]);
-    let fenced = (async {
-        let authority_input_2 = Head {
-            epoch: commit.epoch,
-            sequence: commit.sequence,
-            digest: commit.digest,
-        };
-        let authority_input_3 = proposal(7, 8);
-
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
+    let fenced = ({
+        authority
             .compare_and_append(
                 crate::GuardedAppend {
                     authority_id: authority_id,
                     epoch: Epoch::GENESIS,
-                    expected: authority_input_2,
-                    commit: authority_input_3,
+                    expected: Head {
+                        epoch: commit.epoch,
+                        sequence: commit.sequence,
+                        digest: commit.digest,
+                    },
+                    commit: proposal(7, 8),
                     permit: crate::PublicationPermit::Unrestricted,
                 },
-                &mut __authority_work,
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
                 None::<&mut ()>,
             )
             .await
             .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, _allocation)| value);
-        __authority_work.receipt(__authority_result)
-    })
-    .await?;
-    assert!(matches!(fenced.value, AppendOutcome::Fenced { .. }));
+            .map(|(value, _allocation)| value)
+    })?;
+    assert!(matches!(fenced, AppendOutcome::Fenced { .. }));
     Ok(())
 }
 
@@ -205,40 +175,35 @@ async fn fence_before_append_preserves_nested_budget_failure_work()
     let (authority, _) = simulation.stores();
     let cancellation = CancellationToken::new();
     let authority_id = AuthorityId::from_bytes([81; 16]);
-    let created = (async {
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = authority
-            .create_authority(
-                authority_id,
-                Epoch::GENESIS,
-                &mut __authority_work,
-                None::<&mut ()>,
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity));
-        __authority_work.receipt(__authority_result)
-    })
-    .await?;
-    let CreateAuthorityOutcome::Created(head) = created.value else {
+    let created = (authority
+        .create_authority(
+            authority_id,
+            Epoch::GENESIS,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+            None::<&mut ()>,
+        )
+        .await
+        .map_err(|error| error.into_error(std::convert::identity)))?;
+    let CreateAuthorityOutcome::Created(head) = created else {
         return Err("fresh simulated authority already existed".into());
     };
     let result = (async {
-        let authority_input_3 = proposal(82, 83);
-        let authority_budget = WorkBudget {
-            authority_records_appended: 1,
-            backend_read_operations: 1,
-            backend_write_operations: 1,
-            ..WorkBudget::UNBOUNDED
-        };
-
-        let mut __authority_work = crate::AuthorityWork::new(authority_budget, &cancellation);
+        let mut __authority_work = crate::AuthorityWork::new(
+            WorkBudget {
+                authority_records_appended: 1,
+                backend_read_operations: 1,
+                backend_write_operations: 1,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        );
         let __authority_result = authority
             .compare_and_append(
                 crate::GuardedAppend {
                     authority_id: authority_id,
                     epoch: Epoch::GENESIS,
                     expected: head,
-                    commit: authority_input_3,
+                    commit: proposal(82, 83),
                     permit: crate::PublicationPermit::Unrestricted,
                 },
                 &mut __authority_work,
@@ -300,9 +265,7 @@ async fn stale_head_and_batch_read_faults_are_budgeted_and_exact()
     assert_eq!(observed.value, stale);
     assert_eq!(observed.work.authority_records_read, 1);
     let too_small = (async {
-        let authority_budget = WorkBudget::default();
-
-        let mut __authority_work = crate::AuthorityWork::new(authority_budget, &cancellation);
+        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::default(), &cancellation);
         let __authority_result = authority.head(authority_id, &mut __authority_work).await;
         __authority_work.receipt(__authority_result)
     })
@@ -316,12 +279,13 @@ async fn stale_head_and_batch_read_faults_are_budgeted_and_exact()
     ));
 
     let (object_id, bytes) = object(b"batch-fault");
-    (async {
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = objects.put(object_id, bytes, &mut __object_work).await;
-        __object_work.receipt(__object_result)
-    })
-    .await?;
+    (objects
+        .put(
+            object_id,
+            bytes,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await)?;
     let requests = [ObjectReadRequest {
         object_id,
         maximum_bytes: 64,
@@ -336,28 +300,24 @@ async fn stale_head_and_batch_read_faults_are_budgeted_and_exact()
             fault,
         })?;
     }
-    let corrupt = (async {
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = objects
-            .read_many(&requests, &mut __object_work)
-            .await
-            .map(|(values, _allocation)| values);
-        __object_work.receipt(__object_result)
-    })
-    .await?;
+    let corrupt = (objects
+        .read_many(
+            &requests,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await
+        .map(|(values, _allocation)| values))?;
     assert_ne!(
-        object_digest(object_id.kind, &corrupt.value[0].bytes),
+        object_digest(object_id.kind, &corrupt[0].bytes),
         object_id.digest
     );
-    let partial = (async {
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = objects
-            .read_many(&requests, &mut __object_work)
-            .await
-            .map(|(values, _allocation)| values);
-        __object_work.receipt(__object_result)
-    })
-    .await?;
-    assert_eq!(partial.value[0].bytes.len(), b"batch-fault".len() - 1);
+    let partial = (objects
+        .read_many(
+            &requests,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+        )
+        .await
+        .map(|(values, _allocation)| values))?;
+    assert_eq!(partial[0].bytes.len(), b"batch-fault".len() - 1);
     Ok(())
 }

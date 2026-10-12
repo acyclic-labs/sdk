@@ -309,3 +309,7 @@ use work::remaining;
 use work::remaining_owned;
 use work::{authority_work, record_authority_work};
 use workspace_creation::decode_first_creation_record;
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[path = "../tests/opaque_authority.rs"]
+pub(crate) mod test_authority;

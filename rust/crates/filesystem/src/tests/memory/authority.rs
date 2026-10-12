@@ -2,25 +2,20 @@ use super::*;
 
 #[tokio::test]
 async fn authority_is_fenced_and_replay_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
+    let cancel = crate::CancellationToken::new();
+
     let store = MemoryAuthorityStore::default();
     let authority_id = AuthorityId::from_bytes([1; 16]);
-    let created = ({
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __authority_result = store
-            .create_authority(
-                authority_id,
-                Epoch::GENESIS,
-                &mut __authority_work,
-                None::<&mut ()>,
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity));
-        __authority_work.receipt(__authority_result)
-    })?;
-    let head = match created.value {
+    let created = store
+        .create_authority(
+            authority_id,
+            Epoch::GENESIS,
+            &mut crate::AuthorityWork::new(B, &cancel),
+            None::<&mut ()>,
+        )
+        .await
+        .map_err(|error| error.into_error(std::convert::identity))?;
+    let head = match created {
         CreateAuthorityOutcome::Created(head) => head,
         CreateAuthorityOutcome::Existing(_) => {
             return Err("authority unexpectedly existed".into());
@@ -29,103 +24,72 @@ async fn authority_is_fenced_and_replay_is_bounded() -> Result<(), Box<dyn std::
     let commit = ProposedCommit {
         operation_id: OperationId::from_bytes([2; 16]),
         fingerprint: Digest::from_bytes([3; 32]),
-        payload: bytes::Bytes::from_static(b"payload"),
+        payload: Bytes::from_static(b"payload"),
     };
     assert!(matches!(
-        ({
-            let authority_cancellation = &crate::CancellationToken::new();
-
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __authority_result = store
-                .compare_and_append(
-                    crate::GuardedAppend {
-                        authority_id: authority_id,
-                        epoch: Epoch::GENESIS,
-                        expected: head,
-                        commit: commit,
-                        permit: crate::PublicationPermit::Unrestricted,
-                    },
-                    &mut __authority_work,
-                    None::<&mut ()>,
-                )
-                .await
-                .map_err(|error| error.into_error(std::convert::identity))
-                .map(|(value, _allocation)| value);
-            __authority_work.receipt(__authority_result)
-        })?
-        .value,
+        store
+            .compare_and_append(
+                crate::GuardedAppend {
+                    authority_id: authority_id,
+                    epoch: Epoch::GENESIS,
+                    expected: head,
+                    commit: commit,
+                    permit: crate::PublicationPermit::Unrestricted
+                },
+                &mut crate::AuthorityWork::new(B, &cancel),
+                None::<&mut ()>
+            )
+            .await
+            .map_err(|error| error.into_error(std::convert::identity))
+            .map(|(value, _allocation)| value)?,
         AppendOutcome::Committed(_)
     ));
-    let current = ({
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __authority_result = store.head(authority_id, &mut __authority_work).await;
-        __authority_work.receipt(__authority_result)
-    })?
-    .value;
-    let fenced = ({
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __authority_result = store
-            .fence(authority_id, current, &mut __authority_work)
-            .await;
-        __authority_work.receipt(__authority_result)
-    })?;
-    let FenceOutcome::Advanced(fenced_head) = fenced.value else {
+    let current = store
+        .head(authority_id, &mut crate::AuthorityWork::new(B, &cancel))
+        .await?;
+    let fenced = store
+        .fence(
+            authority_id,
+            current,
+            &mut crate::AuthorityWork::new(B, &cancel),
+        )
+        .await?;
+    let FenceOutcome::Advanced(fenced_head) = fenced else {
         return Err("fresh fence conflicted".into());
     };
     assert_eq!(fenced_head.epoch.get(), 2);
-    let page = ({
-        let authority_input_2 = ReplayLimit {
-            records: 1,
-            payload_bytes: 7,
-        };
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __authority_result = store
-            .replay(
-                authority_id,
-                Sequence::GENESIS,
-                authority_input_2,
-                &mut __authority_work,
-            )
-            .await
-            .map(|(value, _allocation)| value);
-        __authority_work.receipt(__authority_result)
-    })?;
-    assert_eq!(page.value.len(), 1);
+    let page = store
+        .replay(
+            authority_id,
+            Sequence::GENESIS,
+            ReplayLimit {
+                records: 1,
+                payload_bytes: 7,
+            },
+            &mut crate::AuthorityWork::new(B, &cancel),
+        )
+        .await
+        .map(|(value, _allocation)| value)?;
+    assert_eq!(page.len(), 1);
     Ok(())
 }
 
 #[tokio::test]
 async fn authority_payload_and_replay_bounds_preserve_forward_progress()
 -> Result<(), Box<dyn std::error::Error>> {
+    let cancel = crate::CancellationToken::new();
+
     let store = MemoryAuthorityStore::new(2)?;
     let authority_id = AuthorityId::from_bytes([11; 16]);
-    let head = match ({
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __authority_result = store
-            .create_authority(
-                authority_id,
-                Epoch::GENESIS,
-                &mut __authority_work,
-                None::<&mut ()>,
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity));
-        __authority_work.receipt(__authority_result)
-    })?
-    .value
+    let head = match store
+        .create_authority(
+            authority_id,
+            Epoch::GENESIS,
+            &mut crate::AuthorityWork::new(B, &cancel),
+            None::<&mut ()>,
+        )
+        .await
+        .map_err(|error| error.into_error(std::convert::identity))?
     {
         CreateAuthorityOutcome::Created(head) => head,
         CreateAuthorityOutcome::Existing(_) => {
@@ -135,101 +99,70 @@ async fn authority_payload_and_replay_bounds_preserve_forward_progress()
     let commit = ProposedCommit {
         operation_id: OperationId::from_bytes([12; 16]),
         fingerprint: Digest::from_bytes([13; 32]),
-        payload: bytes::Bytes::from_static(b"ab"),
+        payload: Bytes::from_static(b"ab"),
     };
     assert!(matches!(
-        ({
-            let authority_cancellation = &crate::CancellationToken::new();
-
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __authority_result = store
-                .compare_and_append(
-                    crate::GuardedAppend {
-                        authority_id: authority_id,
-                        epoch: Epoch::GENESIS,
-                        expected: head,
-                        commit: commit,
-                        permit: crate::PublicationPermit::Unrestricted,
-                    },
-                    &mut __authority_work,
-                    None::<&mut ()>,
-                )
-                .await
-                .map_err(|error| error.into_error(std::convert::identity))
-                .map(|(value, _allocation)| value);
-            __authority_work.receipt(__authority_result)
-        })?
-        .value,
+        store
+            .compare_and_append(
+                crate::GuardedAppend {
+                    authority_id: authority_id,
+                    epoch: Epoch::GENESIS,
+                    expected: head,
+                    commit: commit,
+                    permit: crate::PublicationPermit::Unrestricted
+                },
+                &mut crate::AuthorityWork::new(B, &cancel),
+                None::<&mut ()>
+            )
+            .await
+            .map_err(|error| error.into_error(std::convert::identity))
+            .map(|(value, _allocation)| value)?,
         AppendOutcome::Committed(_)
     ));
     assert!(matches!(
-        ({
-            let authority_input_2 = ReplayLimit {
-                records: 1,
-                payload_bytes: 1,
-            };
-            let authority_cancellation = &crate::CancellationToken::new();
-
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __authority_result = store
-                .replay(
-                    authority_id,
-                    Sequence::GENESIS,
-                    authority_input_2,
-                    &mut __authority_work,
-                )
-                .await
-                .map(|(value, _allocation)| value);
-            __authority_work.receipt(__authority_result)
-        }),
-        Err(AuthorityFailure {
-            error: AuthorityStoreError::ReplayRecordTooLarge {
-                observed: 2,
-                maximum: 1,
-            },
-            ..
+        store
+            .replay(
+                authority_id,
+                Sequence::GENESIS,
+                ReplayLimit {
+                    records: 1,
+                    payload_bytes: 1,
+                },
+                &mut crate::AuthorityWork::new(B, &cancel)
+            )
+            .await
+            .map(|(value, _allocation)| value),
+        Err(AuthorityStoreError::ReplayRecordTooLarge {
+            observed: 2,
+            maximum: 1,
         })
     ));
-    let oversized_cancellation = crate::CancellationToken::new();
-    let mut oversized_work =
-        crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &oversized_cancellation);
-    let oversized_head = store.head(authority_id, &mut oversized_work).await?;
     let oversized = ProposedCommit {
         operation_id: OperationId::from_bytes([14; 16]),
         fingerprint: Digest::from_bytes([15; 32]),
-        payload: bytes::Bytes::from_static(b"abc"),
+        payload: Bytes::from_static(b"abc"),
     };
     assert!(matches!(
-        ({
-            let authority_cancellation = &crate::CancellationToken::new();
-
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __authority_result = store
-                .compare_and_append(
-                    crate::GuardedAppend {
-                        authority_id: authority_id,
-                        epoch: Epoch::GENESIS,
-                        expected: oversized_head,
-                        commit: oversized,
-                        permit: crate::PublicationPermit::Unrestricted,
-                    },
-                    &mut __authority_work,
-                    None::<&mut ()>,
-                )
-                .await
-                .map_err(|error| error.into_error(std::convert::identity))
-                .map(|(value, _allocation)| value);
-            __authority_work.receipt(__authority_result)
-        }),
-        Err(AuthorityFailure {
-            error: AuthorityStoreError::PayloadTooLarge {
-                observed: 3,
-                maximum: 2,
-            },
-            ..
+        store
+            .compare_and_append(
+                crate::GuardedAppend {
+                    authority_id: authority_id,
+                    epoch: Epoch::GENESIS,
+                    expected: store
+                        .head(authority_id, &mut crate::AuthorityWork::new(B, &cancel))
+                        .await?,
+                    commit: oversized,
+                    permit: crate::PublicationPermit::Unrestricted
+                },
+                &mut crate::AuthorityWork::new(B, &cancel),
+                None::<&mut ()>
+            )
+            .await
+            .map_err(|error| error.into_error(std::convert::identity))
+            .map(|(value, _allocation)| value),
+        Err(AuthorityStoreError::PayloadTooLarge {
+            observed: 3,
+            maximum: 2,
         })
     ));
     Ok(())
@@ -238,59 +171,47 @@ async fn authority_payload_and_replay_bounds_preserve_forward_progress()
 #[tokio::test]
 async fn replay_stops_at_the_payload_bound_after_contiguous_progress()
 -> Result<(), Box<dyn std::error::Error>> {
+    let cancel = crate::CancellationToken::new();
+    let mut replay_work = crate::AuthorityWork::new(B, &cancel);
+
     let store = MemoryAuthorityStore::default();
     let authority_id = AuthorityId::from_bytes([16; 16]);
-    let created = ({
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __authority_result = store
-            .create_authority(
-                authority_id,
-                Epoch::GENESIS,
-                &mut __authority_work,
-                None::<&mut ()>,
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity));
-        __authority_work.receipt(__authority_result)
-    })?;
-    let CreateAuthorityOutcome::Created(mut head) = created.value else {
+    let created = store
+        .create_authority(
+            authority_id,
+            Epoch::GENESIS,
+            &mut crate::AuthorityWork::new(B, &cancel),
+            None::<&mut ()>,
+        )
+        .await
+        .map_err(|error| error.into_error(std::convert::identity))?;
+    let CreateAuthorityOutcome::Created(mut head) = created else {
         return Err("authority unexpectedly existed".into());
     };
     for (operation, fingerprint, payload) in [
-        ([17; 16], [18; 32], bytes::Bytes::from_static(b"aa")),
-        ([19; 16], [20; 32], bytes::Bytes::from_static(b"bb")),
+        ([17; 16], [18; 32], Bytes::from_static(b"aa")),
+        ([19; 16], [20; 32], Bytes::from_static(b"bb")),
     ] {
-        let appended = ({
-            let authority_input_3 = ProposedCommit {
-                operation_id: OperationId::from_bytes(operation),
-                fingerprint: Digest::from_bytes(fingerprint),
-                payload,
-            };
-            let authority_cancellation = &crate::CancellationToken::new();
-
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __authority_result = store
-                .compare_and_append(
-                    crate::GuardedAppend {
-                        authority_id: authority_id,
-                        epoch: Epoch::GENESIS,
-                        expected: head,
-                        commit: authority_input_3,
-                        permit: crate::PublicationPermit::Unrestricted,
+        let appended = store
+            .compare_and_append(
+                crate::GuardedAppend {
+                    authority_id: authority_id,
+                    epoch: Epoch::GENESIS,
+                    expected: head,
+                    commit: ProposedCommit {
+                        operation_id: OperationId::from_bytes(operation),
+                        fingerprint: Digest::from_bytes(fingerprint),
+                        payload,
                     },
-                    &mut __authority_work,
-                    None::<&mut ()>,
-                )
-                .await
-                .map_err(|error| error.into_error(std::convert::identity))
-                .map(|(value, _allocation)| value);
-            __authority_work.receipt(__authority_result)
-        })?;
-        let AppendOutcome::Committed(commit) = appended.value else {
+                    permit: crate::PublicationPermit::Unrestricted,
+                },
+                &mut crate::AuthorityWork::new(B, &cancel),
+                None::<&mut ()>,
+            )
+            .await
+            .map_err(|error| error.into_error(std::convert::identity))
+            .map(|(value, _allocation)| value)?;
+        let AppendOutcome::Committed(commit) = appended else {
             return Err("authority append did not commit".into());
         };
         head = Head {
@@ -299,36 +220,30 @@ async fn replay_stops_at_the_payload_bound_after_contiguous_progress()
             digest: commit.digest,
         };
     }
-    let replay = ({
-        let authority_input_2 = ReplayLimit {
-            records: 2,
-            payload_bytes: 3,
-        };
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __authority_result = store
-            .replay(
-                authority_id,
-                Sequence::GENESIS,
-                authority_input_2,
-                &mut __authority_work,
-            )
-            .await
-            .map(|(value, _allocation)| value);
-        __authority_work.receipt(__authority_result)
-    })?;
-    assert_eq!(replay.value.len(), 1);
-    assert_eq!(replay.value[0].payload.as_ref(), b"aa");
-    assert_eq!(replay.work.authority_records_read, 1);
-    assert_eq!(replay.work.authority_bytes_read, 2);
+    let replay = store
+        .replay(
+            authority_id,
+            Sequence::GENESIS,
+            ReplayLimit {
+                records: 2,
+                payload_bytes: 3,
+            },
+            &mut replay_work,
+        )
+        .await
+        .map(|(value, _allocation)| value)?;
+    assert_eq!(replay.len(), 1);
+    assert_eq!(replay[0].payload.as_ref(), b"aa");
+    assert_eq!(replay_work.spent().authority_records_read, 1);
+    assert_eq!(replay_work.spent().authority_bytes_read, 2);
     Ok(())
 }
 
 #[tokio::test]
 async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
 -> Result<(), Box<dyn std::error::Error>> {
+    let cancel = crate::CancellationToken::new();
+
     assert!(matches!(
         MemoryAuthorityStore::new(0),
         Err(AuthorityStoreError::PayloadTooLarge {
@@ -339,42 +254,27 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
     let store = MemoryAuthorityStore::default();
     let authority_id = AuthorityId::from_bytes([21; 16]);
     assert!(matches!(
-        ({
-            let authority_cancellation = &crate::CancellationToken::new();
-
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __authority_result = store.head(authority_id, &mut __authority_work).await;
-            __authority_work.receipt(__authority_result)
-        }),
-        Err(AuthorityFailure {
-            error: AuthorityStoreError::Missing,
-            ..
-        })
+        store
+            .head(authority_id, &mut crate::AuthorityWork::new(B, &cancel))
+            .await,
+        Err(AuthorityStoreError::Missing)
     ));
-    let created = ({
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __authority_result = store
-            .create_authority(
-                authority_id,
-                Epoch::GENESIS,
-                &mut __authority_work,
-                None::<&mut ()>,
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity));
-        __authority_work.receipt(__authority_result)
-    })?;
-    let CreateAuthorityOutcome::Created(genesis) = created.value else {
+    let created = store
+        .create_authority(
+            authority_id,
+            Epoch::GENESIS,
+            &mut crate::AuthorityWork::new(B, &cancel),
+            None::<&mut ()>,
+        )
+        .await
+        .map_err(|error| error.into_error(std::convert::identity))?;
+    let CreateAuthorityOutcome::Created(genesis) = created else {
         return Err("authority unexpectedly existed".into());
     };
     assert!(matches!(
-        ({ let authority_cancellation = &crate::CancellationToken::new();
-         let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation); let __authority_result = store.create_authority(authority_id, Epoch::GENESIS, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })?
-            .value,
+        store
+            .create_authority(authority_id, Epoch::GENESIS, &mut crate::AuthorityWork::new(B, &cancel), None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity))?
+            ,
         CreateAuthorityOutcome::Existing(actual) if actual == genesis
     ));
     let operation_id = OperationId::from_bytes([22; 16]);
@@ -382,183 +282,136 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
     let proposed = ProposedCommit {
         operation_id,
         fingerprint,
-        payload: bytes::Bytes::from_static(b"durable"),
+        payload: Bytes::from_static(b"durable"),
     };
-    let committed = ({
-        let authority_input_3 = proposed.clone();
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __authority_result = store
-            .compare_and_append(
-                crate::GuardedAppend {
-                    authority_id: authority_id,
-                    epoch: Epoch::GENESIS,
-                    expected: genesis,
-                    commit: authority_input_3,
-                    permit: crate::PublicationPermit::Unrestricted,
-                },
-                &mut __authority_work,
-                None::<&mut ()>,
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, _allocation)| value);
-        __authority_work.receipt(__authority_result)
-    })?;
-    let AppendOutcome::Committed(durable) = committed.value else {
+    let committed = store
+        .compare_and_append(
+            crate::GuardedAppend {
+                authority_id: authority_id,
+                epoch: Epoch::GENESIS,
+                expected: genesis,
+                commit: proposed.clone(),
+                permit: crate::PublicationPermit::Unrestricted,
+            },
+            &mut crate::AuthorityWork::new(B, &cancel),
+            None::<&mut ()>,
+        )
+        .await
+        .map_err(|error| error.into_error(std::convert::identity))
+        .map(|(value, _allocation)| value)?;
+    let AppendOutcome::Committed(durable) = committed else {
         return Err("first append was not committed".into());
     };
     assert!(matches!(
-        ({ let authority_input_3 = proposed.clone();
-        let authority_cancellation = &crate::CancellationToken::new();
-         let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation); let __authority_result = store.compare_and_append(crate::GuardedAppend { authority_id: authority_id, epoch: Epoch::GENESIS, expected: genesis, commit: authority_input_3, permit: crate::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })?
-            .value,
+        store
+            .compare_and_append(crate::GuardedAppend { authority_id: authority_id, epoch: Epoch::GENESIS, expected: genesis, commit: proposed.clone(), permit: crate::PublicationPermit::Unrestricted }, &mut crate::AuthorityWork::new(B, &cancel), None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value)?
+            ,
         AppendOutcome::AlreadyCommitted(actual) if actual == durable
     ));
     assert!(matches!(
-        ({ let authority_input_3 = ProposedCommit {
+        store
+            .compare_and_append(crate::GuardedAppend { authority_id: authority_id, epoch: Epoch::GENESIS, expected: genesis, commit: ProposedCommit {
                     fingerprint: Digest::from_bytes([24; 32]),
                     ..proposed
-                };
-        let authority_cancellation = &crate::CancellationToken::new();
-         let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation); let __authority_result = store.compare_and_append(crate::GuardedAppend { authority_id: authority_id, epoch: Epoch::GENESIS, expected: genesis, commit: authority_input_3, permit: crate::PublicationPermit::Unrestricted }, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })?
-            .value,
+                }, permit: crate::PublicationPermit::Unrestricted }, &mut crate::AuthorityWork::new(B, &cancel), None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value)?
+            ,
         AppendOutcome::IdempotencyConflict {
             committed_fingerprint,
         } if committed_fingerprint == fingerprint
     ));
     assert_eq!(
-        ({
-            let authority_cancellation = &crate::CancellationToken::new();
-
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __authority_result = store
-                .find_operation(authority_id, operation_id, &mut __authority_work)
-                .await
-                .map(|(value, _allocation)| value);
-            __authority_work.receipt(__authority_result)
-        })?
-        .value,
+        store
+            .find_operation(
+                authority_id,
+                operation_id,
+                &mut crate::AuthorityWork::new(B, &cancel)
+            )
+            .await
+            .map(|(value, _allocation)| value)?,
         Some(durable.clone())
     );
     assert!(
-        ({
-            let authority_input_1 = OperationId::from_bytes([25; 16]);
-            let authority_cancellation = &crate::CancellationToken::new();
-
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __authority_result = store
-                .find_operation(authority_id, authority_input_1, &mut __authority_work)
-                .await
-                .map(|(value, _allocation)| value);
-            __authority_work.receipt(__authority_result)
-        })?
-        .value
-        .is_none()
-    );
-    let current = ({
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __authority_result = store.head(authority_id, &mut __authority_work).await;
-        __authority_work.receipt(__authority_result)
-    })?
-    .value;
-    let stale = ({
-        let authority_input_3 = ProposedCommit {
-            operation_id: OperationId::from_bytes([26; 16]),
-            fingerprint: Digest::from_bytes([27; 32]),
-            payload: bytes::Bytes::from_static(b"stale"),
-        };
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __authority_result = store
-            .compare_and_append(
-                crate::GuardedAppend {
-                    authority_id: authority_id,
-                    epoch: Epoch::GENESIS,
-                    expected: genesis,
-                    commit: authority_input_3,
-                    permit: crate::PublicationPermit::Unrestricted,
-                },
-                &mut __authority_work,
-                None::<&mut ()>,
+        store
+            .find_operation(
+                authority_id,
+                OperationId::from_bytes([25; 16]),
+                &mut crate::AuthorityWork::new(B, &cancel)
             )
             .await
-            .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, _allocation)| value);
-        __authority_work.receipt(__authority_result)
-    })?;
+            .map(|(value, _allocation)| value)?
+            .is_none()
+    );
+    let current = store
+        .head(authority_id, &mut crate::AuthorityWork::new(B, &cancel))
+        .await?;
+    let stale = store
+        .compare_and_append(
+            crate::GuardedAppend {
+                authority_id: authority_id,
+                epoch: Epoch::GENESIS,
+                expected: genesis,
+                commit: ProposedCommit {
+                    operation_id: OperationId::from_bytes([26; 16]),
+                    fingerprint: Digest::from_bytes([27; 32]),
+                    payload: Bytes::from_static(b"stale"),
+                },
+                permit: crate::PublicationPermit::Unrestricted,
+            },
+            &mut crate::AuthorityWork::new(B, &cancel),
+            None::<&mut ()>,
+        )
+        .await
+        .map_err(|error| error.into_error(std::convert::identity))
+        .map(|(value, _allocation)| value)?;
     assert!(matches!(
-        stale.value,
+        stale,
         AppendOutcome::Conflict { actual } if actual == current
     ));
-    let fenced = ({
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __authority_result = store
-            .fence(authority_id, current, &mut __authority_work)
-            .await;
-        __authority_work.receipt(__authority_result)
-    })?;
-    let FenceOutcome::Advanced(fenced_head) = fenced.value else {
+    let fenced = store
+        .fence(
+            authority_id,
+            current,
+            &mut crate::AuthorityWork::new(B, &cancel),
+        )
+        .await?;
+    let FenceOutcome::Advanced(fenced_head) = fenced else {
         return Err("fresh fence conflicted".into());
     };
     assert_eq!(fenced_head.epoch.get(), 2);
-    let repeated_fence = ({
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __authority_result = store
-            .fence(authority_id, current, &mut __authority_work)
-            .await;
-        __authority_work.receipt(__authority_result)
-    })?;
+    let repeated_fence = store
+        .fence(
+            authority_id,
+            current,
+            &mut crate::AuthorityWork::new(B, &cancel),
+        )
+        .await?;
     assert_eq!(
-        repeated_fence.value,
+        repeated_fence,
         FenceOutcome::Conflict {
             actual: fenced_head
         }
     );
-    let wrong_epoch = ({
-        let authority_input_3 = ProposedCommit {
-            operation_id: OperationId::from_bytes([28; 16]),
-            fingerprint: Digest::from_bytes([29; 32]),
-            payload: bytes::Bytes::from_static(b"fenced"),
-        };
-        let authority_cancellation = &crate::CancellationToken::new();
-
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __authority_result = store
-            .compare_and_append(
-                crate::GuardedAppend {
-                    authority_id: authority_id,
-                    epoch: Epoch::GENESIS,
-                    expected: fenced_head,
-                    commit: authority_input_3,
-                    permit: crate::PublicationPermit::Unrestricted,
+    let wrong_epoch = store
+        .compare_and_append(
+            crate::GuardedAppend {
+                authority_id: authority_id,
+                epoch: Epoch::GENESIS,
+                expected: fenced_head,
+                commit: ProposedCommit {
+                    operation_id: OperationId::from_bytes([28; 16]),
+                    fingerprint: Digest::from_bytes([29; 32]),
+                    payload: Bytes::from_static(b"fenced"),
                 },
-                &mut __authority_work,
-                None::<&mut ()>,
-            )
-            .await
-            .map_err(|error| error.into_error(std::convert::identity))
-            .map(|(value, _allocation)| value);
-        __authority_work.receipt(__authority_result)
-    })?;
+                permit: crate::PublicationPermit::Unrestricted,
+            },
+            &mut crate::AuthorityWork::new(B, &cancel),
+            None::<&mut ()>,
+        )
+        .await
+        .map_err(|error| error.into_error(std::convert::identity))
+        .map(|(value, _allocation)| value)?;
     assert!(matches!(
-        wrong_epoch.value,
+        wrong_epoch,
         AppendOutcome::Fenced { actual_epoch } if actual_epoch == fenced_head.epoch
     ));
     for invalid in [
@@ -572,54 +425,32 @@ async fn authority_outcomes_are_exactly_idempotent_conflicted_and_fenced()
         },
     ] {
         assert!(matches!(
-            ({
-                let authority_cancellation = &crate::CancellationToken::new();
-
-                let mut __authority_work =
-                    crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-                let __authority_result = store
-                    .replay(
-                        authority_id,
-                        Sequence::GENESIS,
-                        invalid,
-                        &mut __authority_work,
-                    )
-                    .await
-                    .map(|(value, _allocation)| value);
-                __authority_work.receipt(__authority_result)
-            }),
-            Err(AuthorityFailure {
-                error: AuthorityStoreError::InvalidReplayLimit,
-                ..
-            })
+            store
+                .replay(
+                    authority_id,
+                    Sequence::GENESIS,
+                    invalid,
+                    &mut crate::AuthorityWork::new(B, &cancel)
+                )
+                .await
+                .map(|(value, _allocation)| value),
+            Err(AuthorityStoreError::InvalidReplayLimit)
         ));
     }
     assert!(matches!(
-        ({
-            let authority_input_1 = Sequence::new(2);
-            let authority_input_2 = ReplayLimit {
-                records: 1,
-                payload_bytes: 16,
-            };
-            let authority_cancellation = &crate::CancellationToken::new();
-
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __authority_result = store
-                .replay(
-                    authority_id,
-                    authority_input_1,
-                    authority_input_2,
-                    &mut __authority_work,
-                )
-                .await
-                .map(|(value, _allocation)| value);
-            __authority_work.receipt(__authority_result)
-        }),
-        Err(AuthorityFailure {
-            error: AuthorityStoreError::ReplayCursorAhead { .. },
-            ..
-        })
+        store
+            .replay(
+                authority_id,
+                Sequence::new(2),
+                ReplayLimit {
+                    records: 1,
+                    payload_bytes: 16,
+                },
+                &mut crate::AuthorityWork::new(B, &cancel)
+            )
+            .await
+            .map(|(value, _allocation)| value),
+        Err(AuthorityStoreError::ReplayCursorAhead { .. })
     ));
     Ok(())
 }

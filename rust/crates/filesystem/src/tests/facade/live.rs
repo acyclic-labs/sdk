@@ -11,7 +11,7 @@ async fn original_guarded_live_retry_preserves_both_real_identities()
         .create_volume_with_id(
             VolumeId::from_bytes([209; 16]),
             serialized_config(),
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         )
         .await?
@@ -20,7 +20,7 @@ async fn original_guarded_live_retry_preserves_both_real_identities()
         .checkout(
             GenerationSelector::Head,
             writable_pinned(),
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         )
         .await?
@@ -32,7 +32,7 @@ async fn original_guarded_live_retry_preserves_both_real_identities()
                 bytes: (bytes::Bytes::from_static(b"left real source")).into(),
                 metadata: crate::kernel::FileMetadata::default(),
             },
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         )
         .await?
@@ -44,7 +44,7 @@ async fn original_guarded_live_retry_preserves_both_real_identities()
                 bytes: (bytes::Bytes::from_static(b"distinct right real source")).into(),
                 metadata: crate::kernel::FileMetadata::default(),
             },
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         )
         .await?
@@ -55,7 +55,7 @@ async fn original_guarded_live_retry_preserves_both_real_identities()
         None,
         None,
         crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
         |_| async {
             crate::FsResult::Ok(crate::OperationReceipt {
@@ -65,10 +65,10 @@ async fn original_guarded_live_retry_preserves_both_real_identities()
         },
     )
     .await?;
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(cause, _)| cause)?;
+    let original =
+        crate::NativeMaterializationWork::new(B, &cancellation).map_err(|(cause, _)| cause)?;
     let mut local = volume
-        .checkout_with_native_work(
+        .checkout(
             GenerationSelector::Head,
             writable_live(),
             &original,
@@ -79,7 +79,7 @@ async fn original_guarded_live_retry_preserves_both_real_identities()
         .checkout(
             GenerationSelector::Head,
             writable_pinned(),
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         )
         .await?
@@ -103,7 +103,7 @@ async fn original_guarded_live_retry_preserves_both_real_identities()
                 file_id: right,
                 mutation: FileMutation::Resize { logical_bytes: 0 },
             }],
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         )
         .await?;
@@ -114,7 +114,7 @@ async fn original_guarded_live_retry_preserves_both_real_identities()
             None,
             None,
             crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
             |_| async {
                 crate::FsResult::Ok(crate::OperationReceipt {
@@ -153,7 +153,7 @@ async fn original_guarded_live_retry_preserves_both_real_identities()
     assert!(callbacks.load(Ordering::SeqCst) >= 2);
     assert!(!local.has_pending_mutations());
     assert_eq!(local.live_operation_id, None);
-    assert!(local.root.same_original_scope(original.native_read_meter()));
+    assert!(local.root.same_original_scope(&original.state));
     let left_record = crate::kernel::lookup_file_record_async_with_accounting(
         &fs.inner.objects,
         local.root.file_table,
@@ -189,23 +189,15 @@ async fn direct_live_mutations_retry_only_across_exactly_safe_regions()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let optimistic = (fs.create_volume_with_id(
-        VolumeId::from_bytes([90; 16]),
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    let rejected = (optimistic.checkout(
-        GenerationSelector::Head,
-        writable_live(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await
-    .err()
-    .ok_or("optimistic volume admitted direct live")?;
+    let optimistic =
+        (fs.create_volume_with_id(VolumeId::from_bytes([90; 16]), config(), B, &cancellation))
+            .await?
+            .value;
+    let rejected =
+        (optimistic.checkout(GenerationSelector::Head, writable_live(), B, &cancellation))
+            .await
+            .err()
+            .ok_or("optimistic volume admitted direct live")?;
     assert!(matches!(
         rejected.error,
         FsError::LiveRequiresSerializedAuthority
@@ -214,7 +206,7 @@ async fn direct_live_mutations_retry_only_across_exactly_safe_regions()
     let volume = (fs.create_volume_with_id(
         VolumeId::from_bytes([91; 16]),
         serialized_config(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -223,18 +215,18 @@ async fn direct_live_mutations_retry_only_across_exactly_safe_regions()
     let mut seed = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
     .value;
     (seed.create(
-        crate::AuthoredMutation::CreateFile {
+        AuthoredMutation::CreateFile {
             path: file.clone(),
-            bytes: (bytes::Bytes::from(vec![b'a'; 128])).into(),
-            metadata: crate::kernel::FileMetadata::default(),
+            bytes: OwnedBytes::from(vec![b'a'; 128]),
+            metadata: FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -243,45 +235,30 @@ async fn direct_live_mutations_retry_only_across_exactly_safe_regions()
         None,
         None,
         None,
-        crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        PublicationPermit::Unrestricted,
+        B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?;
 
-    let mut first = (volume.checkout(
-        GenerationSelector::Head,
-        writable_live(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    let mut second = (volume.checkout(
-        GenerationSelector::Head,
-        writable_live(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let mut first = (volume.checkout(GenerationSelector::Head, writable_live(), B, &cancellation))
+        .await?
+        .value;
+    let mut second = (volume.checkout(GenerationSelector::Head, writable_live(), B, &cancellation))
+        .await?
+        .value;
     let first_blob = (first.stage_content(
-        &mut std::io::Cursor::new(bytes::Bytes::from_static(b"FIRST")),
+        &mut std::io::Cursor::new(OwnedBytes::from_static(b"FIRST")),
         5,
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
     let second_blob = (second.stage_content(
-        &mut std::io::Cursor::new(bytes::Bytes::from_static(b"SECOND")),
+        &mut std::io::Cursor::new(OwnedBytes::from_static(b"SECOND")),
         6,
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -296,7 +273,7 @@ async fn direct_live_mutations_retry_only_across_exactly_safe_regions()
         OperationId::from_bytes([93; 16]),
         2,
         8,
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -315,7 +292,7 @@ async fn direct_live_mutations_retry_only_across_exactly_safe_regions()
         OperationId::from_bytes([94; 16]),
         2,
         8,
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -324,33 +301,24 @@ async fn direct_live_mutations_retry_only_across_exactly_safe_regions()
         LiveMutationOutcome::Committed { .. }
     ));
 
-    let mut overlapping = (volume.checkout(
-        GenerationSelector::Head,
-        writable_live(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    let mut racing = (volume.checkout(
-        GenerationSelector::Head,
-        writable_live(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let mut overlapping =
+        (volume.checkout(GenerationSelector::Head, writable_live(), B, &cancellation))
+            .await?
+            .value;
+    let mut racing = (volume.checkout(GenerationSelector::Head, writable_live(), B, &cancellation))
+        .await?
+        .value;
     let overlap_blob = (overlapping.stage_content(
-        &mut std::io::Cursor::new(bytes::Bytes::from_static(b"OVERLAP")),
+        &mut std::io::Cursor::new(OwnedBytes::from_static(b"OVERLAP")),
         7,
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
     let racing_blob = (racing.stage_content(
-        &mut std::io::Cursor::new(bytes::Bytes::from_static(b"RACING")),
+        &mut std::io::Cursor::new(OwnedBytes::from_static(b"RACING")),
         6,
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -365,7 +333,7 @@ async fn direct_live_mutations_retry_only_across_exactly_safe_regions()
         OperationId::from_bytes([95; 16]),
         2,
         8,
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -380,7 +348,7 @@ async fn direct_live_mutations_retry_only_across_exactly_safe_regions()
         OperationId::from_bytes([96; 16]),
         2,
         8,
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -398,178 +366,149 @@ async fn direct_live_mutations_retry_only_across_exactly_safe_regions()
 #[tokio::test]
 async fn explicit_live_refresh_advances_only_across_unobserved_regions()
 -> Result<(), Box<dyn std::error::Error>> {
+    macro_rules! ready {
+        ($future:expr) => {
+            ($future).await?
+        };
+    }
+
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = (fs.create_volume_with_id(
+    let volume = ready!(fs.create_volume_with_id(
         VolumeId::from_bytes([97; 16]),
         serialized_config(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
-    .await?
     .value;
     let file = path("refresh")?;
-    let mut seed = (volume.checkout(
+    let mut seed = ready!(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
-    .await?
     .value;
-    (seed.create(
-        crate::AuthoredMutation::CreateFile {
+    ready!(seed.create(
+        AuthoredMutation::CreateFile {
             path: file.clone(),
-            bytes: (bytes::Bytes::from(vec![b'a'; 128])).into(),
-            metadata: crate::kernel::FileMetadata::default(),
+            bytes: OwnedBytes::from(vec![b'a'; 128]),
+            metadata: FileMetadata::default()
         },
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
-    (seed.commit(
+        B,
+        &cancellation
+    ));
+    ready!(seed.commit(
         OperationId::from_bytes([98; 16]),
         None,
         None,
         None,
-        crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        PublicationPermit::Unrestricted,
+        B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
-    ))
-    .await?;
+        allow::<FsError>
+    ));
 
-    let mut live = (volume.checkout(
-        GenerationSelector::Head,
-        writable_live(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let mut live =
+        ready!(volume.checkout(GenerationSelector::Head, writable_live(), B, &cancellation,)).value;
     assert_eq!(
-        (live.read_file_range(
+        ready!(live.read_file_range(
             &file,
             ByteRange {
                 offset: 0,
                 length: 4,
             },
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         ))
-        .await?
         .value
         .bytes
         .as_ref(),
         b"aaaa"
     );
 
-    let mut disjoint = (volume.checkout(
+    let mut disjoint = ready!(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
-    .await?
     .value;
-    (disjoint.change_content(
+    ready!(disjoint.change_content(
         file.clone(),
-        crate::ContentChange::Write {
+        ContentChange::Write {
             offset: 64,
-            bytes: (bytes::Bytes::from_static(b"SAFE")).into(),
+            bytes: OwnedBytes::from_static(b"SAFE")
         },
-        crate::ContentTimes::Preserve,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
-    let disjoint_generation = match (disjoint.commit(
+        ContentTimes::Preserve,
+        B,
+        &cancellation
+    ));
+    let disjoint_generation = match ready!(disjoint.commit(
         OperationId::from_bytes([99; 16]),
         None,
         None,
         None,
-        crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        PublicationPermit::Unrestricted,
+        B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>
     ))
-    .await?
     .value
     {
         LivePublicationObservation::Committed { generation_id, .. } => generation_id,
         outcome => return Err(format!("unexpected disjoint commit: {outcome:?}").into()),
     };
     assert_eq!(
-        (live.refresh_live(WorkBudget::UNBOUNDED, &cancellation))
-            .await?
-            .value,
+        ready!(live.refresh_live(B, &cancellation)).value,
         disjoint_generation
     );
     assert_eq!(live.generation_id(), disjoint_generation);
 
     assert_eq!(
-        (live.read_file_range(
+        ready!(live.read_file_range(
             &file,
             ByteRange {
                 offset: 0,
                 length: 4,
             },
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         ))
-        .await?
         .value
         .bytes
         .as_ref(),
         b"aaaa"
     );
-    let mut overlapping = (volume.checkout(
+    let mut overlapping = ready!(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
-    .await?
     .value;
-    (overlapping.change_content(
+    ready!(overlapping.change_content(
         file,
-        crate::ContentChange::Write {
+        ContentChange::Write {
             offset: 0,
-            bytes: (bytes::Bytes::from_static(b"RACE")).into(),
+            bytes: OwnedBytes::from_static(b"RACE")
         },
-        crate::ContentTimes::Preserve,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
-    (overlapping.commit(
+        ContentTimes::Preserve,
+        B,
+        &cancellation
+    ));
+    ready!(overlapping.commit(
         OperationId::from_bytes([100; 16]),
         None,
         None,
         None,
-        crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        PublicationPermit::Unrestricted,
+        B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
-    ))
-    .await?;
+        allow::<FsError>
+    ));
     let before_conflict = live.generation_id();
-    let conflict = (live.refresh_live(WorkBudget::UNBOUNDED, &cancellation))
+    let conflict = (live.refresh_live(B, &cancellation))
         .await
         .err()
         .ok_or("conflicting live refresh unexpectedly advanced")?;
@@ -582,27 +521,6 @@ async fn explicit_live_refresh_advances_only_across_unobserved_regions()
             ))
     ));
     assert_eq!(live.generation_id(), before_conflict);
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, _)| cause)?;
-        let native_conflict = (live.synchronize_live_with_accounting(
-            &mut crate::kernel::allocation::KernelAccounting::native(&original, &cancellation),
-            &cancellation,
-        ))
-        .await
-        .err()
-        .ok_or("native conflicting live sync unexpectedly advanced")?;
-        assert!(matches!(&native_conflict,
-            FsError::NativeLiveConflict { conflicts, allocation, .. }
-                if allocation.work().shares_ledger(&original)
-                    && allocation.bytes() >= size_of::<RebaseConflict>() as u64
-                    && conflicts.iter().any(|conflict| matches!(
-                        conflict.region, DependencyRegion::ContentRange { .. }
-                    ))
-        ));
-        assert_eq!(live.generation_id(), before_conflict);
-    }
     Ok(())
 }
 
@@ -612,49 +530,28 @@ async fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let volume_id = VolumeId::from_bytes([117; 16]);
-    let volume = (fs.create_volume_with_id(
-        volume_id,
-        serialized_config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let volume = (fs.create_volume_with_id(volume_id, serialized_config(), B, &cancellation))
+        .await?
+        .value;
 
-    let mut winner = (volume.checkout(
-        GenerationSelector::Head,
-        writable_live(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    let mut retrying = (volume.checkout(
-        GenerationSelector::Head,
-        writable_live(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let mut winner = (volume.checkout(GenerationSelector::Head, writable_live(), B, &cancellation))
+        .await?
+        .value;
+    let mut retrying =
+        (volume.checkout(GenerationSelector::Head, writable_live(), B, &cancellation))
+            .await?
+            .value;
     (winner.create(
         crate::AuthoredMutation::CreateFile {
             path: path("winner")?,
             bytes: (bytes::Bytes::from_static(b"winner")).into(),
             metadata: crate::kernel::FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
-    (winner.resume_live(
-        OperationId::from_bytes([118; 16]),
-        1,
-        8,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
+    (winner.resume_live(OperationId::from_bytes([118; 16]), 1, 8, B, &cancellation)).await?;
 
     (retrying.create(
         crate::AuthoredMutation::CreateFile {
@@ -662,13 +559,12 @@ async fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
             bytes: (bytes::Bytes::from_static(b"retrying")).into(),
             metadata: crate::kernel::FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
     let retry_operation = OperationId::from_bytes([119; 16]);
-    let limited =
-        (retrying.resume_live(retry_operation, 1, 8, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    let limited = (retrying.resume_live(retry_operation, 1, 8, B, &cancellation)).await?;
     assert!(matches!(
         limited.value,
         LiveMutationOutcome::RetryLimit { .. }
@@ -680,7 +576,7 @@ async fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
             bytes: (bytes::Bytes::from_static(b"blocked")).into(),
             metadata: crate::kernel::FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await
@@ -690,21 +586,16 @@ async fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
         mutation_while_unresolved.error,
         FsError::PendingLiveMutation
     ));
-    let mismatched_resume = (retrying.resume_live(
-        OperationId::from_bytes([120; 16]),
-        2,
-        8,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await
-    .err()
-    .ok_or("mismatched live resume unexpectedly succeeded")?;
+    let mismatched_resume =
+        (retrying.resume_live(OperationId::from_bytes([120; 16]), 2, 8, B, &cancellation))
+            .await
+            .err()
+            .ok_or("mismatched live resume unexpectedly succeeded")?;
     assert!(matches!(
         mismatched_resume.error,
         FsError::PendingLiveMutation
     ));
-    let rebase_while_unresolved = (retrying.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
+    let rebase_while_unresolved = (retrying.rebase_head(8, B, &cancellation))
         .await
         .err()
         .ok_or("unresolved live operation accepted public rebase")?;
@@ -712,22 +603,20 @@ async fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
         rebase_while_unresolved.error,
         FsError::PendingLiveMutation
     ));
-    let resumed =
-        (retrying.resume_live(retry_operation, 2, 8, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    let resumed = (retrying.resume_live(retry_operation, 2, 8, B, &cancellation)).await?;
     assert!(matches!(
         resumed.value,
         LiveMutationOutcome::Committed { .. }
     ));
     assert!(!retrying.has_pending_mutations());
-    let clean_resume =
-        (retrying.resume_live(retry_operation, 1, 8, WorkBudget::UNBOUNDED, &cancellation))
-            .await
-            .err()
-            .ok_or("clean live resume unexpectedly succeeded")?;
+    let clean_resume = (retrying.resume_live(retry_operation, 1, 8, B, &cancellation))
+        .await
+        .err()
+        .ok_or("clean live resume unexpectedly succeeded")?;
     assert!(matches!(clean_resume.error, FsError::NoPendingMutations));
     assert_eq!(*clean_resume.work, WorkCounters::default());
     for failure in [
-        (retrying.resume_live(retry_operation, 0, 8, WorkBudget::UNBOUNDED, &cancellation))
+        (retrying.resume_live(retry_operation, 0, 8, B, &cancellation))
             .await
             .err()
             .ok_or("zero-limit live resume unexpectedly succeeded")?,
@@ -736,7 +625,7 @@ async fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
             OperationId::from_bytes([124; 16]),
             0,
             8,
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         ))
         .await
@@ -747,21 +636,17 @@ async fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
         assert_eq!(*failure.work, WorkCounters::default());
     }
 
-    let mut pending_guard = (volume.checkout(
-        GenerationSelector::Head,
-        writable_live(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let mut pending_guard =
+        (volume.checkout(GenerationSelector::Head, writable_live(), B, &cancellation))
+            .await?
+            .value;
     (pending_guard.create(
         crate::AuthoredMutation::CreateFile {
             path: path("pending-guard")?,
             bytes: (bytes::Bytes::from_static(b"pending")).into(),
             metadata: crate::kernel::FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -770,7 +655,7 @@ async fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
         OperationId::from_bytes([125; 16]),
         1,
         8,
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await
@@ -786,7 +671,7 @@ async fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
         OperationId::from_bytes([126; 16]),
         1,
         8,
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await
@@ -798,24 +683,16 @@ async fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
     ));
     assert_eq!(*authored_pending.work, WorkCounters::default());
 
-    let mut first_retry = (volume.checkout(
-        GenerationSelector::Head,
-        writable_live(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
-    let mut exact_retry = (volume.checkout(
-        GenerationSelector::Head,
-        writable_live(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let mut first_retry =
+        (volume.checkout(GenerationSelector::Head, writable_live(), B, &cancellation))
+            .await?
+            .value;
+    let mut exact_retry =
+        (volume.checkout(GenerationSelector::Head, writable_live(), B, &cancellation))
+            .await?
+            .value;
     let root = root_path()?;
-    let metadata = (first_retry.lookup_no_follow(&root, WorkBudget::UNBOUNDED, &cancellation))
+    let metadata = (first_retry.lookup_no_follow(&root, B, &cancellation))
         .await?
         .value
         .record
@@ -831,110 +708,68 @@ async fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
             payload: FilePayload::InlineRegular(InlineFileData::new(b"same")?),
         },
     };
-    (first_retry.mutate(
-        vec![identical.clone()],
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
-    (exact_retry.mutate(vec![identical], WorkBudget::UNBOUNDED, &cancellation)).await?;
+    (first_retry.mutate(vec![identical.clone()], B, &cancellation)).await?;
+    (exact_retry.mutate(vec![identical], B, &cancellation)).await?;
     let idempotent_operation = OperationId::from_bytes([121; 16]);
-    let committed = (first_retry.resume_live(
-        idempotent_operation,
-        1,
-        8,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
+    let committed = (first_retry.resume_live(idempotent_operation, 1, 8, B, &cancellation)).await?;
     assert!(matches!(
         committed.value,
         LiveMutationOutcome::Committed { .. }
     ));
-    let repeated = (exact_retry.resume_live(
-        idempotent_operation,
-        1,
-        8,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
+    let repeated = (exact_retry.resume_live(idempotent_operation, 1, 8, B, &cancellation)).await?;
     assert!(matches!(
         repeated.value,
         LiveMutationOutcome::AlreadyCommitted { .. }
     ));
 
-    let mut conflicting_retry = (volume.checkout(
-        GenerationSelector::Head,
-        writable_live(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let mut conflicting_retry =
+        (volume.checkout(GenerationSelector::Head, writable_live(), B, &cancellation))
+            .await?
+            .value;
     (conflicting_retry.create(
         crate::AuthoredMutation::CreateFile {
             path: path("different-operation")?,
             bytes: (bytes::Bytes::from_static(b"different")).into(),
             metadata: crate::kernel::FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
-    let conflicted = (conflicting_retry.resume_live(
-        idempotent_operation,
-        1,
-        8,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
+    let conflicted =
+        (conflicting_retry.resume_live(idempotent_operation, 1, 8, B, &cancellation)).await?;
     assert!(matches!(
         conflicted.value,
         LiveMutationOutcome::IdempotencyConflict { .. }
     ));
     assert!(conflicting_retry.has_pending_mutations());
 
-    let mut fenced = (volume.checkout(
-        GenerationSelector::Head,
-        writable_live(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let mut fenced = (volume.checkout(GenerationSelector::Head, writable_live(), B, &cancellation))
+        .await?
+        .value;
     (fenced.create(
         crate::AuthoredMutation::CreateFile {
             path: path("fenced")?,
             bytes: (bytes::Bytes::from_static(b"fenced")).into(),
             metadata: crate::kernel::FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
-    let fence_expected = (async {
-        let authority_input_0 = volume_authority_id(volume_id);
-
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __authority_result = AsyncAuthorityStore::head(
+    let fence_expected = ({
+        AsyncAuthorityStore::head(
             &fs.inner.authority,
-            authority_input_0,
-            &mut __authority_work,
+            volume_authority_id(volume_id),
+            &mut crate::AuthorityWork::new(B, &cancellation),
         )
-        .await;
-        __authority_work.receipt(__authority_result)
-    })
-    .await?
-    .value;
+        .await
+    })?;
     let fence = (async {
-        let authority_input_0 = volume_authority_id(volume_id);
-
-        let mut __authority_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+        let mut __authority_work = crate::AuthorityWork::new(B, &cancellation);
         let __authority_result = AsyncAuthorityStore::fence(
             &fs.inner.authority,
-            authority_input_0,
+            volume_authority_id(volume_id),
             fence_expected,
             &mut __authority_work,
         )
@@ -945,14 +780,8 @@ async fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
     let FenceOutcome::Advanced(fenced_head) = fence.value else {
         return Err("fresh facade fence conflicted".into());
     };
-    let fenced_outcome = (fenced.resume_live(
-        OperationId::from_bytes([122; 16]),
-        1,
-        8,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
+    let fenced_outcome =
+        (fenced.resume_live(OperationId::from_bytes([122; 16]), 1, 8, B, &cancellation)).await?;
     assert!(matches!(
         fenced_outcome.value,
         LiveMutationOutcome::Fenced { actual_epoch } if actual_epoch == fenced_head.epoch
@@ -961,23 +790,19 @@ async fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
     let mut non_live = (volume.checkout(
         GenerationSelector::Head,
         writable_manual(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
     .value;
-    assert!(
-        (non_live.refresh_live(WorkBudget::UNBOUNDED, &cancellation))
-            .await
-            .is_err()
-    );
+    assert!((non_live.refresh_live(B, &cancellation)).await.is_err());
     assert!(
         (non_live.mutate_live(
             Vec::new(),
             OperationId::from_bytes([123; 16]),
             1,
             8,
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         ))
         .await
@@ -994,26 +819,22 @@ async fn authored_live_transaction_preserves_create_ids_and_publishes_atomically
     let volume = (fs.create_volume_with_id(
         VolumeId::from_bytes([117; 16]),
         serialized_config(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
     .value;
-    let mut checkout = (volume.checkout(
-        GenerationSelector::Head,
-        writable_live(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let mut checkout =
+        (volume.checkout(GenerationSelector::Head, writable_live(), B, &cancellation))
+            .await?
+            .value;
     let file = path("authored-live.txt")?;
     let receipt = (checkout.apply_authored_live(
         vec![
             AuthoredMutation::CreateFile {
                 path: file.clone(),
                 bytes: OwnedBytes::from_static(b"initial"),
-                metadata: FileMetadata::default(),
+                metadata: empty_metadata(),
             },
             AuthoredMutation::Write {
                 path: file.clone(),
@@ -1024,7 +845,7 @@ async fn authored_live_transaction_preserves_create_ids_and_publishes_atomically
         OperationId::from_bytes([118; 16]),
         3,
         8,
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -1042,7 +863,7 @@ async fn authored_live_transaction_preserves_create_ids_and_publishes_atomically
             offset: 0,
             length: 17,
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;

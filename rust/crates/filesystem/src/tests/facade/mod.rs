@@ -419,24 +419,17 @@ impl crate::async_storage::AsyncObjectStore for FaultObjectStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
+        context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
-        let result = async {
-            cancellation.check().map_err(|_| {
-                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
-            })?;
-            if self.control.should_fail() {
-                return Err(Self::failure(false));
-            }
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result =
-                    AsyncObjectStore::put(&self.inner, object_id, bytes, &mut __object_work).await;
-                __object_work.receipt(__object_result)
-            }
+
+        context
+            .cancellation
+            .check()
+            .map_err(|_| crate::ObjectStoreError::Cancelled)?;
+        if self.control.should_fail() {
+            return context.accept(Err(Self::failure(false)));
         }
-        .await;
-        context.accept(result)
+        AsyncObjectStore::put(&self.inner, object_id, bytes, context).await
     }
     async fn put_many(
         &self,
@@ -447,24 +440,17 @@ impl crate::async_storage::AsyncObjectStore for FaultObjectStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
+        context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
-        let result = async {
-            cancellation.check().map_err(|_| {
-                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
-            })?;
-            if self.control.should_fail() {
-                return Err(Self::failure(false));
-            }
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result =
-                    AsyncObjectStore::put_many(&self.inner, writes, &mut __object_work).await;
-                __object_work.receipt(__object_result)
-            }
+
+        context
+            .cancellation
+            .check()
+            .map_err(|_| crate::ObjectStoreError::Cancelled)?;
+        if self.control.should_fail() {
+            return context.accept(Err(Self::failure(false)));
         }
-        .await;
-        context.accept(result)
+        AsyncObjectStore::put_many(&self.inner, writes, context).await
     }
     async fn read(
         &self,
@@ -476,29 +462,17 @@ impl crate::async_storage::AsyncObjectStore for FaultObjectStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
+        context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
-        let result = async {
-            cancellation.check().map_err(|_| {
-                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
-            })?;
-            if self.control.should_fail() {
-                return Err(Self::failure(true));
-            }
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result = AsyncObjectStore::read(
-                    &self.inner,
-                    object_id,
-                    maximum_bytes,
-                    &mut __object_work,
-                )
-                .await;
-                __object_work.receipt(__object_result)
-            }
+
+        context
+            .cancellation
+            .check()
+            .map_err(|_| crate::ObjectStoreError::Cancelled)?;
+        if self.control.should_fail() {
+            return context.accept(Err(Self::failure(true)));
         }
-        .await;
-        context.accept(result)
+        AsyncObjectStore::read(&self.inner, object_id, maximum_bytes, context).await
     }
     async fn read_many(
         &self,
@@ -509,26 +483,20 @@ impl crate::async_storage::AsyncObjectStore for FaultObjectStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
+        context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
-        let result = async {
-            cancellation.check().map_err(|_| {
-                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
-            })?;
-            if self.control.should_fail() {
-                return Err(Self::failure(true));
-            }
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result =
-                    AsyncObjectStore::read_many(&self.inner, requests, &mut __object_work)
-                        .await
-                        .map(|(values, _allocation)| values);
-                __object_work.receipt(__object_result)
-            }
+
+        context
+            .cancellation
+            .check()
+            .map_err(|_| crate::ObjectStoreError::Cancelled)?;
+        if self.control.should_fail() {
+            return context.accept(Err(Self::failure(true)));
         }
-        .await;
-        context.accept(result).map(|values| (values, None))
+        AsyncObjectStore::read_many(&self.inner, requests, context)
+            .await
+            .map(|(values, _allocation)| values)
+            .map(|values| (values, None))
     }
     async fn contains(
         &self,
@@ -539,24 +507,17 @@ impl crate::async_storage::AsyncObjectStore for FaultObjectStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
+        context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
-        let result = async {
-            cancellation.check().map_err(|_| {
-                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
-            })?;
-            if self.control.should_fail() {
-                return Err(Self::failure(true));
-            }
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result =
-                    AsyncObjectStore::contains(&self.inner, object_id, &mut __object_work).await;
-                __object_work.receipt(__object_result)
-            }
+
+        context
+            .cancellation
+            .check()
+            .map_err(|_| crate::ObjectStoreError::Cancelled)?;
+        if self.control.should_fail() {
+            return context.accept(Err(Self::failure(true)));
         }
-        .await;
-        context.accept(result)
+        AsyncObjectStore::contains(&self.inner, object_id, context).await
     }
 }
 
@@ -571,21 +532,14 @@ impl crate::async_storage::AsyncObjectStore for CountingObjectStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
+        context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
-        let result = async {
-            cancellation.check().map_err(|_| {
-                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
-            })?;
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result =
-                    AsyncObjectStore::put(&self.inner, object_id, bytes, &mut __object_work).await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result)
+
+        context
+            .cancellation
+            .check()
+            .map_err(|_| crate::ObjectStoreError::Cancelled)?;
+        AsyncObjectStore::put(&self.inner, object_id, bytes, context).await
     }
     async fn put_many(
         &self,
@@ -596,21 +550,14 @@ impl crate::async_storage::AsyncObjectStore for CountingObjectStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
+        context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
-        let result = async {
-            cancellation.check().map_err(|_| {
-                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
-            })?;
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result =
-                    AsyncObjectStore::put_many(&self.inner, writes, &mut __object_work).await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result)
+
+        context
+            .cancellation
+            .check()
+            .map_err(|_| crate::ObjectStoreError::Cancelled)?;
+        AsyncObjectStore::put_many(&self.inner, writes, context).await
     }
     async fn read(
         &self,
@@ -622,27 +569,15 @@ impl crate::async_storage::AsyncObjectStore for CountingObjectStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
+        context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
-        let result = async {
-            cancellation.check().map_err(|_| {
-                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
-            })?;
-            self.record(object_id)?;
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result = AsyncObjectStore::read(
-                    &self.inner,
-                    object_id,
-                    maximum_bytes,
-                    &mut __object_work,
-                )
-                .await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result)
+
+        context
+            .cancellation
+            .check()
+            .map_err(|_| crate::ObjectStoreError::Cancelled)?;
+        self.record(object_id).map_err(|failure| failure.error)?;
+        AsyncObjectStore::read(&self.inner, object_id, maximum_bytes, context).await
     }
     async fn read_many(
         &self,
@@ -683,21 +618,14 @@ impl crate::async_storage::AsyncObjectStore for CountingObjectStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
+        context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
-        let result = async {
-            cancellation.check().map_err(|_| {
-                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
-            })?;
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result =
-                    AsyncObjectStore::contains(&self.inner, object_id, &mut __object_work).await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result)
+
+        context
+            .cancellation
+            .check()
+            .map_err(|_| crate::ObjectStoreError::Cancelled)?;
+        AsyncObjectStore::contains(&self.inner, object_id, context).await
     }
 }
 
@@ -820,26 +748,14 @@ impl crate::async_storage::AsyncObjectStore for PostPutObjectStore {
             }
             .await;
         }
-        let budget = context.work.remaining(context.budget)?;
+        context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
-        let result = async {
-            cancellation.check().map_err(|_| {
-                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
-            })?;
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result = AsyncObjectStore::read(
-                    &*self.inner,
-                    object_id,
-                    maximum_bytes,
-                    &mut __object_work,
-                )
-                .await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result)
+
+        context
+            .cancellation
+            .check()
+            .map_err(|_| crate::ObjectStoreError::Cancelled)?;
+        AsyncObjectStore::read(&*self.inner, object_id, maximum_bytes, context).await
     }
     async fn read_many(
         &self,
@@ -864,23 +780,17 @@ impl crate::async_storage::AsyncObjectStore for PostPutObjectStore {
             .await
             .map(|(values, allocation)| (values, Some(allocation)));
         }
-        let budget = context.work.remaining(context.budget)?;
+        context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
-        let result = async {
-            cancellation.check().map_err(|_| {
-                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
-            })?;
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result =
-                    AsyncObjectStore::read_many(&*self.inner, requests, &mut __object_work)
-                        .await
-                        .map(|(values, _allocation)| values);
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result).map(|values| (values, None))
+
+        context
+            .cancellation
+            .check()
+            .map_err(|_| crate::ObjectStoreError::Cancelled)?;
+        AsyncObjectStore::read_many(&*self.inner, requests, context)
+            .await
+            .map(|(values, _allocation)| values)
+            .map(|values| (values, None))
     }
     async fn contains(
         &self,
@@ -891,21 +801,14 @@ impl crate::async_storage::AsyncObjectStore for PostPutObjectStore {
         if context.original.is_some() {
             return Err(crate::ObjectStoreError::NativeUnavailable);
         }
-        let budget = context.work.remaining(context.budget)?;
+        context.work.remaining(context.budget)?;
         let cancellation = context.cancellation;
-        let result = async {
-            cancellation.check().map_err(|_| {
-                crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
-            })?;
-            {
-                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
-                let __object_result =
-                    AsyncObjectStore::contains(&*self.inner, object_id, &mut __object_work).await;
-                __object_work.receipt(__object_result)
-            }
-        }
-        .await;
-        context.accept(result)
+
+        context
+            .cancellation
+            .check()
+            .map_err(|_| crate::ObjectStoreError::Cancelled)?;
+        AsyncObjectStore::contains(&*self.inner, object_id, context).await
     }
 
     async fn put_hashed(
@@ -1139,3 +1042,13 @@ mod transfer;
 
 mod protocol_helpers;
 use protocol_helpers::*;
+
+const B: WorkBudget = WorkBudget::UNBOUNDED;
+fn allow<E>(
+    _: WorkBudget,
+) -> std::future::Ready<Result<OperationReceipt<()>, OperationFailure<E>>> {
+    std::future::ready(Ok(OperationReceipt {
+        value: (),
+        work: WorkCounters::UNCHARGED,
+    }))
+}

@@ -43,49 +43,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         let result = crate::obs::in_span(&span, async {
             accounting.check()?;
             validate_checkout(mode, self.config).map_err(|failure| failure.error)?;
-            let (generation_root, mut authority_head) = {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(original) = accounting.native_work() {
-                    let (root, head, _) = self
-                        .resolve_checkout_generation(selector, mode, original, cancellation)
-                        .await?;
-                    (root, head)
-                } else {
-                    let resolved = self
-                        .resolve_checkout_generation(
-                            selector,
-                            mode,
-                            accounting.remaining()?,
-                            cancellation,
-                        )
-                        .await;
-                    let work = match &resolved {
-                        Ok(receipt) => receipt.work,
-                        Err(failure) => *failure.work,
-                    };
-                    merge_creation_backend_work(&mut accounting, work)?;
-                    let (root, head, _) = resolved.map_err(|failure| failure.error)?.value;
-                    (root, head)
-                }
-                #[cfg(target_arch = "wasm32")]
-                {
-                    let resolved = self
-                        .resolve_checkout_generation(
-                            selector,
-                            mode,
-                            accounting.remaining()?,
-                            cancellation,
-                        )
-                        .await;
-                    let work = match &resolved {
-                        Ok(receipt) => receipt.work,
-                        Err(failure) => *failure.work,
-                    };
-                    merge_creation_backend_work(&mut accounting, work)?;
-                    let (root, head, _) = resolved.map_err(|failure| failure.error)?.value;
-                    (root, head)
-                }
-            };
+            let (generation_root, mut authority_head) = self
+                .resolve_checkout_generation(selector, mode, &mut accounting, cancellation)
+                .await?;
             let before = readonly_standalone_live(&accounting);
             let (root, allocation) = read_generation_root_with_accounting(
                 &self.fs.inner.objects,
@@ -350,11 +310,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 FsError::PendingMutationsRequireRebase,
             ));
         }
-        let (generation_root, head, mut work) = self
+        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+        let result = self
             .volume
-            .resolve_head_generation(budget, cancellation)
-            .await
-            .map(|receipt| receipt.value)?;
+            .resolve_head_generation(&mut accounting, cancellation)
+            .await;
+        let (generation_root, head) =
+            result.map_err(|error| OperationFailure::new(error, accounting.spent()))?;
+        let mut work = accounting.spent();
         if generation_root == self.generation_root {
             self.authority_head = Some(head);
             return Ok(OperationReceipt {

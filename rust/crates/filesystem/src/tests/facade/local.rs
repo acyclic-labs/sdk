@@ -72,8 +72,9 @@ async fn local_facade_reopens_durable_volume_and_exact_generation()
 }
 
 #[cfg(all(feature = "local", any(unix, windows)))]
-#[test]
-fn local_root_lifecycle_outlives_provider_destruction() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn local_root_lifecycle_outlives_provider_destruction()
+-> Result<(), Box<dyn std::error::Error>> {
     struct BlockingProviderDrop {
         entered: std::sync::mpsc::SyncSender<()>,
         release: std::sync::mpsc::Receiver<()>,
@@ -98,7 +99,7 @@ fn local_root_lifecycle_outlives_provider_destruction() -> Result<(), Box<dyn st
         objects: (),
         capabilities: EmbeddedCapabilities::MEMORY,
         workspace_namespace: [0; 16],
-        path_index: crate::path_index::MemoryGenerationPathIndex::default(),
+        path_index: Arc::new(crate::path_index::MemoryGenerationPathIndex::default()),
         _local_root_lifecycle: Some(acyclic_native_runtime::OwnershipAnchor::new(ownership)),
     };
     let dropping = std::thread::spawn(move || drop(inner));

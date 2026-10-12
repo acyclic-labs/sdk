@@ -3,23 +3,14 @@ use super::*;
 #[tokio::test]
 async fn original_fork_retry_after_both_heads_advance_needs_no_publication_seal()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let parent = fs
-        .create_workspace(
-            "original-fork-parent",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("original-fork-parent", B, &cancel)
         .await?
         .value;
     parent.write_text("/file", "original").await?;
-    let frozen = parent
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let frozen = parent.head(B, &cancel).await?.value;
     let key = IdempotencyKey::new();
     let cancellation = CancellationToken::new();
     let budget = selected_transaction_budget();
@@ -39,22 +30,10 @@ async fn original_fork_retry_after_both_heads_advance_needs_no_publication_seal(
         )
         .await?;
     let child = first.value;
-    let original_child = child
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let original_child = child.head(B, &cancel).await?.value;
     parent.write_text("/file", "later parent").await?;
     child.write_text("/file", "later child").await?;
-    let advanced_child = child
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let advanced_child = child.head(B, &cancel).await?.value;
     let retry = parent
         .fork(
             "original-fork-child",
@@ -72,26 +51,13 @@ async fn original_fork_retry_after_both_heads_advance_needs_no_publication_seal(
     retry.work.verify(budget)?;
     assert_eq!(retry.work.authority_records_appended, 0);
     assert_eq!(
-        retry
-            .value
-            .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .id(),
+        retry.value.head(B, &cancel).await?.value.id(),
         advanced_child.id()
     );
     assert_eq!(
         retry
             .value
-            .read(
-                "/file",
-                32,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .read("/file", 32, B, &cancel)
             .await?
             .value
             .as_ref(),
@@ -110,16 +76,7 @@ async fn original_fork_retry_after_both_heads_advance_needs_no_publication_seal(
         .ok_or("original creation missing")?;
     assert_eq!(creation.id(), original_child.id());
     assert_eq!(
-        creation
-            .read(
-                "/file",
-                32,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .as_ref(),
+        creation.read("/file", 32, B, &cancel).await?.value.as_ref(),
         b"original"
     );
     Ok(())
@@ -128,37 +85,21 @@ async fn original_fork_retry_after_both_heads_advance_needs_no_publication_seal(
 #[tokio::test]
 async fn guarded_stale_exact_retry_resolves_committed_without_owner_reseal()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace(
-            "resolved-owner-seal",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("resolved-owner-seal", B, &cancel)
         .await?
         .value;
-    let base = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let base = workspace.head(B, &cancel).await?.value;
     let key = IdempotencyKey::new();
-    let mut first = workspace
-        .begin_transaction(
-            key,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let mut first = workspace.begin_transaction(key, B, &cancel).await?.value;
     first
         .write(
             "/file",
             bytes::Bytes::from_static(b"same input"),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            B,
+            &cancel,
         )
         .await?
         .value;
@@ -166,8 +107,8 @@ async fn guarded_stale_exact_retry_resolves_committed_without_owner_reseal()
         .commit(
             None,
             crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            B,
+            &cancel,
             |_| async {
                 Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
                     value: (),
@@ -181,20 +122,15 @@ async fn guarded_stale_exact_retry_resolves_committed_without_owner_reseal()
         return Err("initial original commit did not publish".into());
     };
     let mut retry = workspace
-        .begin_transaction_at(
-            &base,
-            key,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .begin_transaction_at(&base, key, B, &cancel)
         .await?
         .value;
     retry
         .write(
             "/file",
             bytes::Bytes::from_static(b"same input"),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            B,
+            &cancel,
         )
         .await?
         .value;
@@ -223,17 +159,7 @@ async fn guarded_stale_exact_retry_resolves_committed_without_owner_reseal()
     assert!(
         matches!(&resolved.value, TransactionCommit::AlreadyCommitted(generation) if generation.id() == committed.id())
     );
-    assert_eq!(
-        workspace
-            .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .id(),
-        committed.id()
-    );
+    assert_eq!(workspace.head(B, &cancel).await?.value.id(), committed.id());
     assert_eq!(
         owner_calls, 0,
         "an already committed operation performs no new CAS"
@@ -244,38 +170,20 @@ async fn guarded_stale_exact_retry_resolves_committed_without_owner_reseal()
 #[tokio::test]
 async fn ordinary_owner_denial_preserves_whole_error_work_and_candidate()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace(
-            "whole-ordinary-owner",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("whole-ordinary-owner", B, &cancel)
         .await?
         .value;
-    let base = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let base = workspace.head(B, &cancel).await?.value;
     let cancellation = CancellationToken::new();
     let mut candidate = workspace
-        .begin_transaction(
-            IdempotencyKey::new(),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .begin_transaction(IdempotencyKey::new(), B, &cancel)
         .await?
         .value;
     candidate
-        .write(
-            "/file",
-            bytes::Bytes::from_static(b"candidate"),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .write("/file", bytes::Bytes::from_static(b"candidate"), B, &cancel)
         .await?
         .value;
     let callback_work = crate::WorkCounters {
@@ -307,17 +215,7 @@ async fn ordinary_owner_denial_preserves_whole_error_work_and_candidate()
     assert!(failure.work.backend_read_operations >= callback_work.backend_read_operations);
     assert!(failure.work.bytes_hashed > 0);
     assert_eq!(failure.work.authority_records_appended, 0);
-    assert_eq!(
-        workspace
-            .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .id(),
-        base.id()
-    );
+    assert_eq!(workspace.head(B, &cancel).await?.value.id(), base.id());
     let failure = async {
         let mut guard = || {
             std::future::ready(Err(OrdinaryOwnerError::Denied {
@@ -330,7 +228,7 @@ async fn ordinary_owner_denial_preserves_whole_error_work_and_candidate()
             .commit(
                 None,
                 crate::PublicationPermit::Unrestricted,
-                crate::WorkBudget::UNBOUNDED,
+                B,
                 &cancellation,
                 |_| {
                     let future = guard();
@@ -354,24 +252,14 @@ async fn ordinary_owner_denial_preserves_whole_error_work_and_candidate()
     .ok_or("denied ordinary owner published")?;
     assert!(matches!(failure,
         OrdinaryOwnerError::Denied { task, revision: 913, expired: false } if task == [118; 16]));
-    assert_eq!(
-        workspace
-            .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .id(),
-        base.id()
-    );
+    assert_eq!(workspace.head(B, &cancel).await?.value.id(), base.id());
     assert!(matches!(
         candidate
             .commit(
                 None,
                 crate::PublicationPermit::Unrestricted,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
+                B,
+                &cancel,
                 |_| async {
                     Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
                         crate::OperationReceipt {
@@ -387,31 +275,22 @@ async fn ordinary_owner_denial_preserves_whole_error_work_and_candidate()
     ));
     assert_eq!(
         workspace
-            .read(
-                "/file",
-                32,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .read("/file", 32, B, &cancel)
             .await?
             .value
             .as_ref(),
         b"candidate"
     );
     let mut cancelled_candidate = workspace
-        .begin_transaction(
-            IdempotencyKey::new(),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .begin_transaction(IdempotencyKey::new(), B, &cancel)
         .await?
         .value;
     cancelled_candidate
         .write(
             "/cancelled",
             bytes::Bytes::from_static(b"not published"),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            B,
+            &cancel,
         )
         .await?
         .value;
@@ -422,7 +301,7 @@ async fn ordinary_owner_denial_preserves_whole_error_work_and_candidate()
             .commit(
                 None,
                 crate::PublicationPermit::Unrestricted,
-                crate::WorkBudget::UNBOUNDED,
+                B,
                 &cancellation,
                 |_| {
                     let future = guard();
@@ -455,6 +334,7 @@ async fn ordinary_owner_denial_preserves_whole_error_work_and_candidate()
 #[tokio::test]
 async fn native_guarded_creation_preserves_original_callback_error_and_prepared_work()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let original =
@@ -489,15 +369,11 @@ async fn native_guarded_creation_preserves_original_callback_error_and_prepared_
         before.authority_records_appended
     );
     assert!(
-        fs.open_workspace(
-            "native-guarded-creation-denied",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .is_err()
+        fs.open_workspace("native-guarded-creation-denied", B, &cancel)
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
+            .is_err()
     );
     original.receipt().verify(selected_transaction_budget())?;
     Ok(())
@@ -507,25 +383,16 @@ async fn native_guarded_creation_preserves_original_callback_error_and_prepared_
 #[tokio::test]
 async fn native_guarded_fork_denial_keeps_prepared_work_without_destination_authority()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace(
-            "native-guarded-fork-source",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("native-guarded-fork-source", B, &cancel)
         .await?
         .value;
     workspace
         .write("/selected", bytes::Bytes::from_static(b"original"))
         .await?;
-    let frozen = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let frozen = workspace.head(B, &cancel).await?.value;
     let cancellation = CancellationToken::new();
     let original =
         crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
@@ -561,15 +428,11 @@ async fn native_guarded_fork_denial_keeps_prepared_work_without_destination_auth
     assert!(seals.load(std::sync::atomic::Ordering::Relaxed) > 0);
     assert!(original.receipt().bytes_hashed > before.bytes_hashed);
     assert!(
-        fs.open_workspace(
-            "native-guarded-fork-denied",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .is_err()
+        fs.open_workspace("native-guarded-fork-denied", B, &cancel)
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
+            .is_err()
     );
     original.receipt().verify(selected_transaction_budget())?;
     Ok(())
@@ -579,25 +442,16 @@ async fn native_guarded_fork_denial_keeps_prepared_work_without_destination_auth
 #[tokio::test]
 async fn native_guarded_fork_rejects_an_unrelated_source_reservation_without_rebinding_it()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace(
-            "native-fork-reserved-source",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("native-fork-reserved-source", B, &cancel)
         .await?
         .value;
     workspace
         .write("/value", bytes::Bytes::from_static(b"frozen"))
         .await?;
-    let frozen = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let frozen = workspace.head(B, &cancel).await?.value;
     let cancellation = CancellationToken::new();
     let original =
         crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
@@ -637,15 +491,11 @@ async fn native_guarded_fork_rejects_an_unrelated_source_reservation_without_reb
     ));
     assert_eq!(original.receipt().authority_records_appended, before);
     assert!(
-        fs.open_workspace(
-            "native-fork-reserved-destination",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .is_err()
+        fs.open_workspace("native-fork-reserved-destination", B, &cancel)
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
+            .is_err()
     );
     workspace
         .release_publication(reservation, &original, &cancellation)
@@ -656,33 +506,23 @@ async fn native_guarded_fork_rejects_an_unrelated_source_reservation_without_reb
 #[tokio::test]
 async fn contextual_operation_record_retains_original_witness_after_head_advances()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace(
-            "original-context-record",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("original-context-record", B, &cancel)
         .await?
         .value;
     let cancellation = CancellationToken::new();
     let key = IdempotencyKey::new();
     let original_evidence: &'static [u8] = b"opaque original SDK operation witness";
     let context = crate::Digest::from_bytes([0xc7; 32]);
-    let mut transaction = workspace
-        .begin_transaction(
-            key,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let mut transaction = workspace.begin_transaction(key, B, &cancel).await?.value;
     transaction
         .write(
             "/original",
             bytes::Bytes::from_static(b"original generation"),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            B,
+            &cancel,
         )
         .await?
         .value;
@@ -694,7 +534,7 @@ async fn contextual_operation_record_retains_original_witness_after_head_advance
                 crate::PublicationPermit::Unrestricted,
             )),
             crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
             |_| {
                 std::future::ready(Ok::<_, crate::OperationFailure<WorkspaceError>>(
@@ -717,16 +557,10 @@ async fn contextual_operation_record_retains_original_witness_after_head_advance
             bytes::Bytes::from_static(b"later unrelated generation"),
         )
         .await?;
-    let current = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let current = workspace.head(B, &cancel).await?.value;
     assert_ne!(current.id(), original_generation.id());
     let observed = workspace
-        .operation_generation_record(key, WorkBudget::UNBOUNDED, &cancellation)
+        .operation_generation_record(key, B, &cancellation)
         .await?;
     let (generation, record) = observed.value.0.ok_or("original operation disappeared")?;
     assert_eq!(generation.id(), original_generation.id());
@@ -736,7 +570,7 @@ async fn contextual_operation_record_retains_original_witness_after_head_advance
     let mut accounting = crate::kernel::allocation::KernelAccounting::borrowed_standalone(
         &mut allocations,
         &mut decode_work,
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     );
     let evidence = crate::kernel::decode_publication_evidence_with_accounting(
@@ -754,7 +588,7 @@ async fn contextual_operation_record_retains_original_witness_after_head_advance
     assert!(decode_work.bytes_hashed >= original_evidence.len() as u64);
     assert_eq!(
         workspace
-            .operation_generation(key, WorkBudget::UNBOUNDED, &cancellation,)
+            .operation_generation(key, B, &cancellation,)
             .await?
             .value
             .ok_or("generation-only projection lost the operation")?
@@ -763,11 +597,7 @@ async fn contextual_operation_record_retains_original_witness_after_head_advance
     );
     assert!(
         workspace
-            .operation_generation_record(
-                IdempotencyKey::new(),
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )
+            .operation_generation_record(IdempotencyKey::new(), B, &cancellation,)
             .await?
             .value
             .0
@@ -779,13 +609,10 @@ async fn contextual_operation_record_retains_original_witness_after_head_advance
 #[tokio::test]
 async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_changed_data()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace(
-            "original-fingerprint-current-reservation",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("original-fingerprint-current-reservation", B, &cancel)
         .await?
         .value;
     let cancellation = CancellationToken::new();
@@ -793,29 +620,18 @@ async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_
     let context = crate::Digest::from_bytes([0xc8; 32]);
     let evidence = acyclic_stream::OwnedBytes::from_static(b"the original frozen SDK witness");
     let historical_permit = crate::PublicationPermit::Unrestricted;
-    let mut transaction = workspace
-        .begin_transaction(
-            key,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let mut transaction = workspace.begin_transaction(key, B, &cancel).await?.value;
     transaction
         .write(
             "/original",
             bytes::Bytes::from_static(b"original content"),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            B,
+            &cancel,
         )
         .await?
         .value;
     let first = workspace
-        .reserve_publication(
-            IdempotencyKey::new().operation_id(),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .reserve_publication(IdempotencyKey::new().operation_id(), B, &cancel)
         .await?
         .value;
     let current_permit = crate::PublicationPermit::Reservation {
@@ -835,7 +651,7 @@ async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_
         .commit(
             Some((context, evidence.clone(), historical_permit)),
             current_permit,
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
             &mut allow,
         )
@@ -846,7 +662,7 @@ async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_
         _ => return Err("the current genuine reservation did not authorize publication".into()),
     };
     let (_, record) = workspace
-        .operation_generation_record(key, WorkBudget::UNBOUNDED, &cancellation)
+        .operation_generation_record(key, B, &cancellation)
         .await?
         .value
         .0
@@ -856,7 +672,7 @@ async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_
     let mut accounting = crate::kernel::allocation::KernelAccounting::borrowed_standalone(
         &mut allocations,
         &mut work,
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     );
     let publication = crate::kernel::decode_publication_evidence_with_accounting(
@@ -893,19 +709,11 @@ async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_
     drop(accounting);
     drop(record);
     workspace
-        .release_publication(
-            first,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .release_publication(first, B, &cancel)
         .await?
         .value;
     let rotated = workspace
-        .reserve_publication(
-            IdempotencyKey::new().operation_id(),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .reserve_publication(IdempotencyKey::new().operation_id(), B, &cancel)
         .await?
         .value;
     let rotated_permit = crate::PublicationPermit::Reservation {
@@ -919,7 +727,7 @@ async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_
         .retry_stale_commit(
             key.operation_id(),
             rotated_permit,
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
             &mut allow,
             None,
@@ -937,7 +745,7 @@ async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_
         .retry_stale_commit(
             key.operation_id(),
             rotated_permit,
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
             &mut allow,
             None,
@@ -956,8 +764,8 @@ async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_
         .write(
             "/original",
             bytes::Bytes::from_static(b"changed candidate content"),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            B,
+            &cancel,
         )
         .await?
         .value;
@@ -966,7 +774,7 @@ async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_
         .retry_stale_commit(
             key.operation_id(),
             rotated_permit,
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
             &mut allow,
             None,
@@ -980,22 +788,11 @@ async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_
         Some(crate::LivePublicationObservation::IdempotencyConflict { .. })
     ));
     assert_eq!(
-        workspace
-            .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .id(),
+        workspace.head(B, &cancel).await?.value.id(),
         generation.id()
     );
     workspace
-        .release_publication(
-            rotated,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .release_publication(rotated, B, &cancel)
         .await?
         .value;
     Ok(())
@@ -1004,63 +801,35 @@ async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_
 #[tokio::test]
 async fn original_fingerprint_metadata_never_authorizes_a_foreign_current_reservation()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace(
-            "original-fingerprint-current-target",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("original-fingerprint-current-target", B, &cancel)
         .await?
         .value;
     let foreign = fs
-        .create_workspace(
-            "original-fingerprint-foreign-current-grant",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("original-fingerprint-foreign-current-grant", B, &cancel)
         .await?
         .value;
     let cancellation = CancellationToken::new();
-    let original_head = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let original_head = workspace.head(B, &cancel).await?.value;
     let key = IdempotencyKey::new();
-    let mut transaction = workspace
-        .begin_transaction(
-            key,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let mut transaction = workspace.begin_transaction(key, B, &cancel).await?.value;
     transaction
         .write(
             "/value",
             bytes::Bytes::from_static(b"the genuine candidate"),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            B,
+            &cancel,
         )
         .await?
         .value;
     let target_reservation = workspace
-        .reserve_publication(
-            IdempotencyKey::new().operation_id(),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .reserve_publication(IdempotencyKey::new().operation_id(), B, &cancel)
         .await?
         .value;
     let foreign_reservation = foreign
-        .reserve_publication(
-            IdempotencyKey::new().operation_id(),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .reserve_publication(IdempotencyKey::new().operation_id(), B, &cancel)
         .await?
         .value;
     let foreign_permit = crate::PublicationPermit::Reservation {
@@ -1076,7 +845,7 @@ async fn original_fingerprint_metadata_never_authorizes_a_foreign_current_reserv
                 crate::PublicationPermit::Unrestricted,
             )),
             foreign_permit,
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
             |_| {
                 std::future::ready(Ok::<_, crate::OperationFailure<WorkspaceError>>(
@@ -1099,38 +868,23 @@ async fn original_fingerprint_metadata_never_authorizes_a_foreign_current_reserv
     assert!(rejected.work.bytes_hashed > 0);
     assert_eq!(rejected.work.authority_records_appended, 0);
     assert_eq!(
-        workspace
-            .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .id(),
+        workspace.head(B, &cancel).await?.value.id(),
         original_head.id()
     );
     assert!(
         workspace
-            .operation_generation_record(key, WorkBudget::UNBOUNDED, &cancellation,)
+            .operation_generation_record(key, B, &cancellation,)
             .await?
             .value
             .0
             .is_none()
     );
     workspace
-        .release_publication(
-            target_reservation,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .release_publication(target_reservation, B, &cancel)
         .await?
         .value;
     foreign
-        .release_publication(
-            foreign_reservation,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .release_publication(foreign_reservation, B, &cancel)
         .await?
         .value;
     Ok(())

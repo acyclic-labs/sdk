@@ -5,18 +5,14 @@ async fn authored_transaction_is_atomic_and_preserves_result_positions()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = (fs.create_volume_with_id(
-        VolumeId::from_bytes([113; 16]),
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let volume =
+        (fs.create_volume_with_id(VolumeId::from_bytes([113; 16]), config(), B, &cancellation))
+            .await?
+            .value;
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -27,12 +23,12 @@ async fn authored_transaction_is_atomic_and_preserves_result_positions()
         vec![
             AuthoredMutation::CreateDirectory {
                 path: directory,
-                metadata: FileMetadata::default(),
+                metadata: empty_metadata(),
             },
             AuthoredMutation::CreateFile {
                 path: file.clone(),
                 bytes: OwnedBytes::from_static(b"initial"),
-                metadata: FileMetadata::default(),
+                metadata: empty_metadata(),
             },
             AuthoredMutation::Write {
                 path: file.clone(),
@@ -40,7 +36,7 @@ async fn authored_transaction_is_atomic_and_preserves_result_positions()
                 bytes: OwnedBytes::from_static(b"-atomic"),
             },
         ],
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -54,7 +50,7 @@ async fn authored_transaction_is_atomic_and_preserves_result_positions()
             offset: 0,
             length: 14,
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -65,20 +61,19 @@ async fn authored_transaction_is_atomic_and_preserves_result_positions()
             AuthoredMutation::CreateFile {
                 path: path("orphan")?,
                 bytes: OwnedBytes::from_static(b"never-visible"),
-                metadata: FileMetadata::default(),
+                metadata: empty_metadata(),
             },
             AuthoredMutation::Remove {
                 path: path("absent")?,
                 expected_file_id: None,
             },
         ],
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await;
     assert!(failed.is_err());
-    let absent =
-        (checkout.lookup_no_follow(&path("orphan")?, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    let absent = (checkout.lookup_no_follow(&path("orphan")?, B, &cancellation)).await?;
     assert!(absent.value.record.is_none());
     Ok(())
 }
@@ -90,18 +85,14 @@ async fn authored_bulk_transaction_is_bounded_and_atomic() -> Result<(), Box<dyn
     let cancellation = CancellationToken::new();
     let mut limited = config();
     limited.limits.maximum_mutations_per_batch = 2;
-    let volume = (fs.create_volume_with_id(
-        VolumeId::from_bytes([244; 16]),
-        limited,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let volume =
+        (fs.create_volume_with_id(VolumeId::from_bytes([244; 16]), limited, B, &cancellation))
+            .await?
+            .value;
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -111,23 +102,18 @@ async fn authored_bulk_transaction_is_bounded_and_atomic() -> Result<(), Box<dyn
             Ok(AuthoredMutation::CreateFile {
                 path: path(&format!("bulk{index}"))?,
                 bytes: OwnedBytes::from_static(b"ok"),
-                metadata: FileMetadata::default(),
+                metadata: empty_metadata(),
             })
         })
         .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
-    (checkout.apply_authored_bulk_transaction(created, WorkBudget::UNBOUNDED, &cancellation))
-        .await?;
+    (checkout.apply_authored_bulk_transaction(created, B, &cancellation)).await?;
     for index in 0..5 {
         assert!(
-            (checkout.lookup_no_follow(
-                &path(&format!("bulk{index}"))?,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            ))
-            .await?
-            .value
-            .record
-            .is_some()
+            (checkout.lookup_no_follow(&path(&format!("bulk{index}"))?, B, &cancellation,))
+                .await?
+                .value
+                .record
+                .is_some()
         );
     }
     let failed = (checkout.apply_authored_bulk_transaction(
@@ -135,34 +121,30 @@ async fn authored_bulk_transaction_is_bounded_and_atomic() -> Result<(), Box<dyn
             AuthoredMutation::CreateFile {
                 path: path("should-not-appear")?,
                 bytes: OwnedBytes::from_static(b"no"),
-                metadata: FileMetadata::default(),
+                metadata: empty_metadata(),
             },
             AuthoredMutation::CreateFile {
                 path: path("should-not-appear-either")?,
                 bytes: OwnedBytes::from_static(b"no"),
-                metadata: FileMetadata::default(),
+                metadata: empty_metadata(),
             },
             AuthoredMutation::CreateFile {
                 path: path("bulk0")?,
                 bytes: OwnedBytes::from_static(b"duplicate"),
-                metadata: FileMetadata::default(),
+                metadata: empty_metadata(),
             },
         ],
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await;
     assert!(failed.is_err());
     assert!(
-        (checkout.lookup_no_follow(
-            &path("should-not-appear")?,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .await?
-        .value
-        .record
-        .is_none()
+        (checkout.lookup_no_follow(&path("should-not-appear")?, B, &cancellation,))
+            .await?
+            .value
+            .record
+            .is_none()
     );
     Ok(())
 }
@@ -171,13 +153,10 @@ async fn authored_bulk_transaction_is_bounded_and_atomic() -> Result<(), Box<dyn
 #[tokio::test]
 async fn original_authored_transaction_keeps_true_ids_and_original_result_custody()
 -> Result<(), Box<dyn std::error::Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace(
-            "original-authored-transaction",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
+        .create_workspace("original-authored-transaction", B, &cancel)
         .await?
         .value;
     workspace
@@ -188,19 +167,19 @@ async fn original_authored_transaction_keeps_true_ids_and_original_result_custod
         .checkout(
             GenerationSelector::Head,
             writable_pinned(),
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         )
         .await?
         .value;
     let metadata = checkout
-        .lookup_no_follow_with_metadata(&path("source")?, WorkBudget::UNBOUNDED, &cancellation)
+        .lookup_no_follow_with_metadata(&path("source")?, B, &cancellation)
         .await?
         .value
         .ok_or("real source metadata absent")?
         .metadata;
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(cause, _)| cause)?;
+    let original =
+        crate::NativeMaterializationWork::new(B, &cancellation).map_err(|(cause, _)| cause)?;
     let mut candidate = checkout.private_candidate(&original, &cancellation)?;
     candidate.bind_authored_operation(OperationId::new());
     let first = path("transaction-first")?;
@@ -261,7 +240,7 @@ async fn original_authored_transaction_keeps_true_ids_and_original_result_custod
     assert_eq!(original.live_allocation_bytes(), live - result_bytes);
     assert!(
         checkout
-            .lookup_no_follow(&first, WorkBudget::UNBOUNDED, &cancellation,)
+            .lookup_no_follow(&first, B, &cancellation,)
             .await?
             .value
             .record
@@ -287,19 +266,14 @@ async fn borrowed_authored_second_staged_write_failure_keeps_candidate_source_an
         EmbeddedCapabilities::MEMORY,
     );
     let volume = fs
-        .create_volume_with_id(
-            VolumeId::from_bytes([122; 16]),
-            config(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
+        .create_volume_with_id(VolumeId::from_bytes([122; 16]), config(), B, &cancellation)
         .await?
         .value;
     let mut checkout = volume
         .checkout(
             GenerationSelector::Head,
             writable_pinned(),
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         )
         .await?
@@ -319,20 +293,20 @@ async fn borrowed_authored_second_staged_write_failure_keeps_candidate_source_an
                     bytes: (bytes::Bytes::copy_from_slice(body)).into(),
                     metadata: crate::kernel::FileMetadata::default(),
                 },
-                WorkBudget::UNBOUNDED,
+                B,
                 &cancellation,
             )
             .await?;
     }
     let mut metadata = checkout
-        .lookup_no_follow_with_metadata(&source, WorkBudget::UNBOUNDED, &cancellation)
+        .lookup_no_follow_with_metadata(&source, B, &cancellation)
         .await?
         .value
         .ok_or("real source missing")?
         .metadata;
     metadata.modified_ns = MetadataField::Value(99);
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(cause, _)| cause)?;
+    let original =
+        crate::NativeMaterializationWork::new(B, &cancellation).map_err(|(cause, _)| cause)?;
     let mut candidate = checkout.private_candidate(&original, &cancellation)?;
     let input = original_borrowed_path_changes(
         &source,
@@ -371,13 +345,13 @@ async fn borrowed_authored_second_staged_write_failure_keeps_candidate_source_an
     control.disable();
     for requested in [&source, &destination, &removed] {
         let retained = candidate
-            .lookup_no_follow(requested, WorkBudget::UNBOUNDED, &cancellation)
+            .lookup_no_follow(requested, B, &cancellation)
             .await?
             .value
             .record
             .ok_or("failed candidate lost existing record")?;
         let installed = checkout
-            .lookup_no_follow(requested, WorkBudget::UNBOUNDED, &cancellation)
+            .lookup_no_follow(requested, B, &cancellation)
             .await?
             .value
             .record
@@ -392,18 +366,14 @@ async fn inverse_private_mutations_restore_the_base_and_clear_replay_state()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = (fs.create_volume_with_id(
-        VolumeId::from_bytes([136; 16]),
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let volume =
+        (fs.create_volume_with_id(VolumeId::from_bytes([136; 16]), config(), B, &cancellation))
+            .await?
+            .value;
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -411,28 +381,17 @@ async fn inverse_private_mutations_restore_the_base_and_clear_replay_state()
     let base = checkout.generation_id();
     let transient = path("transient")?;
     (checkout.create(
-        crate::AuthoredMutation::CreateFile {
+        AuthoredMutation::CreateFile {
             path: transient.clone(),
-            bytes: (bytes::Bytes::from_static(b"temporary")).into(),
-            metadata: crate::kernel::FileMetadata::default(),
+            bytes: OwnedBytes::from_static(b"temporary"),
+            metadata: FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
     assert!(checkout.has_pending_mutations());
-    (checkout.mutate(
-        vec![crate::kernel::Mutation::Remove {
-            path: transient,
-            expected_file_id: (None).map_or(
-                crate::kernel::MetadataField::Unavailable,
-                crate::kernel::MetadataField::Value,
-            ),
-        }],
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
+    (checkout.remove(transient, None, B, &cancellation)).await?;
     assert!(!checkout.has_pending_mutations());
     assert_eq!(checkout.generation_id(), base);
     Ok(())
@@ -449,7 +408,7 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
     let volume = (fs.create_volume_with_id(
         VolumeId::from_bytes([124; 16]),
         operation_limited,
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -457,7 +416,7 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -468,7 +427,7 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
             offset: 0,
             bytes: OwnedBytes::new(),
         }],
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await
@@ -484,7 +443,7 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
     let noop_volume = (noop_fs.create_volume_with_id(
         VolumeId::from_bytes([125; 16]),
         config(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -492,7 +451,7 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
     let mut noop_checkout = (noop_volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -507,10 +466,10 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
             AuthoredMutation::CreateFile {
                 path: path("ordered")?,
                 bytes: OwnedBytes::new(),
-                metadata: FileMetadata::default(),
+                metadata: empty_metadata(),
             },
         ],
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await
@@ -521,7 +480,7 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         FsError::Mutation(GenerationMutationError::MissingSource)
     ));
     assert!(
-        (noop_checkout.lookup_no_follow(&path("ordered")?, WorkBudget::UNBOUNDED, &cancellation,))
+        (noop_checkout.lookup_no_follow(&path("ordered")?, B, &cancellation,))
             .await?
             .value
             .record
@@ -530,12 +489,12 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
 
     let direct_missing = (noop_checkout.change_content(
         path("missing")?,
-        crate::ContentChange::Write {
+        ContentChange::Write {
             offset: 0,
-            bytes: (bytes::Bytes::new()).into(),
+            bytes: OwnedBytes::new(),
         },
-        crate::ContentTimes::Preserve,
-        WorkBudget::UNBOUNDED,
+        ContentTimes::Preserve,
+        B,
         &cancellation,
     ))
     .await
@@ -550,20 +509,15 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         vec![AuthoredMutation::CreateFile {
             path: path("present")?,
             bytes: OwnedBytes::new(),
-            metadata: FileMetadata::default(),
+            metadata: empty_metadata(),
         }],
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
     let file_id = created.value.created_file_ids[0].ok_or("created file id missing")?;
     let generation_before_noop = noop_checkout.generation_id();
-    let empty = (noop_checkout.apply_authored_transaction(
-        Vec::new(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
+    let empty = (noop_checkout.apply_authored_transaction(Vec::new(), B, &cancellation)).await?;
     assert!(empty.value.created_file_ids.is_empty());
     assert_eq!(empty.work, WorkCounters::default());
     assert_eq!(noop_checkout.generation_id(), generation_before_noop);
@@ -573,7 +527,7 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
             offset: 0,
             bytes: OwnedBytes::new(),
         }],
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -581,10 +535,9 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
     assert!(noop.work.page_reads > 0);
     assert_eq!(noop_checkout.generation_id(), generation_before_noop);
     let mut empty_source = std::io::Cursor::new(OwnedBytes::new());
-    let empty_content =
-        (noop_checkout.stage_content(&mut empty_source, 1, WorkBudget::UNBOUNDED, &cancellation))
-            .await?
-            .value;
+    let empty_content = (noop_checkout.stage_content(&mut empty_source, 1, B, &cancellation))
+        .await?
+        .value;
     assert_eq!(empty_content.logical_bytes(), 0);
     let content_noop = (noop_checkout.apply_authored_transaction(
         vec![AuthoredMutation::WriteFromContent {
@@ -592,7 +545,7 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
             offset: u64::MAX,
             content: empty_content,
         }],
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -601,12 +554,12 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
     assert_eq!(noop_checkout.generation_id(), generation_before_noop);
     let direct = (noop_checkout.change_content(
         path("present")?,
-        crate::ContentChange::Write {
+        ContentChange::Write {
             offset: u64::MAX,
-            bytes: (bytes::Bytes::new()).into(),
+            bytes: OwnedBytes::new(),
         },
-        crate::ContentTimes::Preserve,
-        WorkBudget::UNBOUNDED,
+        ContentTimes::Preserve,
+        B,
         &cancellation,
     ))
     .await?;
@@ -614,12 +567,12 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
     assert_eq!(noop_checkout.generation_id(), generation_before_noop);
     let identity = (noop_checkout.change_content(
         file_id,
-        crate::ContentChange::Write {
+        ContentChange::Write {
             offset: u64::MAX,
-            bytes: (bytes::Bytes::new()).into(),
+            bytes: OwnedBytes::new(),
         },
-        crate::ContentTimes::Preserve,
-        WorkBudget::UNBOUNDED,
+        ContentTimes::Preserve,
+        B,
         &cancellation,
     ))
     .await?;
@@ -630,9 +583,9 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         vec![AuthoredMutation::CreateFile {
             path: path("large")?,
             bytes: OwnedBytes::from(vec![1; crate::kernel::MAXIMUM_INLINE_FILE_BYTES + 1]),
-            metadata: FileMetadata::default(),
+            metadata: empty_metadata(),
         }],
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await
@@ -641,7 +594,7 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
     assert!(matches!(expanded.error, FsError::TooManyPendingMutations));
     assert_eq!(*expanded.work, WorkCounters::default());
     assert!(
-        (checkout.lookup_no_follow(&path("large")?, WorkBudget::UNBOUNDED, &cancellation,))
+        (checkout.lookup_no_follow(&path("large")?, B, &cancellation,))
             .await?
             .value
             .record
@@ -653,7 +606,7 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
     let volume = (fs.create_volume_with_id(
         VolumeId::from_bytes([125; 16]),
         byte_limited,
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -661,7 +614,7 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -670,7 +623,7 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         AuthoredMutation::CreateFile {
             path: path("created-file")?,
             bytes: OwnedBytes::from_static(b"xx"),
-            metadata: FileMetadata::default(),
+            metadata: empty_metadata(),
         },
         AuthoredMutation::Write {
             path: path("file")?,
@@ -680,17 +633,13 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         AuthoredMutation::CreateSymbolicLink {
             path: path("link")?,
             target: OwnedBytes::from_static(b"xx"),
-            metadata: FileMetadata::default(),
+            metadata: empty_metadata(),
         },
     ] {
-        let failure = (checkout.apply_authored_transaction(
-            vec![mutation],
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .await
-        .err()
-        .ok_or("byte-limited authored transaction unexpectedly succeeded")?;
+        let failure = (checkout.apply_authored_transaction(vec![mutation], B, &cancellation))
+            .await
+            .err()
+            .ok_or("byte-limited authored transaction unexpectedly succeeded")?;
         assert!(matches!(
             failure.error,
             FsError::FileRead(FileRangeReadError::InvalidRange)
@@ -698,12 +647,12 @@ async fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         assert_eq!(*failure.work, WorkCounters::default());
     }
     let direct = (checkout.create(
-        crate::AuthoredMutation::CreateSymbolicLink {
+        AuthoredMutation::CreateSymbolicLink {
             path: path("direct-link")?,
-            target: (bytes::Bytes::from_static(b"xx")).into(),
-            metadata: crate::kernel::FileMetadata::default(),
+            target: OwnedBytes::from_static(b"xx"),
+            metadata: FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await
@@ -722,33 +671,27 @@ async fn authored_transactions_cover_every_portable_operation_without_hidden_pat
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = (fs.create_volume_with_id(
-        VolumeId::from_bytes([114; 16]),
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let volume =
+        (fs.create_volume_with_id(VolumeId::from_bytes([114; 16]), config(), B, &cancellation))
+            .await?
+            .value;
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
     .value;
 
     let mut create_source = std::io::Cursor::new(OwnedBytes::from_static(b"streamed"));
-    let staged_create =
-        (checkout.stage_content(&mut create_source, 64, WorkBudget::UNBOUNDED, &cancellation))
-            .await?
-            .value;
+    let staged_create = (checkout.stage_content(&mut create_source, 64, B, &cancellation))
+        .await?
+        .value;
     let mut write_source = std::io::Cursor::new(OwnedBytes::from_static(b"TAIL"));
-    let staged_write =
-        (checkout.stage_content(&mut write_source, 64, WorkBudget::UNBOUNDED, &cancellation))
-            .await?
-            .value;
+    let staged_write = (checkout.stage_content(&mut write_source, 64, B, &cancellation))
+        .await?
+        .value;
     assert_eq!(staged_create.logical_bytes(), 8);
     assert_eq!(staged_create.root().kind, ObjectKind::Blob);
     assert_eq!(staged_write.logical_bytes(), 4);
@@ -760,40 +703,40 @@ async fn authored_transactions_cover_every_portable_operation_without_hidden_pat
     let streamed_identity = FileId::from_bytes([199; 16]);
     let hard_link = path("hard-link")?;
     let renamed = path("renamed")?;
-    let mut replacement_metadata = FileMetadata::default();
+    let mut replacement_metadata = empty_metadata();
     replacement_metadata.modified_ns = MetadataField::Value(42);
     let large = OwnedBytes::from(vec![0x5a; crate::kernel::MAXIMUM_INLINE_FILE_BYTES + 1]);
     let transaction = (checkout.apply_authored_transaction(
         vec![
             AuthoredMutation::CreateDirectory {
                 path: path("directory")?,
-                metadata: FileMetadata::default(),
+                metadata: empty_metadata(),
             },
             AuthoredMutation::CreateFile {
                 path: source.clone(),
                 bytes: OwnedBytes::from_static(b"abcdefgh"),
-                metadata: FileMetadata::default(),
+                metadata: empty_metadata(),
             },
             AuthoredMutation::CreateFile {
                 path: destination.clone(),
                 bytes: OwnedBytes::from_static(b"................"),
-                metadata: FileMetadata::default(),
+                metadata: empty_metadata(),
             },
             AuthoredMutation::CreateFile {
                 path: path("large")?,
                 bytes: large.clone(),
-                metadata: FileMetadata::default(),
+                metadata: empty_metadata(),
             },
             AuthoredMutation::CreateFileFromContent {
                 path: streamed.clone(),
                 content: staged_create,
-                metadata: FileMetadata::default(),
+                metadata: empty_metadata(),
                 file_id: Some(streamed_identity),
             },
             AuthoredMutation::CreateSymbolicLink {
                 path: path("symbolic")?,
                 target: OwnedBytes::from_static(b"../source"),
-                metadata: FileMetadata::default(),
+                metadata: empty_metadata(),
             },
             AuthoredMutation::Write {
                 path: source.clone(),
@@ -856,7 +799,7 @@ async fn authored_transactions_cover_every_portable_operation_without_hidden_pat
                 expected_file_id: None,
             },
         ],
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -881,7 +824,7 @@ async fn authored_transactions_cover_every_portable_operation_without_hidden_pat
                 offset: 0,
                 length: 12,
             },
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         ))
         .await?
@@ -895,10 +838,10 @@ async fn authored_transactions_cover_every_portable_operation_without_hidden_pat
             vec![AuthoredMutation::CreateFileFromContent {
                 path: path("duplicate-source-identity")?,
                 content: staged_create,
-                metadata: FileMetadata::default(),
+                metadata: empty_metadata(),
                 file_id: Some(streamed_identity),
             }],
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         ))
         .await
@@ -911,25 +854,23 @@ async fn authored_transactions_cover_every_portable_operation_without_hidden_pat
                 offset: 0,
                 length: u64::try_from(large.len())?,
             },
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         ))
         .await?
         .value
-        .bytes
-        .as_ref(),
-        large.as_ref()
+        .bytes,
+        large
     );
     assert_eq!(
-        (checkout.read_symbolic_link(&path("symbolic")?, WorkBudget::UNBOUNDED, &cancellation,))
+        (checkout.read_symbolic_link(&path("symbolic")?, B, &cancellation,))
             .await?
             .value
-            .bytes
             .as_ref(),
         b"../source"
     );
     assert_eq!(
-        (checkout.read_metadata(&source, WorkBudget::UNBOUNDED, &cancellation,))
+        (checkout.read_metadata(&source, B, &cancellation,))
             .await?
             .value
             .modified_ns,

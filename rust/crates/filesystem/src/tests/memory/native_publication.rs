@@ -9,18 +9,18 @@ async fn original_authority_checks_both_cancellation_roots_before_backend_work()
     let root = crate::CancellationToken::new();
     let supplied = crate::CancellationToken::new();
     let active = crate::CancellationToken::new();
-    let work = NativeMaterializationWork::new(native_authority_budget(), &root)
+    let work = NativeMaterializationWork::new(NATIVE_AUTHORITY_BUDGET, &root)
         .map_err(|(error, _)| error)?;
     let head = ({
-        let authority_budget = native_authority_budget();
         let authority_cancellation = &crate::CancellationToken::new();
 
-        let mut __authority_work =
-            crate::AuthorityWork::new(authority_budget, authority_cancellation);
-        let __authority_result = store.head(id, &mut __authority_work).await;
-        __authority_work.receipt(__authority_result)
-    })?
-    .value;
+        store
+            .head(
+                id,
+                &mut crate::AuthorityWork::new(NATIVE_AUTHORITY_BUDGET, authority_cancellation),
+            )
+            .await
+    })?;
     let before = work.receipt();
     supplied.cancel();
     for cancellation in [&supplied, &active] {
@@ -29,61 +29,58 @@ async fn original_authority_checks_both_cancellation_roots_before_backend_work()
         }
         assert!(
             ({
-                let mut __authority_work = crate::AuthorityWork::native(&work, cancellation);
-                let __authority_result =
-                    AsyncAuthorityStore::head(&store, id, &mut __authority_work).await;
-                __authority_result
+                AsyncAuthorityStore::head(
+                    &store,
+                    id,
+                    &mut crate::AuthorityWork::native(&work, cancellation),
+                )
+                .await
             })
             .is_err()
         );
         assert!(
             ({
-                let authority_input_2 = ReplayLimit {
-                    records: 1,
-                    payload_bytes: 8_192,
-                };
-
-                let mut __authority_work = crate::AuthorityWork::native(&work, cancellation);
-                let __authority_result = AsyncAuthorityStore::replay(
+                AsyncAuthorityStore::replay(
                     &store,
                     id,
                     Sequence::GENESIS,
-                    authority_input_2,
-                    &mut __authority_work,
+                    ReplayLimit {
+                        records: 1,
+                        payload_bytes: 8_192,
+                    },
+                    &mut crate::AuthorityWork::native(&work, cancellation),
                 )
                 .await
                 .map(|(value, allocation)| {
                     (value, allocation.expect("native authority allocation"))
-                });
-                __authority_result
+                })
             })
             .is_err()
         );
         assert!(
             ({
-                let mut __authority_work = crate::AuthorityWork::native(&work, cancellation);
-                let __authority_result =
-                    AsyncAuthorityStore::fence(&store, id, head, &mut __authority_work).await;
-                __authority_result
-            })
-            .is_err()
-        );
-        assert!(
-            ({
-                let authority_input_1 = committed.operation_id;
-
-                let mut __authority_work = crate::AuthorityWork::native(&work, cancellation);
-                let __authority_result = AsyncAuthorityStore::find_operation(
+                AsyncAuthorityStore::fence(
                     &store,
                     id,
-                    authority_input_1,
-                    &mut __authority_work,
+                    head,
+                    &mut crate::AuthorityWork::native(&work, cancellation),
+                )
+                .await
+            })
+            .is_err()
+        );
+        assert!(
+            ({
+                AsyncAuthorityStore::find_operation(
+                    &store,
+                    id,
+                    committed.operation_id,
+                    &mut crate::AuthorityWork::native(&work, cancellation),
                 )
                 .await
                 .map(|(value, allocation)| {
                     (value, allocation.expect("native authority allocation"))
-                });
-                __authority_result
+                })
             })
             .is_err()
         );
@@ -91,15 +88,15 @@ async fn original_authority_checks_both_cancellation_roots_before_backend_work()
     }
     assert_eq!(
         ({
-            let authority_budget = native_authority_budget();
             let authority_cancellation = &crate::CancellationToken::new();
 
-            let mut __authority_work =
-                crate::AuthorityWork::new(authority_budget, authority_cancellation);
-            let __authority_result = store.head(id, &mut __authority_work).await;
-            __authority_work.receipt(__authority_result)
-        })?
-        .value,
+            store
+                .head(
+                    id,
+                    &mut crate::AuthorityWork::new(NATIVE_AUTHORITY_BUDGET, authority_cancellation),
+                )
+                .await
+        })?,
         head
     );
     Ok(())
@@ -112,7 +109,7 @@ async fn original_first_record_is_atomic_exact_and_ordinary_byte_compatible()
     use crate::async_storage::AsyncAuthorityStore;
     use crate::materializer::NativeMaterializationWork;
     let cancellation = crate::CancellationToken::new();
-    let work = NativeMaterializationWork::new(native_authority_budget(), &cancellation)
+    let work = NativeMaterializationWork::new(NATIVE_AUTHORITY_BUDGET, &cancellation)
         .map_err(|(error, _)| error)?;
     let native = std::sync::Arc::new(MemoryAuthorityStore::default());
     let ordinary = std::sync::Arc::new(MemoryAuthorityStore::default());
@@ -120,19 +117,15 @@ async fn original_first_record_is_atomic_exact_and_ordinary_byte_compatible()
     let proposed = native_mutation_request(id, Head::genesis(Epoch::GENESIS)).commit;
     assert!(
         (async {
-            let authority_input_1 = proposed.clone();
-
-            let mut __authority_work = crate::AuthorityWork::native(&work, &cancellation);
-            let __authority_result = AsyncAuthorityStore::create_first_record(
+            AsyncAuthorityStore::create_first_record(
                 &native,
                 id,
-                authority_input_1,
-                &mut __authority_work,
+                proposed.clone(),
+                &mut crate::AuthorityWork::native(&work, &cancellation),
                 None::<&mut ()>,
             )
             .await
-            .map_err(|error| error.into_error(std::convert::identity));
-            __authority_result
+            .map_err(|error| error.into_error(std::convert::identity))
         })
         .await?
     );
@@ -146,14 +139,12 @@ async fn original_first_record_is_atomic_exact_and_ordinary_byte_compatible()
         + size_of::<(OperationId, (usize, KernelOwnedAllocation))>()) as u64;
     assert_eq!(created.peak_allocation_bytes, state + retained);
     let ordinary_receipt = (async {
-        let authority_input_1 = proposed.clone();
-        let authority_budget = native_authority_budget();
-
-        let mut __authority_work = crate::AuthorityWork::new(authority_budget, &cancellation);
+        let mut __authority_work =
+            crate::AuthorityWork::new(NATIVE_AUTHORITY_BUDGET, &cancellation);
         let __authority_result = AsyncAuthorityStore::create_first_record(
             &ordinary,
             id,
-            authority_input_1,
+            proposed.clone(),
             &mut __authority_work,
             None::<&mut ()>,
         )
@@ -172,53 +163,41 @@ async fn original_first_record_is_atomic_exact_and_ordinary_byte_compatible()
         ({
             let authority_cancellation = &crate::CancellationToken::new();
 
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __authority_result = AsyncAuthorityStore::replay(
+            AsyncAuthorityStore::replay(
                 native.as_ref(),
                 id,
                 Sequence::GENESIS,
                 limit,
-                &mut __authority_work,
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation),
             )
             .await
-            .map(|(value, _allocation)| value);
-            __authority_work.receipt(__authority_result)
-        })?
-        .value,
+            .map(|(value, _allocation)| value)
+        })?,
         ({
             let authority_cancellation = &crate::CancellationToken::new();
 
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __authority_result = AsyncAuthorityStore::replay(
+            AsyncAuthorityStore::replay(
                 ordinary.as_ref(),
                 id,
                 Sequence::GENESIS,
                 limit,
-                &mut __authority_work,
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation),
             )
             .await
-            .map(|(value, _allocation)| value);
-            __authority_work.receipt(__authority_result)
+            .map(|(value, _allocation)| value)
         })?
-        .value
     );
     assert!(
         (async {
-            let authority_input_1 = proposed.clone();
-
-            let mut __authority_work = crate::AuthorityWork::native(&work, &cancellation);
-            let __authority_result = AsyncAuthorityStore::create_first_record(
+            AsyncAuthorityStore::create_first_record(
                 &native,
                 id,
-                authority_input_1,
-                &mut __authority_work,
+                proposed.clone(),
+                &mut crate::AuthorityWork::native(&work, &cancellation),
                 None::<&mut ()>,
             )
             .await
-            .map_err(|error| error.into_error(std::convert::identity));
-            __authority_result
+            .map_err(|error| error.into_error(std::convert::identity))
         })
         .await?
     );
@@ -246,17 +225,15 @@ async fn original_first_record_is_atomic_exact_and_ordinary_byte_compatible()
     ] {
         assert!(
             !(async {
-                let mut __authority_work = crate::AuthorityWork::native(&work, &cancellation);
-                let __authority_result = AsyncAuthorityStore::create_first_record(
+                AsyncAuthorityStore::create_first_record(
                     &native,
                     id,
                     changed,
-                    &mut __authority_work,
+                    &mut crate::AuthorityWork::native(&work, &cancellation),
                     None::<&mut ()>,
                 )
                 .await
-                .map_err(|error| error.into_error(std::convert::identity));
-                __authority_result
+                .map_err(|error| error.into_error(std::convert::identity))
             })
             .await?
         );
@@ -290,24 +267,20 @@ async fn original_owner_failure_wins_after_planning_outside_every_lock()
     let id = AuthorityId::from_bytes([0x96; 16]);
     let head = Head::genesis(Epoch::GENESIS);
     ({
-        let authority_input_1 = head.epoch;
         let authority_cancellation = &crate::CancellationToken::new();
 
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __authority_result = AsyncAuthorityStore::create_authority(
+        AsyncAuthorityStore::create_authority(
             store.as_ref(),
             id,
-            authority_input_1,
-            &mut __authority_work,
+            head.epoch,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation),
             None::<&mut ()>,
         )
         .await
-        .map_err(|error| error.into_error(std::convert::identity));
-        __authority_work.receipt(__authority_result)
+        .map_err(|error| error.into_error(std::convert::identity))
     })?;
     let cancellation = crate::CancellationToken::new();
-    let work = NativeMaterializationWork::new(native_authority_budget(), &cancellation)
+    let work = NativeMaterializationWork::new(NATIVE_AUTHORITY_BUDGET, &cancellation)
         .map_err(|(error, _)| error)?;
     let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let callback_calls = calls.clone();
@@ -322,10 +295,12 @@ async fn original_owner_failure_wins_after_planning_outside_every_lock()
         let original = original.clone();
         async move {
             let actual = ({
-                let mut __authority_work = crate::AuthorityWork::native(&original, &cancellation);
-                let __authority_result =
-                    AsyncAuthorityStore::head(store.as_ref(), id, &mut __authority_work).await;
-                __authority_result
+                AsyncAuthorityStore::head(
+                    store.as_ref(),
+                    id,
+                    &mut crate::AuthorityWork::native(&original, &cancellation),
+                )
+                .await
             })
             .expect("owner callback must hold no provider or root lock");
             assert_eq!(actual, head);
@@ -340,22 +315,15 @@ async fn original_owner_failure_wins_after_planning_outside_every_lock()
     };
     assert!(matches!(
         (async {
-            let authority_input_0 = native_mutation_request(id, head);
-            let authority_input_3 = &mut guard;
-
-            let mut __authority_work = crate::AuthorityWork::native(&work, &cancellation);
-            let __authority_result = AsyncAuthorityStore::compare_and_append(
+            AsyncAuthorityStore::compare_and_append(
                 &store,
-                authority_input_0,
-                &mut __authority_work,
-                Some(&mut crate::NativeAuthorityGuard(
-                    (authority_input_3).clone(),
-                )),
+                native_mutation_request(id, head),
+                &mut crate::AuthorityWork::native(&work, &cancellation),
+                Some(&mut crate::NativeAuthorityGuard((&mut guard).clone())),
             )
             .await
             .map_err(|error| error.into_error(std::convert::Into::into))
-            .map(|(value, allocation)| (value, allocation.expect("native authority allocation")));
-            __authority_result
+            .map(|(value, allocation)| (value, allocation.expect("native authority allocation")))
         })
         .await,
         Err(OriginalMutationOwnerFailure::Owner(0xa7))
@@ -365,13 +333,13 @@ async fn original_owner_failure_wins_after_planning_outside_every_lock()
         ({
             let authority_cancellation = &crate::CancellationToken::new();
 
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __authority_result =
-                AsyncAuthorityStore::head(store.as_ref(), id, &mut __authority_work).await;
-            __authority_work.receipt(__authority_result)
-        })?
-        .value,
+            AsyncAuthorityStore::head(
+                store.as_ref(),
+                id,
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation),
+            )
+            .await
+        })?,
         head
     );
     let prefix = work.receipt();
@@ -400,25 +368,21 @@ async fn original_owner_revalidates_head_permit_and_cancellation_at_publication(
     let id = AuthorityId::from_bytes([0x97; 16]);
     let head = Head::genesis(Epoch::GENESIS);
     ({
-        let authority_input_1 = head.epoch;
         let authority_cancellation = &crate::CancellationToken::new();
 
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __authority_result = AsyncAuthorityStore::create_authority(
+        AsyncAuthorityStore::create_authority(
             store.as_ref(),
             id,
-            authority_input_1,
-            &mut __authority_work,
+            head.epoch,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation),
             None::<&mut ()>,
         )
         .await
-        .map_err(|error| error.into_error(std::convert::identity));
-        __authority_work.receipt(__authority_result)
+        .map_err(|error| error.into_error(std::convert::identity))
     })?;
     let root = crate::CancellationToken::new();
     let supplied = crate::CancellationToken::new();
-    let work = NativeMaterializationWork::new(native_authority_budget(), &root)
+    let work = NativeMaterializationWork::new(NATIVE_AUTHORITY_BUDGET, &root)
         .map_err(|(error, _)| error)?;
     let callback_store = store.clone();
     let callback_supplied = supplied.clone();
@@ -428,32 +392,27 @@ async fn original_owner_revalidates_head_permit_and_cancellation_at_publication(
         let original = original.clone();
         async move {
             ({
-                let mut __authority_work = crate::AuthorityWork::native(&original, &supplied);
-                let __authority_result =
-                    AsyncAuthorityStore::fence(store.as_ref(), id, head, &mut __authority_work)
-                        .await;
-                __authority_result
+                AsyncAuthorityStore::fence(
+                    store.as_ref(),
+                    id,
+                    head,
+                    &mut crate::AuthorityWork::native(&original, &supplied),
+                )
+                .await
             })
             .map(|_| ())
         }
     };
     let (outcome, allocation) = (async {
-        let authority_input_0 = native_mutation_request(id, head);
-        let authority_input_3 = &mut guard;
-
-        let mut __authority_work = crate::AuthorityWork::native(&work, &supplied);
-        let __authority_result = AsyncAuthorityStore::compare_and_append(
+        AsyncAuthorityStore::compare_and_append(
             &store,
-            authority_input_0,
-            &mut __authority_work,
-            Some(&mut crate::NativeAuthorityGuard(
-                (authority_input_3).clone(),
-            )),
+            native_mutation_request(id, head),
+            &mut crate::AuthorityWork::native(&work, &supplied),
+            Some(&mut crate::NativeAuthorityGuard((&mut guard).clone())),
         )
         .await
         .map_err(|error| error.into_error(std::convert::Into::into))
-        .map(|(value, allocation)| (value, allocation.expect("native authority allocation")));
-        __authority_result
+        .map(|(value, allocation)| (value, allocation.expect("native authority allocation")))
     })
     .await?;
     assert!(matches!(outcome, AppendOutcome::Fenced { actual_epoch } if actual_epoch.get() == 2));
@@ -462,26 +421,26 @@ async fn original_owner_revalidates_head_permit_and_cancellation_at_publication(
         ({
             let authority_cancellation = &crate::CancellationToken::new();
 
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __authority_result =
-                AsyncAuthorityStore::head(store.as_ref(), id, &mut __authority_work).await;
-            __authority_work.receipt(__authority_result)
+            AsyncAuthorityStore::head(
+                store.as_ref(),
+                id,
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation),
+            )
+            .await
         })?
-        .value
         .sequence,
         Sequence::GENESIS
     );
     let actual = ({
         let authority_cancellation = &crate::CancellationToken::new();
 
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __authority_result =
-            AsyncAuthorityStore::head(store.as_ref(), id, &mut __authority_work).await;
-        __authority_work.receipt(__authority_result)
-    })?
-    .value;
+        AsyncAuthorityStore::head(
+            store.as_ref(),
+            id,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation),
+        )
+        .await
+    })?;
     let mut request = native_mutation_request(id, actual);
     request.permit = crate::storage::PublicationPermit::Reservation {
         operation_id: request.commit.operation_id.into_bytes(),
@@ -497,21 +456,15 @@ async fn original_owner_revalidates_head_permit_and_cancellation_at_publication(
     };
     assert!(matches!(
         (async {
-            let authority_input_3 = &mut forbidden;
-
-            let mut __authority_work = crate::AuthorityWork::native(&work, &supplied);
-            let __authority_result = AsyncAuthorityStore::compare_and_append(
+            AsyncAuthorityStore::compare_and_append(
                 &store,
                 request,
-                &mut __authority_work,
-                Some(&mut crate::NativeAuthorityGuard(
-                    (authority_input_3).clone(),
-                )),
+                &mut crate::AuthorityWork::native(&work, &supplied),
+                Some(&mut crate::NativeAuthorityGuard((&mut forbidden).clone())),
             )
             .await
             .map_err(|error| error.into_error(std::convert::Into::into))
-            .map(|(value, allocation)| (value, allocation.expect("native authority allocation")));
-            __authority_result
+            .map(|(value, allocation)| (value, allocation.expect("native authority allocation")))
         })
         .await,
         Err(AuthorityStoreError::RejectedStatic(_))
@@ -525,22 +478,15 @@ async fn original_owner_revalidates_head_permit_and_cancellation_at_publication(
     };
     assert!(matches!(
         (async {
-            let authority_input_0 = native_mutation_request(id, actual);
-            let authority_input_3 = &mut cancel;
-
-            let mut __authority_work = crate::AuthorityWork::native(&work, &supplied);
-            let __authority_result = AsyncAuthorityStore::compare_and_append(
+            AsyncAuthorityStore::compare_and_append(
                 &store,
-                authority_input_0,
-                &mut __authority_work,
-                Some(&mut crate::NativeAuthorityGuard(
-                    (authority_input_3).clone(),
-                )),
+                native_mutation_request(id, actual),
+                &mut crate::AuthorityWork::native(&work, &supplied),
+                Some(&mut crate::NativeAuthorityGuard((&mut cancel).clone())),
             )
             .await
             .map_err(|error| error.into_error(std::convert::Into::into))
-            .map(|(value, allocation)| (value, allocation.expect("native authority allocation")));
-            __authority_result
+            .map(|(value, allocation)| (value, allocation.expect("native authority allocation")))
         })
         .await,
         Err(AuthorityStoreError::Cancelled)
@@ -549,13 +495,13 @@ async fn original_owner_revalidates_head_permit_and_cancellation_at_publication(
         ({
             let authority_cancellation = &crate::CancellationToken::new();
 
-            let mut __authority_work =
-                crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-            let __authority_result =
-                AsyncAuthorityStore::head(store.as_ref(), id, &mut __authority_work).await;
-            __authority_work.receipt(__authority_result)
-        })?
-        .value,
+            AsyncAuthorityStore::head(
+                store.as_ref(),
+                id,
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation),
+            )
+            .await
+        })?,
         actual
     );
     assert_eq!(
@@ -578,7 +524,7 @@ async fn original_first_record_and_append_denial_never_create_a_partial_authorit
     let work = NativeMaterializationWork::new(
         WorkBudget {
             peak_allocation_bytes: NativeMaterializationWork::accounting_state_bytes(),
-            ..native_authority_budget()
+            ..NATIVE_AUTHORITY_BUDGET
         },
         &root,
     )
@@ -586,19 +532,15 @@ async fn original_first_record_and_append_denial_never_create_a_partial_authorit
     let request = native_mutation_request(id, Head::genesis(Epoch::GENESIS));
     assert!(matches!(
         ({
-            let authority_input_1 = request.commit.clone();
-
-            let mut __authority_work = crate::AuthorityWork::native(&work, &supplied);
-            let __authority_result = AsyncAuthorityStore::create_first_record(
+            AsyncAuthorityStore::create_first_record(
                 &store,
                 id,
-                authority_input_1,
-                &mut __authority_work,
+                request.commit.clone(),
+                &mut crate::AuthorityWork::native(&work, &supplied),
                 None::<&mut ()>,
             )
             .await
-            .map_err(|error| error.into_error(std::convert::identity));
-            __authority_result
+            .map_err(|error| error.into_error(std::convert::identity))
         }),
         Err(AuthorityStoreError::NativeOriginal(_))
     ));
@@ -628,39 +570,31 @@ async fn original_first_record_and_append_denial_never_create_a_partial_authorit
         let prefix = work.receipt();
         assert!(
             ({
-                let authority_input_1 = request.commit.clone();
-
-                let mut __authority_work = crate::AuthorityWork::native(&work, cancellation);
-                let __authority_result = AsyncAuthorityStore::create_first_record(
+                AsyncAuthorityStore::create_first_record(
                     &store,
                     id,
-                    authority_input_1,
-                    &mut __authority_work,
+                    request.commit.clone(),
+                    &mut crate::AuthorityWork::native(&work, cancellation),
                     None::<&mut ()>,
                 )
                 .await
-                .map_err(|error| error.into_error(std::convert::identity));
-                __authority_result
+                .map_err(|error| error.into_error(std::convert::identity))
             })
             .is_err()
         );
         assert!(
             ({
-                let authority_input_0 = request.clone();
-
-                let mut __authority_work = crate::AuthorityWork::native(&work, cancellation);
-                let __authority_result = AsyncAuthorityStore::compare_and_append(
+                AsyncAuthorityStore::compare_and_append(
                     &store,
-                    authority_input_0,
-                    &mut __authority_work,
+                    request.clone(),
+                    &mut crate::AuthorityWork::native(&work, cancellation),
                     None::<&mut ()>,
                 )
                 .await
                 .map_err(|error| error.into_error(std::convert::identity))
                 .map(|(value, allocation)| {
                     (value, allocation.expect("native authority allocation"))
-                });
-                __authority_result
+                })
             })
             .is_err()
         );
@@ -677,7 +611,7 @@ async fn ordinary_guarded_first_record_seals_atomic_creation_and_successful_reco
     let store = std::sync::Arc::new(MemoryAuthorityStore::default());
     let id = AuthorityId::from_bytes([0x9a; 16]);
     let proposed = native_mutation_request(id, Head::genesis(Epoch::GENESIS)).commit;
-    let budget = native_authority_budget();
+    let budget = NATIVE_AUTHORITY_BUDGET;
     let cancellation = crate::CancellationToken::new();
     let mut failed = |remaining: WorkBudget| {
         assert!(remaining.bytes_hashed < budget.bytes_hashed);
@@ -710,14 +644,13 @@ async fn ordinary_guarded_first_record_seals_atomic_creation_and_successful_reco
         }
     };
     let failure = (async {
-        let authority_input_1 = proposed.clone();
         let authority_input_4 = &mut failed;
 
         let mut __authority_work = crate::AuthorityWork::new(budget, &cancellation);
         let __authority_result = AsyncAuthorityStore::create_first_record(
             &store,
             id,
-            authority_input_1,
+            proposed.clone(),
             &mut __authority_work,
             Some(&mut (&mut *authority_input_4)),
         )
@@ -775,14 +708,13 @@ async fn ordinary_guarded_first_record_seals_atomic_creation_and_successful_reco
         }
     };
     let first = (async {
-        let authority_input_1 = proposed.clone();
         let authority_input_4 = &mut successful;
 
         let mut __authority_work = crate::AuthorityWork::new(budget, &cancellation);
         let __authority_result = AsyncAuthorityStore::create_first_record(
             &store,
             id,
-            authority_input_1,
+            proposed.clone(),
             &mut __authority_work,
             Some(&mut (&mut *authority_input_4)),
         )

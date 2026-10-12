@@ -43,13 +43,13 @@ async fn scheduling_is_bounded_typed_and_traceable() -> Result<(), Box<dyn std::
     let rejected_result = (async {
         let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __object_result = objects.contains(object_id, &mut __object_work).await;
-        __object_work.receipt(__object_result)
+        __object_result
     })
     .await;
     let Err(rejected) = rejected_result else {
         return Err("scheduled contains rejection succeeded".into());
     };
-    assert!(matches!(rejected.error, ObjectStoreError::Rejected(_)));
+    assert!(matches!(rejected, ObjectStoreError::Rejected(_)));
     assert_eq!(simulation.trace()?.len(), 1);
     assert_eq!(
         simulation.schedule(ScheduledSimulationFault {
@@ -67,13 +67,13 @@ async fn scheduling_is_bounded_typed_and_traceable() -> Result<(), Box<dyn std::
     let second_result = (async {
         let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __object_result = objects.contains(object_id, &mut __object_work).await;
-        __object_work.receipt(__object_result)
+        __object_result
     })
     .await;
     let Err(second) = second_result else {
         return Err("scheduled next partition succeeded".into());
     };
-    assert!(matches!(second.error, ObjectStoreError::Rejected(_)));
+    assert!(matches!(second, ObjectStoreError::Rejected(_)));
     assert_eq!(simulation.trace()?.len(), 2);
     Ok(())
 }
@@ -147,12 +147,12 @@ async fn simulator_bounds_duplicate_schedule_and_trace_exhaustion_are_fail_close
     let exhausted = (async {
         let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let __object_result = objects.contains(object_id, &mut __object_work).await;
-        __object_work.receipt(__object_result)
+        __object_result
     })
     .await
     .err()
     .ok_or("trace exhaustion was ignored")?;
-    assert!(matches!(exhausted.error, ObjectStoreError::Rejected(_)));
+    assert!(matches!(exhausted, ObjectStoreError::Rejected(_)));
     assert_eq!(simulation.trace()?.len(), 1);
     Ok(())
 }

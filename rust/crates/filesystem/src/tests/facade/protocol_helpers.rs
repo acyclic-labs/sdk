@@ -123,7 +123,7 @@ pub(super) async fn sparse_rebase_across_remote_ranges(
         )
         .map_err(|(cause, _)| cause)?;
         assert!(
-            (local.rebase_head_with_native_work(8, &denied, &cancellation))
+            (local.rebase_head(8, &denied, &cancellation))
                 .await
                 .is_err()
         );
@@ -145,7 +145,7 @@ pub(super) async fn sparse_rebase_across_remote_ranges(
         .map_err(|(cause, _)| cause)?;
     #[cfg(not(target_arch = "wasm32"))]
     let safe = if native {
-        let result = (local.rebase_head_with_native_work(8, &original, &cancellation)).await?;
+        let result = (local.rebase_head(8, &original, &cancellation)).await?;
         (result.0, Some(result.1))
     } else {
         (
@@ -241,8 +241,7 @@ pub(super) async fn sparse_rebase_across_remote_ranges(
     );
     #[cfg(not(target_arch = "wasm32"))]
     let conflict = if native {
-        let result =
-            (overlapping_local.rebase_head_with_native_work(8, &original, &cancellation)).await?;
+        let result = (overlapping_local.rebase_head(8, &original, &cancellation)).await?;
         assert!(result.1.work().shares_ledger(&original));
         assert!(result.1.bytes() >= (std::mem::size_of::<crate::kernel::RebaseConflict>()) as u64);
         (result.0, Some(result.1))
@@ -454,20 +453,17 @@ pub(super) async fn assert_authority_volume_identity_fails_closed()
     let active = ({
         let authority_cancellation = &crate::CancellationToken::new();
 
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __authority_result = AsyncAuthorityStore::create_authority(
+        AsyncAuthorityStore::create_authority(
             &*authority,
             expected_authority,
             Epoch::GENESIS,
-            &mut __authority_work,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation),
             None::<&mut ()>,
         )
         .await
-        .map_err(|error| error.into_error(std::convert::identity));
-        __authority_work.receipt(__authority_result)
+        .map_err(|error| error.into_error(std::convert::identity))
     })?;
-    let head = match active.value {
+    let head = match active {
         CreateAuthorityOutcome::Created(head) | CreateAuthorityOutcome::Existing(head) => head,
     };
     let encoded = crate::kernel::encode(
@@ -498,28 +494,23 @@ pub(super) async fn assert_authority_volume_identity_fails_closed()
     )?
     .value;
     ({
-        let authority_input_1 = head.epoch;
-        let authority_input_2 = Head::genesis(head.epoch);
         let authority_cancellation = &crate::CancellationToken::new();
 
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __authority_result = AsyncAuthorityStore::compare_and_append(
+        AsyncAuthorityStore::compare_and_append(
             &*authority,
             crate::GuardedAppend {
                 authority_id: expected_authority,
-                epoch: authority_input_1,
-                expected: authority_input_2,
+                epoch: head.epoch,
+                expected: Head::genesis(head.epoch),
                 commit: proposal,
                 permit: crate::PublicationPermit::Unrestricted,
             },
-            &mut __authority_work,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation),
             None::<&mut ()>,
         )
         .await
         .map_err(|error| error.into_error(std::convert::identity))
-        .map(|(value, _allocation)| value);
-        __authority_work.receipt(__authority_result)
+        .map(|(value, _allocation)| value)
     })?;
     let cancellation = CancellationToken::new();
     assert!(matches!(
@@ -532,21 +523,17 @@ pub(super) async fn assert_authority_volume_identity_fails_closed()
 
     let empty_volume = VolumeId::from_bytes([228; 16]);
     ({
-        let authority_input_0 = volume_authority_id(empty_volume);
         let authority_cancellation = &crate::CancellationToken::new();
 
-        let mut __authority_work =
-            crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation);
-        let __authority_result = AsyncAuthorityStore::create_authority(
+        AsyncAuthorityStore::create_authority(
             &*authority,
-            authority_input_0,
+            volume_authority_id(empty_volume),
             Epoch::GENESIS,
-            &mut __authority_work,
+            &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, authority_cancellation),
             None::<&mut ()>,
         )
         .await
-        .map_err(|error| error.into_error(std::convert::identity));
-        __authority_work.receipt(__authority_result)
+        .map_err(|error| error.into_error(std::convert::identity))
     })?;
     let empty = Volume {
         fs,
@@ -554,11 +541,12 @@ pub(super) async fn assert_authority_volume_identity_fails_closed()
         config: config(),
     };
     assert!(matches!(
-        (empty.resolve_head_generation(WorkBudget::UNBOUNDED, &cancellation)).await,
-        Err(OperationFailure {
-            error: FsError::EmptyAuthority,
-            ..
-        })
+        (empty.resolve_head_generation(
+            &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation),
+            &cancellation
+        ))
+        .await,
+        Err(FsError::EmptyAuthority)
     ));
     Ok(())
 }

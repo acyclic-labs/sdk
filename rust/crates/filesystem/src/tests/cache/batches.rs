@@ -7,17 +7,15 @@ async fn malformed_backend_batch_cardinality_releases_all_flights()
     let cancellation = CancellationToken::new();
     let objects = [object(b"first-short"), object(b"second-short")];
     for (object_id, bytes) in &objects {
-        (async {
-            let authority_input_0 = *object_id;
-            let authority_input_1 = bytes.clone();
-
-            let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let __object_result = inner
-                .put(authority_input_0, authority_input_1, &mut __object_work)
-                .await;
-            __object_work.receipt(__object_result)
-        })
-        .await?;
+        ({
+            inner
+                .put(
+                    *object_id,
+                    bytes.clone(),
+                    &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+                )
+                .await
+        })?;
     }
     let cached = CachedObjectStore::new(ShortBatchStore { inner }, options(4, 64))?;
     let requests = objects.map(|(object_id, bytes)| ObjectReadRequest {
@@ -30,12 +28,12 @@ async fn malformed_backend_batch_cardinality_releases_all_flights()
             .read_many(&requests, &mut __object_work)
             .await
             .map(|(values, _allocation)| values);
-        __object_work.receipt(__object_result)
+        __object_result
     })
     .await
     .err()
     .ok_or("short backend batch was accepted")?;
-    assert!(matches!(failure.error, ObjectStoreError::Corrupt));
+    assert!(matches!(failure, ObjectStoreError::Corrupt));
     assert_eq!(cached.stats()?.in_flight, 0);
     Ok(())
 }
@@ -47,28 +45,27 @@ async fn mixed_batches_preserve_backend_multiget_order_duplicates_and_exact_limi
     let cancellation = CancellationToken::new();
     let objects = [object(b"warm"), object(b"second"), object(b"third")];
     for (object_id, bytes) in &objects {
-        (async {
-            let authority_input_0 = *object_id;
-            let authority_input_1 = bytes.clone();
-
-            let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let __object_result = inner
-                .put(authority_input_0, authority_input_1, &mut __object_work)
-                .await;
-            __object_work.receipt(__object_result)
-        })
-        .await?;
+        ({
+            inner
+                .put(
+                    *object_id,
+                    bytes.clone(),
+                    &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+                )
+                .await
+        })?;
     }
     let (counting, scalar_reads, batch_reads) = counting_store(inner);
     let cached = CachedObjectStore::new(counting, options(8, 128))?;
-    (async {
-        let authority_input_0 = objects[0].0;
-
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = cached.read(authority_input_0, 4, &mut __object_work).await;
-        __object_work.receipt(__object_result)
-    })
-    .await?;
+    ({
+        cached
+            .read(
+                objects[0].0,
+                4,
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+            )
+            .await
+    })?;
     let requests = [
         ObjectReadRequest {
             object_id: objects[0].0,
@@ -124,13 +121,13 @@ async fn mixed_batches_preserve_backend_multiget_order_duplicates_and_exact_limi
             .read_many(&unequal, &mut __object_work)
             .await
             .map(|(values, _allocation)| values);
-        __object_work.receipt(__object_result)
+        __object_result
     })
     .await
     .err()
     .ok_or("per-request byte limit was ignored")?;
     assert!(matches!(
-        failure.error,
+        failure,
         ObjectStoreError::TooLarge {
             observed: 6,
             maximum: 1
@@ -147,17 +144,15 @@ async fn failed_batch_planning_releases_every_unstarted_flight_without_backend_i
     let cancellation = CancellationToken::new();
     let objects = [object(b"one"), object(b"two")];
     for (object_id, bytes) in &objects {
-        (async {
-            let authority_input_0 = *object_id;
-            let authority_input_1 = bytes.clone();
-
-            let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let __object_result = inner
-                .put(authority_input_0, authority_input_1, &mut __object_work)
-                .await;
-            __object_work.receipt(__object_result)
-        })
-        .await?;
+        ({
+            inner
+                .put(
+                    *object_id,
+                    bytes.clone(),
+                    &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+                )
+                .await
+        })?;
     }
     let (counting, scalar_reads, batch_reads) = counting_store(inner);
     let cached = CachedObjectStore::new(
@@ -179,12 +174,12 @@ async fn failed_batch_planning_releases_every_unstarted_flight_without_backend_i
             .read_many(&requests, &mut __object_work)
             .await
             .map(|(values, _allocation)| values);
-        __object_work.receipt(__object_result)
+        __object_result
     })
     .await
     .err()
     .ok_or("over-capacity batch unexpectedly succeeded")?;
-    assert!(matches!(failure.error, ObjectStoreError::Rejected(_)));
+    assert!(matches!(failure, ObjectStoreError::Rejected(_)));
     assert_eq!(cached.stats()?.in_flight, 0);
     assert_eq!(scalar_reads.load(Ordering::Acquire), 0);
     assert_eq!(batch_reads.load(Ordering::Acquire), 0);

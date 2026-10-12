@@ -353,11 +353,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             kind: ObjectKind::GenerationRoot,
             digest: theirs.digest(),
         };
-        let (current_head_root, current_head, mut work) = self
+        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+        let result = self
             .volume
-            .resolve_head_generation(budget, cancellation)
-            .await
-            .map(|receipt| receipt.value)?;
+            .resolve_head_generation(&mut accounting, cancellation)
+            .await;
+        let (current_head_root, current_head) =
+            result.map_err(|error| OperationFailure::new(error, accounting.spent()))?;
+        let mut work = accounting.spent();
         if current_head_root != theirs_id {
             return Err(OperationFailure::new(FsError::MergeParentNotHead, work));
         }

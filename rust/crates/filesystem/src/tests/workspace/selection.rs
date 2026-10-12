@@ -3,69 +3,34 @@ use super::*;
 #[tokio::test]
 async fn empty_fork_keeps_lineage_without_deleting_excluded_parent_paths()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let parent = fs
-        .create_workspace(
-            "scratch-parent",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("scratch-parent", B, &cancel)
         .await?
         .value;
     parent.write_text("/memory.txt", "parent").await?;
-    let pinned = parent
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let pinned = parent.head(B, &cancel).await?.value;
     let key = IdempotencyKey::new();
     let child = parent
         .fork(
             "scratch-child",
             ForkOptions::from_generation(pinned.clone(), key).inherit_paths(Vec::new()),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            allow::<FsError>,
         )
         .await?
         .value;
-    let initial = child
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
-    assert_eq!(
-        initial
-            .parents(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value,
-        vec![pinned.id()]
-    );
+    let initial = child.head(B, &cancel).await?.value;
+    assert_eq!(initial.parents(B, &cancel).await?.value, vec![pinned.id()]);
     assert!(
         child
-            .list_directory(
-                "/",
-                None,
-                1,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value.0)
-            .map_err(|failure| failure.error)?
+            .list_directory("/", None, 1, B, &cancel)
+            .await?
+            .value
+            .0
             .entries
             .is_empty()
     );
@@ -73,71 +38,34 @@ async fn empty_fork_keeps_lineage_without_deleting_excluded_parent_paths()
         .fork(
             "scratch-child",
             ForkOptions::from_generation(pinned.clone(), key).inherit_paths(Vec::new()),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            allow::<FsError>,
         )
         .await?
         .value;
-    assert_eq!(
-        retried
-            .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .id(),
-        initial.id()
-    );
+    assert_eq!(retried.head(B, &cancel).await?.value.id(), initial.id());
     assert!(
         parent
             .fork(
                 "scratch-child",
                 ForkOptions::from_generation(pinned, key),
-                crate::PublicationPermit::Unrestricted,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-                |_| std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED
-                }))
+                PublicationPermit::Unrestricted,
+                B,
+                &cancel,
+                allow::<FsError>
             )
             .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
             .is_err()
     );
     child.write_text("/new.txt", "child").await?;
     parent.write_text("/concurrent.txt", "user").await?;
-    let source = child
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
-    let target = parent
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let source = child.head(B, &cancel).await?.value;
+    let target = parent.head(B, &cancel).await?.value;
     let plan = child
         .join_into(&parent)
-        .plan_at(
-            &source,
-            &target,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
+        .plan_at(&source, &target, B, &cancel)
         .await?
         .value;
     let options = ApplyOptions {
@@ -145,18 +73,12 @@ async fn empty_fork_keeps_lineage_without_deleting_excluded_parent_paths()
         idempotency_key: IdempotencyKey::new(),
     };
     assert!(matches!(
-        plan.apply(options, crate::PublicationPermit::Unrestricted)
-            .await?,
+        plan.apply(options, PublicationPermit::Unrestricted).await?,
         JoinOutcome::Applied(_)
     ));
     assert_eq!(
         parent
-            .read(
-                "/memory.txt",
-                16,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .read("/memory.txt", 16, B, &cancel)
             .await?
             .value
             .as_ref(),
@@ -164,12 +86,7 @@ async fn empty_fork_keeps_lineage_without_deleting_excluded_parent_paths()
     );
     assert_eq!(
         parent
-            .read(
-                "/concurrent.txt",
-                16,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .read("/concurrent.txt", 16, B, &cancel)
             .await?
             .value
             .as_ref(),
@@ -177,170 +94,83 @@ async fn empty_fork_keeps_lineage_without_deleting_excluded_parent_paths()
     );
     assert_eq!(
         parent
-            .read(
-                "/new.txt",
-                16,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .read("/new.txt", 16, B, &cancel)
             .await?
             .value
             .as_ref(),
         b"child"
     );
-    assert_eq!(
-        child
-            .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .id(),
-        source.id()
-    );
+    assert_eq!(child.head(B, &cancel).await?.value.id(), source.id());
     Ok(())
 }
 
 #[tokio::test]
 async fn selected_fork_import_preserves_omissions_and_detects_selected_conflicts()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     for paths in [vec!["/notes/keep.txt"], vec!["/notes"]] {
         let fs = Fs::memory();
-        let parent = fs
-            .create_workspace(
-                "parent",
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
-            .await?
-            .value;
+        let parent = fs.create_workspace("parent", B, &cancel).await?.value;
         let mut transaction = parent
-            .begin_transaction(
-                IdempotencyKey::new(),
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
+            .begin_transaction(IdempotencyKey::new(), B, &cancel)
             .await?
             .value;
         transaction
-            .create_directory(
-                "/notes",
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
+            .create_directory("/notes", B, &cancel)
             .await?
             .value;
         transaction
             .commit(
                 None,
-                crate::PublicationPermit::Unrestricted,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-                |_| async {
-                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
-                        crate::OperationReceipt {
-                            value: (),
-                            work: crate::WorkCounters::default(),
-                        },
-                    )
-                },
+                PublicationPermit::Unrestricted,
+                B,
+                &cancel,
+                allow::<WorkspaceError>,
             )
             .await?
             .value;
         parent.write_text("/notes/keep.txt", "base").await?;
         parent.write_text("/notes/other.txt", "other").await?;
         parent.write_text("/excluded.txt", "excluded").await?;
-        let pinned = parent
-            .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
-            .await?
-            .value;
+        let pinned = parent.head(B, &cancel).await?.value;
         let child = parent
             .fork(
                 "child",
                 ForkOptions::from_generation(pinned.clone(), IdempotencyKey::new())
                     .inherit_paths(paths.iter().map(|path| (*path).to_owned()).collect()),
-                crate::PublicationPermit::Unrestricted,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-                |_| {
-                    std::future::ready(Ok(crate::OperationReceipt {
-                        value: (),
-                        work: crate::WorkCounters::UNCHARGED,
-                    }))
-                },
+                PublicationPermit::Unrestricted,
+                B,
+                &cancel,
+                allow::<FsError>,
             )
             .await?
             .value;
         assert_eq!(
             child
-                .head(
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new()
-                )
+                .head(B, &cancel)
                 .await?
                 .value
-                .parents(
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new()
-                )
+                .parents(B, &cancel)
                 .await?
                 .value,
             vec![pinned.id()]
         );
         assert_eq!(
             child
-                .read(
-                    "/notes/keep.txt",
-                    16,
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new()
-                )
+                .read("/notes/keep.txt", 16, B, &cancel)
                 .await?
                 .value
                 .as_ref(),
             b"base"
         );
-        assert!(
-            child
-                .read(
-                    "/excluded.txt",
-                    16,
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new()
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error)
-                .is_err()
-        );
+        assert!(child.read("/excluded.txt", 16, B, &cancel).await.is_err());
         child.write_text("/notes/keep.txt", "child").await?;
         parent.write_text("/excluded.txt", "updated").await?;
-        let source = child
-            .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
-            .await?
-            .value;
-        let target = parent
-            .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
-            .await?
-            .value;
+        let source = child.head(B, &cancel).await?.value;
+        let target = parent.head(B, &cancel).await?.value;
         let plan = child
             .join_into(&parent)
-            .plan_at(
-                &source,
-                &target,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
+            .plan_at(&source, &target, B, &cancel)
             .await?
             .value;
         assert!(matches!(
@@ -349,19 +179,14 @@ async fn selected_fork_import_preserves_omissions_and_detects_selected_conflicts
                     if_target: target.id(),
                     idempotency_key: IdempotencyKey::new()
                 },
-                crate::PublicationPermit::Unrestricted
+                PublicationPermit::Unrestricted
             )
             .await?,
             JoinOutcome::Applied(_)
         ));
         assert_eq!(
             parent
-                .read(
-                    "/excluded.txt",
-                    16,
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new()
-                )
+                .read("/excluded.txt", 16, B, &cancel)
                 .await?
                 .value
                 .as_ref(),
@@ -369,12 +194,7 @@ async fn selected_fork_import_preserves_omissions_and_detects_selected_conflicts
         );
         assert_eq!(
             parent
-                .read(
-                    "/notes/other.txt",
-                    16,
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new()
-                )
+                .read("/notes/other.txt", 16, B, &cancel)
                 .await?
                 .value
                 .as_ref(),
@@ -382,45 +202,23 @@ async fn selected_fork_import_preserves_omissions_and_detects_selected_conflicts
         );
         assert_eq!(
             parent
-                .read(
-                    "/notes/keep.txt",
-                    16,
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new()
-                )
+                .read("/notes/keep.txt", 16, B, &cancel)
                 .await?
                 .value
                 .as_ref(),
             b"child"
         );
-        assert_eq!(
-            child
-                .head(
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new()
-                )
-                .await?
-                .value
-                .id(),
-            source.id()
-        );
+        assert_eq!(child.head(B, &cancel).await?.value.id(), source.id());
         child.write_text("/notes/keep.txt", "child again").await?;
         parent.write_text("/notes/keep.txt", "parent again").await?;
         let plan = child.join_into(&parent).plan().await?;
         assert!(matches!(
             plan.apply(
                 ApplyOptions {
-                    if_target: parent
-                        .head(
-                            crate::WorkBudget::UNBOUNDED,
-                            &crate::CancellationToken::new()
-                        )
-                        .await?
-                        .value
-                        .id(),
+                    if_target: parent.head(B, &cancel).await?.value.id(),
                     idempotency_key: IdempotencyKey::new()
                 },
-                crate::PublicationPermit::Unrestricted
+                PublicationPermit::Unrestricted
             )
             .await?,
             JoinOutcome::Conflicted { .. }
@@ -434,27 +232,18 @@ async fn selected_fork_import_preserves_omissions_and_detects_selected_conflicts
 /// evidence for filtered delta semantics, not an unrestricted lineage proof.
 #[tokio::test]
 async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     for mask in 0_u8..8 {
         for descendant in [false, true] {
             let fs = Fs::memory();
             let parent = fs
-                .create_workspace(
-                    "subset-parent",
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                )
+                .create_workspace("subset-parent", B, &cancel)
                 .await?
                 .value;
             for index in 0..3 {
                 parent.write_text(&format!("/file-{index}"), "base").await?;
             }
-            let pinned = parent
-                .head(
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                )
-                .await?
-                .value;
+            let pinned = parent.head(B, &cancel).await?.value;
             let paths = (0..3)
                 .filter(|index| mask & (1 << index) != 0)
                 .map(|index| format!("/file-{index}"))
@@ -464,15 +253,10 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
                     "subset-child",
                     ForkOptions::from_generation(pinned, IdempotencyKey::new())
                         .inherit_paths(paths),
-                    crate::PublicationPermit::Unrestricted,
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                    |_| {
-                        std::future::ready(Ok(crate::OperationReceipt {
-                            value: (),
-                            work: crate::WorkCounters::UNCHARGED,
-                        }))
-                    },
+                    PublicationPermit::Unrestricted,
+                    B,
+                    &cancel,
+                    allow::<FsError>,
                 )
                 .await?
                 .value;
@@ -481,24 +265,13 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
                     .fork(
                         "subset-grandchild",
                         ForkOptions::from_generation(
-                            child
-                                .head(
-                                    crate::WorkBudget::UNBOUNDED,
-                                    &crate::CancellationToken::new(),
-                                )
-                                .await?
-                                .value,
+                            child.head(B, &cancel).await?.value,
                             IdempotencyKey::new(),
                         ),
-                        crate::PublicationPermit::Unrestricted,
-                        crate::WorkBudget::UNBOUNDED,
-                        &crate::CancellationToken::new(),
-                        |_| {
-                            std::future::ready(Ok(crate::OperationReceipt {
-                                value: (),
-                                work: crate::WorkCounters::UNCHARGED,
-                            }))
-                        },
+                        PublicationPermit::Unrestricted,
+                        B,
+                        &cancel,
+                        allow::<FsError>,
                     )
                     .await?
                     .value
@@ -510,53 +283,18 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
                 if mask & (1 << index) != 0 {
                     source.write_text(&path, "selected").await?;
                 } else {
-                    assert!(
-                        source
-                            .read(
-                                &path,
-                                16,
-                                crate::WorkBudget::UNBOUNDED,
-                                &crate::CancellationToken::new()
-                            )
-                            .await
-                            .map(|receipt| receipt.value)
-                            .map_err(|failure| failure.error)
-                            .is_err()
-                    );
+                    assert!(source.read(&path, 16, B, &cancel).await.is_err());
                     parent.write_text(&path, "concurrent").await?;
                 }
             }
             source.write_text("/added", "new").await?;
-            let selected_head = source
-                .head(
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                )
-                .await?
-                .value;
+            let selected_head = source.head(B, &cancel).await?.value;
             source.write_text("/after-pin", "excluded by pin").await?;
-            let source_head = source
-                .head(
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                )
-                .await?
-                .value;
-            let target = parent
-                .head(
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                )
-                .await?
-                .value;
+            let source_head = source.head(B, &cancel).await?.value;
+            let target = parent.head(B, &cancel).await?.value;
             let plan = source
                 .join_into(&parent)
-                .plan_at(
-                    &selected_head,
-                    &target,
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                )
+                .plan_at(&selected_head, &target, B, &cancel)
                 .await?
                 .value;
             assert!(matches!(
@@ -565,7 +303,7 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
                         if_target: target.id(),
                         idempotency_key: IdempotencyKey::new()
                     },
-                    crate::PublicationPermit::Unrestricted
+                    PublicationPermit::Unrestricted
                 )
                 .await?,
                 JoinOutcome::Applied(_)
@@ -578,55 +316,22 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
                 };
                 assert_eq!(
                     parent
-                        .read(
-                            &format!("/file-{index}"),
-                            16,
-                            crate::WorkBudget::UNBOUNDED,
-                            &crate::CancellationToken::new()
-                        )
+                        .read(&format!("/file-{index}"), 16, B, &cancel)
                         .await?
                         .value
                         .as_ref(),
                     expected.as_bytes()
                 );
             }
-            assert!(
-                parent
-                    .read(
-                        "/after-pin",
-                        32,
-                        crate::WorkBudget::UNBOUNDED,
-                        &crate::CancellationToken::new()
-                    )
-                    .await
-                    .map(|receipt| receipt.value)
-                    .map_err(|failure| failure.error)
-                    .is_err()
-            );
-            assert_eq!(
-                source
-                    .head(
-                        crate::WorkBudget::UNBOUNDED,
-                        &crate::CancellationToken::new()
-                    )
-                    .await?
-                    .value
-                    .id(),
-                source_head.id()
-            );
+            assert!(parent.read("/after-pin", 32, B, &cancel).await.is_err());
+            assert_eq!(source.head(B, &cancel).await?.value.id(), source_head.id());
             let repeated = source
                 .join_into(&parent)
                 .plan_at(
                     &selected_head,
-                    &parent
-                        .head(
-                            crate::WorkBudget::UNBOUNDED,
-                            &crate::CancellationToken::new(),
-                        )
-                        .await?
-                        .value,
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
+                    &parent.head(B, &cancel).await?,
+                    B,
+                    &cancel.value,
                 )
                 .await?
                 .value;
@@ -637,7 +342,7 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
                             if_target: repeated.target_head(),
                             idempotency_key: IdempotencyKey::new()
                         },
-                        crate::PublicationPermit::Unrestricted
+                        PublicationPermit::Unrestricted
                     )
                     .await?,
                 JoinOutcome::NoChanges(_)
@@ -648,11 +353,7 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
     // deletion and must reach the parent. Filtering must not mean fork+clear.
     let fs = Fs::memory();
     let parent = fs
-        .create_workspace(
-            "negative-parent",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("negative-parent", B, &cancel)
         .await?
         .value;
     parent.write_text("/omitted", "base").await?;
@@ -660,24 +361,13 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
         .fork(
             "negative-child",
             ForkOptions::from_generation(
-                parent
-                    .head(
-                        crate::WorkBudget::UNBOUNDED,
-                        &crate::CancellationToken::new(),
-                    )
-                    .await?
-                    .value,
+                parent.head(B, &cancel).await?.value,
                 IdempotencyKey::new(),
             ),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            allow::<FsError>,
         )
         .await?
         .value;
@@ -689,36 +379,21 @@ async fn filtered_fork_subset_model_preserves_unselected_paths() -> Result<(), B
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new()
             },
-            crate::PublicationPermit::Unrestricted
+            PublicationPermit::Unrestricted
         )
         .await?,
         JoinOutcome::Applied(_)
     ));
-    assert!(
-        parent
-            .read(
-                "/omitted",
-                16,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error)
-            .is_err()
-    );
+    assert!(parent.read("/omitted", 16, B, &cancel).await.is_err());
     Ok(())
 }
 
 #[tokio::test]
 async fn filtered_fork_rebase_preserves_local_and_parent_changes() -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let parent = fs
-        .create_workspace(
-            "filtered-rebase-parent",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("filtered-rebase-parent", B, &cancel)
         .await?
         .value;
     parent.write_text("/omitted", "base").await?;
@@ -726,25 +401,14 @@ async fn filtered_fork_rebase_preserves_local_and_parent_changes() -> Result<(),
         .fork(
             "filtered-rebase-child",
             ForkOptions::from_generation(
-                parent
-                    .head(
-                        crate::WorkBudget::UNBOUNDED,
-                        &crate::CancellationToken::new(),
-                    )
-                    .await?
-                    .value,
+                parent.head(B, &cancel).await?.value,
                 IdempotencyKey::new(),
             )
             .inherit_paths(Vec::new()),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            allow::<FsError>,
         )
         .await?
         .value;
@@ -755,39 +419,15 @@ async fn filtered_fork_rebase_preserves_local_and_parent_changes() -> Result<(),
         WorkspaceRebase::Rebased(_)
     ));
     assert_eq!(
-        child
-            .read(
-                "/omitted",
-                16,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .as_ref(),
+        child.read("/omitted", 16, B, &cancel).await?.value.as_ref(),
         b"user edit"
     );
     assert_eq!(
-        child
-            .read(
-                "/local",
-                16,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .as_ref(),
+        child.read("/local", 16, B, &cancel).await?.value.as_ref(),
         b"child"
     );
     child.write_text("/local", "after rebase").await?;
-    let source = child
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let source = child.head(B, &cancel).await?.value;
     let plan = child.join_into(&parent).plan().await?;
     assert!(matches!(
         plan.apply(
@@ -795,86 +435,43 @@ async fn filtered_fork_rebase_preserves_local_and_parent_changes() -> Result<(),
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new()
             },
-            crate::PublicationPermit::Unrestricted
+            PublicationPermit::Unrestricted
         )
         .await?,
         JoinOutcome::Applied(_)
     ));
     assert_eq!(
         parent
-            .read(
-                "/omitted",
-                16,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .read("/omitted", 16, B, &cancel)
             .await?
             .value
             .as_ref(),
         b"user edit"
     );
     assert_eq!(
-        parent
-            .read(
-                "/local",
-                16,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .as_ref(),
+        parent.read("/local", 16, B, &cancel).await?.value.as_ref(),
         b"after rebase"
     );
-    assert_eq!(
-        child
-            .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .id(),
-        source.id()
-    );
+    assert_eq!(child.head(B, &cancel).await?.value.id(), source.id());
     Ok(())
 }
 
 #[tokio::test]
 async fn nested_filtered_fork_uses_its_pinned_inheritance_as_delta_baseline()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
-    let root = fs
-        .create_workspace(
-            "nested-root",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let root = fs.create_workspace("nested-root", B, &cancel).await?.value;
     root.write_text("/keep", "root").await?;
     root.write_text("/omit", "root").await?;
     let parent = root
         .fork(
             "nested-parent",
-            ForkOptions::from_generation(
-                root.head(
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                )
-                .await?
-                .value,
-                IdempotencyKey::new(),
-            ),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            ForkOptions::from_generation(root.head(B, &cancel).await?.value, IdempotencyKey::new()),
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            allow::<FsError>,
         )
         .await?
         .value;
@@ -883,25 +480,14 @@ async fn nested_filtered_fork_uses_its_pinned_inheritance_as_delta_baseline()
         .fork(
             "nested-child",
             ForkOptions::from_generation(
-                parent
-                    .head(
-                        crate::WorkBudget::UNBOUNDED,
-                        &crate::CancellationToken::new(),
-                    )
-                    .await?
-                    .value,
+                parent.head(B, &cancel).await?.value,
                 IdempotencyKey::new(),
             )
             .inherit_paths(vec!["/keep".into()]),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            allow::<FsError>,
         )
         .await?
         .value;
@@ -914,43 +500,19 @@ async fn nested_filtered_fork_uses_its_pinned_inheritance_as_delta_baseline()
             if_target: plan.target_head(),
             idempotency_key: IdempotencyKey::new(),
         },
-        crate::PublicationPermit::Unrestricted,
+        PublicationPermit::Unrestricted,
     )
     .await?;
     assert_eq!(
-        root.read(
-            "/keep",
-            32,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await?
-        .value
-        .as_ref(),
+        root.read("/keep", 32, B, &cancel).await?.value.as_ref(),
         b"root"
     );
     assert_eq!(
-        root.read(
-            "/omit",
-            32,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await?
-        .value
-        .as_ref(),
+        root.read("/omit", 32, B, &cancel).await?.value.as_ref(),
         b"root"
     );
     assert_eq!(
-        root.read(
-            "/new",
-            32,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await?
-        .value
-        .as_ref(),
+        root.read("/new", 32, B, &cancel).await?.value.as_ref(),
         b"child"
     );
     child.write_text("/keep", "edited").await?;
@@ -961,7 +523,7 @@ async fn nested_filtered_fork_uses_its_pinned_inheritance_as_delta_baseline()
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
             },
-            crate::PublicationPermit::Unrestricted
+            PublicationPermit::Unrestricted
         )
         .await?,
         JoinOutcome::Conflicted { .. }
@@ -973,32 +535,15 @@ async fn nested_filtered_fork_uses_its_pinned_inheritance_as_delta_baseline()
             if_target: plan.target_head(),
             idempotency_key: IdempotencyKey::new(),
         },
-        crate::PublicationPermit::Unrestricted,
+        PublicationPermit::Unrestricted,
     )
     .await?;
     assert_eq!(
-        root.read(
-            "/keep",
-            32,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await?
-        .value
-        .as_ref(),
+        root.read("/keep", 32, B, &cancel).await?.value.as_ref(),
         b"edited"
     );
     assert_eq!(
-        parent
-            .read(
-                "/keep",
-                32,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .as_ref(),
+        parent.read("/keep", 32, B, &cancel).await?.value.as_ref(),
         b"inherited"
     );
     Ok(())

@@ -43,21 +43,16 @@ async fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retr
     let volume = through_every_authority_cut!(fs.create_volume_with_id(
         volume_id,
         config(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .value;
     assert_eq!(volume.id(), volume_id);
-    let reopened = through_every_authority_cut!(fs.open_volume(
-        volume_id,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .value;
+    let reopened = through_every_authority_cut!(fs.open_volume(volume_id, B, &cancellation,)).value;
     let mut checkout = through_every_authority_cut!(reopened.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .value;
@@ -68,7 +63,7 @@ async fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retr
             bytes: (bytes::Bytes::from_static(b"authority cut candidate")).into(),
             metadata: crate::kernel::FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -84,7 +79,7 @@ async fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retr
             None,
             None,
             crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
             |_| async {
                 crate::FsResult::Ok(crate::OperationReceipt {
@@ -130,14 +125,14 @@ async fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retr
     let live_volume = through_every_authority_cut!(fs.create_volume_with_id(
         live_id,
         serialized_config(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .value;
     let mut live = through_every_authority_cut!(live_volume.checkout(
         GenerationSelector::Head,
         writable_live(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .value;
@@ -149,7 +144,7 @@ async fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retr
             bytes: (bytes::Bytes::from_static(b"live")).into(),
             metadata: crate::kernel::FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -158,8 +153,7 @@ async fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retr
     let mut published = None;
     for cut in 1..=64 {
         control.arm(cut);
-        let outcome =
-            (live.resume_live(live_operation, 3, 16, WorkBudget::UNBOUNDED, &cancellation)).await;
+        let outcome = (live.resume_live(live_operation, 3, 16, B, &cancellation)).await;
         match outcome {
             Ok(receipt) => {
                 published = Some(receipt);
@@ -209,9 +203,7 @@ async fn every_post_put_creation_fault_retries_from_a_complete_authenticated_clo
         let volume_id = VolumeId::from_bytes(
             [u8::try_from(cut).map_err(|_| "post-put cut does not fit identity")?; 16],
         );
-        let first =
-            (fs.create_volume_with_id(volume_id, config(), WorkBudget::UNBOUNDED, &cancellation))
-                .await;
+        let first = (fs.create_volume_with_id(volume_id, config(), B, &cancellation)).await;
         match first {
             Ok(created) => {
                 assert_eq!(created.value.id(), volume_id);
@@ -229,23 +221,15 @@ async fn every_post_put_creation_fault_retries_from_a_complete_authenticated_clo
                     u64::try_from(cut).map_err(|_| "post-put cut does not fit work counter")?
                 );
                 control.disable();
-                let retried = (fs.create_volume_with_id(
-                    volume_id,
-                    config(),
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                ))
-                .await?;
+                let retried =
+                    (fs.create_volume_with_id(volume_id, config(), B, &cancellation)).await?;
                 assert_eq!(retried.value.id(), volume_id);
-                let reopened =
-                    (fs.open_volume(volume_id, WorkBudget::UNBOUNDED, &cancellation)).await?;
-                let checkout = (reopened.value.checkout(
-                    GenerationSelector::Head,
-                    pinned(),
-                    WorkBudget::UNBOUNDED,
-                    &cancellation,
-                ))
-                .await?;
+                let reopened = (fs.open_volume(volume_id, B, &cancellation)).await?;
+                let checkout =
+                    (reopened
+                        .value
+                        .checkout(GenerationSelector::Head, pinned(), B, &cancellation))
+                    .await?;
                 assert_eq!(checkout.value.volume_id(), volume_id);
                 assert!(!checkout.value.has_pending_mutations());
             }
@@ -272,9 +256,7 @@ async fn every_pre_object_fault_preserves_creation_and_checkout_retry()
     let mut volume = None;
     for cut in 1..=64 {
         control.arm(cut);
-        match (fs.create_volume_with_id(volume_id, config(), WorkBudget::UNBOUNDED, &cancellation))
-            .await
-        {
+        match (fs.create_volume_with_id(volume_id, config(), B, &cancellation)).await {
             Ok(receipt) => {
                 volume = Some(receipt.value);
                 break;
@@ -300,14 +282,7 @@ async fn every_pre_object_fault_preserves_creation_and_checkout_retry()
     let mut checkout = None;
     for cut in 1..=64 {
         control.arm(cut);
-        match (volume.checkout(
-            GenerationSelector::Head,
-            pinned(),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .await
-        {
+        match (volume.checkout(GenerationSelector::Head, pinned(), B, &cancellation)).await {
             Ok(receipt) => {
                 checkout = Some(receipt.value);
                 break;

@@ -18,7 +18,7 @@ enum Stores {
 }
 
 macro_rules! delegate {
-        ($self:ident, $trait:ident, $field:ident, $method:ident($($argument:expr),*)) => {
+        ($self:ident, $trait:ident, $field:ident, $method:ident($($argument:expr),* $(,)?)) => {
             match $self {
                 Stores::Memory(fs) => $trait::$method(&fs.inner.$field, $($argument),*).await,
                 Stores::Local(fs) => $trait::$method(&fs.inner.$field, $($argument),*).await,
@@ -26,7 +26,7 @@ macro_rules! delegate {
         };
 
         ($trait:ident, $field:ident, {$($extra:item)*},
-            $(fn $method:ident($context:ident: $context_type:ty $(, $argument:ident: $type:ty)*) -> $result:ty;)*
+            $(fn $method:ident($context:ident: $context_type:ty $(, $argument:ident: $type:ty)* $(,)?) -> $result:ty; $(,)?) *
         ) => {
             impl $trait for Stores {
                 $($extra)*
@@ -248,6 +248,7 @@ delegate!(
 #[tokio::test]
 async fn mounted_view_routes_memory_and_local_objects_through_existing_traits()
 -> Result<(), Box<dyn std::error::Error>> {
+    let cancel = CancellationToken::new();
     let directory = tempfile::tempdir()?;
     let local = Fs::local(LocalOptions::new(directory.path())).await?;
     let memory_store = Stores::Memory(Fs::memory());
@@ -262,24 +263,12 @@ async fn mounted_view_routes_memory_and_local_objects_through_existing_traits()
         local_store,
         EmbeddedCapabilities::MEMORY,
     );
-    let root = memory
-        .create_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await?
-        .value;
-    let scratch = disk
-        .create_workspace("scratch", WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await?
-        .value;
+    let root = memory.create_workspace("root", B, &cancel).await?.value;
+    let scratch = disk.create_workspace("scratch", B, &cancel).await?.value;
     root.write_text("/file", "memory").await?;
     scratch.write_text("/file", "disk").await?;
-    let root_head = root
-        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await?
-        .value;
-    let scratch_head = scratch
-        .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .await?
-        .value;
+    let root_head = root.head(B, &cancel).await?.value;
+    let scratch_head = scratch.head(B, &cancel).await?.value;
     assert!(matches!(
         scratch
             .fork(
@@ -289,8 +278,8 @@ async fn mounted_view_routes_memory_and_local_objects_through_existing_traits()
                     crate::IdempotencyKey::from_bytes([60; 16]),
                 ),
                 crate::PublicationPermit::Unrestricted,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
+                B,
+                &cancel,
                 |_| std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED
@@ -309,8 +298,8 @@ async fn mounted_view_routes_memory_and_local_objects_through_existing_traits()
                 crate::IdempotencyKey::from_bytes([61; 16]),
             ),
             crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            B,
+            &cancel,
             |_| std::future::ready(Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED
@@ -330,8 +319,8 @@ async fn mounted_view_routes_memory_and_local_objects_through_existing_traits()
                     crate::IdempotencyKey::from_bytes([62; 16]),
                 ),
                 crate::PublicationPermit::Unrestricted,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
+                B,
+                &cancel,
                 |_| {
                     std::future::ready(Ok(crate::OperationReceipt {
                         value: (),
@@ -342,21 +331,8 @@ async fn mounted_view_routes_memory_and_local_objects_through_existing_traits()
             .await?
             .value;
         fork.write_text("/file", "child only").await?;
-        assert_eq!(
-            workspace
-                .head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .await?
-                .value
-                .id(),
-            head.id()
-        );
-        assert_ne!(
-            fork.head(WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .await?
-                .value
-                .id(),
-            head.id()
-        );
+        assert_eq!(workspace.head(B, &cancel).await?.value.id(), head.id());
+        assert_ne!(fork.head(B, &cancel).await?.value.id(), head.id());
     }
     let mut view = crate::MountedView::builder()
         .mount(
@@ -364,8 +340,8 @@ async fn mounted_view_routes_memory_and_local_objects_through_existing_traits()
             root.checkout(
                 GenerationSelector::Head,
                 CheckoutMode::read_only_pinned(),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
+                B,
+                &cancel,
             )
             .await?
             .value,
@@ -376,8 +352,8 @@ async fn mounted_view_routes_memory_and_local_objects_through_existing_traits()
                 .checkout(
                     GenerationSelector::Head,
                     CheckoutMode::read_only_pinned(),
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
+                    B,
+                    &cancel,
                 )
                 .await?
                 .value,
@@ -391,7 +367,7 @@ async fn mounted_view_routes_memory_and_local_objects_through_existing_traits()
         assert!(
             route
                 .checkout
-                .lookup_no_follow(&route.path, WorkBudget::UNBOUNDED, &cancellation)
+                .lookup_no_follow(&route.path, B, &cancellation)
                 .await?
                 .value
                 .record
@@ -418,7 +394,7 @@ async fn mounted_view_routes_memory_and_local_objects_through_existing_traits()
         Err(crate::MountError::CrossVolume)
     );
     assert_eq!(
-        root.read("/file", 32, WorkBudget::UNBOUNDED, &cancellation)
+        root.read("/file", 32, B, &cancellation)
             .await?
             .value
             .as_ref(),
@@ -426,7 +402,7 @@ async fn mounted_view_routes_memory_and_local_objects_through_existing_traits()
     );
     assert_eq!(
         scratch
-            .read("/file", 32, WorkBudget::UNBOUNDED, &cancellation)
+            .read("/file", 32, B, &cancellation)
             .await?
             .value
             .as_ref(),

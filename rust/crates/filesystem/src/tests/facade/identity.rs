@@ -4,14 +4,11 @@ use super::*;
 #[tokio::test]
 async fn original_identity_mutation_preserves_source_and_cancelled_candidate()
 -> Result<(), Box<dyn std::error::Error>> {
+    let cancel = CancellationToken::new();
     use crate::kernel::allocation::KernelAccounting;
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace(
-            "original-identity-candidate",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
+        .create_workspace("original-identity-candidate", B, &cancel)
         .await?
         .value;
     workspace
@@ -22,20 +19,20 @@ async fn original_identity_mutation_preserves_source_and_cancelled_candidate()
         .checkout(
             GenerationSelector::Head,
             CheckoutMode::tracking_transaction(),
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         )
         .await?
         .value;
     let path = path("source")?;
     let source = checkout
-        .lookup_no_follow(&path, WorkBudget::UNBOUNDED, &cancellation)
+        .lookup_no_follow(&path, B, &cancellation)
         .await?
         .value
         .record
         .ok_or("actual source record absent")?;
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(cause, _)| cause)?;
+    let original =
+        crate::NativeMaterializationWork::new(B, &cancellation).map_err(|(cause, _)| cause)?;
     let mut candidate = checkout.private_candidate(&original, &cancellation)?;
     let paid = |mutation| -> Result<crate::kernel::Owned<Vec<Mutation>>, FsError> {
         let mut accounting = KernelAccounting::native(&original, &cancellation);
@@ -72,15 +69,11 @@ async fn original_identity_mutation_preserves_source_and_cancelled_candidate()
     let current = current.0.ok_or("mutated identity disappeared")?;
     assert_eq!(current.file_id, source.file_id);
     assert_ne!(current.payload, source.payload);
-    assert!(
-        candidate
-            .root
-            .same_original_scope(original.native_read_meter())
-    );
+    assert!(candidate.root.same_original_scope(&original.state));
     assert_eq!(candidate.base_file_table, checkout.root.file_table);
     assert_eq!(
         checkout
-            .lookup_no_follow(&path, WorkBudget::UNBOUNDED, &cancellation,)
+            .lookup_no_follow(&path, B, &cancellation,)
             .await?
             .value
             .record,
@@ -136,30 +129,26 @@ async fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_r
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = (fs.create_volume_with_id(
-        VolumeId::from_bytes([111; 16]),
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let volume =
+        (fs.create_volume_with_id(VolumeId::from_bytes([111; 16]), config(), B, &cancellation))
+            .await?
+            .value;
     let file = path("identity")?;
     let mut seed = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
     .value;
     let file_id = (seed.create(
-        crate::AuthoredMutation::CreateFile {
+        AuthoredMutation::CreateFile {
             path: file.clone(),
-            bytes: (bytes::Bytes::from(vec![b'a'; 128])).into(),
-            metadata: crate::kernel::FileMetadata::default(),
+            bytes: OwnedBytes::from(vec![b'a'; 128]),
+            metadata: FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -169,22 +158,17 @@ async fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_r
         None,
         None,
         None,
-        crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        PublicationPermit::Unrestricted,
+        B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?;
 
     let mut local = (volume.checkout(
         GenerationSelector::Head,
         writable_tracking(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -192,30 +176,30 @@ async fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_r
     let mut remote = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
     .value;
     (local.change_content(
         file_id,
-        crate::ContentChange::Write {
+        ContentChange::Write {
             offset: 0,
-            bytes: (bytes::Bytes::from_static(b"LOCAL")).into(),
+            bytes: OwnedBytes::from_static(b"LOCAL"),
         },
-        crate::ContentTimes::Preserve,
-        WorkBudget::UNBOUNDED,
+        ContentTimes::Preserve,
+        B,
         &cancellation,
     ))
     .await?;
     (remote.change_content(
         file.clone(),
-        crate::ContentChange::Write {
+        ContentChange::Write {
             offset: 64,
-            bytes: (bytes::Bytes::from_static(b"REMOTE")).into(),
+            bytes: OwnedBytes::from_static(b"REMOTE"),
         },
-        crate::ContentTimes::Preserve,
-        WorkBudget::UNBOUNDED,
+        ContentTimes::Preserve,
+        B,
         &cancellation,
     ))
     .await?;
@@ -224,18 +208,13 @@ async fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_r
         None,
         None,
         None,
-        crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        PublicationPermit::Unrestricted,
+        B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?;
-    let safe = (local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    let safe = (local.rebase_head(8, B, &cancellation)).await?;
     assert!(matches!(safe.value, RebaseDecision::Safe { .. }));
     let bytes = (local.read_file_range_by_id(
         file_id,
@@ -243,7 +222,7 @@ async fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_r
             offset: 0,
             length: 70,
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -256,7 +235,7 @@ async fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_r
             length: 70,
         },
         8,
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -265,7 +244,7 @@ async fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_r
     let mut overlapping_local = (volume.checkout(
         GenerationSelector::Head,
         writable_tracking(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -273,30 +252,30 @@ async fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_r
     let mut overlapping_remote = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
     .value;
     (overlapping_local.change_content(
         file_id,
-        crate::ContentChange::Write {
+        ContentChange::Write {
             offset: 10,
-            bytes: (bytes::Bytes::from_static(b"local")).into(),
+            bytes: OwnedBytes::from_static(b"local"),
         },
-        crate::ContentTimes::Preserve,
-        WorkBudget::UNBOUNDED,
+        ContentTimes::Preserve,
+        B,
         &cancellation,
     ))
     .await?;
     (overlapping_remote.change_content(
         file,
-        crate::ContentChange::Write {
+        ContentChange::Write {
             offset: 12,
-            bytes: (bytes::Bytes::from_static(b"remote")).into(),
+            bytes: OwnedBytes::from_static(b"remote"),
         },
-        crate::ContentTimes::Preserve,
-        WorkBudget::UNBOUNDED,
+        ContentTimes::Preserve,
+        B,
         &cancellation,
     ))
     .await?;
@@ -305,18 +284,13 @@ async fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_r
         None,
         None,
         None,
-        crate::PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED,
+        PublicationPermit::Unrestricted,
+        B,
         &cancellation,
-        |_| async {
-            crate::FsResult::Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED,
-            })
-        },
+        allow::<FsError>,
     ))
     .await?;
-    let conflict = (overlapping_local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    let conflict = (overlapping_local.rebase_head(8, B, &cancellation)).await?;
     assert!(matches!(
         conflict.value,
         RebaseDecision::Conflicted { ref conflicts, .. }
@@ -329,32 +303,32 @@ async fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_r
     let mut extending = (volume.checkout(
         GenerationSelector::Head,
         writable_tracking(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
     .value;
     (extending.change_content(
         file_id,
-        crate::ContentChange::Write {
+        ContentChange::Write {
             offset: 128,
-            bytes: (bytes::Bytes::from_static(b"TAIL")).into(),
+            bytes: OwnedBytes::from_static(b"TAIL"),
         },
-        crate::ContentTimes::Preserve,
-        WorkBudget::UNBOUNDED,
+        ContentTimes::Preserve,
+        B,
         &cancellation,
     ))
     .await?;
     (extending.change_content(
         file_id,
-        crate::ContentChange::CloneFrom {
+        ContentChange::CloneFrom {
             source: file_id,
             source_offset: 0,
             offset: 140,
             length: 4,
         },
-        crate::ContentTimes::Preserve,
-        WorkBudget::UNBOUNDED,
+        ContentTimes::Preserve,
+        B,
         &cancellation,
     ))
     .await?;
@@ -364,7 +338,7 @@ async fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_r
             offset: 128,
             length: 16,
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -377,157 +351,143 @@ async fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_r
 #[tokio::test]
 async fn public_identity_and_posix_special_surfaces_share_one_candidate()
 -> Result<(), Box<dyn std::error::Error>> {
+    macro_rules! ready {
+        ($future:expr) => {
+            ($future).await?
+        };
+    }
+
     let mut volume_config = config();
     volume_config.profile = FilesystemProfile::Posix;
     let cancellation = CancellationToken::new();
     let fs = Fs::memory();
-    let volume = (fs.create_volume(volume_config, WorkBudget::UNBOUNDED, &cancellation)).await?;
-    let mut checkout = (volume.value.checkout(
+    let volume = ready!(fs.create_volume(volume_config, B, &cancellation,));
+    let mut checkout = ready!(volume.value.checkout(
         GenerationSelector::Head,
         writable_tracking(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
-    ))
-    .await?;
+    ));
 
     let file = path("identity.bin")?;
     let clone = path("clone.bin")?;
-    let file_id = (checkout.value.create(
-        crate::AuthoredMutation::CreateFile {
+    let file_id = ready!(checkout.value.create(
+        AuthoredMutation::CreateFile {
             path: file.clone(),
-            bytes: (bytes::Bytes::from_static(b"abcdefgh")).into(),
-            metadata: crate::kernel::FileMetadata::default(),
+            bytes: OwnedBytes::from_static(b"abcdefgh"),
+            metadata: FileMetadata::default()
         },
-        WorkBudget::UNBOUNDED,
-        &cancellation,
+        B,
+        &cancellation
     ))
-    .await?
     .value;
-    let clone_id = (checkout.value.create(
-        crate::AuthoredMutation::CreateFile {
+    let clone_id = ready!(checkout.value.create(
+        AuthoredMutation::CreateFile {
             path: clone.clone(),
-            bytes: (bytes::Bytes::from_static(b"........")).into(),
-            metadata: crate::kernel::FileMetadata::default(),
+            bytes: OwnedBytes::from_static(b"........"),
+            metadata: FileMetadata::default()
         },
-        WorkBudget::UNBOUNDED,
-        &cancellation,
+        B,
+        &cancellation
     ))
-    .await?
     .value;
 
-    let record =
-        (checkout
+    let record = ready!(
+        checkout
             .value
-            .read_file_record_by_id(file_id, WorkBudget::UNBOUNDED, &cancellation))
-        .await?;
+            .read_file_record_by_id(file_id, B, &cancellation,)
+    );
     assert_eq!(record.value.file_id, file_id);
     assert_eq!(record.value.kind, FileKind::Regular);
     assert_eq!(
-        (checkout.value.read_file_range_by_id(
+        ready!(checkout.value.read_file_range_by_id(
             file_id,
             ByteRange {
                 offset: 2,
                 length: 3,
             },
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         ))
-        .await?
         .value
         .bytes
         .as_ref(),
         b"cde"
     );
     assert!(
-        (checkout.value.plan_file_extents_by_id(
+        ready!(checkout.value.plan_file_extents_by_id(
             file_id,
             ByteRange {
                 offset: 0,
                 length: 8,
             },
             8,
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         ))
-        .await?
         .value
         .is_none()
     );
     assert_eq!(
-        (checkout.value.seek_file_extent_by_id(
+        ready!(checkout.value.seek_file_extent_by_id(
             file_id,
             0,
             ExtentSeekTarget::Data,
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         ))
-        .await?
         .value,
         Some(0)
     );
     assert_eq!(
-        (checkout.value.seek_file_extent_by_id(
+        ready!(checkout.value.seek_file_extent_by_id(
             file_id,
             0,
             ExtentSeekTarget::Hole,
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         ))
-        .await?
         .value,
         Some(8)
     );
     assert_eq!(
-        (checkout.value.seek_file_extent_by_id(
+        ready!(checkout.value.seek_file_extent_by_id(
             file_id,
             9,
             ExtentSeekTarget::Data,
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         ))
-        .await?
         .value,
         None
     );
     assert_eq!(
-        (checkout.value.seek_file_extent(
-            &file,
-            9,
-            ExtentSeekTarget::Data,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .await?
+        ready!(
+            checkout
+                .value
+                .seek_file_extent(&file, 9, ExtentSeekTarget::Data, B, &cancellation,)
+        )
         .value,
         None
     );
 
-    let mut path_metadata =
-        (checkout
-            .value
-            .read_metadata(&file, WorkBudget::UNBOUNDED, &cancellation))
-        .await?
-        .value;
+    let mut path_metadata = ready!(checkout.value.read_metadata(&file, B, &cancellation,)).value;
     path_metadata.posix_mode = MetadataField::Value(0o100_660);
-    (checkout.value.set_attributes(
-        file.clone(),
-        path_metadata,
-        Some(10),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
+    ready!(
+        checkout
+            .value
+            .set_attributes(file.clone(), path_metadata, Some(10), B, &cancellation,)
+    );
     assert_eq!(
-        (checkout.value.read_file_range_by_id(
+        ready!(checkout.value.read_file_range_by_id(
             file_id,
             ByteRange {
                 offset: 8,
                 length: 2,
             },
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         ))
-        .await?
         .value
         .bytes
         .as_ref(),
@@ -540,257 +500,225 @@ async fn public_identity_and_posix_special_surfaces_share_one_candidate()
         128,
     )?;
     assert!(
-        (checkout.value.read_named_attribute_by_id(
-            file_id,
-            &attribute,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .await?
+        ready!(
+            checkout
+                .value
+                .read_named_attribute_by_id(file_id, &attribute, B, &cancellation,)
+        )
         .value
         .is_none()
     );
     assert!(
-        (checkout.value.list_named_attributes_by_id(
-            file_id,
-            None,
-            8,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .await?
+        ready!(
+            checkout
+                .value
+                .list_named_attributes_by_id(file_id, None, 8, B, &cancellation,)
+        )
         .value
         .entries
         .is_empty()
     );
-    (checkout.value.change_named_attribute_by_id(
+    ready!(checkout.value.change_named_attribute_by_id(
         file_id,
-        &attribute,
+        &attribute.clone(),
         Some((
-            &bytes::Bytes::from_static(b"first"),
-            NamedAttributeWriteMode::Create,
+            &OwnedBytes::from_static(b"first"),
+            NamedAttributeWriteMode::Create
         )),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
+        B,
+        &cancellation
+    ));
     assert_eq!(
-        (checkout.value.read_named_attribute_by_id(
-            file_id,
-            &attribute,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .await?
+        ready!(
+            checkout
+                .value
+                .read_named_attribute_by_id(file_id, &attribute, B, &cancellation,)
+        )
         .value
         .map(|chunk| chunk.bytes)
         .as_deref(),
         Some(b"first".as_slice())
     );
     assert_eq!(
-        (checkout.value.list_named_attributes_by_id(
-            file_id,
-            None,
-            8,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .await?
+        ready!(
+            checkout
+                .value
+                .list_named_attributes_by_id(file_id, None, 8, B, &cancellation,)
+        )
         .value
         .entries
         .len(),
         1
     );
-    (checkout.value.change_named_attribute_by_id(
+    ready!(checkout.value.change_named_attribute_by_id(
         file_id,
-        &attribute,
+        &attribute.clone(),
         Some((
-            &bytes::Bytes::from_static(b"second"),
-            NamedAttributeWriteMode::Replace,
+            &OwnedBytes::from_static(b"second"),
+            NamedAttributeWriteMode::Replace
         )),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
+        B,
+        &cancellation
+    ));
 
-    let mut metadata =
-        (checkout
+    let mut metadata = ready!(
+        checkout
             .value
-            .read_metadata_by_id(file_id, WorkBudget::UNBOUNDED, &cancellation))
-        .await?
-        .value;
+            .read_metadata_by_id(file_id, B, &cancellation,)
+    )
+    .value;
     metadata.posix_mode = MetadataField::Value(0o100_640);
-    (checkout.value.set_attributes_by_id(
-        file_id,
-        metadata,
-        None,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
+    ready!(
+        checkout
+            .value
+            .set_attributes_by_id(file_id, metadata, None, B, &cancellation)
+    );
     metadata.posix_mode = MetadataField::Value(0o100_600);
-    (checkout.value.set_attributes_by_id(
+    ready!(
+        checkout
+            .value
+            .set_attributes_by_id(file_id, metadata, Some(12), B, &cancellation,)
+    );
+    ready!(checkout.value.change_content(
         file_id,
-        metadata,
-        Some(12),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
-    (checkout.value.change_content(
-        file_id,
-        crate::ContentChange::Write {
+        ContentChange::Write {
             offset: 8,
-            bytes: (bytes::Bytes::from_static(b"tail")).into(),
+            bytes: OwnedBytes::from_static(b"tail")
         },
-        crate::ContentTimes::Preserve,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
-    (checkout.value.change_content(
+        ContentTimes::Preserve,
+        B,
+        &cancellation
+    ));
+    ready!(checkout.value.change_content(
         file_id,
-        crate::ContentChange::ZeroRange {
+        ContentChange::ZeroRange {
             range: ByteRange {
                 offset: 4,
                 length: 2,
             },
             allocated: false,
-            extend: false,
+            extend: false
         },
-        crate::ContentTimes::Preserve,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
-    (checkout.value.change_content(
+        ContentTimes::Preserve,
+        B,
+        &cancellation
+    ));
+    ready!(checkout.value.change_content(
         file_id,
-        crate::ContentChange::Preallocate {
+        ContentChange::Preallocate {
             range: ByteRange {
                 offset: 12,
                 length: 4,
             },
-            keep_size: false,
+            keep_size: false
         },
-        crate::ContentTimes::Preserve,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
-    (checkout.value.change_content(
+        ContentTimes::Preserve,
+        B,
+        &cancellation
+    ));
+    ready!(checkout.value.change_content(
         clone_id,
-        crate::ContentChange::Resize { logical_bytes: 16 },
-        crate::ContentTimes::Preserve,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
-    (checkout.value.change_content(
+        ContentChange::Resize { logical_bytes: 16 },
+        ContentTimes::Preserve,
+        B,
+        &cancellation
+    ));
+    ready!(checkout.value.change_content(
         clone_id,
-        crate::ContentChange::CloneFrom {
+        ContentChange::CloneFrom {
             source: file_id,
             source_offset: 0,
             offset: 4,
-            length: 8,
+            length: 8
         },
-        crate::ContentTimes::Preserve,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
-    (checkout.value.change_named_attribute_by_id(
+        ContentTimes::Preserve,
+        B,
+        &cancellation
+    ));
+    ready!(checkout.value.change_named_attribute_by_id(
         file_id,
-        &attribute,
+        &attribute.clone(),
         None,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
+        B,
+        &cancellation
+    ));
     assert!(
-        (checkout.value.read_named_attribute_by_id(
-            file_id,
-            &attribute,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        ))
-        .await?
+        ready!(
+            checkout
+                .value
+                .read_named_attribute_by_id(file_id, &attribute, B, &cancellation,)
+        )
         .value
         .is_none()
     );
 
-    let target = bytes::Bytes::from_static(b"../identity.bin");
-    (checkout.value.create(
-        crate::AuthoredMutation::CreateSymbolicLink {
+    let target = OwnedBytes::from_static(b"../identity.bin");
+    ready!(checkout.value.create(
+        AuthoredMutation::CreateSymbolicLink {
             path: path("link")?,
-            target: (target.clone()).into(),
-            metadata: crate::kernel::FileMetadata::default(),
+            target: target.clone(),
+            metadata: FileMetadata::default()
         },
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
+        B,
+        &cancellation
+    ));
     assert_eq!(
-        (checkout
-            .value
-            .read_symbolic_link(&path("link")?, WorkBudget::UNBOUNDED, &cancellation,))
-        .await?
-        .value
-        .bytes
-        .as_ref(),
-        target.as_ref()
+        ready!(
+            checkout
+                .value
+                .read_symbolic_link(&path("link")?, B, &cancellation,)
+        )
+        .value,
+        target
     );
-    (checkout.value.create(
-        crate::AuthoredMutation::CreateEmptySpecial {
+    ready!(checkout.value.create(
+        AuthoredMutation::CreateEmptySpecial {
             path: path("fifo")?,
             kind: FileKind::Fifo,
-            metadata: crate::kernel::FileMetadata::default(),
+            metadata: FileMetadata::default()
         },
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
-    (checkout.value.create(
-        crate::AuthoredMutation::CreateEmptySpecial {
+        B,
+        &cancellation
+    ));
+    ready!(checkout.value.create(
+        AuthoredMutation::CreateEmptySpecial {
             path: path("socket")?,
             kind: FileKind::Socket,
-            metadata: crate::kernel::FileMetadata::default(),
+            metadata: FileMetadata::default()
         },
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
-    (checkout.value.create(
-        crate::AuthoredMutation::CreateDevice {
+        B,
+        &cancellation
+    ));
+    ready!(checkout.value.create(
+        AuthoredMutation::CreateDevice {
             path: path("character")?,
             kind: FileKind::CharacterDevice,
             major: 1,
             minor: 3,
-            metadata: crate::kernel::FileMetadata::default(),
+            metadata: FileMetadata::default()
         },
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
-    (checkout.value.create(
-        crate::AuthoredMutation::CreateDevice {
+        B,
+        &cancellation
+    ));
+    ready!(checkout.value.create(
+        AuthoredMutation::CreateDevice {
             path: path("block")?,
             kind: FileKind::BlockDevice,
             major: 8,
             minor: 0,
-            metadata: crate::kernel::FileMetadata::default(),
+            metadata: FileMetadata::default()
         },
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
+        B,
+        &cancellation
+    ));
     assert!(
         (checkout.value.create(
-            crate::AuthoredMutation::CreateEmptySpecial {
+            AuthoredMutation::CreateEmptySpecial {
                 path: path("invalid")?,
                 kind: FileKind::Regular,
-                metadata: crate::kernel::FileMetadata::default()
+                metadata: FileMetadata::default()
             },
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation
         ))
         .await
@@ -798,59 +726,43 @@ async fn public_identity_and_posix_special_surfaces_share_one_candidate()
     );
     assert!(
         (checkout.value.create(
-            crate::AuthoredMutation::CreateDevice {
+            AuthoredMutation::CreateDevice {
                 path: path("invalid-device")?,
                 kind: FileKind::Regular,
                 major: 0,
                 minor: 0,
-                metadata: crate::kernel::FileMetadata::default()
+                metadata: FileMetadata::default()
             },
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation
         ))
         .await
         .is_err()
     );
 
-    (checkout.value.mutate(
-        vec![crate::kernel::Mutation::Link {
-            source: file.clone(),
-            destination: path("hard-link")?,
-        }],
-        WorkBudget::UNBOUNDED,
+    ready!(
+        checkout
+            .value
+            .hard_link(file.clone(), path("hard-link")?, B, &cancellation,)
+    );
+    ready!(checkout.value.rename(
+        path("hard-link")?,
+        path("renamed-link")?,
+        false,
+        B,
         &cancellation,
-    ))
-    .await?;
-    (checkout.value.mutate(
-        vec![crate::kernel::Mutation::Rename {
-            source: path("hard-link")?,
-            destination: path("renamed-link")?,
-            replace: false,
-        }],
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
-    (checkout.value.mutate(
-        vec![crate::kernel::Mutation::Remove {
-            path: path("renamed-link")?,
-            expected_file_id: (Some(file_id)).map_or(
-                crate::kernel::MetadataField::Unavailable,
-                crate::kernel::MetadataField::Value,
-            ),
-        }],
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
-    let listing = (checkout.value.list_directory_records(
-        &root_path()?,
-        std::ops::Bound::Unbounded,
-        32,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?;
+    ));
+    ready!(
+        checkout
+            .value
+            .remove(path("renamed-link")?, Some(file_id), B, &cancellation,)
+    );
+    let listing =
+        ready!(
+            checkout
+                .value
+                .list_directory_records(&root_path()?, None, 32, B, &cancellation,)
+        );
     assert_eq!(listing.value.entries.len(), 7);
     Ok(())
 }
@@ -892,18 +804,14 @@ async fn remaining_facade_guards_are_fast_typed_and_non_mutating()
     let cancellation = CancellationToken::new();
     let mut limited = config();
     limited.limits.maximum_read_bytes = 1;
-    let volume = (fs.create_volume_with_id(
-        VolumeId::from_bytes([211; 16]),
-        limited,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let volume =
+        (fs.create_volume_with_id(VolumeId::from_bytes([211; 16]), limited, B, &cancellation))
+            .await?
+            .value;
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -920,19 +828,31 @@ async fn remaining_facade_guards_are_fast_typed_and_non_mutating()
             ..
         })
     ));
+    assert!(matches!(
+        (checkout.stage_content(
+            &mut std::io::Cursor::new(OwnedBytes::from_static(b"xx")),
+            2,
+            B,
+            &cancellation
+        ))
+        .await,
+        Err(OperationFailure {
+            error: FsError::FileRead(FileRangeReadError::InvalidRange),
+            ..
+        })
+    ));
 
     (checkout.create(
-        crate::AuthoredMutation::CreateDirectory {
+        AuthoredMutation::CreateDirectory {
             path: path("directory")?,
-            metadata: crate::kernel::FileMetadata::default(),
+            metadata: FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
     assert!(matches!(
-        (checkout.detach_regular_file(&path("directory")?, WorkBudget::UNBOUNDED, &cancellation,))
-            .await,
+        (checkout.detach_regular_file(&path("directory")?, B, &cancellation,)).await,
         Err(OperationFailure {
             error: FsError::FileRead(FileRangeReadError::NotRegular),
             ..
@@ -946,25 +866,23 @@ async fn detached_payload_bounds_and_authority_volume_identity_fail_closed()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = (fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
-        .await?
-        .value;
+    let volume = (fs.create_volume(config(), B, &cancellation)).await?.value;
     let file = path("bounded-detached")?;
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
     .value;
     (checkout.create(
-        crate::AuthoredMutation::CreateFile {
+        AuthoredMutation::CreateFile {
             path: file.clone(),
-            bytes: (bytes::Bytes::new()).into(),
-            metadata: crate::kernel::FileMetadata::default(),
+            bytes: OwnedBytes::new(),
+            metadata: FileMetadata::default(),
         },
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
@@ -975,45 +893,55 @@ async fn detached_payload_bounds_and_authority_volume_identity_fail_closed()
     )?;
     (checkout.change_named_attribute(
         file.clone(),
-        &attribute,
+        &attribute.clone(),
         Some((
-            &bytes::Bytes::from_static(b"xx"),
+            &OwnedBytes::from_static(b"xx"),
             NamedAttributeWriteMode::Create,
         )),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;
-    let mut detached = (checkout.detach_regular_file(&file, WorkBudget::UNBOUNDED, &cancellation))
+    let mut detached = (checkout.detach_regular_file(&file, B, &cancellation))
         .await?
         .value;
     detached.volume.config.limits.maximum_read_bytes = 1;
     assert!(matches!(
-        (detached.read_named_attribute(&attribute, WorkBudget::UNBOUNDED, &cancellation,)).await,
+        (detached.read_named_attribute(&attribute, B, &cancellation,)).await,
         Err(OperationFailure {
             error: FsError::FileRead(FileRangeReadError::InvalidRange),
             ..
         })
     ));
-    assert_authority_volume_identity_fails_closed().await
+    assert!(matches!(
+        (detached.stage_content(
+            &mut std::io::Cursor::new(OwnedBytes::from_static(b"xx")),
+            2,
+            B,
+            &cancellation
+        ))
+        .await,
+        Err(OperationFailure {
+            error: FsError::FileRead(FileRangeReadError::InvalidRange),
+            ..
+        })
+    ));
+
+    assert_authority_volume_identity_fails_closed()
 }
 
 #[tokio::test]
 async fn one_reader_answers_a_batch_of_identities() -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = (fs.create_volume_with_id(
-        VolumeId::from_bytes([191; 16]),
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .await?
-    .value;
+    let volume =
+        (fs.create_volume_with_id(VolumeId::from_bytes([191; 16]), config(), B, &cancellation))
+            .await?
+            .value;
     let mut writer = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?
@@ -1021,16 +949,16 @@ async fn one_reader_answers_a_batch_of_identities() -> Result<(), Box<dyn std::e
     let mut identities = Vec::new();
     for name in ["a", "b"] {
         (writer.create(
-            crate::AuthoredMutation::CreateFile {
+            AuthoredMutation::CreateFile {
                 path: path(name)?,
-                bytes: (bytes::Bytes::from_static(b"x")).into(),
-                metadata: crate::kernel::FileMetadata::default(),
+                bytes: OwnedBytes::from_static(b"x"),
+                metadata: FileMetadata::default(),
             },
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         ))
         .await?;
-        let record = (writer.lookup_no_follow(&path(name)?, WorkBudget::UNBOUNDED, &cancellation))
+        let record = (writer.lookup_no_follow(&path(name)?, B, &cancellation))
             .await?
             .value
             .record
@@ -1042,7 +970,7 @@ async fn one_reader_answers_a_batch_of_identities() -> Result<(), Box<dyn std::e
     assert_eq!(reader.generation_id(), writer.generation_id());
     let records = (reader.file_records_by_id(
         &[identities[1].file_id, absent, identities[0].file_id],
-        WorkBudget::UNBOUNDED,
+        B,
         &cancellation,
     ))
     .await?;

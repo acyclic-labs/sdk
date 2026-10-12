@@ -78,40 +78,42 @@ async fn provider_object_batch_reads_once_and_preserves_order()
     };
     let cancellation = CancellationToken::new();
     ({
-        let authority_input_1 = first_bytes.clone();
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = store
-            .put(first, authority_input_1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
+        store
+            .put(
+                first,
+                first_bytes.clone(),
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+            )
+            .await
     })?;
     ({
-        let authority_input_1 = second_bytes.clone();
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = store
-            .put(second, authority_input_1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
+        store
+            .put(
+                second,
+                second_bytes.clone(),
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+            )
+            .await
     })?;
     assert!(
-        ({
-            let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let __object_result = store.contains(first, &mut __object_work).await;
-            __object_work.receipt(__object_result)
-        })?
-        .value
+        (store
+            .contains(
+                first,
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            )
+            .await)?
     );
     let missing = ObjectId {
         kind: first.kind,
         digest: crate::Digest::from_bytes([99; 32]),
     };
     assert!(
-        !({
-            let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-            let __object_result = store.contains(missing, &mut __object_work).await;
-            __object_work.receipt(__object_result)
-        })?
-        .value
+        !(store
+            .contains(
+                missing,
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            )
+            .await)?
     );
     let denied = WorkBudget {
         allocation_operations: 0,
@@ -696,14 +698,13 @@ async fn native_logical_write_denies_request_and_call_before_effects()
         let (store, work, cancellation) = observed_native_store(budget, false, false, false);
         assert!(
             ({
-                let authority_input_0 = native_test_id();
-                let authority_input_1 = OwnedBytes::from_static(b"body");
-
-                let mut __object_work = crate::AuthorityWork::native(&work, &cancellation);
-                let __object_result = store
-                    .put(authority_input_0, authority_input_1, &mut __object_work)
-                    .await;
-                __object_result
+                store
+                    .put(
+                        native_test_id(),
+                        OwnedBytes::from_static(b"body"),
+                        &mut crate::AuthorityWork::native(&work, &cancellation),
+                    )
+                    .await
             })
             .is_err()
         );
@@ -731,14 +732,13 @@ async fn native_logical_post_mutation_cancellation_keeps_acknowledgement()
         observed_native_store(WorkBudget::UNBOUNDED, true, false, false);
     assert!(
         ({
-            let authority_input_0 = native_test_id();
-            let authority_input_1 = OwnedBytes::from_static(b"body");
-
-            let mut __object_work = crate::AuthorityWork::native(&work, &cancellation);
-            let __object_result = store
-                .put(authority_input_0, authority_input_1, &mut __object_work)
-                .await;
-            __object_result
+            store
+                .put(
+                    native_test_id(),
+                    OwnedBytes::from_static(b"body"),
+                    &mut crate::AuthorityWork::native(&work, &cancellation),
+                )
+                .await
         })
         .is_err()
     );
@@ -781,14 +781,13 @@ async fn native_logical_lost_ack_retry_inspects_existing_with_original_work()
         )
         .await?;
     ({
-        let authority_input_0 = native_test_id();
-        let authority_input_1 = OwnedBytes::from_static(b"body");
-
-        let mut __object_work = crate::AuthorityWork::native(&work, &cancellation);
-        let __object_result = store
-            .put(authority_input_0, authority_input_1, &mut __object_work)
-            .await;
-        __object_result
+        store
+            .put(
+                native_test_id(),
+                OwnedBytes::from_static(b"body"),
+                &mut crate::AuthorityWork::native(&work, &cancellation),
+            )
+            .await
     })?;
     assert_eq!(work.receipt().backend_write_operations, 0);
     assert_eq!(work.receipt().object_bytes_written, 4);
