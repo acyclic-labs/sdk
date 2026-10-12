@@ -25,7 +25,6 @@ use acyclic_stream::{BoxProviderFuture, StreamProvider};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
-#[cfg(not(target_arch = "wasm32"))]
 use crate::store::history::HistoryIo as _;
 
 const FORK_SOURCE_STAGE: &str = "acyclic.recursive.fork.source_stage.v1";
@@ -1038,7 +1037,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                         let original = recursive_decode_with_native_work::<ForkToolArguments>(&arguments, work)?;
                         let io = super::PreparationIo::from_native_work(work)?;
                         let mut history = io.history_io();
-                        original.0.source_task_with_work(caller, context.effective_scope().limits(),
+                        original.0.source_task(caller, context.effective_scope().limits(),
                             &mut Some(&mut history))?;
                         drop(history);
                         let payload = stage(context,
@@ -1059,12 +1058,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                         recursive_encode_with_native_work(&pin, work)?
                     }
                     State::Ready { arguments } => {
-                        let plan = self.plan_with_native_work(context, &owner.0, caller,
-                            &arguments, None, cancellation, work).await?;
                         let command_io = super::PreparationIo::from_native_work(work)?;
+                        let plan = self.plan(context, &owner.0, caller,
+                            &arguments, None, cancellation, Some(&command_io)).await?;
                         let command = self.command(
-                            context, "merge-apply", &plan.0, None, None, cancellation, Some(&command_io)).await?;
-                        let initial = InitialPlan { plan: plan.0, command };
+                            context, "merge-apply", &plan, None, None, cancellation, Some(&command_io)).await?;
+                        let initial = InitialPlan { plan, command };
                         recursive_encode_with_native_work(&initial, work)?
                     }
                     State::SourcePinned { arguments, intent, command } => {
@@ -1077,12 +1076,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                                 reason: "source-stage outbox changed original native arguments" });
                         }
                         drop(retained_io);
-                        let plan = self.plan_with_native_work(context, &owner.0, caller,
-                            &arguments, Some(&intent), cancellation, work).await?;
                         let command_io = super::PreparationIo::from_native_work(work)?;
+                        let plan = self.plan(context, &owner.0, caller,
+                            &arguments, Some(&intent), cancellation, Some(&command_io)).await?;
                         let command = self.command(
-                            context, "prepare", &plan.0, None, None, cancellation, Some(&command_io)).await?;
-                        let initial = InitialPlan { plan: plan.0, command };
+                            context, "prepare", &plan, None, None, cancellation, Some(&command_io)).await?;
+                        let initial = InitialPlan { plan, command };
                         recursive_encode_with_native_work(&initial, work)?
                     }
                     State::Waiting { plan, command, report, receipt, .. } => {
@@ -1171,7 +1170,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 State::Complete { value } => return Ok(Some(ToolResult { value })),
                 State::Ready { arguments } if matches!(self.kind, Kind::Fork) => {
                     let original_arguments: ForkToolArguments = decode(&arguments, None)?;
-                    original_arguments.source_task(caller, context.scope().limits())?;
+                    original_arguments.source_task(caller, context.scope().limits(), &mut None)?;
                     let payload = stage(&context, derived(invocation.operation_id, "source-arguments", None)?,
                         "source-arguments", &arguments, self.maximum_request_bytes, cancellation, None).await?;
                     let intent = self.source()?.select(&context, &original_arguments, cancellation).await?;
@@ -1185,7 +1184,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     } }), None)?
                 }
                 State::Ready { arguments } => {
-                    let plan = self.plan(&context, &owner, caller, &arguments, None, cancellation).await?;
+                    let plan = self.plan(&context, &owner, caller, &arguments, None, cancellation, None).await?;
                     let command = self.command(&context, "merge-apply", &plan, None, None, cancellation, None).await?;
                     encode(&(InitialPlan { plan, command }), None)?
                 }
@@ -1195,7 +1194,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     if retained_payload(&context, &command.payload, self.maximum_request_bytes, cancellation, None).await? != arguments {
                         return Err(Error::Unauthorized("source-stage outbox changed original tool arguments".into()));
                     }
-                    let plan = self.plan(&context, &owner, caller, &arguments, Some(&intent), cancellation).await?;
+                    let plan = self.plan(&context, &owner, caller, &arguments, Some(&intent), cancellation, None).await?;
                     let command = self.command(&context, "prepare", &plan, None, None, cancellation, None).await?;
                     encode(&(InitialPlan { plan, command }), None)?
                 }
@@ -1234,51 +1233,127 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     async fn plan(&self, context: &ToolContext, owner: &RecursiveToolOwner<P, A, O>, caller: TaskId,
-        arguments: &Value, intent: Option<&RecursiveForkSourceIntent>, cancellation: &CancellationToken) -> Result<Plan> {
+        arguments: &Value, intent: Option<&RecursiveForkSourceIntent>, cancellation: &CancellationToken,
+        io: Option<&super::PreparationIo>) -> Result<Plan> {
         let runtime = owner.runtime.as_ref();
+        #[cfg(not(target_arch = "wasm32"))]
+        let native_work = io.and_then(super::PreparationIo::original_native_work);
         let plan = match self.kind {
             Kind::Fork => {
-                let arguments: ForkToolArguments = decode(arguments, None)?;
-                arguments.source_task(caller, context.scope().limits())?;
-                let intent = intent.ok_or_else(|| Error::Unauthorized("fork source choice is not durably pinned".into()))?;
-                let binding = self.source()?.fork(context, &arguments, intent, None, cancellation).await?;
+                let original: ForkToolArguments = decode(arguments, io)?;
+                recursive_observe(io, |work| original.source_task(
+                    caller, recursive_effective_scope(context, io).limits(), work))?;
+                let intent = intent.ok_or_else(|| recursive_reject(io, crate::wire::ErrorCode::Unauthorized,
+                    "fork source choice is not durably pinned"))?;
+                let binding = 'binding: {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let (Some(io), Some(work)) = (io, native_work) {
+                        let (binding, custody) = self.source()?.fork_with_native_work(
+                            context, &original, intent, None, cancellation, work)?.await?;
+                        io.absorb_native_custody(custody)?;
+                        break 'binding binding;
+                    }
+                    break 'binding self.source()?.fork(context, &original, intent, None, cancellation).await?;
+                };
                 if binding.source.request != intent.request || binding.child.operation_id != intent.child_operation_id {
-                    return Err(Error::Unauthorized("source staging changed the selected immutable source/allocation".into()));
+                    return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized,
+                        "source staging changed the selected immutable source/allocation"));
                 }
-                validate_fork_binding(context, &arguments, &binding, cancellation, None).await?;
-                let operation = derived(context.operation_id(), "preparation-task", None)?;
-                let payload = stage(context, derived(context.operation_id(), "preparation-payload", None)?,
-                    "preparation-payload", &encode(&binding.source.request, None)?, self.maximum_request_bytes, cancellation, None).await?;
-                let request = fork_preparation_request(binding.source.preparer.as_ref(), binding.source.request,
+                validate_fork_binding(context, &original, &binding, cancellation, io).await?;
+                let operation = derived(context.operation_id(), "preparation-task", io)?;
+                let payload = {
+                    let hold;
+                    let before = io.map(super::PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
+                    let encoded = encode(&binding.source.request, io)?;
+                    hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
+                        .ok_or_else(|| recursive_reject(Some(io), crate::wire::ErrorCode::Invalid,
+                            "recursive payload custody underflow"))?)).transpose()?;
+                    let file = stage(context, derived(context.operation_id(), "preparation-payload", io)?,
+                        "preparation-payload", &encoded, self.maximum_request_bytes, cancellation, io).await?;
+                    drop(encoded);
+                    drop(hold);
+                    file
+                };
+                let checkpoint = recursive_observe(io, |work| binding.source_checkpoint.clone_with_work(work))?;
+                let request = fork_preparation_request(binding.source.preparer.as_ref(), &binding.source.request,
                     task_id_for_admission(operation), binding.child, WorkflowCommand {
-                        operation_id: context.operation_id(), kind: FORK_PREPARE_TASK_COMMAND_KIND.into(), payload,
-                    }, binding.limits, Some(binding.source_checkpoint.clone()), binding.input_files)?;
-                let preparation = runtime.harness().registered_child_admission(operation, "acyclic.fork_preparation", "1", encode(&request, None)?, caller, context.scope())?;
-                Plan::Fork(Box::new(RecursiveForkToolPlan { arguments, caller, request, preparation,
+                        operation_id: context.operation_id(),
+                        kind: crate::filesystem::fork_preparer_io::clone_text(FORK_PREPARE_TASK_COMMAND_KIND, io)?, payload,
+                    }, binding.limits, Some(checkpoint), binding.input_files, io)?;
+                let preparation = 'preparation: {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let (Some(io), Some(work)) = (io, native_work) {
+                        let input = recursive_encode_with_native_work(&request, work)?;
+                        let (preparation, custody) = runtime.harness().registered_child_admission_with_native_work(
+                            operation, "acyclic.fork_preparation", "1", input, caller, context.scope(), work)?;
+                        io.absorb_native_custody(custody)?;
+                        break 'preparation preparation;
+                    }
+                    break 'preparation runtime.harness().registered_child_admission(
+                        operation, "acyclic.fork_preparation", "1", encode(&request, io)?, caller, context.scope())?;
+                };
+                Plan::Fork(recursive_box(RecursiveForkToolPlan { arguments: original, caller, request, preparation,
                     child_message_pointer: binding.child_message_pointer,
                     child_message_file_pointer: binding.child_message_file_pointer,
-                    allocation_digest: intent.allocation_digest, source_checkpoint: binding.source_checkpoint }))
+                    allocation_digest: intent.allocation_digest, source_checkpoint: binding.source_checkpoint }, io)?)
             }
             Kind::Merge => {
-                let arguments: MergeToolArguments = decode(arguments, None)?;
-                let binding = self.source()?.merge(context, &arguments, None, cancellation).await?;
-                validate_merge_binding(context, arguments.source, &binding, None)?;
-                let controller = ParentProjectController::new(binding.filesystem.as_ref(), binding.destination.reducer(), &binding.verifier, &binding.scope, binding.project.clone())?;
-                let inspected = match &binding.source_read {
-                    Some(handle) => controller.prepare_project_import_from_selected_source(
-                        &binding.source_project, &binding.source_generation, handle,
-                        &owner.journal_owner, context.task(), context.operation_id()).await?,
-                    None => controller.prepare_project_import(&binding.source_project, &binding.source_generation).await?,
+                let original: MergeToolArguments = decode(arguments, io)?;
+                let binding = 'binding: {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let (Some(io), Some(work)) = (io, native_work) {
+                        let (binding, custody) = self.source()?.merge_with_native_work(
+                            context, &original, None, cancellation, work)?.await?;
+                        io.absorb_native_custody(custody)?;
+                        break 'binding binding;
+                    }
+                    break 'binding self.source()?.merge(context, &original, None, cancellation).await?;
                 };
-                Plan::Merge(Box::new(RecursiveMergeToolPlan { arguments, caller, operation_id: context.operation_id(),
-                    destination: binding.destination.reducer().authority().clone(), source: binding.source,
+                validate_merge_binding(context, original.source, &binding, io)?;
+                let controller = ParentProjectController::new(binding.filesystem.as_ref(),
+                    binding.destination.reducer(), &binding.verifier, &binding.scope, &binding.project, io)?;
+                let expected_target_generation = 'generation: {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let (Some(io), Some(work)) = (io, native_work) {
+                        let inspected = match &binding.source_read {
+                            Some(handle) => controller.prepare_project_import_from_selected_source_with_native_work(
+                                &binding.source_project, &binding.source_generation, handle,
+                                &owner.journal_owner, context.task(), context.operation_id(), work).await?,
+                            None => controller.prepare_project_import_with_native_work(
+                                &binding.source_project, &binding.source_generation, work).await?,
+                        };
+                        let (generation, custody) = GenerationRef::new_with_native_work(
+                            binding.project.provider(), &inspected.0.target_head().digest().into_bytes(), None, work)?;
+                        io.absorb_native_custody(custody)?;
+                        break 'generation generation;
+                    }
+                    let inspected = match &binding.source_read {
+                        Some(handle) => controller.prepare_project_import_from_selected_source(
+                            &binding.source_project, &binding.source_generation, handle,
+                            &owner.journal_owner, context.task(), context.operation_id()).await?,
+                        None => controller.prepare_project_import(&binding.source_project, &binding.source_generation).await?,
+                    };
+                    break 'generation binding.filesystem.generation_ref_id(inspected.target_head())?;
+                };
+                let destination = match io {
+                    Some(io) => io.history_io().clone_authority(binding.destination.reducer().authority())?,
+                    None => binding.destination.reducer().authority().clone(),
+                };
+                let authorized_source = binding.source_read.as_ref().map(|source|
+                    recursive_observe(io, |work| source.authorization().clone_with_work_and_custody(work))
+                        .map(|copied| copied.0)).transpose()?;
+                drop(controller);
+                Plan::Merge(recursive_box(RecursiveMergeToolPlan { arguments: original, caller,
+                    operation_id: context.operation_id(), destination, source: binding.source,
                     source_project: binding.source_project, source_generation: binding.source_generation,
-                    target_project: binding.project, expected_target_generation: binding.filesystem.generation_ref_id(inspected.target_head())?,
-                    authorized_source: binding.source_read.as_ref().map(|source| source.authorization().clone()), notice: binding.notice }))
+                    target_project: binding.project, expected_target_generation,
+                    authorized_source, notice: binding.notice }, io)?)
             }
         };
-        validate_plan(&plan, arguments, None)?;
-        crate::contract::validate_json_byte_bound(&plan, self.maximum_request_bytes.min(context.scope().limits().file_bytes))?;
+        validate_plan(&plan, arguments, io)?;
+        if !io.is_some_and(super::PreparationIo::uses_native_work) {
+            crate::contract::validate_json_byte_bound(&plan, self.maximum_request_bytes.min(context.scope().limits().file_bytes))?;
+        }
         Ok(plan)
     }
 
@@ -1299,128 +1374,6 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             kind: crate::filesystem::fork_preparer_io::clone_text(command_kind(stage_kind), io)?, payload: file })
     }
     #[cfg(not(target_arch = "wasm32"))]
-    async fn plan_with_native_work(
-        &self, context: &ToolContext, owner: &RecursiveToolOwner<P, A, O>, caller: TaskId,
-        arguments: &Value, intent: Option<&RecursiveForkSourceIntent>,
-        cancellation: &CancellationToken, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Plan, acyclic_fs::NativeAllocation)> {
-        let runtime = owner.runtime.as_ref();
-        match self.kind {
-            Kind::Fork => {
-                let mut original = recursive_decode_with_native_work::<ForkToolArguments>(arguments, work)?;
-                let io = super::PreparationIo::from_native_work(work)?;
-                {
-                    let mut history = io.history_io();
-                    original.0.source_task_with_work(caller, context.effective_scope().limits(),
-                        &mut Some(&mut history))?;
-                }
-                let intent = intent.ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unauthorized, reason: "native fork source choice is not durably pinned",
-                })?;
-                let mut binding = self.source()?.fork_with_native_work(
-                    context, &original.0, intent, None, cancellation, work)?.await?;
-                if binding.0.source.request != intent.request
-                    || binding.0.child.operation_id != intent.child_operation_id
-                {
-                    return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                        reason: "native source staging changed original source/allocation" });
-                }
-                validate_fork_binding(context, &original.0, &binding.0, cancellation, Some(&io)).await?;
-                let operation = derived(context.operation_id(), "preparation-task", Some(&io))?;
-                let encoded = recursive_encode_with_native_work(&binding.0.source.request, work)?;
-                let payload = stage(context,
-                    derived(context.operation_id(), "preparation-payload", Some(&io))?,
-                    "preparation-payload", &encoded.0, self.maximum_request_bytes, cancellation, Some(&io)).await?;
-                drop(encoded);
-                let command_kind = crate::filesystem::fork_preparer_io::clone_text(FORK_PREPARE_TASK_COMMAND_KIND, Some(&io))?;
-                let checkpoint = {
-                    let mut history = io.history_io();
-                    binding.0.source_checkpoint.copy(&mut Some(&mut history))?
-                };
-                let mut request = super::recursive::fork_preparation_request_with_native_work(
-                    binding.0.source.preparer.as_ref(), &binding.0.source.request,
-                    task_id_for_admission(operation), binding.0.child,
-                    WorkflowCommand { operation_id: context.operation_id(), kind: command_kind, payload },
-                    binding.0.limits, Some(checkpoint), binding.0.input_files, work,
-                )?;
-                let input = recursive_encode_with_native_work(&request.0, work)?;
-                let mut preparation = runtime.harness().registered_child_admission_with_native_work(
-                    operation, "acyclic.fork_preparation", "1", input, caller, context.scope(), work)?;
-                let plan = RecursiveForkToolPlan {
-                    arguments: original.0, caller, request: request.0, preparation: preparation.0,
-                    child_message_pointer: binding.0.child_message_pointer,
-                    child_message_file_pointer: binding.0.child_message_file_pointer,
-                    allocation_digest: intent.allocation_digest,
-                    source_checkpoint: binding.0.source_checkpoint,
-                };
-                let plan = recursive_box(plan, Some(&io))?;
-                drop((binding.0.source, binding.0.parent, binding.0.child_conversation,
-                    binding.0.parent_scope, binding.0.child_scope));
-                let mut output = (Plan::Fork(plan), io.take_native_custody(io.owned_bytes()?)?);
-                output.1.absorb(&mut original.1)?;
-                output.1.absorb(&mut request.1)?;
-                output.1.absorb(&mut preparation.1)?;
-                output.1.absorb(&mut binding.1)?;
-                validate_plan(&output.0, arguments, Some(&super::PreparationIo::from_native_work(work)?))?;
-                Ok(output)
-            }
-            Kind::Merge => self.plan_merge_with_native_work(
-                context, owner, caller, arguments, cancellation, work).await,
-        }
-    }
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn plan_merge_with_native_work(
-        &self, context: &ToolContext, owner: &RecursiveToolOwner<P, A, O>,
-        caller: TaskId, arguments: &Value, cancellation: &CancellationToken,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Plan, acyclic_fs::NativeAllocation)> {
-        let mut original = recursive_decode_with_native_work::<MergeToolArguments>(arguments, work)?;
-        let io = super::PreparationIo::from_native_work(work)?;
-        let mut binding = self.source()?.merge_with_native_work(
-            context, &original.0, None, cancellation, work)?.await?;
-        validate_merge_binding(context, original.0.source, &binding.0, Some(&io))?;
-        let controller = ParentProjectController::new_with_native_work(
-            binding.0.filesystem.as_ref(), binding.0.destination.reducer(),
-            &binding.0.verifier, &binding.0.scope, &binding.0.project, work)?;
-        let inspected = match &binding.0.source_read {
-            Some(handle) => controller.prepare_project_import_from_selected_source_with_native_work(
-                &binding.0.source_project, &binding.0.source_generation, handle,
-                &owner.journal_owner, context.task(), context.operation_id(), work).await?,
-            None => controller.prepare_project_import_with_native_work(
-                &binding.0.source_project, &binding.0.source_generation, work).await?,
-        };
-        let mut expected_target_generation = GenerationRef::new_with_native_work(
-            binding.0.project.provider(), &inspected.0.target_head().digest().into_bytes(), None, work)?;
-        let destination = {
-            let mut history = io.history_io();
-            history.clone_authority(binding.0.destination.reducer().authority())?
-        };
-        let authorized_source = {
-            let mut history = io.history_io();
-            binding.0.source_read.as_ref().map(|source|
-                source.authorization().clone_with_work_and_custody(&mut Some(&mut history))
-                    .map(|copied| copied.0)).transpose()?
-        };
-        drop((inspected, controller));
-        let plan = RecursiveMergeToolPlan {
-            arguments: original.0, caller, operation_id: context.operation_id(),
-            destination, source: binding.0.source, source_project: binding.0.source_project,
-            source_generation: binding.0.source_generation, target_project: binding.0.project,
-            expected_target_generation: expected_target_generation.0,
-            authorized_source, notice: binding.0.notice,
-        };
-        let plan = recursive_box(plan, Some(&io))?;
-        drop((binding.0.filesystem, binding.0.destination, binding.0.verifier,
-            binding.0.scope, binding.0.source_read));
-        let mut output = (Plan::Merge(plan), io.take_native_custody(io.owned_bytes()?)?);
-        output.1.absorb(&mut original.1)?;
-        output.1.absorb(&mut binding.1)?;
-        output.1.absorb(&mut expected_target_generation.1)?;
-        validate_plan(&output.0, arguments, Some(&super::PreparationIo::from_native_work(work)?))?;
-        Ok(output)
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
     async fn apply_merge_with_native_work(
         &self, context: &ToolContext, owner: &RecursiveToolOwner<P, A, O>,
         merge: &RecursiveMergeToolPlan, cancellation: &CancellationToken,
@@ -1431,9 +1384,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             context, &merge.arguments, Some(merge), cancellation, work)?.await?;
         validate_merge_binding(context, merge.arguments.source, &binding.0, Some(&io))?;
         check_merge_binding(merge, &binding.0, Some(&io))?;
-        let controller = ParentProjectController::new_with_native_work(
+        let controller = ParentProjectController::new(
             binding.0.filesystem.as_ref(), binding.0.destination.reducer(),
-            &binding.0.verifier, &binding.0.scope, &binding.0.project, work)?;
+            &binding.0.verifier, &binding.0.scope, &binding.0.project, Some(&io))?;
         let inspected = match &binding.0.source_read {
             Some(handle) => controller.prepare_project_import_at_from_selected_source_with_native_work(
                 &merge.source_project, &merge.source_generation, &merge.expected_target_generation,
@@ -1531,12 +1484,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             WorkflowCommand { operation_id: command.operation_id, kind: history.clone_text(&command.kind)?,
                 payload: command.payload.copy(&mut Some(&mut history))? }
         };
-        let restored = super::recursive::fork_preparation_request_with_native_work(
+        let restored = fork_preparation_request(
             binding.0.source.preparer.as_ref(), &binding.0.source.request,
             fork.preparation.task_id(), binding.0.child, command, binding.0.limits,
-            Some(binding.0.source_checkpoint), binding.0.input_files, work,
+            Some(binding.0.source_checkpoint), binding.0.input_files, Some(&io),
         )?;
-        if restored.0 != fork.request {
+        if restored != fork.request {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "restored native child, source or allowances changed" });
         }
@@ -1760,10 +1713,10 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     return Err(Error::Unauthorized("restored fork source differs from the original cut".into()));
                 }
                 let restored = fork_preparation_request(
-                    binding.source.preparer.as_ref(), binding.source.request,
+                    binding.source.preparer.as_ref(), &binding.source.request,
                     fork.preparation.task_id(), binding.child,
                     fork.request.command.clone().ok_or_else(|| Error::Invalid("fork preparation command missing".into()))?,
-                    binding.limits, Some(binding.source_checkpoint), binding.input_files,
+                    binding.limits, Some(binding.source_checkpoint), binding.input_files, None,
                 )?;
                 if restored != fork.request {
                     return Err(Error::Unauthorized("restored fork child, source or allowances changed".into()));
@@ -1787,7 +1740,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 let binding = self.source()?.merge(context, &merge.arguments, Some(merge), cancellation).await?;
                 validate_merge_binding(context, merge.arguments.source, &binding, None)?;
                 check_merge_binding(merge, &binding, None)?;
-                let controller = ParentProjectController::new(binding.filesystem.as_ref(), binding.destination.reducer(), &binding.verifier, &binding.scope, binding.project.clone())?;
+                let controller = ParentProjectController::new(binding.filesystem.as_ref(), binding.destination.reducer(), &binding.verifier, &binding.scope, &binding.project, None)?;
                 let inspected = match &binding.source_read {
                     Some(handle) => controller.prepare_project_import_at_from_selected_source(
                         &merge.source_project, &merge.source_generation, &merge.expected_target_generation,

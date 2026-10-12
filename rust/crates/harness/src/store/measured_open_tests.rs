@@ -85,7 +85,7 @@ mod measured_open_tests {
             return Err(Error::Invalid("fresh original command must apply".into()));
         };
         let publication = operations::IndexedPublication::new(
-            &authority(), &event, encode_event(&authority(), &event)?)?;
+            &authority(), &event, encode_event(&authority(), &event)?, &mut None)?;
         let cancellation = CancellationToken::new();
         let mut denied = budget();
         denied.allocation_operations = 0;
@@ -102,13 +102,13 @@ mod measured_open_tests {
         let mut work = history::HistoryWork::new(allowed, &cancellation);
         let mut observer: Option<&mut dyn history::HistoryIo> = Some(&mut work);
         let (key, held) = crate::distributed::digest_key(&[68; 32], &mut observer)?;
-        let mut prepared = crate::distributed::PreparedCommitRequest::new(key, held, &mut observer);
-        prepared.push_condition(acyclic_stream::CommitCondition::Absent {
+        let mut prepared = crate::distributed::commit_request(key, held, &mut observer);
+        crate::distributed::add_condition(&mut prepared, acyclic_stream::CommitCondition::Absent {
             path: publication.path.clone(),
         })?;
-        prepared.append(publication.path.clone(), publication.bytes.clone())?;
+        crate::distributed::add_record(&mut prepared, publication.path.clone(), publication.bytes.clone())?;
         publication.add_index_with_work(&mut prepared)?;
-        let (outcome, retained) = prepared.commit(&client, Some(event.operation_id), None, None, None).await?;
+        let (outcome, retained) = crate::distributed::commit(prepared, &client, Some(event.operation_id), None, None, None).await?;
         let acyclic_stream::CommitOutcome::Committed(envelope) = outcome else {
             return Err(Error::Conflict("original indexed publication unexpectedly conflicted".into()));
         };

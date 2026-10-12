@@ -304,11 +304,11 @@ async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
         let (outcome, native_received) = if native {
             let key_owned = retained - path_owned;
             retained -= key_owned;
-            let mut request = crate::distributed::PreparedCommitRequest::new(
+            let mut request = crate::distributed::commit_request(
                 key, key_owned, work);
-            request.push_condition(CommitCondition::Absent { path: path.clone() })?;
-            request.append(path.clone(), bytes.clone())?;
-            request.commit(client, None, None, None, None).await?
+            crate::distributed::add_condition(&mut request, CommitCondition::Absent { path: path.clone() })?;
+            crate::distributed::add_record(&mut request, path.clone(), bytes.clone())?;
+            crate::distributed::commit(request, client, None, None, None, None).await?
         } else {
             let mut conditions = if work.is_none() { Vec::with_capacity(1) } else { Vec::new() };
             reserve_chunk_slot(&mut conditions, 1, work)?;
@@ -430,7 +430,7 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
     event: &Event,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<operations::IndexedPublication> {
-    let mut publication = operations::IndexedPublication::new_with_work(
+    let mut publication = operations::IndexedPublication::new(
         reducer.authority(),
         event,
         crate::wire_codec::encode_event(reducer.authority(), event, work)?,

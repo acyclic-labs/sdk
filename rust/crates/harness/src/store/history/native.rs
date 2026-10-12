@@ -481,14 +481,14 @@ impl HistoryIo for AcceptedCompletionIo {
     }
     fn allocation_failure(&self, cause: std::collections::TryReserveError) -> Error { error(cause) }
     fn receive_record(&mut self, bytes: u64) -> Result<()> {
-        self.reservation.record_received_prefix(WorkCounters {
+        self.reservation.record_completed(WorkCounters {
             authority_records_read: 1, authority_bytes_read: bytes,
             items_examined: 1, ..WorkCounters::default()
         }).map_err(Self::native_error)?;
         self.retain(bytes)
     }
     fn receive_native_record(&mut self, bytes: u64) -> Result<()> {
-        self.reservation.record_received_prefix(WorkCounters {
+        self.reservation.record_completed(WorkCounters {
             authority_records_read: 1, authority_bytes_read: bytes,
             ..WorkCounters::default()
         }).map_err(Self::native_error)

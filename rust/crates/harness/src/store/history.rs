@@ -332,10 +332,7 @@ impl<P: StreamProvider> HistoryReader<P> {
                 crate::store::operations::stream_error_with_work(error, quota.work()))
         })();
         drop(path);
-        let stream = match stream {
-            Ok(stream) => stream,
-            Err(error) => return Err(error),
-        };
+        let stream = stream?;
         if let Err(error) = quota.relinquish(temporary_bytes) {
             drop(stream);
             return Err(error);

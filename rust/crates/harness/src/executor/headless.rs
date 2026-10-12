@@ -33,7 +33,7 @@ impl StockExecution<'_> {
         let records = self.prefix_records(journal, input.operation_id, step).await?;
         match records.first() {
             Some(ExecutionRecord { sequence: 1, event: ExecutionEvent::Started { request_digest }, .. })
-                if self.matches_request_digest(input, request_digest)? => {}
+                if *request_digest == self.request_digest(input)? => {}
             _ => return Err(stock_boundary(self.io(), crate::wire::ErrorCode::Conflict,
                 "tool settlement has another execution identity")),
         }
