@@ -100,6 +100,31 @@ pub(super) async fn write_record<A: AsyncAuthorityStore, O: AsyncObjectStore, T:
     }
 }
 
+pub(super) async fn write_once<A, O, T>(
+    host: &FilesystemHost<A, O>,
+    journal: &WorkspaceRef,
+    path: &str,
+    value: &T,
+    maximum: u64,
+    key: &IdempotencyKey,
+    operation: OperationId,
+    io: Option<&PreparationIo>,
+    preparation: Option<&Arc<TaskResourcePreparation>>,
+) -> Result<T>
+where
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+    T: Serialize + bounded_io::PreparationRecord,
+{
+    if let Some(prior) = read_record(host, journal, path, maximum, io).await? {
+        return Ok(prior);
+    }
+    write_record(host, journal, path, value, maximum, key, io, preparation).await?;
+    read_record(host, journal, path, maximum, io)
+        .await?
+        .ok_or(Error::Indeterminate(operation))
+}
+
 pub(super) async fn read_claim<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>,
     journal: &WorkspaceRef,

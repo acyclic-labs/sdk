@@ -76,17 +76,9 @@ pub(in crate::filesystem) async fn open<A: AsyncAuthorityStore, O: AsyncObjectSt
     }
     let name = std::str::from_utf8(reference.as_resource().key())
         .map_err(|_| io.invalid("workspace reference key must be UTF-8"))?;
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(work) = io.original_native_work() {
-        return host
-            .filesystem
-            .open_workspace_with_native_work(name, work, io.cancellation())
-            .await
-            .map_err(|(source, custody)| Error::NativeWorkspace { source, custody });
-    }
-    io.receive(
+    io.sdk(
         host.filesystem
-            .open_workspace(name, io.remaining()?, io.cancellation())
+            .open_workspace(name, io, io.cancellation())
             .await,
     )
 }
@@ -228,8 +220,7 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
     name: &str,
     key: &IdempotencyKey,
     io: Option<&PreparationIo>,
-    preparation: Option<&TaskResourcePreparation>,
-    #[cfg(not(target_arch = "wasm32"))] native_guard: Option<&Arc<TaskResourcePreparation>>,
+    preparation: Option<&Arc<TaskResourcePreparation>>,
 ) -> Result<()> {
     let lifecycle = if host.filesystem.capabilities().durable {
         acyclic_fs::Lifecycle::Durable
@@ -237,55 +228,57 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
         acyclic_fs::Lifecycle::Ephemeral
     };
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-        let guard = Arc::clone(native_guard.ok_or(Error::NativeBoundary {
+    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
+        let guard = Arc::clone(preparation.ok_or(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized,
-            reason: "task-bound native creation requires its original issued creation guard",
+            reason: "native creation requires its original issued task guard",
         })?);
-        guard.verify_creation_with_native_work(work)?.await?;
-        let operation = acyclic_fs::OperationId::from_bytes(operation_key(key, io)?.into_bytes());
-        let mut before = move |work: &acyclic_fs::NativeMaterializationWork| {
-            let work = work.clone();
-            let guard = Arc::clone(&guard);
-            async move { guard.verify_creation_with_native_work(&work)?.await }
-        };
-        host.filesystem
-            .create_workspace_with_operation_guarded_with_native_work(
+        guard
+            .verify_creation_with_native_work(io.original_native_work().unwrap())?
+            .await?;
+        let mut before = acyclic_fs::NativeAuthorityGuard(
+            move |work: &acyclic_fs::NativeMaterializationWork| {
+                let work = work.clone();
+                let guard = Arc::clone(&guard);
+                async move { guard.verify_creation_with_native_work(&work)?.await }
+            },
+        );
+        let (result, recorded) = host
+            .filesystem
+            .create_workspace_with_operation(
                 name,
                 acyclic_fs::VolumeConfig::portable(lifecycle),
-                operation,
-                work,
-                work.cancellation(),
-                &mut before,
+                acyclic_fs::OperationId::from_bytes(operation_key(key, Some(io))?.into_bytes()),
+                io,
+                io.cancellation(),
+                Some(&mut before),
             )
-            .await?;
+            .await;
+        recorded?;
+        result?;
         return Ok(());
     }
     if let Some(task) = preparation {
         task.verify_creation().await?;
     }
-    match io {
-        Some(io) => {
-            let operation =
-                acyclic_fs::OperationId::from_bytes(operation_key(key, Some(io))?.into_bytes());
-            io.receive(
-                host.filesystem
-                    .create_workspace_with_operation(
-                        name,
-                        acyclic_fs::VolumeConfig::portable(lifecycle),
-                        operation,
-                        io.remaining()?,
-                        io.cancellation(),
-                    )
-                    .await,
-            )?;
-        }
-        None => {
+    if let Some(io) = io {
+        io.sdk(
             host.filesystem
-                .create_workspace(name, WorkBudget::UNBOUNDED, &CancellationToken::new())
-                .await
-                .map_err(|failure| map_error(failure.error))?;
-        }
+                .create_workspace_with_operation::<_, (), WorkspaceError>(
+                    name,
+                    acyclic_fs::VolumeConfig::portable(lifecycle),
+                    acyclic_fs::OperationId::from_bytes(operation_key(key, Some(io))?.into_bytes()),
+                    io,
+                    io.cancellation(),
+                    None,
+                )
+                .await,
+        )?;
+    } else {
+        host.filesystem
+            .create_workspace(name, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .await
+            .map_err(|failure| map_error(failure.error))?;
     }
     if let Some(task) = preparation {
         task.verify_creation().await?;
@@ -405,6 +398,31 @@ fn committed<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     }
 }
 
+async fn mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+    transaction: &mut acyclic_fs::Transaction<A, O>,
+    value: &WorkspaceMutation,
+    io: &PreparationIo,
+) -> Result<()> {
+    io.remaining()?;
+    match value {
+        WorkspaceMutation::CreateDirectory { path } => io.sdk(
+            transaction
+                .create_dir_all(path, io, io.cancellation())
+                .await,
+        ),
+        WorkspaceMutation::PutFile { path, bytes } => io.sdk(
+            transaction
+                .write(path, bytes.clone(), io, io.cancellation())
+                .await,
+        ),
+        WorkspaceMutation::Remove { .. } => Err(failure(
+            Some(io),
+            crate::wire::ErrorCode::Unsupported,
+            "bounded publication does not remove content",
+        )),
+    }
+}
+
 pub(in crate::filesystem) async fn publish_generation<A, O, F, Fut>(
     host: &FilesystemHost<A, O>,
     reference: &WorkspaceRef,
@@ -444,29 +462,8 @@ where
             .begin_pinned_transaction(&pinned, filesystem_key(key), io, io.cancellation())
             .await,
     )?;
-    for mutation in mutations {
-        io.remaining()?;
-        match mutation {
-            WorkspaceMutation::CreateDirectory { path } => {
-                io.sdk(
-                    transaction
-                        .create_dir_all(path, io, io.cancellation())
-                        .await,
-                )?;
-            }
-            WorkspaceMutation::PutFile { path, bytes } => {
-                io.sdk(
-                    transaction
-                        .write(path, bytes.clone(), io, io.cancellation())
-                        .await,
-                )?;
-            }
-            WorkspaceMutation::Remove { .. } => {
-                return Err(Error::Unsupported(
-                    "bounded publication does not remove content".into(),
-                ));
-            }
-        }
+    for value in mutations {
+        mutation(&mut transaction, value, io).await?;
     }
     committed(
         io.receive_content(
@@ -515,31 +512,9 @@ where
             .begin_pinned_transaction(&pinned, key, io, io.cancellation())
             .await,
     )?;
-    for mutation in mutations {
+    for value in mutations {
         before(work).await?;
-        match mutation {
-            WorkspaceMutation::CreateDirectory { path } => {
-                io.sdk(
-                    transaction
-                        .create_dir_all(path, io, io.cancellation())
-                        .await,
-                )?;
-            }
-            WorkspaceMutation::PutFile { path, bytes } => {
-                io.sdk(
-                    transaction
-                        .write(path, bytes.clone(), io, io.cancellation())
-                        .await,
-                )?;
-            }
-            WorkspaceMutation::Remove { .. } => {
-                return Err(failure(
-                    Some(io),
-                    crate::wire::ErrorCode::Unsupported,
-                    "bounded publication does not remove content",
-                ));
-            }
-        }
+        mutation(&mut transaction, value, io).await?;
     }
     committed(
         transaction
