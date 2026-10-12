@@ -46,7 +46,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
         },
         schema: schema.clone(),
     });
-    let (identity, machine, tasks, machines) = test_registries(
+    let (identity, machine, tasks, machines) = test_registries::<Value>(
         implementation, schema.clone(), schema.clone(),
     )?;
     let mut host = CoordinatorTaskHost::new(
