@@ -416,13 +416,13 @@ pub(crate) async fn bind_root_output_context_with_native_work<P: StreamProvider 
 #[allow(clippy::too_many_arguments, reason = "independent original source and bounded observer arguments")]
 pub(crate) async fn prove_root_project_source_with_native_work<P: StreamProvider + 'static>(
     owner: Arc<PiOwnerConfig>, resources: &ServiceResources, filesystem: Arc<Host>, stream: std::sync::Arc<P>,
-    request: &PiRootRequest, project: &VolumeRef, snapshot: acyclic_fs::LazySnapshotRef,
+    binding: &super::PiTaskBinding, intent: &PiRootIntent, project: &VolumeRef, snapshot: acyclic_fs::LazySnapshotRef,
     context: Arc<acyclic_harness::NativeTaskContext>, current_owner: &TaskJournalOwner<P>,
     work: &NativeMaterializationWork,
 ) -> Result<()> {
     current_owner.require_volume_grant_with_native_work(project, VolumeOperation::Read, work)?;
     context.context().verify_original_volume_read_with_native_work(current_owner, project, work).await?;
-    let preparation = load_original_preparation_with_native_work(&owner, &filesystem, &request.binding, &request.root,
+    let preparation = load_original_preparation_with_native_work(&owner, &filesystem, binding, intent,
         Arc::clone(&context), work).await?;
     let provider = root_provider(owner, resources, filesystem, stream,
         preparation, None, work.clone())?;
@@ -432,8 +432,8 @@ pub(crate) async fn prove_root_project_source_with_native_work<P: StreamProvider
     let reference = provider.original_artifact_with_native_work(effect, attempt, "result", work).await?
         .ok_or_else(|| PiRootProvider::<P>::native_failure("root source has no canonical successful allocation output"))?;
     let recorded = provider.read_with_native_work::<PiRootAllocation>(&reference.0, work).await?;
-    recorded.0.validate(&request.binding)?;
-    let key = request.binding.project_volumes.iter().find_map(|(key, volume)| (volume == project).then_some(key))
+    recorded.0.validate(binding)?;
+    let key = binding.project_volumes.iter().find_map(|(key, volume)| (volume == project).then_some(key))
         .ok_or_else(|| PiRootProvider::<P>::native_failure("project is not an originally selected root source"))?;
     let root = &recorded.0.roots[key];
     if snapshot.workspace_id.into_bytes() != root.repository_workspace_id
@@ -443,7 +443,7 @@ pub(crate) async fn prove_root_project_source_with_native_work<P: StreamProvider
     let inputs_reference = provider.original_artifact_with_native_work(effect, attempt, "attachments", work).await?
         .ok_or_else(|| PiRootProvider::<P>::native_failure("root source has no original attachment input"))?;
     let inputs = provider.read_with_native_work::<BTreeMap<String, AttachmentInput>>(&inputs_reference.0, work).await?;
-    let PiRootIntent::Project { paths, .. } = &request.root else {
+    let PiRootIntent::Project { paths, .. } = intent else {
         return Err(PiRootProvider::<P>::native_failure("scratch-only root has no native project source"));
     };
     if !inputs.0.keys().eq(paths.keys()) {

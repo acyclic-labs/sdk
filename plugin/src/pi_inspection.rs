@@ -208,7 +208,6 @@ pub(crate) async fn build_writeback_generations<'a, P: StreamProvider + 'static>
 ) -> Result<PiWritebackGenerations<'a, acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>> {
     let context = native_context.context();
 
-    let result = async {
     authenticate_root(root, context, owner, verifier, scope, native_work).await?;
     let _read_grant = acyclic_harness::conversation::ContentGrant::verify_with_native_work(
         verifier, scope, &root.volume, acyclic_harness::conversation::VolumeOperation::Read, native_work)?;
@@ -261,8 +260,6 @@ pub(crate) async fn build_writeback_generations<'a, P: StreamProvider + 'static>
     Ok(PiWritebackGenerations {
         from, candidate, original_snapshot: original, imported: imported.id(), operation, paths,
     })
-    }.await;
-    result
 }
 
 fn phase_operation(operation: acyclic_harness::OperationId, phase: &[u8]) -> acyclic_harness::OperationId {
@@ -312,8 +309,8 @@ impl<P: StreamProvider + 'static> PiSelectedPublicationGuard<P> {
         if let Some(guard) = &self.mount_guard {
             let original_volume = work.clone();
             guard.check(&original_volume)
-                .map_err(|cause| crate::pi_native::native_view_error(acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?
-                .await.map_err(|cause| crate::pi_native::native_view_error(
+                .map_err(|cause| Error::from(acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?
+                .await.map_err(|cause| Error::from(
                     acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?;
         }
         for (index, (context, owner)) in [
@@ -373,7 +370,6 @@ pub(crate) async fn prepare_writeback<'a, P, A, O>(
 where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::AsyncObjectStore,
 {
 
-    let result = async {
     authenticate_root(root, context, owner, verifier, scope, native_work).await?;
     let from = &generations.from;
     let candidate = &generations.candidate;
@@ -423,8 +419,6 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::Asyn
             original_snapshot: generations.original_snapshot, imported: generations.imported,
             excluded_names,
             journal, approval_digest: digest.0, canonical_digest_input, _codec_custody: digest.1 })
-    }.await;
-    result
 }
 
 /// Publishes only the exact user-confirmed preparation.
@@ -441,7 +435,6 @@ pub(crate) async fn publish_writeback<P, A, O>(
 where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::AsyncObjectStore,
 {
 
-    let result = async {
     authenticate_root(root, context, owner, verifier, scope, native_work).await?;
     let from = &generations.from;
     let candidate = &generations.candidate;
@@ -487,8 +480,6 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::Asyn
             })),
     };
     Ok(value)
-    }.await;
-    result
 }
 
 /// A replay can acknowledge only the SDK's authenticated completed original journal, with the same exact user digest.
@@ -650,7 +641,6 @@ where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectSt
         native_work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<PiNativeInspectionPage<'b>> {
 
-        let result = async {
         owner.native_view_owner().verify_with_native_work(native_work).await?;
         if context.durable_task_id() != Some(owner.task_id()) {
             return Err(selected_unauthorized("native inspection changed its ORIGINAL caller context"));
@@ -706,8 +696,6 @@ where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectSt
             source: self.source, volume: self.volume, snapshot: self.snapshot,
             directory: output.1, entries: output.0, cursor, _custody: output.2,
         })
-        }.await;
-        result
     }
 
     /// The canonical sealed reader retains its original SDK byte capacity through the caller's encoding/publication; this is not post-hoc adoption.
@@ -770,7 +758,6 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
     let caller = caller_native.context();
     let destination = destination_native.context();
 
-    let result = async {
     if mount.is_some() != mount_guard.is_some() {
         return Err(selected_unauthorized("selected mounted publication lacks its original SDK source WRITE guard"));
     }
@@ -847,8 +834,6 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
             }).await?
     };
     Ok(value)
-    }.await;
-    result
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -902,7 +887,6 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acycli
       D: acyclic_fs::DemandSource + 'static, S: acyclic_fs::LazyWorkspaceStore + 'static,
 {
 
-    let result = async {
     owner.native_view_owner().verify_with_native_work(native_work).await?;
     if context.durable_task_id() != Some(owner.task_id()) {
         return Err(selected_unauthorized("native diff changed its ORIGINAL caller context"));
@@ -1025,8 +1009,6 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acycli
     Ok(PiNativeDiffPage {
         entries: output.0, directory: output.1, cursor: next, _custody: output.2,
     })
-    }.await;
-    result
 }
 
 fn native_extra_facts_differ(before: &acyclic_fs::LazyLookup, after: &acyclic_fs::LazyLookup) -> bool {
