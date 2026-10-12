@@ -300,7 +300,7 @@ impl MachinesProvider for GrpcProvider {
                                 .await
                                 .map_err(|_| ProviderError::CommandIndeterminate(machine))?
                         }
-                        .map_err(|error| command_error(machine, &error))?;
+                        .map_err(|error| command_stream_error(machine, exited, &error))?;
                         match frame {
                             None if exited => Ok(None),
                             None => Err(ProviderError::CommandIndeterminate(machine)),
@@ -1814,6 +1814,15 @@ fn command_error(machine: MachineId, value: &tonic::Status) -> ProviderError {
         | tonic::Code::Internal => ProviderError::CommandIndeterminate(machine),
         tonic::Code::Unimplemented => ProviderError::Unsupported(value.message().into()),
         _ => ProviderError::Rejected(value.message().into()),
+    }
+}
+
+fn command_stream_error(machine: MachineId, exited: bool, value: &tonic::Status) -> ProviderError {
+    obs::failed_rpc(value);
+    if exited {
+        ProviderError::Rejected("exec stream failed after its terminal result".into())
+    } else {
+        ProviderError::CommandIndeterminate(machine)
     }
 }
 

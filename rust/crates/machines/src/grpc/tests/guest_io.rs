@@ -256,6 +256,51 @@ async fn exec_rejects_extra_frames_and_reports_lost_outcomes_without_retry() {
 }
 
 #[tokio::test]
+async fn exec_stream_errors_distinguish_unknown_and_completed_commands() {
+    let (machine, io, shutdown, task) = fixture().await;
+    for exited in [false, true] {
+        for code in [
+            Code::ResourceExhausted,
+            Code::Unavailable,
+            Code::PermissionDenied,
+        ] {
+            let mut output = machine.exec(command(60_000)).await.unwrap();
+            let sender = io.sender();
+            let (wire_output, expected) = if exited {
+                (
+                    wire::exec_output::Output::ExitCode(7),
+                    ExecOutput::ExitCode(7),
+                )
+            } else {
+                (
+                    wire::exec_output::Output::Data(vec![1]),
+                    ExecOutput::Data(vec![1]),
+                )
+            };
+            sender
+                .send(Ok(frame(machine.id(), wire_output)))
+                .await
+                .unwrap();
+            assert_eq!(output.next().await.unwrap().unwrap(), expected);
+            sender
+                .send(Err(Status::new(code, "stream failed")))
+                .await
+                .unwrap();
+            drop(sender);
+            let error = output.next().await.unwrap().unwrap_err();
+            if exited {
+                assert!(matches!(error, ProviderError::Rejected(_)));
+            } else {
+                assert_eq!(error, ProviderError::CommandIndeterminate(machine.id()));
+            }
+            assert!(output.next().await.is_none());
+        }
+    }
+    assert_eq!(io.commands.lock().unwrap().len(), 6);
+    stop(shutdown, task).await;
+}
+
+#[tokio::test]
 async fn read_output_preserves_wide_offsets_and_validates_evidence() {
     let (machine, io, shutdown, task) = fixture().await;
     let offset = 9_007_199_254_740_993;

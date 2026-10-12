@@ -333,6 +333,9 @@ fn map_error(error: ProviderError, operation: Option<OperationId>) -> Error {
         ProviderError::OperationIndeterminate(operation) => {
             Error::Indeterminate(OperationId::from_bytes(operation.as_bytes()))
         }
+        ProviderError::CommandIndeterminate(machine) => Error::Storage(format!(
+            "Machines guest command outcome is unknown on machine {machine}"
+        )),
         ProviderError::Failed => Error::Storage("Machines operation failed".into()),
         ProviderError::Cancelled => Error::Storage("Machines operation was cancelled".into()),
     }
@@ -357,6 +360,22 @@ mod tests {
         assert_eq!(
             map_error(ProviderError::OperationIndeterminate(operation), None),
             Error::Indeterminate(OperationId::from_bytes(operation.as_bytes()))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn command_indeterminate_never_invents_a_lifecycle_operation() -> Result<()> {
+        let machine = acyclic_machines::MachineId::parse("00000000-0000-4000-8000-000000000001")
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+        assert_eq!(
+            map_error(
+                ProviderError::CommandIndeterminate(machine),
+                Some(OperationId::from_bytes([1; 16]))
+            ),
+            Error::Storage(format!(
+                "Machines guest command outcome is unknown on machine {machine}"
+            ))
         );
         Ok(())
     }
