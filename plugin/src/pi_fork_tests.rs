@@ -497,38 +497,29 @@ async fn cancellation_and_owner_replacement_never_admit_a_child() {
 }
 
 #[tokio::test]
-async fn changed_native_sdk_cut_session_bytes_and_child_identity_never_enter_preparation() {
+async fn changed_native_plan_never_prepares_or_admits_a_child() {
     let fixture = Fixture::new(None).await;
     let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
     assert!(plan.request.child.resource_proofs.is_empty());
-    for field in 0..3 {
+    for field in 0..4 {
         let mut changed = plan.clone();
         match field {
             0 => changed.commit.launch.source.entries_json = "[{\"id\":\"foreign\"}]".into(),
             1 => changed.commit.launch.session_bytes.push_str("{}\n"),
-            _ => changed.commit.child.native_session_id = "another-native-sdk-session".into(),
+            2 => changed.commit.child.native_session_id = "another-native-sdk-session".into(),
+            _ => {
+                let foreign_write = plan.source.project.capability(VolumeOperation::Write).unwrap();
+                changed.request.child.grants = Capabilities::new(changed.request.child.grants.iter()
+                    .chain(std::iter::once(foreign_write.as_str())));
+                changed.preparation.input = serde_json::to_value(&changed.request).unwrap();
+            }
         }
         assert!(fixture.advance_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal, &fixture.fence,
             &changed, fixture.root_handle.workspace.clone(), crate::pi_root_provider::allocation_budget(), CancellationToken::new()).await.is_err());
         assert!(fixture.runtime.runtime.task_host().observe_admission(plan.preparation.task_id()).await.is_err());
+        assert!(fixture.runtime.runtime.task_host().observe_admission(plan.request.child.task_id()).await.is_err());
         assert!(fixture.resources.fs.open_workspace_with_native_work(&plan.commit.child.scratch.volume.storage_name().unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
     }
-}
-
-#[tokio::test]
-async fn internally_consistent_child_authority_substitution_cannot_replace_protected_original_plan() {
-    let fixture = Fixture::new(None).await;
-    let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
-    let mut changed = plan.clone();
-    let foreign_write = plan.source.project.capability(VolumeOperation::Write).unwrap();
-    changed.request.child.grants = Capabilities::new(changed.request.child.grants.iter()
-        .chain(std::iter::once(foreign_write.as_str())));
-    changed.preparation.input = serde_json::to_value(&changed.request).unwrap();
-    assert!(fixture.advance_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal, &fixture.fence,
-        &changed, fixture.root_handle.workspace.clone(), crate::pi_root_provider::allocation_budget(), CancellationToken::new()).await.is_err());
-    assert!(fixture.runtime.runtime.task_host().observe_admission(plan.preparation.task_id()).await.is_err());
-    assert!(fixture.runtime.runtime.task_host().observe_admission(plan.request.child.task_id()).await.is_err());
-    assert!(fixture.resources.fs.open_workspace_with_native_work(&plan.commit.child.scratch.volume.storage_name().unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
 }
 
 #[tokio::test]

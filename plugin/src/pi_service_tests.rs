@@ -65,7 +65,7 @@ async fn prepare_service(data: &Path, reserve: bool) -> (crate::service_process:
         runtime
             .runtime
             .task_host()
-            .start_task(&lease)
+            .start_task(&lease, None)
             .await
             .unwrap();
     }

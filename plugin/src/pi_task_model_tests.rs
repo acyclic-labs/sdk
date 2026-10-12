@@ -87,7 +87,7 @@ fn explore(execution: PiTaskExecution, command: &WorkflowCommand) {
         )
         .unwrap();
     let mut registry = MachineRegistry::default();
-    registry.register(machine.clone()).unwrap();
+    registry.register(machine.clone(), &mut None).unwrap();
     let mut frontier = vec![(MachineCheckpoint {
             machine: machine.identity().clone(),
             revision: 0,

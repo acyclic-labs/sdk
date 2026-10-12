@@ -163,41 +163,12 @@ impl Client {
         Ok(())
     }
 
-    /// Connects trusting the platform's roots with an account-bound bearer credential.
-    pub async fn connect(
-        endpoint: impl AsRef<str>,
-        bearer_token: impl AsRef<str>,
-    ) -> Result<Self, ConnectError> {
-        Self::connect_endpoints([endpoint], bearer_token).await
-    }
-
-    /// Connects to independently reachable TLS endpoints with transparent failover.
-    pub async fn connect_endpoints<I, S>(
-        endpoints: I,
-        bearer_token: impl AsRef<str>,
-    ) -> Result<Self, ConnectError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
-        Self::connect_with_tls(endpoints, bearer_token, None)
-    }
-
-    /// Connects to a TLS endpoint trusting exclusively the caller-pinned private CA.
-    pub async fn connect_with_ca_certificate(
-        endpoint: impl AsRef<str>,
-        bearer_token: impl AsRef<str>,
-        certificate_pem: impl AsRef<[u8]>,
-    ) -> Result<Self, ConnectError> {
-        Self::connect_with_tls([endpoint], bearer_token, Some(certificate_pem.as_ref()))
-    }
-
     /// Connects eagerly through TLS and HTTP/2, retaining the resulting channel for later operations.
     pub async fn connect_eager(
         endpoint: impl AsRef<str>,
         bearer_token: impl AsRef<str>,
     ) -> Result<Self, ConnectError> {
-        Self::connect_eager_endpoints([endpoint], bearer_token, None).await
+        Self::connect_eager_tls(endpoint, bearer_token, None).await
     }
 
     /// Eagerly connects trusting exclusively the caller-pinned private CA.
@@ -206,11 +177,12 @@ impl Client {
         bearer_token: impl AsRef<str>,
         certificate_pem: impl AsRef<[u8]>,
     ) -> Result<Self, ConnectError> {
-        Self::connect_eager_endpoints([endpoint], bearer_token, Some(certificate_pem.as_ref()))
+        Self::connect_eager_tls(endpoint, bearer_token, Some(certificate_pem.as_ref()))
             .await
     }
 
-    fn connect_with_tls<I, S>(
+    /// Builds a TLS endpoint pool, optionally trusting an exclusive private CA.
+    pub async fn connect<I, S>(
         endpoints: I,
         bearer_token: impl AsRef<str>,
         certificate_pem: Option<&[u8]>,
@@ -225,23 +197,17 @@ impl Client {
         Self::from_channels(channels, bearer_token)
     }
 
-    async fn connect_eager_endpoints<I, S>(
-        endpoints: I,
+    async fn connect_eager_tls(
+        endpoint: impl AsRef<str>,
         bearer_token: impl AsRef<str>,
         certificate_pem: Option<&[u8]>,
-    ) -> Result<Self, ConnectError>
-    where
-        I: IntoIterator<Item = S>,
-        S: AsRef<str>,
-    {
+    ) -> Result<Self, ConnectError> {
         let authorization = Self::authorization(bearer_token.as_ref())?;
         let certificate_pem = certificate_pem.map(bounded_ca_certificate).transpose()?;
-        let endpoints = Self::endpoints_with_tls(endpoints, certificate_pem)?;
-        let mut channels = Vec::with_capacity(endpoints.len());
-        for endpoint in endpoints {
-            channels.push(endpoint.connect().await?);
-        }
-        Ok(Self::from_authorization(channels.into(), authorization))
+        let endpoint = Self::endpoints_with_tls([endpoint], certificate_pem)?
+            .pop().expect("one endpoint was configured");
+        let channel = endpoint.connect().await?;
+        Ok(Self::from_authorization(vec![channel].into(), authorization))
     }
 
     fn endpoints_with_tls<I, S>(
@@ -1986,7 +1952,7 @@ mod tests {
         let mut obsolete = tonic::client::Grpc::new(channel);
         obsolete.ready().await?;
         let result: Result<Response<wire::TailResponse>, Status> = obsolete
-            .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
+            .unary(
                 Request::new(wire::TailRequest {
                     path: "events".into(),
                 }),
@@ -2556,7 +2522,7 @@ mod tests {
         let _default = tracing::subscriber::set_default(
             tracing_subscriber::Registry::default().with(captured.clone()),
         );
-        let client = Client::connect("https://fixture.invalid", "fixture").await?;
+        let client = Client::connect(["https://fixture.invalid"], "fixture", None).await?;
         let mut first = true;
         let response = client
             .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT, (), |_, _| {
@@ -2591,7 +2557,7 @@ mod tests {
         let _default = tracing::subscriber::set_default(
             tracing_subscriber::Registry::default().with(captured.clone()),
         );
-        let client = Client::connect("https://fixture.invalid", "fixture").await?;
+        let client = Client::connect(["https://fixture.invalid"], "fixture", None).await?;
         let response = client
             .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT, (), |_, _| {
                 Box::pin(async { Ok(Response::new(wire::AppendResponse::default())) })
@@ -2749,30 +2715,30 @@ mod tests {
     #[tokio::test]
     async fn endpoint_pool_is_explicit_and_bounded()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let shared = Client::connect_endpoints(
+        let shared = Client::connect(
             ["https://data-a.invalid", "https://data-b.invalid"],
-            "fixture",
+            "fixture", None,
         )
         .await?;
         assert_eq!(shared.channels.len(), 2);
 
         assert!(matches!(
-            Client::connect_endpoints(std::iter::empty::<&str>(), "fixture").await,
+            Client::connect(std::iter::empty::<&str>(), "fixture", None).await,
             Err(ConnectError::NoEndpoints)
         ));
         assert!(matches!(
-            Client::connect_endpoints(std::iter::repeat("https://data.invalid"), "fixture",).await,
+            Client::connect(std::iter::repeat("https://data.invalid"), "fixture", None).await,
             Err(ConnectError::EndpointLimit)
         ));
         let oversized = format!("https://{}.invalid", "x".repeat(MAX_ENDPOINT_URI_BYTES));
         assert!(matches!(
-            Client::connect_endpoints([oversized], "fixture").await,
+            Client::connect([oversized], "fixture", None).await,
             Err(ConnectError::EndpointLimit)
         ));
         let long = "t".repeat(MAX_BEARER_TOKEN_BYTES + 1);
         for token in ["", " ", "a\r\nb", "a\0b", long.as_str()] {
             assert!(matches!(
-                Client::connect_endpoints(["https://data.invalid"], token).await,
+                Client::connect(["https://data.invalid"], token, None).await,
                 Err(ConnectError::InvalidCredential)
             ));
         }
@@ -3070,7 +3036,7 @@ mod tests {
         error: Status,
         retry: bool,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let client = Client::connect("https://fixture.invalid", "fixture").await?;
+        let client = Client::connect(["https://fixture.invalid"], "fixture", None).await?;
         let body = wire::AppendRequest {
             path: "/fixture".to_owned(),
             records: vec![Bytes::from_static(b"mutation")],
@@ -3102,7 +3068,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn persistent_unknown_expires_without_changing_request_identity()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let client = Client::connect("https://fixture.invalid", "fixture").await?;
+        let client = Client::connect(["https://fixture.invalid"], "fixture", None).await?;
         let started = tokio::time::Instant::now();
         let mut attempts = 0;
         let result: Result<(), StreamError> = client

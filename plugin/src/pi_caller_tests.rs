@@ -44,8 +44,7 @@ fn native_caller_preserves_claims_and_rejects_extra_grants_or_owner_substitution
     assert_eq!(caller.0.capabilities(), &Capabilities::new([CALLER_CAPABILITY]));
     assert_eq!(verify(&owner, &state, &caller.0,
         &binding.native_session_id, &work).unwrap().task_id, binding.task_id);
-    let expanded = owner.authority().unwrap().issuer.root_for_agent(binding.agent_id,
-        caller.0.id(), Capabilities::new([CALLER_CAPABILITY, "operation:declare"]));
+    let expanded = owner.authority().unwrap().issuer.issue(&caller.0.id(), &Capabilities::new([CALLER_CAPABILITY, "operation:declare"]), Some(binding.agent_id), None, &mut None).expect("scope proof");
     assert!(verify(&owner, &state, &expanded, &binding.native_session_id, &work).is_err());
     let mut wire = serde_json::to_value(&caller.0).unwrap();
     let mut claims: serde_json::Value = serde_json::from_str(caller.0.id()).unwrap();

@@ -262,7 +262,7 @@ pub(crate) async fn apply_file_table_mutations_with_accounting<S: crate::AsyncOb
     let receipt = persistent_btree::apply_with_accounting::<S, FileTableFormat, FileTableMutation>(
         store, root, mutations, maximum_mutations, limits, accounting, cancellation,
     ).await?;
-    Ok(FileTableMutationReceipt { root: receipt.root, work: receipt.work })
+    Ok(FileTableMutationReceipt { root: receipt.value, work: receipt.work })
 }
 
 pub(super) fn project_file_table_error(error: crate::FsError) -> FileTableMutationError {

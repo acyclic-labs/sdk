@@ -1,6 +1,6 @@
 use super::*;
 use crate::foundation::{Digest, FileId};
-use crate::kernel::tree_mutation::{TreeFormat, TreeMutation, TreeSemanticError};
+use crate::kernel::tree_mutation::{TreeFormat, TreeMutation, TreeMutationError};
 use crate::kernel::{FileKind, LogicalName, NameEncoding, TreeEntry};
 use crate::storage::ObjectKind;
 
@@ -113,7 +113,7 @@ fn pages_clone_without_changing_authenticated_frontiers() -> Result<(), Box<dyn 
 fn page_sizes(
     lengths: &[usize],
     limits: DecodeLimits,
-) -> Result<Vec<usize>, Error<TreeSemanticError>> {
+) -> Result<Vec<usize>, Error<TreeMutationError>> {
     let (mut chunks, examined) = PageChunks::new(lengths, limits, |length| Ok(*length))?;
     assert_eq!(examined, u64::try_from(lengths.len()).unwrap_or(u64::MAX));
     let mut sizes = Vec::new();
@@ -156,7 +156,7 @@ fn chunking_is_bounded_by_items_bytes_and_encoder_contracts()
     assert!(matches!(
         PageChunks::new(&[1_u8], limits, |_| Err(CanonicalDecodeError::Truncated))
             .map(|(chunks, _)| chunks.start),
-        Err(Error::<TreeSemanticError>::Decode(
+        Err(Error::<TreeMutationError>::Decode(
             CanonicalDecodeError::Truncated
         ))
     ));
@@ -180,7 +180,7 @@ fn chunking_balances_pages_around_the_soft_target() -> Result<(), Box<dyn std::e
 }
 
 #[test]
-fn search_unchanged_and_bounds_cover_every_frontier() -> Result<(), Box<dyn std::error::Error>> {
+fn search_and_bounds_cover_every_frontier() -> Result<(), Box<dyn std::error::Error>> {
     let entries = [entry(2)?, entry(4)?, entry(6)?];
     assert_eq!(search::<TreeFormat>(&entries, &name(2)?).0, Ok(0));
     assert_eq!(search::<TreeFormat>(&entries, &name(4)?).0, Ok(1));
@@ -190,11 +190,6 @@ fn search_unchanged_and_bounds_cover_every_frontier() -> Result<(), Box<dyn std:
     assert_eq!(search::<TreeFormat>(&entries, &name(7)?).0, Err(3));
 
     let children = [child(2)?, child(4)?];
-    assert!(unchanged(&children, &children));
-    assert!(!unchanged(&children[..1], &children));
-    let mut changed = children.clone();
-    changed[1].page = root(ObjectKind::TreePage, 9);
-    assert!(!unchanged(&changed, &children));
 
     assert!(leaf_within::<TreeFormat>(&entries, None, None));
     assert!(leaf_within::<TreeFormat>(
