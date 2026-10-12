@@ -55,11 +55,16 @@ pub(super) fn generation(byte: u8) -> GenerationId {
 }
 
 pub(super) fn workspace() -> WorkspaceId {
+    workspace_identity([9; 16], "repo")
+}
+
+fn workspace_identity(namespace: [u8; 16], name: &str) -> WorkspaceId {
+    let name = WorkspaceName::new(name, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .expect("workspace name")
+        .value;
     WorkspaceId::derive(
-        [9; 16],
-        &WorkspaceName::new("repo", WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .expect("valid test workspace")
-            .value,
+        namespace,
+        &name,
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
     )

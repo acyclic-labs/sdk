@@ -4,20 +4,7 @@ use super::*;
 async fn persisted_foreign_commit_tree_needs_capture_provenance() {
     let store = MemoryGitCompatStore::default();
     let mut state = GitCompatState::new("main", workspace());
-    let foreign = WorkspaceId::derive(
-        [8; 16],
-        &WorkspaceName::new(
-            "foreign-persisted-tree",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .expect("workspace name")
-        .value,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    )
-    .expect("workspace identity")
-    .value;
+    let foreign = workspace_identity([8; 16], "foreign-persisted-tree");
     let commit = GitCommit::new(
         GitTreeRef::exact(foreign, generation(7)),
         tree(1),
