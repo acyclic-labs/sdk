@@ -26,7 +26,7 @@ use acyclic_stream::{BoxProviderFuture, LocalStream};
 use serde_json::Value;
 use std::{collections::BTreeMap, sync::{Arc, RwLock}};
 
-pub(crate) type PiNativeRuntime = PiTaskRuntime<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
+pub(crate) type PiNativeRuntime = PiTaskRuntime<LocalStream>;
 pub(crate) type PiNativeFilesystem = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
 pub(crate) type PiNativeLiveView = NativeVolumeView<LocalAuthorityBackend, LocalObjectBackend>;
 
@@ -47,7 +47,7 @@ pub(crate) struct PiNativeColdLocator {
     pub(crate) sdk_operation: String,
     pub(crate) root_key: String,
     pub(crate) selected_source: Arc<LocalLazyWorkspace>,
-    _custody: Option<NativeAllocation>,
+    _custody: NativeAllocation,
 }
 type Scratch = PiPreparedScratch<LocalAuthorityBackend, LocalObjectBackend>;
 type Journal = FilesystemExecutionJournal<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
@@ -123,10 +123,6 @@ struct BoundEffect {
     command: OperationId,
 }
 
-impl BoundEffect {
-    fn context(&self) -> &TaskContext { self.context.context() }
-}
-
 #[derive(serde::Serialize)]
 struct BorrowedEffectPlan<'a> {
     provider: &'a str,
@@ -159,8 +155,7 @@ struct LiveHandles {
 }
 
 impl LiveHandles {
-    fn stop_startup_mount(&mut self, _work: &NativeMaterializationWork,
-        command: OperationId,
+    fn stop_startup_mount(&mut self, command: OperationId,
     ) -> Result<()> {
         if let Some(session) = self.project_startup_owner.as_mut() {
             let volume_work = self.project_work.as_ref().ok_or(Error::Indeterminate(command))?;
@@ -224,7 +219,7 @@ impl PiNativeCommandHost {
         work: &NativeMaterializationWork,
     ) -> Result<Arc<Self>> {
         runtime.verify_owner_with_native_work(&protected, work)?;
-        protected.native_runtime()?.validate_with_native_work(work)?;
+        protected.native_runtime()?.validate(work)?;
         let protected = protected.into_native_shared(work)?;
         let mut resources = crate::pi_root_provider::service_resources_with_native_work(resources, work)?;
         let custody = work.claim(std::mem::size_of::<Self>() as u64).map_err(native_error)?;
@@ -324,12 +319,11 @@ impl PiNativeCommandHost {
         let mut sdk_operation = work.display(sdk_operation).map_err(native_error)?;
         let mut root_key = work.display(root_key).map_err(native_error)?;
         let custody = work.claim(std::mem::size_of::<PiNativeColdLocator>() as u64).map_err(native_error)?;
-        let mut locator = (PiNativeColdLocator { parent, sdk_operation: sdk_operation.0,
-            root_key: root_key.0, selected_source, _custody: None }, custody);
-        locator.1.absorb(&mut sdk_operation.1).map_err(native_error)?;
-        locator.1.absorb(&mut root_key.1).map_err(native_error)?;
-        locator.0._custody = Some(locator.1);
-        self.retain_cold_locator(task, locator.0, work)
+        let mut locator = PiNativeColdLocator { parent, sdk_operation: sdk_operation.0,
+            root_key: root_key.0, selected_source, _custody: custody };
+        locator._custody.absorb(&mut sdk_operation.1).map_err(native_error)?;
+        locator._custody.absorb(&mut root_key.1).map_err(native_error)?;
+        self.retain_cold_locator(task, locator, work)
     }
 
     fn retain_cold_locator(&self, task: TaskId, locator: PiNativeColdLocator,
@@ -404,7 +398,7 @@ impl PiNativeCommandHost {
         };
         let (allocation, custody) =
             acyclic_harness::filesystem::NativeVolumeView::<LocalAuthorityBackend, LocalObjectBackend>
-                ::recover_allocation_with_native_work(owner, &recorded.manifest.options, work)?.await?;
+                ::recover_allocation(owner, &recorded.manifest.options, work)?.await?;
         Ok((allocation.ok_or(Error::Indeterminate(command))?, custody))
     }
 
@@ -424,8 +418,8 @@ impl PiNativeCommandHost {
         -> Result<(PiTaskBinding, NativeAllocation)> {
         let maximum = self.protected.policy().maximum_payload_bytes.min(prepared.admission.limits.file_bytes);
         let bytes = crate::pi_root_provider::canonical_pi_value(&prepared.binding, maximum, work)?;
-        crate::pi_root_provider::guarded_pi_decode::<PiTaskBinding>(
-            &bytes.0, maximum, self.protected.policy().maximum_payload_bytes, JsonValueSchema::None,
+        crate::pi_root_provider::guarded_pi_decode::<TaskEffectPlan>(
+            &bytes.0, maximum, self.protected.policy().maximum_payload_bytes, acyclic_harness::wire::ErrorCode::Invalid, JsonValueSchema::None,
             crate::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES, work,
         )
     }
@@ -603,7 +597,7 @@ impl PiNativeCommandHost {
                 .ok_or_else(|| unauthorized("Pi invocation has no original retained work ledger"))?;
             (bound, work)
         };
-        if bound.owner.task_id() != task || bound.context().durable_task_id() != Some(task) {
+        if bound.owner.task_id() != task || bound.context.context().durable_task_id() != Some(task) {
             return Err(unauthorized("Pi invocation differs from its original native owner"));
         }
         work.cancellation().check().map_err(|_| native_error(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
@@ -760,7 +754,7 @@ impl PiNativeCommandHost {
         let Some(entry) = self.find_entry(task) else { return Ok(None); };
         let effect = entry.handles.lock().await.effect.clone();
         let Some(effect) = effect else { return Ok(None); };
-        let receipt = effect.provider.receipt_with_native_work(effect.provider.original_attempt(), work).await.map_err(receipt_error)?;
+        let receipt = effect.provider.receipt(effect.provider.original_attempt(), work, None).await.map_err(receipt_error)?;
         match receipt {
             Some(receipt) => {
                 let (effect, custody) = receipt.into_effect_with_native_custody().map_err(receipt_error)?;
@@ -803,7 +797,7 @@ impl PiNativeCommandHost {
             let original = handles.preparation_work.as_ref().cloned()
                 .ok_or_else(|| unauthorized("Pi cleanup has no original view work"))?;
             effect.owner.verify_with_native_work(true, meter).await?;
-            handles.stop_startup_mount(meter, effect.command)?;
+            handles.stop_startup_mount(effect.command)?;
             let LiveHandles { process_drained, drained, .. } = &mut *handles;
             match view.cleanup_mounts_with_native_work(effect.owner.native_view_owner(),
                 process_drained, drained, &original, meter, cancellation)?.await? {
@@ -877,11 +871,11 @@ impl PiNativeCommandHost {
         if recorded_effect.0.as_ref().is_some_and(|effect| effect.status != EffectStatus::Planned)
         { return Err(Error::Indeterminate(command)); }
         if let Some(bound) = &handles.effect
-            && bound.provider.receipt_with_native_work(bound.provider.original_attempt(), meter).await.map_err(receipt_error)?.is_some()
+            && bound.provider.receipt(bound.provider.original_attempt(), meter, None).await.map_err(receipt_error)?.is_some()
         { return Err(Error::Indeterminate(command)); }
         let creator = owner.child_scratch_creation_proof()?;
         creator.authorize_settlement_with_native_work(&owner, meter).await?;
-        handles.stop_startup_mount(meter, command)?;
+        handles.stop_startup_mount(command)?;
         if let Some(project) = handles.project.as_ref() {
             creator.authorize_settlement_with_native_work(&owner, meter).await?;
             let volume_work = handles.project_work.as_ref().ok_or(Error::Indeterminate(command))?;
@@ -891,10 +885,10 @@ impl PiNativeCommandHost {
         if let Some(seed) = handles.root_seed.as_ref() {
             let _cleanup_receipt = if let Some(allocation) = seed.preparation_root() {
                 let recorded = NativeVolumeView::<LocalAuthorityBackend, LocalObjectBackend>
-                    ::inspect_preparation_with_native_work(&owner, allocation, meter)?.await?;
+                    ::inspect_preparation(&owner, allocation, meter, false)?.await?;
                 if recorded.is_some() {
                     NativeVolumeView::<LocalAuthorityBackend, LocalObjectBackend>
-                        ::cleanup_preparation_with_native_work(&owner, allocation, meter)?.await?
+                        ::inspect_preparation(&owner, allocation, meter, true)?.await?
                 } else {
                     None
                 }
@@ -910,7 +904,7 @@ impl PiNativeCommandHost {
         } else {
             let allocation = self.original_allocation(&owner, command, meter).await?;
             let _cleanup_receipt = NativeVolumeView::<LocalAuthorityBackend, LocalObjectBackend>
-                ::cleanup_preparation_with_native_work(&owner, &allocation.0, meter)?.await?;
+                ::inspect_preparation(&owner, &allocation.0, meter, true)?.await?;
             let LiveHandles { scratch, project_startup_owner, project_work, .. } = &mut *handles;
             let no_mounts: [&LocalSingleMount; 0] = [];
             scratch.as_mut().ok_or(Error::Indeterminate(command))?
@@ -929,7 +923,7 @@ impl PiNativeCommandHost {
         effect: &BoundEffect, meter: &NativeMaterializationWork,
     ) -> Result<bool> {
         if entry.handles.lock().await.preparation_owner.is_none() { return Ok(false); }
-        if effect.provider.receipt_with_native_work(effect.provider.original_attempt(), meter).await.map_err(receipt_error)?.is_some() { return Ok(false); }
+        if effect.provider.receipt(effect.provider.original_attempt(), meter, None).await.map_err(receipt_error)?.is_some() { return Ok(false); }
         let admission = self.child_admission(effect.owner.task_id(), meter).await?;
         let input = &admission.1;
         let recorded_effect = self.original_effect(effect.context(), input, effect.command, meter).await?;
@@ -1018,7 +1012,7 @@ impl PiNativeCommandHost {
             &admission.0.input, maximum, work,
         )?;
         let mut input = crate::pi_root_provider::guarded_pi_decode::<PiTaskInput>(
-            &bytes.0, maximum, self.protected.policy().maximum_payload_bytes, JsonValueSchema::None,
+            &bytes.0, maximum, self.protected.policy().maximum_payload_bytes, acyclic_harness::wire::ErrorCode::Invalid, JsonValueSchema::None,
             crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES, work,
         )?;
         if task == self.protected.policy().root_task || admission.0.parent.is_none()
@@ -1081,7 +1075,7 @@ impl PiNativeCommandHost {
         let supplied_bytes = crate::pi_root_provider::canonical_pi_value(&payload, maximum, work)?;
         let supplied = crate::pi_root_provider::guarded_pi_decode::<PiNativeLaunchIntent>(
             &supplied_bytes.0, maximum, self.protected.policy().maximum_payload_bytes,
-            JsonValueSchema::None, pi_native::PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES, work,
+            acyclic_harness::wire::ErrorCode::Invalid, JsonValueSchema::None, pi_native::PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES, work,
         )?;
         if original.0 != supplied.0 {
             return Err(unauthorized("Pi resolved native input differs from its immutable original file"));
@@ -1134,7 +1128,7 @@ impl PiNativeCommandHost {
         let content = self.result_bindings(context, input)?.reader;
         let authorization = self.protected.conversation_authority_with_native_work(input.binding.task_id,
             input.binding.agent_id, context.scope().grants(), work)?;
-        let mut registry = EffectRegistry::new_with_native_work(work)?
+        let mut registry = EffectRegistry::new(Some(work))?
             .with_result_resolver_with_native_work(content.clone(), work)?;
         registry.register_with_native_work(provider.clone(), work)?;
         let ((audience, issuer, scope), custody) = authorization;
@@ -1168,7 +1162,7 @@ impl PiNativeCommandHost {
         let maximum = self.protected.policy().maximum_payload_bytes.min(context.scope().limits().file_bytes);
         let bytes = crate::pi_root_provider::canonical_pi_value(&borrowed, maximum, work)?;
         let plan = crate::pi_root_provider::guarded_pi_decode::<TaskEffectPlan>(
-            &bytes.0, maximum, self.protected.policy().maximum_payload_bytes, JsonValueSchema::None,
+            &bytes.0, maximum, self.protected.policy().maximum_payload_bytes, acyclic_harness::wire::ErrorCode::Invalid, JsonValueSchema::None,
             crate::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES, work,
         )?;
         if plan.0.provider != pi_native::PI_NATIVE_PROVIDER {
@@ -1176,7 +1170,7 @@ impl PiNativeCommandHost {
         }
         let journal = self.journal(&owner, context, input, command, work).await?;
         let authority = self.authority(context, input, journal.clone(), work)?;
-        let provider = NativeProcessProvider::recover_with_native_work(owner.clone(), command, &plan.0,
+        let provider = NativeProcessProvider::recover(owner.clone(), command, &plan.0,
             task_interaction_id(input.binding.task_id, command), authority,
             work).await.map_err(receipt_error)?.into_arc_with_native_work(work)?;
         let effects = self.effects(context, input, &provider, work)?;
@@ -1207,7 +1201,7 @@ impl PiNativeCommandHost {
         {
             return Err(unauthorized("Pi Planned effect differs from its original retained SDK launch"));
         }
-        if bound.provider.receipt_with_native_work(bound.provider.original_attempt(), &bound.work).await?.is_some() { return Ok(None); }
+        if bound.provider.receipt(bound.provider.original_attempt(), &bound.work, None).await?.is_some() { return Ok(None); }
         Ok(Some(bound))
     }
 
@@ -1243,7 +1237,7 @@ impl PiNativeCommandHost {
             &root_admission.0.input, maximum, work,
         )?;
         let root = crate::pi_root_provider::guarded_pi_decode::<PiTaskInput>(
-            &root_bytes.0, maximum, self.protected.policy().maximum_payload_bytes, JsonValueSchema::None,
+            &root_bytes.0, maximum, self.protected.policy().maximum_payload_bytes, acyclic_harness::wire::ErrorCode::Invalid, JsonValueSchema::None,
             crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES, work,
         )?;
         let root_session = &root.0.binding.native_session_id;
@@ -1374,7 +1368,7 @@ impl PiNativeCommandHost {
         let approval = pi_native::approve_command(&self.protected, &owner, context, &prepared.binding,
             &intent.invocation, view.manifest(), command.operation_id, &journal, work).await?;
         let authority = self.authority(context, input, journal.clone(), work)?;
-        let provider = NativeProcessProvider::new_with_native_work(owner.clone(), command.operation_id,
+        let provider = NativeProcessProvider::new(owner.clone(), command.operation_id,
             &staged.1, view, approval, authority, work)?.await?.into_arc_with_native_work(work)?;
         let effects = self.effects(context, input, &provider, work)?;
         let bound = Arc::new(BoundEffect { provider, work: work.clone(), effects, owner, journal, context: shared,
@@ -1399,7 +1393,7 @@ impl PiNativeCommandHost {
         }
         let task = bound.owner.task_id();
         let work = self.preparation_work(&self.registered_entry(task)?).await?;
-        let receipt = bound.provider.receipt_with_native_work(bound.provider.original_attempt(), &work).await.map_err(receipt_error)?
+        let receipt = bound.provider.receipt(bound.provider.original_attempt(), &work, None).await.map_err(receipt_error)?
             .ok_or(Error::Indeterminate(bound.command))?;
         if !receipt.observed || receipt.task != task || receipt.command != bound.command
             || receipt.effect.status != observed.0
@@ -1407,7 +1401,7 @@ impl PiNativeCommandHost {
             return Err(Error::Indeterminate(bound.command));
         }
         let (effect, mut original_custody) = receipt.into_effect_with_native_custody().map_err(receipt_error)?;
-        let maximum = bound.context().scope().limits().file_bytes.min(self.protected.policy().maximum_payload_bytes);
+        let maximum = bound.context.context().scope().limits().file_bytes.min(self.protected.policy().maximum_payload_bytes);
         let mut completed = match effect.status {
             EffectStatus::Succeeded { result } => crate::pi_root_provider::guarded_pi_value(
                 &Outcome::Succeeded(result), maximum, &work)?,
@@ -1476,7 +1470,7 @@ impl TaskCommandHost for PiNativeCommandHost {
                 let planned = effect.status == EffectStatus::Planned;
                 let recovery = self.bind_recovery(Arc::clone(&shared), &input, owner.clone(),
                     command.operation_id, effect, work).await?;
-                if planned && recovery.provider.receipt_with_native_work(recovery.provider.original_attempt(), work).await.map_err(receipt_error)?.is_none() {
+                if planned && recovery.provider.receipt(recovery.provider.original_attempt(), work, None).await.map_err(receipt_error)?.is_none() {
                     let bound = self.prepare_effect(Arc::clone(&shared), &input, owner, &command, intent, true, work).await?;
                     let stock = bound.staged.as_ref()
                         .ok_or_else(|| unauthorized("Pi restored launch has no original staged plan"))?;

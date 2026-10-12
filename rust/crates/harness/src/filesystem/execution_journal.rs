@@ -166,7 +166,7 @@ impl ExecutionSummary {
                 ExecutionEvent::ToolStarted { .. } => std::mem::size_of::<((u32, [u8; 32]), bool)>(),
                 _ => 0,
             };
-            io.claim((std::mem::size_of::<([u8; 32], (u64, [u8; 32]))>() + extra) as u64)?;
+            io.retain_owned((std::mem::size_of::<([u8; 32], (u64, [u8; 32]))>() + extra) as u64)?;
         }
         match &record.event {
             ExecutionEvent::ContextPrepared { step, .. } => {
@@ -194,7 +194,7 @@ impl ExecutionSummary {
                         "model observation is missing"))?,
                     limits, io,
                 )?;
-                if admission.completed() {
+                if admission.completed {
                     *state = None;
                 }
             }
@@ -240,7 +240,6 @@ struct Observation {
 }
 
 impl PreparationRecord for Observation {
-    fn maximum_slot_bytes() -> u64 { preparation_slot_bytes::<Self>() }
     fn diagnostic_label_bytes() -> u64 {
         const PRIVATE_LABEL_BYTES: u64 = {
             let labels = [
@@ -779,7 +778,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                     &self.stream, self.verifier.audience(), &self.verifier, self.turn_operation(envelope.operation_id),
                     history_limits.maximum_bytes, true,
                     &mut Some(work as &mut dyn crate::store::history::HistoryIo)).await?.0,
-                None => reader.operation_event(self.turn_operation(envelope.operation_id)).await?,
+                None => reader.operation_event(self.turn_operation(envelope.operation_id), 2 * acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).await.map(|(event, _)| event)?,
             }.ok_or_else(|| canonical_boundary(io, crate::wire::ErrorCode::Conflict,
                 "checkpoint source selection is not the committed admission"))?;
             let crate::core::EventPayload::ModelContextSelected { selection } = &event.payload else {
@@ -798,7 +797,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             let cursor = crate::store::HistoryCursor {
                 authority, after_revision: 0, through_revision: event.revision,
             };
-            let loaded = reader.conversation_range_with_work(
+            let loaded = reader.conversation_range(
                 &cursor, after, envelope.selection.conversation_revision, history_limits,
                 &mut borrowed.as_mut().map(|work| work as &mut dyn crate::store::history::HistoryIo),
             ).await?;
@@ -888,7 +887,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 }
             }
             if prepared.as_ref().and_then(|projection| projection.canonical.as_ref())
-                != Some(&envelope.source) || !admission.completed() || output.is_empty() {
+                != Some(&envelope.source) || !admission.completed || output.is_empty() {
                 return Err(canonical_boundary(io, crate::wire::ErrorCode::Conflict,
                     "canonical summary lacks its prepared source or settled output"));
             }
@@ -1013,10 +1012,10 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
             match io {
-                Some(io) => ContentGrant::verify_original_volume_with_io(
-                    verifier, scope, volume, operation, io,
+                Some(io) => ContentGrant::authorize_volume(
+                    verifier, scope, volume, operation, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()),
                 )?,
-                None => { ContentGrant::verify(verifier, scope, volume, operation)?; }
+                None => { ContentGrant::verify(verifier, scope, volume, operation, u64::MAX, &mut None)?; }
             }
         }
         if !matches!(verifier.audience().kind,
@@ -1026,10 +1025,10 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
         let mut observer = io.map(PreparationIo::history_io);
         let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-        let volume = volume.clone_with_work(&mut work)?;
-        let verifier = verifier.clone_with_work(&mut work)?;
-        let schemas = schemas.clone_with_work(&mut work)?;
-        let scope = scope.clone_with_work(&mut work)?;
+        let volume = volume.copy(&mut work)?;
+        let verifier = verifier.copy(&mut work)?;
+        let schemas = schemas.copy(&mut work)?;
+        let scope = scope.copy(&mut work)?;
         let interactions = match verifier.audience().kind {
             crate::core::AggregateKind::Conversation => Some(FilesystemInteractionHost::new(
                 stream.clone(), Arc::clone(&host), verifier.audience(), &verifier,
@@ -1089,7 +1088,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 "task interaction binding requires an admitted journal owner"));
         }
         self.interactions = Some(FilesystemInteractionHost::new(
-            self.stream.clone(), Arc::clone(&self.host), verifier.audience(), verifier,
+            self.stream.provider.clone(), Arc::clone(&self.host), verifier.audience(), verifier,
             schemas, scope, private_volume, self.maximum_payload_bytes, io,
         )?);
         Ok(self)
@@ -1124,7 +1123,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
 
     fn path(&self, operation_id: OperationId) -> Result<acyclic_stream::Stream<P>>
     {
-        acyclic_stream::Stream::new(Arc::clone(&self.stream),
+        self.stream.stream(
             crate::distributed::execution_path(operation_id, &mut None)?.as_str())
             .map_err(|error| Error::Invalid(error.to_string()))
     }
@@ -1207,8 +1206,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                     &self.stream,
                     self.verifier.audience().clone(),
                     self.verifier.clone(),
-                    self.schemas.clone(),
-                )
+                    self.schemas.clone(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
                 .await?
                 .with_content_verifier(Arc::clone(verifier)),
             );
@@ -1224,8 +1222,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 &self.stream,
                 self.verifier.audience().clone(),
                 self.verifier.clone(),
-                self.schemas.clone(),
-            )
+                self.schemas.clone(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
             .await?
             .with_content_verifier(Arc::clone(verifier));
             aggregate.set_limits(limits)?;
@@ -1284,7 +1281,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             ).await,
             None => {
                 let grant = ContentGrant::verify(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Write)?;
+                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Write, u64::MAX, &mut None)?;
                 self.host.put_internal_content(
                     &self.volume, &grant, &path, bytes, media_type, "execution.json",
                     self.maximum_payload_bytes, &key, InternalContentClass::Execution,
@@ -1301,12 +1298,12 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
         match io {
             Some(io) => {
-                ContentGrant::verify_original_volume_with_io(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io)?;
+                ContentGrant::authorize_volume(
+                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()))?;
                 self.host.read_pinned_io(reference, self.maximum_payload_bytes, Some(io)).await
             }
             None => {
-                let grant = ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Read)?;
+                let grant = ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Read, u64::MAX, &mut None)?;
                 self.host.read_content(reference, &grant, self.maximum_payload_bytes).await
             }
         }
@@ -1339,7 +1336,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let vector_bytes = capacity.checked_mul(std::mem::size_of::<(ExecutionRecord, Option<ModelEvent>)>())
             .ok_or_else(|| super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "execution replay vector ownership overflow"))? as u64;
         if let Some(io) = io {
-            io.claim(vector_bytes)?;
+            io.retain_owned(vector_bytes)?;
             io.allocation_attempt(vector_bytes)?;
         }
         let mut result: Vec<(ExecutionRecord, Option<ModelEvent>)> = Vec::with_capacity(capacity);
@@ -1359,7 +1356,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             io.charge(copying)?;
             Some(hold)
         } else { None };
-        let stream = acyclic_stream::Stream::new(Arc::clone(&self.stream), &path)
+        let stream = self.stream.stream(&path)
             .map_err(|error| Self::journal_read_stream_error(io, crate::wire::ErrorCode::Invalid, error))?;
         let _read_path_hold;
         _read_path_hold = if let Some(io) = io {
@@ -1394,7 +1391,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                     source_bytes_read: record.value.len() as u64, items_examined: 1, ..Default::default()
                 };
                 io.charge(read)?;
-                io.claim(record.value.len() as u64)?;
+                io.retain_owned(record.value.len() as u64)?;
                 Some(io.guard_owned(record.value.len() as u64)?)
             } else { None };
             if record.value.len() > acyclic_stream::MAX_RECORD_BYTES {
@@ -1408,7 +1405,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                     "execution journal sequence or bound is invalid"));
             }
             let observation: Observation = match io {
-                Some(io) => io.decode_preparation::<Observation>(&record.value, crate::wire::ErrorCode::Storage)?.into_retained(),
+                Some(io) => crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<Observation>, &record.value, crate::wire::ErrorCode::Storage)?),
                 None => crate::contract::json_from_slice(&record.value)
                     .map_err(|error| Error::Storage(format!("execution journal record is invalid: {error}")))?,
             };
@@ -1480,7 +1477,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         page_slots = io.map(|io| io.guard_owned(page_bytes)).transpose()?;
         let output_bytes = page.len().checked_mul(std::mem::size_of::<ExecutionRecord>())
             .ok_or_else(|| super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "execution replay vector ownership overflow"))? as u64;
-        if let Some(io) = io { io.claim(output_bytes)?; io.allocation_attempt(output_bytes)?; }
+        if let Some(io) = io { io.retain_owned(output_bytes)?; io.allocation_attempt(output_bytes)?; }
         let mut records = Vec::with_capacity(page.len());
         for (record, _) in page { records.push(record); }
         drop(page_slots);
@@ -1511,14 +1508,14 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             let ordinary_bytes;
             let bytes = if let Some(io) = io {
                 super::fork_preparer_io::item(Some(io), 0)?;
-                ContentGrant::verify_original_volume_with_io(
-                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io)?;
+                ContentGrant::authorize_volume(
+                    &self.verifier, &self.scope, &self.volume, VolumeOperation::Read, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()))?;
                 native_bytes = self.host.read_pinned_io(reference, self.maximum_payload_bytes, Some(io)).await?;
                 _bytes_hold = io.guard_bytes(&native_bytes)?;
                 native_bytes.as_ref()
             } else {
                 _bytes_hold = None;
-                let grant = ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Read)?;
+                let grant = ContentGrant::verify(&self.verifier, &self.scope, &self.volume, VolumeOperation::Read, u64::MAX, &mut None)?;
                 ordinary_bytes = self.host.read_content(reference, &grant, self.maximum_payload_bytes).await?;
                 ordinary_bytes.as_ref()
             };
@@ -1550,17 +1547,17 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 }
                 model = Some(match io {
                     Some(io) => {
-                        let parsed = io.decode_preparation::<ModelEvent>(&bytes, crate::wire::ErrorCode::Storage)?;
+                        let parsed = io.decode(std::marker::PhantomData::<ModelEvent>, &bytes, crate::wire::ErrorCode::Storage)?;
                         let _canonical_hold;
-                        let canonical = io.encode(&parsed.value, self.maximum_payload_bytes, true)?;
+                        let canonical = io.encode(&parsed.0, self.maximum_payload_bytes, true)?;
                         _canonical_hold = io.guard_bytes(&canonical)?;
                         if canonical.as_ref() != bytes {
                             return Err(canonical_boundary(Some(io), crate::wire::ErrorCode::Storage,
                                 "execution journal JSON is not canonical"));
                         }
-                        parsed.into_retained()
+                        crate::filesystem::retain_decoded(parsed)
                     }
-                    None => decode_json(&bytes)?,
+                    None => decode_json(&bytes, None)?.into_retained(),
                 });
             }
         }
@@ -1580,13 +1577,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         if reference.volume().provider() != &self.host.provider {
             let verifier = self.input_verifier.as_ref().ok_or_else(|| canonical_boundary(
                 io, crate::wire::ErrorCode::Unsupported, "turn input file belongs to another content provider"))?;
-            return match io {
-                Some(io) => {
-                    let mut work = io.history_io();
-                    crate::store::history::HistoryIo::verify_content(&mut work, verifier.as_ref(), reference)?.await
-                }
-                None => verifier.verify(reference).await,
-            };
+            return verifier.verify(reference, self.maximum_payload_bytes, io)?.await;
         }
         if let Some(io) = io {
             super::fork_preparer_io::item(Some(io), reference.logical_owned_bytes()?)?;
@@ -1607,8 +1598,8 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                         "exact file read is not granted"));
                 }
             } else {
-                ContentGrant::verify_original_volume_with_io(
-                    &self.verifier, &self.scope, reference.volume(), VolumeOperation::Read, io)?;
+                ContentGrant::authorize_volume(
+                    &self.verifier, &self.scope, reference.volume(), VolumeOperation::Read, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()))?;
             }
             let before = io.owned_bytes()?;
             let _bytes_hold;
@@ -1622,7 +1613,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             {
                 ContentGrant::verify_file_read(&self.verifier, &self.scope, reference)?
             } else {
-                ContentGrant::verify(&self.verifier, &self.scope, reference.volume(), VolumeOperation::Read)?
+                ContentGrant::verify(&self.verifier, &self.scope, reference.volume(), VolumeOperation::Read, self.maximum_payload_bytes, &mut None)?
             };
             self.host.read_content(reference, &grant, self.maximum_payload_bytes).await?;
         }
@@ -1641,7 +1632,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let bytes = (count as u64).checked_mul(std::mem::size_of::<(&FileRef, Option<&crate::model::NativeConfigurationBinding>)>() as u64)
             .ok_or_else(|| super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "model reference ownership overflow"))?;
         if let Some(io) = io {
-            io.claim(bytes)?;
+            io.retain_owned(bytes)?;
             references_hold = Some(io.guard_owned(bytes)?);
             if count != 0 { io.allocation_attempt(bytes)?; }
         } else {
@@ -2147,7 +2138,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             .ok_or_else(|| super::interaction_host::interaction_boundary(
                 io, crate::wire::ErrorCode::Invalid, "selected history vector size overflows"))?;
         if let Some(io) = io {
-            io.claim(slots as u64)?;
+            io.retain_owned(slots as u64)?;
             io.allocation_attempt(slots as u64)?;
         }
         let mut loaded = Vec::with_capacity(committed.message_ids.len());
@@ -2159,14 +2150,14 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             loaded.push(message.ok_or_else(|| super::interaction_host::interaction_boundary(
                 io, crate::wire::ErrorCode::Storage, "committed selected message is missing at its cutoff"))?);
         }
-        let (historical, _) = crate::conversation::ConversationState::selected_view(loaded, &mut work)?;
+        let (historical, _) = crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages: loaded, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut work)?;
         let (messages, attachments, render_bytes) = self.owner.as_ref().map_or(
             (crate::conversation::MAX_PORTABLE_COUNT, crate::conversation::MAX_PORTABLE_COUNT,
                 self.maximum_payload_bytes),
             |(owner, _)| { let limits = owner.input_limits();
                 (limits.context_messages, limits.attachments, limits.render_bytes) });
         let resolver = JournalSelectedResolver {
-            journal: self, inner: verifier.as_ref(), maximum_attachments: attachments,
+            journal: self, inner: verifier.as_ref(),
         };
         for message in historical.messages() {
             if message.kind != crate::conversation::MessageKind::ToolCall {
@@ -2178,19 +2169,13 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 }
                 crate::conversation::ReferencedAttachments::Manifest { manifest, item_count }
                     if message.kind == crate::conversation::MessageKind::ToolCall => {
-                    match io {
-                        #[cfg(not(target_arch = "wasm32"))]
-                        Some(io) => {
-                            let original = io.original_native_work().ok_or_else(||
-                                super::interaction_host::interaction_boundary(Some(io),
-                                    crate::wire::ErrorCode::Invalid, "selected IO has no original native work"))?;
-                            let (items, custody) = crate::conversation::ContentResidencyVerifier::load_manifest_with_native_work(
-                                &resolver, manifest, *item_count, original)?.await?;
-                            drop(items);
-                            drop(custody);
-                        }
-                        _ => { crate::conversation::ContentResidencyVerifier::load_manifest(&resolver, manifest, *item_count).await?; }
+                    if *item_count as usize > attachments {
+                        return Err(canonical_boundary(io, crate::wire::ErrorCode::Invalid, "selected manifest exceeds attachment limit"));
                     }
+                    let (items, hold) = crate::conversation::load_manifest(&resolver, manifest, *item_count, io).await?;
+                    for item in &items { self.verify_input_file_with_io(&item.file, io).await?; }
+                    drop(items);
+                    drop(hold);
                 }
                 crate::conversation::ReferencedAttachments::Manifest { .. } => {}
             }
@@ -2317,38 +2302,24 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
 struct JournalSelectedResolver<'a, P, A, O> {
     journal: &'a FilesystemExecutionJournal<P, A, O>,
     inner: &'a dyn ContentResidencyVerifier,
-    maximum_attachments: usize,
 }
 
 impl<P, A, O> crate::conversation::ContentResidencyVerifier for JournalSelectedResolver<'_, P, A, O>
 where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
 {
-    fn supports_read(&self, volume: &VolumeRef, io: Option<&PreparationIo>) -> Result<bool> {
-        self.inner.supports_read(volume, io)
-    }
-
-    fn verify<'a>(&'a self, _: &'a FileRef, _: u64, io: Option<&'a PreparationIo>)
+    fn verify<'a>(&'a self, _file: &'a FileRef, _maximum_bytes: u64, io: Option<&'a PreparationIo>)
         -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
         Err(canonical_boundary(io, crate::wire::ErrorCode::Unsupported, "projection-only reader"))
     }
 
-    fn read<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64, io: Option<&'a PreparationIo>)
-        -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            self.journal.authorize_selected_file_with_io(file, io)?;
-            self.inner.read(file, maximum_bytes, io)?.await
-        })
+    fn supports_read(&self, volume: &VolumeRef, io: Option<&PreparationIo>) -> Result<bool> {
+        self.inner.supports_read(volume, io)
     }
 
-    fn verify_manifest<'a>(&'a self, manifest: &'a FileRef, item_count: u32, limits: &'a Limits,
-        io: Option<&'a PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
-        if item_count as usize > self.maximum_attachments {
-            return Err(canonical_boundary(io, crate::wire::ErrorCode::Invalid, "selected manifest exceeds attachment limit"));
-        }
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            crate::conversation::verified_attachment_manifest(self, manifest, item_count, limits, io).await?;
-            Ok(())
-        })
+    fn read<'a>(&'a self, file: &'a FileRef, maximum_bytes: u64, io: Option<&'a PreparationIo>)
+        -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        self.journal.authorize_selected_file_with_io(file, io)?;
+        self.inner.read(file, maximum_bytes, io)
     }
 }
 
@@ -2383,11 +2354,11 @@ fn canonical_push_text(
         };
         io.preflight(copy)?;
         if grows {
-            io.claim((length - old) as u64)?;
+            io.retain_owned((length - old) as u64)?;
             io.allocation_attempt((length - old) as u64)?;
             output.try_reserve_exact(length - output.len()).map_err(|_| canonical_boundary(
                 Some(io), crate::wire::ErrorCode::Storage, "canonical summary allocation failed"))?;
-            if output.capacity() > length { io.claim((output.capacity() - length) as u64)?; }
+            if output.capacity() > length { io.retain_owned((output.capacity() - length) as u64)?; }
         }
         output.push_str(delta);
         io.charge(copy)?;
@@ -2471,16 +2442,14 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         }
     }
     let mut borrowed = io.map(PreparationIo::history_io);
-    let (history, _) = crate::conversation::ConversationState::selected_view(
-        loaded, &mut borrowed.as_mut().map(|work| work as &mut dyn crate::store::history::HistoryIo),
-    )?;
+    let (history, _) = crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages: loaded, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut borrowed.as_mut().map(|work| work as &mut dyn crate::store::history::HistoryIo))?;
     let mut message_ids = Vec::new();
     for id in &selection.message_ids { crate::executor::stock_vec_push(&mut message_ids, *id, io)?; }
     let selection = crate::conversation::ModelContextSelection {
         conversation_revision: selection.conversation_revision, message_ids,
         checkpoint: selection.checkpoint.as_ref().map(|file| super::fork_preparer_io::clone_file(file, io)).transpose()?,
     };
-    let resolver = JournalSelectedResolver { journal, inner: verifier, maximum_attachments: limits.attachments };
+    let resolver = JournalSelectedResolver { journal, inner: verifier };
     let resolver: &dyn ContentResidencyVerifier = if io.is_some() { &resolver } else { verifier };
     let selected = select_model_context(
         &history, selection.conversation_revision, selection, resolver,
@@ -2534,14 +2503,10 @@ mod tests {
                 id: crate::ConversationId::new().to_string(),
             },
         );
-        let scope = issuer.root_for_agent(
-            agent,
-            "owner",
-            crate::Capabilities::new([
-                volume.capability(VolumeOperation::Read)?,
-                volume.capability(VolumeOperation::Write)?,
-            ]),
-        );
+        let scope = issuer.issue("owner", &crate::Capabilities::new([
+                volume.capability(VolumeOperation::Read, &mut None)?,
+                volume.capability(VolumeOperation::Write, &mut None)?,
+            ]), Some(agent), None, &mut None).expect("scope proof");
         let stream = Arc::new(acyclic_stream::MemoryStream::default());
         let open = |operation, turn| {
             FilesystemExecutionJournal::new(
@@ -2677,36 +2642,31 @@ mod tests {
             id: crate::ConversationId::new().to_string(),
         };
         let issuer = AuthorityIssuer::new("cold-canonical-owner", [72; 32], authority.clone());
-        let scope = issuer.root_for_agent(
-            agent,
-            "owner",
-            crate::Capabilities::new([
+        let scope = issuer.issue("owner", &crate::Capabilities::new([
                 "conversation:bind".into(),
                 "conversation:append".into(),
                 "conversation:select_context".into(),
-                volume.capability(VolumeOperation::Read)?,
-                volume.capability(VolumeOperation::Write)?,
-            ]),
-        );
+                volume.capability(VolumeOperation::Read, &mut None)?,
+                volume.capability(VolumeOperation::Write, &mut None)?,
+            ]), Some(agent), None, &mut None).expect("scope proof");
         let content = Arc::new(super::super::FilesystemContentVerifier::new(
             host.clone(),
-            issuer.verifier(&mut None).expect("verifier copy"),
-            scope.clone(),
-            4096,
+            &issuer.verifier(&mut None).expect("verifier copy"),
+            &scope,
+            4096, None,
         )?);
         let publisher = super::super::FilesystemContentPublisher::new(
             host.clone(),
-            volume.clone(),
+            &volume,
             &issuer.verifier(&mut None).expect("verifier copy"),
             &scope,
-            4096,
+            4096, None,
         )?;
         let mut aggregate = StreamAggregate::open(
             &client,
             authority.clone(),
             issuer.verifier(&mut None).expect("verifier copy"),
-            SchemaRegistry::new(),
-        )
+            SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
         .await?
         .with_content_verifier(content.clone())
         .with_resident_event_limit(1)?;
@@ -2718,7 +2678,7 @@ mod tests {
                 scope: scope.clone(),
                 causal_parent: None,
                 action: Action::BindConversation { agent },
-            })
+            }, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         let mut ids = Vec::new();
         let mut references = Vec::new();
@@ -2762,13 +2722,13 @@ mod tests {
                             sequence,
                             kind,
                             content: file.clone(),
-                            attachments: Vec::new().into(),
+                            attachments: crate::conversation::ReferencedAttachments::Inline { items: Vec::new() },
                             reply_to,
                             tool_call_id: None,
                             extensions: Default::default(),
                         }),
                     },
-                })
+                }, #[cfg(feature = "filesystem")] None, &mut None)
                 .await?;
             ids.push(id);
             references.push(file);
@@ -2799,7 +2759,7 @@ mod tests {
                     scope: scope.clone(),
                     causal_parent: None,
                     action: Action::SelectModelContext { selection },
-                })
+                }, #[cfg(feature = "filesystem")] None, &mut None)
                 .await?;
         }
         let limits = Limits {

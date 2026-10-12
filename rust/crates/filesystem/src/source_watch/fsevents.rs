@@ -378,7 +378,7 @@ fn held_path<W: SourceDemandReadWork>(descriptor: i32, work: &mut W) -> Result<P
         reconciled?;
         owned.push(std::ffi::OsStr::from_bytes(bytes));
         if let Some(copy) = copy.take() {
-            copy.record(bytes.len() as u64).map_err(crate::native_name::original_name_error)?;
+            { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: bytes.len() as u64, ..crate::WorkCounters::UNCHARGED }) }.map_err(crate::native_name::original_name_error)?;
         } else {
             work.record(WorkCounters { bytes_copied: bytes.len() as u64, ..WorkCounters::UNCHARGED })?;
         }

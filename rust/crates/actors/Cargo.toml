@@ -39,6 +39,7 @@ tonic-web-wasm-client = { package = "acyclic-tonic-web-wasm-client", version = "
 url = "=2.5.8"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+acyclic-grpc-observability = { version = "=0.2.0", path = "../grpc-observability", default-features = false, features = ["test-support"] }
 tokio.workspace = true
 rcgen = "0.14.10"
 tempfile = "3.27.0"

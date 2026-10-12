@@ -1071,11 +1071,8 @@ export interface WasmImportManifest {
   readonly objects: readonly Uint8Array[];
 }
 
-export type WasmRawExportManifest = WasmBinding.BrowserExportManifestResult;
 export type WasmRawFileRecordSnapshot = WasmBinding.BrowserFileRecordResult;
 export type WasmRawGenerationDiff = WasmBinding.BrowserGenerationDiffResult;
-export type WasmRawCommitResult = WasmBinding.BrowserCommitResult;
-export type WasmRawLiveTransactionResult = WasmBinding.BrowserLiveTransactionResult;
 
 export type WasmRawGeneration = WasmTypedClass<WasmBinding.BrowserGeneration, {
   listDirectory: [path: string, after: WorkspaceName | undefined, maximumEntries: number];
@@ -1085,13 +1082,6 @@ export type WasmRawGeneration = WasmTypedClass<WasmBinding.BrowserGeneration, {
   planExtents: WasmBinding.BrowserWorkspaceExtentPlan;
   stat: WasmBinding.BrowserWorkspaceStat;
 }>;
-
-export interface RawGenerationChangeSet<Diff> {
-  readonly from: WasmRawGeneration;
-  readonly to: WasmRawGeneration;
-  changes(): Diff;
-  compose(next: RawGenerationChangeSet<Diff>, maximumChanges: number): Promise<RawGenerationChangeSet<Diff>>;
-}
 
 export type WasmRawChangeSet = WasmTypedClass<WasmBinding.BrowserChangeSet, {}, {
   compose: WasmRawChangeSet;
@@ -1123,24 +1113,6 @@ export type WasmRawWorkspace = WasmTypedClass<WasmBinding.BrowserWorkspace, {
   sync: WasmRawGeneration;
   write: WasmBinding.BrowserWorkspaceCommit;
 }>;
-
-export interface RawWorkspaceTransaction<Commit = unknown> {
-  createDirAll(path: string): Promise<void>;
-  createDirectory(path: string): Promise<void>;
-  createSymbolicLink(path: string, target: Uint8Array): Promise<void>;
-  write(path: string, bytes: Uint8Array): Promise<void>;
-  remove(path: string): Promise<void>;
-  copy(source: string, destination: string): Promise<void>;
-  rename(source: string, destination: string): Promise<void>;
-  hardLink(source: string, destination: string): Promise<void>;
-  writeRange(path: string, offset: bigint, bytes: Uint8Array): Promise<void>;
-  resize(path: string, logicalBytes: bigint): Promise<void>;
-  zeroRange(path: string, offset: bigint, length: bigint, allocated: boolean, extend: boolean): Promise<void>;
-  preallocate(path: string, offset: bigint, length: bigint, keepSize: boolean): Promise<void>;
-  cloneRange(source: string, sourceOffset: bigint, destination: string, destinationOffset: bigint, length: bigint): Promise<void>;
-  rebase(maximumConflicts: number): Promise<TransactionRebaseResult>;
-  commit(lease?: OperationWindowLease): Promise<Commit>;
-}
 
 export type WasmRawTransaction = WasmBinding.BrowserTransaction;
 
@@ -1186,7 +1158,7 @@ export type WasmRawCheckout = WasmTypedClass<
     checkpoint: WasmBinding.BrowserCheckpointResult;
     cloneFileRange: WasmBinding.BrowserMutationResult;
     cloneFileRangeById: WasmBinding.BrowserMutationResult;
-    commit: WasmRawCommitResult;
+    commit: WasmBinding.BrowserCommitResult;
     createDevice: WasmBinding.BrowserMutationResult;
     createDirectory: WasmBinding.BrowserMutationResult;
     createFile: WasmBinding.BrowserMutationResult;
@@ -1194,14 +1166,14 @@ export type WasmRawCheckout = WasmTypedClass<
     createSpecial: WasmBinding.BrowserMutationResult;
     createSymbolicLink: WasmBinding.BrowserMutationResult;
     discard: WasmBinding.BrowserMutationResult;
-    exportManifest: WasmRawExportManifest;
+    exportManifest: WasmBinding.BrowserExportManifestResult;
     hardLink: WasmBinding.BrowserMutationResult;
     listDirectory: WasmBinding.BrowserDirectoryPageResult;
     listDirectoryRecords: WasmBinding.BrowserDirectoryRecordPageResult;
     listNamedAttributes: WasmBinding.BrowserNamedAttributePageResult;
     lookupBatchNoFollow: WasmBinding.BrowserBatchLookupResult;
     lookupNoFollow: WasmBinding.BrowserLookupResult;
-    mutateLive: WasmRawLiveTransactionResult;
+    mutateLive: WasmBinding.BrowserLiveTransactionResult;
     planFileExtents: WasmBinding.BrowserExtentPlanResult;
     planFileExtentsById: WasmBinding.BrowserExtentPlanResult;
     preallocateFile: WasmBinding.BrowserMutationResult;
@@ -1296,18 +1268,11 @@ export type NativeRawOperationWindowLease = NativeBoundary<NativeBinding.NativeO
 export type NativeRawOperationWindowPhase = NativeBoundary<NativeBinding.NativeOperationWindowPhase>;
 export type NativeRawOperationWindowClose = NativeBoundary<NativeBinding.NativeOperationWindowClose>;
 export type NativeRawOperationWindowCoordinator = NativeBoundary<NativeBinding.NativeOperationWindowCoordinator>;
-export type NativeRawMutation = NativeBoundary<NativeBinding.NativeMutationResult>;
 export type NativeRawWatchBatch = NativeBoundary<NativeBinding.NativeWatchBatch>;
 export type NativeRawWatcher = NativeBoundary<NativeBinding.NativeWatcher>;
 export type NativeRawCheckout = NativeBoundary<NativeBinding.NativeCheckout>;
-export type NativeRawResolvedFile = NativeBoundary<NativeBinding.NativeResolvedFile>;
 export type NativeRawTransactionOperation = NativeBoundary<NativeBinding.NativeTransactionOperation>;
-export type NativeRawVolume = NativeBoundary<NativeBinding.NativeVolume>;
-export type NativeRawGenerationDiff = NativeBoundary<NativeBinding.NativeGenerationDiff>;
-export type NativeRawMergeConflict = NativeBoundary<NativeBinding.NativeMergeConflict>;
 export type NativeRawFs = NativeBoundary<NativeBinding.NativeFs>;
 export type NativeRawWorkspace = NativeBoundary<NativeBinding.NativeWorkspace>;
 export type NativeRawJoinPlan = NativeBoundary<NativeBinding.NativeJoinPlan>;
 export type NativeRawSourceResult = NativeBoundary<NativeBinding.NativeSourceResult>;
-export type NativeRawWorkspaceMount = NativeBoundary<NativeBinding.NativeWorkspaceMount>;
-export type NativeRawSpeculation = NativeBoundary<NativeBinding.NativeSpeculation>;

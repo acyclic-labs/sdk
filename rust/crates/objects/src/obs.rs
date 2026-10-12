@@ -39,17 +39,11 @@ impl<T> Outcome for Result<T, crate::v1::NativeObjectsError> {
             }
         }
         fn native_failure(error: &NativeObjectsError) -> &'static str {
-            match error {
-                NativeObjectsError::Service(error) => error.code.as_str_name(),
-                NativeObjectsError::Admission(error) => admission(error),
-                NativeObjectsError::Unsupported => "unsupported",
-                NativeObjectsError::SharedFailure(failure) => native_failure(failure.error()),
-                NativeObjectsError::ReadFailure(failure) => match &failure.cause {
-                    NativeObjectsCause::Service(error) => error.code.as_str_name(),
-                    NativeObjectsCause::Admission(error) => admission(error),
-                    NativeObjectsCause::Unsupported => "unsupported",
-                    NativeObjectsCause::SharedFailure(failure) => native_failure(failure.error()),
-                },
+            match &error.cause {
+                NativeObjectsCause::Service(error) => error.code.as_str_name(),
+                NativeObjectsCause::Admission(error) => admission(error),
+                NativeObjectsCause::Unsupported => "unsupported",
+                NativeObjectsCause::SharedFailure(failure) => native_failure(failure.error()),
             }
         }
         self.as_ref().err().map(native_failure)
@@ -292,7 +286,7 @@ pub(crate) fn download(
                 match result {
                     Ok(mut download) => {
                         download.body.inner.set_dispatch(lifetime.dispatch());
-                        if let Some(body) = download.body.inner.inner.as_mut() {
+                        if let Some(body) = download.body.inner.inner_mut() {
                             body.lifetime = lifetime;
                             body.context = Some(context);
                         }
@@ -361,7 +355,7 @@ pub(crate) use record;
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
-    use crate::body::tests::Capture;
+    use acyclic_grpc_observability::test_support::Capture;
     use tracing_subscriber::layer::SubscriberExt;
 
     #[tokio::test]

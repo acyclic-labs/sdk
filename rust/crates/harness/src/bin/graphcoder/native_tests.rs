@@ -14,12 +14,12 @@ async fn composition(root: &std::path::Path) -> Result<Config> {
     let volume = VolumeRef::new(provider.clone(), "private".into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None)?;
     let authority = Authority { kind: AggregateKind::Task, id: "terminal-native-owner".into() };
     let issuer = AuthorityIssuer::new("terminal-native-regression", [22; 32], authority.clone());
-    let scope = issuer.root_for_agent(agent, "owner", Capabilities::new([
+    let scope = issuer.issue("owner", &Capabilities::new([
         "operation:declare".to_owned(), "operation:observe".to_owned(),
         "operation:cancel".to_owned(), "operation:wake".to_owned(),
         "model:generate".to_owned(), "task:spawn:acyclic.stock_turn@1".to_owned(),
         volume.capability(VolumeOperation::Read, &mut None)?, volume.capability(VolumeOperation::Write, &mut None)?,
-    ]));
+    ]), Some(agent), None, &mut None).expect("scope proof");
     let filesystem_root = root.join("filesystem");
     let files = FilesystemHost::new(
         acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(&filesystem_root)).await
@@ -115,8 +115,8 @@ async fn prompt_reference_retains_exact_publication_across_reopen_and_rejects_re
     let owner = session.runtime.task_host().journal_owner(task,
         LeaseFence::from(&lease.reservation)).await?;
     let journal = acyclic_harness::filesystem::FilesystemExecutionJournal::for_task(owner,
-        execution, command_operation, session.files.clone(), session.config.private_volume.clone(),
-        session.config.owner.verifier()?, session.config.owner.scope.clone(), MAX_FRAME_BYTES as u64)?;
+        execution, command_operation, session.files.clone(), &session.config.private_volume,
+        &session.config.owner.verifier()?, &session.config.owner.scope, MAX_FRAME_BYTES as u64, None)?;
     let records = journal.replay(execution, 0, 16).await?;
     let request = records.into_iter().find_map(|record| match record.event {
         ExecutionEvent::ModelStarted { request, .. } => Some(request), _ => None,

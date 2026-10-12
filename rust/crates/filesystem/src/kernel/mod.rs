@@ -97,7 +97,7 @@ pub use attribute_access::{
 pub(crate) use attribute_access::{
     lookup_attribute_async_with_accounting};
 pub use attribute_list::{
-    AttributeListError, AttributeListFailure, AttributeListing, list_attributes, list_attributes_async};
+    AttributeListError, AttributeListFailure, AttributeListing, list_attributes};
 pub use attribute_mutation::{
     AttributeMutation, AttributeMutationError, AttributeMutationFailure, AttributeMutationReceipt, apply_attribute_mutations};
 pub use blob::{
@@ -142,9 +142,8 @@ pub(crate) use generation::{
     read_generation_root_with_accounting, read_generation_root_with_limits_and_accounting};
 pub use generation::{
     GenerationRoot, GenerationRootDecodeStep, MAXIMUM_GENERATION_ROOT_BYTES, decode_generation_root, encode_generation_root, generation_root_id};
-pub(crate) use generation_mutation::apply_generation_mutations_retaining_async;
 pub use generation_mutation::{
-    GenerationMutationError, GenerationMutationFailure, GenerationMutationReceipt, apply_generation_mutations, apply_generation_mutations_async};
+    GenerationMutationError, GenerationMutationFailure, GenerationMutationReceipt, apply_generation_mutations};
 pub(crate) use list::{
     list_tree_entries_async_with_custody};
 pub use list::{
