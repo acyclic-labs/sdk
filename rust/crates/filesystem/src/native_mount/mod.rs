@@ -202,30 +202,23 @@ pub enum NativeMountKind {
     WindowsProjFs,
 }
 
-/// Native-driver isolation required for simultaneous mount sessions.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NativeMountSessionIsolation {
-    /// The driver safely owns multiple live sessions in one process.
-    SharedProcess,
-    /// Every live session requires a distinct operating-system process.
-    ProcessIsolated,
-}
-
 /// Non-destructive compile-time and host capability facts.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeMountCapabilities {
     /// Driver compiled for this target, if any.
     pub kind: Option<NativeMountKind>,
-    /// Whether a live host probe admitted the required device/framework.
-    pub available: bool,
-    /// Whether exact authored effects are observable on this mechanism.
-    pub writable: bool,
-    /// Whether I/O issued by the provider process itself is observable.
-    pub provider_process_io_observable: bool,
-    /// Required process isolation for simultaneous sessions.
-    pub session_isolation: NativeMountSessionIsolation,
     /// Stable bounded reason when unavailable.
-    pub unavailable_reason: Option<String>,
+    pub unavailable_reason: Option<&'static str>,
+}
+
+impl NativeMountCapabilities {
+    /// Whether the host has the required device or framework.
+    pub fn available(&self) -> bool { self.unavailable_reason.is_none() }
+
+    /// Whether the driver observes I/O issued by its provider process.
+    pub fn provider_process_io_observable(&self) -> bool {
+        self.available() && matches!(self.kind, Some(NativeMountKind::LinuxFuse | NativeMountKind::MacOsNfs))
+    }
 }
 
 /// One exact mount request; cross-volume routing remains in the SDK mount table.
@@ -363,7 +356,7 @@ pub trait MountOpenFile: Send + Sync + 'static {
     fn allocate_range_with_meter(&self, offset: u64, length: u64, operation: MountRangeAllocation,
         work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
     /// Mutates exact metadata and optional size through the same engine.
-    fn set_attributes_with_meter(&self, metadata: FileMetadata, logical_bytes: Option<u64>,
+    fn set_attributes(&self, metadata: FileMetadata, logical_bytes: Option<u64>,
         work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
     /// Reads an owned named attribute without erasing capacity.
     fn read_attribute_with_meter(&self, name: &[u8], work: &NativeMaterializationWork)
@@ -372,13 +365,13 @@ pub trait MountOpenFile: Send + Sync + 'static {
     fn list_attributes_with_meter(&self, cursor: Option<&[u8]>, maximum_entries: u32,
         work: &NativeMaterializationWork) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError>;
     /// Consumes an exact already-admitted attribute value.
-    fn write_attribute_with_meter(&self, name: &[u8], value: crate::kernel::OwnedSourceChunk,
+    fn write_attribute(&self, name: &[u8], value: crate::kernel::OwnedSourceChunk,
         mode: MountAttributeWriteMode, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
     /// Removes the actual named attribute through the same engine.
-    fn remove_attribute_with_meter(&self, name: &[u8], work: &NativeMaterializationWork)
+    fn remove_attribute(&self, name: &[u8], work: &NativeMaterializationWork)
         -> Result<(), MountSourceError>;
     /// Settles this actual handle's queued effects before durability acknowledgement.
-    fn settle_with_meter(&self, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
+    fn settle(&self, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
     /// Returns the owned sparse range and its original producer's exact claim.
     fn read_sparse_range(&self, offset: u64, length: u32, work: &NativeMaterializationWork)
         -> Result<(MountSparseRange, crate::NativeAllocation), MountSourceError>;
@@ -405,12 +398,6 @@ pub trait MountOpenFile: Send + Sync + 'static {
         length: u64,
         operation: MountRangeAllocation,
     ) -> Result<(), MountSourceError>;
-    /// Replaces complete metadata and optionally logical size atomically from the native handle's perspective.
-    fn set_attributes(
-        &self,
-        metadata: FileMetadata,
-        logical_bytes: Option<u64>,
-    ) -> Result<(), MountSourceError>;
     /// Reads one exact native named attribute.
     fn read_attribute(&self, name: &[u8]) -> Result<Option<acyclic_stream::OwnedBytes>, MountSourceError>;
     /// Lists one bounded page of native named-attribute names.
@@ -419,20 +406,6 @@ pub trait MountOpenFile: Send + Sync + 'static {
         cursor: Option<&[u8]>,
         maximum_entries: u32,
     ) -> Result<MountAttributePage, MountSourceError>;
-    /// Inserts or replaces one exact native named attribute.
-    fn write_attribute(
-        &self,
-        name: &[u8],
-        value: Bytes,
-        mode: MountAttributeWriteMode,
-    ) -> Result<(), MountSourceError>;
-    /// Removes one exact native named attribute.
-    fn remove_attribute(&self, name: &[u8]) -> Result<(), MountSourceError>;
-    /// Applies whatever this handle holds back from the view, as a durability request must; most handles hold nothing back.
-    fn settle(&self) -> Result<(), MountSourceError> {
-        Ok(())
-    }
-
 }
 
 /// One bounded directory item.
@@ -953,44 +926,23 @@ impl std::future::Future for NativeMountCallbackFuture<'_> {
     }
 }
 
-/// One callback's preadmitted failure payload, never a shared diagnostic slot.
-struct NativeMountCallbackCause<E> {
-    source: Option<E>,
-}
-
-impl<E> std::fmt::Debug for NativeMountCallbackCause<E> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("NativeMountCallbackCause")
-    }
-}
-
-impl<E> std::fmt::Display for NativeMountCallbackCause<E> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("native callback authorization failed")
-    }
-}
-
-impl<E: std::error::Error + 'static> std::error::Error for NativeMountCallbackCause<E> {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.source.as_ref().map(|source| source as &dyn std::error::Error)
-    }
-}
-
 fn callback_failure_slot<E>(
     work: &NativeMaterializationWork,
-) -> Result<(Box<NativeMountCallbackCause<E>>, crate::NativeAllocation), NativeMountError> {
-    let slot_bytes = std::mem::size_of::<NativeMountCallbackCause<E>>();
+) -> Result<(Box<std::mem::MaybeUninit<E>>, crate::NativeAllocation), NativeMountError> {
+    let slot_bytes = std::mem::size_of::<E>();
     let allocation = work.claim_allocation(
         slot_bytes as u64, u64::from(slot_bytes != 0), crate::WorkCounters::UNCHARGED,
     )?;
     // Tuple fields retire the boxed slot before its allocation.
-    Ok((Box::new(NativeMountCallbackCause { source: None }), allocation))
+    Ok((Box::new(std::mem::MaybeUninit::uninit()), allocation))
 }
 
 fn callback_failure<E: std::error::Error + Send + Sync + 'static>(
-    (mut source, custody): (Box<NativeMountCallbackCause<E>>, crate::NativeAllocation), error: E,
+    (mut source, custody): (Box<std::mem::MaybeUninit<E>>, crate::NativeAllocation), error: E,
 ) -> NativeMountError {
-    source.source = Some(error);
+    source.write(error);
+    // SAFETY: the same preallocated slot now contains the complete original error.
+    let source = unsafe { source.assume_init() };
     NativeMountError::CallbackDenied { source, custody }
 }
 
@@ -1231,12 +1183,9 @@ pub trait MountFilesystem: Send + Sync + 'static {
     /// Captures the actual detached open-file identity with its original claim.
     fn detach_file_with_meter(&self, path: &MountPath, work: &NativeMaterializationWork)
         -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
-    /// Creates an empty regular file through the original source engine.
-    fn create_file_with_meter(&self, path: &MountPath, metadata: FileMetadata, work: &NativeMaterializationWork)
-        -> Result<MountLookup, MountSourceError>;
-    /// Preserves the source's actual absent-since proof while creating.
-    fn create_absent_file(&self, path: &MountPath, metadata: FileMetadata,
-        absent_since: ViewStamp, work: &NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
+    /// Creates an empty file, preserving an optional absent-since proof.
+    fn create_file(&self, path: &MountPath, metadata: FileMetadata, absent_since: Option<ViewStamp>,
+        work: &NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
     /// Creates an actual directory through the same source engine.
     fn create_directory(&self, path: &MountPath, metadata: FileMetadata, work: &NativeMaterializationWork)
         -> Result<MountLookup, MountSourceError>;
@@ -1253,11 +1202,11 @@ pub trait MountFilesystem: Send + Sync + 'static {
     fn list_attributes_with_meter(&self, path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32,
         work: &NativeMaterializationWork) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError>;
     /// Consumes an exact already-admitted native attribute value.
-    fn write_attribute_with_meter(&self, path: &MountPath, name: &[u8],
+    fn write_attribute(&self, path: &MountPath, name: &[u8],
         value: crate::kernel::OwnedSourceChunk, mode: MountAttributeWriteMode, work: &NativeMaterializationWork)
         -> Result<(), MountSourceError>;
     /// Removes the exact native attribute.
-    fn remove_attribute_with_meter(&self, path: &MountPath, name: &[u8], work: &NativeMaterializationWork)
+    fn remove_attribute(&self, path: &MountPath, name: &[u8], work: &NativeMaterializationWork)
         -> Result<(), MountSourceError>;
     /// Clones the actual immutable range between authenticated file identities.
     fn clone_range_by_id(&self, source_file_id: FileId, source_offset: u64,
@@ -1469,12 +1418,6 @@ pub trait MountFilesystem: Send + Sync + 'static {
         maximum_entries: u32,
     ) -> Result<MountDirectoryPage, MountSourceError>;
 
-    /// Creates one empty regular file, failing with [`MountSourceError::AlreadyExists`] when `path` names anything.
-    fn create_file(
-        &self,
-        path: &MountPath,
-        metadata: FileMetadata,
-    ) -> Result<MountLookup, MountSourceError>;
     /// Reads one exact native named attribute.
     fn read_attribute(
         &self,
@@ -1488,16 +1431,6 @@ pub trait MountFilesystem: Send + Sync + 'static {
         cursor: Option<&[u8]>,
         maximum_entries: u32,
     ) -> Result<MountAttributePage, MountSourceError>;
-    /// Inserts or replaces one exact native named attribute.
-    fn write_attribute(
-        &self,
-        path: &MountPath,
-        name: &[u8],
-        value: Bytes,
-        mode: MountAttributeWriteMode,
-    ) -> Result<(), MountSourceError>;
-    /// Removes one exact native named attribute.
-    fn remove_attribute(&self, path: &MountPath, name: &[u8]) -> Result<(), MountSourceError>;
     /// Replaces one exact file range.
     fn write_range(
         &self,
@@ -1593,7 +1526,7 @@ pub enum NativeMountError {
     UnsupportedTarget,
     /// Required host driver/device is unavailable.
     #[error("native mount capability is unavailable: {0}")]
-    CapabilityUnavailable(std::borrow::Cow<'static, str>),
+    CapabilityUnavailable(&'static str),
     /// Destination must already exist and be empty.
     #[error("mount destination must be an existing empty directory")]
     InvalidDestination,
@@ -2821,15 +2754,7 @@ pub fn probe_native_mount() -> NativeMountCapabilities {
     let (kind, available, reason) = (None, false, "unsupported target");
     NativeMountCapabilities {
         kind,
-        available,
-        writable: available,
-        provider_process_io_observable: available && !cfg!(windows),
-        session_isolation: if kind.is_some() {
-            NativeMountSessionIsolation::SharedProcess
-        } else {
-            NativeMountSessionIsolation::ProcessIsolated
-        },
-        unavailable_reason: (!available).then(|| reason.to_owned()),
+        unavailable_reason: (!available).then_some(reason),
     }
 }
 
@@ -3091,7 +3016,6 @@ const NATIVE_REGISTRY_NAME: &str = ".acyclic-fs-mount-registry.lock";
 struct MountDestinationGuard {
     file: Option<File>,
     lock_path: PathBuf,
-    registry_path: PathBuf,
     // Retain the physical parent and fixed leaf so replacing an alias cannot redirect cleanup.
     parent_directory: Option<cap_std::fs::Dir>,
     fence_name: Option<[u8; NATIVE_FENCE_NAME_BYTES]>,
@@ -3291,7 +3215,7 @@ impl MountDestinationGuard {
             &parent_directory, Path::new(std::str::from_utf8(&name).expect("literal prefix, hex and suffix are UTF-8")),
             &crate::native_host::NativeOpenOptions::ReadWriteCreate, work,
         )?;
-        let admitted = Self { file: Some(file), lock_path: PathBuf::new(), registry_path: PathBuf::new(),
+        let admitted = Self { file: Some(file), lock_path: PathBuf::new(),
             parent_directory: Some(parent_directory), fence_name: Some(name),
             registry_file: Some(registry), cleanup_name, birth_cleanup };
         if recovery {
@@ -3341,7 +3265,6 @@ impl MountDestinationGuard {
         Ok(Self {
             file: Some(file),
             lock_path,
-            registry_path,
             parent_directory: None,
             fence_name: None,
             registry_file: None,
@@ -3436,14 +3359,12 @@ impl MountDestinationGuard {
                 &opened_directory
             }
         };
-        let registry_name = if self.fence_name.is_some() { Path::new(NATIVE_REGISTRY_NAME) }
-            else { Path::new(self.registry_path.file_name().ok_or(NativeMountError::InvalidDestination)?) };
         let lock_name = match self.fence_name.as_ref() {
             Some(name) => Path::new(std::str::from_utf8(name).expect("literal prefix, hex and suffix are UTF-8")),
             None => Path::new(self.lock_path.file_name().ok_or(NativeMountError::InvalidDestination)?),
         };
         let registry = crate::native_host::open_leaf_with_work(
-            directory, registry_name,
+            directory, Path::new(NATIVE_REGISTRY_NAME),
             &crate::native_host::NativeOpenOptions::ReadWriteCreate, work,
         )?;
         lock_mount_file_with_work(&registry, true, work)?;

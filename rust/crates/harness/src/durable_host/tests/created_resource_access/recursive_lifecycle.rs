@@ -11,7 +11,7 @@ async fn fork_preparation_outbox_replay_binds_actual_report_and_original_request
     let created = fixture.create_filesystem_child().await?;
     let operation = created.report.request.operation_id;
     let bytes = crate::contract::canonical_json_bytes(&created.request.payload)?;
-    let payload = fixture.host.payloads.stage(operation, "recursive-request", &bytes).await?;
+    let payload = fixture.host.payloads.stage(operation, "recursive-request", &bytes, None)?.await?;
     let command = WorkflowCommand { operation_id: operation,
         kind: FORK_PREPARE_TASK_COMMAND_KIND.into(), payload };
     let mut input = created.request.clone();

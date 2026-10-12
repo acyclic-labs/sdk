@@ -1118,13 +1118,6 @@ mod tests {
             async { Ok(None) }.boxed()
         }
     }
-    struct Projection;
-    impl ToolProjection for Projection {
-        fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-            Ok(serde_json::json!({"kind":"json","value":result.value}))
-        }
-    }
-
     #[test]
     fn model_tool_operation_identity_is_stable_and_scoped_to_parent_step_and_call() {
         let parent = OperationId::from_bytes([7; 16]);
@@ -1161,7 +1154,7 @@ mod tests {
                     projection_schema: crate::tool::json_projection_schema(json!({})),
                 },
                 executor: Arc::new(Executor),
-                projection: Arc::new(Projection),
+                projection: Arc::new(JsonToolProjection),
             })?;
         }
         assert!(tools.get("example.echo", None)?.is_none());
@@ -1310,7 +1303,7 @@ mod tests {
         let tool = Tool {
             definition,
             executor: Arc::new(Executor),
-            projection: Arc::new(Projection),
+            projection: Arc::new(JsonToolProjection),
         };
         let mut registry = ToolRegistry::default();
         assert!(

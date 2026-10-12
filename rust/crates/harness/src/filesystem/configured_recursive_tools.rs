@@ -36,9 +36,9 @@ pub struct ConfiguredRecursiveAuthorityBinding {
 }
 
 impl ConfiguredRecursiveAuthorityBinding {
-    /// Retains the original installed signer; setup authenticates its scope through the same configured source validation used for wire bindings.
+    /// Retains the signer and scope for configured-source validation.
     #[must_use]
-    pub fn new(issuer: AuthorityIssuer, scope: Scope) -> Result<Self> { Ok(Self { issuer, scope }) }
+    pub fn new(issuer: AuthorityIssuer, scope: Scope) -> Self { Self { issuer, scope } }
 
     #[must_use]
     pub fn authority(&self) -> &Authority { self.issuer.audience() }
@@ -699,7 +699,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
         let page = HistoryReader::new(&self.stream, binding.authority(), &(verifier(binding)?), &mut None)?.read_page(&HistoryCursor {
             authority: binding.authority().clone(), after_revision: snapshot.revision - 1, through_revision: snapshot.revision,
-        }, HistoryReadLimits { maximum_events: 1, maximum_bytes: self.config.history_limits.maximum_bytes }).await?;
+        }, HistoryReadLimits { maximum_events: 1, maximum_bytes: self.config.history_limits.maximum_bytes }, None).await?;
         cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
         if snapshot.events.last().is_none() || snapshot.events.last() != page.events.last() {
             return Err(Error::Unauthorized("configured checkpoint head differs from original canonical Stream event".into()));
@@ -1433,7 +1433,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 reason: "native child claims changed after immutable source choice" });
         }
         let checkpoint = match original {
-            Some(original) => Some(super::fork_preparer_io::clone_file(&original.source_checkpoint, Some(&io))?),
+            Some(original) => Some(crate::executor::with_history_io(Some(&io), |work| original.source_checkpoint.copy(work))?),
             None => {
                 let observed = context.observe_staged_file_once_with_native_work(
                     checkpoint_operation(context.operation_id()), work,
@@ -1511,7 +1511,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let child_message_file_pointer = allocation.child_message_file_pointer.as_deref().map(|value| super::fork_preparer_io::clone_text(value, Some(&io))).transpose()?;
         let mut input_files = Vec::new();
         for file in &allocation.input_files {
-            let file = super::fork_preparer_io::clone_file(file, Some(&io))?;
+            let file = crate::executor::with_history_io(Some(&io), |work| file.copy(work))?;
             crate::executor::stock_vec_push(&mut input_files, file, Some(&io))?;
         }
         let retained = io.owned_bytes()?;

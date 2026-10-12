@@ -35,7 +35,7 @@ pub(super) fn clone_command(command: &WorkflowCommand, io: Option<&PreparationIo
     Ok(WorkflowCommand {
         operation_id: command.operation_id,
         kind: clone_text(&command.kind, io)?,
-        payload: super::super::fork_preparer::bounded_io::clone_file(&command.payload, io)?,
+        payload: crate::executor::with_history_io(io, |work| command.payload.copy(work))?,
     })
 }
 

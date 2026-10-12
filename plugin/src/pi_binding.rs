@@ -8,17 +8,20 @@ use acyclic_harness::{
 };
 
 /// Required persisted discriminator; absent historical fields are rejected.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     content = "binding",
     rename_all = "snake_case",
     deny_unknown_fields
 )]
-pub(crate) enum PluginTaskBinding {
-    #[default]
+pub(crate) enum PluginTaskBinding<B = Box<PiTaskBinding>> {
     HostManaged,
-    Pi(Box<PiTaskBinding>),
+    Pi(B),
+}
+
+impl Default for PluginTaskBinding {
+    fn default() -> Self { Self::HostManaged }
 }
 
 impl PluginTaskBinding {

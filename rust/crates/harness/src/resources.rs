@@ -115,7 +115,7 @@ impl ProviderRef {
         Self::validate_fields_with_work(&self.namespace, &self.family, &self.version, work)
     }
 
-    fn validation_reason(&self) -> Option<&'static str> {
+    pub(crate) fn validation_error(&self) -> Option<&'static str> {
         self.parts().into_iter().any(|part| part.is_empty() || part.chars().any(char::is_control))
             .then_some("provider identity is invalid")
     }
@@ -147,10 +147,6 @@ impl ProviderRef {
             }
         }
         Ok(())
-    }
-
-    pub(crate) fn validation_error(&self) -> Option<&'static str> {
-        self.validation_reason()
     }
 
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
@@ -345,10 +341,10 @@ macro_rules! typed_reference {
             /// Creates a provider-owned typed reference.
             pub fn new(
                 provider: ProviderRef,
-                key: impl Into<Vec<u8>>,
+                key: Vec<u8>,
                 version: Option<String>,
             ) -> Result<Self> {
-                ResourceRef::new(ResourceKind::$kind, provider, key.into(), version, &mut None).map(Self)
+                ResourceRef::new(ResourceKind::$kind, provider, key, version, &mut None).map(Self)
             }
 
             pub(crate) fn from_resource_with_work(
@@ -458,7 +454,7 @@ impl GenerationRef {
             io.preflight(inspection)?;
             io.charge(inspection)?;
         }
-        if let Some(reason) = provider.validation_reason() {
+        if let Some(reason) = provider.validation_error() {
             return Err(io.invalid(reason));
         }
         let provider = provider.clone_with_io(io)?;
@@ -604,8 +600,8 @@ mod tests {
     #[test]
     fn references_are_typed_bounded_and_provider_owned() -> Result<()> {
         let provider = ProviderRef::new("acyclic".into(), "filesystem".into(), "2".into(), &mut None)?;
-        let workspace = WorkspaceRef::new(provider.clone(), [7; 16], None)?;
-        let generation = GenerationRef::new(provider, [8; 32], Some("immutable".into()))?;
+        let workspace = WorkspaceRef::new(provider.clone(), [7; 16].into(), None)?;
+        let generation = GenerationRef::new(provider, [8; 32].into(), Some("immutable".into()))?;
         assert_eq!(workspace.as_resource().kind(), ResourceKind::Workspace);
         assert_eq!(generation.as_resource().kind(), ResourceKind::Generation);
         assert!(

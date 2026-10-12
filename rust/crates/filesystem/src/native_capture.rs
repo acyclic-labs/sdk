@@ -1396,7 +1396,10 @@ fn release_capture_paths(paths: Vec<NamespacePath>, meter: &CaptureWorkScope) ->
     meter.source().release(bytes).map_err(capture_demand_error)
 }
 fn capture_drop_host_path(path: CaptureHostPath, meter: &CaptureWorkScope) -> Result<(), CaptureError> {
-    let bytes = capture_host_path_bytes(&path);
+    #[cfg(unix)]
+    let bytes = path.capacity() as u64;
+    #[cfg(windows)]
+    let bytes = path.capacity() as u64 * 2;
     drop(path);
     meter.source().release(bytes).map_err(capture_demand_error)
 }
@@ -1773,13 +1776,6 @@ fn collect_host_walk_measured(
     drop(pending);
     meter.source().release(pending_bytes).map_err(capture_demand_error)?;
     Ok(())
-}
-
-fn capture_host_path_bytes(path: &CaptureHostPath) -> u64 {
-    #[cfg(unix)]
-    { path.capacity() as u64 }
-    #[cfg(windows)]
-    { path.capacity() as u64 * 2 }
 }
 
 fn append_path_measured(
@@ -3623,50 +3619,39 @@ fn append_final_state(path: NamespacePath,
         mutations: &mut Vec<AuthoredMutation>,
         meter: &CaptureWorkScope,
 ) -> Result<(), CaptureError> {
-    let appended = (|| {
-        capture_reserve(mutations, if exists_with_kind { 2 } else { 1 }, meter)?;
-        let target = if kind == FileKind::SymbolicLink {
-            Some(read_link_bytes(source_root, host_path, meter)?)
+    capture_reserve(mutations, if exists_with_kind { 2 } else { 1 }, meter)?;
+    match kind {
+        FileKind::Regular => unreachable!("regular files are staged after preparation"),
+        FileKind::Directory => mutations.push(if exists_with_kind {
+            AuthoredMutation::SetMetadata { path, metadata: canonical_metadata }
         } else {
-            None
-        };
-        {
-            match kind {
-                FileKind::Regular => unreachable!("regular files are staged after preparation"),
-                FileKind::Directory => mutations.push(if exists_with_kind {
-                    AuthoredMutation::SetMetadata { path, metadata: canonical_metadata }
-                } else {
-                    AuthoredMutation::CreateDirectory { path, metadata: canonical_metadata }
-                }),
-                FileKind::SymbolicLink => {
-                    let target = target.expect("the symbolic link target was read before mutation");
-                    if exists_with_kind {
-                        mutations.push(AuthoredMutation::Remove { path: clone_capture_path(&path, meter)?, expected_file_id: None });
-                    }
-                    let target = capture_link_target(target, meter)?;
-                    mutations.push(AuthoredMutation::CreateSymbolicLink { path, target: target.into(), metadata: canonical_metadata });
-                }
-                FileKind::Fifo | FileKind::Socket => mutations.push(if exists_with_kind {
-                    AuthoredMutation::SetMetadata { path, metadata: canonical_metadata }
-                } else {
-                    AuthoredMutation::CreateEmptySpecial { path, kind, metadata: canonical_metadata }
-                }),
-                FileKind::CharacterDevice | FileKind::BlockDevice => {
-                    let (major, minor) = host_device_identity(metadata)?;
-                    if exists_with_kind {
-                        mutations.push(AuthoredMutation::Remove { path: clone_capture_path(&path, meter)?, expected_file_id: None });
-                    }
-                    mutations.push(AuthoredMutation::CreateDevice { path, kind, major, minor, metadata: canonical_metadata });
-                }
-                FileKind::ReparsePoint | FileKind::MountBoundary => return Err(CaptureError::UnsupportedKind),
+            AuthoredMutation::CreateDirectory { path, metadata: canonical_metadata }
+        }),
+        FileKind::SymbolicLink => {
+            let target = read_link_bytes(source_root, host_path, meter)?;
+            if exists_with_kind {
+                mutations.push(AuthoredMutation::Remove { path: clone_capture_path(&path, meter)?, expected_file_id: None });
             }
+            let target = capture_link_target(target, meter)?;
+            mutations.push(AuthoredMutation::CreateSymbolicLink { path, target: target.into(), metadata: canonical_metadata });
         }
-        let observed = capture_stat(source_root, host_path, meter).map_err(capture_demand_error)?;
-        ensure_same_host_node(&snapshot, &observed)?;
-        meter.source().check().map_err(capture_demand_error)
-    })();
-
-    appended
+        FileKind::Fifo | FileKind::Socket => mutations.push(if exists_with_kind {
+            AuthoredMutation::SetMetadata { path, metadata: canonical_metadata }
+        } else {
+            AuthoredMutation::CreateEmptySpecial { path, kind, metadata: canonical_metadata }
+        }),
+        FileKind::CharacterDevice | FileKind::BlockDevice => {
+            let (major, minor) = host_device_identity(metadata)?;
+            if exists_with_kind {
+                mutations.push(AuthoredMutation::Remove { path: clone_capture_path(&path, meter)?, expected_file_id: None });
+            }
+            mutations.push(AuthoredMutation::CreateDevice { path, kind, major, minor, metadata: canonical_metadata });
+        }
+        FileKind::ReparsePoint | FileKind::MountBoundary => return Err(CaptureError::UnsupportedKind),
+    }
+    let observed = capture_stat(source_root, host_path, meter).map_err(capture_demand_error)?;
+    ensure_same_host_node(&snapshot, &observed)?;
+    meter.source().check().map_err(capture_demand_error)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3993,7 +3978,7 @@ mod host_file_race_tests {
     }
 
     #[test]
-    fn accepts_an_unobservable_creation_time_in_either_direction()
+    fn creation_time_changes_require_two_observable_values()
     -> Result<(), Box<dyn std::error::Error>> {
         let temporary = tempfile::tempdir()?;
         std::fs::write(temporary.path().join("current"), b"first")?;
@@ -4003,22 +3988,8 @@ mod host_file_race_tests {
         expected.metadata.created_ns = MetadataField::Value(123);
         let mut observed = expected;
         observed.metadata.created_ns = MetadataField::Unavailable;
-        // The exact musl case: path statx sees birth time, held fstat cannot.
         ensure_same_host_snapshot(&expected, &observed)?;
-        // Also allow the reverse observation order.
         ensure_same_host_snapshot(&observed, &expected)?;
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_an_observable_creation_time_change() -> Result<(), Box<dyn std::error::Error>> {
-        let temporary = tempfile::tempdir()?;
-        std::fs::write(temporary.path().join("current"), b"first")?;
-        let root = HostRoot::open(temporary.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
-        let metadata = test_host_stat(&root, Path::new("current"))?;
-        let mut expected = HostSnapshot::from_metadata(&metadata)?;
-        expected.metadata.created_ns = MetadataField::Value(123);
-        let mut observed = expected;
         observed.metadata.created_ns = MetadataField::Value(124);
         assert!(matches!(
             ensure_same_host_snapshot(&expected, &observed),
@@ -4788,15 +4759,12 @@ fn read_link_bytes(root: &HostRoot, path: &CaptureHostPath, meter: &CaptureWorkS
     #[cfg(windows)]
     {
         let (units, allocation) = root.read_link_wide_with_work(path, maximum, &mut meter.source()).map_err(capture_demand_error)?;
-        let bytes = (|| {
-            let length = units.len().checked_mul(2).ok_or(CaptureError::from(WorkError::Overflow))?;
-            let mut bytes = capture_vec(length, meter)?;
-            for unit in &units {
-                capture_charge(meter, WorkCounters { bytes_copied: 2, ..WorkCounters::UNCHARGED })?;
-                bytes.extend_from_slice(&unit.to_le_bytes());
-            }
-            Ok::<_, CaptureError>(bytes)
-        })()?;
+        let length = units.len().checked_mul(2).ok_or(CaptureError::from(WorkError::Overflow))?;
+        let mut bytes = capture_vec(length, meter)?;
+        for unit in &units {
+            capture_charge(meter, WorkCounters { bytes_copied: 2, ..WorkCounters::UNCHARGED })?;
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
         drop(units);
         meter.source().release(allocation).map_err(capture_demand_error)?;
         Ok(bytes)

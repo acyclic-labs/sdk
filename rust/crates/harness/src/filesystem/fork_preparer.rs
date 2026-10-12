@@ -393,7 +393,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                         if selected.len() > request.preparation.maximum_inherited_references as usize {
                             return Err(bounded_io::failure(io, crate::wire::ErrorCode::Invalid, "summary reader grants exceed capture allowance"));
                         }
-                        grants.push(ReferenceGrant { file: bounded_io::clone_file(file, io)?,
+                        grants.push(ReferenceGrant { file: crate::executor::with_history_io(io, |work| file.copy(work))?,
                             reader, attachment_manifest: None });
                     }
                 }
@@ -781,10 +781,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             |io| io.history_io().clone_authority(value))
     }
 
-    fn clone_generation(&self, value: &crate::resources::GenerationRef) -> Result<crate::resources::GenerationRef> {
-        self.io.as_ref().map_or_else(|| Ok(value.clone()), |io| value.clone_with_io(io))
-    }
-
     fn clone_paths(&self, paths: &[String]) -> Result<Vec<String>> {
         let mut values = bounded_io::vector(paths.len(), self.io.as_ref())?;
         for path in paths { values.push(bounded_io::clone_text(path, self.io.as_ref())?); }
@@ -1047,7 +1043,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 )
                 .await?;
         }
-        let private = crate::executor::with_history_io(self.io.as_ref(), |work| (&request.preparation.child_private_volume).copy(work))?;
+        let private = crate::executor::with_history_io(self.io.as_ref(), |work| request.preparation.child_private_volume.copy(work))?;
         let (source_private, private_generation, paths) = request
             .selections
             .iter()
@@ -1102,7 +1098,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
             attachment_manifests,
         ) = if request.preparation.inherited_through_sequence == 0 {
             (
-                self.clone_generation(&private_observation.generation)?,
+                self.io.as_ref().map_or_else(|| Ok(private_observation.generation.clone()), |io| private_observation.generation.clone_with_io(io))?,
                 Vec::new(),
                 Vec::new(),
                 Vec::new(),
@@ -1212,7 +1208,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                         && reference_selection(&mut granted, file, reader, self.io.as_ref())?
                     {
                         reference_grants.push(ReferenceGrant {
-                            file: bounded_io::clone_file(file, self.io.as_ref())?,
+                            file: crate::executor::with_history_io(self.io.as_ref(), |work| file.copy(work))?,
                             reader,
                             attachment_manifest: None,
                         });
@@ -1223,7 +1219,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 .ok_or_else(|| bounded_io::failure(self.io.as_ref(), crate::wire::ErrorCode::Invalid, "summary context count overflows"))?;
             bounded_io::reserve(&mut inherited_context, capacity, self.io.as_ref())?;
             for file in capture.inherited_files() {
-                inherited_context.push(bounded_io::clone_file(file, self.io.as_ref())?);
+                inherited_context.push(crate::executor::with_history_io(self.io.as_ref(), |work| file.copy(work))?);
             }
             child_private_generation = generation;
             Some(capture)
@@ -1242,11 +1238,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 ResourceRevision::History(_) => crate::executor::with_history_io(self.io.as_ref(), |work| selection.revision.copy(work).map(|(value, _)| value))?,
                 ResourceRevision::Project { .. } => ResourceRevision::Project {
                     volume: crate::executor::with_history_io(self.io.as_ref(), |work| request.preparation.child_project_volume.copy(work))?,
-                    generation: self.clone_generation(&child_project.generation)?,
+                    generation: self.io.as_ref().map_or_else(|| Ok(child_project.generation.clone()), |io| child_project.generation.clone_with_io(io))?,
                 },
                 ResourceRevision::PrivateVolume { paths, .. } => ResourceRevision::PrivateVolume {
                     volume: crate::executor::with_history_io(self.io.as_ref(), |work| private.copy(work))?,
-                    generation: self.clone_generation(&private_observation.generation)?,
+                    generation: self.io.as_ref().map_or_else(|| Ok(private_observation.generation.clone()), |io| private_observation.generation.clone_with_io(io))?,
                     paths: self.clone_paths(paths)?,
                 },
                 ResourceRevision::SharedVolume(volume) if volume.provider() == &self.preparer.host.provider => {
@@ -1671,14 +1667,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
             native_creation_guard.ok_or(native_error(crate::wire::ErrorCode::Unauthorized, "native allocation claim requires its original issued creation guard"))?.verify_creation_with_native_work(work)?.await?;
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            claim.volume.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
-        } else {
-            claim.volume.validate(&mut None)?;
-        }
-        #[cfg(target_arch = "wasm32")]
-        claim.volume.validate()?;
+        crate::executor::with_history_io(io.filter(|io| io.uses_native_work()),
+            |work| claim.volume.validate(work))?;
         if claim.volume.provider() != &self.provider {
             return Err(bounded_io::failure(
                 io, crate::wire::ErrorCode::Invalid, "fork allocation belongs to another Filesystem provider",
