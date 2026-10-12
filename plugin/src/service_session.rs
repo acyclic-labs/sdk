@@ -691,15 +691,31 @@ impl PiSession {
                         reason: "Pi selected project workspace was substituted",
                     });
                 }
-                let resumed = LazyWorkspace::resume_root_observation_with_native_work(
+                let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                    work: original_native_work,
+                    cancellation: original_native_work.cancellation(),
+                };
+                let original = acyclic_fs::LazyWorkspaceStore::load_lazy_workspace(
+                    &self.resources.store,
+                    workspace.id(),
+                    &mut accounting,
+                )
+                .await
+                .map_err(|source| RootError::NativeSource { source, custody: None })?
+                .ok_or(RootError::NativeSource {
+                    source: acyclic_fs::LazyWorkspaceError::OriginalSnapshotUnavailable,
+                    custody: None,
+                })?;
+                original.validate_root_binding(workspace.id(), expected)
+                    .map_err(|source| RootError::NativeSource { source, custody: None })?;
+                let resumed = LazyWorkspace::open(
                     workspace,
                     Arc::clone(&physical.source),
                     self.resources.store.clone(),
-                    expected,
-                    original_native_work,
+                    &mut accounting,
                 )
                 .await
-                .map_err(|(source, custody)| RootError::NativeSource { source, custody })?;
+                .map_err(|source| RootError::NativeSource { source, custody: None })?;
                 let key =
                     original_native_work
                         .display(key)

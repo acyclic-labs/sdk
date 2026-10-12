@@ -191,15 +191,30 @@ impl PiRootProvider {
                 self.require_native_creation()?;
                 let workspace = match existing_workspace {
                     Some(workspace) => {
-                        LocalLazyWorkspace::resume_root_observation_with_native_work(
+                        let mut accounting = acyclic_fs::kernel::KernelAccounting::NativeOriginal {
+                            work,
+                            cancellation: work.cancellation(),
+                        };
+                        let original = acyclic_fs::LazyWorkspaceStore::load_lazy_workspace(
+                            &self.store,
+                            workspace.id(),
+                            &mut accounting,
+                        )
+                        .await
+                        .map_err(crate::pi_fork_host::native_lazy_error)?
+                        .ok_or_else(|| crate::pi_fork_host::native_lazy_error(
+                            acyclic_fs::LazyWorkspaceError::OriginalSnapshotUnavailable,
+                        ))?;
+                        original.validate_root_binding(workspace.id(), input.0)
+                            .map_err(crate::pi_fork_host::native_lazy_error)?;
+                        LocalLazyWorkspace::open(
                             workspace,
                             Arc::clone(&physical.source),
                             self.store.clone(),
-                            input.0,
-                            work,
+                            &mut accounting,
                         )
                         .await
-                        .map_err(|(source, custody)| Error::NativeSource { source, custody })?
+                        .map_err(crate::pi_fork_host::native_lazy_error)?
                     }
                     None => {
                         let operation =
