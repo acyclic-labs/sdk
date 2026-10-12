@@ -24,11 +24,9 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     ) -> Result<(EffectStatus, acyclic_fs::NativeAllocation)> {
         self.require_native_metadata(work)?;
         self.providers.require_native_metadata(work)?;
-        let mut io =
-            crate::store::history::native_work_io(work).map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let status = self
             .run_task_effect_with_work(owner, command_id, plan, &mut Some(&mut io))
             .await?;
@@ -131,11 +129,9 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     ) -> Result<(EffectStatus, acyclic_fs::NativeAllocation)> {
         self.require_native_metadata(work)?;
         self.providers.require_native_metadata(work)?;
-        let mut io =
-            crate::store::history::native_work_io(work).map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         let status = self
             .reconcile_task_effect_with_work(owner, command_id, plan, &mut Some(&mut io))
             .await?;

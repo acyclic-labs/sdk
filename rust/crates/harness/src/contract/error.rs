@@ -179,6 +179,14 @@ pub enum Error {
         /// Existing custody, released after the original cause is dropped.
         custody: Option<acyclic_fs::NativeAllocation>,
     },
+    /// A physical native action whose journal completion is uncertain.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    #[error("{failure}")]
+    NativeStageUncertain {
+        /// The original cause and durable/live work prefixes.
+        #[source]
+        failure: acyclic_fs::NativeStageUncertainty<Error>,
+    },
     /// A driven workspace join failure with its complete original typed cause.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[error("{source}")]
@@ -319,6 +327,7 @@ impl Error {
             | Self::NativeSource { .. }
             | Self::NativeWorkspace { .. }
             | Self::NativeDrivenJoin { .. }
+            | Self::NativeStageUncertain { .. }
             | Self::NativeFilesystem { .. } => ErrorCode::Storage,
             #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
             Self::NativeView { .. }

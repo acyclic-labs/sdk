@@ -24,44 +24,14 @@ impl ExecutionReplay {
         io: Option<&PreparationIo>,
     ) -> Result<Option<Vec<ExecutionRecord>>> {
         validate_execution_page(EXECUTION_REPLAY_PAGE_RECORDS)?;
-        let page = 'page: {
-            #[cfg(feature = "filesystem")]
-            if let Some(io) = io {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let Some(work) = io.original_native_work() {
-                    let (page, custody) = journal
-                        .replay_with_native_work(
-                            self.operation_id,
-                            self.after,
-                            EXECUTION_REPLAY_PAGE_RECORDS,
-                            work,
-                        )?
-                        .await?;
-                    if page.is_empty() {
-                        drop(page);
-                        drop(custody);
-                        return Ok(None);
-                    }
-                    io.absorb_native_custody(custody)?;
-                    break 'page page;
-                }
-                break 'page receive_preparation(
-                    io,
-                    journal
-                        .replay_measured(
-                            self.operation_id,
-                            self.after,
-                            EXECUTION_REPLAY_PAGE_RECORDS,
-                            io.remaining()?,
-                            io.cancellation(),
-                        )
-                        .await,
-                )?;
-            }
-            break 'page journal
-                .replay(self.operation_id, self.after, EXECUTION_REPLAY_PAGE_RECORDS)
-                .await?;
-        };
+        let page = journal
+            .replay(
+                self.operation_id,
+                self.after,
+                EXECUTION_REPLAY_PAGE_RECORDS,
+                io,
+            )?
+            .await?;
         if page.len() > EXECUTION_REPLAY_PAGE_RECORDS as usize {
             return Err(Error::Storage("execution replay page exceeds bound".into()));
         }

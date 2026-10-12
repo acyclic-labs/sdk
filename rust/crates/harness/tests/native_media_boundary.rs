@@ -1780,7 +1780,7 @@ where
         ),
     };
     executor.execute(input.clone(), &journal).await?;
-    let records = journal.replay(input.operation_id, 0, 64).await?;
+    let records = journal.replay(input.operation_id, 0, 64, None)?.await?;
     assert_eq!(
         records
             .iter()
@@ -1813,7 +1813,7 @@ where
         })
         .ok_or_else(|| Error::NotFound("compacted native response".into()))?;
     let admitted =
-        PreparedModelRequest::decode(&journal.load(request).await?, Limits::default(), None)?;
+        PreparedModelRequest::decode(&journal.load(request, None)?.await?, Limits::default(), None)?;
     assert!(
         admitted
             .request()
@@ -2062,7 +2062,7 @@ where
         captures
     );
     assert_eq!(
-        PreparedModelRequest::decode(&journal.load(request).await?, Limits::default(), None)?
+        PreparedModelRequest::decode(&journal.load(request, None)?.await?, Limits::default(), None)?
             .bytes(),
         admitted.bytes()
     );

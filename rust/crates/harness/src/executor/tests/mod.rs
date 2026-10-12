@@ -480,6 +480,7 @@ struct Journal(
     Mutex<HashMap<String, (FileRef, acyclic_stream::OwnedBytes)>>,
     Mutex<HashMap<InteractionId, (Interaction, Option<InteractionOutcome>)>>,
     AtomicUsize,
+    AtomicUsize,
 );
 
 impl Journal {
@@ -542,9 +543,41 @@ impl crate::context::ContextSource for ChangingContextSource {
 }
 
 impl ExecutionJournal for Journal {
-    fn verify_input_file<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            let bytes = self.load(reference).await?;
+    fn verify_model_content<'a>(
+        &'a self,
+        content: &'a ModelContent,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        if io.is_some() {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "finite test journal verification is unavailable",
+            ));
+        }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            for file in content.file_refs() {
+                file.descriptor()
+                    .verify(&self.load(file, io)?.await?, &mut None)?;
+            }
+            Ok(())
+        })
+    }
+
+    fn verify_input_file<'a>(
+        &'a self,
+        reference: &'a FileRef,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        if io.is_some() {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "finite test journal verification is unavailable",
+            ));
+        }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            let bytes = self.load(reference, io)?.await?;
             reference.descriptor().verify(&bytes, &mut None)
         })
     }
@@ -554,8 +587,14 @@ impl ExecutionJournal for Journal {
         operation_id: OperationId,
         after: u64,
         maximum: u32,
-    ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
-        async move {
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>> {
+        if io.is_some() {
+            return Err(crate::Error::Unsupported(
+                "finite test journal IO is unavailable".into(),
+            ));
+        }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
             self.3.fetch_add(1, Ordering::SeqCst);
             validate_execution_page(maximum)?;
             Ok(self
@@ -567,8 +606,7 @@ impl ExecutionJournal for Journal {
                 .take(maximum as usize)
                 .cloned()
                 .collect())
-        }
-        .boxed()
+        })
     }
 
     fn append<'a>(
@@ -644,8 +682,15 @@ impl ExecutionJournal for Journal {
     fn load<'a>(
         &'a self,
         reference: &'a FileRef,
-    ) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        async move {
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        if io.is_some() {
+            return Err(crate::Error::Unsupported(
+                "finite test journal IO is unavailable".into(),
+            ));
+        }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            self.4.fetch_add(1, Ordering::SeqCst);
             self.1
                 .lock()
                 .unwrap()
@@ -653,8 +698,7 @@ impl ExecutionJournal for Journal {
                 .find(|(stored, _)| stored == reference)
                 .map(|(_, bytes)| bytes.clone())
                 .ok_or_else(|| Error::NotFound("journal content is missing".into()))
-        }
-        .boxed()
+        })
     }
 
     fn open_interaction<'a>(
@@ -700,7 +744,10 @@ impl crate::conversation::ContentResidencyVerifier for Journal {
         _maximum_bytes: u64,
         io: Option<&'a crate::executor::PreparationIo>,
     ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
-        crate::conversation::BoundedContentFuture::new(io, || async move { self.load(file).await })
+        crate::conversation::BoundedContentFuture::new(
+            io,
+            || async move { self.load(file, io)?.await },
+        )
     }
 }
 
@@ -745,71 +792,9 @@ impl crate::context::ContextStage for OnceStage {
     }
 }
 
-#[derive(Default)]
-struct ModelReadSpy {
-    journal: Journal,
-    reads: AtomicUsize,
-    replays: AtomicUsize,
-}
-
-impl ExecutionJournal for ModelReadSpy {
-    fn replay<'a>(
-        &'a self,
-        operation: OperationId,
-        after: u64,
-        maximum: u32,
-    ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
-        self.replays.fetch_add(1, Ordering::SeqCst);
-        self.journal.replay(operation, after, maximum)
-    }
-    fn append<'a>(
-        &'a self,
-        operation: OperationId,
-        key: String,
-        event: ExecutionEvent,
-    ) -> BoxFuture<'a, Result<()>> {
-        self.journal.append(operation, key, event)
-    }
-    fn stage<'a>(
-        &'a self,
-        operation: OperationId,
-        key: String,
-        bytes: Vec<u8>,
-        media: &'static str,
-    ) -> BoxFuture<'a, Result<FileRef>> {
-        self.journal.stage(operation, key, bytes, media)
-    }
-    fn load<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        self.reads.fetch_add(1, Ordering::SeqCst);
-        self.journal.load(file)
-    }
-    fn open_interaction<'a>(
-        &'a self,
-        id: InteractionId,
-        interaction: Interaction,
-    ) -> BoxFuture<'a, Result<()>> {
-        self.journal.open_interaction(id, interaction)
-    }
-    fn interaction_outcome<'a>(
-        &'a self,
-        id: InteractionId,
-    ) -> BoxFuture<'a, Result<Option<InteractionOutcome>>> {
-        self.journal.interaction_outcome(id)
-    }
-    fn verify_model_content<'a>(&'a self, content: &'a ModelContent) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            for file in content.file_refs() {
-                file.descriptor()
-                    .verify(&self.load(file).await?, &mut None)?;
-            }
-            Ok(())
-        })
-    }
-}
-
-mod recovery;
 mod compaction;
+mod content;
+mod recovery;
+mod replay;
 mod tools_1;
 mod tools_2;
-mod replay;
-mod content;

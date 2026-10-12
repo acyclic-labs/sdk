@@ -450,25 +450,7 @@ pub async fn load_canonical_checkpoint(
     )
     .await?;
     for file in retained.0.metadata.values() {
-        match io {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Some(io) if io.original_native_work().is_some() => {
-                journal
-                    .verify_input_file_with_native_work(
-                        file,
-                        io.original_native_work()
-                            .expect("native branch retains original work"),
-                    )?
-                    .await?;
-            }
-            #[cfg(feature = "filesystem")]
-            Some(io) => io.receive_content(
-                journal
-                    .verify_input_file_measured(file, io.remaining()?, io.cancellation())
-                    .await,
-            )?,
-            _ => journal.verify_input_file(file).await?,
-        }
+        journal.verify_input_file(file, io)?.await?;
     }
     if proof
         .0

@@ -14,26 +14,7 @@ pub(super) async fn load_json_bytes(
             "execution journal references non-private JSON content",
         ));
     }
-    let bytes = match io {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        Some(io) if io.original_native_work().is_some() => {
-            journal
-                .load_with_native_work(
-                    reference,
-                    io.original_native_work()
-                        .expect("native IO retains original work"),
-                )?
-                .await?
-        }
-        #[cfg(feature = "filesystem")]
-        Some(io) => receive_preparation(
-            io,
-            journal
-                .load_measured(reference, io.remaining()?, io.cancellation())
-                .await,
-        )?,
-        _ => journal.load(reference).await?,
-    };
+    let bytes = journal.load(reference, io)?.await?;
     with_history_io(io, |work| reference.descriptor().verify(&bytes, work))?;
     Ok(bytes)
 }

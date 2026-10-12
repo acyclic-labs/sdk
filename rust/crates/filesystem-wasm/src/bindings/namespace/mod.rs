@@ -9,11 +9,7 @@ impl BrowserCheckout {
         path: String,
         bytes: Vec<u8>,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let bytes = bytes::Bytes::from(bytes);
         let receipt = browser_call!(
             self,
@@ -32,11 +28,7 @@ impl BrowserCheckout {
         &mut self,
         path: String,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let receipt = browser_call!(
             self,
             create(acyclic_fs::AuthoredMutation::CreateDirectory {
@@ -54,11 +46,7 @@ impl BrowserCheckout {
         path: String,
         target: Vec<u8>,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let target = bytes::Bytes::from(target);
         let receipt = browser_call!(
             self,
@@ -78,11 +66,7 @@ impl BrowserCheckout {
         path: String,
         kind: String,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let kind = empty_special_kind(&kind)?;
         let receipt = browser_call!(
             self,
@@ -107,11 +91,7 @@ impl BrowserCheckout {
         let major = wasm_u32(&major)?;
         let minor = wasm_u32(&minor)?;
 
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let kind = device_kind(&kind)?;
         let receipt = browser_call!(
             self,
@@ -133,11 +113,7 @@ impl BrowserCheckout {
         path: String,
         payload: Vec<u8>,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let receipt = browser_call!(
             self,
             create(acyclic_fs::AuthoredMutation::CreateReparsePoint {
@@ -155,11 +131,7 @@ impl BrowserCheckout {
         path: String,
         expected_file_id: Option<Vec<u8>>,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-        let path = browser_path(
-            &path,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let path = browser_path(&path, self.engine.volume_config())?;
         let expected = expected_file_id
             .as_deref()
             .map(fixed_16)
@@ -185,16 +157,8 @@ impl BrowserCheckout {
         destination: String,
         replace: bool,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-        let source = browser_path(
-            &source,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
-        let destination = browser_path(
-            &destination,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let source = browser_path(&source, self.engine.volume_config())?;
+        let destination = browser_path(&destination, self.engine.volume_config())?;
         let receipt = browser_call!(
             self,
             mutate(vec![acyclic_fs::kernel::Mutation::Rename {
@@ -213,16 +177,8 @@ impl BrowserCheckout {
         source: String,
         destination: String,
     ) -> Result<Ts<BrowserMutationResult>, JsValue> {
-        let source = browser_path(
-            &source,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
-        let destination = browser_path(
-            &destination,
-            self.engine.volume_config().profile,
-            self.engine.volume_config().limits,
-        )?;
+        let source = browser_path(&source, self.engine.volume_config())?;
+        let destination = browser_path(&destination, self.engine.volume_config())?;
         let receipt = browser_call!(
             self,
             mutate(vec![acyclic_fs::kernel::Mutation::Link {

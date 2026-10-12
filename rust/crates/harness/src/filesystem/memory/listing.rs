@@ -225,7 +225,7 @@ impl LocalListFilesTool {
                 code: crate::wire::ErrorCode::Invalid,
                 reason: "list_files cache ownership overflow",
             })?;
-        cached.1.resize_retained(retained).map_err(Error::from)?;
+        cached.1.resize(retained).map_err(Error::from)?;
         work.charge(acyclic_fs::WorkCounters {
             allocation_operations: 1,
             ..Default::default()
@@ -433,7 +433,7 @@ impl ToolExecutor for LocalListFilesTool {
                             code: crate::wire::ErrorCode::Invalid,
                             reason: "list_files observation ownership overflow",
                         })?;
-                    output.1.resize_retained(retained).map_err(Error::from)?;
+                    output.1.resize(retained).map_err(Error::from)?;
                     Ok((Some(output.0), output.1))
                 }
                 None => Ok((

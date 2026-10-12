@@ -182,10 +182,7 @@ pub(super) fn bind_unix_socket_in<W: SourceDemandReadWork>(
             }
         }
         let length = digits.len() - start;
-        work.charge(WorkCounters {
-            bytes_copied: (prefix.len() + length) as u64,
-            ..WorkCounters::UNCHARGED
-        })?;
+        work.charge(copy_work((prefix.len() + length) as u64))?;
         path[..prefix.len()].copy_from_slice(prefix);
         path[prefix.len()..prefix.len() + length].copy_from_slice(&digits[start..]);
         prefix.len() + length
@@ -208,10 +205,7 @@ pub(super) fn bind_unix_socket_in<W: SourceDemandReadWork>(
     if length >= address.sun_path.len() {
         return Err(DemandError::InvalidRequest);
     }
-    work.charge(WorkCounters {
-        bytes_copied: (length + leaf.to_bytes().len()) as u64,
-        ..WorkCounters::UNCHARGED
-    })?;
+    work.charge(copy_work((length + leaf.to_bytes().len()) as u64))?;
     path[base] = b'/';
     path[base + 1..length].copy_from_slice(leaf.to_bytes());
     for (destination, byte) in address.sun_path.iter_mut().zip(&path[..length]) {
@@ -345,10 +339,12 @@ pub(crate) fn rename_no_replace_held<W: NativeHostWork>(
         let result = (|| {
             work.record(encoded)?;
             work.attempt_io(WRITE, || {
-                windows_name_packet_once(
+                // SAFETY: the packet builder initialized and bounded this exact byte range.
+                windows_set_information(
                     &file,
-                    &buffer,
-                    length,
+                    unsafe {
+                        std::slice::from_raw_parts((&buffer).as_ptr().cast::<u8>(), length as usize)
+                    },
                     windows::Wdk::Storage::FileSystem::FileRenameInformation,
                 )
             })
@@ -396,7 +392,7 @@ pub(super) fn open_windows_held<W: NativeHostWork>(
         require_leaf(path)?;
     }
     with_wide_path(path, work, |path, work| {
-        open_windows_wide_at(directory, path, access, options, work, W::invalid_request)?
+        open_windows_wide_at(directory, path, access, options, work)?
             .map(cap_std::fs::File::into_std)
             .ok_or_else(|| {
                 status_error(windows::Win32::Foundation::NTSTATUS(

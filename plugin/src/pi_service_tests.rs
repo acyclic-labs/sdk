@@ -29,7 +29,7 @@ async fn prepare(
     crate::service_process::ServiceLock,
     ServiceResources,
     AdapterState,
-    crate::pi_runtime::PiTaskRuntime<LocalStream>,
+    crate::pi_runtime::PiTaskRuntime,
 ) {
     let (lock, resources) = resources(data).await;
     let session = resources.session_directory("pi-root-input");

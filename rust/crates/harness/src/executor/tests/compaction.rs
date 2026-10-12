@@ -580,7 +580,10 @@ async fn explicit_summary_keeps_capacity_admission_when_compaction_is_disabled()
     let summary = executor
         .summarize(&journal, operation, source.clone(), instruction.clone())
         .await?;
-    assert_eq!(journal.load(&summary.output).await?.as_ref(), b"summary");
+    assert_eq!(
+        journal.load(&summary.output, None)?.await?.as_ref(),
+        b"summary"
+    );
     let count_calls = provider.accounting_calls.load(Ordering::SeqCst);
     assert_eq!(count_calls, 1);
     assert_eq!(
@@ -641,7 +644,7 @@ async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<(
         crate::contract::canonical_json_digest(&source, u64::MAX, &mut None)?
     );
     assert_eq!(
-        journal.load(&summary.output).await?.as_ref(),
+        journal.load(&summary.output, None)?.await?.as_ref(),
         format!("{}restored", "partial-".repeat(70)).as_bytes()
     );
     assert_eq!(

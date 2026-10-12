@@ -241,10 +241,10 @@ async fn execution_pages_select_bounded_records_and_reject_cross_page_corruption
     assert_eq!(tail, 70);
     assert_eq!(selected.len(), 1);
     assert_eq!(selected[0].sequence, 70);
-    assert_eq!(journal.replay(operation, 0, 64).await?.len(), 64);
-    assert_eq!(journal.replay(operation, 64, 64).await?.len(), 6);
-    assert_eq!(journal.replay(operation, 0, 65).await?.len(), 65);
-    assert!(journal.replay(operation, 0, 0).await.is_err());
+    assert_eq!(journal.replay(operation, 0, 64, None)?.await?.len(), 64);
+    assert_eq!(journal.replay(operation, 64, 64, None)?.await?.len(), 6);
+    assert_eq!(journal.replay(operation, 0, 65, None)?.await?.len(), 65);
+    assert!(journal.replay(operation, 0, 0, None)?.await.is_err());
     assert!(
         replay_execution(&journal, operation, 1, |_| true, None)
             .await
@@ -294,7 +294,7 @@ async fn execution_pages_select_bounded_records_and_reject_cross_page_corruption
 #[cfg(feature = "filesystem")]
 #[tokio::test]
 async fn finite_canonical_replay_rejects_unmeasured_custom_journal_before_work() -> Result<()> {
-    let journal = ModelReadSpy::default();
+    let journal = Journal::default();
     let operation = OperationId::from_bytes([193; 16]);
     let cancellation = acyclic_fs::CancellationToken::new();
     let io = PreparationIo::from_budget(acyclic_fs::WorkBudget::default(), &cancellation)?;
@@ -303,8 +303,8 @@ async fn finite_canonical_replay_rejects_unmeasured_custom_journal_before_work()
         Err(Error::Unsupported(_))
     ));
     assert_eq!(io.receipt(), acyclic_fs::WorkCounters::default());
-    assert_eq!(journal.replays.load(Ordering::SeqCst), 0);
-    assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
+    assert_eq!(journal.3.load(Ordering::SeqCst), 0);
+    assert_eq!(journal.4.load(Ordering::SeqCst), 0);
     Ok(())
 }
 
@@ -419,7 +419,7 @@ async fn stock_file_authority_precedes_journal_replay() -> Result<()> {
         tools,
     )
     .with_tool_authority(scope, None)?;
-    let journal = ModelReadSpy::default();
+    let journal = Journal::default();
     let mut messages = Vec::new();
     assert!(matches!(
         StockExecution::ordinary(&base)
@@ -434,8 +434,8 @@ async fn stock_file_authority_precedes_journal_replay() -> Result<()> {
             .await,
         Err(Error::Unsupported(_))
     ));
-    assert_eq!(journal.replays.load(Ordering::SeqCst), 0);
-    assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
+    assert_eq!(journal.3.load(Ordering::SeqCst), 0);
+    assert_eq!(journal.4.load(Ordering::SeqCst), 0);
     assert!(journal.journal.0.lock().unwrap().is_empty());
     assert!(journal.journal.1.lock().unwrap().is_empty());
     assert!(messages.is_empty());

@@ -1598,7 +1598,7 @@ async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_model_admiss
     };
     let journal = storage.journal();
     let output = executor.execute(turn.clone(), journal.as_ref()).await?;
-    let records = journal.replay(turn.operation_id, 0, 32).await?;
+    let records = journal.replay(turn.operation_id, 0, 32, None)?.await?;
     let projection = records
         .iter()
         .find_map(|record| match &record.event {
@@ -1610,7 +1610,7 @@ async fn pinned_snapshot_preserves_metadata_and_pins_capture_before_model_admiss
             _ => None,
         })
         .ok_or_else(|| Error::NotFound("actual admitted snapshot projection".into()))?;
-    let projection_bytes = journal.load(projection).await?;
+    let projection_bytes = journal.load(projection, None)?.await?;
     projection.descriptor().verify(&projection_bytes)?;
     let projection_wire: serde_json::Value = serde_json::from_slice(&projection_bytes)
         .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -1720,8 +1720,9 @@ impl acyclic_harness::executor::ExecutionJournal for LostCanonicalAck {
         operation: OperationId,
         after: u64,
         maximum: u32,
-    ) -> BoxProviderFuture<'a, Result<Vec<acyclic_harness::executor::ExecutionRecord>>> {
-        self.inner.replay(operation, after, maximum)
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, Vec<acyclic_harness::executor::ExecutionRecord>>> {
+        self.inner.replay(operation, after, maximum, io)
     }
     fn append<'a>(
         &'a self,
@@ -1775,22 +1776,25 @@ impl acyclic_harness::executor::ExecutionJournal for LostCanonicalAck {
     ) -> BoxProviderFuture<'a, Result<FileRef>> {
         self.inner.stage(operation, key, bytes, media_type)
     }
-    fn load<'a>(&'a self, file: &'a FileRef) -> BoxProviderFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        self.inner.load(file)
+    fn load<'a>(&'a self, file: &'a FileRef,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        self.inner.load(file, io)
     }
-    fn verify_input_file<'a>(&'a self, file: &'a FileRef) -> BoxProviderFuture<'a, Result<()>> {
+    fn verify_input_file<'a>(&'a self, file: &'a FileRef, io: Option<&'a acyclic_harness::filesystem::PreparationIo>) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, ()>> {
         if self.deny_reads.load(Ordering::SeqCst) {
-            Box::pin(async { Err(Error::Unauthorized("retained payload read denied".into())) })
+            acyclic_harness::conversation::BoundedContentFuture::new(io, || async { Err(Error::Unauthorized("retained payload read denied".into())) })
         } else {
-            self.inner.verify_input_file(file)
+            self.inner.verify_input_file(file, io)
         }
     }
     fn verify_selected_context<'a>(
         &'a self,
         operation: OperationId,
         selected: &'a acyclic_harness::projection::SelectedModelContext,
-    ) -> BoxProviderFuture<'a, Result<()>> {
-        self.inner.verify_selected_context(operation, selected)
+        io: Option<&'a acyclic_harness::filesystem::PreparationIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, ()>> {
+        self.inner.verify_selected_context(operation, selected, io)
     }
     fn open_interaction<'a>(
         &'a self,
@@ -2089,8 +2093,8 @@ async fn local_journal_admits_compaction_only_after_one_settled_summary() -> Res
             },
         )
         .await?;
-    assert_eq!(journal.replay(operation, 0, 64).await?.len(), 5);
-    assert_eq!(journal.replay(other, 0, 64).await?.len(), 1);
+    assert_eq!(journal.replay(operation, 0, 64, None)?.await?.len(), 5);
+    assert_eq!(journal.replay(other, 0, 64, None)?.await?.len(), 1);
     assert!(
         journal
             .append_if_tail(
@@ -2143,7 +2147,7 @@ async fn fabricate_checkpoint(
     let decode = |bytes: &[u8]| {
         serde_json::from_slice(bytes).map_err(|error| Error::Invalid(error.to_string()))
     };
-    let mut wrapper: serde_json::Value = decode(&journal.load(&projection).await?)?;
+    let mut wrapper: serde_json::Value = decode(&journal.load(&projection, None)?.await?)?;
     let checkpoint: FileRef = serde_json::from_value(
         wrapper
             .get("checkpoint")
@@ -2152,11 +2156,11 @@ async fn fabricate_checkpoint(
     )
     .map_err(|error| Error::Invalid(error.to_string()))?;
     let mut envelope: CanonicalContextCheckpoint =
-        serde_json::from_slice(&journal.load(&checkpoint).await?)
+        serde_json::from_slice(&journal.load(&checkpoint, None)?.await?)
             .map_err(|error| Error::Invalid(error.to_string()))?;
-    let mut source: Context = serde_json::from_slice(&journal.load(&envelope.source).await?)
+    let mut source: Context = serde_json::from_slice(&journal.load(&envelope.source, None)?.await?)
         .map_err(|error| Error::Invalid(error.to_string()))?;
-    let proof: CompactionReference = serde_json::from_slice(&journal.load(&compaction).await?)
+    let proof: CompactionReference = serde_json::from_slice(&journal.load(&compaction, None)?.await?)
         .map_err(|error| Error::Invalid(error.to_string()))?;
     let mut summary = proof
         .summary

@@ -152,10 +152,14 @@ impl ExecutionJournal for RecordingTurnJournal {
         _: crate::OperationId,
         _: u64,
         _: u32,
-    ) -> BoxFuture<'a, Result<Vec<crate::executor::ExecutionRecord>>> {
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<crate::executor::ExecutionRecord>>> {
+        if io.is_some() {
+            return Err(crate::Error::Unsupported("finite test journal IO is unavailable".into()));
+        }
         self.replays
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        async { Ok(Vec::new()) }.boxed()
+        crate::conversation::BoundedContentFuture::new(io, || async { Ok(Vec::new()) })
     }
 
     fn append<'a>(
@@ -189,23 +193,29 @@ impl ExecutionJournal for RecordingTurnJournal {
     fn load<'a>(
         &'a self,
         file: &'a crate::conversation::FileRef,
-    ) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        async { Err(Error::Unsupported("unused test journal".into())) }.boxed()
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        if io.is_some() {
+            return Err(crate::Error::Unsupported("finite test journal IO is unavailable".into()));
+        }
+        crate::conversation::BoundedContentFuture::new(io, || async { Err(Error::Unsupported("unused test journal".into())) })
     }
 
     fn verify_input_file<'a>(
         &'a self,
         _: &'a crate::conversation::FileRef,
-    ) -> BoxFuture<'a, Result<()>> {
-        async { Ok(()) }.boxed()
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || async { Ok(()) })
     }
 
     fn verify_selected_context<'a>(
         &'a self,
         _: crate::OperationId,
         _: &'a crate::projection::SelectedModelContext,
-    ) -> BoxFuture<'a, Result<()>> {
-        async { Ok(()) }.boxed()
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || async { Ok(()) })
     }
 
     fn open_interaction<'a>(

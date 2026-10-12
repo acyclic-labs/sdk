@@ -5,7 +5,7 @@
 
 use super::*;
 use support::*;
-pub(crate) use support::{configured_test_service_bootstrap, test_service_control};
+pub(crate) use support::configured_test_service_bootstrap;
 
 mod hosts;
 mod installation;

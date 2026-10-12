@@ -76,10 +76,11 @@ where
         ),
         MountLifecycleError,
     > {
-        super::super::adapter::validate_native_source_io_binding(
-            work,
-            options.native_original.as_ref(),
-        )?;
+        if options.native_original.as_ref().is_some_and(|binding| !work.shares_allocation_context(binding)) {
+            return Err(MountSourceError::NativeWork(
+                crate::NativeTreeMaterializationError::InvalidLayout,
+            ).into());
+        }
         let cancellation = work.cancellation();
         let config = self.workspace().volume_config();
         let mut accounting =
@@ -172,10 +173,11 @@ where
             &crate::CancellationToken::new(),
         )?;
         let work = &work;
-        super::super::adapter::validate_native_source_io_binding(
-            work,
-            options.native_original.as_ref(),
-        )?;
+        if options.native_original.as_ref().is_some_and(|binding| !work.shares_allocation_context(binding)) {
+            return Err(MountSourceError::NativeWork(
+                crate::NativeTreeMaterializationError::InvalidLayout,
+            ).into());
+        }
         let destination = work.path(destination.as_ref(), None)?;
         let destination_custody = destination.1;
         let destination = destination.0;

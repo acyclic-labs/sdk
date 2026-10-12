@@ -40,10 +40,11 @@ where
     ) -> Result<NativeWorkingSet<A, O>, MountLifecycleError> {
         let original = mount.work(capture_budget, cancellation)?;
         let work = &original;
-        super::super::adapter::validate_native_source_io_binding(
-            work,
-            mount.native_original.as_ref(),
-        )?;
+        if mount.native_original.as_ref().is_some_and(|binding| !work.shares_allocation_context(binding)) {
+            return Err(MountSourceError::NativeWork(
+                crate::NativeTreeMaterializationError::InvalidLayout,
+            ).into());
+        }
         if let Some(guard) = mount.callback_guard.as_ref() {
             guard.check(work)?.await?;
         }
@@ -162,9 +163,8 @@ where
                             &capture,
                         )
                         .await?;
-                    if source
-                        .shared_checkout()
-                        .lock_with_carrier(
+                    if super::super::adapter::await_lock(
+                            source.shared_checkout().lock(),
                             &mut super::super::adapter::NativeDemandCarrier::Native(&capture),
                             cancellation,
                             Some(source.cancellation()),

@@ -78,26 +78,6 @@ where
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    fn replay_with_native_work<'a>(
-        &'a self,
-        operation_id: OperationId,
-        after: u64,
-        maximum: u32,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<ExecutionRecord>, acyclic_fs::NativeAllocation)>>
-    {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            let records = self
-                .records(operation_id, after, maximum, Some(&io))
-                .await?;
-            let retained = io.owned_bytes()?;
-            let custody = io.into_native_custody(retained)?;
-            Ok((records, custody))
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
     fn stage_with_native_work<'a>(
         &'a self,
         operation_id: OperationId,
@@ -209,89 +189,43 @@ where
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn load_with_native_work<'a>(
-        &'a self,
-        reference: &'a FileRef,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            let bytes = self.load_content(reference, Some(&io)).await?;
-            drop(io);
-            Ok(bytes)
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn verify_input_file_with_native_work<'a>(
-        &'a self,
-        reference: &'a FileRef,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            self.verify_input_file_with_io(reference, Some(&io)).await
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn verify_model_content_with_native_work<'a>(
-        &'a self,
-        content: &'a ModelContent,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            self.verify_model_content_with_io(content, Some(&io)).await
-        })
-    }
-
     fn replay<'a>(
         &'a self,
-        operation_id: OperationId,
+        operation: OperationId,
         after: u64,
         maximum: u32,
-    ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
-        let span = obs_span!(
-            "acyclic.harness.journal.replay",
-            rev = after,
-            items = crate::obs::Empty
-        );
-        traced(span, async move {
-            let records = self.records(operation_id, after, maximum, None).await?;
-            crate::obs::obs_record!("items" = records.len());
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            if io.is_none() {
+                let span = obs_span!("acyclic.harness.journal.replay", rev = after, items = crate::obs::Empty);
+                return traced(span, async move {
+                    let records = self.records(operation, after, maximum, io).await?;
+                    crate::obs::obs_record!("items" = records.len());
+                    Ok(records)
+                }).await;
+            }
+            let records = self.records(operation, after, maximum, io).await?;
+            io.expect("bounded branch").remaining()?;
             Ok(records)
         })
     }
-    fn replay_measured<'a>(
+
+    fn load<'a>(
         &'a self,
-        operation_id: OperationId,
-        after: u64,
-        maximum: u32,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> BoxFuture<
-        'a,
-        acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Vec<ExecutionRecord>>, Error>,
-    > {
-        Box::pin(async move {
-            let io = PreparationIo::from_budget(budget, cancellation)
-                .map_err(|cause| acyclic_fs::OperationFailure::new(cause, Default::default()))?;
-            let result = async {
-                let records = self
-                    .records(operation_id, after, maximum, Some(&io))
-                    .await?;
-                io.remaining()?;
-                Ok(records)
+        reference: &'a FileRef,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        crate::conversation::BoundedContentFuture::new(io, || async move {
+            if io.is_none() {
+                let span = obs_span!("acyclic.harness.journal.load", bytes = crate::obs::Empty);
+                return traced(span, async move {
+                    let bytes = self.load_content(reference, io).await?;
+                    crate::obs::obs_record!("bytes" = bytes.len());
+                    Ok(bytes)
+                }).await;
             }
-            .await;
-            result
-                .map(|value| acyclic_fs::OperationReceipt {
-                    value,
-                    work: io.receipt(),
-                })
-                .map_err(|cause| acyclic_fs::OperationFailure::new(cause, io.receipt()))
+            self.load_content(reference, io).await
         })
     }
 
@@ -387,107 +321,29 @@ where
         })
     }
 
-    fn load<'a>(
+    fn verify_input_file<'a>(
         &'a self,
         reference: &'a FileRef,
-    ) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        let span = obs_span!("acyclic.harness.journal.load", bytes = crate::obs::Empty);
-        traced(span, async move {
-            let bytes = self.load_content(reference, None).await?;
-            crate::obs::obs_record!("bytes" = bytes.len());
-            Ok(bytes)
-        })
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || self.verify_input_file_with_io(reference, io))
     }
 
-    fn load_measured<'a>(
-        &'a self,
-        reference: &'a FileRef,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> BoxFuture<
-        'a,
-        acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<acyclic_stream::OwnedBytes>, Error>,
-    > {
-        Box::pin(async move {
-            let io = crate::filesystem::PreparationIo::from_budget(budget, cancellation)
-                .map_err(acyclic_fs::OperationFailure::before_work)?;
-            let result = self.load_content(reference, Some(&io)).await;
-            match result {
-                Ok(value) => Ok(acyclic_fs::OperationReceipt {
-                    value,
-                    work: io.receipt(),
-                }),
-                Err(error) => Err(acyclic_fs::OperationFailure::new(error, io.receipt())),
-            }
-        })
-    }
-
-    fn verify_input_file<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<()>> {
-        Box::pin(self.verify_input_file_with_io(reference, None))
-    }
-
-    fn verify_input_file_measured<'a>(
-        &'a self,
-        reference: &'a FileRef,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error>> {
-        Box::pin(async move {
-            let io = PreparationIo::from_budget(budget, cancellation)
-                .map_err(acyclic_fs::OperationFailure::before_work)?;
-            let result = self.verify_input_file_with_io(reference, Some(&io)).await;
-            result
-                .map(|value| acyclic_fs::OperationReceipt {
-                    value,
-                    work: io.receipt(),
-                })
-                .map_err(|cause| acyclic_fs::OperationFailure::new(cause, io.receipt()))
-        })
-    }
-
-    fn verify_model_content<'a>(&'a self, content: &'a ModelContent) -> BoxFuture<'a, Result<()>> {
-        Box::pin(self.verify_model_content_with_io(content, None))
-    }
-
-    fn verify_model_content_measured<'a>(
+    fn verify_model_content<'a>(
         &'a self,
         content: &'a ModelContent,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error>> {
-        Box::pin(async move {
-            let io = PreparationIo::from_budget(budget, cancellation)
-                .map_err(acyclic_fs::OperationFailure::before_work)?;
-            let result = self.verify_model_content_with_io(content, Some(&io)).await;
-            result
-                .map(|value| acyclic_fs::OperationReceipt {
-                    value,
-                    work: io.receipt(),
-                })
-                .map_err(|cause| acyclic_fs::OperationFailure::new(cause, io.receipt()))
-        })
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || self.verify_model_content_with_io(content, io))
     }
 
     fn verify_selected_context<'a>(
         &'a self,
-        operation_id: OperationId,
+        operation: OperationId,
         selected: &'a SelectedModelContext,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(self.verify_selected_context_with_io(operation_id, selected, None))
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn verify_selected_context_with_native_work<'a>(
-        &'a self,
-        operation_id: OperationId,
-        selected: &'a SelectedModelContext,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            self.verify_selected_context_with_io(operation_id, selected, Some(&io))
-                .await
-        })
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        crate::conversation::BoundedContentFuture::new(io, || self.verify_selected_context_with_io(operation, selected, io))
     }
 
     fn open_interaction<'a>(

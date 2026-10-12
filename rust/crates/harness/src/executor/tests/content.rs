@@ -2,7 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn later_model_references_fail_preflight_before_earlier_content_reads() -> Result<()> {
-    let journal = ModelReadSpy::default();
+    let journal = Journal::default();
     let first = journal
         .stage(OperationId::new(), "first".into(), vec![1, 2], "image/png")
         .await?;
@@ -30,7 +30,7 @@ async fn later_model_references_fail_preflight_before_earlier_content_reads() ->
         .await,
         Err(Error::Unauthorized(_))
     ));
-    assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
+    assert_eq!(journal.4.load(Ordering::SeqCst), 0);
     let grants = Capabilities::new([first.read_capability()?, second.read_capability()?]);
     let narrow = RuntimeScope::new(
         grants.clone(),
@@ -50,7 +50,7 @@ async fn later_model_references_fail_preflight_before_earlier_content_reads() ->
         .await,
         Err(Error::Invalid(_))
     ));
-    assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
+    assert_eq!(journal.4.load(Ordering::SeqCst), 0);
     let allowed = RuntimeScope::new(grants, Limits::default())?;
     verify_model_contents_scoped(
         &journal,
@@ -60,6 +60,6 @@ async fn later_model_references_fail_preflight_before_earlier_content_reads() ->
         None,
     )
     .await?;
-    assert_eq!(journal.reads.load(Ordering::SeqCst), 2);
+    assert_eq!(journal.4.load(Ordering::SeqCst), 2);
     Ok(())
 }

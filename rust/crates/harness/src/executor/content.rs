@@ -11,25 +11,7 @@ pub(super) async fn verify_model_contents_scoped<'a>(
         validate_model_content_scope(content, limits, scope, io)?;
     }
     for content in contents {
-        match io {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            Some(io) if io.original_native_work().is_some() => {
-                journal
-                    .verify_model_content_with_native_work(
-                        content,
-                        io.original_native_work()
-                            .expect("native branch retains original work"),
-                    )?
-                    .await?;
-            }
-            #[cfg(feature = "filesystem")]
-            Some(io) => io.receive_content(
-                journal
-                    .verify_model_content_measured(content, io.remaining()?, io.cancellation())
-                    .await,
-            )?,
-            _ => journal.verify_model_content(content).await?,
-        }
+        journal.verify_model_content(content, io)?.await?;
     }
     Ok(())
 }
@@ -140,19 +122,8 @@ impl StockExecution<'_> {
             for message in &selected.messages {
                 validate_model_content_scope(&message.content, self.stock.limits, scope, self.io)?;
             }
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if let Some(work) = self.native_work() {
-                journal
-                    .verify_selected_context_with_native_work(input.operation_id, selected, work)?
-                    .await?;
-            } else {
-                journal
-                    .verify_selected_context(input.operation_id, selected)
-                    .await?;
-            }
-            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
             journal
-                .verify_selected_context(input.operation_id, selected)
+                .verify_selected_context(input.operation_id, selected, self.io)?
                 .await?;
             for message in &selected.messages {
                 crate::executor::with_history_io(self.io, |work| {

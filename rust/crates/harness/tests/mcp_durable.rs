@@ -56,8 +56,9 @@ impl ExecutionJournal for FaultJournal {
         op: OperationId,
         after: u64,
         maximum: u32,
-    ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>> {
-        self.inner.replay(op, after, maximum)
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>> {
+        self.inner.replay(op, after, maximum, io)
     }
     fn append<'a>(
         &'a self,
@@ -114,8 +115,10 @@ impl ExecutionJournal for FaultJournal {
             self.inner.stage(op, key, bytes, media).await
         })
     }
-    fn load<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-        self.inner.load(file)
+    fn load<'a>(&'a self, file: &'a FileRef,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+        self.inner.load(file, io)
     }
     fn open_interaction<'a>(
         &'a self,

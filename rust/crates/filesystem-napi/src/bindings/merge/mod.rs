@@ -122,16 +122,11 @@ impl NativeCheckout {
             "merge generation identity",
         )?));
         let mut checkout = Box::pin(self.inner.lock()).await;
-        let receipt = checkout
-            .prepare_merge(
-                theirs,
-                maximum_changes,
-                maximum_conflicts,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
-            )
-            .await
-            .map_err(napi_error)?;
+        let receipt = checkout_call!(
+            self,
+            checkout,
+            prepare_merge(theirs, maximum_changes, maximum_conflicts,)
+        )?;
         encode_merge_preparation(receipt.value, receipt.work)
     }
 }
@@ -206,24 +201,21 @@ pub(in crate::bindings) fn encode_merge_preparation(
     work: acyclic_fs::WorkCounters,
 ) -> Result<NativeMergePreparation> {
     let work_json = work_json(&work)?;
-    Ok(match preparation {
-        MergePreparation::Prepared { generation_id } => NativeMergePreparation {
-            status: "prepared".to_owned(),
-            generation_id: Some(Buffer::from(generation_id.digest().into_bytes().to_vec())),
-            conflicts: Vec::new(),
-            truncated: false,
-            work_json,
-        },
+    let (status, generation, conflicts, truncated) = match preparation {
+        MergePreparation::Prepared { generation_id } => {
+            ("prepared", Some(generation_id), Vec::new(), false)
+        }
         MergePreparation::Conflicted {
             conflicts,
             truncated,
-        } => NativeMergePreparation {
-            status: "conflicted".to_owned(),
-            generation_id: None,
-            conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
-            truncated,
-            work_json,
-        },
+        } => ("conflicted", None, conflicts, truncated),
+    };
+    Ok(NativeMergePreparation {
+        status: status.to_owned(),
+        generation_id: generation.map(native_generation_buffer),
+        conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
+        truncated,
+        work_json,
     })
 }
 

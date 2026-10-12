@@ -222,21 +222,17 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         operation_id: OperationId,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<&OperationState> {
-        let operation = self.scheduler.operation(operation_id).ok_or_else(|| {
-            coordinator_boundary(
-                work,
-                wire::ErrorCode::NotFound,
-                "operation is absent for this owner",
-            )
-        })?;
-        let declared_owner = operation.spec.owner.authority();
-        if declared_owner != owner {
-            return Err(coordinator_boundary(
-                work,
-                wire::ErrorCode::NotFound,
-                "operation is absent for this owner",
-            ));
-        }
+        let operation = self
+            .scheduler
+            .operation(operation_id)
+            .filter(|operation| operation.spec.owner.authority() == owner)
+            .ok_or_else(|| {
+                coordinator_boundary(
+                    work,
+                    wire::ErrorCode::NotFound,
+                    "operation is absent for this owner",
+                )
+            })?;
         operation.spec.verify_owner(owner, verifier, work)?;
         Ok(operation)
     }

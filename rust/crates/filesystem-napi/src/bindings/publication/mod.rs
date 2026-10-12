@@ -273,14 +273,7 @@ impl NativeCheckout {
 
         let mut checkout = Box::pin(self.inner.lock()).await;
         checkout.ensure_publication_resolved().map_err(napi_error)?;
-        let receipt = checkout
-            .rebase_head(
-                maximum_conflicts,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
-            )
-            .await
-            .map_err(napi_error)?;
+        let receipt = checkout_call!(self, checkout, rebase_head(maximum_conflicts,))?;
         let (status, generation_id, conflict_count, truncated) = match receipt.value {
             RebaseDecision::Safe { generation } => (
                 "safe",

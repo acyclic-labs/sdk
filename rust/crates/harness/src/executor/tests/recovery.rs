@@ -271,9 +271,26 @@ async fn interrupted_model_stream_reconciles_without_redispatch() -> Result<()> 
     assert_eq!(model.calls.load(Ordering::SeqCst), 1);
     assert_eq!(model.reconciliations.load(Ordering::SeqCst), 1);
     assert_eq!(host.claims.load(Ordering::SeqCst), 1);
-    assert_eq!(journal.replay(input.operation_id, 0, 64).await?.len(), 64);
-    assert_eq!(journal.replay(input.operation_id, 64, 64).await?.len(), 11);
-    assert!(journal.replay(input.operation_id, 75, 64).await?.is_empty());
+    assert_eq!(
+        journal
+            .replay(input.operation_id, 0, 64, None)?
+            .await?
+            .len(),
+        64
+    );
+    assert_eq!(
+        journal
+            .replay(input.operation_id, 64, 64, None)?
+            .await?
+            .len(),
+        11
+    );
+    assert!(
+        journal
+            .replay(input.operation_id, 75, 64, None)?
+            .await?
+            .is_empty()
+    );
     host.owned.store(false, Ordering::SeqCst);
     let records_before = journal.0.lock().unwrap().len();
     let artifacts_before = journal.1.lock().unwrap().len();
@@ -386,7 +403,7 @@ async fn identical_model_bytes_keep_distinct_dispatch_identities() -> Result<()>
 
 #[tokio::test]
 async fn native_result_reads_obey_effective_limits_and_attenuated_grants() -> Result<()> {
-    let journal = ModelReadSpy::default();
+    let journal = Journal::default();
     let file = journal
         .stage(
             OperationId::new(),
@@ -484,7 +501,7 @@ async fn native_result_reads_obey_effective_limits_and_attenuated_grants() -> Re
         .await,
         Err(Error::Invalid(_))
     ));
-    assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
+    assert_eq!(journal.4.load(Ordering::SeqCst), 0);
     assert!(matches!(
         verify_model_contents_scoped(
             &journal,
@@ -503,7 +520,7 @@ async fn native_result_reads_obey_effective_limits_and_attenuated_grants() -> Re
         .await,
         Err(Error::Unsupported(_))
     ));
-    assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
+    assert_eq!(journal.4.load(Ordering::SeqCst), 0);
     let references = ModelContent::Parts(
         [file, options]
             .map(|file| ModelContentPart::File {
@@ -520,6 +537,6 @@ async fn native_result_reads_obey_effective_limits_and_attenuated_grants() -> Re
         None,
     )
     .await?;
-    assert_eq!(journal.reads.load(Ordering::SeqCst), 2);
+    assert_eq!(journal.4.load(Ordering::SeqCst), 2);
     Ok(())
 }

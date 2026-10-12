@@ -199,7 +199,7 @@ impl McpRuntimeCallbacks {
                 self.pin(operation, request).await?;
                 match context.interact(operation, interaction.clone()).await? {
                     InteractionOutcome::Answered { answer } => {
-                        let bytes = self.journal.load(&answer).await?;
+                        let bytes = self.journal.load(&answer, None)?.await?;
                         answer.descriptor().verify(&bytes, &mut None)?;
                         let response: InteractionResponse = crate::contract::json_from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
                         interaction.validate_response(&response, &mut None)?;

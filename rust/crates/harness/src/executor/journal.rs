@@ -13,27 +13,8 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         operation_id: OperationId,
         after: u64,
         maximum: u32,
-    ) -> BoxFuture<'a, Result<Vec<ExecutionRecord>>>;
-
-    /// Optional finite replay of the same authenticated journal engine.
-    #[cfg(feature = "filesystem")]
-    fn replay_measured<'a>(
-        &'a self,
-        _operation: OperationId,
-        _after: u64,
-        _maximum: u32,
-        _budget: acyclic_fs::WorkBudget,
-        _cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> BoxFuture<
-        'a,
-        acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Vec<ExecutionRecord>>, Error>,
-    > {
-        Box::pin(async {
-            Err(acyclic_fs::OperationFailure::before_work(
-                Error::Unsupported("finite execution replay is unavailable".into()),
-            ))
-        })
-    }
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>>;
 
     /// Appends one reconstructable executor observation.
     fn append<'a>(
@@ -86,89 +67,55 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     fn load<'a>(
         &'a self,
         reference: &'a FileRef,
-    ) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>>;
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>>;
 
-    /// Optional finite-work load under the same original journal-owner grant.
-    #[cfg(feature = "filesystem")]
-    fn load_measured<'a>(
+    /// Verifies a user file under the original owner and optional work.
+    fn verify_input_file<'a>(
         &'a self,
         _reference: &'a FileRef,
-        _budget: acyclic_fs::WorkBudget,
-        _cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> BoxFuture<
-        'a,
-        acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<acyclic_stream::OwnedBytes>, Error>,
-    > {
-        Box::pin(async {
-            Err(acyclic_fs::OperationFailure::before_work(
-                Error::Unsupported("finite journal payload resolution is unavailable".into()),
-            ))
-        })
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "turn input file verification is unavailable",
+        ))
     }
 
-    /// Verifies a user-supplied file under its owner-mediated grant before turn admission.
-    fn verify_input_file<'a>(&'a self, _reference: &'a FileRef) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "turn input file verification is unavailable".into(),
-            ))
-        })
-    }
-
-    #[cfg(feature = "filesystem")]
-    fn verify_input_file_measured<'a>(
+    /// Verifies data and original option bindings without granting fresh execution.
+    fn verify_model_content<'a>(
         &'a self,
-        _reference: &'a FileRef,
-        _budget: acyclic_fs::WorkBudget,
-        _cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error>> {
-        Box::pin(async {
-            Err(acyclic_fs::OperationFailure::before_work(
-                Error::Unsupported("finite turn input verification is unavailable".into()),
-            ))
-        })
-    }
-
-    /// Verifies data and native option bindings without granting fresh execution.
-    fn verify_model_content<'a>(&'a self, content: &'a ModelContent) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
-            if content.native_configurations().next().is_some() {
-                return Err(Error::Unsupported(
-                    "original native option verification is unavailable".into(),
-                ));
-            }
+        content: &'a ModelContent,
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        if io.is_some() || content.native_configurations().next().is_some() {
+            return Err(stock_boundary(
+                io,
+                crate::wire::ErrorCode::Unsupported,
+                "original native option verification is unavailable",
+            ));
+        }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
             for file in content.file_refs() {
-                self.verify_input_file(file).await?;
+                self.verify_input_file(file, io)?.await?;
             }
             Ok(())
         })
     }
 
-    #[cfg(feature = "filesystem")]
-    fn verify_model_content_measured<'a>(
-        &'a self,
-        _content: &'a ModelContent,
-        _budget: acyclic_fs::WorkBudget,
-        _cancellation: &'a acyclic_fs::CancellationToken,
-    ) -> BoxFuture<'a, acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error>> {
-        Box::pin(async {
-            Err(acyclic_fs::OperationFailure::before_work(
-                Error::Unsupported("finite model content verification is unavailable".into()),
-            ))
-        })
-    }
-
-    /// Verifies the selected context against the committed conversation.
+    /// Verifies the selection against the committed conversation and original work.
     fn verify_selected_context<'a>(
         &'a self,
-        _operation_id: OperationId,
+        _operation: OperationId,
         _selected: &'a SelectedModelContext,
-    ) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async {
-            Err(Error::Unsupported(
-                "canonical model context verification is unavailable".into(),
-            ))
-        })
+        io: Option<&'a PreparationIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        Err(stock_boundary(
+            io,
+            crate::wire::ErrorCode::Unsupported,
+            "canonical model context verification is unavailable",
+        ))
     }
 
     /// Opens one typed durable interaction exactly once.
@@ -192,22 +139,6 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
     ) -> Result<bool> {
         work.remaining()?;
         Ok(false)
-    }
-
-    /// Replays the same journal while retaining its known records under original work.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn replay_with_native_work<'a>(
-        &'a self,
-        _operation: OperationId,
-        _after: u64,
-        _maximum: u32,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<ExecutionRecord>, acyclic_fs::NativeAllocation)>>
-    {
-        Err(crate::Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "native execution replay is unavailable",
-        })
     }
 
     /// Appends borrowed paid metadata; a custom journal must explicitly audit this producer.
@@ -254,59 +185,6 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         Err(crate::Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
             reason: "native execution staging is unavailable",
-        })
-    }
-
-    /// Resolves exact journal-owner bytes without substituting a remaining budget.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn load_with_native_work<'a>(
-        &'a self,
-        _reference: &'a FileRef,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
-        Err(crate::Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "native execution payload resolution is unavailable",
-        })
-    }
-
-    /// Verifies the original user file authority before native turn admission.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn verify_input_file_with_native_work<'a>(
-        &'a self,
-        _reference: &'a FileRef,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(crate::Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "native turn file verification is unavailable",
-        })
-    }
-
-    /// Verifies data and original option bindings through the audited native engine.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn verify_model_content_with_native_work<'a>(
-        &'a self,
-        _content: &'a ModelContent,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(crate::Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "native model content verification is unavailable",
-        })
-    }
-
-    /// Verifies the previously committed canonical selection under its original owner.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn verify_selected_context_with_native_work<'a>(
-        &'a self,
-        _operation: OperationId,
-        _selected: &'a SelectedModelContext,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(crate::Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "native selected context verification is unavailable",
         })
     }
 

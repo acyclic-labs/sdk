@@ -51,7 +51,7 @@ async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Res
     .with_tool_authority(wide, None)?
     .with_limits(narrow);
     assert!(executor.tool_scope.limits().file_bytes > executor.limits.file_bytes);
-    let journal = ModelReadSpy::default();
+    let journal = Journal::default();
     let mut messages = Vec::new();
     assert!(matches!(
         StockExecution::ordinary(&executor)
@@ -60,8 +60,8 @@ async fn stock_tool_input_obeys_narrow_executor_bound_before_journal_io() -> Res
         Err(Error::Invalid(_))
     ));
     assert_eq!(adapter.0.load(Ordering::SeqCst), 0);
-    assert_eq!(journal.replays.load(Ordering::SeqCst), 0);
-    assert_eq!(journal.reads.load(Ordering::SeqCst), 0);
+    assert_eq!(journal.3.load(Ordering::SeqCst), 0);
+    assert_eq!(journal.4.load(Ordering::SeqCst), 0);
     assert!(journal.journal.0.lock().unwrap().is_empty());
     assert!(journal.journal.1.lock().unwrap().is_empty());
     assert!(messages.is_empty());

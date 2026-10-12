@@ -168,30 +168,38 @@ impl NativeCheckout {
         &self,
         options: NativeMaterializeOptions,
     ) -> Result<NativeMaterializationResult> {
-        let mut checkout = Box::pin(self.inner.lock()).await;
-        let receipt = Box::pin(materialize_checkout(
-            &mut checkout,
-            &MaterializeOptions {
-                destination: options.destination.into(),
-                expected_root_identity: None,
-                maximum_directory_entries: options.maximum_directory_entries.into_inner(),
-                maximum_extent_spans: options.maximum_extent_spans.into_inner(),
-                transfer_bytes: bigint_u64(&options.transfer_bytes, "transferBytes")?,
-            },
-            acyclic_fs::performance::BOUNDARY_BUDGET,
-            &self.cancellation,
-        ))
-        .await
-        .map_err(napi_error)?;
-        Ok(NativeMaterializationResult {
-            files: bigint(receipt.value.files),
-            directories: bigint(receipt.value.directories),
-            symbolic_links: bigint(receipt.value.symbolic_links),
-            special_files: bigint(receipt.value.special_files),
-            logical_file_bytes: bigint(receipt.value.logical_file_bytes),
-            written_bytes: bigint(receipt.value.written_bytes),
-            work_json: work_json(&receipt.work)?,
+        let checkout = Arc::clone(&self.inner);
+        let cancellation = self.cancellation.clone();
+        tokio::task::spawn_blocking(move || {
+            tokio::runtime::Handle::current().block_on(async move {
+                let mut checkout = Box::pin(checkout.lock()).await;
+                let receipt = Box::pin(materialize_checkout(
+                    &mut checkout,
+                    &MaterializeOptions {
+                        destination: options.destination.into(),
+                        expected_root_identity: None,
+                        maximum_directory_entries: options.maximum_directory_entries.into_inner(),
+                        maximum_extent_spans: options.maximum_extent_spans.into_inner(),
+                        transfer_bytes: bigint_u64(&options.transfer_bytes, "transferBytes")?,
+                    },
+                    acyclic_fs::performance::BOUNDARY_BUDGET,
+                    &cancellation,
+                ))
+                .await
+                .map_err(napi_error)?;
+                Ok(NativeMaterializationResult {
+                    files: bigint(receipt.value.files),
+                    directories: bigint(receipt.value.directories),
+                    symbolic_links: bigint(receipt.value.symbolic_links),
+                    special_files: bigint(receipt.value.special_files),
+                    logical_file_bytes: bigint(receipt.value.logical_file_bytes),
+                    written_bytes: bigint(receipt.value.written_bytes),
+                    work_json: work_json(&receipt.work)?,
+                })
+            })
         })
+        .await
+        .map_err(napi_error)?
     }
 
     /// Captures final host state for a bounded exact path set in one atomic

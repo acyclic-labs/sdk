@@ -261,17 +261,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             let mut writes = fork_preparer_io::vector(capacity, io)?;
             writes.push(WorkspaceMutation::CreateDirectory { path: fork_preparer_io::clone_text("/.system/inherited-conversation/summary-payloads", io)? });
             for (key, file) in &payloads {
-                let bytes = match io {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    Some(io) if io.original_native_work().is_some() =>
-                        journal.load_with_native_work(file, io.original_native_work().expect("original summary work"))?.await?,
-                    Some(io) => {
-                        let bytes = io.receive_content(journal.load_measured(file, io.remaining()?, io.cancellation()).await)?;
-                        io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
-                        bytes
-                    }
-                    None => journal.load(file).await?,
-                };
+                let bytes = journal.load(file, io)?.await?;
                 crate::executor::with_history_io(io, |work| file.descriptor().verify(&bytes, work))?;
                 let encoded = fork_preparer_io::hex_key(key, io)?;
                 writes.push(WorkspaceMutation::PutFile {

@@ -124,9 +124,10 @@ impl ExecutionJournal for JournalSpy {
         operation: OperationId,
         after: u64,
         maximum: u32,
-    ) -> BoxProviderFuture<'a, Result<Vec<ExecutionRecord>>> {
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, Vec<ExecutionRecord>>> {
         self.reads.fetch_add(1, Ordering::SeqCst);
-        self.inner.replay(operation, after, maximum)
+        self.inner.replay(operation, after, maximum, io)
     }
     fn append<'a>(
         &'a self,
@@ -157,9 +158,11 @@ impl ExecutionJournal for JournalSpy {
         self.writes.fetch_add(1, Ordering::SeqCst);
         self.inner.stage(operation, key, bytes, media_type)
     }
-    fn load<'a>(&'a self, file: &'a FileRef) -> BoxProviderFuture<'a, Result<acyclic_stream::OwnedBytes>> {
+    fn load<'a>(&'a self, file: &'a FileRef,
+        io: Option<&'a acyclic_harness::conversation::ContentIo>,
+    ) -> Result<acyclic_harness::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
         self.reads.fetch_add(1, Ordering::SeqCst);
-        self.inner.load(file)
+        self.inner.load(file, io)
     }
     fn open_interaction<'a>(
         &'a self,
@@ -493,8 +496,8 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         if reopened {
             assert_eq!(journal.writes.load(Ordering::SeqCst), 0);
         }
-        let write_records = journal.inner.replay(write_call, 0, 16).await?;
-        let records = journal.inner.replay(call, 0, 16).await?;
+        let write_records = journal.inner.replay(write_call, 0, 16, None)?.await?;
+        let records = journal.inner.replay(call, 0, 16, None)?.await?;
         assert_eq!(
             records
                 .iter()
@@ -549,7 +552,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
             ));
         }
         assert_eq!(
-            journal.inner.replay(write_call, 0, 16).await?,
+            journal.inner.replay(write_call, 0, 16, None)?.await?,
             write_records
         );
         let restricted = context.scoped(
@@ -593,7 +596,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
         assert_eq!(journal.writes.load(Ordering::SeqCst), before_writes);
         assert_eq!(executor.executions.load(Ordering::SeqCst), 1);
         assert_eq!(executor.reconciliations.load(Ordering::SeqCst), 0);
-        assert_eq!(journal.inner.replay(call, 0, 16).await?, records);
+        assert_eq!(journal.inner.replay(call, 0, 16, None)?.await?, records);
         assert_eq!(
             filesystem.resolve(&workspace).await?.generation,
             before_rejected_head

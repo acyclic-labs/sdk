@@ -12,6 +12,14 @@ pub(super) async fn open<P: StreamProvider>(client: &Arc<P>) -> Result<Distribut
     .await
 }
 
+pub(super) fn worker(id: &str) -> Worker {
+    Worker {
+        id: id.into(),
+        available: ResourceSnapshot::default(),
+        labels: BTreeMap::new(),
+    }
+}
+
 pub(super) fn state_ref() -> Result<FileRef> {
     let volume = VolumeRef::new(
         ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
