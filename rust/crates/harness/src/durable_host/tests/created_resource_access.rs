@@ -505,11 +505,7 @@ impl CreationFixture {
         };
         #[cfg(target_arch = "wasm32")]
         let fs_creator = Arc::new(FilesystemResourceCreationProvider::new(filesystem.clone(), &issuer, #[cfg(not(target_arch = "wasm32"))] None)?);
-        let host = Arc::new(CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&stream, payloads.clone(), None, &mut None).await?, stream,
-            payloads, reader, authority, signed, issuer.verifier(&mut None).expect("verifier copy"), root_scope.clone(),
-            tasks.clone(), machines, Arc::new(SystemUnixMillisClock),
-        )?.with_session_limits(crate::scheduler::SessionLimits {
+        let host = Arc::new(CoordinatorTaskHost::new(DistributedCoordinator::open(&stream, payloads.clone(), None, &mut None).await?, stream, payloads, reader, &(authority), signed, issuer.verifier(&mut None).expect("verifier copy"), root_scope.clone(), tasks.clone(), machines, Arc::new(SystemUnixMillisClock), None)?.with_session_limits(crate::scheduler::SessionLimits {
             active_tasks: 16, total_tasks: 32, depth: 4, model_steps: 4,
         }, None)?.with_resource_creation_providers(&[creator.clone(), fs_creator.clone()], None)?);
         let mut bindings = Bindings::local();
@@ -685,7 +681,7 @@ async fn changed_child_request_evidence_and_provider_revision_are_rejected() -> 
     self_authorizing.parent = Some(preparation.origin().preparation_task);
     self_authorizing.grants = request.child.grants.clone();
     self_authorizing.resource_proofs = request.child.resource_proofs.clone();
-    let prep_lease = fixture.host.recover_work(preparation.origin().preparation_task).await?;
+    let prep_lease = fixture.host.recover_work(preparation.origin().preparation_task, &mut None).await?;
     let crate::distributed::WorkPull::Claimed(prep_lease) = prep_lease else {
         return Err(Error::NotFound("preparation lease for self-authorization control".into()));
     };
@@ -952,7 +948,7 @@ async fn ordinary_task_io_uses_verified_created_volume_without_root_grant_wideni
     descendant.parent = Some(task);
     descendant.grants = Capabilities::new([read.clone()]);
     descendant.limits.file_bytes = 1_024;
-    let crate::distributed::WorkPull::Claimed(parent_lease) = fixture.host.recover_work(task).await? else {
+    let crate::distributed::WorkPull::Claimed(parent_lease) = fixture.host.recover_work(task, &mut None).await? else {
         return Err(Error::NotFound("created child parent lease".into()));
     };
     assert!(matches!(fixture.host.admit_owned(
@@ -1566,7 +1562,7 @@ async fn native_original_root_child_grandchild_keep_exact_created_source() -> Re
     descendant.parent = Some(child);
     descendant.grants = Capabilities::new([read.clone()]);
     descendant.limits.file_bytes = 1_024;
-    let crate::distributed::WorkPull::Claimed(lease) = fixture.host.recover_work(child).await? else {
+    let crate::distributed::WorkPull::Claimed(lease) = fixture.host.recover_work(child, &mut None).await? else {
         return Err(Error::NotFound("native created parent lease".into()));
     };
     fixture.host.admit_owned(descendant.clone(), (&lease.reservation).into()).await?;

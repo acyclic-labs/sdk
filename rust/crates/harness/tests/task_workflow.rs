@@ -2208,21 +2208,8 @@ async fn stock_restart_with_publication_fault(
             &signed,
             65_536, None,
         )?);
-        let host = CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None)
-                .await?
-                ,
-            stream.clone(),
-            payloads.clone(),
-            reader.clone(),
-            authority.clone(),
-            signed.clone(),
-            issuer.verifier(&mut None).expect("verifier copy"),
-            scope.clone(),
-            tasks.clone(),
-            machines.clone(),
-            Arc::new(SystemUnixMillisClock),
-        )?
+        let host = CoordinatorTaskHost::new(DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None)
+                .await?, stream.clone(), payloads.clone(), reader.clone(), &(authority), signed.clone(), issuer.verifier(&mut None).expect("verifier copy"), scope.clone(), tasks.clone(), machines.clone(), Arc::new(SystemUnixMillisClock), None)?
         .with_session_limits(if reopened {
             SessionLimits {
                 model_steps: session_limits.model_steps + 1,

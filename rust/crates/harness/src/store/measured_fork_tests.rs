@@ -151,7 +151,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     parent.bind_published_child(&original, &created.seed, parent_scope.clone(), None, &mut None).await?;
     let task = crate::TaskId::from_bytes([84; 16]);
     assert!(matches!(fixture.admit_child(created.request.child.clone()).await?, crate::Admission::Accepted(id) if id == task));
-    let crate::distributed::WorkPull::Claimed(lease) = fixture.host.recover_work(task).await? else {
+    let crate::distributed::WorkPull::Claimed(lease) = fixture.host.recover_work(task, &mut None).await? else {
         return Err(Error::NotFound("measured fork original owner lease".into()));
     };
     let owner = fixture.host.journal_owner(task, (&lease.reservation).into()).await?;

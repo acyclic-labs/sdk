@@ -362,7 +362,7 @@ impl NativeSession {
     pub async fn claim(&self, task: TaskId, worker: &Worker) -> Result<WorkPull> {
         let admission = self.runtime.task_host().observe_admission(task).await?;
         self.runtime.poll_task_wake(task, None).await?;
-        self.runtime.task_host().pull_operation(worker, admission.operation_id).await
+        self.runtime.task_host().pull_operation(worker, admission.operation_id, &mut None).await
     }
 
     pub async fn cancel_task(&self, task: TaskId) -> Result<String> {
