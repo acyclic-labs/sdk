@@ -926,8 +926,6 @@ impl Eq for Owned {}
 #[derive(Clone, PartialEq, Eq)]
 enum Placed {
     Nothing,
-    /// Written with nothing the projection owns in it: a link placeholder, which `ProjFS` manages, or an ordinary directory.
-    Unowned,
     Owned(Owned),
     Retry,
 }
@@ -936,7 +934,7 @@ impl Placed {
     fn owned(&self) -> Option<Owned> {
         match self {
             Self::Owned(owned) => Some(owned.clone()),
-            Self::Nothing | Self::Unowned | Self::Retry => None,
+            Self::Nothing | Self::Retry => None,
         }
     }
 }
@@ -3400,7 +3398,7 @@ fn replace_ordinary(
             owned: Some(owned), facts: Some(entry.facts), basis,
         }),
         Placed::Retry => Replaced::Busy,
-        Placed::Nothing | Placed::Unowned => Replaced::Released,
+        Placed::Nothing => Replaced::Released,
     })
 }
 
