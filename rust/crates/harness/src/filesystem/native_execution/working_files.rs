@@ -28,7 +28,6 @@ pub trait NativeTaskWorkingView: IssuedWorkingView + std::any::Any + Send + Sync
     /// Reads bounded verified physical bytes.
     fn read_builtin_file<'a>(
         &'a self,
-        operation: crate::OperationId,
         path: &'a Path,
         maximum: usize,
         work: &'a NativeMaterializationWork,
@@ -36,7 +35,6 @@ pub trait NativeTaskWorkingView: IssuedWorkingView + std::any::Any + Send + Sync
     /// Writes an authorized physical path with an optional preimage.
     fn write_builtin_file<'a>(
         &'a self,
-        operation: crate::OperationId,
         path: &'a Path,
         content: &'a str,
         parents: bool,

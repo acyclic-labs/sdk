@@ -63,7 +63,7 @@ pinned by a test.
 ## Phase A: this crate
 
 Rules for all of Phase A: workspace lints (no `unwrap`, `expect` or `panic` outside tests), no `unsafe` (so
-use `acyclic-native-runtime::spawn_process_tree` for process groups, not `pre_exec`), unix only for process
+use `acyclic_native_runtime::ProcessTree::spawn` for process groups, not `pre_exec`), unix only for process
 code, and no change to any other sdk crate.
 
 ### A1 Scaffold and public API: done
@@ -129,7 +129,7 @@ duplicate keys and unknown types.
 ### A6 Process control (`src/process.rs`): done
 
 - **Command:** `<binary> exec --json --strict-config --skip-git-repo-check -m <model> -C <workspace>
-  [resume <thread>] <prompt>`, run through `spawn_process_tree` with stdin set to null and stdout read line by
+  [resume <thread>] <prompt>`, run through `ProcessTree::spawn` with stdin set to null and stdout read line by
   line.
 - **Environment:** start from an empty environment, then set `PATH`, `LANG`, `TMPDIR`, `SSL_CERT_FILE` (when
   set), `HOME = <state_dir>/<op>/home`, `CODEX_HOME = <state_dir>/<op>/codex`, `ACYCLIC_CODEX_PROXY_KEY` (a

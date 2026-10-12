@@ -79,9 +79,11 @@ impl MachinesHost {
             .await
             .map_err(|error| map_error(error, Some(operation_id)))?
         {
-            MutationOutcome::Created(observation) => {
-                SandboxRef::new(self.provider_ref.clone(), observation.id.as_bytes().into(), None)
-            }
+            MutationOutcome::Created(observation) => SandboxRef::new(
+                self.provider_ref.clone(),
+                observation.id.as_bytes().into(),
+                None,
+            ),
             _ => Err(Error::Storage(
                 "Machines returned the wrong create outcome".into(),
             )),
@@ -109,9 +111,11 @@ impl MachinesHost {
             .await
             .map_err(|error| map_error(error, Some(operation_id)))?
         {
-            MutationOutcome::Checkpointed(observation) => {
-                CheckpointRef::new(self.provider_ref.clone(), observation.id.as_bytes().into(), None)
-            }
+            MutationOutcome::Checkpointed(observation) => CheckpointRef::new(
+                self.provider_ref.clone(),
+                observation.id.as_bytes().into(),
+                None,
+            ),
             _ => Err(Error::Storage(
                 "Machines returned the wrong checkpoint outcome".into(),
             )),
@@ -149,7 +153,9 @@ impl MachinesHost {
         {
             MutationOutcome::Forked(values) => values
                 .into_iter()
-                .map(|value| SandboxRef::new(self.provider_ref.clone(), value.id.as_bytes().into(), None))
+                .map(|value| {
+                    SandboxRef::new(self.provider_ref.clone(), value.id.as_bytes().into(), None)
+                })
                 .collect(),
             _ => Err(Error::Storage(
                 "Machines returned the wrong fork outcome".into(),
@@ -358,7 +364,8 @@ mod tests {
 
     #[tokio::test]
     async fn opaque_refs_round_trip_through_a_replaceable_provider() -> Result<()> {
-        let provider_ref = ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?;
+        let provider_ref =
+            ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?;
         let host = MachinesHost::new(Arc::new(SimulatedMachines::default()), provider_ref.clone())?;
         let artifact = ArtifactRef::new(provider_ref, [1; 32].into(), None)?;
         let sandbox = host
@@ -387,16 +394,24 @@ mod tests {
 
     #[tokio::test]
     async fn create_requires_explicit_network_policy_and_provider_ownership() -> Result<()> {
-        let provider_ref = ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?;
+        let provider_ref =
+            ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?;
         let host = MachinesHost::new(Arc::new(SimulatedMachines::default()), provider_ref)?;
-        let foreign = ArtifactRef::new(ProviderRef::new("other".into(), "machines".into(), "1".into(), &mut None)?, [1; 32].into(), None)?;
+        let foreign = ArtifactRef::new(
+            ProviderRef::new("other".into(), "machines".into(), "1".into(), &mut None)?,
+            [1; 32].into(),
+            None,
+        )?;
         assert!(matches!(
             host.qualify(&foreign).await,
             Err(Error::Invalid(_))
         ));
 
-        let artifact =
-            ArtifactRef::new(ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?, [1; 32].into(), None)?;
+        let artifact = ArtifactRef::new(
+            ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?,
+            [1; 32].into(),
+            None,
+        )?;
         assert!(matches!(
             host.create(
                 OperationId::from_bytes([2; 16]),
@@ -413,7 +428,8 @@ mod tests {
 
     #[tokio::test]
     async fn fork_admission_proves_the_selected_checkpoint_exists() -> Result<()> {
-        let machines = ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?;
+        let machines =
+            ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?;
         let simulator = Arc::new(SimulatedMachines::default());
         let host = MachinesHost::new(simulator.clone(), machines.clone())?;
         let artifact = ArtifactRef::new(machines.clone(), [1; 32].into(), None)?;
@@ -441,7 +457,8 @@ mod tests {
             kind: AggregateKind::Conversation,
             id: "child".into(),
         };
-        let filesystem = ProviderRef::new("example".into(), "filesystem".into(), "2".into(), &mut None)?;
+        let filesystem =
+            ProviderRef::new("example".into(), "filesystem".into(), "2".into(), &mut None)?;
         let owner = VolumeOwner::Project("project".into());
         let history = ResourceRevision::History(StreamRef::new(
             ProviderRef::new("example".into(), "stream".into(), "2".into(), &mut None)?,
@@ -455,7 +472,7 @@ mod tests {
                 VolumeClass::Project,
                 owner.clone(),
             )?,
-            generation: GenerationRef::new(filesystem.clone(), [1; 32].into(), Some("1".into()))?,
+            generation: GenerationRef::new(&(filesystem), &([1; 32]), Some("1"), None)?.0,
         };
         let child_project = ResourceRevision::Project {
             volume: VolumeRef::new(
@@ -464,69 +481,78 @@ mod tests {
                 VolumeClass::Project,
                 owner,
             )?,
-            generation: GenerationRef::new(filesystem.clone(), [2; 32].into(), Some("1".into()))?,
+            generation: GenerationRef::new(&(filesystem), &([2; 32]), Some("1"), None)?.0,
         };
         let process = ResourceRevision::Process(checkpoint);
-        let seed = ForkSeed { history_witness: None, summary: None,
-        authorized_source: None,
-        child_result_volume: None,
-        child_result_generation: None,
-        operation_id: OperationId::from_bytes([3; 16]),
-        parent,
-        parent_revision: 0,
-        child,
-        child_agent: AgentId::from_bytes([4; 16]),
-        resources: vec![
-            CapturedResource {
-                source: history.clone(),
-                revision: history,
-            },
-            CapturedResource {
-                source: project,
-                revision: child_project,
-            },
-            CapturedResource {
-                source: process.clone(),
-                revision: process,
-            },
-            CapturedResource {
-                source: ResourceRevision::PrivateVolume {
-                    volume: VolumeRef::new(
-                        filesystem.clone(),
-                        "parent-scratch",
-                        VolumeClass::AgentPrivate,
-                        VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
-                    )?,
-                    generation: GenerationRef::new(filesystem.clone(), [98; 32].into(), None)?,
-                    paths: Vec::new(),
+        let seed = ForkSeed {
+            history_witness: None,
+            summary: None,
+            authorized_source: None,
+            child_result_volume: None,
+            child_result_generation: None,
+            operation_id: OperationId::from_bytes([3; 16]),
+            parent,
+            parent_revision: 0,
+            child,
+            child_agent: AgentId::from_bytes([4; 16]),
+            resources: vec![
+                CapturedResource {
+                    source: history.clone(),
+                    revision: history,
                 },
-                revision: ResourceRevision::PrivateVolume {
-                    volume: VolumeRef::new(
-                        filesystem.clone(),
-                        "child-private",
-                        VolumeClass::AgentPrivate,
-                        VolumeOwner::Agent(AgentId::from_bytes([4; 16])),
-                    )?,
-                    generation: GenerationRef::new(filesystem.clone(), [99; 32].into(), None)?,
-                    paths: Vec::new(),
+                CapturedResource {
+                    source: project,
+                    revision: child_project,
                 },
-            },
-        ],
-        omissions: Vec::new(),
-        child_private_volume: VolumeRef::new(
-            filesystem.clone(),
-            "child-private",
-            VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(AgentId::from_bytes([4; 16])),
-        )?,
-        child_private_generation: GenerationRef::new(filesystem, [3; 32].into(), Some("1".into()))?,
-        inherited_context: Vec::new(),
-        shared_grants: Vec::new(),
-        attached_agents: Vec::new(),
-        reference_grants: Vec::new(),
-        attachment_manifests: Vec::new(),
-        inherited_through_sequence: 0,
-        boundary: None, };
+                CapturedResource {
+                    source: process.clone(),
+                    revision: process,
+                },
+                CapturedResource {
+                    source: ResourceRevision::PrivateVolume {
+                        volume: VolumeRef::new(
+                            filesystem.clone(),
+                            "parent-scratch",
+                            VolumeClass::AgentPrivate,
+                            VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
+                        )?,
+                        generation: GenerationRef::new(&(filesystem), &([98; 32]), None, None)?.0,
+                        paths: Vec::new(),
+                    },
+                    revision: ResourceRevision::PrivateVolume {
+                        volume: VolumeRef::new(
+                            filesystem.clone(),
+                            "child-private",
+                            VolumeClass::AgentPrivate,
+                            VolumeOwner::Agent(AgentId::from_bytes([4; 16])),
+                        )?,
+                        generation: GenerationRef::new(&(filesystem), &([99; 32]), None, None)?.0,
+                        paths: Vec::new(),
+                    },
+                },
+            ],
+            omissions: Vec::new(),
+            child_private_volume: VolumeRef::new(
+                filesystem.clone(),
+                "child-private",
+                VolumeClass::AgentPrivate,
+                VolumeOwner::Agent(AgentId::from_bytes([4; 16])),
+            )?,
+            child_private_generation: GenerationRef::new(
+                &(filesystem),
+                &([3; 32]),
+                Some("1"),
+                None,
+            )?
+            .0,
+            inherited_context: Vec::new(),
+            shared_grants: Vec::new(),
+            attached_agents: Vec::new(),
+            reference_grants: Vec::new(),
+            attachment_manifests: Vec::new(),
+            inherited_through_sequence: 0,
+            boundary: None,
+        };
         host.verify(&seed).await?;
         let ResourceRevision::Project {
             volume: child_project,

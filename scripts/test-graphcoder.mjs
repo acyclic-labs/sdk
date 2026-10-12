@@ -733,12 +733,12 @@ if (scenarioDirectory) {
     run(["--prepare-scenario", cancellationDirectory], "", true, 120_000);
     const cancellation = load(join(cancellationDirectory, "native-scenario.json"));
     assert.deepEqual(cancellation.missing_prerequisites, []);
-    const cancellationLedger = invocationLedgerPath(cancellation, load(cancellation.config), "cancel-preparation");
+    const cancellationLedger = invocationLedgerPath(cancellation, load(cancellation.config));
     const originalCalls = readFileSync(cancellationLedger);
     const cancelledPreparation = cancellation.preparations.find(value => value.label === "cross_source");
     const cancelledRequest = load(cancelledPreparation.request);
     const caller = cancelledRequest.parent, lease = cancelledRequest.caller_lease;
-    const sourcePath = input("cancel-preparation-source", {
+    const sourcePath = input({
       caller, lease, volume: cancellation.files.left_scratch.volume, path: cancellation.files.left_scratch.path,
     });
     active = new InstalledSession(cancellation.config);
@@ -757,7 +757,7 @@ if (scenarioDirectory) {
     await active.command(`/reconcile ${cancelledRequest.request.child.operation_id}`, /retained=None/);
     assert.deepEqual(await active.commandJson(`/read-path ${sourcePath}`, "file"), originalSource);
     await active.quit();
-    const refusedPublication = input("cancelled-preparation-publish", {
+    const refusedPublication = input({
       caller, lease, preparation: cancelledPreparation.task,
     });
     run(["--session", cancellation.config, "--headless"], `/publish-fork ${refusedPublication}\n`, false, 15_000);

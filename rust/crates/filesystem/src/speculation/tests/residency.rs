@@ -1,5 +1,5 @@
-use crate::async_storage::AsyncObjectStore;
 use super::*;
+use crate::async_storage::AsyncObjectStore;
 use crate::foundation::Digest;
 use crate::memory::{MemoryAuthorityStore, MemoryObjectStore};
 use crate::storage::{ObjectId, ObjectKind, object_digest};
@@ -17,7 +17,15 @@ async fn object(store: &MemoryObjectStore, byte: u8) -> Result<ObjectId, Box<dyn
         kind: ObjectKind::Blob,
         digest: object_digest(ObjectKind::Blob, &bytes),
     };
-    AsyncObjectStore::put(store, object_id, bytes, WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+    {
+        let __object_args = (
+            object_id, bytes, WorkBudget::UNBOUNDED, &crate::CancellationToken::new());
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(object_id)
 }
 
@@ -354,12 +362,19 @@ async fn execution_warms_the_same_authenticated_cache_without_retaining_a_second
     ));
     assert_eq!(*stale.work, WorkCounters::default());
 
-    let warm = (store.read(
+    let warm = (async {
+        let __object_args = (
         object_id,
         64,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }).await?;
     assert_eq!(warm.work.backend_read_operations, 0);
     assert_eq!(warm.work.object_bytes_read, 0);
     assert_eq!(store.stats()?.hits, 1);

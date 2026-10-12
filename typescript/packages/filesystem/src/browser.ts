@@ -1,5 +1,6 @@
 import { resolveObserver } from "@acyclic-labs/actors/observe";
-import type { BrowserFsOptions, FsVolumeEngine, WasmBindings } from "./contracts.js";
+import type { BrowserFsOptions, FsVolumeEngine } from "./contracts.js";
+import type { WasmBindings } from "./binding-types.js";
 import type {
   OperationWindowCoordinator,
 } from "./compat.js";

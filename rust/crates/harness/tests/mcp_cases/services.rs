@@ -129,10 +129,10 @@ async fn endpoint_sampling_lost_ack_reopens_without_model_redispatch_and_pins_re
         assert!(registry.definitions(None)?.is_empty());
         installed.revision = "g1".into();
         installed.install(&mut registry, None, &transport, &projection, 8, 8192)?;
-        let observed = transport.call_with_context(tool.clone(), "echo", json!({})).await;
+        let observed = transport.call(tool.operation_id(), "echo", json!({}), Some(tool.clone())).await;
         if lose_ack { assert!(matches!(observed, Err(Error::Indeterminate(_)))); }
         else { assert_eq!(observed?.content.first().and_then(|content| content.get("text")), Some(&json!("complete"))); }
-        assert!(transport.reconcile(operation).await?.is_none());
+        assert!(transport.reconcile(operation, None).await?.is_none());
         server.await.map_err(|error| Error::Storage(error.to_string()))??;
         assert_eq!(model.dispatches.load(Ordering::SeqCst), 1);
         drop(transport); drop(callback); drop(disk); drop(tool);
@@ -234,7 +234,7 @@ async fn remote_callback_cancellation_drops_recorded_model_without_replay() -> R
         Ok::<_, Error>(())
     });
     let transport = HttpMcpTransport::new(Arc::new(NativeMcpHttpProvider::new(reqwest::header::HeaderMap::new())?), format!("http://{address}/mcp"), None, 8192, 2000)?.with_callbacks(policy(), Arc::clone(&callbacks))?;
-    assert!(matches!(transport.call_with_context(tool.clone(), "echo", json!({})).await, Err(Error::Indeterminate(id)) if id == operation));
+    assert!(matches!(transport.call(tool.operation_id(), "echo", json!({}), Some(tool.clone())).await, Err(Error::Indeterminate(id)) if id == operation));
     let callback = sampling(operation);
     let records = disk.replay(callback.operation()?, 0, 64).await?;
     assert!(records.iter().any(|record| matches!(record.event, acyclic_harness::executor::ExecutionEvent::ModelStarted { .. })));
@@ -253,14 +253,14 @@ async fn sampling_media_uses_scoped_filesystem_publication_and_native_policy() -
         let root = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
         let (disk, issuer, signed) = journal(root.path(), true).await?;
         let provider = ProviderRef::new("mcp-fault".into(), "filesystem".into(), "2".into(), &mut None)?;
-        let host = Arc::new(FilesystemHost::new(acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(root.path().join("fs"))).await.map_err(|error| Error::Storage(error.to_string()))?, provider.clone())?);
+        let host = FilesystemHost::new(acyclic_fs::Fs::local(acyclic_fs::LocalOptions::new(root.path().join("fs"))).await.map_err(|error| Error::Storage(error.to_string()))?, &provider, None)?;
         let volume = VolumeRef::new(provider, "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(acyclic_harness::AgentId::from_bytes([41;16])))?;
         let mut grants = vec!["model:generate".into(), "context:build".into(), "interaction:route".into()];
         if granted { grants.extend([volume.capability(VolumeOperation::Read)?, volume.capability(VolumeOperation::Write)?]); }
         let scope = RuntimeScope::new(Capabilities::new(grants), Limits::default())?;
         let content = ContentBindings {
-            reader: Arc::new(FilesystemContentVerifier::new(Arc::clone(&host), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 8192, None)?),
-            writer: Some(Arc::new(FilesystemContentPublisher::new(host, &volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 8192, None)?)),
+            reader: FilesystemContentVerifier::new(Arc::clone(&host), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 8192, None)?,
+            writer: Some(FilesystemContentPublisher::new(host, &volume, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 8192, None)?),
         };
         let context = admitted_context(scope.clone(), Arc::new(Participant { journal: Arc::clone(&disk), issuer }), Some(content)).await?;
         let operation = OperationId::from_bytes([86;16]);

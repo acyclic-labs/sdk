@@ -202,11 +202,8 @@ impl VolumeRef {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
             inspect_native_metadata(native, 0)?;
-            provider.validate(work)?;
         }
-        if let Some(reason) = provider.validation_error() {
-            return Err(conversation_error(work, crate::wire::ErrorCode::Invalid, reason));
-        }
+        provider.validate(work)?;
         validate_label(id, work)?;
         match owner {
             VolumeOwner::Project(id) | VolumeOwner::Session(id) => {
@@ -686,8 +683,13 @@ impl FileRef {
                 Some(&["volume", "path", "version", "descriptor", "display_name"]), work)?;
             let mut volume = native_owned_wire_object(native_owned_wire_field(&mut file, "volume", work)?,
                 Some(&["provider", "id", "class", "owner"]), work)?;
-            let provider = ProviderRef::from_owned_value_with_work(
-                native_owned_wire_field(&mut volume, "provider", work)?, work)?;
+            let mut provider = native_owned_wire_object(
+                native_owned_wire_field(&mut volume, "provider", work)?,
+                Some(&["namespace", "family", "version"]), work)?;
+            let provider = ProviderRef::new(
+                native_owned_wire_text(native_owned_wire_field(&mut provider, "namespace", work)?, work)?,
+                native_owned_wire_text(native_owned_wire_field(&mut provider, "family", work)?, work)?,
+                native_owned_wire_text(native_owned_wire_field(&mut provider, "version", work)?, work)?, work)?;
             let id = native_owned_wire_text(native_owned_wire_field(&mut volume, "id", work)?, work)?;
             let class = native_owned_volume_class(native_owned_wire_field(&mut volume, "class", work)?, work)?;
             let mut owner = native_owned_wire_object(native_owned_wire_field(&mut volume, "owner", work)?,
@@ -2438,7 +2440,7 @@ impl ConversationState {
             if self.native_custody.archive.is_none()
                 && let Some(prefix) = &self.archived_prefix
             {
-                let bytes = crate::core::source_inventory(prefix)?;
+                let bytes = prefix.checkpoint.logical_owned_bytes()?;
                 io.admit_owned(bytes)?;
                 io.retain_owned(bytes)?;
                 self.native_custody.archive = Some(io.take_native_custody(bytes)?);
@@ -2963,7 +2965,7 @@ mod tests {
             10_000,
             &[],
             &state,
-        )?;
+         &mut None)?;
         for _ in 0..32 {
             assert_eq!(
                 crate::fork::InheritedConversationPrefix::select(
@@ -2972,7 +2974,7 @@ mod tests {
                     10_000,
                     &[],
                     &state
-                )?,
+                , &mut None)?,
                 pinned
             );
         }

@@ -1,5 +1,5 @@
-use crate::async_storage::AsyncObjectStore;
 use super::*;
+use crate::async_storage::AsyncObjectStore;
 use crate::foundation::VolumeId;
 use crate::kernel::{
     BlobChunkRef, BlobNode, BlobPage, CheckoutDependencies, Dependency, Extent, ExtentPage,
@@ -8,7 +8,7 @@ use crate::kernel::{
     encode_extent_page, encode_file_metadata, encode_file_table_page, encode_generation_root, encode_tree_page,
 };
 use crate::memory::MemoryObjectStore;
-use crate::storage::{object_digest};
+use crate::storage::object_digest;
 use acyclic_stream::OwnedBytes;
 use std::future::Future;
 use std::task::{Context, Poll, Waker};
@@ -22,7 +22,19 @@ async fn put(
         kind,
         digest: object_digest(kind, &bytes),
     };
-    AsyncObjectStore::put(store, id, OwnedBytes::from(bytes), WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await?;
+    {
+        let __object_args = (
+            id,
+            OwnedBytes::from(bytes),
+            WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result =
+            AsyncObjectStore::put(store, __object_args.0, __object_args.1, &mut __object_work)
+                .await;
+        __object_work.receipt(__object_result)
+    }?;
     Ok(id)
 }
 
@@ -1098,34 +1110,40 @@ struct PanicProbeStore<'a> {
 #[cfg(not(target_arch = "wasm32"))]
 impl AsyncObjectStore for PanicProbeStore<'_> {
     async fn put(
-        &self, object: ObjectId, bytes: OwnedBytes, budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> crate::storage::ObjectResult<()> {
-        AsyncObjectStore::put(&self.store, object, bytes, budget, cancellation).await
+        &self, object: ObjectId, bytes: OwnedBytes,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(), crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            {
+                let __object_args = (object, bytes, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = AsyncObjectStore::put(&self.store,
+                    __object_args.0,
+                    __object_args.1,
+                    &mut __object_work,
+                )
+                .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 
     async fn read(
-        &self, object: ObjectId, maximum_bytes: u64, budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> crate::storage::ObjectResult<crate::storage::ObjectRead> {
-        AsyncObjectStore::read(&self.store, object, maximum_bytes, budget, cancellation).await
-    }
-
-    async fn read_many(
-        &self, requests: &[crate::storage::ObjectReadRequest], budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> crate::storage::ObjectResult<Vec<crate::storage::ObjectRead>> {
-        crate::async_storage::read_many_sequential_async(self, requests, budget, cancellation).await
-    }
-
-    async fn contains(
-        &self, object: ObjectId, budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> crate::storage::ObjectResult<bool> {
-        AsyncObjectStore::contains(&self.store, object, budget, cancellation).await
-    }
-
-    async fn read_with_native_work(
-        &self, object: ObjectId, maximum_bytes: u64, work: &crate::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<crate::storage::ObjectRead, ObjectStoreError> {
+        &self, object: ObjectId, maximum_bytes: u64,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<crate::ObjectRead, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(work) = context.original {
+            let cancellation = context.cancellation;
+            return async {
         cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
         work.admit(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED })
             .map_err(ObjectStoreError::Native)?;
@@ -1135,14 +1153,72 @@ impl AsyncObjectStore for PanicProbeStore<'_> {
                 Some((self.original.live_allocation_bytes(), self.original.receipt()));
             std::panic::resume_unwind(Box::new("cold original authenticated probe read"));
         }
-        AsyncObjectStore::read_with_native_work(&self.store, object, maximum_bytes, work, cancellation).await
+                {
+                    let __object_args = (object, maximum_bytes, work, cancellation);
+                    let mut __object_work =
+                        crate::AuthorityWork::native(__object_args.2, __object_args.3);
+                    let __object_result = AsyncObjectStore::read(
+                        &self.store,
+                        __object_args.0,
+                        __object_args.1,
+                        &mut __object_work,
+                    )
+                    .await;
+                    __object_result
+                }
+            }
+            .await;
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            {
+                let __object_args = (object, maximum_bytes, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let __object_result = AsyncObjectStore::read(
+                    &self.store,
+                    __object_args.0,
+                    __object_args.1,
+                    &mut __object_work,
+                )
+                .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 
-    async fn read_many_with_native_work(
-        &self, requests: &[crate::storage::ObjectReadRequest], work: &crate::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<(Vec<crate::storage::ObjectRead>, crate::materializer::NativeAllocation), ObjectStoreError> {
-        crate::async_storage::read_many_sequential_with_native_work(self, requests, work, cancellation).await
+    async fn read_many(
+        &self, requests: &[crate::storage::ObjectReadRequest],
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<(Vec<crate::ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError> {
+        crate::async_storage::read_many_sequential(self, requests, context).await
+    }
+
+    async fn contains(
+        &self,
+        object: ObjectId,
+        context: &mut crate::AuthorityWork<'_>,
+    ) -> Result<bool, crate::ObjectStoreError> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if context.original.is_some() {
+            return Err(crate::ObjectStoreError::NativeUnavailable);
+        }
+        let budget = context.work.remaining(context.budget)?;
+        let cancellation = context.cancellation;
+        let result = async {
+            {
+                let __object_args = (object, budget, cancellation);
+                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let __object_result =
+                    AsyncObjectStore::contains(&self.store, __object_args.0, &mut __object_work)
+                        .await;
+                __object_work.receipt(__object_result)
+            }
+        }
+        .await;
+        context.accept(result)
     }
 }
 
@@ -1248,8 +1324,10 @@ async fn original_probe_generation_caches_preserve_dependency_conflicts()
             match failure {
                 super::super::rebase::ClassifyRebaseFailure::Accounting(error)
                 | super::super::rebase::ClassifyRebaseFailure::Probe(error) => Box::new(error),
-                super::super::rebase::ClassifyRebaseFailure::ZeroConflictLimit => "zero conflict limit".into(),
+                super::super::rebase::ClassifyRebaseFailure::ZeroConflictLimit => {
+                "zero conflict limit".into()
             }
+        }
         })?;
     assert!(matches!(&decision, RebaseDecision::Conflicted { conflicts, truncated: false }
         if conflicts.len() == 1 && conflicts[0].region == region

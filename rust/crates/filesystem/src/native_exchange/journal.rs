@@ -67,9 +67,6 @@ pub enum NativeExchangeError {
     /// The next operation exceeded its finite allowance.
     #[error(transparent)]
     Work(#[from] crate::WorkError),
-    /// Journal serialization failed.
-    #[error(transparent)]
-    Json(#[from] serde_json::Error),
 }
 
 /// Persists an exchange request with opaque bytes needed by consumer recovery.
@@ -94,7 +91,7 @@ pub fn prepare_native_exchange(
         phase: NativeExchangePhase::Carrying,
     };
     match read_journal(journal_path) {
-        Ok(existing) if same_prepared_request(&existing, &journal) => Ok(()),
+        Ok(existing) if existing == journal => Ok(()),
         Ok(_) => Err(NativeExchangeError::IncompatibleJournal),
         Err(NativeExchangeError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
             write_journal(journal_path, &journal)
@@ -103,20 +100,9 @@ pub fn prepare_native_exchange(
     }
 }
 
-pub(super) fn same_prepared_request(
-    existing: &NativeExchangeJournal,
-    requested: &NativeExchangeJournal,
-) -> bool {
-    existing.operation == requested.operation
-        && existing.recovery == requested.recovery
-        && existing.live == requested.live
-        && existing.prepared == requested.prepared
-        && existing.carried == requested.carried
-        && existing.roots == requested.roots
-        && existing.phase == requested.phase
-}
 pub(super) fn read_journal(path: &Path) -> Result<NativeExchangeJournal, NativeExchangeError> {
-    let journal: NativeExchangeJournal = serde_json::from_slice(&std::fs::read(path)?)?;
+    let journal: NativeExchangeJournal =
+        serde_json::from_slice(&std::fs::read(path)?).map_err(std::io::Error::other)?;
     match journal.version {
         NATIVE_EXCHANGE_JOURNAL_VERSION => {
             validate_carried_paths(&journal.carried)?;
@@ -143,17 +129,21 @@ pub(super) fn validate_carried_paths(relative: &[PathBuf]) -> Result<(), NativeE
     }
     Ok(())
 }
-pub(super) fn write_journal(path: &Path, journal: &NativeExchangeJournal) -> Result<(), NativeExchangeError> {
+pub(super) fn write_journal(
+    path: &Path,
+    journal: &NativeExchangeJournal,
+) -> Result<(), NativeExchangeError> {
     use std::io::Write;
     let temporary = path.with_extension("next");
     let mut file = std::fs::File::create(&temporary)?;
-    file.write_all(&serde_json::to_vec(journal)?)?;
+    file.write_all(&serde_json::to_vec(journal).map_err(std::io::Error::other)?)?;
     file.sync_all()?;
     drop(file);
     durable_rename(
         &temporary,
         path,
-        acyclic_native_runtime::RenameMode::Replace, None,
+        acyclic_native_runtime::RenameMode::Replace,
+        None,
     )?;
     Ok(())
 }
