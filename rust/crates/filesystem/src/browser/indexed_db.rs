@@ -1344,7 +1344,7 @@ async fn replay(&self, authority_id: AuthorityId, after: Sequence, limit: Replay
     let cancellation = context.cancellation;
     let result: AuthorityResult<Vec<DurableCommit>> = async {
         let mut work = WorkCounters::default();
-        if after > head.sequence { return Err(Self::corrupt("replay cursor is ahead of authority head", work)); }
+        if after > head.sequence { return Err(AuthorityFailure::new(AuthorityStoreError::Rejected("replay cursor is ahead of authority head".to_owned()), work)); }
         if after == head.sequence { return Ok(crate::OperationReceipt { value: Vec::new(), work }); }
         let requested = u64::from(limit.records).min(head.sequence.get() - after.get());
         let maximum_payload_bytes = limit.payload_bytes;
@@ -1517,7 +1517,7 @@ async fn replay(&self, authority_id: AuthorityId, after: Sequence, limit: Replay
             value: output,
             work,
         })
-    
+
     }.await;
     Ok((context.accept(result)?, None))
 }
