@@ -22,11 +22,17 @@ pub struct NativeMountCapabilities {
 
 impl NativeMountCapabilities {
     /// Whether the host has the required device or framework.
-    pub fn available(&self) -> bool { self.unavailable_reason.is_none() }
+    pub fn available(&self) -> bool {
+        self.unavailable_reason.is_none()
+    }
 
     /// Whether the driver observes I/O issued by its provider process.
     pub fn provider_process_io_observable(&self) -> bool {
-        self.available() && matches!(self.kind, Some(NativeMountKind::LinuxFuse | NativeMountKind::MacOsNfs))
+        self.available()
+            && matches!(
+                self.kind,
+                Some(NativeMountKind::LinuxFuse | NativeMountKind::MacOsNfs)
+            )
     }
 }
 
@@ -68,7 +74,8 @@ pub struct MountLookup {
 }
 
 /// Receives content one piece at a time: the piece's logical offset and its canonical owned bytes.
-pub type ContentSink<'a> = dyn FnMut(u64, acyclic_stream::OwnedBytes) -> Result<(), MountSourceError> + 'a;
+pub type ContentSink<'a> =
+    dyn FnMut(u64, acyclic_stream::OwnedBytes) -> Result<(), MountSourceError> + 'a;
 
 /// Measured pinned content keeps the producer's exact live capacity through the actual native completion.
 pub type NativeMountContentSink<'a> =
@@ -146,54 +153,117 @@ pub struct MountSparseRange {
 /// Path-independent regular-file handle used for every native open operation.
 pub trait MountOpenFile: Send + Sync + 'static {
     /// Looks up through the operative shared native invocation.
-    fn lookup_with_meter(&self, work: &NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
+    fn lookup_with_meter(
+        &self,
+        work: &NativeMaterializationWork,
+    ) -> Result<MountLookup, MountSourceError>;
     /// Reads an exact owned range admitted on the original invocation.
-    fn read_range_with_meter(&self, offset: u64, length: u32, work: &NativeMaterializationWork)
-        -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
+    fn read_range_with_meter(
+        &self,
+        offset: u64,
+        length: u32,
+        work: &NativeMaterializationWork,
+    ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
     /// Reads up to the original bound without losing the producer's capacity.
-    fn read_up_to_with_meter(&self, offset: u64, maximum_bytes: u32, work: &NativeMaterializationWork)
-        -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
+    fn read_up_to_with_meter(
+        &self,
+        offset: u64,
+        maximum_bytes: u32,
+        work: &NativeMaterializationWork,
+    ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
     /// Finds the actual sparse boundary through the original source engine.
-    fn seek_with_meter(&self, offset: u64, target: MountSeekTarget, work: &NativeMaterializationWork)
-        -> Result<Option<u64>, MountSourceError>;
+    fn seek_with_meter(
+        &self,
+        offset: u64,
+        target: MountSeekTarget,
+        work: &NativeMaterializationWork,
+    ) -> Result<Option<u64>, MountSourceError>;
     /// Consumes the caller's exact already-admitted owned payload.
-    fn write_range_with_meter(&self, offset: u64, bytes: crate::kernel::OwnedSourceChunk,
-        work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
+    fn write_range_with_meter(
+        &self,
+        offset: u64,
+        bytes: crate::kernel::OwnedSourceChunk,
+        work: &NativeMaterializationWork,
+    ) -> Result<(), MountSourceError>;
     /// Changes length through the same operative source invocation.
-    fn resize_with_meter(&self, logical_bytes: u64, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
+    fn resize_with_meter(
+        &self,
+        logical_bytes: u64,
+        work: &NativeMaterializationWork,
+    ) -> Result<(), MountSourceError>;
     /// Applies the actual sparse allocation operation.
-    fn allocate_range_with_meter(&self, offset: u64, length: u64, operation: MountRangeAllocation,
-        work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
+    fn allocate_range_with_meter(
+        &self,
+        offset: u64,
+        length: u64,
+        operation: MountRangeAllocation,
+        work: &NativeMaterializationWork,
+    ) -> Result<(), MountSourceError>;
     /// Mutates exact metadata and optional size through the same engine.
-    fn set_attributes(&self, metadata: FileMetadata, logical_bytes: Option<u64>,
-        work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
+    fn set_attributes(
+        &self,
+        metadata: FileMetadata,
+        logical_bytes: Option<u64>,
+        work: &NativeMaterializationWork,
+    ) -> Result<(), MountSourceError>;
     /// Reads an owned named attribute without erasing capacity.
-    fn read_attribute(&self, name: &[u8], work: &NativeMaterializationWork)
-        -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError>;
+    fn read_attribute(
+        &self,
+        name: &[u8],
+        work: &NativeMaterializationWork,
+    ) -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError>;
     /// Lists the actual owned native attribute page.
-    fn list_attributes_with_meter(&self, cursor: Option<&[u8]>, maximum_entries: u32,
-        work: &NativeMaterializationWork) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError>;
+    fn list_attributes_with_meter(
+        &self,
+        cursor: Option<&[u8]>,
+        maximum_entries: u32,
+        work: &NativeMaterializationWork,
+    ) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError>;
     /// Consumes an exact already-admitted attribute value.
-    fn write_attribute(&self, name: &[u8], value: crate::kernel::OwnedSourceChunk,
-        mode: MountAttributeWriteMode, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
+    fn write_attribute(
+        &self,
+        name: &[u8],
+        value: crate::kernel::OwnedSourceChunk,
+        mode: MountAttributeWriteMode,
+        work: &NativeMaterializationWork,
+    ) -> Result<(), MountSourceError>;
     /// Removes the actual named attribute through the same engine.
-    fn remove_attribute(&self, name: &[u8], work: &NativeMaterializationWork)
-        -> Result<(), MountSourceError>;
+    fn remove_attribute(
+        &self,
+        name: &[u8],
+        work: &NativeMaterializationWork,
+    ) -> Result<(), MountSourceError>;
     /// Settles this actual handle's queued effects before durability acknowledgement.
     fn settle(&self, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
     /// Returns the owned sparse range and its original producer's exact claim.
-    fn read_sparse_range(&self, offset: u64, length: u32, work: &NativeMaterializationWork)
-        -> Result<(MountSparseRange, crate::NativeAllocation), MountSourceError>;
+    fn read_sparse_range(
+        &self,
+        offset: u64,
+        length: u32,
+        work: &NativeMaterializationWork,
+    ) -> Result<(MountSparseRange, crate::NativeAllocation), MountSourceError>;
     /// Consumes the exact already-admitted sparse payload, including capacities known before each span's conversion to `Bytes`.
-    fn write_sparse_range(&self, offset: u64, range: (MountSparseRange, crate::NativeAllocation),
-        work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
+    fn write_sparse_range(
+        &self,
+        offset: u64,
+        range: (MountSparseRange, crate::NativeAllocation),
+        work: &NativeMaterializationWork,
+    ) -> Result<(), MountSourceError>;
 
     /// Returns current identity, size, and metadata for `fstat`-style calls.
     fn lookup(&self) -> Result<MountLookup, MountSourceError>;
     /// Reads one exact bounded logical range.
-    fn read_range(&self, offset: u64, length: u32) -> Result<acyclic_stream::OwnedBytes, MountSourceError>;
+    fn read_range(
+        &self,
+        offset: u64,
+        length: u32,
+    ) -> Result<acyclic_stream::OwnedBytes, MountSourceError>;
     /// Reads at most `maximum_bytes`, clipping to EOF in the same coherent view.
-    fn read_up_to(&self, offset: u64, maximum_bytes: u32) -> Result<acyclic_stream::OwnedBytes, MountSourceError>;
+    fn read_up_to(
+        &self,
+        offset: u64,
+        maximum_bytes: u32,
+    ) -> Result<acyclic_stream::OwnedBytes, MountSourceError>;
     /// Finds the next sparse data or hole boundary.
     fn seek(&self, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError>;
     /// Replaces one exact byte range in the detached file.
@@ -241,46 +311,74 @@ impl MountDirectoryPage {
     /// Retains a page and any original allocation custody.
     #[must_use]
     pub fn new(
-        entries: Vec<MountDirectoryEntry>, next_cursor: Option<Vec<u8>>,
+        entries: Vec<MountDirectoryEntry>,
+        next_cursor: Option<Vec<u8>>,
         allocation: Option<crate::NativeAllocation>,
     ) -> Self {
         let ownership = allocation.map_or_else(
             crate::demand::SourcePayloadOwnership::default,
             crate::demand::SourcePayloadOwnership::from_native_allocation,
         );
-        Self { entries, next_cursor, ownership }
+        Self {
+            entries,
+            next_cursor,
+            ownership,
+        }
     }
 
     /// Borrows entries without detaching their physical capacity custody.
     #[must_use]
-    pub fn entries(&self) -> &[MountDirectoryEntry] { &self.entries }
+    pub fn entries(&self) -> &[MountDirectoryEntry] {
+        &self.entries
+    }
 
     /// Borrows this page's opaque continuation.
     #[must_use]
-    pub fn next_cursor(&self) -> Option<&[u8]> { self.next_cursor.as_deref() }
+    pub fn next_cursor(&self) -> Option<&[u8]> {
+        self.next_cursor.as_deref()
+    }
 
     /// Internal physical projections transfer data and its exact custody together, splitting that custody only for actual escaping payloads.
-    pub(crate) fn into_parts(self) -> (
-        Vec<MountDirectoryEntry>, Option<Vec<u8>>, crate::demand::SourcePayloadOwnership,
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Vec<MountDirectoryEntry>,
+        Option<Vec<u8>>,
+        crate::demand::SourcePayloadOwnership,
     ) {
         (self.entries, self.next_cursor, self.ownership)
     }
 
     /// Known owned capacities of this exact page, excluding borrowed metadata and opaque allocator overhead.
     pub fn logical_owned_bytes(&self) -> Result<u64, crate::WorkError> {
-        let entries = self.entries.capacity().checked_mul(std::mem::size_of::<MountDirectoryEntry>())
+        let entries = self
+            .entries
+            .capacity()
+            .checked_mul(std::mem::size_of::<MountDirectoryEntry>())
             .ok_or(crate::WorkError::Overflow)? as u64;
-        self.entries.iter().try_fold(entries, |bytes, entry| {
-            bytes.checked_add(entry.name.capacity() as u64).ok_or(crate::WorkError::Overflow)
-        })?.checked_add(self.next_cursor.as_ref().map_or(0, |cursor| cursor.capacity() as u64))
+        self.entries
+            .iter()
+            .try_fold(entries, |bytes, entry| {
+                bytes
+                    .checked_add(entry.name.capacity() as u64)
+                    .ok_or(crate::WorkError::Overflow)
+            })?
+            .checked_add(
+                self.next_cursor
+                    .as_ref()
+                    .map_or(0, |cursor| cursor.capacity() as u64),
+            )
             .ok_or(crate::WorkError::Overflow)
     }
 }
 
 impl std::fmt::Debug for MountDirectoryPage {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("MountDirectoryPage")
-            .field("entries", &self.entries).field("next_cursor", &self.next_cursor).finish()
+        formatter
+            .debug_struct("MountDirectoryPage")
+            .field("entries", &self.entries)
+            .field("next_cursor", &self.next_cursor)
+            .finish()
     }
 }
 
@@ -296,11 +394,23 @@ pub struct MountAttributePage {
 impl MountAttributePage {
     /// Exact known owned capacities of this page, excluding allocator overhead.
     pub fn logical_owned_bytes(&self) -> Result<u64, crate::WorkError> {
-        let slots = self.names.capacity().checked_mul(std::mem::size_of::<Vec<u8>>())
+        let slots = self
+            .names
+            .capacity()
+            .checked_mul(std::mem::size_of::<Vec<u8>>())
             .ok_or(crate::WorkError::Overflow)? as u64;
-        self.names.iter().try_fold(slots, |bytes, name| {
-            bytes.checked_add(name.capacity() as u64).ok_or(crate::WorkError::Overflow)
-        })?.checked_add(self.next_cursor.as_ref().map_or(0, |cursor| cursor.capacity() as u64))
+        self.names
+            .iter()
+            .try_fold(slots, |bytes, name| {
+                bytes
+                    .checked_add(name.capacity() as u64)
+                    .ok_or(crate::WorkError::Overflow)
+            })?
+            .checked_add(
+                self.next_cursor
+                    .as_ref()
+                    .map_or(0, |cursor| cursor.capacity() as u64),
+            )
             .ok_or(crate::WorkError::Overflow)
     }
 }
@@ -432,7 +542,9 @@ pub enum MountSourceError {
     NativeWatchOriginalBackend(#[source] notify::Error),
     /// Same actual started root watcher retained after later admission failure.
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-    #[error("filesystem engine failure: source demand failed: native watcher startup failed: {cause}")]
+    #[error(
+        "filesystem engine failure: source demand failed: native watcher startup failed: {cause}"
+    )]
     NativeWatchStartupFailed {
         /// Original typed cause, moved without another allocation.
         #[source]
@@ -442,7 +554,9 @@ pub enum MountSourceError {
     },
     /// Same complete root watcher and already-retained source startup cause.
     #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-    #[error("filesystem engine failure: source demand failed: native source watcher startup failed: {cause}")]
+    #[error(
+        "filesystem engine failure: source demand failed: native source watcher startup failed: {cause}"
+    )]
     NativeWatchSourceStartupFailed {
         /// Original preallocated partial source failure.
         #[source]
@@ -527,8 +641,12 @@ impl MountSourceError {
         loop {
             match error {
                 Self::Retained(cause) => error = cause.semantic_error(),
-                Self::MutationFinalization { primary, .. } if primary.is_some() =>
-                    error = primary.as_ref().as_ref().expect("a completed mutation has its original primary"),
+                Self::MutationFinalization { primary, .. } if primary.is_some() => {
+                    error = primary
+                        .as_ref()
+                        .as_ref()
+                        .expect("a completed mutation has its original primary")
+                }
                 _ => break,
             }
         }
@@ -537,10 +655,12 @@ impl MountSourceError {
 
     pub(crate) fn native_allocation_mut(&mut self) -> Option<&mut Option<crate::NativeAllocation>> {
         match self {
-            Self::Io(_, allocation) | Self::NativeRecordJson(_, allocation)
-            | Self::NativeRecordLockTimeout(_, allocation) | Self::NativeRecordOwnershipConflict(_, allocation)
-            | Self::NativeRecordContextTransaction(_, allocation) | Self::NativeRecordCorrupt(_, allocation) =>
-                Some(allocation),
+            Self::Io(_, allocation)
+            | Self::NativeRecordJson(_, allocation)
+            | Self::NativeRecordLockTimeout(_, allocation)
+            | Self::NativeRecordOwnershipConflict(_, allocation)
+            | Self::NativeRecordContextTransaction(_, allocation)
+            | Self::NativeRecordCorrupt(_, allocation) => Some(allocation),
             Self::MutationFinalization { custody, .. } => Some(custody),
             Self::NativeWorkspaceCause(cause) => Some(&mut cause.custody),
             Self::NativeWork(error) => error.native_failure_allocation_mut(),
@@ -550,14 +670,17 @@ impl MountSourceError {
 }
 
 impl From<std::io::Error> for MountSourceError {
-    fn from(error: std::io::Error) -> Self { Self::Io(error, None) }
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error, None)
+    }
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(super) fn native_materialization_errno(error: &crate::NativeTreeMaterializationError) -> i32 {
     match error {
-        crate::NativeTreeMaterializationError::Io(error) =>
-            error.raw_os_error().unwrap_or(libc::EIO),
+        crate::NativeTreeMaterializationError::Io(error) => {
+            error.raw_os_error().unwrap_or(libc::EIO)
+        }
         crate::NativeTreeMaterializationError::Cancelled => libc::ESTALE,
         crate::NativeTreeMaterializationError::AllocationFailed(_) => libc::ENOMEM,
         crate::NativeTreeMaterializationError::PayloadTooLarge { .. } => libc::EFBIG,
@@ -569,19 +692,33 @@ pub(super) fn native_materialization_errno(error: &crate::NativeTreeMaterializat
 pub(super) fn native_workspace_errno(error: &crate::WorkspaceError) -> i32 {
     use crate::WorkspaceError;
     match error {
-        WorkspaceError::Cancelled(_) | WorkspaceError::Filesystem(crate::FsError::Cancelled(_))
-        | WorkspaceError::NamespacePath(crate::kernel::NamespacePathError::Cancelled) => libc::ECANCELED,
-        WorkspaceError::Filesystem(crate::FsError::NativeKernel(error)) => native_materialization_errno(error),
-        WorkspaceError::NotFound | WorkspaceError::Filesystem(crate::FsError::NotFound) => libc::ENOENT,
-        WorkspaceError::NotDirectory | WorkspaceError::Filesystem(crate::FsError::NotDirectory) => libc::ENOTDIR,
+        WorkspaceError::Cancelled(_)
+        | WorkspaceError::Filesystem(crate::FsError::Cancelled(_))
+        | WorkspaceError::NamespacePath(crate::kernel::NamespacePathError::Cancelled) => {
+            libc::ECANCELED
+        }
+        WorkspaceError::Filesystem(crate::FsError::NativeKernel(error)) => {
+            native_materialization_errno(error)
+        }
+        WorkspaceError::NotFound | WorkspaceError::Filesystem(crate::FsError::NotFound) => {
+            libc::ENOENT
+        }
+        WorkspaceError::NotDirectory | WorkspaceError::Filesystem(crate::FsError::NotDirectory) => {
+            libc::ENOTDIR
+        }
         WorkspaceError::NamespacePath(crate::kernel::NamespacePathError::Work(_)) => libc::EIO,
         WorkspaceError::NamespacePath(crate::kernel::NamespacePathError::AllocationFailed)
         | WorkspaceError::Filesystem(crate::FsError::HandleAllocationFailed) => libc::ENOMEM,
-        WorkspaceError::Name(_) | WorkspaceError::Path(_) | WorkspaceError::NotRegularFile
+        WorkspaceError::Name(_)
+        | WorkspaceError::Path(_)
+        | WorkspaceError::NotRegularFile
         | WorkspaceError::NamespacePath(_) => libc::EINVAL,
         WorkspaceError::ReadLimitExceeded => libc::EFBIG,
-        WorkspaceError::StaleGeneration | WorkspaceError::StaleSource | WorkspaceError::StaleIdentity
-        | WorkspaceError::StaleTarget | WorkspaceError::Filesystem(crate::FsError::SourceSnapshotStale) => libc::ESTALE,
+        WorkspaceError::StaleGeneration
+        | WorkspaceError::StaleSource
+        | WorkspaceError::StaleIdentity
+        | WorkspaceError::StaleTarget
+        | WorkspaceError::Filesystem(crate::FsError::SourceSnapshotStale) => libc::ESTALE,
         _ => libc::EIO,
     }
 }
@@ -590,34 +727,46 @@ pub(crate) fn native_workspace_failure_is_fatal(error: &crate::WorkspaceError) -
     if let crate::WorkspaceError::Filesystem(crate::FsError::NativeKernel(error)) = error {
         return native_materialization_failure_is_fatal(error);
     }
-    matches!(crate::workspace::workspace_bounded_error(error),
-        Some(crate::WorkspaceError::Work(_) | crate::WorkspaceError::Cancelled(_)
-            | crate::WorkspaceError::Filesystem(crate::FsError::RootReadWorkMerge { .. })))
-        || matches!(error,
-            crate::WorkspaceError::NamespacePath(crate::kernel::NamespacePathError::AllocationFailed)
-            | crate::WorkspaceError::Filesystem(crate::FsError::HandleAllocationFailed))
+    matches!(
+        crate::workspace::workspace_bounded_error(error),
+        Some(
+            crate::WorkspaceError::Work(_)
+                | crate::WorkspaceError::Cancelled(_)
+                | crate::WorkspaceError::Filesystem(crate::FsError::RootReadWorkMerge { .. })
+        )
+    ) || matches!(
+        error,
+        crate::WorkspaceError::NamespacePath(crate::kernel::NamespacePathError::AllocationFailed)
+            | crate::WorkspaceError::Filesystem(crate::FsError::HandleAllocationFailed)
+    )
 }
 
 pub(crate) fn native_materialization_failure_is_fatal(
     error: &crate::NativeTreeMaterializationError,
 ) -> bool {
-    matches!(error,
+    matches!(
+        error,
         crate::NativeTreeMaterializationError::Work(_)
-        | crate::NativeTreeMaterializationError::Cancelled
-        | crate::NativeTreeMaterializationError::AllocationFailed(_)
-        | crate::NativeTreeMaterializationError::IndeterminatePreparation
-        | crate::NativeTreeMaterializationError::ExternalMutation(..)
-        | crate::NativeTreeMaterializationError::AllocationChanged { .. })
+            | crate::NativeTreeMaterializationError::Cancelled
+            | crate::NativeTreeMaterializationError::AllocationFailed(_)
+            | crate::NativeTreeMaterializationError::IndeterminatePreparation
+            | crate::NativeTreeMaterializationError::ExternalMutation(..)
+            | crate::NativeTreeMaterializationError::AllocationChanged { .. }
+    )
 }
 
 impl From<NativeMountStartupAdmissionError> for MountSourceError {
     fn from(error: NativeMountStartupAdmissionError) -> Self {
         match error {
-            NativeMountStartupAdmissionError::Materialization(crate::NativeTreeMaterializationError::Work(error)) => Self::Work(error),
+            NativeMountStartupAdmissionError::Materialization(
+                crate::NativeTreeMaterializationError::Work(error),
+            ) => Self::Work(error),
             NativeMountStartupAdmissionError::Materialization(error) => Self::NativeWork(error),
             NativeMountStartupAdmissionError::Demand(error) => lazy::mount_demand_error(error),
             NativeMountStartupAdmissionError::ServicesCold => Self::ServicesNotInitialized,
-            NativeMountStartupAdmissionError::ServiceUnavailable(error) => Self::ServiceUnavailable(error),
+            NativeMountStartupAdmissionError::ServiceUnavailable(error) => {
+                Self::ServiceUnavailable(error)
+            }
         }
     }
 }

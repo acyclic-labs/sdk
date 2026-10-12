@@ -1,6 +1,5 @@
 use super::*;
 
-
 #[test]
 fn local_transactions_work_without_a_tokio_runtime() {
     let directory = tempfile::tempdir().expect("local state directory");
@@ -8,7 +7,6 @@ fn local_transactions_work_without_a_tokio_runtime() {
     let result = futures::executor::block_on(WorkspaceLineageStore::load(&store, workspace()));
     assert!(result.expect("runtime-independent transaction").is_none());
 }
-
 
 #[tokio::test(flavor = "current_thread")]
 async fn admitted_local_transaction_does_not_block_executor_or_stop_on_observer_drop() {
@@ -20,15 +18,16 @@ async fn admitted_local_transaction_does_not_block_executor_or_stop_on_observer_
     let (finished_tx, finished_rx) = mpsc::channel();
     let observer = tokio::spawn(async move {
         let directory = tempfile::tempdir().expect("local state directory");
-        LocalCoreStateStore::new(directory.path()).transaction(move |_| {
-            entered_tx.send(()).expect("test observer is alive");
-            release_rx.recv().expect("test permits completion");
-            finished_tx
-                .send(())
-                .expect("test completion observer is alive");
-            Ok(())
-        })
-        .await
+        LocalCoreStateStore::new(directory.path())
+            .transaction(move |_| {
+                entered_tx.send(()).expect("test observer is alive");
+                release_rx.recv().expect("test permits completion");
+                finished_tx
+                    .send(())
+                    .expect("test completion observer is alive");
+                Ok(())
+            })
+            .await
     });
     let deadline = Instant::now() + Duration::from_secs(2);
     while entered_rx.try_recv().is_err() {
@@ -43,7 +42,6 @@ async fn admitted_local_transaction_does_not_block_executor_or_stop_on_observer_
         tokio::task::yield_now().await;
     }
 }
-
 
 #[tokio::test]
 async fn owner_excludes_every_other_store_in_its_process() {
@@ -85,7 +83,6 @@ async fn owner_excludes_every_other_store_in_its_process() {
     drop(concurrent);
     LocalCoreStateStore::open_owned(directory.path()).expect("owner after admissions end");
 }
-
 
 #[test]
 fn owner_excludes_other_processes_until_it_dies() -> Result<(), Box<dyn std::error::Error>> {

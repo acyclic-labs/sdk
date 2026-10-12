@@ -19,131 +19,259 @@ pub trait MountFilesystem: Send + Sync + 'static {
 
     /// Looks up through an already shared original native invocation.
     fn lookup_with_meter(
-        &self, path: &MountPath, work: &NativeMaterializationWork,
+        &self,
+        path: &MountPath,
+        work: &NativeMaterializationWork,
     ) -> Result<Option<MountLookup>, MountSourceError>;
     /// Looks up and pins through the same existing invocation.
     fn lookup_pinned_with_meter(
-        &self, path: &MountPath, work: &NativeMaterializationWork,
+        &self,
+        path: &MountPath,
+        work: &NativeMaterializationWork,
     ) -> Result<Option<(MountLookup, Option<MountContentPin>)>, MountSourceError>;
     /// Registers the actual observer on the same original allocation ledger.
     fn observe_view_with_meter(
-        &self, observer: std::sync::Weak<dyn ViewObserver>, work: &NativeMaterializationWork,
+        &self,
+        observer: std::sync::Weak<dyn ViewObserver>,
+        work: &NativeMaterializationWork,
     ) -> Result<(), MountSourceError>;
     /// Fences actual source changes without another ledger or queue.
-    fn fence_changes_with_meter(&self, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
+    fn fence_changes_with_meter(
+        &self,
+        work: &NativeMaterializationWork,
+    ) -> Result<(), MountSourceError>;
     /// Acquires the actual source binding lease with its physical drop proof.
     fn acquire_binding_lease_with_meter(
-        &self, expected_epoch: Option<u64>, work: &NativeMaterializationWork,
+        &self,
+        expected_epoch: Option<u64>,
+        work: &NativeMaterializationWork,
     ) -> Result<Box<dyn Send>, MountSourceError>;
     /// Captures exact paths through the existing original shared invocation.
     fn capture_host_paths_with_meter(
-        &self, root: &Path, paths: &[MountPath], expected_root_identity: crate::NativeRootIdentity,
+        &self,
+        root: &Path,
+        paths: &[MountPath],
+        expected_root_identity: crate::NativeRootIdentity,
         work: &NativeMaterializationWork,
     ) -> Result<(), MountSourceError>;
     /// Captures one subtree through the same actual capture producer.
     fn capture_host_subtree_with_meter(
-        &self, root: &Path, path: &MountPath, expected_root_identity: crate::NativeRootIdentity,
+        &self,
+        root: &Path,
+        path: &MountPath,
+        expected_root_identity: crate::NativeRootIdentity,
         work: &NativeMaterializationWork,
     ) -> Result<(), MountSourceError>;
     /// Reads a pinned range without erasing the actual owned chunk capacity.
     fn read_pinned_with_meter(
-        &self, path: &MountPath, pin: MountContentPin, offset: u64, length: u64,
-        piece: u32, sink: &mut NativeMountContentSink<'_>, work: &NativeMaterializationWork,
+        &self,
+        path: &MountPath,
+        pin: MountContentPin,
+        offset: u64,
+        length: u64,
+        piece: u32,
+        sink: &mut NativeMountContentSink<'_>,
+        work: &NativeMaterializationWork,
     ) -> Result<(), MountSourceError>;
     /// Reads actual link bytes and retains their producer-known capacity.
     fn read_link(
-        &self, path: &MountPath, work: &NativeMaterializationWork,
+        &self,
+        path: &MountPath,
+        work: &NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
     /// Reads the exact range using the existing shared native queue.
     fn read_range_with_meter(
-        &self, path: &MountPath, offset: u64, length: u32, work: &NativeMaterializationWork,
+        &self,
+        path: &MountPath,
+        offset: u64,
+        length: u32,
+        work: &NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
     /// Reads a page with the original ledger and actual capacity custody.
     fn read_directory_with_meter(
-        &self, path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32,
+        &self,
+        path: &MountPath,
+        cursor: Option<&[u8]>,
+        maximum_entries: u32,
         work: &NativeMaterializationWork,
     ) -> Result<MountDirectoryPage, MountSourceError>;
 
     /// Removes the exact binding on a shared original invocation.
     fn remove(
-        &self, path: &MountPath, expected: Option<FileId>, work: &NativeMaterializationWork,
+        &self,
+        path: &MountPath,
+        expected: Option<FileId>,
+        work: &NativeMaterializationWork,
     ) -> Result<(), MountSourceError>;
     /// Renames the exact binding with original source grants.
     fn rename(
-        &self, source: &MountPath, destination: &MountPath, replace: bool,
+        &self,
+        source: &MountPath,
+        destination: &MountPath,
+        replace: bool,
         work: &NativeMaterializationWork,
     ) -> Result<(), MountSourceError>;
     /// Mutates actual metadata and optional length through the same source.
     fn set_attributes(
-        &self, path: &MountPath, metadata: FileMetadata, logical_bytes: Option<u64>,
+        &self,
+        path: &MountPath,
+        metadata: FileMetadata,
+        logical_bytes: Option<u64>,
         work: &NativeMaterializationWork,
     ) -> Result<(), MountSourceError>;
     /// Flushes the actual candidate on the shared original invocation.
     fn flush(&self, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
     /// Opens an actual attached handle and reports its pre-erasure SDK payload claim.
-    fn open_file_with_meter(&self, path: &MountPath, work: &NativeMaterializationWork)
-        -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
+    fn open_file_with_meter(
+        &self,
+        path: &MountPath,
+        work: &NativeMaterializationWork,
+    ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
     /// Opens and proves the handle in the same coherent original invocation.
-    fn open_file_with_lookup_with_meter(&self, path: &MountPath, work: &NativeMaterializationWork)
-        -> Result<((Arc<dyn MountOpenFile>, u64), MountLookup), MountSourceError>;
+    fn open_file_with_lookup_with_meter(
+        &self,
+        path: &MountPath,
+        work: &NativeMaterializationWork,
+    ) -> Result<((Arc<dyn MountOpenFile>, u64), MountLookup), MountSourceError>;
     /// Opens the actual identity just created, without resolving a replacement.
-    fn open_created_with_meter(&self, path: &MountPath, created: &MountLookup, work: &NativeMaterializationWork)
-        -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
+    fn open_created_with_meter(
+        &self,
+        path: &MountPath,
+        created: &MountLookup,
+        work: &NativeMaterializationWork,
+    ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
     /// Captures the actual detached open-file identity with its original claim.
-    fn detach_file_with_meter(&self, path: &MountPath, work: &NativeMaterializationWork)
-        -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
+    fn detach_file_with_meter(
+        &self,
+        path: &MountPath,
+        work: &NativeMaterializationWork,
+    ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
     /// Creates an empty file, preserving an optional absent-since proof.
-    fn create_file(&self, path: &MountPath, metadata: FileMetadata, absent_since: Option<ViewStamp>,
-        work: &NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
+    fn create_file(
+        &self,
+        path: &MountPath,
+        metadata: FileMetadata,
+        absent_since: Option<ViewStamp>,
+        work: &NativeMaterializationWork,
+    ) -> Result<MountLookup, MountSourceError>;
     /// Creates an actual directory through the same source engine.
-    fn create_directory(&self, path: &MountPath, metadata: FileMetadata, work: &NativeMaterializationWork)
-        -> Result<MountLookup, MountSourceError>;
+    fn create_directory(
+        &self,
+        path: &MountPath,
+        metadata: FileMetadata,
+        work: &NativeMaterializationWork,
+    ) -> Result<MountLookup, MountSourceError>;
     /// Consumes the exact already-admitted opaque symbolic-link target.
-    fn create_symbolic_link(&self, path: &MountPath, target: crate::kernel::OwnedSourceChunk,
-        metadata: FileMetadata, work: &NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
+    fn create_symbolic_link(
+        &self,
+        path: &MountPath,
+        target: crate::kernel::OwnedSourceChunk,
+        metadata: FileMetadata,
+        work: &NativeMaterializationWork,
+    ) -> Result<MountLookup, MountSourceError>;
     /// Creates the exact native special-file kind and device identity.
-    fn create_special(&self, path: &MountPath, kind: MountNodeKind, device: Option<(u32, u32)>,
-        metadata: FileMetadata, work: &NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
+    fn create_special(
+        &self,
+        path: &MountPath,
+        kind: MountNodeKind,
+        device: Option<(u32, u32)>,
+        metadata: FileMetadata,
+        work: &NativeMaterializationWork,
+    ) -> Result<MountLookup, MountSourceError>;
     /// Reads the exact owned attribute on the operative source invocation.
-    fn read_attribute(&self, path: &MountPath, name: &[u8], work: &NativeMaterializationWork)
-        -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError>;
+    fn read_attribute(
+        &self,
+        path: &MountPath,
+        name: &[u8],
+        work: &NativeMaterializationWork,
+    ) -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError>;
     /// Lists the actual owned attribute page.
-    fn list_attributes_with_meter(&self, path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32,
-        work: &NativeMaterializationWork) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError>;
+    fn list_attributes_with_meter(
+        &self,
+        path: &MountPath,
+        cursor: Option<&[u8]>,
+        maximum_entries: u32,
+        work: &NativeMaterializationWork,
+    ) -> Result<(MountAttributePage, crate::NativeAllocation), MountSourceError>;
     /// Consumes an exact already-admitted native attribute value.
-    fn write_attribute(&self, path: &MountPath, name: &[u8],
-        value: crate::kernel::OwnedSourceChunk, mode: MountAttributeWriteMode, work: &NativeMaterializationWork)
-        -> Result<(), MountSourceError>;
+    fn write_attribute(
+        &self,
+        path: &MountPath,
+        name: &[u8],
+        value: crate::kernel::OwnedSourceChunk,
+        mode: MountAttributeWriteMode,
+        work: &NativeMaterializationWork,
+    ) -> Result<(), MountSourceError>;
     /// Removes the exact native attribute.
-    fn remove_attribute(&self, path: &MountPath, name: &[u8], work: &NativeMaterializationWork)
-        -> Result<(), MountSourceError>;
+    fn remove_attribute(
+        &self,
+        path: &MountPath,
+        name: &[u8],
+        work: &NativeMaterializationWork,
+    ) -> Result<(), MountSourceError>;
     /// Clones the actual immutable range between authenticated file identities.
-    fn clone_range_by_id(&self, source_file_id: FileId, source_offset: u64,
-        destination_file_id: FileId, destination_offset: u64, length: u64, work: &NativeMaterializationWork)
-        -> Result<(), MountSourceError>;
+    fn clone_range_by_id(
+        &self,
+        source_file_id: FileId,
+        source_offset: u64,
+        destination_file_id: FileId,
+        destination_offset: u64,
+        length: u64,
+        work: &NativeMaterializationWork,
+    ) -> Result<(), MountSourceError>;
     /// Creates the actual same-volume hard-link binding.
-    fn hard_link(&self, source: &MountPath, destination: &MountPath, work: &NativeMaterializationWork)
-        -> Result<(), MountSourceError>;
+    fn hard_link(
+        &self,
+        source: &MountPath,
+        destination: &MountPath,
+        work: &NativeMaterializationWork,
+    ) -> Result<(), MountSourceError>;
     /// Folds the actual source representation and reports exact owned capacity.
-    fn folded_path_with_meter(&self, path: &MountPath, work: &NativeMaterializationWork)
-        -> Result<Option<(MountPath, u64)>, MountSourceError>;
+    fn folded_path_with_meter(
+        &self,
+        path: &MountPath,
+        work: &NativeMaterializationWork,
+    ) -> Result<Option<(MountPath, u64)>, MountSourceError>;
     /// Queries actual source stability on the operative invocation.
-    fn view_is_stable_with_meter(&self, work: &NativeMaterializationWork) -> Result<bool, MountSourceError>;
+    fn view_is_stable_with_meter(
+        &self,
+        work: &NativeMaterializationWork,
+    ) -> Result<bool, MountSourceError>;
     /// Queries the actual source stamp.
-    fn view_stamp_with_meter(&self, work: &NativeMaterializationWork) -> Result<Option<ViewStamp>, MountSourceError>;
+    fn view_stamp_with_meter(
+        &self,
+        work: &NativeMaterializationWork,
+    ) -> Result<Option<ViewStamp>, MountSourceError>;
     /// Queries the actual writable binding epoch.
-    fn binding_epoch_with_meter(&self, work: &NativeMaterializationWork) -> Result<Option<u64>, MountSourceError>;
+    fn binding_epoch_with_meter(
+        &self,
+        work: &NativeMaterializationWork,
+    ) -> Result<Option<u64>, MountSourceError>;
     /// Traverses actual source change history under the original item limits.
-    fn unchanged_since_with_meter(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp,
-        work: &NativeMaterializationWork) -> Result<bool, MountSourceError>;
+    fn unchanged_since_with_meter(
+        &self,
+        path: &MountPath,
+        file_id: Option<FileId>,
+        stamp: ViewStamp,
+        work: &NativeMaterializationWork,
+    ) -> Result<bool, MountSourceError>;
     /// Traverses only actual reported changes through the same history engine.
-    fn reported_unchanged_since_with_meter(&self, path: &MountPath, file_id: Option<FileId>, stamp: ViewStamp,
-        work: &NativeMaterializationWork) -> Result<bool, MountSourceError>;
+    fn reported_unchanged_since_with_meter(
+        &self,
+        path: &MountPath,
+        file_id: Option<FileId>,
+        stamp: ViewStamp,
+        work: &NativeMaterializationWork,
+    ) -> Result<bool, MountSourceError>;
     /// Stops the actual owned source watcher; success confirms physical quiescence (or that this source owns no active watcher).
-    fn shutdown_with_meter(&self, work: &NativeMaterializationWork) -> Result<bool, MountSourceError>;
+    fn shutdown_with_meter(
+        &self,
+        work: &NativeMaterializationWork,
+    ) -> Result<bool, MountSourceError>;
     /// Retires this held source using only its constructor-owned cleanup credit.
     fn shutdown_with_cleanup_wait(
-        &self, _wait: &crate::CancellationToken,
+        &self,
+        _wait: &crate::CancellationToken,
     ) -> Result<bool, MountSourceError> {
         Err(MountSourceError::NativeUnsupported)
     }
@@ -152,11 +280,19 @@ pub trait MountFilesystem: Send + Sync + 'static {
         Err(MountSourceError::NativeUnsupported)
     }
     /// Traverses actual changes to this file identity under original limits.
-    fn node_unchanged_since_with_meter(&self, file_id: FileId, stamp: ViewStamp,
-        work: &NativeMaterializationWork) -> Result<bool, MountSourceError>;
+    fn node_unchanged_since_with_meter(
+        &self,
+        file_id: FileId,
+        stamp: ViewStamp,
+        work: &NativeMaterializationWork,
+    ) -> Result<bool, MountSourceError>;
     /// Traverses actual changes to this directory's immediate listing.
-    fn listing_unchanged_since_with_meter(&self, path: &MountPath, stamp: ViewStamp,
-        work: &NativeMaterializationWork) -> Result<bool, MountSourceError>;
+    fn listing_unchanged_since_with_meter(
+        &self,
+        path: &MountPath,
+        stamp: ViewStamp,
+        work: &NativeMaterializationWork,
+    ) -> Result<bool, MountSourceError>;
 
     /// Whether this source can represent native POSIX named attributes.
     fn supports_posix_named_attributes(&self) -> bool {
@@ -396,7 +532,9 @@ pub enum NativeMountStartupAdmissionError {
 }
 
 impl From<crate::WorkError> for NativeMountStartupAdmissionError {
-    fn from(error: crate::WorkError) -> Self { Self::Materialization(error.into()) }
+    fn from(error: crate::WorkError) -> Self {
+        Self::Materialization(error.into())
+    }
 }
 
 impl From<crate::DemandError> for NativeMountStartupAdmissionError {
@@ -411,11 +549,17 @@ impl From<crate::DemandError> for NativeMountStartupAdmissionError {
 impl From<NativeMountStartupAdmissionError> for NativeMountError {
     fn from(error: NativeMountStartupAdmissionError) -> Self {
         match error {
-            NativeMountStartupAdmissionError::Materialization(crate::NativeTreeMaterializationError::Work(error)) => Self::Work(error),
-            NativeMountStartupAdmissionError::Materialization(error) => Self::Materialization(error),
+            NativeMountStartupAdmissionError::Materialization(
+                crate::NativeTreeMaterializationError::Work(error),
+            ) => Self::Work(error),
+            NativeMountStartupAdmissionError::Materialization(error) => {
+                Self::Materialization(error)
+            }
             NativeMountStartupAdmissionError::Demand(error) => error.into(),
             NativeMountStartupAdmissionError::ServicesCold => Self::ServicesNotInitialized,
-            NativeMountStartupAdmissionError::ServiceUnavailable(error) => Self::ServiceUnavailable(error),
+            NativeMountStartupAdmissionError::ServiceUnavailable(error) => {
+                Self::ServiceUnavailable(error)
+            }
         }
     }
 }

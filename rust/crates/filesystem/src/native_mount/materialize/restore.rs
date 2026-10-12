@@ -11,11 +11,16 @@ pub(super) async fn restore_io<T: Send + 'static>(
         let _restore_lock = lock;
         operation(&mut NativeSourceWork::new(&work))
     };
-    let task = acyclic_native_runtime::run_blocking_io(
-        operation, Some((observer, false)),
-    ).map_err(|error| materialize_native_error(crate::NativeTreeMaterializationError::from_runtime_error(error)))?;
+    let task = acyclic_native_runtime::run_blocking_io(operation, Some((observer, false)))
+        .map_err(|error| {
+            materialize_native_error(crate::NativeTreeMaterializationError::from_runtime_error(
+                error,
+            ))
+        })?;
     task.await.map_err(|error| {
-        materialize_native_error(crate::NativeTreeMaterializationError::from_runtime_error(error))
+        materialize_native_error(crate::NativeTreeMaterializationError::from_runtime_error(
+            error,
+        ))
     })?
 }
 
@@ -23,7 +28,9 @@ pub(super) fn restore_demand_error(error: crate::demand::DemandError) -> Materia
     match error {
         crate::demand::DemandError::Work(error) => MaterializeError::Work(error),
         crate::demand::DemandError::Io(error) => MaterializeError::Io(error),
-        crate::demand::DemandError::Cancelled => MaterializeError::Cancelled(crate::CancellationError),
+        crate::demand::DemandError::Cancelled => {
+            MaterializeError::Cancelled(crate::CancellationError)
+        }
         _ => MaterializeError::InvalidDestination,
     }
 }
@@ -58,7 +65,10 @@ pub(super) fn prepare_restore(
     // No parent creation, lock creation, recovery, or stage mutation precedes
     // the identity check on the capability that owns the destination writes.
     let destination_parent = held_parent(&root, &relative.0, work)?;
-    let destination_name = relative.0.file_name().ok_or(MaterializeError::InvalidPath)?;
+    let destination_name = relative
+        .0
+        .file_name()
+        .ok_or(MaterializeError::InvalidPath)?;
     let lock = acquire_restore_lock(&destination_parent, &relative.0, true, work)?;
     cleanup_removed_restore(&destination_parent, &relative.0, work)?;
     match replacement {
@@ -66,40 +76,66 @@ pub(super) fn prepare_restore(
             .recover_entry_exchange_measured(Path::new(destination_name), work)
             .map_err(restore_demand_error)?,
         HostPathReplacement::LiveMount => recover_live_mount_replacement(
-            &destination_parent, Path::new(destination_name), &relative.0, work,
+            &destination_parent,
+            Path::new(destination_name),
+            &relative.0,
+            work,
         )?,
     }
     let stage_parent_path = match replacement {
-        HostPathReplacement::Atomic => allocation_work.path(
-            destination_root.0.parent().ok_or(MaterializeError::InvalidPath)?, None,
-        ).map_err(materialize_native_error)?,
-        HostPathReplacement::LiveMount => allocation_work.path(
-            &destination_root.0, Some(relative.0.parent().unwrap_or_else(|| Path::new(""))),
-        ).map_err(materialize_native_error)?,
+        HostPathReplacement::Atomic => allocation_work
+            .path(
+                destination_root
+                    .0
+                    .parent()
+                    .ok_or(MaterializeError::InvalidPath)?,
+                None,
+            )
+            .map_err(materialize_native_error)?,
+        HostPathReplacement::LiveMount => allocation_work
+            .path(
+                &destination_root.0,
+                Some(relative.0.parent().unwrap_or_else(|| Path::new(""))),
+            )
+            .map_err(materialize_native_error)?,
     };
     let stage_parent_root = match replacement {
-        HostPathReplacement::Atomic => HostRoot::open(&stage_parent_path.0, work)
-            .map_err(restore_demand_error)?,
-        HostPathReplacement::LiveMount => destination_parent.open_child(Path::new(""), work)
+        HostPathReplacement::Atomic => {
+            HostRoot::open(&stage_parent_path.0, work).map_err(restore_demand_error)?
+        }
+        HostPathReplacement::LiveMount => destination_parent
+            .open_child(Path::new(""), work)
             .map_err(restore_demand_error)?,
     };
-    let stage_owner = stage_parent_root.create_dir_all_held_measured(Path::new(""), work)
+    let stage_owner = stage_parent_root
+        .create_dir_all_held_measured(Path::new(""), work)
         .map_err(restore_demand_error)?;
     let (stage_name, stage_root) = create_restore_stage(&stage_owner, &allocation_work, work)?;
-    let stage_path = match allocation_work.path(&stage_parent_path.0, Some(&stage_name.0)).map_err(materialize_native_error) {
+    let stage_path = match allocation_work
+        .path(&stage_parent_path.0, Some(&stage_name.0))
+        .map_err(materialize_native_error)
+    {
         Ok(path) => path,
         Err(error) => {
             let identity = stage_root.identity();
             drop(stage_root);
-            let _ = stage_owner.remove_identity(&stage_name.0, identity, work)
+            let _ = stage_owner
+                .remove_identity(&stage_name.0, identity, work)
                 .and_then(|()| stage_owner.sync(work));
             return Err(error);
         }
     };
     drop(stage_parent_path);
     Ok(PreparedRestore {
-        root, destination_parent, stage_owner, stage_root, stage_name, stage_path,
-        destination_root, relative, lock,
+        root,
+        destination_parent,
+        stage_owner,
+        stage_root,
+        stage_name,
+        stage_path,
+        destination_root,
+        relative,
+        lock,
     })
 }
 
@@ -116,14 +152,26 @@ pub(super) fn publish_restore(
     match destination_parent.stat(name, work) {
         Ok(_) => match replacement {
             HostPathReplacement::Atomic => destination_parent
-                .exchange_to_measured(name, &stage_parent, name, work).map_err(restore_demand_error)?,
+                .exchange_to_measured(name, &stage_parent, name, work)
+                .map_err(restore_demand_error)?,
             HostPathReplacement::LiveMount => replace_live_mount(
-                &stage_parent, name, destination_parent, name, relative, work,
+                &stage_parent,
+                name,
+                destination_parent,
+                name,
+                relative,
+                work,
             )?,
         },
-        Err(crate::demand::DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-            stage_parent.rename_to(name, destination_parent, name, work).map_err(restore_demand_error)?;
-            destination_parent.sync(work).map_err(restore_demand_error)?;
+        Err(crate::demand::DemandError::Io(error))
+            if error.kind() == std::io::ErrorKind::NotFound =>
+        {
+            stage_parent
+                .rename_to(name, destination_parent, name, work)
+                .map_err(restore_demand_error)?;
+            destination_parent
+                .sync(work)
+                .map_err(restore_demand_error)?;
             stage_parent.sync(work).map_err(restore_demand_error)?;
         }
         Err(error) => return Err(restore_demand_error(error)),
@@ -131,36 +179,71 @@ pub(super) fn publish_restore(
     Ok(())
 }
 
-pub(super) fn validate_host_relative_measured(relative: &Path, work: &mut impl crate::demand::SourceDemandReadWork) -> Result<(), MaterializeError> {
+pub(super) fn validate_host_relative_measured(
+    relative: &Path,
+    work: &mut impl crate::demand::SourceDemandReadWork,
+) -> Result<(), MaterializeError> {
     let mut any = false;
     for component in relative.components() {
-        work.charge(WorkCounters { source_path_components: 1, items_examined: 1, ..WorkCounters::UNCHARGED })
-            .map_err(restore_demand_error)?;
+        work.charge(WorkCounters {
+            source_path_components: 1,
+            items_examined: 1,
+            ..WorkCounters::UNCHARGED
+        })
+        .map_err(restore_demand_error)?;
         if !matches!(component, std::path::Component::Normal(_)) {
             return Err(MaterializeError::InvalidPath);
         }
         any = true;
     }
-    if any { Ok(()) } else { Err(MaterializeError::InvalidPath) }
+    if any {
+        Ok(())
+    } else {
+        Err(MaterializeError::InvalidPath)
+    }
 }
 
-pub(super) fn held_parent(root: &HostRoot, relative: &Path, work: &mut impl crate::demand::SourceDemandReadWork) -> Result<HostRoot, MaterializeError> {
+pub(super) fn held_parent(
+    root: &HostRoot,
+    relative: &Path,
+    work: &mut impl crate::demand::SourceDemandReadWork,
+) -> Result<HostRoot, MaterializeError> {
     root.create_dir_all_held_measured(relative.parent().unwrap_or_else(|| Path::new("")), work)
         .map_err(restore_demand_error)
 }
 
-pub(super) fn create_restore_stage(parent: &HostRoot, allocation_work: &crate::NativeMaterializationWork, work: &mut impl crate::demand::SourceDemandReadWork) -> Result<((PathBuf, crate::NativeAllocation), HostRoot), MaterializeError> {
+pub(super) fn create_restore_stage(
+    parent: &HostRoot,
+    allocation_work: &crate::NativeMaterializationWork,
+    work: &mut impl crate::demand::SourceDemandReadWork,
+) -> Result<((PathBuf, crate::NativeAllocation), HostRoot), MaterializeError> {
     use std::fmt::Write as _;
     for _ in 0..16 {
         let sequence = RESTORE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
         let process = std::process::id();
-        let digits = |value: u64| if value == 0 { 1 } else { value.ilog10() as usize + 1 };
+        let digits = |value: u64| {
+            if value == 0 {
+                1
+            } else {
+                value.ilog10() as usize + 1
+            }
+        };
         let bytes = ".acyclic-restore-".len() + digits(u64::from(process)) + 1 + digits(sequence);
-        let delta = WorkCounters { bytes_encoded: bytes as u64, ..WorkCounters::UNCHARGED };
+        let delta = WorkCounters {
+            bytes_encoded: bytes as u64,
+            ..WorkCounters::UNCHARGED
+        };
         work.admit(delta).map_err(restore_demand_error)?;
-        let allocation = allocation_work.claim(bytes as u64, u64::from((bytes as u64) != 0), crate::WorkCounters::UNCHARGED).map_err(materialize_native_error)?;
+        let allocation = allocation_work
+            .claim(
+                bytes as u64,
+                u64::from((bytes as u64) != 0),
+                crate::WorkCounters::UNCHARGED,
+            )
+            .map_err(materialize_native_error)?;
         let mut name = String::with_capacity(bytes);
-        write!(name, ".acyclic-restore-{process}-{sequence}").expect("String formatting cannot fail");
+        write!(name, ".acyclic-restore-{process}-{sequence}")
+            .expect("String formatting cannot fail");
         work.record(delta).map_err(restore_demand_error)?;
         let name = (PathBuf::from(name), allocation);
         match parent.create_dir(&name.0, work) {
@@ -174,43 +257,63 @@ pub(super) fn create_restore_stage(parent: &HostRoot, allocation_work: &crate::N
                 if let Err(error) = parent.sync(work).map_err(restore_demand_error) {
                     let identity = root.identity();
                     drop(root);
-                    let _ = parent.remove_identity(&name.0, identity, work)
+                    let _ = parent
+                        .remove_identity(&name.0, identity, work)
                         .and_then(|()| parent.sync(work));
                     return Err(error);
                 }
                 return Ok((name, root));
             }
-            Err(crate::demand::DemandError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            Err(crate::demand::DemandError::Io(error))
+                if error.kind() == std::io::ErrorKind::AlreadyExists =>
+            {
                 drop(name);
             }
             Err(error) => return Err(restore_demand_error(error)),
         }
     }
     Err(MaterializeError::Io(std::io::Error::new(
-        std::io::ErrorKind::AlreadyExists, "restore stage names are exhausted",
+        std::io::ErrorKind::AlreadyExists,
+        "restore stage names are exhausted",
     )))
 }
 
-pub(super) fn restore_artifact_name(prefix: &str, relative: &Path, work: &mut impl crate::demand::SourceDemandReadWork) -> Result<PathBuf, MaterializeError> {
+pub(super) fn restore_artifact_name(
+    prefix: &str,
+    relative: &Path,
+    work: &mut impl crate::demand::SourceDemandReadWork,
+) -> Result<PathBuf, MaterializeError> {
     use std::fmt::Write as _;
     let mut hasher = blake3::Hasher::new();
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt as _;
         let bytes = relative.as_os_str().as_bytes();
-        work.charge(WorkCounters { bytes_hashed: bytes.len() as u64, ..WorkCounters::UNCHARGED }).map_err(restore_demand_error)?;
+        work.charge(WorkCounters {
+            bytes_hashed: bytes.len() as u64,
+            ..WorkCounters::UNCHARGED
+        })
+        .map_err(restore_demand_error)?;
         hasher.update(bytes);
     }
     #[cfg(windows)]
     {
         use std::os::windows::ffi::OsStrExt as _;
         for unit in relative.as_os_str().encode_wide() {
-            work.charge(WorkCounters { bytes_hashed: 2, bytes_encoded: 2, ..WorkCounters::UNCHARGED }).map_err(restore_demand_error)?;
+            work.charge(WorkCounters {
+                bytes_hashed: 2,
+                bytes_encoded: 2,
+                ..WorkCounters::UNCHARGED
+            })
+            .map_err(restore_demand_error)?;
             hasher.update(&unit.to_le_bytes());
         }
     }
     let bytes = prefix.len().checked_add(64).ok_or(WorkError::Overflow)?;
-    let delta = WorkCounters { bytes_encoded: bytes as u64, ..WorkCounters::UNCHARGED };
+    let delta = WorkCounters {
+        bytes_encoded: bytes as u64,
+        ..WorkCounters::UNCHARGED
+    };
     work.admit(delta).map_err(restore_demand_error)?;
     work.allocate(bytes as u64).map_err(restore_demand_error)?;
     let mut name = String::with_capacity(bytes);
@@ -244,11 +347,19 @@ pub(super) fn acquire_restore_lock(
     work: &mut impl crate::demand::SourceDemandReadWork,
 ) -> Result<File, MaterializeError> {
     with_restore_artifact(".acyclic-restore-lock-", relative, work, |name, work| {
-        let file = parent.open_file_with(
-            name, &crate::native_host::NativeOpenOptions::ReadWriteCreate, work,
-        ).map_err(restore_demand_error)?;
+        let file = parent
+            .open_file_with(
+                name,
+                &crate::native_host::NativeOpenOptions::ReadWriteCreate,
+                work,
+            )
+            .map_err(restore_demand_error)?;
         loop {
-            work.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED }).map_err(restore_demand_error)?;
+            work.charge(WorkCounters {
+                backend_write_operations: 1,
+                ..WorkCounters::UNCHARGED
+            })
+            .map_err(restore_demand_error)?;
             match fs2::FileExt::try_lock_exclusive(&file) {
                 Ok(()) => return Ok(file),
                 Err(error) if blocking && error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -263,63 +374,128 @@ pub(super) fn acquire_restore_lock(
 pub(super) const REMOVE_RESTORE_WITNESS: &[u8] = b"acyclic-remove-restore-v1\n";
 pub(super) const LIVE_RESTORE_WITNESS: &[u8] = b"acyclic-live-restore-v1\n";
 
-pub(super) fn create_restore_witness(parent: &HostRoot, name: &Path, contents: &[u8], work: &mut impl crate::demand::SourceDemandReadWork) -> Result<(), MaterializeError> {
+pub(super) fn create_restore_witness(
+    parent: &HostRoot,
+    name: &Path,
+    contents: &[u8],
+    work: &mut impl crate::demand::SourceDemandReadWork,
+) -> Result<(), MaterializeError> {
     use std::io::Write as _;
-    let mut file = parent.open_file_with(
-        name, &crate::native_host::NativeOpenOptions::CreateNew, work,
-    ).map_err(restore_demand_error)?;
+    let mut file = parent
+        .open_file_with(
+            name,
+            &crate::native_host::NativeOpenOptions::CreateNew,
+            work,
+        )
+        .map_err(restore_demand_error)?;
     let mut remaining = contents;
     while !remaining.is_empty() {
-        work.admit(WorkCounters { output_bytes: remaining.len() as u64, backend_write_operations: 1, ..WorkCounters::UNCHARGED })
-            .map_err(restore_demand_error)?;
-        work.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED }).map_err(restore_demand_error)?;
+        work.admit(WorkCounters {
+            output_bytes: remaining.len() as u64,
+            backend_write_operations: 1,
+            ..WorkCounters::UNCHARGED
+        })
+        .map_err(restore_demand_error)?;
+        work.charge(WorkCounters {
+            backend_write_operations: 1,
+            ..WorkCounters::UNCHARGED
+        })
+        .map_err(restore_demand_error)?;
         match file.write(remaining) {
-            Ok(0) => return Err(std::io::Error::new(std::io::ErrorKind::WriteZero, "restore witness write made no progress").into()),
+            Ok(0) => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WriteZero,
+                    "restore witness write made no progress",
+                )
+                .into());
+            }
             Ok(written) => {
-                work.record(WorkCounters { output_bytes: written as u64, ..WorkCounters::UNCHARGED }).map_err(restore_demand_error)?;
+                work.record(WorkCounters {
+                    output_bytes: written as u64,
+                    ..WorkCounters::UNCHARGED
+                })
+                .map_err(restore_demand_error)?;
                 remaining = &remaining[written..];
             }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
             Err(error) => return Err(error.into()),
         }
     }
-    work.charge(WorkCounters { durability_operations: 1, ..WorkCounters::UNCHARGED }).map_err(restore_demand_error)?;
+    work.charge(WorkCounters {
+        durability_operations: 1,
+        ..WorkCounters::UNCHARGED
+    })
+    .map_err(restore_demand_error)?;
     file.sync_all()?;
     parent.sync(work).map_err(restore_demand_error)
 }
 
-pub(super) fn validate_restore_witness(parent: &HostRoot, name: &Path, expected: &[u8], work: &mut impl crate::demand::SourceDemandReadWork) -> Result<bool, MaterializeError> {
+pub(super) fn validate_restore_witness(
+    parent: &HostRoot,
+    name: &Path,
+    expected: &[u8],
+    work: &mut impl crate::demand::SourceDemandReadWork,
+) -> Result<bool, MaterializeError> {
     use std::io::Read as _;
-    let mut file = match parent.open_file_with(
-        name, &crate::native_host::NativeOpenOptions::Read, work,
-    ) {
-        Ok(file) => file,
-        Err(crate::demand::DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(restore_demand_error(error)),
-    };
+    let mut file =
+        match parent.open_file_with(name, &crate::native_host::NativeOpenOptions::Read, work) {
+            Ok(file) => file,
+            Err(crate::demand::DemandError::Io(error))
+                if error.kind() == std::io::ErrorKind::NotFound =>
+            {
+                return Ok(false);
+            }
+            Err(error) => return Err(restore_demand_error(error)),
+        };
     let mut contents = [0_u8; 64];
-    let bound = expected.len().checked_add(1).filter(|bound| *bound <= contents.len()).ok_or(MaterializeError::InvalidOptions)?;
+    let bound = expected
+        .len()
+        .checked_add(1)
+        .filter(|bound| *bound <= contents.len())
+        .ok_or(MaterializeError::InvalidOptions)?;
     let mut read = 0;
     while read < bound {
-        work.admit(WorkCounters { source_bytes_read: (bound - read) as u64, backend_read_operations: 1, ..WorkCounters::UNCHARGED })
-            .map_err(restore_demand_error)?;
-        work.charge(WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED }).map_err(restore_demand_error)?;
+        work.admit(WorkCounters {
+            source_bytes_read: (bound - read) as u64,
+            backend_read_operations: 1,
+            ..WorkCounters::UNCHARGED
+        })
+        .map_err(restore_demand_error)?;
+        work.charge(WorkCounters {
+            backend_read_operations: 1,
+            ..WorkCounters::UNCHARGED
+        })
+        .map_err(restore_demand_error)?;
         match file.read(&mut contents[read..bound]) {
             Ok(0) => break,
             Ok(bytes) => {
-                work.record(WorkCounters { source_bytes_read: bytes as u64, ..WorkCounters::UNCHARGED }).map_err(restore_demand_error)?;
+                work.record(WorkCounters {
+                    source_bytes_read: bytes as u64,
+                    ..WorkCounters::UNCHARGED
+                })
+                .map_err(restore_demand_error)?;
                 read += bytes;
             }
             Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
             Err(error) => return Err(error.into()),
         }
     }
-    if &contents[..read] == expected { Ok(true) } else {
-        Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "restore artifact ownership witness is invalid").into())
+    if &contents[..read] == expected {
+        Ok(true)
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "restore artifact ownership witness is invalid",
+        )
+        .into())
     }
 }
 
-pub(super) fn remove_restore_witness(parent: &HostRoot, name: &Path, work: &mut impl crate::demand::SourceDemandReadWork) -> Result<(), MaterializeError> {
+pub(super) fn remove_restore_witness(
+    parent: &HostRoot,
+    name: &Path,
+    work: &mut impl crate::demand::SourceDemandReadWork,
+) -> Result<(), MaterializeError> {
     parent.remove(name, work).map_err(restore_demand_error)?;
     parent.sync(work).map_err(restore_demand_error)
 }
@@ -329,27 +505,51 @@ pub(super) fn cleanup_removed_restore(
     relative: &Path,
     work: &mut impl crate::demand::SourceDemandReadWork,
 ) -> Result<(), MaterializeError> {
-    with_restore_artifact(".acyclic-restore-removed-", relative, work, |removed, work| {
-        with_restore_artifact(".acyclic-restore-remove-witness-", relative, work, |witness, work| {
-            match parent.stat(removed, work) {
-                Ok(_) => {
-                    if !validate_restore_witness(parent, witness, REMOVE_RESTORE_WITNESS, work)? {
-                        return Err(MaterializeError::Engine("unowned restore-removal artifact collision"));
+    with_restore_artifact(
+        ".acyclic-restore-removed-",
+        relative,
+        work,
+        |removed, work| {
+            with_restore_artifact(
+                ".acyclic-restore-remove-witness-",
+                relative,
+                work,
+                |witness, work| {
+                    match parent.stat(removed, work) {
+                        Ok(_) => {
+                            if !validate_restore_witness(
+                                parent,
+                                witness,
+                                REMOVE_RESTORE_WITNESS,
+                                work,
+                            )? {
+                                return Err(MaterializeError::Engine(
+                                    "unowned restore-removal artifact collision",
+                                ));
+                            }
+                            parent.remove(removed, work).map_err(restore_demand_error)?;
+                            parent.sync(work).map_err(restore_demand_error)?;
+                            remove_restore_witness(parent, witness, work)?;
+                        }
+                        Err(crate::demand::DemandError::Io(error))
+                            if error.kind() == std::io::ErrorKind::NotFound =>
+                        {
+                            if validate_restore_witness(
+                                parent,
+                                witness,
+                                REMOVE_RESTORE_WITNESS,
+                                work,
+                            )? {
+                                remove_restore_witness(parent, witness, work)?;
+                            }
+                        }
+                        Err(error) => return Err(restore_demand_error(error)),
                     }
-                    parent.remove(removed, work).map_err(restore_demand_error)?;
-                    parent.sync(work).map_err(restore_demand_error)?;
-                    remove_restore_witness(parent, witness, work)?;
-                }
-                Err(crate::demand::DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                    if validate_restore_witness(parent, witness, REMOVE_RESTORE_WITNESS, work)? {
-                        remove_restore_witness(parent, witness, work)?;
-                    }
-                }
-                Err(error) => return Err(restore_demand_error(error)),
-            }
-            Ok(())
-        })
-    })
+                    Ok(())
+                },
+            )
+        },
+    )
 }
 
 pub(super) fn remove_restored_path(
@@ -358,22 +558,35 @@ pub(super) fn remove_restored_path(
     relative: &Path,
     work: &mut impl crate::demand::SourceDemandReadWork,
 ) -> Result<(), MaterializeError> {
-    with_restore_artifact(".acyclic-restore-removed-", relative, work, |removed, work| {
-        with_restore_artifact(".acyclic-restore-remove-witness-", relative, work, |witness, work| {
-            create_restore_witness(parent, witness, REMOVE_RESTORE_WITNESS, work)?;
-            match parent.stat(destination_name, work) {
-                Ok(_) => {
-                    parent.rename_to(destination_name, parent, removed, work).map_err(restore_demand_error)?;
-                    parent.sync(work).map_err(restore_demand_error)?;
-                    parent.remove(removed, work).map_err(restore_demand_error)?;
-                    parent.sync(work).map_err(restore_demand_error)?;
-                }
-                Err(crate::demand::DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => return Err(restore_demand_error(error)),
-            }
-            remove_restore_witness(parent, witness, work)
-        })
-    })
+    with_restore_artifact(
+        ".acyclic-restore-removed-",
+        relative,
+        work,
+        |removed, work| {
+            with_restore_artifact(
+                ".acyclic-restore-remove-witness-",
+                relative,
+                work,
+                |witness, work| {
+                    create_restore_witness(parent, witness, REMOVE_RESTORE_WITNESS, work)?;
+                    match parent.stat(destination_name, work) {
+                        Ok(_) => {
+                            parent
+                                .rename_to(destination_name, parent, removed, work)
+                                .map_err(restore_demand_error)?;
+                            parent.sync(work).map_err(restore_demand_error)?;
+                            parent.remove(removed, work).map_err(restore_demand_error)?;
+                            parent.sync(work).map_err(restore_demand_error)?;
+                        }
+                        Err(crate::demand::DemandError::Io(error))
+                            if error.kind() == std::io::ErrorKind::NotFound => {}
+                        Err(error) => return Err(restore_demand_error(error)),
+                    }
+                    remove_restore_witness(parent, witness, work)
+                },
+            )
+        },
+    )
 }
 
 pub(super) fn replace_live_mount(
@@ -385,25 +598,44 @@ pub(super) fn replace_live_mount(
     work: &mut impl crate::demand::SourceDemandReadWork,
 ) -> Result<(), MaterializeError> {
     recover_live_mount_replacement(parent, destination_name, relative, work)?;
-    with_restore_artifact(".acyclic-restore-backup-", relative, work, |backup, work| {
-        with_restore_artifact(".acyclic-restore-live-witness-", relative, work, |witness, work| {
-            create_restore_witness(parent, witness, LIVE_RESTORE_WITNESS, work)?;
-            parent.rename_to(destination_name, parent, backup, work).map_err(restore_demand_error)?;
-            parent.sync(work).map_err(restore_demand_error)?;
-            if let Err(error) = staged_parent.rename_to(staged_name, parent, destination_name, work) {
-                if let Err(rollback) = parent.rename_to(backup, parent, destination_name, work) {
-                    return Err(MaterializeError::RestoreRollback { primary: error, rollback });
-                }
-                parent.sync(work).map_err(restore_demand_error)?;
-                return Err(restore_demand_error(error));
-            }
-            parent.sync(work).map_err(restore_demand_error)?;
-            staged_parent.sync(work).map_err(restore_demand_error)?;
-            parent.remove(backup, work).map_err(restore_demand_error)?;
-            parent.sync(work).map_err(restore_demand_error)?;
-            remove_restore_witness(parent, witness, work)
-        })
-    })
+    with_restore_artifact(
+        ".acyclic-restore-backup-",
+        relative,
+        work,
+        |backup, work| {
+            with_restore_artifact(
+                ".acyclic-restore-live-witness-",
+                relative,
+                work,
+                |witness, work| {
+                    create_restore_witness(parent, witness, LIVE_RESTORE_WITNESS, work)?;
+                    parent
+                        .rename_to(destination_name, parent, backup, work)
+                        .map_err(restore_demand_error)?;
+                    parent.sync(work).map_err(restore_demand_error)?;
+                    if let Err(error) =
+                        staged_parent.rename_to(staged_name, parent, destination_name, work)
+                    {
+                        if let Err(rollback) =
+                            parent.rename_to(backup, parent, destination_name, work)
+                        {
+                            return Err(MaterializeError::RestoreRollback {
+                                primary: error,
+                                rollback,
+                            });
+                        }
+                        parent.sync(work).map_err(restore_demand_error)?;
+                        return Err(restore_demand_error(error));
+                    }
+                    parent.sync(work).map_err(restore_demand_error)?;
+                    staged_parent.sync(work).map_err(restore_demand_error)?;
+                    parent.remove(backup, work).map_err(restore_demand_error)?;
+                    parent.sync(work).map_err(restore_demand_error)?;
+                    remove_restore_witness(parent, witness, work)
+                },
+            )
+        },
+    )
 }
 
 pub(super) fn recover_live_mount_replacement(
@@ -412,31 +644,51 @@ pub(super) fn recover_live_mount_replacement(
     relative: &Path,
     work: &mut impl crate::demand::SourceDemandReadWork,
 ) -> Result<(), MaterializeError> {
-    with_restore_artifact(".acyclic-restore-backup-", relative, work, |backup, work| {
-        with_restore_artifact(".acyclic-restore-live-witness-", relative, work, |witness, work| {
-            let backup_exists = match parent.stat(backup, work) {
-                Ok(_) => true,
-                Err(crate::demand::DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => false,
-                Err(error) => return Err(restore_demand_error(error)),
-            };
-            if !backup_exists {
-                if validate_restore_witness(parent, witness, LIVE_RESTORE_WITNESS, work)? {
-                    remove_restore_witness(parent, witness, work)?;
-                }
-                return Ok(());
-            }
-            if !validate_restore_witness(parent, witness, LIVE_RESTORE_WITNESS, work)? {
-                return Err(MaterializeError::Engine("unowned live-restore backup collision"));
-            }
-            match parent.stat(destination_name, work) {
-                Ok(_) => parent.remove(backup, work).map_err(restore_demand_error)?,
-                Err(crate::demand::DemandError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => {
-                    parent.rename_to(backup, parent, destination_name, work).map_err(restore_demand_error)?;
-                }
-                Err(error) => return Err(restore_demand_error(error)),
-            }
-            parent.sync(work).map_err(restore_demand_error)?;
-            remove_restore_witness(parent, witness, work)
-        })
-    })
+    with_restore_artifact(
+        ".acyclic-restore-backup-",
+        relative,
+        work,
+        |backup, work| {
+            with_restore_artifact(
+                ".acyclic-restore-live-witness-",
+                relative,
+                work,
+                |witness, work| {
+                    let backup_exists = match parent.stat(backup, work) {
+                        Ok(_) => true,
+                        Err(crate::demand::DemandError::Io(error))
+                            if error.kind() == std::io::ErrorKind::NotFound =>
+                        {
+                            false
+                        }
+                        Err(error) => return Err(restore_demand_error(error)),
+                    };
+                    if !backup_exists {
+                        if validate_restore_witness(parent, witness, LIVE_RESTORE_WITNESS, work)? {
+                            remove_restore_witness(parent, witness, work)?;
+                        }
+                        return Ok(());
+                    }
+                    if !validate_restore_witness(parent, witness, LIVE_RESTORE_WITNESS, work)? {
+                        return Err(MaterializeError::Engine(
+                            "unowned live-restore backup collision",
+                        ));
+                    }
+                    match parent.stat(destination_name, work) {
+                        Ok(_) => parent.remove(backup, work).map_err(restore_demand_error)?,
+                        Err(crate::demand::DemandError::Io(error))
+                            if error.kind() == std::io::ErrorKind::NotFound =>
+                        {
+                            parent
+                                .rename_to(backup, parent, destination_name, work)
+                                .map_err(restore_demand_error)?;
+                        }
+                        Err(error) => return Err(restore_demand_error(error)),
+                    }
+                    parent.sync(work).map_err(restore_demand_error)?;
+                    remove_restore_witness(parent, witness, work)
+                },
+            )
+        },
+    )
 }

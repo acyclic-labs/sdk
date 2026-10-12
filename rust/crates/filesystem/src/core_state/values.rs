@@ -12,7 +12,10 @@ pub(super) enum RecordKey {
 }
 
 impl RecordKey {
-    pub(super) fn paths(self, root: &Namespace) -> RecordPaths<'_> {
+    pub(super) fn paths(
+        self,
+        root: &Namespace,
+    ) -> Result<RecordPaths<'_>, LocalCoreStateStoreError> {
         match self {
             Self::Context(id) => root.record(WORKSPACE_CONTEXT_FAMILY, &id.into_bytes()),
             Self::Children(id) => root.record(CONTEXT_CHILDREN_FAMILY, &id.into_bytes()),
@@ -45,14 +48,30 @@ pub(super) enum RecordValue {
 impl Serialize for RecordValue {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         match self {
-            Self::Context(value) => serializer.serialize_newtype_variant("RecordValue", 0, "Context", value),
-            Self::Children(value) => serializer.serialize_newtype_variant("RecordValue", 1, "Children", value),
-            Self::ChildCount(value) => serializer.serialize_newtype_variant("RecordValue", 2, "ChildCount", value),
-            Self::ChildIndex(value) => serializer.serialize_newtype_variant("RecordValue", 3, "ChildIndex", value),
-            Self::Lineage(value) => serializer.serialize_newtype_variant("RecordValue", 4, "Lineage", value),
-            Self::LazyWorkspace(value) => serializer.serialize_newtype_variant("RecordValue", 5, "LazyWorkspace", value),
-            Self::FlatContext(value) => serializer.serialize_newtype_variant("RecordValue", 0, "Context", value),
-            Self::FlatChildren(value) => serializer.serialize_newtype_variant("RecordValue", 1, "Children", value),
+            Self::Context(value) => {
+                serializer.serialize_newtype_variant("RecordValue", 0, "Context", value)
+            }
+            Self::Children(value) => {
+                serializer.serialize_newtype_variant("RecordValue", 1, "Children", value)
+            }
+            Self::ChildCount(value) => {
+                serializer.serialize_newtype_variant("RecordValue", 2, "ChildCount", value)
+            }
+            Self::ChildIndex(value) => {
+                serializer.serialize_newtype_variant("RecordValue", 3, "ChildIndex", value)
+            }
+            Self::Lineage(value) => {
+                serializer.serialize_newtype_variant("RecordValue", 4, "Lineage", value)
+            }
+            Self::LazyWorkspace(value) => {
+                serializer.serialize_newtype_variant("RecordValue", 5, "LazyWorkspace", value)
+            }
+            Self::FlatContext(value) => {
+                serializer.serialize_newtype_variant("RecordValue", 0, "Context", value)
+            }
+            Self::FlatChildren(value) => {
+                serializer.serialize_newtype_variant("RecordValue", 1, "Children", value)
+            }
         }
     }
 }
@@ -151,7 +170,9 @@ impl Serialize for Change {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeSeq;
         let mut sequence = serializer.serialize_seq(Some(self.0.len()))?;
-        for record in &self.0 { sequence.serialize_element(&(record.key, &record.value))?; }
+        for record in &self.0 {
+            sequence.serialize_element(&(record.key, &record.value))?;
+        }
         sequence.end()
     }
 }
@@ -166,13 +187,27 @@ impl TryFrom<Vec<(RecordKey, Option<RecordValue>)>> for Change {
                 return Err("core-state record value does not match its key");
             }
         }
-        Ok(Self(records.into_iter().map(|(key, value)| Resident { key, value, allocation: None }).collect(), None))
+        Ok(Self(
+            records
+                .into_iter()
+                .map(|(key, value)| Resident {
+                    key,
+                    value,
+                    allocation: None,
+                })
+                .collect(),
+            None,
+        ))
     }
 }
 
 impl Change {
     pub(super) fn put<T: Logged>(&mut self, id: T::Id, value: Option<T>) {
-        self.0.push(Resident { key: T::key(id), value: value.map(T::into_value), allocation: None });
+        self.0.push(Resident {
+            key: T::key(id),
+            value: value.map(T::into_value),
+            allocation: None,
+        });
     }
 
     /// Replaces a child bucket together with the count read before it.
@@ -181,7 +216,9 @@ impl Change {
         parent: WorkspaceContextId,
         descendants: Option<BTreeSet<WorkspaceContextId>>,
     ) {
-        let count = descendants.as_ref().map(|children| ContextChildCount(children.len() as u64));
+        let count = descendants
+            .as_ref()
+            .map(|children| ContextChildCount(children.len() as u64));
         self.put(parent, descendants.map(ContextChildren));
         self.put(parent, count);
     }
@@ -199,9 +236,7 @@ pub(super) fn context_children(
 }
 
 /// Installs the child index derived from every context.
-pub(super) fn index_change(
-    records: impl IntoIterator<Item = WorkspaceContext>,
-) -> Change {
+pub(super) fn index_change(records: impl IntoIterator<Item = WorkspaceContext>) -> Change {
     let mut change = Change::default();
     for (parent, descendants) in context_children(records) {
         change.put_children(parent, Some(descendants));
@@ -227,26 +262,56 @@ pub(super) struct Residents(
 
 impl Residents {
     pub(super) fn get(&self, key: &RecordKey) -> Option<&Option<RecordValue>> {
-        self.0.iter().find(|record| record.key == *key).map(|record| &record.value)
+        self.0
+            .iter()
+            .find(|record| record.key == *key)
+            .map(|record| &record.value)
     }
     pub(super) fn insert(&mut self, key: RecordKey, value: Option<RecordValue>) {
-        let record = Resident { key, value, allocation: None };
+        let record = Resident {
+            key,
+            value,
+            allocation: None,
+        };
         if let Some(index) = self.0.iter().position(|record| record.key == key) {
             self.0[index] = record;
-        } else { self.0.push(record); }
+        } else {
+            self.0.push(record);
+        }
     }
-    pub(super) fn clear(&mut self) { self.0.clear(); }
-    pub(super) fn keys(&self) -> impl Iterator<Item = &RecordKey> { self.0.iter().map(|record| &record.key) }
-    pub(super) fn adopt_native(&mut self, work: &crate::materializer::NativeMaterializationWork) -> Result<(), LocalCoreStateStoreError> {
+    pub(super) fn clear(&mut self) {
+        self.0.clear();
+    }
+    pub(super) fn keys(&self) -> impl Iterator<Item = &RecordKey> {
+        self.0.iter().map(|record| &record.key)
+    }
+    pub(super) fn adopt_native(
+        &mut self,
+        work: &crate::materializer::NativeMaterializationWork,
+    ) -> Result<(), LocalCoreStateStoreError> {
         let needed = self.0.len();
         reserve_slots(&mut self.0, needed, work, &mut self.1)?;
         for record in &mut self.0 {
-            work.charge(crate::WorkCounters { items_examined: 1, ..Default::default() })?;
-            let bytes = record.value.as_ref().map(|value| native_records::native_record_owned_bytes(value, work)).transpose()?.unwrap_or(0);
-            if record.allocation.is_none() { record.allocation = Some(work.claim(0, 0, crate::WorkCounters::UNCHARGED)?); }
+            work.charge(crate::WorkCounters {
+                items_examined: 1,
+                ..Default::default()
+            })?;
+            let bytes = record
+                .value
+                .as_ref()
+                .map(|value| native_records::native_record_owned_bytes(value, work))
+                .transpose()?
+                .unwrap_or(0);
+            if record.allocation.is_none() {
+                record.allocation = Some(work.claim(0, 0, crate::WorkCounters::UNCHARGED)?);
+            }
             let allocation = record.allocation.as_mut().expect("adopted resident");
             if allocation.bytes() < bytes {
-                let mut prefix = work.claim(bytes - allocation.bytes(), 0, crate::WorkCounters::UNCHARGED)?;
+                let mut prefix = work.claim(
+                    bytes - allocation.bytes(),
+                    0,
+                    crate::WorkCounters::UNCHARGED,
+                )?;
                 allocation.absorb(&mut prefix)?;
             }
         }
@@ -284,7 +349,9 @@ impl<K: Serialize, V: Serialize> Serialize for FlatMap<K, V> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(Some(self.0.len()))?;
-        for (key, value) in &self.0 { map.serialize_entry(key, value)?; }
+        for (key, value) in &self.0 {
+            map.serialize_entry(key, value)?;
+        }
         map.end()
     }
 }
@@ -292,17 +359,27 @@ impl<K: Serialize, V: Serialize> Serialize for FlatMap<K, V> {
 impl<'de, K: Deserialize<'de>, V: Deserialize<'de>> Deserialize<'de> for FlatMap<K, V> {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         struct FlatMapVisitor<K, V>(PhantomData<(K, V)>);
-        impl<'de, K: Deserialize<'de>, V: Deserialize<'de>> serde::de::Visitor<'de> for FlatMapVisitor<K, V> {
+        impl<'de, K: Deserialize<'de>, V: Deserialize<'de>> serde::de::Visitor<'de>
+            for FlatMapVisitor<K, V>
+        {
             type Value = FlatMap<K, V>;
             fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 formatter.write_str("a core-state flat map")
             }
-            fn visit_newtype_struct<D: serde::Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+            fn visit_newtype_struct<D: serde::Deserializer<'de>>(
+                self,
+                deserializer: D,
+            ) -> Result<Self::Value, D::Error> {
                 deserializer.deserialize_map(self)
             }
-            fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<Self::Value, A::Error> {
                 let mut entries = Vec::new();
-                while let Some(entry) = map.next_entry()? { entries.push(entry); }
+                while let Some(entry) = map.next_entry()? {
+                    entries.push(entry);
+                }
                 Ok(FlatMap(entries))
             }
         }
@@ -312,28 +389,44 @@ impl<'de, K: Deserialize<'de>, V: Deserialize<'de>> Deserialize<'de> for FlatMap
 
 impl RecordValue {
     pub(super) fn matches(&self, key: RecordKey) -> bool {
-        matches!((key, self),
-            (RecordKey::Context(_), Self::Context(_) | Self::FlatContext(_)) |
-            (RecordKey::Children(_), Self::Children(_) | Self::FlatChildren(_)) |
-            (RecordKey::ChildCount(_), Self::ChildCount(_)) |
-            (RecordKey::ChildIndex, Self::ChildIndex(_)) |
-            (RecordKey::Lineage(_), Self::Lineage(_)) |
-            (RecordKey::LazyWorkspace(_), Self::LazyWorkspace(_)))
+        matches!(
+            (key, self),
+            (
+                RecordKey::Context(_),
+                Self::Context(_) | Self::FlatContext(_)
+            ) | (
+                RecordKey::Children(_),
+                Self::Children(_) | Self::FlatChildren(_)
+            ) | (RecordKey::ChildCount(_), Self::ChildCount(_))
+                | (RecordKey::ChildIndex, Self::ChildIndex(_))
+                | (RecordKey::Lineage(_), Self::Lineage(_))
+                | (RecordKey::LazyWorkspace(_), Self::LazyWorkspace(_))
+        )
     }
 
-    pub(super) fn normalize(&mut self, work: Option<&crate::NativeMaterializationWork>) -> Result<(), LocalCoreStateStoreError> {
+    pub(super) fn normalize(
+        &mut self,
+        work: Option<&crate::NativeMaterializationWork>,
+    ) -> Result<(), LocalCoreStateStoreError> {
         match (self, work) {
             (Self::FlatContext(context), Some(work)) => measured_order(&mut context.roots.0, work)?,
-            (Self::FlatChildren(children), Some(work)) => native_records::canonical_ids(children, work)?,
+            (Self::FlatChildren(children), Some(work)) => {
+                native_records::canonical_ids(children, work)?
+            }
             (Self::FlatContext(context), None) => {
                 context.roots.0.sort_by(|left, right| left.0.cmp(&right.0));
                 context.roots.0.dedup_by(|later, earlier| {
-                    if later.0 != earlier.0 { return false; }
+                    if later.0 != earlier.0 {
+                        return false;
+                    }
                     std::mem::swap(later, earlier);
                     true
                 });
             }
-            (Self::FlatChildren(children), None) => { children.sort_unstable(); children.dedup(); }
+            (Self::FlatChildren(children), None) => {
+                children.sort_unstable();
+                children.dedup();
+            }
             _ => {}
         }
         Ok(())
@@ -341,20 +434,26 @@ impl RecordValue {
 }
 
 impl Change {
-    pub(super) fn new(work: &crate::materializer::NativeMaterializationWork) -> Result<Self, LocalCoreStateStoreError> {
+    pub(super) fn new(
+        work: &crate::materializer::NativeMaterializationWork,
+    ) -> Result<Self, LocalCoreStateStoreError> {
         work.charge(crate::WorkCounters::UNCHARGED)?;
         Ok(Self::default())
     }
 
     pub(super) fn put_owned(
-        &mut self, key: RecordKey, value: NativeOwnedCoreState<RecordValue>,
+        &mut self,
+        key: RecordKey,
+        value: NativeOwnedCoreState<RecordValue>,
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(), LocalCoreStateStoreError> {
         self.push(key, Some(value), work)
     }
 
     pub(super) fn put_scalar(
-        &mut self, key: RecordKey, value: Option<RecordValue>,
+        &mut self,
+        key: RecordKey,
+        value: Option<RecordValue>,
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(), LocalCoreStateStoreError> {
         if let Some(value) = &value {
@@ -363,14 +462,19 @@ impl Change {
             }
         }
         let value = match value {
-            Some(value) => Some(NativeOwnedCoreState::from_parts(value, work.claim(0, 0, crate::WorkCounters::UNCHARGED)?)),
+            Some(value) => Some(NativeOwnedCoreState::from_parts(
+                value,
+                work.claim(0, 0, crate::WorkCounters::UNCHARGED)?,
+            )),
             None => None,
         };
         self.push(key, value, work)
     }
 
     pub(super) fn push(
-        &mut self, key: RecordKey, value: Option<NativeOwnedCoreState<RecordValue>>,
+        &mut self,
+        key: RecordKey,
+        value: Option<NativeOwnedCoreState<RecordValue>>,
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(), LocalCoreStateStoreError> {
         let mut empty = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
@@ -378,15 +482,23 @@ impl Change {
         reserve_slots(&mut self.0, needed, work, &mut self.1)?;
         let value = if let Some(value) = value {
             let (value, mut allocation) = value.into_parts();
-            if !value.matches(key) { return Err(LocalCoreStateStoreError::Integrity); }
+            if !value.matches(key) {
+                return Err(LocalCoreStateStoreError::Integrity);
+            }
             if !allocation.matches_work(work) {
                 drop(value);
                 return Err(LocalCoreStateStoreError::NativeLedgerMismatch);
             }
             empty.absorb(&mut allocation)?;
             Some(value)
-        } else { None };
-        self.0.push(Resident { key, value, allocation: Some(empty) });
+        } else {
+            None
+        };
+        self.0.push(Resident {
+            key,
+            value,
+            allocation: Some(empty),
+        });
         Ok(())
     }
 }

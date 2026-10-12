@@ -4,17 +4,21 @@ use super::*;
 pub trait NativeMountCallbackGuard: Send + Sync {
     /// Admits the real verification future on the callback's original context.
     fn check<'a>(
-        &'a self, work: &'a NativeMaterializationWork,
+        &'a self,
+        work: &'a NativeMaterializationWork,
     ) -> Result<NativeMountCallbackFuture<'a>, NativeMountError>;
     /// Verifies current authored namespace WRITE permission on the same original task owner, fence, exact source and purpose.
     fn check_write<'a>(
-        &'a self, work: &'a NativeMaterializationWork,
+        &'a self,
+        work: &'a NativeMaterializationWork,
     ) -> Result<NativeMountCallbackFuture<'a>, NativeMountError>;
 }
 
 /// One directly erased authorization future and its original funded custody.
 pub struct NativeMountCallbackFuture<'a> {
-    pub(super) future: std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), NativeMountError>> + Send + 'a>>,
+    pub(super) future: std::pin::Pin<
+        Box<dyn std::future::Future<Output = Result<(), NativeMountError>> + Send + 'a>,
+    >,
     pub(super) _custody: crate::NativeAllocation,
 }
 
@@ -27,14 +31,21 @@ impl<'a> NativeMountCallbackFuture<'a> {
     {
         let future_bytes = std::mem::size_of::<F>();
         let allocation = work.claim(
-            future_bytes as u64, u64::from(future_bytes != 0), crate::WorkCounters::UNCHARGED)?;
+            future_bytes as u64,
+            u64::from(future_bytes != 0),
+            crate::WorkCounters::UNCHARGED,
+        )?;
         let future = Box::pin(build());
-        Ok(Self { future, _custody: allocation })
+        Ok(Self {
+            future,
+            _custody: allocation,
+        })
     }
 
     /// Preallocates the exact typed failure slot before authorization starts.
     pub fn new_guarded<E, F, B>(
-        work: &NativeMaterializationWork, build: B,
+        work: &NativeMaterializationWork,
+        build: B,
     ) -> Result<Self, NativeMountError>
     where
         E: std::error::Error + Send + Sync + 'static,
@@ -54,7 +65,8 @@ impl<'a> NativeMountCallbackFuture<'a> {
     }
     /// Reuses an already funded native denial rather than nesting its custody inside another cause slot.
     pub(crate) fn new_native_guarded<F, B>(
-        work: &NativeMaterializationWork, build: B,
+        work: &NativeMaterializationWork,
+        build: B,
     ) -> Result<Self, NativeMountError>
     where
         F: std::future::Future<Output = Result<(), NativeMountError>> + Send + 'a,
@@ -75,7 +87,8 @@ impl std::future::Future for NativeMountCallbackFuture<'_> {
     type Output = Result<(), NativeMountError>;
 
     fn poll(
-        self: std::pin::Pin<&mut Self>, context: &mut std::task::Context<'_>,
+        self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Self::Output> {
         self.get_mut().future.as_mut().poll(context)
     }
@@ -86,14 +99,17 @@ pub(super) fn callback_failure_slot<E>(
 ) -> Result<(Box<std::mem::MaybeUninit<E>>, crate::NativeAllocation), NativeMountError> {
     let slot_bytes = std::mem::size_of::<E>();
     let allocation = work.claim(
-        slot_bytes as u64, u64::from(slot_bytes != 0), crate::WorkCounters::UNCHARGED,
+        slot_bytes as u64,
+        u64::from(slot_bytes != 0),
+        crate::WorkCounters::UNCHARGED,
     )?;
     // Tuple fields retire the boxed slot before its allocation.
     Ok((Box::new(std::mem::MaybeUninit::uninit()), allocation))
 }
 
 pub(super) fn callback_failure<E: std::error::Error + Send + Sync + 'static>(
-    (source, custody): (Box<std::mem::MaybeUninit<E>>, crate::NativeAllocation), error: E,
+    (source, custody): (Box<std::mem::MaybeUninit<E>>, crate::NativeAllocation),
+    error: E,
 ) -> NativeMountError {
     let source = Box::write(source, error);
     NativeMountError::CallbackDenied { source, custody }
@@ -103,7 +119,8 @@ pub(super) fn callback_failure<E: std::error::Error + Send + Sync + 'static>(
 #[derive(Default)]
 pub(crate) struct NativeMountMeterActivation {
     pub(super) meter: std::sync::Weak<crate::demand::NativeDemandReadMeter>,
-    pub(super) resource_allowance: Option<std::sync::Weak<crate::materializer::NativeResourceAllowance>>,
+    pub(super) resource_allowance:
+        Option<std::sync::Weak<crate::materializer::NativeResourceAllowance>>,
     pub(super) capture_origin: Option<std::sync::Weak<crate::demand::CaptureTransientCustody>>,
     pub(super) invocation: Option<std::sync::Weak<crate::materializer::NativeInvocationView>>,
     pub(super) execution: Option<std::sync::Weak<crate::materializer::NativeSourceExecutionView>>,
@@ -129,27 +146,45 @@ impl NativeMountMeterActivation {
         let cancellation = meter.lock().cancellation().clone();
         Some(NativeMaterializationWork {
             cancellation,
-            state: meter, resource: resource_allowance, capture_origin: self.capture_origin.clone(), invocation, execution,
+            state: meter,
+            resource: resource_allowance,
+            capture_origin: self.capture_origin.clone(),
+            invocation,
+            execution,
         })
     }
 
     pub(super) fn matches(&self, work: &NativeMaterializationWork) -> bool {
         self.meter.as_ptr() == Arc::as_ptr(&work.state)
-            && self.resource_allowance.as_ref().map(std::sync::Weak::as_ptr) == work.resource.as_ref().map(Arc::as_ptr)
-            && self.capture_origin.as_ref().map(std::sync::Weak::as_ptr) == work.capture_origin.as_ref().map(std::sync::Weak::as_ptr)
-            && self.execution.as_ref().map(std::sync::Weak::as_ptr) == work.execution.as_ref().map(Arc::as_ptr)
-            && self.invocation.as_ref().map(std::sync::Weak::as_ptr) == work.invocation.as_ref().map(Arc::as_ptr)
+            && self
+                .resource_allowance
+                .as_ref()
+                .map(std::sync::Weak::as_ptr)
+                == work.resource.as_ref().map(Arc::as_ptr)
+            && self.capture_origin.as_ref().map(std::sync::Weak::as_ptr)
+                == work.capture_origin.as_ref().map(std::sync::Weak::as_ptr)
+            && self.execution.as_ref().map(std::sync::Weak::as_ptr)
+                == work.execution.as_ref().map(Arc::as_ptr)
+            && self.invocation.as_ref().map(std::sync::Weak::as_ptr)
+                == work.invocation.as_ref().map(Arc::as_ptr)
     }
 
     pub(crate) fn enter(
-        &mut self, work: &NativeMaterializationWork,
+        &mut self,
+        work: &NativeMaterializationWork,
     ) -> Result<u64, NativeMountError> {
         if self.depth != 0 && !self.matches(work) {
             return Err(NativeMountError::ControlPending);
         }
-        let depth = self.depth.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+        let depth = self
+            .depth
+            .checked_add(1)
+            .ok_or(crate::WorkError::Overflow)?;
         if self.depth == 0 {
-            let generation = self.generation.checked_add(1).ok_or(crate::WorkError::Overflow)?;
+            let generation = self
+                .generation
+                .checked_add(1)
+                .ok_or(crate::WorkError::Overflow)?;
             self.meter = Arc::downgrade(&work.state);
             self.resource_allowance = work.resource.as_ref().map(Arc::downgrade);
             self.capture_origin = work.capture_origin.clone();
@@ -161,11 +196,11 @@ impl NativeMountMeterActivation {
         Ok(self.generation)
     }
 
-    pub(crate) fn leave(
-        &mut self, work: &NativeMaterializationWork, generation: u64,
-    ) {
-        assert!(self.depth != 0 && self.generation == generation && self.matches(work),
-            "native accounting scope must retire its own activation");
+    pub(crate) fn leave(&mut self, work: &NativeMaterializationWork, generation: u64) {
+        assert!(
+            self.depth != 0 && self.generation == generation && self.matches(work),
+            "native accounting scope must retire its own activation"
+        );
         self.depth -= 1;
         if self.depth == 0 {
             self.meter = std::sync::Weak::new();
@@ -187,7 +222,10 @@ pub(crate) fn run_native_mount_handler<T>(
         .map_err(|(cause, work)| (cause.into(), work))?;
     let result = run_native_mount_handler_on_meter(&work, operation);
     match result {
-        Ok(value) => Ok(crate::OperationReceipt { value, work: work.receipt() }),
+        Ok(value) => Ok(crate::OperationReceipt {
+            value,
+            work: work.receipt(),
+        }),
         Err(cause) => Err((cause, work.receipt())),
     }
 }
@@ -197,11 +235,14 @@ pub(crate) fn run_native_mount_handler_on_meter<T>(
     work: &NativeMaterializationWork,
     operation: impl FnOnce(&NativeMaterializationWork) -> Result<T, NativeMountError>,
 ) -> Result<T, NativeMountError> {
-    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        operation(work)
-    })).unwrap_or_else(|panic| Err(NativeMountError::DriverPanicked {
-        operation: "SDK callback", panic: std::sync::Mutex::new(panic),
-    }))
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| operation(work))).unwrap_or_else(
+        |panic| {
+            Err(NativeMountError::DriverPanicked {
+                operation: "SDK callback",
+                panic: std::sync::Mutex::new(panic),
+            })
+        },
+    )
 }
 
 /// Borrowed stock-source consistency data, not namespace or task authority.
@@ -229,9 +270,12 @@ pub(super) struct NativeMountNamespaceBinding {
 #[cfg(windows)]
 impl NativeMountNamespaceBinding {
     pub(super) fn matches(&self, next: &NativeMountSourceLineage<'_>) -> bool {
-        Arc::ptr_eq(&self.owner, &next.owner) && self.root == *next.root
+        Arc::ptr_eq(&self.owner, &next.owner)
+            && self.root == *next.root
             && match (&self.native_original, next.native_original) {
-                (Some(old), Some(new)) => old.shares_ledger(new) && old.shares_resource_allowance(new),
+                (Some(old), Some(new)) => {
+                    old.shares_ledger(new) && old.shares_resource_allowance(new)
+                }
                 (None, None) => true,
                 _ => false,
             }

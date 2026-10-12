@@ -28,7 +28,7 @@ pub(crate) struct PiRootPreparation {
     pub(crate) command: WorkflowCommand,
     pub(crate) plan: TaskEffectPlan,
     pub(crate) request: PiRootRequest,
-    pub(crate) context: std::sync::Arc<acyclic_harness::NativeTaskContext>,
+    pub(crate) context: std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>,
     pub(crate) custody: NativeAllocation,
 }
 
@@ -40,7 +40,7 @@ impl PiRootPreparation {
         session: &Path, runtime: &super::pi_native_host::PiNativeRuntime,
         filesystem: &FilesystemHost<super::LocalAuthorityBackend, super::LocalObjectBackend>,
         binding: &PiTaskBinding, origin: super::pi_recovery::PiTaskOrigin<'_>,
-        context: Option<std::sync::Arc<acyclic_harness::NativeTaskContext>>,
+        context: Option<std::sync::Arc<acyclic_harness::runtime::NativeTaskContext>>,
         work: &NativeMaterializationWork,
     ) -> Result<Self>
     {
@@ -67,7 +67,7 @@ impl PiRootPreparation {
         let super::pi_task::PiTaskExecution::Host { root, preparation } = &admitted.0.execution else {
             return Err(invalid("Pi root preparation requires its original host admission"));
         };
-        preparation.validate()?;
+        preparation.validate(&mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| Error::NativeWork { cause, custody: None })?))?;
         if preparation.kind != EFFECT_TASK_COMMAND_KIND
             || preparation.operation_id != preparation_operation(owner.policy().root_task, work)? {
             return Err(invalid("Pi root preparation command identity differs"));

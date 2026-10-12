@@ -1,6 +1,5 @@
 use super::*;
 
-
 #[tokio::test]
 async fn corrupt_context_identity_cannot_enter_listing_cas_or_root_removal() {
     let directory = tempfile::tempdir().expect("temporary directory");
@@ -71,7 +70,6 @@ async fn corrupt_context_identity_cannot_enter_listing_cas_or_root_removal() {
     );
 }
 
-
 #[tokio::test]
 async fn workspace_contexts_are_durable_and_discoverable() {
     let directory = tempfile::tempdir().expect("temporary directory");
@@ -112,7 +110,6 @@ async fn workspace_contexts_are_durable_and_discoverable() {
     );
 }
 
-
 #[tokio::test]
 async fn context_discard_reads_only_the_bounded_subtree() {
     let directory = tempfile::tempdir().expect("temporary directory");
@@ -127,8 +124,7 @@ async fn context_discard_reads_only_the_bounded_subtree() {
         1,
         WorkspaceContextState::Active,
     );
-    let mut child =
-        workspace_context(directory.path(), child_id, 1, WorkspaceContextState::Active);
+    let mut child = workspace_context(directory.path(), child_id, 1, WorkspaceContextState::Active);
     child.parent_context_id = Some(parent_id);
     let unrelated = workspace_context(
         directory.path(),
@@ -163,7 +159,6 @@ async fn context_discard_reads_only_the_bounded_subtree() {
     );
 }
 
-
 #[tokio::test]
 async fn context_discard_checks_child_count_before_reading_bucket() {
     let directory = tempfile::tempdir().expect("temporary directory");
@@ -177,8 +172,7 @@ async fn context_discard_checks_child_count_before_reading_bucket() {
         1,
         WorkspaceContextState::Active,
     );
-    let mut child =
-        workspace_context(directory.path(), child_id, 1, WorkspaceContextState::Active);
+    let mut child = workspace_context(directory.path(), child_id, 1, WorkspaceContextState::Active);
     child.parent_context_id = Some(parent_id);
     for context in [parent, child] {
         assert!(
@@ -202,7 +196,6 @@ async fn context_discard_checks_child_count_before_reading_bucket() {
     );
 }
 
-
 #[tokio::test]
 async fn context_discard_bounds_bucket_bytes_before_deserialization() {
     let directory = tempfile::tempdir().expect("temporary directory");
@@ -216,8 +209,7 @@ async fn context_discard_bounds_bucket_bytes_before_deserialization() {
         1,
         WorkspaceContextState::Active,
     );
-    let mut child =
-        workspace_context(directory.path(), child_id, 1, WorkspaceContextState::Active);
+    let mut child = workspace_context(directory.path(), child_id, 1, WorkspaceContextState::Active);
     child.parent_context_id = Some(parent_id);
     for context in [parent, child] {
         assert!(
@@ -231,8 +223,7 @@ async fn context_discard_bounds_bucket_bytes_before_deserialization() {
     write_journaled(&count, &1_u64).expect("write understated child count");
     let bucket = children_paths(&namespace, child_id);
     std::fs::create_dir_all(&bucket.directory).expect("child bucket directory");
-    std::fs::write(&bucket.current, vec![b' '; 1_000_000])
-        .expect("write oversized child bucket");
+    std::fs::write(&bucket.current, vec![b' '; 1_000_000]).expect("write oversized child bucket");
 
     assert!(matches!(
         WorkspaceContextStore::discard_subtree(&store, parent_id, child_id, 2).await,
@@ -240,7 +231,6 @@ async fn context_discard_bounds_bucket_bytes_before_deserialization() {
             if message.contains("exceeds its declared bound")
     ));
 }
-
 
 #[tokio::test]
 async fn context_discard_never_rebuilds_a_missing_index() {
@@ -250,8 +240,7 @@ async fn context_discard_never_rebuilds_a_missing_index() {
     let parent_id = WorkspaceContextId::from_bytes([27; 16]);
     let child_id = WorkspaceContextId::from_bytes([28; 16]);
     let unrelated_id = WorkspaceContextId::from_bytes([29; 16]);
-    let mut child =
-        workspace_context(directory.path(), child_id, 1, WorkspaceContextState::Active);
+    let mut child = workspace_context(directory.path(), child_id, 1, WorkspaceContextState::Active);
     child.parent_context_id = Some(parent_id);
     for context in [
         workspace_context(
@@ -283,7 +272,6 @@ async fn context_discard_never_rebuilds_a_missing_index() {
     );
 }
 
-
 #[tokio::test]
 async fn intact_mismatched_frame_cannot_checkpoint_or_hide_context() {
     for owned in [false, true] {
@@ -303,7 +291,10 @@ async fn intact_mismatched_frame_cannot_checkpoint_or_hide_context() {
         );
         let namespace = store.namespace().expect("admitted namespace");
         let context_path = context_paths(&namespace, context_id).current;
-        let log_path = core_log_paths(&namespace).current;
+        let log_path = &namespace
+            .record(CORE_LOG_FAMILY, &[0; 16])
+            .expect("record paths")
+            .current;
         let before = std::fs::read(&context_path).expect("context bytes");
         drop(namespace);
         drop(store);
@@ -316,8 +307,8 @@ async fn intact_mismatched_frame_cannot_checkpoint_or_hide_context() {
         );
         drop(writer);
         let frame = rewrite_intact_frame(directory.path(), |frame| {
-            frame["change"][0][0] = serde_json::to_value(RecordKey::Context(context_id))
-                .expect("context record key");
+            frame["change"][0][0] =
+                serde_json::to_value(RecordKey::Context(context_id)).expect("context record key");
         });
         let reader = if owned {
             LocalCoreStateStore::open_owned(directory.path()).expect("reader")

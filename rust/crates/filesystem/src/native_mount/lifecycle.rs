@@ -6,19 +6,26 @@ pub fn probe_native_mount() -> NativeMountCapabilities {
     #[cfg(target_os = "linux")]
     let (kind, available, reason) = (
         Some(NativeMountKind::LinuxFuse),
-        std::fs::OpenOptions::new().read(true).write(true).open("/dev/fuse").is_ok(),
+        std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open("/dev/fuse")
+            .is_ok(),
         "/dev/fuse is not usable",
     );
     #[cfg(target_os = "macos")]
     let (kind, available, reason) = (
-        Some(NativeMountKind::MacOsNfs), Path::new("/sbin/mount_nfs").is_file(),
+        Some(NativeMountKind::MacOsNfs),
+        Path::new("/sbin/mount_nfs").is_file(),
         "the built-in macOS NFS mount utility is unavailable",
     );
     #[cfg(windows)]
     let (kind, available, reason) = (
         Some(NativeMountKind::WindowsProjFs),
         Path::new(&std::env::var_os("SystemRoot").unwrap_or_else(|| "C:\\Windows".into()))
-            .join("System32").join("ProjectedFSLib.dll").is_file(),
+            .join("System32")
+            .join("ProjectedFSLib.dll")
+            .is_file(),
         "ProjectedFSLib.dll is unavailable",
     );
     #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
@@ -38,91 +45,139 @@ pub fn mount_native(
 }
 
 pub(super) fn mount_native_ordinary(
-    request: NativeMountRequest, source: Arc<dyn MountFilesystem>, allow_nonempty: bool,
+    request: NativeMountRequest,
+    source: Arc<dyn MountFilesystem>,
+    allow_nonempty: bool,
 ) -> Result<NativeMountSession, NativeMountError> {
     let cancellation = crate::CancellationToken::new();
-    let work = match crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation) {
-        Ok(work) => work,
-        Err((error, _work)) => return Err(NativeMountError::StartupAdmissionFailed {
-            cause: error.into(), source,
-        }),
-    };
+    let work =
+        match crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation) {
+            Ok(work) => work,
+            Err((error, _work)) => {
+                return Err(NativeMountError::StartupAdmissionFailed {
+                    cause: error.into(),
+                    source,
+                });
+            }
+        };
     // Ordinary bootstrap is explicit, but the supplied source still needs
     // genuine failure custody if that bootstrap cannot complete.
     let storage = match PreparedNativeMountStart::new(&work) {
         Ok(storage) => storage,
         Err(cause) => return Err(NativeMountError::StartupAdmissionFailed { cause, source }),
     };
-    let initialized = initialize_native_mount_services().and_then(|()| {
-        acyclic_native_runtime::initialize_native_io_services().map_err(Into::into)
-    });
+    let initialized = initialize_native_mount_services()
+        .and_then(|()| acyclic_native_runtime::initialize_native_io_services().map_err(Into::into));
     if let Err(error) = initialized {
         let owner = NativeMountSession::new(request, Some(source), None);
-        return Err(NativeMountError::StartupFailed(storage.failed(error, owner)));
+        return Err(NativeMountError::StartupFailed(
+            storage.failed(error, owner),
+        ));
     }
     start_native_mount_prepared_with_meter(request, source, allow_nonempty, &work, storage, None)
 }
 
 /// Finite projection of the same native constructor and actual work prefix.
 pub fn mount_native_measured(
-    request: NativeMountRequest, source: Arc<dyn MountFilesystem>,
-    budget: crate::WorkBudget, cancellation: &crate::CancellationToken,
+    request: NativeMountRequest,
+    source: Arc<dyn MountFilesystem>,
+    budget: crate::WorkBudget,
+    cancellation: &crate::CancellationToken,
 ) -> Result<crate::OperationReceipt<NativeMountSession>, (NativeMountError, crate::WorkCounters)> {
     let work = match crate::NativeMaterializationWork::new(budget, cancellation) {
         Ok(work) => work,
-        Err((error, work)) => return Err((NativeMountError::StartupAdmissionFailed {
-            cause: error.into(), source,
-        }, work)),
+        Err((error, work)) => {
+            return Err((
+                NativeMountError::StartupAdmissionFailed {
+                    cause: error.into(),
+                    source,
+                },
+                work,
+            ));
+        }
     };
     let prepared = match prepare_native_mount_start(&work) {
         Ok(prepared) => prepared,
-        Err(cause) => return Err((NativeMountError::StartupAdmissionFailed { cause, source }, work.receipt())),
+        Err(cause) => {
+            return Err((
+                NativeMountError::StartupAdmissionFailed { cause, source },
+                work.receipt(),
+            ));
+        }
     };
-    match start_native_mount_prepared_with_meter(
-        request, source, false, &work, prepared, None,
-    ) {
-        Ok(value) => Ok(crate::OperationReceipt { value, work: work.receipt() }),
+    match start_native_mount_prepared_with_meter(request, source, false, &work, prepared, None) {
+        Ok(value) => Ok(crate::OperationReceipt {
+            value,
+            work: work.receipt(),
+        }),
         Err(error) => Err((error, work.receipt())),
     }
 }
 
 pub(super) fn start_native_mount_prepared_with_meter(
-    request: NativeMountRequest, source: Arc<dyn MountFilesystem>, allow_nonempty: bool,
-    work: &NativeMaterializationWork, storage: PreparedNativeMountStart,
+    request: NativeMountRequest,
+    source: Arc<dyn MountFilesystem>,
+    allow_nonempty: bool,
+    work: &NativeMaterializationWork,
+    storage: PreparedNativeMountStart,
     destination_custody: Option<crate::NativeAllocation>,
 ) -> Result<NativeMountSession, NativeMountError> {
     // The existing driver loop accepts its lifetime before this stack factory
     // acquires a physical fence. The factory never escapes or allocates a frame.
     let mut retirement = Some(NativeMountRetirement {
         retained_source: Some(Arc::clone(&source)),
-        destination_guard: None, startup_source_watch: None,
+        destination_guard: None,
+        startup_source_watch: None,
         #[cfg(windows)]
-        warm_namespace: storage.retired.as_ref().and_then(|old|
-            old.namespace_outcome.as_ref().and_then(projfs::ProjFsNamespaceOutcome::qualification)),
+        warm_namespace: storage.retired.as_ref().and_then(|old| {
+            old.namespace_outcome
+                .as_ref()
+                .and_then(projfs::ProjFsNamespaceOutcome::qualification)
+        }),
     });
     let mut driver = None;
     #[cfg(windows)]
     let mut namespace_binding = None;
     #[cfg(windows)]
-    let lineage_admission = source.native_namespace_lineage().map(|lineage|
-        adapter::retain_namespace_lineage(&lineage, work, storage.retired.is_some())
-            .map(|binding| namespace_binding = Some(binding))
-    ).transpose().map(|_| ()).map_err(NativeMountError::from);
+    let lineage_admission = source
+        .native_namespace_lineage()
+        .map(|lineage| {
+            adapter::retain_namespace_lineage(&lineage, work, storage.retired.is_some())
+                .map(|binding| namespace_binding = Some(binding))
+        })
+        .transpose()
+        .map(|_| ())
+        .map_err(NativeMountError::from);
     #[cfg(not(windows))]
     let lineage_admission: Result<(), NativeMountError> = Ok(());
-    let result = lineage_admission.and_then(|()| start_driver_into(
-        &request, source, work, &mut driver, &mut retirement, |packet| {
-            let _services = adapter::CallbackRuntime::existing()?;
-            work.state.lock().check()?;
-            MountDestinationGuard::acquire_with_work(
-                &request.destination, allow_nonempty, work, &mut packet.destination_guard, false,
-            )
-        },
-    ));
+    let result = lineage_admission.and_then(|()| {
+        start_driver_into(
+            &request,
+            source,
+            work,
+            &mut driver,
+            &mut retirement,
+            |packet| {
+                let _services = adapter::CallbackRuntime::existing()?;
+                work.state.lock().check()?;
+                MountDestinationGuard::acquire_with_work(
+                    &request.destination,
+                    allow_nonempty,
+                    work,
+                    &mut packet.destination_guard,
+                    false,
+                )
+            },
+        )
+    });
     // A prebirth rejection leaves its packet here. An accepted loop owns it
     // even on failure; the retained driver signals that same owner to retire.
     let (destination_guard, retained_source, startup_source_watch) = match retirement {
-        Some(packet) => (packet.destination_guard, packet.retained_source, packet.startup_source_watch),
+        Some(packet) => (
+            packet.destination_guard,
+            packet.retained_source,
+            packet.startup_source_watch,
+        ),
         None => (None, None, None),
     };
     let mut owner = NativeMountSession::new(request, retained_source, destination_custody);
@@ -130,15 +185,17 @@ pub(super) fn start_native_mount_prepared_with_meter(
     owner.destination_guard = destination_guard;
     owner.startup_source_watch = startup_source_watch;
     #[cfg(windows)]
-    { owner.namespace_binding = namespace_binding; }
+    {
+        owner.namespace_binding = namespace_binding;
+    }
     match result {
         Ok(()) => {
             drop(storage);
             Ok(owner)
-        },
-        Err(error) => {
-            Err(NativeMountError::StartupFailed(storage.failed(error, owner)))
-        },
+        }
+        Err(error) => Err(NativeMountError::StartupFailed(
+            storage.failed(error, owner),
+        )),
     }
 }
 
@@ -241,7 +298,10 @@ pub fn recover_native_mount_destination(destination: &Path) -> Result<(), Native
     let mut owner = NativeMountRecoveryOwner::acquire(destination)?;
     match owner.recover() {
         Ok(_) => Ok(()),
-        Err(error) => Err(NativeMountError::RecoveryFailed { error: Box::new(error), owner }),
+        Err(error) => Err(NativeMountError::RecoveryFailed {
+            error: Box::new(error),
+            owner,
+        }),
     }
 }
 
@@ -274,6 +334,9 @@ pub fn detach_native_mount_destination_after_crash(
     let mut owner = NativeMountRecoveryOwner::acquire(destination)?;
     match owner.detach() {
         Ok(_) => Ok(()),
-        Err(error) => Err(NativeMountError::RecoveryFailed { error: Box::new(error), owner }),
+        Err(error) => Err(NativeMountError::RecoveryFailed {
+            error: Box::new(error),
+            owner,
+        }),
     }
 }

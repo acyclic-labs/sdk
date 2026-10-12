@@ -107,9 +107,9 @@ fn finish_decode<'a, T>(io: &'a PreparationIo, result: Result<T>, admission: Opt
     Ok((value, reservation))
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 fn finish_encoding<T>(mut diagnostics: DecodeReservation<'_>, result: Result<T>) -> Result<T> {
     match result {
+        #[cfg(not(target_arch = "wasm32"))]
         Err(Error::NativeEncode { code, source, custody: None }) => {
             let custody = diagnostics.io.take_native_custody(diagnostics.bytes)?;
             diagnostics.bytes = 0;
@@ -272,7 +272,8 @@ impl PreparationIo {
         Self::from_budget(acyclic_fs::performance::work_budget(request.maximum_work, request.maximum_bytes), cancellation)
     }
 
-    pub(crate) fn from_budget(budget: WorkBudget, cancellation: &CancellationToken) -> Result<Self> {
+    /// Starts finite preparation accounting with the caller's cancellation token.
+    pub fn from_budget(budget: WorkBudget, cancellation: &CancellationToken) -> Result<Self> {
         if !budget.has_finite_allowances() {
             return Err(Error::Invalid("measured content requires finite work allowances".into()));
         }
@@ -284,7 +285,7 @@ impl PreparationIo {
     /// Uses the original native ledger for filesystem operations.
     pub fn from_native_work(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
         work.remaining().map_err(Error::from)?;
-        let custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(Error::from)?;
+        let custody = work.claim(0, 0, acyclic_fs::WorkCounters::default()).map_err(Error::from)?;
         Ok(Self::Native { work: work.clone(), custody: Mutex::new(custody) })
     }
 
@@ -335,7 +336,8 @@ impl PreparationIo {
 
     /// Move already admitted ownership; never retain it a second time.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn take_native_custody(&self, bytes: u64) -> Result<acyclic_fs::NativeAllocation> {
+    /// Transfers retained output storage to its caller.
+    pub fn take_native_custody(&self, bytes: u64) -> Result<acyclic_fs::NativeAllocation> {
         match self {
             PreparationIo::Native { custody, .. } => custody.lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -775,10 +777,10 @@ impl PreparationIo {
     }
 
     /// Builds the original serde JSON graph directly.
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn value_json<T: Serialize>(
         &self, source: &T, maximum_bytes: u64,
     ) -> Result<serde_json::Value> {
+        #[cfg(not(target_arch = "wasm32"))]
         if self.original_native_work().is_none() {
             return Err(self.invalid("native JSON graph conversion requires original work"));
         }
@@ -843,14 +845,20 @@ impl PreparationIo {
         Ok(retain_decoded(decoded))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn value_decode_preparation<T: PreparationRecord>(
         &self, source: &serde_json::Value, code: crate::wire::ErrorCode,
     ) -> Result<(T, DecodeReservation<'_>)> {
-        self.value_decode_with_schema(
+        #[cfg(target_arch = "wasm32")]
+        {
+            let bytes = self.encode(source, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
+            let _bytes = self.guard_bytes(&bytes)?;
+            self.decode(std::marker::PhantomData::<T>, &bytes, code)
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        { self.value_decode_with_schema(
             source, code, T::json_value_schema(), T::diagnostic_label_bytes(),
             |shape| T::decode_owned_allowance(shape, 0, shape.input_bytes(), Some(code)),
-        )
+        ) }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -1088,7 +1096,7 @@ macro_rules! filesystem_call {
         result
     }};
 }
-pub(super) use filesystem_call;
+pub(in crate::filesystem) use filesystem_call;
 
 pub(super) fn digest(bytes: &[u8], io: Option<&PreparationIo>) -> Result<blake3::Hash> {
     let work = WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
@@ -1315,7 +1323,7 @@ pub(in crate::filesystem) async fn publish_generation<A, O, F, Fut>(
     key: &IdempotencyKey, io: Option<&PreparationIo>, before_publication: &mut F,
 ) -> Result<acyclic_fs::Generation<A, O>>
 where A: AsyncAuthorityStore, O: AsyncObjectStore,
-    F: FnMut() -> Fut + Send, Fut: Future<Output = Result<()>> + Send,
+    F: FnMut() -> Fut + acyclic_stream::ProviderTask, Fut: Future<Output = Result<()>> + acyclic_stream::ProviderTask,
 {
     let Some(io) = io else {
         return host.apply_generation_guarded(reference, expected, mutations, key, before_publication).await;
@@ -1476,7 +1484,7 @@ pub(in crate::filesystem) fn generation_ref<A: AsyncAuthorityStore, O: AsyncObje
         strings(io, &[host.provider.namespace(), host.provider.family(), host.provider.version()])?;
         io.retain_owned(32)?;
     }
-    host.generation_ref(generation)
+    host.generation_ref_id(generation.id())
 }
 
 /// Pins the acknowledged immutable generation with its original typed cause.
@@ -1624,10 +1632,10 @@ mod tests {
     async fn finite_ordinary_owner_callback_retains_full_failure_and_real_sdk_prefix() -> Result<()> {
         let provider = crate::resources::ProviderRef::new("ordinary-owner-control".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = FilesystemHost::new(Fs::memory(), provider.clone())?;
-        let volume = VolumeRef::new(provider, "owned", VolumeClass::Project,
-            VolumeOwner::Project("ordinary-owner-control".into()))?;
+        let volume = VolumeRef::new(provider, "owned".into(), VolumeClass::Project,
+            VolumeOwner::Project("ordinary-owner-control".into()), &mut None)?;
         let initial = host.create_volume(&volume).await?;
-        let mutations = [WorkspaceMutation::PutFile { path: "/file".into(), bytes: b"owned".to_vec() }];
+        let mutations = [WorkspaceMutation::PutFile { path: "/file".into(), bytes: b"owned".to_vec().into() }];
         let cancellation = CancellationToken::new();
         let denied_io = PreparationIo::from_budget(acyclic_fs::performance::work_budget(100_000, 16_000_000), &cancellation)?;
         let denied = publish_generation(
@@ -1649,7 +1657,7 @@ mod tests {
                 Ok(())
             },
         ).await?;
-        assert_eq!(host.read(&initial.workspace, Some(&host.generation_ref(&accepted)?), "/file", 32).await?.as_ref(), b"owned");
+        assert_eq!(host.read(&initial.workspace, Some(&host.generation_ref_id(accepted.id())?), "/file", 32).await?.as_ref(), b"owned");
         Ok(())
     }
 
@@ -1657,8 +1665,8 @@ mod tests {
     async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() -> Result<()> {
         let provider = crate::resources::ProviderRef::new("source-read-control".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = FilesystemHost::new(Fs::memory(), provider.clone())?;
-        let project = |name: &str| VolumeRef::new(provider.clone(), name, VolumeClass::Project,
-            VolumeOwner::Project("source-read-control".into()));
+        let project = |name: &str| VolumeRef::new(provider.clone(), name.into(), VolumeClass::Project,
+            VolumeOwner::Project("source-read-control".into()), &mut None);
         let source = project("selected")?;
         let caller = project("caller")?;
         let child = project("child")?;
@@ -1666,10 +1674,10 @@ mod tests {
         let initial = host.create_volume(&source).await?;
         let caller_head = host.create_volume(&caller).await?;
         let selected_generation = host.apply(&initial.workspace, Some(&initial.generation),
-            &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"selected".to_vec() }],
+            &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"selected".to_vec().into() }],
             &IdempotencyKey::new("selected-generation")?).await?;
         let wrong_generation = host.apply(&caller_head.workspace, Some(&caller_head.generation),
-            &[WorkspaceMutation::PutFile { path: "/other.txt".into(), bytes: b"other-source".to_vec() }],
+            &[WorkspaceMutation::PutFile { path: "/other.txt".into(), bytes: b"other-source".to_vec().into() }],
             &IdempotencyKey::new("other-source-generation")?).await?;
         let issuer = AuthorityIssuer::new("source-read-control", [41; 32], Authority {
             kind: AggregateKind::Conversation, id: "caller".into(),
@@ -1683,7 +1691,7 @@ mod tests {
             None, &IdempotencyKey::new("denied-source-read")?, None, None,
             #[cfg(not(target_arch = "wasm32"))]
             None).await, Err(Error::Unauthorized(_))));
-        let denied_ref = workspace_ref(provider.clone(), &denied_child.storage_name(&mut None)?)?;
+        let denied_ref = crate::filesystem::workspace_ref(provider.clone(), &denied_child.storage_name(&mut None)?)?;
         assert!(host.resolve(&denied_ref).await.is_err());
         assert!(fork(&host, &source, &selected_read, &wrong_generation, &denied_child,
             None, &IdempotencyKey::new("wrong-generation")?, None, None,
@@ -1691,7 +1699,7 @@ mod tests {
             None).await.is_err());
         assert!(host.resolve(&denied_ref).await.is_err());
         let later_generation = host.apply(&initial.workspace, Some(&selected_generation),
-            &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"later".to_vec() }],
+            &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"later".to_vec().into() }],
             &IdempotencyKey::new("later-generation")?).await?;
         let forked = fork(&host, &source, &selected_read, &selected_generation, &child,
             None, &IdempotencyKey::new("pinned-selected-fork")?, None, None,
@@ -1699,7 +1707,7 @@ mod tests {
             None).await?;
         assert_eq!(host.read(&forked.workspace, Some(&forked.generation), "/value.txt", 32).await?.as_ref(), b"selected");
         host.apply(&forked.workspace, Some(&forked.generation),
-            &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"child".to_vec() }],
+            &[WorkspaceMutation::PutFile { path: "/value.txt".into(), bytes: b"child".to_vec().into() }],
             &IdempotencyKey::new("isolated-child-edit")?).await?;
         assert_eq!(host.resolve(&initial.workspace).await?.generation, later_generation);
         assert_eq!(host.read(&initial.workspace, None, "/value.txt", 32).await?.as_ref(), b"later");

@@ -1,5 +1,6 @@
 //! Real MemoryFS/SDK mailbox controls; no replacement reader or mailbox engine.
 
+use serde_json::json;
 use super::*;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
 
@@ -27,7 +28,7 @@ async fn native_stock_mail_command_uses_original_atomic_v3_send_and_custody() ->
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
     let (lease, custody) = fixture.native_lease_command(
         &runtime, super::super::super::MAIL_SEND_TASK_COMMAND_KIND,
-        serde_json::to_value(super::super::super::MailSendTaskCommand { recipient: task, payload: payload.clone() })?,
+        serde_json::to_value(super::super::super::MailSendTaskCommand { recipient: task, payload: payload.clone() }).map_err(|error| Error::Invalid(error.to_string()))?,
         &work,
     ).await?;
     let reservation = lease.reservation.clone();

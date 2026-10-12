@@ -28,7 +28,6 @@ pub(super) struct GenerationReceipt {
 }
 
 impl GenerationReceipt {
-
     pub(super) fn new(
         budget: WorkBudget,
         cancellation: &CancellationToken,
@@ -38,8 +37,12 @@ impl GenerationReceipt {
         Self::from_work(&original).map_err(|error| (error, original.receipt()))
     }
 
-    pub(super) fn from_work(work: &crate::NativeMaterializationWork) -> Result<Self, MaterializeError> {
-        let custody = work.claim(0, 0, crate::WorkCounters::UNCHARGED).map_err(materialize_native_error)?;
+    pub(super) fn from_work(
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<Self, MaterializeError> {
+        let custody = work
+            .claim(0, 0, crate::WorkCounters::UNCHARGED)
+            .map_err(materialize_native_error)?;
         Ok(Self {
             value: MaterializationReceipt::default(),
             custody,
@@ -50,29 +53,38 @@ impl GenerationReceipt {
         &self,
         operation: impl FnOnce(&mut NativeSourceWork<'_>) -> Result<T, DemandError>,
     ) -> Result<T, MaterializeError> {
-        let result = operation(&mut NativeSourceWork::from_native_materialization_work(self.custody.work()));
+        let result = operation(&mut NativeSourceWork::from_native_materialization_work(
+            self.custody.work(),
+        ));
         result.map_err(materialize_demand_error)
     }
 
-
-
-
     pub(super) fn adopt(&mut self, bytes: usize) -> Result<(), MaterializeError> {
-        let retained = self.custody.bytes().checked_add(bytes as u64)
+        let retained = self
+            .custody
+            .bytes()
+            .checked_add(bytes as u64)
             .ok_or(MaterializeError::Work(WorkError::Overflow))?;
         let result = self.custody.reconcile_capacity(retained);
         result.map_err(materialize_native_error)
     }
 
-
     pub(super) fn owned_arc<T>(
-        &mut self, value: T, retained: usize,
+        &mut self,
+        value: T,
+        retained: usize,
     ) -> Result<Arc<(T, crate::NativeAllocation)>, MaterializeError> {
         let bytes = std::mem::size_of::<(T, crate::NativeAllocation)>();
-        self.custody.grow(bytes as u64).map_err(materialize_native_error)?;
-        let bytes = retained.checked_add(bytes)
+        self.custody
+            .grow(bytes as u64)
+            .map_err(materialize_native_error)?;
+        let bytes = retained
+            .checked_add(bytes)
             .ok_or(MaterializeError::Work(WorkError::Overflow))?;
-        let custody = self.custody.split_off(bytes as u64).map_err(materialize_native_error)?;
+        let custody = self
+            .custody
+            .split_off(bytes as u64)
+            .map_err(materialize_native_error)?;
         Ok(Arc::new((value, custody)))
     }
 
@@ -82,37 +94,51 @@ impl GenerationReceipt {
         additional: usize,
     ) -> Result<(), MaterializeError> {
         let old_capacity = values.capacity();
-        let required = values.len().checked_add(additional).ok_or(MaterializeError::Work(WorkError::Overflow))?;
+        let required = values
+            .len()
+            .checked_add(additional)
+            .ok_or(MaterializeError::Work(WorkError::Overflow))?;
         let growth = required.saturating_sub(old_capacity);
-        let bytes = growth.checked_mul(std::mem::size_of::<T>()).ok_or(MaterializeError::Work(WorkError::Overflow))?;
+        let bytes = growth
+            .checked_mul(std::mem::size_of::<T>())
+            .ok_or(MaterializeError::Work(WorkError::Overflow))?;
         if growth == 0 {
             return Ok(());
         }
-        let result = self.custody.work().allocations(|ledger, work, budget, cancellation| {
-            cancellation.check().map_err(|_| crate::NativeTreeMaterializationError::Cancelled)?;
-            let prior_peak = work.peak_allocation_bytes;
-            ledger.claim_bytes(bytes as u64, 1, work, budget).map_err(|error| {
-                error.into_work_or(crate::NativeTreeMaterializationError::Io(
-                    std::io::ErrorKind::OutOfMemory.into(),
-                ))
-            })?;
-            if values.try_reserve_exact(additional).is_err() {
-                ledger.release(bytes as u64).map_err(|_| {
-                    crate::NativeTreeMaterializationError::Work(WorkError::Overflow)
-                })?;
-                work.peak_allocation_bytes = prior_peak;
-                return Err(crate::NativeTreeMaterializationError::Io(
-                    std::io::ErrorKind::OutOfMemory.into(),
-                ));
-            }
-            let actual = (values.capacity() - old_capacity) * std::mem::size_of::<T>();
-            ledger.record_owned_bytes(actual.saturating_sub(bytes) as u64, work).map_err(|_| {
-                crate::NativeTreeMaterializationError::Work(WorkError::Overflow)
-            })?;
-            // Retain the physical capacity even when its observed surplus fails
-            // the late check; the caller drops the vector before this custody.
-            Ok(work.verify(budget))
-        });
+        let result = self
+            .custody
+            .work()
+            .allocations(|ledger, work, budget, cancellation| {
+                cancellation
+                    .check()
+                    .map_err(|_| crate::NativeTreeMaterializationError::Cancelled)?;
+                let prior_peak = work.peak_allocation_bytes;
+                ledger
+                    .claim_bytes(bytes as u64, 1, work, budget)
+                    .map_err(|error| {
+                        error.into_work_or(crate::NativeTreeMaterializationError::Io(
+                            std::io::ErrorKind::OutOfMemory.into(),
+                        ))
+                    })?;
+                if values.try_reserve_exact(additional).is_err() {
+                    ledger.release(bytes as u64).map_err(|_| {
+                        crate::NativeTreeMaterializationError::Work(WorkError::Overflow)
+                    })?;
+                    work.peak_allocation_bytes = prior_peak;
+                    return Err(crate::NativeTreeMaterializationError::Io(
+                        std::io::ErrorKind::OutOfMemory.into(),
+                    ));
+                }
+                let actual = (values.capacity() - old_capacity) * std::mem::size_of::<T>();
+                ledger
+                    .record_owned_bytes(actual.saturating_sub(bytes) as u64, work)
+                    .map_err(|_| {
+                        crate::NativeTreeMaterializationError::Work(WorkError::Overflow)
+                    })?;
+                // Retain the physical capacity even when its observed surplus fails
+                // the late check; the caller drops the vector before this custody.
+                Ok(work.verify(budget))
+            });
         let (verified, mut custody) = result.map_err(materialize_native_error)?;
         let absorbed = self.custody.absorb(&mut custody);
         absorbed.map_err(materialize_native_error)?;
@@ -132,10 +158,10 @@ impl GenerationReceipt {
         Ok(())
     }
 
-
-
     pub(super) fn accept_source<T>(
-        &mut self, value: T, custody: crate::NativeAllocation,
+        &mut self,
+        value: T,
+        custody: crate::NativeAllocation,
     ) -> Result<T, MaterializeError> {
         let mut owned = (value, custody);
         let result = self.custody.absorb(&mut owned.1);
@@ -156,21 +182,33 @@ impl GenerationReceipt {
 }
 
 pub(super) fn materialize_runtime_error(error: std::io::Error) -> MaterializeError {
-    if let Some(work) = error.get_ref().and_then(|error| error.downcast_ref::<WorkError>()) {
+    if let Some(work) = error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<WorkError>())
+    {
         MaterializeError::Work(*work)
-    } else if let Some(demand) = error.get_ref().and_then(|error| error.downcast_ref::<DemandError>()) {
+    } else if let Some(demand) = error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<DemandError>())
+    {
         match demand {
             DemandError::Work(work) => MaterializeError::Work(*work),
             DemandError::Cancelled => MaterializeError::Cancelled(crate::CancellationError),
             _ => MaterializeError::Io(error),
         }
-    } else { MaterializeError::Io(error) }
+    } else {
+        MaterializeError::Io(error)
+    }
 }
 
-pub(super) fn materialize_native_error(error: crate::NativeTreeMaterializationError) -> MaterializeError {
+pub(super) fn materialize_native_error(
+    error: crate::NativeTreeMaterializationError,
+) -> MaterializeError {
     match error {
         crate::NativeTreeMaterializationError::Work(error) => MaterializeError::Work(error),
-        crate::NativeTreeMaterializationError::Cancelled => MaterializeError::Cancelled(crate::CancellationError),
+        crate::NativeTreeMaterializationError::Cancelled => {
+            MaterializeError::Cancelled(crate::CancellationError)
+        }
         crate::NativeTreeMaterializationError::Io(error) => MaterializeError::Io(error),
         error => MaterializeError::NativeWork(error),
     }
@@ -197,17 +235,26 @@ pub(super) fn clone_namespace_measured(
     limits: crate::model::VolumeLimits,
     receipt: &mut GenerationReceipt,
 ) -> Result<NamespacePath, MaterializeError> {
-    let result = receipt.custody.work().allocations(|ledger, work, budget, cancellation| {
-        let result = match extra {
-            Some(name) => path.child_with_ledger(name, limits, ledger, work, budget, cancellation),
-            None => path.clone_with_ledger(ledger, work, budget, cancellation),
-        };
-        result.map_err(|error| match error {
-            crate::kernel::NamespacePathError::Work(error) => crate::NativeTreeMaterializationError::Work(error),
-            crate::kernel::NamespacePathError::Cancelled => crate::NativeTreeMaterializationError::Cancelled,
-            _ => crate::NativeTreeMaterializationError::InvalidLayout,
-        })
-    });
+    let result = receipt
+        .custody
+        .work()
+        .allocations(|ledger, work, budget, cancellation| {
+            let result = match extra {
+                Some(name) => {
+                    path.child_with_ledger(name, limits, ledger, work, budget, cancellation)
+                }
+                None => path.clone_with_ledger(ledger, work, budget, cancellation),
+            };
+            result.map_err(|error| match error {
+                crate::kernel::NamespacePathError::Work(error) => {
+                    crate::NativeTreeMaterializationError::Work(error)
+                }
+                crate::kernel::NamespacePathError::Cancelled => {
+                    crate::NativeTreeMaterializationError::Cancelled
+                }
+                _ => crate::NativeTreeMaterializationError::InvalidLayout,
+            })
+        });
     let (path, mut custody) = result.map_err(materialize_native_error)?;
     let result = receipt.custody.absorb(&mut custody);
     result.map_err(materialize_native_error)?;
@@ -232,14 +279,26 @@ impl GenerationHostPath {
         let prefix = prefix.map_or(&[][..], |prefix| prefix.bytes.as_slice());
         #[cfg(windows)]
         let prefix = prefix.map_or(&[][..], |prefix| prefix.units.as_slice());
-        let mut length = prefix.len().checked_add(names.len().saturating_sub(1))
-            .and_then(|length| length.checked_add(usize::from(!prefix.is_empty() && !names.is_empty())))
+        let mut length = prefix
+            .len()
+            .checked_add(names.len().saturating_sub(1))
+            .and_then(|length| {
+                length.checked_add(usize::from(!prefix.is_empty() && !names.is_empty()))
+            })
             .ok_or(MaterializeError::Work(WorkError::Overflow))?;
         for name in names {
-            receipt.run(|work| work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }))?;
+            receipt.run(|work| {
+                work.charge(WorkCounters {
+                    items_examined: 1,
+                    ..WorkCounters::UNCHARGED
+                })
+            })?;
             #[cfg(unix)]
             let count = {
-                if !matches!(name.encoding(), NameEncoding::Utf8 | NameEncoding::PosixBytes) {
+                if !matches!(
+                    name.encoding(),
+                    NameEncoding::Utf8 | NameEncoding::PosixBytes
+                ) {
                     return Err(MaterializeError::UnrepresentableName);
                 }
                 name.as_bytes().len()
@@ -248,49 +307,63 @@ impl GenerationHostPath {
             let count = match name.encoding() {
                 NameEncoding::WindowsUtf16Le => name.as_bytes().len() / 2,
                 NameEncoding::Utf8 | NameEncoding::PosixBytes => {
-                    let text = std::str::from_utf8(name.as_bytes()).map_err(|_| {
-                        MaterializeError::UnrepresentableName
-                    })?;
+                    let text = std::str::from_utf8(name.as_bytes())
+                        .map_err(|_| MaterializeError::UnrepresentableName)?;
                     let mut count = 0_usize;
                     for _ in text.encode_utf16() {
-                        receipt.run(|work| work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }))?;
+                        receipt.run(|work| {
+                            work.charge(WorkCounters {
+                                items_examined: 1,
+                                ..WorkCounters::UNCHARGED
+                            })
+                        })?;
                         count += 1;
                     }
                     count
                 }
             };
-            length = length.checked_add(count).ok_or(MaterializeError::Work(WorkError::Overflow))?;
+            length = length
+                .checked_add(count)
+                .ok_or(MaterializeError::Work(WorkError::Overflow))?;
         }
         let mut units = Vec::new();
         receipt.reserve(&mut units, length)?;
         #[cfg(unix)]
-        receipt.run(|work| work.charge(WorkCounters { bytes_copied: length as u64, ..WorkCounters::UNCHARGED }))?;
+        receipt.run(|work| {
+            work.charge(WorkCounters {
+                bytes_copied: length as u64,
+                ..WorkCounters::UNCHARGED
+            })
+        })?;
         #[cfg(windows)]
-        receipt.run(|work| work.charge(WorkCounters {
-            bytes_copied: prefix.len() as u64 * 2,
-            bytes_encoded: (length - prefix.len()) as u64 * 2,
-            ..WorkCounters::UNCHARGED
-        }))?;
+        receipt.run(|work| {
+            work.charge(WorkCounters {
+                bytes_copied: prefix.len() as u64 * 2,
+                bytes_encoded: (length - prefix.len()) as u64 * 2,
+                ..WorkCounters::UNCHARGED
+            })
+        })?;
         units.extend_from_slice(prefix);
         for name in names {
             #[cfg(unix)]
             let separator = b'/';
             #[cfg(windows)]
             let separator = u16::from(b'\\');
-            if !units.is_empty() { units.push(separator); }
+            if !units.is_empty() {
+                units.push(separator);
+            }
             #[cfg(unix)]
             units.extend_from_slice(name.as_bytes());
             #[cfg(windows)]
             match name.encoding() {
                 NameEncoding::WindowsUtf16Le => units.extend(
-                    crate::kernel::types::utf16le_units(name.as_bytes()).ok_or_else(|| {
-                        MaterializeError::UnrepresentableName
-                    })?,
+                    crate::kernel::types::utf16le_units(name.as_bytes())
+                        .ok_or_else(|| MaterializeError::UnrepresentableName)?,
                 ),
                 NameEncoding::Utf8 | NameEncoding::PosixBytes => units.extend(
-                    std::str::from_utf8(name.as_bytes()).map_err(|_| {
-                        MaterializeError::UnrepresentableName
-                    })?.encode_utf16(),
+                    std::str::from_utf8(name.as_bytes())
+                        .map_err(|_| MaterializeError::UnrepresentableName)?
+                        .encode_utf16(),
                 ),
             }
         }
@@ -309,49 +382,81 @@ impl GenerationHostPath {
     }
 
     pub(super) fn create_parents(
-        &self, root: &HostRoot, work: &mut NativeSourceWork<'_>,
+        &self,
+        root: &HostRoot,
+        work: &mut NativeSourceWork<'_>,
     ) -> Result<(), DemandError> {
         #[cfg(unix)]
-        if let Some(parent) = self.path().parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        if let Some(parent) = self
+            .path()
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+        {
             root.create_dir_all_held_measured(parent, work)?;
         }
         #[cfg(windows)]
-        if let Some(separator) = self.units.iter().rposition(|unit| *unit == u16::from(b'\\')) {
+        if let Some(separator) = self
+            .units
+            .iter()
+            .rposition(|unit| *unit == u16::from(b'\\'))
+        {
             root.create_dir_all_held_wide_measured(&self.units[..separator], work)?;
         }
         Ok(())
     }
 
     pub(super) fn create_dir(
-        &self, root: &HostRoot, work: &mut NativeSourceWork<'_>,
+        &self,
+        root: &HostRoot,
+        work: &mut NativeSourceWork<'_>,
     ) -> Result<(), DemandError> {
         #[cfg(unix)]
-        { root.create_dir(self.path(), work) }
+        {
+            root.create_dir(self.path(), work)
+        }
         #[cfg(windows)]
-        { root.create_dir_wide_measured(&self.units, work) }
+        {
+            root.create_dir_wide_measured(&self.units, work)
+        }
     }
 
     pub(super) fn hard_link(
-        &self, root: &HostRoot, source: &Self, work: &mut NativeSourceWork<'_>,
+        &self,
+        root: &HostRoot,
+        source: &Self,
+        work: &mut NativeSourceWork<'_>,
     ) -> Result<(), DemandError> {
         #[cfg(unix)]
-        { root.hard_link(source.path(), self.path(), work) }
+        {
+            root.hard_link(source.path(), self.path(), work)
+        }
         #[cfg(windows)]
-        { root.hard_link_wide_measured(&source.units, &self.units, work) }
+        {
+            root.hard_link_wide_measured(&source.units, &self.units, work)
+        }
     }
 
     #[cfg(any(target_os = "macos", windows))]
     pub(super) fn clone_file(
-        &self, root: &HostRoot, source: &Self, work: &mut NativeSourceWork<'_>,
+        &self,
+        root: &HostRoot,
+        source: &Self,
+        work: &mut NativeSourceWork<'_>,
     ) -> Result<bool, DemandError> {
         #[cfg(target_os = "macos")]
-        { root.clone_file_from(root, source.path(), self.path(), work) }
+        {
+            root.clone_file_from(root, source.path(), self.path(), work)
+        }
         #[cfg(windows)]
-        { root.clone_file_from_wide_measured(root, &source.units, &self.units, work) }
+        {
+            root.clone_file_from_wide_measured(root, &source.units, &self.units, work)
+        }
     }
 
     pub(super) fn stat(
-        &self, root: &HostRoot, work: &mut NativeSourceWork<'_>,
+        &self,
+        root: &HostRoot,
+        work: &mut NativeSourceWork<'_>,
     ) -> Result<(), DemandError> {
         #[cfg(unix)]
         root.stat(self.path(), work)?;

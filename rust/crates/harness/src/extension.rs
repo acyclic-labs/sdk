@@ -388,7 +388,7 @@ impl ExtensionRuntime {
                 .ok_or_else(|| {
                     Error::Unsupported(format!("extension {} is not installed", dependency.name))
                 })?;
-            if reducer.extension_implementation_digest(&dependency.name, dependency.version)? != identity.digest {
+            if reducer.schemas().implementation_digest(&dependency.name, dependency.version, &mut None)? != identity.digest {
                 return Err(Error::Conflict(format!(
                     "extension {}@{} implementation digest differs from admission",
                     dependency.name, dependency.version

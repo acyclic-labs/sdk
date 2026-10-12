@@ -1580,7 +1580,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             } else {
                 ContentGrant::verify(&self.verifier, &self.scope, reference.volume(), VolumeOperation::Read, self.maximum_payload_bytes, &mut None)?
             };
-            self.host.read_content(reference, &grant, self.maximum_payload_bytes).await?;
+            self.host.read_content(reference, &grant, self.maximum_payload_bytes, None).await?;
         }
         Ok(())
     }
@@ -1745,13 +1745,13 @@ where
             code: crate::wire::ErrorCode::Unsupported,
             reason: "native staging requires an original dispatch owner",
         })?;
-        owner.require_volume_grant_with_native_work(&self.volume, VolumeOperation::Write, work)?;
+        owner.require_volume_grant(&self.volume, VolumeOperation::Write, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            owner.verify_with_native_work(false, work).await?;
+            owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
             let file = self.stage_with_io(
                 operation_id, idempotency_key, bytes, media_type, Some(&io)).await?;
-            owner.verify_with_native_work(false, work).await?;
+            owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
             let retained = file.logical_owned_bytes()?;
             let custody = io.into_native_custody(retained)?;
             Ok((file, custody))
@@ -1768,7 +1768,7 @@ where
             code: crate::wire::ErrorCode::Unsupported,
             reason: "original staged-payload observation requires a task-owned journal",
         })?;
-        owner.require_volume_grant_with_native_work(&self.volume, VolumeOperation::Read, work)?;
+        owner.require_volume_grant(&self.volume, VolumeOperation::Read, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             let file = {
@@ -2458,10 +2458,10 @@ mod tests {
         let agent = AgentId::new();
         let volume = VolumeRef::new(
             provider,
-            "observation-identity",
+            "observation-identity".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),
-        )?;
+         &mut None)?;
         host.create_volume(&volume).await?;
         let issuer = crate::core::AuthorityIssuer::new(
             "observation-identity",
@@ -2559,7 +2559,7 @@ mod tests {
             journal.path(target)?
                 .append_batch(
                     vec![Bytes::from(serde_json::to_vec(&wire)
-                        .map_err(|error| Error::Invalid(error.to_string()))?)],
+                        .map_err(|error| Error::Invalid(error.to_string()))?).into()],
                     Some(0),
                     None,
                 )
@@ -2600,10 +2600,10 @@ mod tests {
         let agent = AgentId::new();
         let volume = VolumeRef::new(
             fs_provider,
-            "cold-source",
+            "cold-source".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),
-        )?;
+         &mut None)?;
         host.create_volume(&volume).await?;
         let authority = Authority {
             kind: AggregateKind::Conversation,
@@ -2617,19 +2617,8 @@ mod tests {
                 volume.capability(VolumeOperation::Read, &mut None)?,
                 volume.capability(VolumeOperation::Write, &mut None)?,
             ]), Some(agent), None, &mut None).expect("scope proof");
-        let content = Arc::new(super::super::FilesystemContentVerifier::new(
-            host.clone(),
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &scope,
-            4096, None,
-        )?);
-        let publisher = super::super::FilesystemContentPublisher::new(
-            host.clone(),
-            &volume,
-            &issuer.verifier(&mut None).expect("verifier copy"),
-            &scope,
-            4096, None,
-        )?;
+        let content = super::super::FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &scope, 4096, None)?;
+        let publisher = super::super::FilesystemContentPublisher::new(host.clone(), &volume, &issuer.verifier(&mut None).expect("verifier copy"), &scope, 4096, None)?;
         let mut aggregate = StreamAggregate::open(
             &client,
             authority.clone(),
@@ -2666,9 +2655,9 @@ mod tests {
                     &format!("messages/{sequence}.txt"),
                     format!("canonical-{sequence}").as_bytes(),
                     "text/plain",
-                    "message.txt",
-                )
-                .await?;
+                    "message.txt", None,
+                )?
+                .await?.0;
             let id = uuid::Uuid::new_v4();
             let reply_to = if kind == MessageKind::Assistant {
                 ids.first().copied()

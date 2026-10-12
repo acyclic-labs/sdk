@@ -60,7 +60,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             .map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
         let selected = self.authorization();
         self.handle.require_selection(selected.operation_id, source, project, generation, selected.native_snapshot.as_ref(), Some(work))?;
-        self.owner.verify_project_source_read_with_native_work(&self.handle, work).await?;
+        self.owner.verify_project_source_read(&self.handle, Some(work)).await?;
         let io = PreparationIo::from_native_work(work)?;
         self.host.require_private_directory(&self.handle.authorization().project, self.handle.grant(), "", Some(&io))?;
         if let Some(frozen) = frozen {
@@ -83,7 +83,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 }
             }
         }
-        self.owner.verify_project_source_read_with_native_work(&self.handle, work).await?;
+        self.owner.verify_project_source_read(&self.handle, Some(work)).await?;
         original.remaining()?;
         self.io.cancellation().check()
             .map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
@@ -102,7 +102,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
             }
             work.remaining()?;
-            owner.verify_with_native_work(false, work).await?;
+            owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
             if cancellation.is_cancelled() || io.cancellation().is_cancelled() {
                 return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
             }
@@ -259,7 +259,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         Self::verify_owner(&self.owner, &self.io).await?;
         let result = self.generation.list_directory(&requested, after.as_ref(), engine_maximum,
             self.io.remaining()?, self.io.cancellation()).await;
-        let page = self.io.receive(result);
+        let page = self.io.receive(result).map(|(page, _)| page);
         Self::verify_owner(&self.owner, &self.io).await?;
         let page = page?;
         let slots = (page.entries.len() as u64).checked_mul(std::mem::size_of::<PrivateDirectoryEntry>() as u64)

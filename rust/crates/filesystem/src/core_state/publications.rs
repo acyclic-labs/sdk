@@ -90,7 +90,7 @@ impl MultiRootPublicationStore for LocalCoreStateStore {
             let paths = namespace.record(
                 MULTI_ROOT_PARENT_CLAIM_FAMILY,
                 &parent_context_id.into_bytes(),
-            );
+            )?;
             for _ in 0..2 {
                 if let Some(claim) = read_locked::<MultiRootParentClaim>(&paths)? {
                     return Ok(claim.operation_id == operation_id);
@@ -120,7 +120,7 @@ impl MultiRootPublicationStore for LocalCoreStateStore {
             let paths = namespace.record(
                 MULTI_ROOT_PARENT_CLAIM_FAMILY,
                 &parent_context_id.into_bytes(),
-            );
+            )?;
             let Some(claim) = read_locked::<MultiRootParentClaim>(&paths)? else {
                 return Ok(true);
             };

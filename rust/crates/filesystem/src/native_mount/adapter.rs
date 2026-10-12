@@ -38,10 +38,14 @@ use std::sync::OnceLock;
 use std::sync::PoisonError;
 use std::sync::Weak;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
-use std::task::{Context, Poll, Wake, Waker};
+use std::task::Poll;
 use std::time::Duration;
 
 const CALLBACK_TIMEOUT: Duration = Duration::from_secs(30);
+
+mod runtime;
+pub(super) use runtime::{CallbackRuntime, CallbackWait};
+pub use runtime::initialize_native_mount_services;
 const MAXIMUM_EXACT_INSTALL_CHANGES: u32 = 65_536;
 const MAX_NATIVE_SUBTREE_CAPTURE_PATHS: u32 = 4_000_000;
 const CAPTURE_PENDING: u8 = 0;
@@ -1074,232 +1078,6 @@ pub(super) fn retain_namespace_lineage(
         lazy_owner: lineage.lazy_owner.clone(),
         lazy_root, _custody: scratch.retain(),
     })
-}
-
-/// Blocking bridge from native driver threads into the shared async runtime.
-#[derive(Clone)]
-pub(super) struct CallbackRuntime {
-    handle: tokio::runtime::Handle,
-}
-
-// Existing-only access must not implicitly initialize a bounded invocation.
-static CALLBACK_RUNTIME: OnceLock<Result<tokio::runtime::Runtime, Arc<std::io::Error>>> = OnceLock::new();
-
-struct ParkedCallback {
-    woken: StdMutex<bool>,
-    changed: std::sync::Condvar,
-    _native_allocation: Option<crate::NativeAllocation>,
-}
-
-impl Wake for ParkedCallback {
-    fn wake(self: Arc<Self>) {
-        self.wake_by_ref();
-    }
-
-    fn wake_by_ref(self: &Arc<Self>) {
-        *self.woken.lock().unwrap_or_else(PoisonError::into_inner) = true;
-        self.changed.notify_one();
-    }
-}
-
-impl ParkedCallback {
-    fn poll_to_completion_measured<F: Future + Unpin>(
-        future: F, meter: Option<&dyn acyclic_native_runtime::NativeReadMeter>,
-    ) -> std::io::Result<F::Output> {
-        let bytes = u64::try_from(std::mem::size_of::<Self>()).map_err(std::io::Error::other)?;
-        if let Some(meter) = meter { meter.allocate(bytes)?; }
-        let _allocation = CaptureRuntimeAllocation { meter, bytes };
-        let parked = Arc::new(Self {
-            woken: StdMutex::new(false),
-            changed: std::sync::Condvar::new(),
-            _native_allocation: None,
-        });
-        Ok(Self::poll_with_parked(future, parked))
-    }
-
-    fn poll_with_parked<F: Future + Unpin>(mut future: F, parked: Arc<Self>) -> F::Output {
-        let waker = Waker::from(Arc::clone(&parked));
-        let mut context = Context::from_waker(&waker);
-        loop {
-            if let Poll::Ready(output) = Pin::new(&mut future).poll(&mut context) {
-                drop(future);
-                return output;
-            }
-            let mut woken = parked.woken.lock().unwrap_or_else(PoisonError::into_inner);
-            while !*woken {
-                woken = parked.changed.wait(woken).unwrap_or_else(PoisonError::into_inner);
-            }
-            *woken = false;
-        }
-    }
-}
-
-/// Actual wake owner admitted before a future borrows the invocation meter.
-pub(super) struct PreparedCallbackWait {
-    parked: Arc<ParkedCallback>,
-    bytes: u64,
-}
-
-impl PreparedCallbackWait {
-    pub(super) fn logical_owned_bytes(&self) -> u64 { self.bytes }
-}
-
-struct CaptureRuntimeAllocation<'a> {
-    meter: Option<&'a dyn acyclic_native_runtime::NativeReadMeter>,
-    bytes: u64,
-}
-
-impl Drop for CaptureRuntimeAllocation<'_> {
-    fn drop(&mut self) {
-        if let Some(meter) = self.meter { meter.release(self.bytes); }
-    }
-}
-
-/// Initializes the process-shared mount callback runtime outside a bounded preparation invocation.
-pub fn initialize_native_mount_services() -> Result<(), NativeMountError> {
-    CallbackRuntime::create().map(|_| ())
-}
-
-impl CallbackRuntime {
-    pub(super) fn create() -> Result<Self, NativeMountError> {
-        CALLBACK_RUNTIME.get_or_init(|| {
-            tokio::runtime::Builder::new_multi_thread()
-                .worker_threads(2)
-                .enable_all()
-                .thread_name("acyclic-fs-mount")
-                .build()
-                .map_err(Arc::new)
-        });
-        Self::existing()
-    }
-
-    pub(super) fn existing() -> Result<Self, NativeMountError> {
-        Self::existing_startup().map_err(Into::into)
-    }
-
-    pub(super) fn existing_startup() -> Result<Self, super::NativeMountStartupAdmissionError> {
-        let runtime = CALLBACK_RUNTIME.get()
-            .ok_or(super::NativeMountStartupAdmissionError::ServicesCold)?;
-        match runtime {
-            Ok(runtime) => Ok(Self { handle: runtime.handle().clone() }),
-            Err(error) => Err(super::NativeMountStartupAdmissionError::ServiceUnavailable(Arc::clone(error))),
-        }
-    }
-
-    pub(super) fn prepare_wait(
-        &self, work: &mut crate::demand::DemandWork,
-    ) -> Result<PreparedCallbackWait, MountSourceError> {
-        work.check().map_err(super::lazy::mount_demand_error)?;
-        let bytes = std::mem::size_of::<ParkedCallback>() as u64;
-        work.allocate(bytes).map_err(super::lazy::mount_demand_error)?;
-        Ok(PreparedCallbackWait {
-            parked: Arc::new(ParkedCallback {
-                woken: StdMutex::new(false), changed: std::sync::Condvar::new(),
-                _native_allocation: None,
-            }),
-            bytes,
-        })
-    }
-
-    /// Polls the original producer in place, retaining its cancellation and quiescence protocol.
-    pub(super) fn wait_prepared<F: Future>(
-        &self, prepared: PreparedCallbackWait, create: impl FnOnce() -> F,
-    ) -> F::Output {
-        let poll = || {
-            let _runtime = self.handle.enter();
-            let _inline = acyclic_native_runtime::InlineBlocking::enter();
-            let mut future = std::pin::pin!(tokio::task::unconstrained(create()));
-            ParkedCallback::poll_with_parked(future.as_mut(), prepared.parked)
-        };
-        match tokio::runtime::Handle::try_current() {
-            Ok(current) if current.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread =>
-                tokio::task::block_in_place(poll),
-            _ => poll(),
-        }
-    }
-
-    /// Checks authentic callback authority on this existing runtime before the provider allocates its exchange frame or starts a source effect.
-    pub(super) fn verify_native_callback_guard(
-        &self, guard: &dyn super::NativeMountCallbackGuard,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeMountError> {
-        self.verify_native_callback_role(guard, work, false)
-    }
-
-    /// Checks authored WRITE on the same runtime and original callback binding.
-    pub(super) fn verify_native_callback_write_guard(
-        &self, guard: &dyn super::NativeMountCallbackGuard,
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<(), NativeMountError> {
-        self.verify_native_callback_role(guard, work, true)
-    }
-
-    fn verify_native_callback_role(
-        &self, guard: &dyn super::NativeMountCallbackGuard,
-        work: &crate::NativeMaterializationWork, authored_write: bool,
-    ) -> Result<(), NativeMountError> {
-        let allocation = work.claim(
-            std::mem::size_of::<ParkedCallback>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
-        let prepared = PreparedCallbackWait {
-            parked: Arc::new(ParkedCallback {
-                woken: StdMutex::new(false),
-                changed: std::sync::Condvar::new(),
-                _native_allocation: Some(allocation),
-            }),
-            bytes: 0,
-        };
-        self.wait_prepared(prepared, || async {
-            let mut verification = if authored_write { guard.check_write(work)? }
-                else { guard.check(work)? };
-            (&mut verification).await
-        })
-    }
-
-    pub(super) fn block_on_measured<F: Future>(
-        &self, create: impl FnOnce() -> F, meter: &dyn acyclic_native_runtime::NativeReadMeter,
-    ) -> std::io::Result<F::Output> {
-        let _runtime = self.handle.enter();
-        let _inline = acyclic_native_runtime::InlineBlocking::enter();
-        let mut allocation = CaptureRuntimeAllocation { meter: Some(meter), bytes: 0 };
-        let (future, _) = crate::heap_future::in_heap_admitted(
-            (create, &mut allocation),
-            |(_, allocation), bytes| {
-                meter.allocate(bytes)?;
-                allocation.bytes = bytes;
-                Ok::<_, std::io::Error>(())
-            },
-            |(create, _)| tokio::task::unconstrained(create()),
-        )?;
-        ParkedCallback::poll_to_completion_measured(future, Some(meter))
-    }
-
-    fn block_on<F: Future>(&self, create: impl FnOnce() -> F) -> F::Output {
-        let poll = || {
-            // Built inside the runtime's context, which timers need.
-            let _runtime = self.handle.enter();
-            // This thread serves exactly this callback until it completes.
-            let _inline = acyclic_native_runtime::InlineBlocking::enter();
-            ParkedCallback::poll_to_completion_measured(tokio::task::unconstrained(in_heap(create)), None)
-                .expect("unmetered callback has no denied allocations")
-        };
-        match tokio::runtime::Handle::try_current() {
-            Ok(current)
-                if current.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread =>
-            {
-                tokio::task::block_in_place(poll)
-            }
-            _ => poll(),
-        }
-    }
-
-    /// Runs one callback's complete future under the finite callback deadline.
-    pub(super) fn wait<T, F: Future<Output = Result<T, MountSourceError>>>(
-        &self,
-        create: impl FnOnce() -> F,
-    ) -> Result<T, MountSourceError> {
-        self.block_on(|| tokio::time::timeout(CALLBACK_TIMEOUT, create()))
-            .map_err(|_| MountSourceError::Stale)?
-    }
 }
 
 struct DetachedMountState<A, O> {
@@ -5399,7 +5177,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             .wait(|| async { Ok(self.checkout.observe(owner, &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())), &CancellationToken::new(), None).await?.generation_id()) })
     }
 
-    /// Records a composing source’s projection change.
+    /// Records a composing sourceâ€™s projection change.
     pub(super) fn record_projection_change(&self, change: &ViewChange<'_>) {
         self.checkout.ledger.record(change, &mut NativeDemandCarrier::Borrowed(&mut super::view_ledger::unbounded_view_work()), &mut super::view_ledger::ViewLedgerAdmission::default()).expect("unbounded view recording");
     }
@@ -6105,7 +5883,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         Ok((handle, 0))
     }
 
-    /// Resolves a mounted path using the caller’s accounting scope.
+    /// Resolves a mounted path using the callerâ€™s accounting scope.
     pub(super) async fn lookup_async(
         &self,
         path: &MountPath,
@@ -6213,7 +5991,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         })
     }
 
-    /// Checks an authored stamp using the caller’s accounting scope.
+    /// Checks an authored stamp using the callerâ€™s accounting scope.
     pub(super) fn unchanged_since_with_carrier(
         &self,
         path: &MountPath,
@@ -7220,7 +6998,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         paths: &[MountPath],
         expected_root_identity: NativeRootIdentity,
         scope: HostCaptureScope,
-        baseline: Option<Arc<NativeViewBaseline>>,
+        baseline: Option<NativeViewBaseline>,
         native: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError>
     where A: 'static,
@@ -7233,7 +7011,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         )?;
         self.capture_host_with_identity_async(
             &inputs.paths, &inputs.options, scope,
-            baseline.as_deref(), None, native,
+            baseline.as_ref(), None, native,
         ).await.map(|_| ())
     }
 
@@ -7244,7 +7022,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         paths: &[MountPath],
         expected_root_identity: NativeRootIdentity,
         scope: HostCaptureScope,
-        baseline: Arc<NativeViewBaseline>,
+        baseline: NativeViewBaseline,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> crate::MeasuredResult<crate::OperationReceipt<u64>, MountSourceError>
@@ -9269,7 +9047,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         std::fs::write(directory.path().join("file"), b"actual")?;
         let identity = capture_root_identity(directory.path())?;
-        let baseline = Arc::new(NativeViewBaseline::new(identity));
+        let baseline = NativeViewBaseline::new(identity, false);
         let cancellation = CancellationToken::new();
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build()?;
         runtime.block_on(async {
@@ -9279,7 +9057,7 @@ mod tests {
             }] {
                 let failure = source.capture_host_with_identity_budgeted(
                     directory.path(), &paths, identity, HostCaptureScope::ExactPaths,
-                    Arc::clone(&baseline), budget, &cancellation,
+                    baseline, budget, &cancellation,
                 ).await.expect_err("finite input denial must not start a worker");
                 assert!(matches!(failure.error, MountSourceError::Work(_)
                     | MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Work(_))));
@@ -9645,7 +9423,7 @@ mod tests {
         let directory = tempfile::tempdir()?;
         std::fs::write(directory.path().join("file"), b"child")?;
         let identity = capture_root_identity(directory.path())?;
-        let baseline = Arc::new(NativeViewBaseline::new(identity));
+        let baseline = NativeViewBaseline::new(identity, false);
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
@@ -10035,7 +9813,7 @@ mod tests {
         let data = Box::new(*b"retained");
         let demand = crate::demand::NativeSourceWork::from_native_materialization_work(&job).original_demand_work()
             .allocation_work();
-        assert!(demand.source_execution_view().is_none());
+        assert!(demand.execution.is_none());
         let credit = crate::materializer::NativeOwnedCleanupCredit::from_reserved(
             job.reserve_work(crate::WorkCounters {
                 items_examined: 1, ..crate::WorkCounters::UNCHARGED
@@ -10164,7 +9942,7 @@ mod tests {
 
         acyclic_native_runtime::initialize_native_io_services()?;
         let borrowed = source(FilesystemProfile::Portable)?;
-        let workspace_id = crate::WorkspaceId::from_volume_id(borrowed.volume_id()?);
+        let workspace_id = crate::WorkspaceId::from_bytes(borrowed.volume_id()?.into_bytes());
         let config = VolumeConfig::portable(Lifecycle::Ephemeral);
         let context = crate::lazy_workspace::NativeSnapshotContext::Authored { workspace_id, config };
         let path = native_test_path("qualified-guard-original");
@@ -12165,7 +11943,7 @@ mod tests {
         let source = source(FilesystemProfile::Windows)?;
         let (initial, pending) = checkout_state(&source);
         assert!(!pending);
-        let name = "exact-α-😀"
+        let name = "exact-Î±-ðŸ˜€"
             .encode_utf16()
             .flat_map(u16::to_le_bytes)
             .collect::<Vec<_>>();
@@ -12190,7 +11968,7 @@ mod tests {
         assert!(!pending);
 
         let host = tempfile::tempdir()?;
-        let captured_text = "captured-β.bin";
+        let captured_text = "captured-Î².bin";
         std::fs::write(host.path().join(captured_text), b"captured")?;
         let captured_name = captured_text
             .encode_utf16()
@@ -12227,9 +12005,9 @@ mod tests {
             Arc::clone(&source) as Arc<dyn MountFilesystem>,
         )?;
 
-        let first_name = "written-α.bin";
-        let second_name = "renamed-β.bin";
-        let linked_name = "linked-γ.bin";
+        let first_name = "written-Î±.bin";
+        let second_name = "renamed-Î².bin";
+        let linked_name = "linked-Î³.bin";
         let write_status = acyclic_native_runtime::process_status(std::process::Command::new("powershell.exe")
             .args([
                 "-NoProfile",
@@ -13174,9 +12952,9 @@ fn capture_mount_error(error: crate::CaptureError) -> MountSourceError {
             | crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(error))) => MountSourceError::Work(error),
         crate::CaptureError::Kernel(crate::FsError::NativeKernel(crate::NativeTreeMaterializationError::AllocationFailed(error))) => MountSourceError::Allocation(error),
         crate::CaptureError::Kernel(crate::FsError::NativeKernel(error)) => MountSourceError::NativeWork(error),
+        crate::CaptureError::Kernel(crate::FsError::Cancelled(_)) => MountSourceError::Cancelled,
+        crate::CaptureError::Kernel(crate::FsError::SourceSnapshotStale) => MountSourceError::Stale,
         crate::CaptureError::Kernel(error) => MountSourceError::Filesystem(error),
-        crate::CaptureError::Cancelled => MountSourceError::Cancelled,
-        crate::CaptureError::StaleVersion => MountSourceError::Stale,
         error => engine_error(error),
     }
 }

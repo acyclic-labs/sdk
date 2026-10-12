@@ -1,7 +1,7 @@
 //! Journaled local persistence for filesystem control-plane state.
 
-use crate::record_store::Revisioned;
 use crate::lazy_workspace::{MemoryLazyNode, NativeOwnedCoreState};
+use crate::record_store::Revisioned;
 use crate::workspace_context::{
     WorkspaceContextChildren, discard_context_subtree, plan_context_subtree_discard,
     update_context_children,
@@ -48,9 +48,12 @@ pub struct LocalCoreStateStore {
 
 impl std::fmt::Debug for LocalCoreStateStore {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("LocalCoreStateStore")
-            .field("root", &self.root).field("ownership", &self.ownership)
-            .field("deferral", &self.deferral).field("nodes", &self.nodes)
+        formatter
+            .debug_struct("LocalCoreStateStore")
+            .field("root", &self.root)
+            .field("ownership", &self.ownership)
+            .field("deferral", &self.deferral)
+            .field("nodes", &self.nodes)
             .finish_non_exhaustive()
     }
 }
@@ -200,7 +203,11 @@ impl LocalCoreStateStore {
     fn namespace(&self) -> Result<Namespace, LocalCoreStateStoreError> {
         let work = self.journal_work.as_ref();
         let (root, allocation) = match work {
-            Some(work) => { let (root, allocation) = crate::native_host::clone_path_with_work(&self.root, &mut &*work)?; (root, Some(allocation)) }
+            Some(work) => {
+                let (root, allocation) =
+                    crate::native_host::clone_path_with_work(&self.root, &mut &*work)?;
+                (root, Some(allocation))
+            }
             None => (self.root.as_ref().clone(), None),
         };
         let admission = match (&self.ownership, work) {
@@ -208,26 +215,57 @@ impl LocalCoreStateStore {
                 crate::native_host::create_directories(&root, &mut &*work)?;
                 let mut paths_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
                 let path = measured_record_path(&root, OWNER_LOCK, work, &mut paths_allocation)?;
-                let lock = materialization_open_options(&path, &crate::native_host::NativeOpenOptions::ReadWriteCreate, work)?;
+                let lock = materialization_open_options(
+                    &path,
+                    &crate::native_host::NativeOpenOptions::ReadWriteCreate,
+                    work,
+                )?;
                 let cleanup = work.reserve_cleanup_write()?;
-                let read = crate::WorkCounters { backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED };
+                let read = crate::WorkCounters {
+                    backend_read_operations: 1,
+                    ..crate::WorkCounters::UNCHARGED
+                };
                 work.admit(read)?;
                 let acquired = FileExt::try_lock_shared(&lock);
-                let owner_lock = acquired.as_ref().is_ok().then(|| OwnerLock(lock, Some(cleanup)));
+                let owner_lock = acquired
+                    .as_ref()
+                    .is_ok()
+                    .then(|| OwnerLock(lock, Some(cleanup)));
                 work.spent(read)?;
                 match acquired {
-                    Ok(()) => Admission::Shared { _lock: owner_lock.expect("acquired lock") },
-                    Err(error) if acyclic_native_runtime::is_exclusive_lock_contention(&error) =>
-                        return Err(LocalCoreStateStoreError::LazyWork(crate::LazyWorkspaceError::NativeRecordOwnershipConflict(root, allocation))),
+                    Ok(()) => Admission::Shared {
+                        _lock: owner_lock.expect("acquired lock"),
+                    },
+                    Err(error) if acyclic_native_runtime::is_exclusive_lock_contention(&error) => {
+                        return Err(LocalCoreStateStoreError::LazyWork(
+                            crate::LazyWorkspaceError::NativeRecordOwnershipConflict(
+                                root, allocation,
+                            ),
+                        ));
+                    }
                     Err(error) => return Err(error.into()),
                 }
             }
-            (Ownership::Shared, None) => Admission::Shared { _lock: OwnerLock::acquire(&root, LockMode::Shared)? },
+            (Ownership::Shared, None) => Admission::Shared {
+                _lock: OwnerLock::acquire(&root, LockMode::Shared)?,
+            },
             (Ownership::Owned(owner), _) => Admission::Owned(Arc::clone(owner)),
         };
         let deferred = matches!(admission, Admission::Owned(_))
-            && self.deferral.as_ref().is_some_and(|deferral| deferral.load(Ordering::Acquire));
-        Ok(Namespace { root, admission, durability: if deferred { Durability::Deferred } else { Durability::Flushed }, _allocation: allocation })
+            && self
+                .deferral
+                .as_ref()
+                .is_some_and(|deferral| deferral.load(Ordering::Acquire));
+        Ok(Namespace {
+            root,
+            admission,
+            durability: if deferred {
+                Durability::Deferred
+            } else {
+                Durability::Flushed
+            },
+            _allocation: allocation,
+        })
     }
 
     /// Runs one admitted transaction without blocking an async executor.
@@ -235,15 +273,27 @@ impl LocalCoreStateStore {
         &self,
         operation: impl FnOnce(Namespace) -> Result<T, LocalCoreStateStoreError> + Send + 'static,
     ) -> Result<T, LocalCoreStateStoreError> {
-        if let Some(work) = &self.journal_work { work.admit(crate::WorkCounters::UNCHARGED)?; }
-        let meter = self.journal_work.as_ref().map(|work| (work.runtime_meter(), false));
+        if let Some(work) = &self.journal_work {
+            work.admit(crate::WorkCounters::UNCHARGED)?;
+        }
+        let meter = self
+            .journal_work
+            .as_ref()
+            .map(|work| (work.runtime_meter(), false));
         let native = meter.is_some();
         let runtime_error = |error| {
-            if native { LocalCoreStateStoreError::from(crate::NativeTreeMaterializationError::from_runtime_error(error)) }
-            else { LocalCoreStateStoreError::Io(error) }
+            if native {
+                LocalCoreStateStoreError::from(
+                    crate::NativeTreeMaterializationError::from_runtime_error(error),
+                )
+            } else {
+                LocalCoreStateStoreError::Io(error)
+            }
         };
         let store = self.clone();
-        let task = acyclic_native_runtime::run_blocking_io(move || operation(store.namespace()?), meter).map_err(&runtime_error)?;
+        let task =
+            acyclic_native_runtime::run_blocking_io(move || operation(store.namespace()?), meter)
+                .map_err(&runtime_error)?;
         task.await.map_err(runtime_error)?
     }
 
@@ -253,7 +303,7 @@ impl LocalCoreStateStore {
         family: &'static str,
         key: [u8; 16],
     ) -> Result<Option<T>, LocalCoreStateStoreError> {
-        self.transaction(move |namespace| read_locked(&namespace.record(family, &key)))
+        self.transaction(move |namespace| read_locked(&namespace.record(family, &key)?))
             .await
     }
 
@@ -270,7 +320,7 @@ impl LocalCoreStateStore {
     {
         self.transaction(move |namespace| {
             compare_and_swap(
-                &namespace.record(family, &key),
+                &namespace.record(family, &key)?,
                 expected_revision,
                 &replacement,
             )
@@ -286,7 +336,7 @@ impl LocalCoreStateStore {
         expected_revision: u64,
     ) -> Result<bool, LocalCoreStateStoreError> {
         self.transaction(move |namespace| {
-            compare_and_delete::<T>(&namespace.record(family, &key), expected_revision)
+            compare_and_delete::<T>(&namespace.record(family, &key)?, expected_revision)
         })
         .await
     }
@@ -308,7 +358,7 @@ impl LocalCoreStateStore {
             return self.remove_journal(operation_id, work).await;
         }
         self.transaction(move |namespace| {
-            let paths = namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes());
+            let paths = namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes())?;
             with_lock(&paths, || {
                 let journal: Option<MaterializationJournal> = read_recoverable(&paths)?;
                 if journal.as_ref().is_some_and(|journal| {
@@ -332,17 +382,79 @@ impl Namespace {
         self.root.join(family)
     }
 
-    fn record(&self, family: &str, key: &[u8]) -> RecordPaths<'_> {
+    fn record(
+        &self,
+        family: &str,
+        key: &[u8],
+    ) -> Result<RecordPaths<'_>, LocalCoreStateStoreError> {
+        if let Some(allocation) = &self._allocation {
+            let work = allocation.work();
+            let key_bytes = key
+                .len()
+                .checked_mul(2)
+                .ok_or(crate::WorkError::Overflow)
+                .map_err(crate::materializer::NativeTreeMaterializationError::from)?;
+            let mut name = [0_u8; 96];
+            let encoded = name.get_mut(..key_bytes).ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "record identity exceeds the bounded key width",
+                )
+            })?;
+            let encoding = crate::WorkCounters {
+                bytes_encoded: key_bytes as u64,
+                ..Default::default()
+            };
+            work.admit(encoding)?;
+            hex::encode_to_slice(key, encoded).map_err(std::io::Error::other)?;
+            work.spent(encoding)?;
+            let mut allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
+            let directory = measured_record_path(&self.root, family, work, &mut allocation)?;
+            let mut entry = |suffix: &str| -> Result<PathBuf, LocalCoreStateStoreError> {
+                let end = key_bytes
+                    .checked_add(suffix.len())
+                    .ok_or(crate::WorkError::Overflow)
+                    .map_err(crate::materializer::NativeTreeMaterializationError::from)?;
+                name.get_mut(key_bytes..end)
+                    .ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            "record identity and suffix exceed the bounded key width",
+                        )
+                    })?
+                    .copy_from_slice(suffix.as_bytes());
+                measured_record_path(
+                    &directory,
+                    std::str::from_utf8(&name[..end]).map_err(std::io::Error::other)?,
+                    work,
+                    &mut allocation,
+                )
+            };
+            let current = entry(".json")?;
+            let previous = entry(".previous.json")?;
+            let temporary = entry(".next.json")?;
+            let lock = entry(".lock")?;
+            return Ok(RecordPaths {
+                directory,
+                current,
+                previous,
+                temporary,
+                lock,
+                namespace: PhantomData,
+                allocation: Some(allocation),
+            });
+        }
         let directory = self.family(family);
         let stem = hex::encode(key);
-        RecordPaths {
+        Ok(RecordPaths {
             current: directory.join(format!("{stem}.json")),
             previous: directory.join(format!("{stem}.previous.json")),
             temporary: directory.join(format!("{stem}.next.json")),
             lock: directory.join(format!("{stem}.lock")),
             directory,
             namespace: PhantomData,
-        }
+            allocation: None,
+        })
     }
 
     fn operation_records(
@@ -441,22 +553,21 @@ pub enum LocalCoreStateStoreError {
     Corrupt(PathBuf),
 }
 
-
 mod contexts;
 use contexts::*;
 mod values;
 use values::*;
 mod log;
 use log::*;
-mod native_log;
 mod native_io;
+mod native_log;
 use native_io::*;
 mod journal;
 pub use journal::LocalMaterializationActionCompletion;
 mod decode;
 use decode::*;
-mod publications;
 mod nodes;
+mod publications;
 use nodes::*;
 mod collection;
 mod lazy_log;

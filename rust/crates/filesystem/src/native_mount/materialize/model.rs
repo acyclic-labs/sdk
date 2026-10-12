@@ -61,7 +61,6 @@ impl MaterializeOptions {
             transfer_bytes: 8 * 1024 * 1024,
         }
     }
-
 }
 
 /// Exact result and host-side movement facts.
@@ -106,7 +105,9 @@ pub enum MaterializeError {
     #[error("materialization destination must be an existing empty real directory")]
     InvalidDestination,
     /// The destination path now names another physical allocation.
-    #[error("materialization destination allocation changed: expected {expected:?}, actual {actual:?}")]
+    #[error(
+        "materialization destination allocation changed: expected {expected:?}, actual {actual:?}"
+    )]
     AllocationChanged {
         /// Original witnessed allocation.
         expected: crate::NativeRootIdentity,
@@ -147,7 +148,9 @@ pub enum MaterializeError {
     #[error(transparent)]
     Demand(crate::DemandError),
     /// Replacement and its rollback both failed; the owned backup is retained.
-    #[error("replacement failed: {primary}; displaced entry remains in the owned backup after rollback failed: {rollback}")]
+    #[error(
+        "replacement failed: {primary}; displaced entry remains in the owned backup after rollback failed: {rollback}"
+    )]
     RestoreRollback {
         /// Primary actual replacement failure.
         #[source]

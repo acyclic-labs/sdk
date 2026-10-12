@@ -6901,7 +6901,7 @@ mod tests {
         let original = outcome._stage.as_ref().expect("original held-stage metadata, not an ambient replacement");
         assert!(original.directory.is_none(), "physical success requires the actual original directory handle to close");
         assert_eq!(original.identity, identity);
-        assert!(!original.name.data.as_slice().is_empty());
+        assert!(!original._name.data.as_slice().is_empty());
         let (primary, secondary) = outcome.take_capture_failures().expect("actual namespace-only refusal");
         assert_eq!(super::native_mount_error_code(&primary), Some(super::HR_DIRECTORY_NOT_EMPTY));
         assert!(secondary.is_none(), "no authored capture failure was invented");

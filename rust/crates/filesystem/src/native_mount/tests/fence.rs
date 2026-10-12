@@ -1,6 +1,5 @@
 use super::*;
 
-
 #[cfg(windows)]
 #[test]
 fn projfs_cannot_shadow_an_existing_directory() -> Result<(), Box<dyn std::error::Error>> {
@@ -31,7 +30,6 @@ fn projfs_cannot_shadow_an_existing_directory() -> Result<(), Box<dyn std::error
     Ok(())
 }
 
-
 #[test]
 fn administrative_last_drop_closes_real_fence_without_touching_residue()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -40,35 +38,65 @@ fn administrative_last_drop_closes_real_fence_without_touching_residue()
     std::fs::create_dir(&destination)?;
     std::fs::write(destination.join("authored"), b"retain")?;
     let (lock_path, _) = MountDestinationGuard::paths_for_canonical(&destination.canonicalize()?)?;
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .map_err(|(error, _)| error)?;
-    let mut owner = NativeMountRecoveryOwner::acquire_with_original(&destination, original.clone())?;
+    let original =
+        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(error, _)| error)?;
+    let mut owner =
+        NativeMountRecoveryOwner::acquire_with_original(&destination, original.clone())?;
     let identity = owner.cleanup_state().fence_identity;
-    let borrowed_path = owner.cleanup_state().destination.as_os_str().as_encoded_bytes().as_ptr();
+    let borrowed_path = owner
+        .cleanup_state()
+        .destination
+        .as_os_str()
+        .as_encoded_bytes()
+        .as_ptr();
     let cancellation = CancellationToken::new();
     let mut budget = WorkBudget::UNBOUNDED;
     budget.backend_read_operations = 0;
-    let (error, receipt) = owner.detach_measured(budget, &cancellation).expect_err("the actual native observation is denied");
-    assert!(matches!(error, NativeMountError::Work(_) | NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(_))));
+    let (error, receipt) = owner
+        .detach_measured(budget, &cancellation)
+        .expect_err("the actual native observation is denied");
+    assert!(matches!(
+        error,
+        NativeMountError::Work(_)
+            | NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(_))
+    ));
     assert_eq!(receipt.backend_read_operations, 0);
     assert!(owner.cleanup_state().destination_fence_retained);
     assert!(owner.cleanup_state().measured_cleanup_failed);
     assert_eq!(owner.cleanup_state().fence_identity, identity);
-    assert_eq!(owner.cleanup_state().destination.as_os_str().as_encoded_bytes().as_ptr(), borrowed_path);
-    assert!(matches!(acquire_existing_mount_lock(&lock_path), Err(NativeMountError::DestinationBusy)));
+    assert_eq!(
+        owner
+            .cleanup_state()
+            .destination
+            .as_os_str()
+            .as_encoded_bytes()
+            .as_ptr(),
+        borrowed_path
+    );
+    assert!(matches!(
+        acquire_existing_mount_lock(&lock_path),
+        Err(NativeMountError::DestinationBusy)
+    ));
     let before_close = original.receipt().backend_write_operations;
     await_recovery_worker(owner)?;
-    assert_eq!(original.receipt().backend_write_operations, before_close + 1);
-    assert!(lock_path.is_file(), "LastDrop must preserve the actual marker");
+    assert_eq!(
+        original.receipt().backend_write_operations,
+        before_close + 1
+    );
+    assert!(
+        lock_path.is_file(),
+        "LastDrop must preserve the actual marker"
+    );
     let unlocked = acquire_existing_mount_lock(&lock_path)?;
-    let (after_identity, _) = crate::native_host::file_identity_and_length_with_work(&unlocked, &mut &original)?;
+    let (after_identity, _) =
+        crate::native_host::file_identity_and_length_with_work(&unlocked, &mut &original)?;
     assert_eq!(after_identity, identity);
     drop(unlocked);
     assert_eq!(std::fs::read(destination.join("authored"))?, b"retain");
     assert!(destination.is_dir());
     Ok(())
 }
-
 
 #[test]
 fn administrative_post_lock_acquisition_denial_retires_actual_opened_fence()
@@ -77,8 +105,9 @@ fn administrative_post_lock_acquisition_denial_retires_actual_opened_fence()
     let destination = parent.path().join("mount");
     std::fs::create_dir(&destination)?;
     let (lock_path, _) = MountDestinationGuard::paths_for_canonical(&destination.canonicalize()?)?;
-    let baseline = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
-        .map_err(|(error, _)| error)?;
+    let baseline =
+        crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .map_err(|(error, _)| error)?;
     let owner = NativeMountRecoveryOwner::acquire_with_original(&destination, baseline.clone())?;
     let writes = baseline.receipt().backend_write_operations;
     await_recovery_worker(owner)?;
@@ -90,16 +119,28 @@ fn administrative_post_lock_acquisition_denial_retires_actual_opened_fence()
         .map_err(|(error, _)| error)?;
     let error = NativeMountRecoveryOwner::acquire_with_original(&destination, denied.clone())
         .expect_err("the actual post-lock registry unlock is denied");
-    assert!(matches!(error, NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(
-        crate::WorkError::BudgetExceeded { counter: "backend_write_operations", .. }
-    ))));
-    assert_eq!(denied.receipt().backend_write_operations, writes, "actual prefix plus original physical fence close");
-    assert!(lock_path.exists(), "failed acquisition preserves its on-disk marker");
+    assert!(matches!(
+        error,
+        NativeMountError::Materialization(crate::NativeTreeMaterializationError::Work(
+            crate::WorkError::BudgetExceeded {
+                counter: "backend_write_operations",
+                ..
+            }
+        ))
+    ));
+    assert_eq!(
+        denied.receipt().backend_write_operations,
+        writes,
+        "actual prefix plus original physical fence close"
+    );
+    assert!(
+        lock_path.exists(),
+        "failed acquisition preserves its on-disk marker"
+    );
     drop(acquire_existing_mount_lock(&lock_path)?);
     assert!(destination.is_dir());
     Ok(())
 }
-
 
 #[test]
 fn administrative_retry_uses_same_fence_and_distinct_action_ledgers()
@@ -112,8 +153,13 @@ fn administrative_retry_uses_same_fence_and_distinct_action_ledgers()
     let identity = owner.cleanup_state().fence_identity;
     let mut budget = WorkBudget::UNBOUNDED;
     budget.backend_read_operations = 0;
-    assert!(owner.detach_measured(budget, &CancellationToken::new()).is_err());
-    let receipt = owner.detach_measured(WorkBudget::UNBOUNDED, &CancellationToken::new())
+    assert!(
+        owner
+            .detach_measured(budget, &CancellationToken::new())
+            .is_err()
+    );
+    let receipt = owner
+        .detach_measured(WorkBudget::UNBOUNDED, &CancellationToken::new())
         .map_err(|(error, _)| error)?;
     assert!(receipt.value);
     assert!(receipt.work.backend_read_operations > 0);
@@ -124,7 +170,6 @@ fn administrative_retry_uses_same_fence_and_distinct_action_ledgers()
     assert_eq!(std::fs::read(destination.join("authored"))?, b"retain");
     Ok(())
 }
-
 
 #[test]
 fn crash_recovery_never_removes_live_or_contaminated_destinations()
@@ -167,7 +212,6 @@ fn crash_recovery_never_removes_live_or_contaminated_destinations()
     Ok(())
 }
 
-
 #[cfg(windows)]
 #[test]
 fn preserving_recovery_fences_live_owner_and_retains_ordinary_residue()
@@ -191,7 +235,6 @@ fn preserving_recovery_fences_live_owner_and_retains_ordinary_residue()
     Ok(())
 }
 
-
 #[test]
 fn destination_ownership_is_process_external_and_recoverable()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -212,10 +255,8 @@ fn destination_ownership_is_process_external_and_recoverable()
     Ok(())
 }
 
-
 #[test]
-fn orderly_destination_release_removes_per_mount_fence()
--> Result<(), Box<dyn std::error::Error>> {
+fn orderly_destination_release_removes_per_mount_fence() -> Result<(), Box<dyn std::error::Error>> {
     let temporary = tempfile::tempdir()?;
     let destination = temporary.path().join("mount");
     std::fs::create_dir(&destination)?;
@@ -235,7 +276,6 @@ fn orderly_destination_release_removes_per_mount_fence()
     );
     Ok(())
 }
-
 
 #[test]
 fn repeated_admission_teardown_has_constant_persistent_resource_set()
@@ -270,7 +310,6 @@ fn repeated_admission_teardown_has_constant_persistent_resource_set()
     Ok(())
 }
 
-
 #[test]
 fn bounded_parent_sweep_reclaims_stale_fences_and_preserves_live_owners()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -300,10 +339,8 @@ fn bounded_parent_sweep_reclaims_stale_fences_and_preserves_live_owners()
     Ok(())
 }
 
-
 #[test]
-fn parent_sweep_rejects_malformed_reserved_fence_names()
--> Result<(), Box<dyn std::error::Error>> {
+fn parent_sweep_rejects_malformed_reserved_fence_names() -> Result<(), Box<dyn std::error::Error>> {
     let temporary = tempfile::tempdir()?;
     std::fs::write(temporary.path().join(".acyclic-fs-mount-invalid.lock"), b"")?;
     assert!(matches!(
@@ -312,7 +349,6 @@ fn parent_sweep_rejects_malformed_reserved_fence_names()
     ));
     Ok(())
 }
-
 
 #[test]
 fn independent_supervisors_concurrently_reclaim_one_crash_left_fence()
@@ -370,10 +406,9 @@ fn independent_supervisors_concurrently_reclaim_one_crash_left_fence()
     Ok(())
 }
 
-
 #[test]
-fn destination_ownership_is_reclaimed_after_process_death()
--> Result<(), Box<dyn std::error::Error>> {
+fn destination_ownership_is_reclaimed_after_process_death() -> Result<(), Box<dyn std::error::Error>>
+{
     let temporary = tempfile::tempdir()?;
     let destination = temporary.path().join("mount");
     let ready = temporary.path().join("ready");
@@ -419,7 +454,6 @@ fn destination_ownership_is_reclaimed_after_process_death()
     Ok(())
 }
 
-
 #[test]
 fn shared_destination_fence_retains_original_owner_after_denial()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -428,7 +462,8 @@ fn shared_destination_fence_retains_original_owner_after_denial()
     std::fs::create_dir(&destination)?;
     let cancellation = crate::CancellationToken::new();
     let original = Arc::new(crate::demand::NativeDemandReadMeter(std::sync::Mutex::new(
-        crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation))));
+        crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation),
+    )));
     let meter = NativeMaterializationWork::from_meter(Arc::clone(&original));
     let mut guard = None;
     MountDestinationGuard::acquire_with_work(&destination, false, &meter, &mut guard, false)?;
@@ -437,27 +472,46 @@ fn shared_destination_fence_retains_original_owner_after_denial()
     assert!(guard.parent_directory.is_some());
     assert!(guard.file.is_some());
     let mut competing_guard = None;
-    assert!(matches!(MountDestinationGuard::acquire_with_work(&destination, false, &meter, &mut competing_guard, false),
-        Err(NativeMountError::DestinationBusy)));
-    assert!(competing_guard.is_none(), "a competing lock never becomes an owned cleanup target");
+    assert!(matches!(
+        MountDestinationGuard::acquire_with_work(
+            &destination,
+            false,
+            &meter,
+            &mut competing_guard,
+            false
+        ),
+        Err(NativeMountError::DestinationBusy)
+    ));
+    assert!(
+        competing_guard.is_none(),
+        "a competing lock never becomes an owned cleanup target"
+    );
     {
         let mut work = original.lock();
         work.budget.backend_write_operations = work.work.backend_write_operations;
     }
     let before = original.lock().work;
-    let error = guard.release(&mut &meter).expect_err("original write allowance denies cleanup");
-    assert!(matches!(error, NativeMountError::Work(crate::WorkError::BudgetExceeded {
-        counter: "backend_write_operations", ..
-    })));
+    let error = guard
+        .release(&mut &meter)
+        .expect_err("original write allowance denies cleanup");
+    assert!(matches!(
+        error,
+        NativeMountError::Work(crate::WorkError::BudgetExceeded {
+            counter: "backend_write_operations",
+            ..
+        })
+    ));
     assert!(guard.file.is_some());
-    assert_eq!(original.lock().work.backend_write_operations, before.backend_write_operations);
+    assert_eq!(
+        original.lock().work.backend_write_operations,
+        before.backend_write_operations
+    );
     original.lock().budget.backend_write_operations = u64::MAX;
     guard.release(&mut &meter)?;
     assert!(guard.file.is_none());
     assert_eq!(original.lock().live_allocation_bytes(), 0);
     Ok(())
 }
-
 
 #[test]
 fn accepted_destination_fence_cleanup_survives_original_cancellation()
@@ -466,35 +520,52 @@ fn accepted_destination_fence_cleanup_survives_original_cancellation()
     let destination = temporary.path().join("mount");
     std::fs::create_dir(&destination)?;
     let cancelled = crate::CancellationToken::new();
-    let work = crate::NativeMaterializationWork::new(crate::WorkBudget {
-        backend_read_operations: 64,
-        backend_write_operations: 64,
-        items_examined: 1_024,
-        ..crate::WorkBudget::UNBOUNDED
-    }, &cancelled).map_err(|(error, _)| error)?;
+    let work = crate::NativeMaterializationWork::new(
+        crate::WorkBudget {
+            backend_read_operations: 64,
+            backend_write_operations: 64,
+            items_examined: 1_024,
+            ..crate::WorkBudget::UNBOUNDED
+        },
+        &cancelled,
+    )
+    .map_err(|(error, _)| error)?;
     let mut guard = None;
-    MountDestinationGuard::acquire_with_work(
-        &destination, false, &work, &mut guard, false)?;
+    MountDestinationGuard::acquire_with_work(&destination, false, &work, &mut guard, false)?;
     let mut guard = guard.expect("actual fence was admitted");
     let before = work.receipt();
     cancelled.cancel();
     let refused_wait = crate::CancellationToken::new();
     refused_wait.cancel();
     assert!(guard.release_cleanup(Some(&refused_wait)).is_err());
-    assert!(guard.file.is_some(), "denied wait preserves the actual fence");
-    assert_eq!(work.receipt(), before, "no accepted operation starts on a denied wait");
+    assert!(
+        guard.file.is_some(),
+        "denied wait preserves the actual fence"
+    );
+    assert_eq!(
+        work.receipt(),
+        before,
+        "no accepted operation starts on a denied wait"
+    );
     guard.release_cleanup(Some(&crate::CancellationToken::new()))?;
-    assert!(guard.file.is_none(), "the same held fence physically retired");
+    assert!(
+        guard.file.is_none(),
+        "the same held fence physically retired"
+    );
     let after = work.receipt();
     assert!(after.backend_write_operations > before.backend_write_operations);
-    assert_eq!(after.allocation_operations, before.allocation_operations,
-        "accepted cleanup does not allocate a path or control");
-    assert!(work.cancellation().is_cancelled(), "original cancellation is never replaced");
+    assert_eq!(
+        after.allocation_operations, before.allocation_operations,
+        "accepted cleanup does not allocate a path or control"
+    );
+    assert!(
+        work.cancellation().is_cancelled(),
+        "original cancellation is never replaced"
+    );
     drop(guard);
     assert_eq!(work.live_allocation_bytes(), 0);
     Ok(())
 }
-
 
 #[test]
 fn measured_fence_native_delete_failure_preserves_typed_cause_and_custody()
@@ -507,7 +578,9 @@ fn measured_fence_native_delete_failure_preserves_typed_cause_and_custody()
     std::fs::create_dir(&guard.lock_path)?;
     let cancellation = crate::CancellationToken::new();
     let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
-    let error = guard.release(&mut work).expect_err("native file deletion cannot remove a directory");
+    let error = guard
+        .release(&mut work)
+        .expect_err("native file deletion cannot remove a directory");
     assert!(matches!(error, NativeMountError::Io(_)));
     assert!(work.work.backend_read_operations > 0);
     assert!(work.work.backend_write_operations > 0);
@@ -516,10 +589,9 @@ fn measured_fence_native_delete_failure_preserves_typed_cause_and_custody()
     Ok(())
 }
 
-
 #[test]
-fn measured_fence_cancellation_never_starts_a_native_leaf()
--> Result<(), Box<dyn std::error::Error>> {
+fn measured_fence_cancellation_never_starts_a_native_leaf() -> Result<(), Box<dyn std::error::Error>>
+{
     let temporary = tempfile::tempdir()?;
     let destination = temporary.path().join("mount");
     std::fs::create_dir(&destination)?;
@@ -527,8 +599,13 @@ fn measured_fence_cancellation_never_starts_a_native_leaf()
     let cancellation = crate::CancellationToken::new();
     cancellation.cancel();
     let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
-    let error = guard.release(&mut work).expect_err("original cancellation must win before native work");
-    assert!(matches!(error, NativeMountError::Demand(crate::DemandError::Cancelled)));
+    let error = guard
+        .release(&mut work)
+        .expect_err("original cancellation must win before native work");
+    assert!(matches!(
+        error,
+        NativeMountError::Demand(crate::DemandError::Cancelled)
+    ));
     assert_eq!(work.work, crate::WorkCounters::default());
     assert!(guard.file.is_some());
     assert!(guard.lock_path.is_file());

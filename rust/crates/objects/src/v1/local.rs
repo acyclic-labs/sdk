@@ -378,7 +378,7 @@ mod tests {
             first
         );
         assert_eq!(
-            provider.get(get("value"), 5).await?.into_body(),
+            provider.get(get(bucket(), "value"), 5).await?.into_body(),
             OwnedBytes::from_static(b"after")
         );
         assert_eq!(
@@ -401,9 +401,9 @@ mod tests {
         assert!(results.iter().all(Result::is_ok));
         let reads = provider
             .get_batch(vec![
-                (get("third"), 5),
-                (get("missing"), 10),
-                (get("second"), 3),
+                (get(bucket(), "third"), 5),
+                (get(bucket(), "missing"), 10),
+                (get(bucket(), "second"), 3),
             ])
             .await;
         assert_eq!(

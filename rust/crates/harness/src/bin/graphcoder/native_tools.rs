@@ -78,14 +78,14 @@ pub fn source(config: &Config, stream: std::sync::Arc<LocalStream>, files: Arc<F
         return Err(Error::Invalid("native tools exceed the finite producer binding limit".into()));
     }
     let configured = ConfiguredRecursiveToolsConfig {
-        callers: config.tools.callers.iter().map(|caller| Ok(ConfiguredRecursiveCaller {
+        callers: config.tools.callers.iter().map(|caller| ConfiguredRecursiveCaller {
             task: caller.task,
-            owner: authority_binding(&caller.owner)?,
+            owner: authority_binding(&caller.owner),
             project: caller.project.clone(),
             private_volume: caller.private_volume.clone(),
             native_snapshot: caller.native_snapshot.clone(),
             result_volume: caller.result_volume.clone(),
-        })).collect::<Result<Vec<_>>>()?,
+        }).collect(),
         forks: config.tools.forks.iter().map(|fork| {
             let command = WorkflowCommand::deserialize(&fork.admission.input)
                 .map_err(|error| Error::Invalid(format!("native child model command: {error}")))?;
@@ -95,7 +95,7 @@ pub fn source(config: &Config, stream: std::sync::Arc<LocalStream>, files: Arc<F
             }
             Ok(ConfiguredRecursiveFork {
                 caller: fork.caller,
-                child: authority_binding(&fork.child)?,
+                child: authority_binding(&fork.child),
                 project: fork.project.clone(),
                 private_volume: fork.private_volume.clone(),
                 admission: fork.admission.clone(),
@@ -128,9 +128,9 @@ pub fn source(config: &Config, stream: std::sync::Arc<LocalStream>, files: Arc<F
     Source::new(configured, stream, files, &config.filesystem_provider, config.limits)
 }
 
-fn authority_binding(binding: &AuthorityBinding) -> Result<ConfiguredRecursiveAuthorityBinding> {
-    Ok(ConfiguredRecursiveAuthorityBinding::new(acyclic_harness::core::AuthorityIssuer::new(
-        &binding.issuer, binding.key, binding.authority.clone()), binding.scope.clone()))
+fn authority_binding(binding: &AuthorityBinding) -> ConfiguredRecursiveAuthorityBinding {
+    ConfiguredRecursiveAuthorityBinding::new(acyclic_harness::core::AuthorityIssuer::new(
+        &binding.issuer, binding.key, binding.authority.clone()), binding.scope.clone())
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -166,13 +166,11 @@ impl super::native::NativeSession {
         let fence = LeaseFence::from(&lease.reservation);
         let owner = self.runtime.task_host().journal_owner_with_native_work(caller, &fence, &work)
             .await?.into_native_shared(&work)?;
-        let reader = Arc::new(FilesystemContentVerifier::new(self.files.clone(), &verifier,
-            &binding.scope, super::terminal::MAX_FRAME_BYTES as u64, None)?);
+        let reader = FilesystemContentVerifier::new(self.files.clone(), &verifier, &binding.scope, super::terminal::MAX_FRAME_BYTES as u64, None)?;
         let result_volume = self.config.tools.callers.iter().find(|entry| entry.task == caller)
             .and_then(|entry| entry.result_volume.as_ref())
             .ok_or_else(|| Error::Unsupported("native command requires separate result storage".into()))?;
-        let results = Arc::new(FilesystemContentPublisher::new(self.files.clone(), result_volume,
-            &verifier, &binding.scope, super::terminal::MAX_FRAME_BYTES as u64, None)?);
+        let results = FilesystemContentPublisher::new(self.files.clone(), result_volume, &verifier, &binding.scope, super::terminal::MAX_FRAME_BYTES as u64, None)?;
         let caller_private = &self.config.tools.callers.iter().find(|entry| entry.task == caller)
             .ok_or_else(|| Error::NotFound("native caller private volume".into()))?.private_volume;
         let approvals = Arc::new(FilesystemInteractionHost::new(self.stream.clone(), self.files.clone(),

@@ -1,8 +1,8 @@
 //! Native Linux FUSE, macOS NFS, and Windows `ProjFS` projection boundary.
 
 use crate::NativeMaterializationWork;
-use crate::kernel::FileMetadata;
 use crate::demand::NativeMountAllocationCustody;
+use crate::kernel::FileMetadata;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use crate::kernel::MetadataField;
 use crate::{FileId, MountId, VolumeId};
@@ -30,8 +30,8 @@ macro_rules! callback_span {
 
 mod adapter;
 pub use adapter::{
-    CheckoutMountSource, NativeSourceIoLease, SharedCheckout, SharedCheckoutGuard, SharedCheckoutState,
-    initialize_native_mount_services,
+    CheckoutMountSource, NativeSourceIoLease, SharedCheckout, SharedCheckoutGuard,
+    SharedCheckoutState, initialize_native_mount_services,
 };
 
 mod view_gate;
@@ -47,7 +47,8 @@ pub use lazy::{LazyMountSource, NativeMountSourceWatchOwner};
 
 mod customer;
 pub use customer::{
-    LazyMount, Mount, MountLifecycleError, MountOptions, MountPublication, NativeWorkingSet, NativeMountDrainProof, NativeMountPublicationFailure,
+    LazyMount, Mount, MountLifecycleError, MountOptions, MountPublication, NativeMountDrainProof,
+    NativeMountPublicationFailure, NativeWorkingSet,
 };
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -59,17 +60,16 @@ pub use crate::{
 };
 
 mod materialize;
+pub use materialize::materialize_checkout_with_work;
 pub use materialize::{
     HostPathReplacement, HostPathRestore, MaterializationReceipt, MaterializeError,
-    MaterializeOptions, materialize_checkout,
-    materialize_checkout_paths, restore_checkout_host_path,
+    MaterializeOptions, materialize_checkout, materialize_checkout_paths,
+    restore_checkout_host_path,
 };
 pub(crate) use materialize::{
-    MaterializeMode,
-    NativeMaterializationActionPhase, materialize_checkout_host_paths_with_work_guarded,
-    materialize_reader_paths,
+    MaterializeMode, NativeMaterializationActionPhase,
+    materialize_checkout_host_paths_with_work_guarded, materialize_reader_paths,
 };
-pub use materialize::materialize_checkout_with_work;
 
 mod publication;
 pub use publication::{seal_checkout, seal_checkout_with_permit};
@@ -93,10 +93,10 @@ pub use darwin_mount::DarwinTeardownFailure;
 #[cfg(target_os = "linux")]
 mod fuse;
 
-#[cfg(target_os = "linux")]
-pub use fuse::NativeMountWorkScope;
 #[cfg(target_os = "macos")]
 pub use darwin_mount::NativeMountWorkScope;
+#[cfg(target_os = "linux")]
+pub use fuse::NativeMountWorkScope;
 #[cfg(windows)]
 pub use projfs::NativeMountWorkScope;
 /// Accounting activation is unavailable on this target.
@@ -162,8 +162,7 @@ fn errno(error: MountSourceError) -> i32 {
         MountSourceError::Invalid(_) | MountSourceError::NamespacePath(_) => libc::EINVAL,
         MountSourceError::Unsupported(_) | MountSourceError::NativeUnsupported => libc::EOPNOTSUPP,
         MountSourceError::Allocation(_) => libc::ENOMEM,
-        MountSourceError::Io(error, _) =>
-            error.raw_os_error().unwrap_or(libc::EIO),
+        MountSourceError::Io(error, _) => error.raw_os_error().unwrap_or(libc::EIO),
         MountSourceError::NativeWork(error) => native_materialization_errno(error),
         MountSourceError::WorkspaceCause(error) => native_workspace_errno(error),
         MountSourceError::WorkspacePrefixFailure { source, .. } => native_workspace_errno(source),
@@ -172,19 +171,26 @@ fn errno(error: MountSourceError) -> i32 {
         MountSourceError::Filesystem(crate::FsError::Cancelled(_)) => libc::ESTALE,
         MountSourceError::Filesystem(crate::FsError::SourceSnapshotStale) => libc::ESTALE,
         MountSourceError::Stale | MountSourceError::Cancelled => libc::ESTALE,
-        MountSourceError::Engine(_) | MountSourceError::Work(_)
-        | MountSourceError::Filesystem(_) | MountSourceError::ServicesNotInitialized
-        | MountSourceError::ServiceUnavailable(_) | MountSourceError::Retained(_)
+        MountSourceError::Engine(_)
+        | MountSourceError::Work(_)
+        | MountSourceError::Filesystem(_)
+        | MountSourceError::ServicesNotInitialized
+        | MountSourceError::ServiceUnavailable(_)
+        | MountSourceError::Retained(_)
         | MountSourceError::MutationFinalization { .. }
-        | MountSourceError::OriginalSnapshotUnavailable | MountSourceError::Indeterminate
-        | MountSourceError::SelectedPublication(_) | MountSourceError::PublicationRetryLimit
-        | MountSourceError::NativeRecordJson(_, _) | MountSourceError::NativeRecordLockTimeout(_, _)
+        | MountSourceError::OriginalSnapshotUnavailable
+        | MountSourceError::Indeterminate
+        | MountSourceError::SelectedPublication(_)
+        | MountSourceError::PublicationRetryLimit
+        | MountSourceError::NativeRecordJson(_, _)
+        | MountSourceError::NativeRecordLockTimeout(_, _)
         | MountSourceError::NativeRecordOwnershipConflict(_, _)
         | MountSourceError::NativeRecordContextTransaction(_, _)
         | MountSourceError::NativeRecordCorrupt(_, _) => libc::EIO,
         MountSourceError::Metadata(_) => libc::EIO,
         #[cfg(all(feature = "native-watch", not(target_arch = "wasm32")))]
-        MountSourceError::SourceWatchStartup(_) | MountSourceError::NativeWatchOriginalIo(_)
+        MountSourceError::SourceWatchStartup(_)
+        | MountSourceError::NativeWatchOriginalIo(_)
         | MountSourceError::NativeWatchOriginalBackend(_)
         | MountSourceError::NativeWatchStartupFailed { .. }
         | MountSourceError::NativeWatchSourceStartupFailed { .. } => libc::EIO,
@@ -211,23 +217,36 @@ macro_rules! with_driver {
     ($driver:expr, $session:ident, $operation:expr, $unsupported:expr $(,)?) => {
         with_driver!($driver, $session, $operation, $operation, $unsupported)
     };
-    ($driver:expr, $session:ident, $operation:expr, $windows:expr, $unsupported:expr $(,)?) => {
+    ($driver:expr, $session:ident, $operation:expr, $windows:expr, $unsupported:expr $(,)?) => {{
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         {
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
-            { let $session = $driver; $operation }
-            #[cfg(target_os = "windows")]
-            { let $session = $driver; $windows }
-            #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-            { let _ = $driver; $unsupported }
+            let $session = $driver;
+            $operation
         }
-    };
+        #[cfg(target_os = "windows")]
+        {
+            let $session = $driver;
+            $windows
+        }
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        {
+            let _ = $driver;
+            $unsupported
+        }
+    }};
 }
 
 fn start_driver_into<F>(
-    request: &NativeMountRequest, source: Arc<dyn MountFilesystem>, work: &NativeMaterializationWork,
-    out: &mut Option<DriverSession>, retirement: &mut Option<NativeMountRetirement>, prepare: F,
+    request: &NativeMountRequest,
+    source: Arc<dyn MountFilesystem>,
+    work: &NativeMaterializationWork,
+    out: &mut Option<DriverSession>,
+    retirement: &mut Option<NativeMountRetirement>,
+    prepare: F,
 ) -> Result<(), NativeMountError>
-where F: FnOnce(&mut NativeMountRetirement) -> Result<(), NativeMountError> {
+where
+    F: FnOnce(&mut NativeMountRetirement) -> Result<(), NativeMountError>,
+{
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     {
         #[cfg(target_os = "linux")]

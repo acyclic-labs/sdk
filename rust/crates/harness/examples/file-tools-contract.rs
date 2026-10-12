@@ -91,14 +91,16 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let file = FileRef::new(
         VolumeRef::new(
             ProviderRef::new("file-contract".into(), "filesystem".into(), "1".into(), &mut None)?,
-            "private",
+            "private".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([51; 16])),
+            &mut None,
         )?,
-        "source.txt",
-        "generation-1",
-        FileDescriptor::from_bytes(source.as_bytes(), "text/plain")?,
-        "source.txt",
+        "source.txt".into(),
+        "generation-1".into(),
+        FileDescriptor::from_bytes(source.as_bytes(), "text/plain", &mut None)?,
+        "source.txt".into(),
+        &mut None,
     )?;
     let read_input = ReadInput {
         file: file.clone(),
@@ -106,7 +108,9 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     };
     let read = ReadResult {
         file: file.clone(),
-        selection: text::read_range(source, read_input.range, READ)?,
+        selection: text::TextSelection {
+            range: read_input.range, text: "🦀".into(), omitted_before: 5, omitted_after: 9,
+        },
     };
     let read_invocation = invocation("acyclic.read_file_range", value(&read_input)?);
     let read_result = ToolResult {
@@ -119,7 +123,10 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let search = SearchResult {
         file: file.clone(),
         query: search_input.query.clone(),
-        matches: text::literal_search(source, &search_input.query, SEARCH)?,
+        matches: text::SearchMatches {
+            matches: vec![TextRange { start: 10, end: 13 }],
+            total_matches: 2, omitted_matches: 1, work: 19,
+        },
     };
     let search_invocation = invocation("acyclic.search_file", value(&search_input)?);
     let search_result = ToolResult {
@@ -142,23 +149,23 @@ fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             "source":{"file":file,"text":source},
             "range_read":{
                 "input":read_input,"canonical":read,
-                "full":ReadProjection(ProjectionMode::Full).project(&read_invocation,&read_result)?,
-                "reference":ReadProjection(ProjectionMode::Reference).project(&read_invocation,&read_result)?,
+                "full":ReadProjection(ProjectionMode::Full).project(&read_invocation,&read_result,None)?.0,
+                "reference":ReadProjection(ProjectionMode::Reference).project(&read_invocation,&read_result,None)?.0,
             },
             "literal_search":{
                 "input":search_input,"canonical":search,
-                "full":SearchProjection(ProjectionMode::Full).project(&search_invocation,&search_result)?,
-                "reference":SearchProjection(ProjectionMode::Reference).project(&search_invocation,&search_result)?,
+                "full":SearchProjection(ProjectionMode::Full).project(&search_invocation,&search_result,None)?.0,
+                "reference":SearchProjection(ProjectionMode::Reference).project(&search_invocation,&search_result,None)?.0,
             },
             "exact_read":{
                 "input":exact_input,"canonical":exact_result.value,
-                "full":ReadFileProjection(ProjectionMode::Full).project(&exact_invocation,&exact_result)?,
-                "reference":ReadFileProjection(ProjectionMode::Reference).project(&exact_invocation,&exact_result)?,
+                "full":ReadFileProjection(ProjectionMode::Full).project(&exact_invocation,&exact_result,None)?.0,
+                "reference":ReadFileProjection(ProjectionMode::Reference).project(&exact_invocation,&exact_result,None)?.0,
             },
             "file_result":{
                 "canonical":file_result.value,
-                "full":FileResultProjection(ProjectionMode::Full).project(&file_invocation,&file_result)?,
-                "reference":FileResultProjection(ProjectionMode::Reference).project(&file_invocation,&file_result)?,
+                "full":FileResultProjection(ProjectionMode::Full).project(&file_invocation,&file_result,None)?.0,
+                "reference":FileResultProjection(ProjectionMode::Reference).project(&file_invocation,&file_result,None)?.0,
             },
         })
     );

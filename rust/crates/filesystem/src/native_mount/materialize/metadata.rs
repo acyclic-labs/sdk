@@ -11,13 +11,16 @@ pub(super) async fn apply_metadata<A, O, E, F, Fut>(
     before_effect: &mut Option<&mut F>,
 ) -> Result<(), E>
 where
-    A: AsyncAuthorityStore, O: AsyncObjectStore, E: From<MaterializeError>,
-    F: FnMut(NativeMaterializationActionPhase) -> Fut, Fut: Future<Output = Result<(), E>>,
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+    E: From<MaterializeError>,
+    F: FnMut(NativeMaterializationActionPhase) -> Fut,
+    Fut: Future<Output = Result<(), E>>,
 {
     let metadata = match metadata {
         Some(metadata) => metadata,
         None => read_source!(reader, receipt, remaining, value,
-            reader.read_metadata_with_native_work(path, receipt.custody.work(), cancellation) => value,
+            reader.read_metadata(path, receipt.custody.work(), cancellation) => value,
             reader.read_metadata(path, remaining, cancellation) => value,
         ),
     };
@@ -43,17 +46,28 @@ where
                 return Err(MaterializeError::UnsupportedMetadata("named_attributes").into());
             }
             let name = name.bytes;
-            let value_bytes = if reader.validate_native_work(receipt.custody.work()).is_ok() { 0 } else { value.len() };
-            payload_bytes = payload_bytes.checked_add(name.capacity()).and_then(|bytes| bytes.checked_add(value_bytes))
+            let value_bytes = if reader.validate_native_work(receipt.custody.work()).is_ok() {
+                0
+            } else {
+                value.len()
+            };
+            payload_bytes = payload_bytes
+                .checked_add(name.capacity())
+                .and_then(|bytes| bytes.checked_add(value_bytes))
                 .ok_or(MaterializeError::Work(WorkError::Overflow))?;
             receipt.push(&mut attributes, (name, value))?;
         }
-        receipt.custody.release(source_array_bytes as u64).map_err(materialize_native_error)?;
+        receipt
+            .custody
+            .release(source_array_bytes as u64)
+            .map_err(materialize_native_error)?;
         let host_array_bytes = vec_bytes(&attributes);
-        let retained = host_array_bytes.checked_add(payload_bytes)
+        let retained = host_array_bytes
+            .checked_add(payload_bytes)
             .ok_or(MaterializeError::Work(WorkError::Overflow))?;
         generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
-        apply_host_attributes_offloaded(host_root, host_path, attributes, retained, receipt).await?;
+        apply_host_attributes_offloaded(host_root, host_path, attributes, retained, receipt)
+            .await?;
         generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
     }
     generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
@@ -69,10 +83,13 @@ pub(super) async fn generation_blocking<T: Send + 'static>(
     let original = receipt.custody.work().clone();
     let task = acyclic_native_runtime::run_blocking_io(
         move || {
-            operation(&mut NativeSourceWork::from_native_materialization_work(&original))
+            operation(&mut NativeSourceWork::from_native_materialization_work(
+                &original,
+            ))
         },
         Some((observer, false)),
-    ).map_err(materialize_runtime_error)?;
+    )
+    .map_err(materialize_runtime_error)?;
     let result = task.await.map_err(materialize_runtime_error)?;
     result.map_err(materialize_demand_error)
 }
@@ -84,9 +101,14 @@ pub(super) async fn apply_host_attributes_offloaded(
     retained: usize,
     receipt: &mut GenerationReceipt,
 ) -> Result<(), MaterializeError> {
-    let custody = receipt.custody.split_off(retained as u64).map_err(materialize_native_error)?;
+    let custody = receipt
+        .custody
+        .split_off(retained as u64)
+        .map_err(materialize_native_error)?;
     let attributes = (attributes, custody);
-    if attributes.0.is_empty() { return Ok(()); }
+    if attributes.0.is_empty() {
+        return Ok(());
+    }
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         let root = host_root.clone();
@@ -101,11 +123,16 @@ pub(super) async fn apply_host_attributes_offloaded(
             let result = crate::native_host::set_extended_attributes(&target, &attributes.0, work);
             #[cfg(target_os = "macos")]
             let result = match &target {
-                crate::native_host::MacMetadataTarget::Held(file) =>
-                    crate::native_host::set_extended_attributes(file, &attributes.0, work),
-                crate::native_host::MacMetadataTarget::Noop { .. } => work.check().and(Err(
-                    crate::native_host::NativeMetadataError("named_attributes on a non-ordinary file kind").into(),
-                )),
+                crate::native_host::MacMetadataTarget::Held(file) => {
+                    crate::native_host::set_extended_attributes(file, &attributes.0, work)
+                }
+                crate::native_host::MacMetadataTarget::Noop { .. } => {
+                    work.check()
+                        .and(Err(crate::native_host::NativeMetadataError(
+                            "named_attributes on a non-ordinary file kind",
+                        )
+                        .into()))
+                }
             };
             #[cfg(target_os = "macos")]
             {
@@ -114,7 +141,8 @@ pub(super) async fn apply_host_attributes_offloaded(
                 crate::native_host::NativeHostWork::release(work, target_bytes)?;
             }
             result
-        }).await
+        })
+        .await
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
@@ -142,18 +170,29 @@ pub(super) async fn apply_host_metadata_offloaded(
         #[cfg(target_os = "macos")]
         let target = root.0.open_macos_metadata_target(path.0.path(), work)?;
         #[cfg(windows)]
-        let target = root.0.open_windows_metadata_target_wide(&path.0.units, work)?;
+        let target = root
+            .0
+            .open_windows_metadata_target_wide(&path.0.units, work)?;
         #[cfg(target_os = "linux")]
-        { crate::native_host::apply_linux_metadata(&target, metadata, work) }
+        {
+            crate::native_host::apply_linux_metadata(&target, metadata, work)
+        }
         #[cfg(target_os = "macos")]
-        { target.apply(metadata, work) }
+        {
+            target.apply(metadata, work)
+        }
         #[cfg(windows)]
-        { crate::native_host::apply_windows_metadata(target, metadata, work) }
-    }).await
+        {
+            crate::native_host::apply_windows_metadata(target, metadata, work)
+        }
+    })
+    .await
 }
 
 #[cfg(unix)]
-pub(super) fn reject_unbaselined_unix_metadata(metadata: FileMetadata) -> Result<(), MaterializeError> {
+pub(super) fn reject_unbaselined_unix_metadata(
+    metadata: FileMetadata,
+) -> Result<(), MaterializeError> {
     use crate::kernel::MetadataField;
     if matches!(metadata.changed_ns, MetadataField::Value(_)) {
         return Err(MaterializeError::UnsupportedMetadata(
@@ -173,7 +212,8 @@ pub(super) fn validate_options(
     options: &MaterializeOptions,
     receipt: &mut GenerationReceipt,
 ) -> Result<HostRoot, MaterializeError> {
-    let root = receipt.run(|work| HostRoot::open(&options.destination, work))
+    let root = receipt
+        .run(|work| HostRoot::open(&options.destination, work))
         .map_err(|failure| {
             let error = match failure {
                 error @ (MaterializeError::Work(_) | MaterializeError::Cancelled(_)) => error,
@@ -187,9 +227,8 @@ pub(super) fn validate_options(
             return Err(MaterializeError::AllocationChanged { expected, actual });
         }
     }
-    let (mut entries, reader_allocation) = receipt.run(|work| {
-        root.read_dir_stats(Path::new(""), work)
-    })?;
+    let (mut entries, reader_allocation) =
+        receipt.run(|work| root.read_dir_stats(Path::new(""), work))?;
     #[cfg(unix)]
     let next = receipt.run(|work| entries.next_with_work(work));
     #[cfg(windows)]
@@ -221,27 +260,43 @@ pub(super) fn create_file(
     receipt: &mut GenerationReceipt,
 ) -> Result<acyclic_native_runtime::NativeFile, MaterializeError> {
     #[cfg(windows)]
-    let file = receipt.run(|work| host_root.create_overlapped_file_wide_measured(&path.units, work))?;
+    let file =
+        receipt.run(|work| host_root.create_overlapped_file_wide_measured(&path.units, work))?;
     #[cfg(unix)]
     let file = receipt.run(|work| host_root.create_file(path.path(), work))?;
-    let meter = Some(acyclic_native_runtime::NativeFileMeter::Owned(receipt.custody.work().runtime_meter()));
+    let meter = Some(acyclic_native_runtime::NativeFileMeter::Owned(
+        receipt.custody.work().runtime_meter(),
+    ));
     #[cfg(windows)]
-    #[allow(unsafe_code, reason = "the newly created held handle is overlapped and exclusively transferred")]
+    #[allow(
+        unsafe_code,
+        reason = "the newly created held handle is overlapped and exclusively transferred"
+    )]
     // SAFETY: the held-root-relative constructor provides a fresh, unassociated overlapped handle.
-    let native = unsafe {
-        acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file, meter)
-    };
+    let native =
+        unsafe { acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file, meter) };
     #[cfg(unix)]
     let native = acyclic_native_runtime::NativeFile::from_file(file, meter);
-    native.map_err(|(error, file)| { drop(file); error }).map_err(materialize_runtime_error)
+    native
+        .map_err(|(error, file)| {
+            drop(file);
+            error
+        })
+        .map_err(materialize_runtime_error)
 }
 
 pub(super) fn account_written(
     receipt: &mut GenerationReceipt,
     bytes: u64,
 ) -> Result<(), MaterializeError> {
-    receipt.value.written_bytes = receipt.value.written_bytes.checked_add(bytes).ok_or(MaterializeError::Work(WorkError::Overflow))?;
-    receipt.run(|work| work.with_original_leaf(|work| work.work.verify(work.budget).map_err(DemandError::from)))
+    receipt.value.written_bytes = receipt
+        .value
+        .written_bytes
+        .checked_add(bytes)
+        .ok_or(MaterializeError::Work(WorkError::Overflow))?;
+    receipt.run(|work| {
+        work.with_original_leaf(|work| work.work.verify(work.budget).map_err(DemandError::from))
+    })
 }
 
 pub(super) fn account_materialization(
@@ -249,10 +304,12 @@ pub(super) fn account_materialization(
     bytes: u64,
 ) -> Result<(), MaterializeError> {
     account_written(receipt, bytes)?;
-    receipt.run(|work| work.record(WorkCounters {
-        materializations: 1,
-        ..WorkCounters::UNCHARGED
-    }))
+    receipt.run(|work| {
+        work.record(WorkCounters {
+            materializations: 1,
+            ..WorkCounters::UNCHARGED
+        })
+    })
 }
 
 pub(super) fn account_file(
@@ -260,11 +317,16 @@ pub(super) fn account_file(
     logical: u64,
     written: u64,
 ) -> Result<(), MaterializeError> {
-    receipt.value.files = receipt.value.files.checked_add(1).ok_or(MaterializeError::Work(WorkError::Overflow))?;
-    receipt.value.logical_file_bytes =
-        receipt.value.logical_file_bytes
-            .checked_add(logical)
-            .ok_or(MaterializeError::Work(WorkError::Overflow))?;
+    receipt.value.files = receipt
+        .value
+        .files
+        .checked_add(1)
+        .ok_or(MaterializeError::Work(WorkError::Overflow))?;
+    receipt.value.logical_file_bytes = receipt
+        .value
+        .logical_file_bytes
+        .checked_add(logical)
+        .ok_or(MaterializeError::Work(WorkError::Overflow))?;
     account_materialization(receipt, written)
 }
 
@@ -281,24 +343,33 @@ pub(super) fn create_symlink_measured(
     }
     #[cfg(windows)]
     {
-        let decoded = crate::kernel::types::utf16le_units(target).ok_or_else(|| {
-            MaterializeError::UnrepresentableName
-        })?;
+        let decoded = crate::kernel::types::utf16le_units(target)
+            .ok_or_else(|| MaterializeError::UnrepresentableName)?;
         let mut units = Vec::new();
         receipt.reserve(&mut units, target.len() / 2)?;
-        receipt.run(|work| work.charge(WorkCounters {
-            bytes_copied: target.len() as u64, ..WorkCounters::UNCHARGED
-        }))?;
+        receipt.run(|work| {
+            work.charge(WorkCounters {
+                bytes_copied: target.len() as u64,
+                ..WorkCounters::UNCHARGED
+            })
+        })?;
         units.extend(decoded);
-        let result = receipt.run(|work| host_root.symlink_file_wide_measured(&units, &destination.units, work));
+        let result = receipt
+            .run(|work| host_root.symlink_file_wide_measured(&units, &destination.units, work));
         let retained = units.capacity() * std::mem::size_of::<u16>();
         drop(units);
-        receipt.custody.release(retained as u64).map_err(materialize_native_error)?;
+        receipt
+            .custody
+            .release(retained as u64)
+            .map_err(materialize_native_error)?;
         result
     }
 }
 
-#[allow(clippy::useless_conversion, reason = "libc file-type constants have different widths on Linux and macOS")]
+#[allow(
+    clippy::useless_conversion,
+    reason = "libc file-type constants have different widths on Linux and macOS"
+)]
 pub(super) fn create_special_measured(
     host_root: &HostRoot,
     destination: &GenerationHostPath,
@@ -309,11 +380,12 @@ pub(super) fn create_special_measured(
     #[cfg(unix)]
     {
         match kind {
-            FileKind::Fifo => receipt.run(|work| host_root.create_fifo_held(destination.path(), 0o600, work)),
+            FileKind::Fifo => {
+                receipt.run(|work| host_root.create_fifo_held(destination.path(), 0o600, work))
+            }
             FileKind::CharacterDevice | FileKind::BlockDevice => {
-                let (major, minor) = device.ok_or_else(|| {
-                    MaterializeError::UnsupportedKind(kind)
-                })?;
+                let (major, minor) =
+                    device.ok_or_else(|| MaterializeError::UnsupportedKind(kind))?;
                 let file_type = if kind == FileKind::CharacterDevice {
                     u32::from(libc::S_IFCHR)
                 } else {
@@ -322,9 +394,18 @@ pub(super) fn create_special_measured(
                 let device_number = super::device::join_device(major, minor).map_err(|errno| {
                     MaterializeError::Io(std::io::Error::from_raw_os_error(errno))
                 })?;
-                receipt.run(|work| host_root.create_device_held(destination.path(), file_type | 0o600, device_number, work))
+                receipt.run(|work| {
+                    host_root.create_device_held(
+                        destination.path(),
+                        file_type | 0o600,
+                        device_number,
+                        work,
+                    )
+                })
             }
-            FileKind::Socket => receipt.run(|work| host_root.bind_unix_socket(destination.path(), work)),
+            FileKind::Socket => {
+                receipt.run(|work| host_root.bind_unix_socket(destination.path(), work))
+            }
             _ => Err(MaterializeError::UnsupportedKind(kind)),
         }
     }

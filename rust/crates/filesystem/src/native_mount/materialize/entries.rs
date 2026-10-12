@@ -18,31 +18,54 @@ pub(super) async fn materialize_entry<A, O, E, F, Fut>(
     options: &MaterializeOptions,
     cancellation: &CancellationToken,
     known_files: &mut Vec<(FileId, Arc<(GenerationHostPath, crate::NativeAllocation)>)>,
-    #[cfg(any(target_os = "macos", windows))]
-    known_payloads: &mut Vec<((u64, ObjectId, ObjectId), Arc<(GenerationHostPath, crate::NativeAllocation)>)>,
-    pending: &mut Vec<(Arc<(NamespacePath, crate::NativeAllocation)>, Arc<(GenerationHostPath, crate::NativeAllocation)>)>,
+    #[cfg(any(target_os = "macos", windows))] known_payloads: &mut Vec<(
+        (u64, ObjectId, ObjectId),
+        Arc<(GenerationHostPath, crate::NativeAllocation)>,
+    )>,
+    pending: &mut Vec<(
+        Arc<(NamespacePath, crate::NativeAllocation)>,
+        Arc<(GenerationHostPath, crate::NativeAllocation)>,
+    )>,
     receipt: &mut GenerationReceipt,
     mode: MaterializeMode,
     before_effect: &mut Option<&mut F>,
 ) -> Result<(), E>
 where
-    A: AsyncAuthorityStore, O: AsyncObjectStore, E: From<MaterializeError>,
-    F: FnMut(NativeMaterializationActionPhase) -> Fut, Fut: Future<Output = Result<(), E>>,
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+    E: From<MaterializeError>,
+    F: FnMut(NativeMaterializationActionPhase) -> Fut,
+    Fut: Future<Output = Result<(), E>>,
 {
     receipt.run(|work| {
         work.with_original_leaf(|work| {
             work.check()?;
-            work.work.admit(&WorkCounters { materializations: 1, ..WorkCounters::UNCHARGED }, &work.budget)?;
+            work.work.admit(
+                &WorkCounters {
+                    materializations: 1,
+                    ..WorkCounters::UNCHARGED
+                },
+                &work.budget,
+            )?;
             Ok(())
         })
     })?;
     for (identity, existing) in known_files.iter() {
-        receipt.run(|work| work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }))?;
+        receipt.run(|work| {
+            work.charge(WorkCounters {
+                items_examined: 1,
+                ..WorkCounters::UNCHARGED
+            })
+        })?;
         if *identity == file_id {
             generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
             receipt.run(|work| host_path.0.hard_link(&host_root.0, &existing.0, work))?;
             generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
-            receipt.value.files = receipt.value.files.checked_add(1).ok_or(MaterializeError::Work(WorkError::Overflow))?;
+            receipt.value.files = receipt
+                .value
+                .files
+                .checked_add(1)
+                .ok_or(MaterializeError::Work(WorkError::Overflow))?;
             account_materialization(receipt, 0)?;
             receipt.run(|work| work.check())?;
             return Ok(());
@@ -55,7 +78,11 @@ where
             receipt.run(|work| host_path.0.create_dir(&host_root.0, work))?;
             generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
             let directory = directory.ok_or(MaterializeError::InvalidOptions)?;
-            receipt.value.directories = receipt.value.directories.checked_add(1).ok_or(MaterializeError::Work(WorkError::Overflow))?;
+            receipt.value.directories = receipt
+                .value
+                .directories
+                .checked_add(1)
+                .ok_or(MaterializeError::Work(WorkError::Overflow))?;
             account_materialization(receipt, 0)?;
             receipt.push(known_files, (file_id, host_path.clone()))?;
             receipt.push(pending, (directory, host_path.clone()))?;
@@ -68,16 +95,25 @@ where
             generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
             let length = data.as_bytes().len();
             let original = receipt.custody.work().clone();
-            let (bytes, allocation) = original.copy_bytes(data.as_bytes()).map_err(materialize_native_error)?;
+            let (bytes, allocation) = original
+                .copy_bytes(data.as_bytes())
+                .map_err(materialize_native_error)?;
             let bytes = acyclic_stream::OwnedBytes::from_vec_with_guard(
-                bytes, allocation, original.runtime_meter(),
-            ).map_err(|failure| match failure.into_error() {
-                acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error),
-                acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-                => crate::NativeTreeMaterializationError::InvalidLayout,
+                bytes,
+                allocation,
+                original.runtime_meter(),
+            )
+            .map_err(|failure| match failure.into_error() {
+                acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
+                    original.runtime_error(error)
+                }
+                acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
+                    crate::NativeTreeMaterializationError::InvalidLayout
+                }
             });
             let bytes = bytes.map_err(materialize_native_error)?;
-            let written = write_generation_bytes(&file, 0, bytes, 0, receipt, before_effect).await?;
+            let written =
+                write_generation_bytes(&file, 0, bytes, 0, receipt, before_effect).await?;
             if mode == MaterializeMode::DurableOutput {
                 sync_generation_file(&file, receipt, before_effect).await?;
             }
@@ -85,7 +121,13 @@ where
             account_file(receipt, length as u64, written)?;
             receipt.push(known_files, (file_id, host_path.clone()))?;
         }
-        (FileKind::Regular, FilePayload::Regular { logical_bytes, extents }) => {
+        (
+            FileKind::Regular,
+            FilePayload::Regular {
+                logical_bytes,
+                extents,
+            },
+        ) => {
             #[cfg(not(any(target_os = "macos", windows)))]
             let _ = extents;
             #[cfg(any(target_os = "macos", windows))]
@@ -94,12 +136,20 @@ where
             let mut payload_known = false;
             #[cfg(any(target_os = "macos", windows))]
             for (key, source) in known_payloads.iter() {
-                receipt.run(|work| work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }))?;
+                receipt.run(|work| {
+                    work.charge(WorkCounters {
+                        items_examined: 1,
+                        ..WorkCounters::UNCHARGED
+                    })
+                })?;
                 if *key == (logical_bytes, extents, metadata_id) {
                     payload_known = true;
-                    generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
-                    cloned = receipt.run(|work| host_path.0.clone_file(&host_root.0, &source.0, work))?;
-                    generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
+                    generation_action(before_effect, NativeMaterializationActionPhase::Before)
+                        .await?;
+                    cloned = receipt
+                        .run(|work| host_path.0.clone_file(&host_root.0, &source.0, work))?;
+                    generation_action(before_effect, NativeMaterializationActionPhase::Completed)
+                        .await?;
                     break;
                 }
             }
@@ -108,23 +158,46 @@ where
             if !cloned {
                 generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
                 let mut file = create_file(&host_root.0, &host_path.0, receipt)?;
-                generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
+                generation_action(before_effect, NativeMaterializationActionPhase::Completed)
+                    .await?;
                 #[cfg(windows)]
                 {
-                    generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
+                    generation_action(before_effect, NativeMaterializationActionPhase::Before)
+                        .await?;
                     let meter = receipt.custody.work().runtime_meter();
-                    let control = file.control_async(|file, meter| mark_sparse_measured(file, meter.expect("metered control")), Some(meter)).map_err(materialize_runtime_error)?;
+                    let control = file
+                        .control_async(
+                            |file, meter| {
+                                mark_sparse_measured(file, meter.expect("metered control"))
+                            },
+                            Some(meter),
+                        )
+                        .map_err(materialize_runtime_error)?;
                     control.await.map_err(materialize_runtime_error)?;
-                    generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
+                    generation_action(before_effect, NativeMaterializationActionPhase::Completed)
+                        .await?;
                 }
                 generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
                 let meter = receipt.custody.work().runtime_meter();
-                let resize = file.set_len_async(logical_bytes, Some(meter)).map_err(materialize_runtime_error)?;
+                let resize = file
+                    .set_len_async(logical_bytes, Some(meter))
+                    .map_err(materialize_runtime_error)?;
                 resize.await.map_err(materialize_runtime_error)?;
-                generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
-                authenticated_metadata = Some(materialize_sparse_file(
-                    reader, path, &mut file, logical_bytes, options, cancellation, receipt, before_effect,
-                ).await?);
+                generation_action(before_effect, NativeMaterializationActionPhase::Completed)
+                    .await?;
+                authenticated_metadata = Some(
+                    materialize_sparse_file(
+                        reader,
+                        path,
+                        &mut file,
+                        logical_bytes,
+                        options,
+                        cancellation,
+                        receipt,
+                        before_effect,
+                    )
+                    .await?,
+                );
                 if mode == MaterializeMode::DurableOutput {
                     sync_generation_file(&file, receipt, before_effect).await?;
                 }
@@ -134,12 +207,27 @@ where
             if cloned {
                 if mode == MaterializeMode::DurableOutput {
                     #[cfg(target_os = "macos")]
-                    let file = receipt.run(|work| host_root.0.open_file(host_path.0.path(), work))?.into_std();
+                    let file = receipt
+                        .run(|work| host_root.0.open_file(host_path.0.path(), work))?
+                        .into_std();
                     #[cfg(windows)]
-                    let file = receipt.run(|work| host_root.0.open_file_positional_wide_with_work(&host_path.0.units, work))?.into_std();
+                    let file = receipt
+                        .run(|work| {
+                            host_root
+                                .0
+                                .open_file_positional_wide_with_work(&host_path.0.units, work)
+                        })?
+                        .into_std();
                     let meter = receipt.custody.work().runtime_meter();
-                    let file = acyclic_native_runtime::NativeFile::from_file(file, Some(acyclic_native_runtime::NativeFileMeter::Owned(meter)))
-                            .map_err(|(error, file)| { drop(file); error }).map_err(materialize_runtime_error)?;
+                    let file = acyclic_native_runtime::NativeFile::from_file(
+                        file,
+                        Some(acyclic_native_runtime::NativeFileMeter::Owned(meter)),
+                    )
+                    .map_err(|(error, file)| {
+                        drop(file);
+                        error
+                    })
+                    .map_err(materialize_runtime_error)?;
                     sync_generation_file(&file, receipt, before_effect).await?;
                     drop(file);
                 }
@@ -147,13 +235,16 @@ where
             account_file(receipt, logical_bytes, 0)?;
             #[cfg(any(target_os = "macos", windows))]
             if !payload_known {
-                receipt.push(known_payloads, ((logical_bytes, extents, metadata_id), host_path.clone()))?;
+                receipt.push(
+                    known_payloads,
+                    ((logical_bytes, extents, metadata_id), host_path.clone()),
+                )?;
             }
             receipt.push(known_files, (file_id, host_path.clone()))?;
         }
         (FileKind::SymbolicLink, FilePayload::SymbolicLink { target_bytes, .. }) => {
             let target = read_source!(reader, receipt, remaining, value,
-                reader.read_symbolic_link_with_native_work(path, receipt.custody.work(), cancellation) => value,
+                reader.read_symbolic_link(path, receipt.custody.work(), cancellation) => value,
                 reader.read_symbolic_link(path, remaining, cancellation) => {
                     receipt.adopt(value.len())?;
                     value
@@ -166,8 +257,17 @@ where
             create_symlink_measured(&host_root.0, &target, &host_path.0, receipt)?;
             generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
             drop(target);
-            if !reader.validate_native_work(receipt.custody.work()).is_ok() { receipt.custody.release((target_bytes as usize) as u64).map_err(materialize_native_error)?; }
-            receipt.value.symbolic_links = receipt.value.symbolic_links.checked_add(1).ok_or(MaterializeError::Work(WorkError::Overflow))?;
+            if !reader.validate_native_work(receipt.custody.work()).is_ok() {
+                receipt
+                    .custody
+                    .release((target_bytes as usize) as u64)
+                    .map_err(materialize_native_error)?;
+            }
+            receipt.value.symbolic_links = receipt
+                .value
+                .symbolic_links
+                .checked_add(1)
+                .ok_or(MaterializeError::Work(WorkError::Overflow))?;
             account_materialization(receipt, 0)?;
             receipt.push(known_files, (file_id, host_path.clone()))?;
         }
@@ -175,21 +275,48 @@ where
             generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
             create_special_measured(&host_root.0, &host_path.0, kind, None, receipt)?;
             generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
-            receipt.value.special_files = receipt.value.special_files.checked_add(1).ok_or(MaterializeError::Work(WorkError::Overflow))?;
+            receipt.value.special_files = receipt
+                .value
+                .special_files
+                .checked_add(1)
+                .ok_or(MaterializeError::Work(WorkError::Overflow))?;
             account_materialization(receipt, 0)?;
             receipt.push(known_files, (file_id, host_path.clone()))?;
         }
-        (kind @ (FileKind::CharacterDevice | FileKind::BlockDevice), FilePayload::Device { major, minor }) => {
+        (
+            kind @ (FileKind::CharacterDevice | FileKind::BlockDevice),
+            FilePayload::Device { major, minor },
+        ) => {
             generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
-            create_special_measured(&host_root.0, &host_path.0, kind, Some((major, minor)), receipt)?;
+            create_special_measured(
+                &host_root.0,
+                &host_path.0,
+                kind,
+                Some((major, minor)),
+                receipt,
+            )?;
             generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
-            receipt.value.special_files = receipt.value.special_files.checked_add(1).ok_or(MaterializeError::Work(WorkError::Overflow))?;
+            receipt.value.special_files = receipt
+                .value
+                .special_files
+                .checked_add(1)
+                .ok_or(MaterializeError::Work(WorkError::Overflow))?;
             account_materialization(receipt, 0)?;
             receipt.push(known_files, (file_id, host_path.clone()))?;
         }
         (unsupported, _) => return Err(MaterializeError::UnsupportedKind(unsupported).into()),
     }
-    apply_metadata(reader, host_root, path, host_path, authenticated_metadata, cancellation, receipt, before_effect).await?;
+    apply_metadata(
+        reader,
+        host_root,
+        path,
+        host_path,
+        authenticated_metadata,
+        cancellation,
+        receipt,
+        before_effect,
+    )
+    .await?;
     receipt.run(|work| work.check())?;
     Ok(())
 }

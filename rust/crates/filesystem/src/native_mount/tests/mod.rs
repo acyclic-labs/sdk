@@ -1,39 +1,46 @@
-
 use super::*;
 use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
 use crate::model::{
-    AccessMode, CaseSensitivity, CheckoutMode, ConcurrencyMode, ConsistencyMode,
-    FilesystemProfile, GenerationSelector, Lifecycle, MutationMode, UnicodePolicy,
-    VolumeConfig, VolumeLimits,
+    AccessMode, CaseSensitivity, CheckoutMode, ConcurrencyMode, ConsistencyMode, FilesystemProfile,
+    GenerationSelector, Lifecycle, MutationMode, UnicodePolicy, VolumeConfig, VolumeLimits,
 };
 use crate::path::PortablePath;
-use crate::{
-    ByteRange, CancellationToken, Fs, VolumeId, WatchBatch, WatchChange, WorkBudget,
-};
+use crate::{ByteRange, CancellationToken, Fs, VolumeId, WatchBatch, WatchChange, WorkBudget};
 use bytes::Bytes;
 use std::time::{Duration, Instant};
 
 pub(super) async fn memory_volume(
-    id: VolumeId, config: VolumeConfig, cancellation: &CancellationToken,
-) -> Result<crate::Volume<impl crate::AsyncAuthorityStore + use<>, impl crate::AsyncObjectStore + use<>>, Box<dyn std::error::Error>> {
-    Ok(Fs::memory().create_volume_with_id(id, config, WorkBudget::UNBOUNDED, cancellation).await?.value)
+    id: VolumeId,
+    config: VolumeConfig,
+    cancellation: &CancellationToken,
+) -> Result<
+    crate::Volume<impl crate::AsyncAuthorityStore + use<>, impl crate::AsyncObjectStore + use<>>,
+    Box<dyn std::error::Error>,
+> {
+    Ok(Fs::memory()
+        .create_volume_with_id(id, config, WorkBudget::UNBOUNDED, cancellation)
+        .await?
+        .value)
 }
-
 
 pub(super) async fn private_checkout<A: crate::AsyncAuthorityStore, O: crate::AsyncObjectStore>(
-    volume: &crate::Volume<A, O>, cancellation: &CancellationToken,
+    volume: &crate::Volume<A, O>,
+    cancellation: &CancellationToken,
 ) -> Result<crate::Checkout<A, O>, Box<dyn std::error::Error>> {
-    Ok(volume.checkout(
-        GenerationSelector::Head,
-        CheckoutMode {
-            access: AccessMode::ReadWrite,
-            consistency: ConsistencyMode::Pinned,
-            mutations: MutationMode::PrivateOverlay,
-        },
-        WorkBudget::UNBOUNDED, cancellation,
-    ).await?.value)
+    Ok(volume
+        .checkout(
+            GenerationSelector::Head,
+            CheckoutMode {
+                access: AccessMode::ReadWrite,
+                consistency: ConsistencyMode::Pinned,
+                mutations: MutationMode::PrivateOverlay,
+            },
+            WorkBudget::UNBOUNDED,
+            cancellation,
+        )
+        .await?
+        .value)
 }
-
 
 pub(super) fn portable_path(
     limits: VolumeLimits,
@@ -54,18 +61,25 @@ pub(super) fn portable_path(
     )?)
 }
 
-
-pub(super) fn await_recovery_worker(owner: NativeMountRecoveryOwner) -> Result<(), Box<dyn std::error::Error>> {
+pub(super) fn await_recovery_worker(
+    owner: NativeMountRecoveryOwner,
+) -> Result<(), Box<dyn std::error::Error>> {
     let shared = Arc::clone(&owner.shared);
     drop(owner);
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !shared.mailbox.lock().unwrap_or_else(|error| error.into_inner()).state_retired {
-        if Instant::now() >= deadline { return Err("actual administrative state did not retire".into()); }
+    while !shared
+        .mailbox
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .state_retired
+    {
+        if Instant::now() >= deadline {
+            return Err("actual administrative state did not retire".into());
+        }
         std::thread::sleep(Duration::from_millis(1));
     }
     Ok(())
 }
-
 
 #[test]
 pub(super) fn destination_reclaim_child_waits_for_external_release()
@@ -89,7 +103,6 @@ pub(super) fn destination_reclaim_child_waits_for_external_release()
     Ok(())
 }
 
-
 #[test]
 pub(super) fn destination_ownership_child_holds_lock_until_killed()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -104,7 +117,6 @@ pub(super) fn destination_ownership_child_holds_lock_until_killed()
         std::thread::park();
     }
 }
-
 
 /// Drives host mutations through finite access/sharing-denial windows.
 pub(super) fn mutate_as_a_user_would(
@@ -125,5 +137,5 @@ pub(super) fn mutate_as_a_user_would(
     }
 }
 
-mod fence;
 mod capture;
+mod fence;

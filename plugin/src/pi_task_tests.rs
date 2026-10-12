@@ -1,3 +1,4 @@
+use acyclic_harness::runtime::TaskSpawner as _;
 use super::*;
 use acyclic_harness::runtime::TaskStateProvider;
 use crate::pi_fork::tests::{policy, work};
@@ -15,7 +16,7 @@ use acyclic_harness::{
     distributed::{WorkPull, Worker},
     filesystem::FilesystemHost,
     resources::ProviderRef,
-    runtime::{DurableTaskHost, RuntimeScope},
+    runtime::{RuntimeScope},
     scheduler::{LeaseFence, ResourceSnapshot},
 };
 use acyclic_stream::{LocalStream, LocalStreamLimits};
@@ -33,11 +34,12 @@ fn preparation() -> WorkflowCommand {
         kind: EFFECT_TASK_COMMAND_KIND.to_owned(),
         payload: FileRef::new(
             binding().scratch.volume,
-            "preparation.json",
-            "fixture",
-            acyclic_harness::conversation::FileDescriptor::from_bytes(b"{}", "application/json")
+            "preparation.json".into(),
+            "fixture".into(),
+            acyclic_harness::conversation::FileDescriptor::from_bytes(b"{}", "application/json", &mut None)
                 .unwrap(),
-            "preparation.json",
+            "preparation.json".into(),
+            &mut None,
         )
         .unwrap(),
     }
@@ -59,9 +61,10 @@ fn binding() -> PiTaskBinding {
         scratch: PiScratchBinding {
             volume: VolumeRef::new(
                 provider,
-                "scratch",
+                "scratch".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(agent_id),
+                &mut None,
             )
             .unwrap(),
             allocation: PiScratchAllocation::Preparing,
@@ -126,9 +129,10 @@ async fn pi_service_recovery_rejects_legacy_workspace_access() {
         root_key,
         VolumeRef::new(
             binding.scratch.volume.provider().clone(),
-            "project",
+            "project".into(),
             VolumeClass::Project,
             VolumeOwner::Project("project".to_owned()),
+            &mut None,
         )
         .unwrap(),
     );
@@ -173,9 +177,10 @@ async fn open(
         .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
     let journal = VolumeRef::new(
         binding.scratch.volume.provider().clone(),
-        "journal",
+        "journal".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(binding.agent_id),
+        &mut None,
     )
     .unwrap();
     let grants = Capabilities::new(
@@ -188,12 +193,12 @@ async fn open(
             binding
                 .scratch
                 .volume
-                .capability(VolumeOperation::Read)
+                .capability(VolumeOperation::Read, &mut None)
                 .unwrap(),
             binding
                 .scratch
                 .volume
-                .capability(VolumeOperation::Write)
+                .capability(VolumeOperation::Write, &mut None)
                 .unwrap(),
         ]
         .into_iter()
@@ -201,7 +206,7 @@ async fn open(
             binding
                 .project_volumes
                 .values()
-                .map(|volume| volume.capability(VolumeOperation::Read).unwrap()),
+                .map(|volume| volume.capability(VolumeOperation::Read, &mut None).unwrap()),
         ),
     );
     let config = if create {
@@ -295,9 +300,10 @@ async fn pi_root_physical_selection_reopens_only_from_original_admission() {
         key.clone(),
         VolumeRef::new(
             binding.scratch.volume.provider().clone(),
-            "selected-project",
+            "selected-project".into(),
             VolumeClass::Project,
             VolumeOwner::Project("selected-project".to_owned()),
+            &mut None,
         )
         .unwrap(),
     );
@@ -408,9 +414,10 @@ fn pi_root_intent_rejects_unselected_or_unbounded_paths_and_invalid_identity() {
         key.clone(),
         VolumeRef::new(
             binding.scratch.volume.provider().clone(),
-            "project",
+            "project".into(),
             VolumeClass::Project,
             VolumeOwner::Project("project".to_owned()),
+            &mut None,
         )
         .unwrap(),
     );
@@ -563,9 +570,10 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
     foreign.agent_id = AgentId::from_bytes([71; 16]);
     foreign.scratch.volume = VolumeRef::new(
         foreign.scratch.volume.provider().clone(),
-        "scratch",
+        "scratch".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(foreign.agent_id),
+        &mut None,
     )
     .unwrap();
     assert!(
@@ -593,9 +601,10 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
     );
     let journal = VolumeRef::new(
         binding.scratch.volume.provider().clone(),
-        "journal",
+        "journal".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(binding.agent_id),
+        &mut None,
     )
     .unwrap();
     let mut journal_selection = binding.clone();
@@ -631,7 +640,7 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
         assert!(
             !admission
                 .grants
-                .contains(&journal.capability(operation).unwrap())
+                .contains(&journal.capability(operation, &mut None).unwrap())
         );
     }
     assert_eq!(
@@ -653,7 +662,7 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
     .unwrap();
     assert!(
         storage
-            .open_workspace_with_native_work(&binding.scratch.volume.storage_name().unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new())
+            .open_workspace_with_native_work(&binding.scratch.volume.storage_name(&mut None).unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new())
             .await
             .is_err()
     );
@@ -835,8 +844,8 @@ async fn pi_pending_preparation_unknown_admission_fails_before_future_native_chi
     child.task_id = TaskId::from_bytes([121; 16]);
     child.native_session_id = "not-yet-native".to_owned();
     child.agent_id = AgentId::from_bytes([123; 16]);
-    child.scratch.volume = VolumeRef::new(root.scratch.volume.provider().clone(), "scratch",
-        VolumeClass::AgentPrivate, VolumeOwner::Agent(child.agent_id)).unwrap();
+    child.scratch.volume = VolumeRef::new(root.scratch.volume.provider().clone(), "scratch".into(),
+        VolumeClass::AgentPrivate, VolumeOwner::Agent(child.agent_id), &mut None).unwrap();
     state.pending.push_back(crate::PendingSpawn {
         task_binding: PluginTaskBinding::Pi(Box::new(child.clone())),
         agent_id: Some("future-child".to_owned()),
@@ -904,10 +913,17 @@ async fn pi_real_preparation_pending_reserved_and_succeeded_never_report_future_
     } if *task_id == plan.commit.child.task_id && *preparation == plan.preparation.task_id()));
     drop(observed);
     assert_eq!(query.live_allocation_bytes(), query_baseline);
-    let partial = fixture.runtime.runtime.run_operation_with_native_work(&Worker {
+    let partial = (async {
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&query)?;
+        let value = fixture.runtime.runtime.run_operation(&Worker {
         id: "pi-preparing-observation".into(), available: ResourceSnapshot::default(),
         labels: BTreeMap::new(),
-    }, plan.preparation.task_id(), &fixture.runtime.runtime.commands(), 1, &query).await.unwrap();
+    }, plan.preparation.task_id(), &fixture.runtime.runtime.commands(), 1, Some(&io)).await?;
+        let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+            return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "worker run requires original native custody" });
+        };
+        Ok::<_, acyclic_harness::Error>((value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)))
+    }).await.unwrap();
     assert!(matches!(partial.0, Some( acyclic_harness::filesystem::TaskWorkerAttempt::Progress(
         acyclic_harness::filesystem::TaskWorkerOutcome::Yielded { .. }))));
     drop(partial);
@@ -921,7 +937,7 @@ async fn pi_real_preparation_pending_reserved_and_succeeded_never_report_future_
         &fixture.fence, &plan, fixture.root_handle.workspace.clone(),
         crate::pi_root_provider::allocation_budget(), acyclic_fs::CancellationToken::new())
         .await.unwrap().unwrap();
-    report.0.validate().unwrap();
+    report.0.validate(&mut None).unwrap();
     assert!(host.observe_admission(plan.request.child.task_id()).await.is_err());
     let reopen_work = crate::pi_fork::tests::work();
     let reopened = OwnedRuntime::open_with_native_work(
@@ -982,7 +998,13 @@ async fn pi_real_root_committed_control_reopen_keeps_original_context_and_next_a
     let task = fixture.owner.policy().root_task;
     let host = fixture.runtime.runtime.task_host();
     let original = work();
-    let recovery = host.recover_work_with_native_work(task, &original).await.unwrap();
+    let recovery = (async {
+        let mut io = acyclic_harness::store::history::native_work_io(&original).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        acyclic_harness::store::history::HistoryIo::retain_owned(&mut io,
+            std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(std::mem::size_of::<acyclic_harness::filesystem::TaskWorkerAttempt>()) as u64)?;
+        let value = host.recover_work(task, &mut Some(&mut io)).await?;
+        Ok::<_, acyclic_harness::Error>((value, io.into_custody()))
+    }).await.unwrap();
     let WorkPull::Claimed(lease) = recovery.0 else {
         panic!("fixture retains original root control owner");
     };
@@ -1027,10 +1049,17 @@ async fn pi_real_root_committed_control_reopen_keeps_original_context_and_next_a
     ).await.unwrap();
     let suspension = reopened.runtime.task_host().workflow_suspension(task).await.unwrap().unwrap();
     reopened.runtime.task_host().resume_workflow(task, suspension.revision, input, acyclic_harness::IdempotencyKey::new("pi-root-control/distinct-next").unwrap(), None).await.unwrap();
-    let next = reopened.runtime.run_operation_with_native_work(&Worker {
+    let next = (async {
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&reopen_work)?;
+        let value = reopened.runtime.run_operation(&Worker {
         id: "pi-root-control-next".into(), available: ResourceSnapshot::default(),
         labels: BTreeMap::new(),
-    }, task, &reopened.runtime.commands(), 8, &reopen_work).await.unwrap();
+    }, task, &reopened.runtime.commands(), 8, Some(&io)).await?;
+        let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+            return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "worker run requires original native custody" });
+        };
+        Ok::<_, acyclic_harness::Error>((value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)))
+    }).await.unwrap();
     assert!(matches!(next.0, Some(acyclic_harness::filesystem::TaskWorkerAttempt::Progress(
         acyclic_harness::filesystem::TaskWorkerOutcome::Suspended { .. }))));
     let next = reopened.runtime.observe_workflow_checkpoint(task).await.unwrap();

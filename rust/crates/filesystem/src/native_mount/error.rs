@@ -142,7 +142,9 @@ impl std::fmt::Debug for NativeMountError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::StartupAdmissionFailed { cause, .. } => formatter
-                .debug_struct("StartupAdmissionFailed").field("cause", cause).finish_non_exhaustive(),
+                .debug_struct("StartupAdmissionFailed")
+                .field("cause", cause)
+                .finish_non_exhaustive(),
             _ => std::fmt::Display::fmt(self, formatter),
         }
     }

@@ -21,7 +21,9 @@ pub struct NativeMountCleanupState<'a> {
 
 impl NativeMountCleanupState<'_> {
     /// Whether driver, source/watcher, and destination fence were released.
-    pub fn cleanup_complete(&self) -> bool { !self.driver_retained && !self.destination_fence_retained && !self.source_retained }
+    pub fn cleanup_complete(&self) -> bool {
+        !self.driver_retained && !self.destination_fence_retained && !self.source_retained
+    }
 }
 
 /// Borrowed actual recovery custody, not a physical root-presence probe.
@@ -54,9 +56,16 @@ pub(super) type NativeRecoveryControl = projfs::ProjFsRecoveryControl;
 pub(super) struct NativeRecoveryControl;
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 impl NativeRecoveryControl {
-    pub(super) fn controls_pending(&self) -> bool { false }
-    pub(super) fn namespace_detach_confirmed(&self) -> bool { false }
-    pub(super) fn retire_controls_with_work(&mut self, _original: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
+    pub(super) fn controls_pending(&self) -> bool {
+        false
+    }
+    pub(super) fn namespace_detach_confirmed(&self) -> bool {
+        false
+    }
+    pub(super) fn retire_controls_with_work(
+        &mut self,
+        _original: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
         Ok(())
     }
 }
@@ -84,7 +93,10 @@ pub(super) struct NativeRecoverySnapshot {
 }
 
 pub(super) enum NativeRecoveryCommand {
-    Action { remove_destination: bool, work: crate::NativeMaterializationWork },
+    Action {
+        remove_destination: bool,
+        work: crate::NativeMaterializationWork,
+    },
     LastDrop,
 }
 
@@ -119,8 +131,10 @@ pub struct NativeMountRecoveryOwner {
 
 impl std::fmt::Debug for NativeMountRecoveryOwner {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("NativeMountRecoveryOwner")
-            .field("cleanup", &self.cleanup_state()).finish()
+        formatter
+            .debug_struct("NativeMountRecoveryOwner")
+            .field("cleanup", &self.cleanup_state())
+            .finish()
     }
 }
 
@@ -128,20 +142,33 @@ impl NativeMountRecoveryOwner {
     /// Administratively acquires the existing destination fence once.
     pub fn acquire(destination: &Path) -> Result<Self, NativeMountError> {
         let original = crate::NativeMaterializationWork::new(
-            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
-        ).map_err(|(error, _)| NativeMountError::from(error))?;
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .map_err(|(error, _)| NativeMountError::from(error))?;
         Self::acquire_with_original(destination, original)
     }
 
     pub(super) fn acquire_with_original(
-        destination: &Path, original: crate::NativeMaterializationWork,
+        destination: &Path,
+        original: crate::NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
-        let mut destination = crate::native_host::clone_path_with_work(destination, &mut &original)?;
-        let mut shared_custody = original.claim(std::mem::size_of::<NativeRecoveryShared>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
+        let mut destination =
+            crate::native_host::clone_path_with_work(destination, &mut &original)?;
+        let mut shared_custody = original.claim(
+            std::mem::size_of::<NativeRecoveryShared>() as u64,
+            1,
+            crate::WorkCounters::UNCHARGED,
+        )?;
         destination.1.absorb(&mut shared_custody)?;
-        let closure_custody = original.claim(std::mem::size_of::<NativeRecoveryWorker>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
+        let closure_custody = original.claim(
+            std::mem::size_of::<NativeRecoveryWorker>() as u64,
+            1,
+            crate::WorkCounters::UNCHARGED,
+        )?;
         let final_close = original.reserve_work(crate::WorkCounters {
-            backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
+            backend_write_operations: 1,
+            ..crate::WorkCounters::UNCHARGED
         })?;
         let control = NativeRecoveryControl::default();
         #[cfg(windows)]
@@ -153,7 +180,10 @@ impl NativeMountRecoveryOwner {
         let shared = Arc::new(NativeRecoveryShared {
             destination: destination.0,
             mailbox: std::sync::Mutex::new(NativeRecoveryMailbox {
-                command: None, reply: None, snapshot: None, state_retired: false,
+                command: None,
+                reply: None,
+                snapshot: None,
+                state_retired: false,
             }),
             wake: std::sync::Condvar::new(),
             _custody: destination.1,
@@ -163,23 +193,41 @@ impl NativeMountRecoveryOwner {
             state: NativeRecoveryState {
                 #[cfg(windows)]
                 destination_identity: None,
-                guard: None, control, driver_step_complete: false,
-                destination_removed: false, measured_cleanup_failed: false, panic: None, retirement_error: None,
+                guard: None,
+                control,
+                driver_step_complete: false,
+                destination_removed: false,
+                measured_cleanup_failed: false,
+                panic: None,
+                retirement_error: None,
             },
-            original, final_close,
+            original,
+            final_close,
             _closure_custody: closure_custody,
         };
         // std's scheduler, native thread stack, Arc headers, and JoinHandle
         // internals are opaque; known SDK closure/slot/path DATA are funded.
-        crate::native_host::NativeHostWork::started_io(&mut &worker.original, crate::WorkCounters {
-            backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
-        })?;
+        crate::native_host::NativeHostWork::started_io(
+            &mut &worker.original,
+            crate::WorkCounters {
+                backend_write_operations: 1,
+                ..crate::WorkCounters::UNCHARGED
+            },
+        )?;
         drop(std::thread::Builder::new().spawn(move || worker.run())?);
         let owner = Self { shared };
         let result = {
-            let mut mailbox = owner.shared.mailbox.lock().unwrap_or_else(|error| error.into_inner());
+            let mut mailbox = owner
+                .shared
+                .mailbox
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             while mailbox.reply.is_none() {
-                mailbox = owner.shared.wake.wait(mailbox).unwrap_or_else(|error| error.into_inner());
+                mailbox = owner
+                    .shared
+                    .wake
+                    .wait(mailbox)
+                    .unwrap_or_else(|error| error.into_inner());
             }
             mailbox.reply.take().expect("actual acquisition reply")
         };
@@ -190,8 +238,13 @@ impl NativeMountRecoveryOwner {
     /// Borrows the real original identity, evidence, and retained resources.
     #[must_use]
     pub fn cleanup_state(&self) -> NativeMountRecoveryCleanupState<'_> {
-        let state = self.shared.mailbox.lock().unwrap_or_else(|error| error.into_inner())
-            .snapshot.expect("only an actually acquired owner is published");
+        let state = self
+            .shared
+            .mailbox
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .snapshot
+            .expect("only an actually acquired owner is published");
         NativeMountRecoveryCleanupState {
             destination: &self.shared.destination,
             fence_identity: state.fence_identity,
@@ -203,31 +256,49 @@ impl NativeMountRecoveryOwner {
         }
     }
     /// Recovers through the same engine with an explicit unbounded allowance.
-    pub fn recover(&mut self) -> Result<bool, NativeMountError> { self.ordinary_action(true) }
+    pub fn recover(&mut self) -> Result<bool, NativeMountError> {
+        self.ordinary_action(true)
+    }
 
     /// Detaches while preserving the underlying destination and authored residue.
-    pub fn detach(&mut self) -> Result<bool, NativeMountError> { self.ordinary_action(false) }
+    pub fn detach(&mut self) -> Result<bool, NativeMountError> {
+        self.ordinary_action(false)
+    }
 
-    pub(super) fn ordinary_action(&mut self, remove_destination: bool) -> Result<bool, NativeMountError> {
-        if !self.cleanup_state().destination_fence_retained { return Ok(false); }
+    pub(super) fn ordinary_action(
+        &mut self,
+        remove_destination: bool,
+    ) -> Result<bool, NativeMountError> {
+        if !self.cleanup_state().destination_fence_retained {
+            return Ok(false);
+        }
         #[cfg(target_os = "macos")]
         if let Err(error) = acyclic_native_runtime::initialize_native_io_services() {
             self.mark_failed();
             return Err(error.into());
         }
-        self.measured_action(remove_destination, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .map(|receipt| receipt.value).map_err(|(error, _work)| error)
+        self.measured_action(
+            remove_destination,
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .map(|receipt| receipt.value)
+        .map_err(|(error, _work)| error)
     }
 
     /// Detaches on finite work without removing the destination.
     pub fn detach_measured(
-        &mut self, budget: crate::WorkBudget, cancellation: &crate::CancellationToken,
+        &mut self,
+        budget: crate::WorkBudget,
+        cancellation: &crate::CancellationToken,
     ) -> Result<crate::OperationReceipt<bool>, (NativeMountError, crate::WorkCounters)> {
         self.measured_action(false, budget, cancellation)
     }
 
     pub(super) fn measured_action(
-        &mut self, remove_destination: bool, budget: crate::WorkBudget,
+        &mut self,
+        remove_destination: bool,
+        budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken,
     ) -> Result<crate::OperationReceipt<bool>, (NativeMountError, crate::WorkCounters)> {
         let work = match crate::NativeMaterializationWork::new(budget, cancellation) {
@@ -238,23 +309,47 @@ impl NativeMountRecoveryOwner {
             }
         };
         {
-            let mut mailbox = self.shared.mailbox.lock().unwrap_or_else(|error| error.into_inner());
+            let mut mailbox = self
+                .shared
+                .mailbox
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             debug_assert!(mailbox.command.is_none() && mailbox.reply.is_none());
-            mailbox.command = Some(NativeRecoveryCommand::Action { remove_destination, work: work.clone() });
+            mailbox.command = Some(NativeRecoveryCommand::Action {
+                remove_destination,
+                work: work.clone(),
+            });
             self.shared.wake.notify_one();
         }
-        let mut mailbox = self.shared.mailbox.lock().unwrap_or_else(|error| error.into_inner());
+        let mut mailbox = self
+            .shared
+            .mailbox
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         while mailbox.reply.is_none() {
-            mailbox = self.shared.wake.wait(mailbox).unwrap_or_else(|error| error.into_inner());
+            mailbox = self
+                .shared
+                .wake
+                .wait(mailbox)
+                .unwrap_or_else(|error| error.into_inner());
         }
         let result = mailbox.reply.take().expect("actual action reply");
         drop(mailbox);
         let spent = work.receipt();
-        result.map(|value| crate::OperationReceipt { value, work: spent }).map_err(|error| (error, spent))
+        result
+            .map(|value| crate::OperationReceipt { value, work: spent })
+            .map_err(|error| (error, spent))
     }
 
     pub(super) fn mark_failed(&mut self) {
-        if let Some(snapshot) = self.shared.mailbox.lock().unwrap_or_else(|error| error.into_inner()).snapshot.as_mut() {
+        if let Some(snapshot) = self
+            .shared
+            .mailbox
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .snapshot
+            .as_mut()
+        {
             snapshot.measured_cleanup_failed = true;
         }
     }
@@ -262,25 +357,36 @@ impl NativeMountRecoveryOwner {
 
 impl NativeRecoveryState {
     pub(super) fn finish_with_work(
-        &mut self, destination: &Path, remove_destination: bool, work: &crate::NativeMaterializationWork,
+        &mut self,
+        destination: &Path,
+        remove_destination: bool,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<bool, NativeMountError> {
         let result = (|| {
-            if self.guard.is_none() { return Ok(false); }
+            if self.guard.is_none() {
+                return Ok(false);
+            }
             if !self.driver_step_complete {
                 recover_driver_with_work(&mut self.control, destination, remove_destination, work)?;
-                if self.control.controls_pending() { return Err(NativeMountError::ControlPending); }
+                if self.control.controls_pending() {
+                    return Err(NativeMountError::ControlPending);
+                }
                 self.driver_step_complete = true;
             }
             if remove_destination && !self.destination_removed {
                 #[cfg(windows)]
                 projfs::remove_empty_recovery_destination_measured(
-                    destination, self.destination_identity, &mut &*work,
+                    destination,
+                    self.destination_identity,
+                    &mut &*work,
                 )?;
                 #[cfg(not(windows))]
                 remove_empty_recovery_destination(destination, work)?;
                 self.destination_removed = true;
             }
-            self.guard.as_mut().expect("original retained fence")
+            self.guard
+                .as_mut()
+                .expect("original retained fence")
                 .release(&mut &*work)?;
             self.guard.take();
             Ok(true)
@@ -305,24 +411,39 @@ impl NativeRecoveryWorker {
     pub(super) fn acquire(&mut self) -> Result<crate::NativeRootIdentity, NativeMountError> {
         #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
         MountDestinationGuard::acquire_with_work(
-            &self.shared.destination, true, &self.original, &mut self.state.guard, true,
+            &self.shared.destination,
+            true,
+            &self.original,
+            &mut self.state.guard,
+            true,
         )?;
         #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
         return Err(NativeMountError::UnsupportedTarget);
         let (identity, _) = crate::native_host::file_identity_and_length_with_work(
-            self.state.guard.as_ref().and_then(|guard| guard.file.as_ref())
-                .ok_or(NativeMountError::InvalidDestination)?, &mut &self.original,
+            self.state
+                .guard
+                .as_ref()
+                .and_then(|guard| guard.file.as_ref())
+                .ok_or(NativeMountError::InvalidDestination)?,
+            &mut &self.original,
         )?;
         #[cfg(windows)]
         {
             self.state.destination_identity = match crate::native_host::root_path_identity_with_work(
-                &self.shared.destination, &mut &self.original,
+                &self.shared.destination,
+                &mut &self.original,
             ) {
                 Ok(identity) => Some(identity),
-                Err(crate::NativeTreeMaterializationError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(crate::NativeTreeMaterializationError::Io(error))
+                    if error.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    None
+                }
                 Err(error) => return Err(error.into()),
             };
-            if let Some(identity) = self.state.destination_identity { self.state.control.bind_root_identity(identity); }
+            if let Some(identity) = self.state.destination_identity {
+                self.state.control.bind_root_identity(identity);
+            }
         }
         Ok(identity)
     }
@@ -333,13 +454,19 @@ impl NativeRecoveryWorker {
         while self.state.control.controls_pending() {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
-                { self.state.control.retire_controls(&self.original) }
+                {
+                    self.state.control.retire_controls(&self.original)
+                }
                 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-                { self.state.control.retire_controls_with_work(&self.original) }
+                {
+                    self.state.control.retire_controls_with_work(&self.original)
+                }
             })) {
                 Ok(Ok(())) if !self.state.control.controls_pending() => break,
                 Ok(Err(error)) => {
-                    if self.state.retirement_error.is_none() { self.state.retirement_error = Some(error); }
+                    if self.state.retirement_error.is_none() {
+                        self.state.retirement_error = Some(error);
+                    }
                 }
                 Ok(Ok(())) => {}
                 Err(panic) => self.state.panic = Some(panic),
@@ -354,11 +481,14 @@ impl NativeRecoveryWorker {
     }
 
     pub(super) fn run(mut self) {
-        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.acquire())) {
+        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.acquire()))
+        {
             Ok(result) => result,
             Err(panic) => {
                 self.state.panic = Some(panic);
-                Err(NativeMountError::Lifecycle("administrative acquisition panicked"))
+                Err(NativeMountError::Lifecycle(
+                    "administrative acquisition panicked",
+                ))
             }
         };
         let identity = match result {
@@ -366,7 +496,11 @@ impl NativeRecoveryWorker {
             Err(error) => {
                 self.retire();
                 drop(self.state);
-                let mut mailbox = self.shared.mailbox.lock().unwrap_or_else(|error| error.into_inner());
+                let mut mailbox = self
+                    .shared
+                    .mailbox
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
                 mailbox.reply = Some(Err(error));
                 mailbox.state_retired = true;
                 self.shared.wake.notify_all();
@@ -374,30 +508,54 @@ impl NativeRecoveryWorker {
             }
         };
         {
-            let mut mailbox = self.shared.mailbox.lock().unwrap_or_else(|error| error.into_inner());
+            let mut mailbox = self
+                .shared
+                .mailbox
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             mailbox.snapshot = Some(self.state.snapshot(identity));
             mailbox.reply = Some(Ok(true));
             self.shared.wake.notify_all();
         }
         loop {
             let command = {
-                let mut mailbox = self.shared.mailbox.lock().unwrap_or_else(|error| error.into_inner());
+                let mut mailbox = self
+                    .shared
+                    .mailbox
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
                 while mailbox.command.is_none() {
-                    mailbox = self.shared.wake.wait(mailbox).unwrap_or_else(|error| error.into_inner());
+                    mailbox = self
+                        .shared
+                        .wake
+                        .wait(mailbox)
+                        .unwrap_or_else(|error| error.into_inner());
                 }
-                mailbox.command.take().expect("original administrative slot")
+                mailbox
+                    .command
+                    .take()
+                    .expect("original administrative slot")
             };
             let reply = match command {
-                NativeRecoveryCommand::Action { remove_destination, work } => {
+                NativeRecoveryCommand::Action {
+                    remove_destination,
+                    work,
+                } => {
                     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                        self.state.finish_with_work(&self.shared.destination, remove_destination, &work)
+                        self.state.finish_with_work(
+                            &self.shared.destination,
+                            remove_destination,
+                            &work,
+                        )
                     }));
                     match result {
                         Ok(result) => result,
                         Err(panic) => {
                             self.state.panic = Some(panic);
                             self.state.measured_cleanup_failed = true;
-                            Err(NativeMountError::Lifecycle("administrative action panicked"))
+                            Err(NativeMountError::Lifecycle(
+                                "administrative action panicked",
+                            ))
                         }
                     }
                 }
@@ -405,14 +563,22 @@ impl NativeRecoveryWorker {
                     self.retire();
                     // Drop state data outside the mutex, before the worker's allocation guard.
                     drop(self.state);
-                    let mut mailbox = self.shared.mailbox.lock().unwrap_or_else(|error| error.into_inner());
+                    let mut mailbox = self
+                        .shared
+                        .mailbox
+                        .lock()
+                        .unwrap_or_else(|error| error.into_inner());
                     mailbox.state_retired = true;
                     self.shared.wake.notify_all();
                     return;
                 }
             };
             let snapshot = self.state.snapshot(identity);
-            let mut mailbox = self.shared.mailbox.lock().unwrap_or_else(|error| error.into_inner());
+            let mut mailbox = self
+                .shared
+                .mailbox
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             mailbox.snapshot = Some(snapshot);
             mailbox.reply = Some(reply);
             self.shared.wake.notify_all();
@@ -423,7 +589,11 @@ impl NativeRecoveryWorker {
 impl Drop for NativeMountRecoveryOwner {
     fn drop(&mut self) {
         {
-            let mut mailbox = self.shared.mailbox.lock().unwrap_or_else(|error| error.into_inner());
+            let mut mailbox = self
+                .shared
+                .mailbox
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             if !mailbox.state_retired {
                 mailbox.command = Some(NativeRecoveryCommand::LastDrop);
                 self.shared.wake.notify_one();
@@ -433,32 +603,55 @@ impl Drop for NativeMountRecoveryOwner {
 }
 
 pub(super) fn recover_driver_with_work(
-    control: &mut NativeRecoveryControl, destination: &Path,
-    disposable: bool, work: &crate::NativeMaterializationWork,
+    control: &mut NativeRecoveryControl,
+    destination: &Path,
+    disposable: bool,
+    work: &crate::NativeMaterializationWork,
 ) -> Result<(), NativeMountError> {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
-    { let _ = disposable; control.recover(destination, work) }
+    {
+        let _ = disposable;
+        control.recover(destination, work)
+    }
     #[cfg(target_os = "windows")]
-    { control.recover_measured(destination, disposable, &mut &*work) }
+    {
+        control.recover_measured(destination, disposable, &mut &*work)
+    }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-    { let _ = (control, destination, disposable, work); Err(NativeMountError::UnsupportedTarget) }
+    {
+        let _ = (control, destination, disposable, work);
+        Err(NativeMountError::UnsupportedTarget)
+    }
 }
 
 #[cfg(not(windows))]
 pub(super) fn remove_empty_recovery_destination(
-    destination: &Path, work: &crate::NativeMaterializationWork,
+    destination: &Path,
+    work: &crate::NativeMaterializationWork,
 ) -> Result<(), NativeMountError> {
-    let parent = destination.parent().ok_or(NativeMountError::InvalidDestination)?;
-    let name = destination.file_name().ok_or(NativeMountError::InvalidDestination)?;
+    let parent = destination
+        .parent()
+        .ok_or(NativeMountError::InvalidDestination)?;
+    let name = destination
+        .file_name()
+        .ok_or(NativeMountError::InvalidDestination)?;
     let mut host = work;
-    let result = crate::native_host::open_root_directory_with_work(parent, &mut host)
-        .and_then(|directory| crate::native_host::remove_empty_directory_held_with_work(
-            &directory, Path::new(name), &mut host,
-        ));
+    let result = crate::native_host::open_root_directory_with_work(parent, &mut host).and_then(
+        |directory| {
+            crate::native_host::remove_empty_directory_held_with_work(
+                &directory,
+                Path::new(name),
+                &mut host,
+            )
+        },
+    );
     match result {
         Ok(()) => Ok(()),
         Err(crate::NativeTreeMaterializationError::Io(error))
-            if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            if error.kind() == std::io::ErrorKind::NotFound =>
+        {
+            Ok(())
+        }
         Err(error) => Err(error.into()),
     }
 }

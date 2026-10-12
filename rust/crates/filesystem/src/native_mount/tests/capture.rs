@@ -1,11 +1,13 @@
 use super::*;
 
-
 #[tokio::test]
 async fn capture_host_hard_links_preserves_shared_file_identity()
 -> Result<(), Box<dyn std::error::Error>> {
     let limits = VolumeLimits::default();
-    let config = VolumeConfig { limits, ..VolumeConfig::portable(Lifecycle::Ephemeral) };
+    let config = VolumeConfig {
+        limits,
+        ..VolumeConfig::portable(Lifecycle::Ephemeral)
+    };
     let cancellation = CancellationToken::new();
     let volume = memory_volume(VolumeId::from_bytes([92; 16]), config, &cancellation).await?;
     let mut checkout = private_checkout(&volume, &cancellation).await?;
@@ -49,12 +51,20 @@ async fn capture_host_hard_links_preserves_shared_file_identity()
         std::fs::hard_link(host.path().join("a"), host.path().join(name))?;
         let additional = path(name)?;
         capture_paths(
-            &mut checkout, &[paths[0].clone(), additional.clone()], &options,
-            WorkBudget::UNBOUNDED, &cancellation,
-        ).await?;
+            &mut checkout,
+            &[paths[0].clone(), additional.clone()],
+            &options,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
         let additional_id = checkout
             .lookup_no_follow(&additional, WorkBudget::UNBOUNDED, &cancellation)
-            .await?.value.record.ok_or("additional link missing")?.file_id;
+            .await?
+            .value
+            .record
+            .ok_or("additional link missing")?
+            .file_id;
         assert_eq!(additional_id, first.file_id);
     }
     std::fs::hard_link(host.path().join("a"), host.path().join("c"))?;
@@ -68,7 +78,10 @@ async fn capture_host_hard_links_preserves_shared_file_identity()
             changes: vec![WatchChange::Created(third.clone())],
             original: Default::default(),
         },
-        &CaptureOptions { maximum_paths: 1, ..options.clone() },
+        &CaptureOptions {
+            maximum_paths: 1,
+            ..options.clone()
+        },
         &crate::CapturePolicy::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -94,7 +107,10 @@ async fn capture_host_hard_links_preserves_shared_file_identity()
     capture_paths(
         &mut checkout,
         std::slice::from_ref(&existing),
-        &CaptureOptions { maximum_paths: 1, ..options.clone() },
+        &CaptureOptions {
+            maximum_paths: 1,
+            ..options.clone()
+        },
         WorkBudget::UNBOUNDED,
         &cancellation,
     )
@@ -117,7 +133,10 @@ async fn capture_host_hard_links_preserves_shared_file_identity()
             changes: vec![WatchChange::Created(existing.clone())],
             original: Default::default(),
         },
-        &CaptureOptions { maximum_paths: 1, ..options },
+        &CaptureOptions {
+            maximum_paths: 1,
+            ..options
+        },
         &crate::CapturePolicy::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -143,12 +162,15 @@ async fn capture_host_hard_links_preserves_shared_file_identity()
     Ok(())
 }
 
-
 #[tokio::test]
-async fn baseline_path_limit_stops_unbounded_traversal()
--> Result<(), Box<dyn std::error::Error>> {
+async fn baseline_path_limit_stops_unbounded_traversal() -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
-    let volume = memory_volume(VolumeId::from_bytes([94; 16]), VolumeConfig::portable(Lifecycle::Ephemeral), &cancellation).await?;
+    let volume = memory_volume(
+        VolumeId::from_bytes([94; 16]),
+        VolumeConfig::portable(Lifecycle::Ephemeral),
+        &cancellation,
+    )
+    .await?;
     let mut checkout = private_checkout(&volume, &cancellation).await?;
     let host = tempfile::tempdir()?;
     for index in 0..3 {
@@ -175,24 +197,51 @@ async fn baseline_path_limit_stops_unbounded_traversal()
     Ok(())
 }
 
-
 #[tokio::test]
 async fn explicit_materialization_and_capture_round_trip_sparse_checkout()
 -> Result<(), Box<dyn std::error::Error>> {
     let limits = VolumeLimits::default();
-    let config = VolumeConfig { limits, ..VolumeConfig::portable(Lifecycle::Ephemeral) };
+    let config = VolumeConfig {
+        limits,
+        ..VolumeConfig::portable(Lifecycle::Ephemeral)
+    };
     let cancellation = CancellationToken::new();
     let volume = memory_volume(VolumeId::from_bytes([91; 16]), config, &cancellation).await?;
     let mut checkout = private_checkout(&volume, &cancellation).await?;
     let file = portable_path(limits, &[b"sparse.bin"])?;
     checkout
-        .create(crate::AuthoredMutation::CreateFile { path: file.clone(), bytes: (Bytes::from_static(b"head")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)
+        .create(
+            crate::AuthoredMutation::CreateFile {
+                path: file.clone(),
+                bytes: (Bytes::from_static(b"head")).into(),
+                metadata: crate::kernel::FileMetadata::default(),
+            },
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?;
     checkout
-        .change_content(file.clone(), crate::ContentChange::Resize { logical_bytes: 1024 * 1024 }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation)
+        .change_content(
+            file.clone(),
+            crate::ContentChange::Resize {
+                logical_bytes: 1024 * 1024,
+            },
+            crate::ContentTimes::Preserve,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?;
     checkout
-        .change_content(file.clone(), crate::ContentChange::Write { offset: 1024 * 1024 - 4, bytes: (Bytes::from_static(b"tail")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation)
+        .change_content(
+            file.clone(),
+            crate::ContentChange::Write {
+                offset: 1024 * 1024 - 4,
+                bytes: (Bytes::from_static(b"tail")).into(),
+            },
+            crate::ContentTimes::Preserve,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?;
 
     let temporary = tempfile::tempdir()?;
@@ -351,7 +400,10 @@ async fn explicit_materialization_and_capture_round_trip_sparse_checkout()
             ],
             original: Default::default(),
         },
-        &CaptureOptions { maximum_paths: 2, ..capture_options.clone() },
+        &CaptureOptions {
+            maximum_paths: 2,
+            ..capture_options.clone()
+        },
         &crate::CapturePolicy::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -387,10 +439,17 @@ async fn explicit_materialization_and_capture_round_trip_sparse_checkout()
     let mut previous_id = replacement_record.file_id;
     let mut first_sequence = 14;
     for (payload, changes) in [
-        (b"replaced-again".as_slice(), vec![WatchChange::Created(renamed.clone())]),
-        (b"compound-replacement".as_slice(), vec![
-            WatchChange::Created(renamed.clone()), WatchChange::Modified(renamed.clone()),
-        ]),
+        (
+            b"replaced-again".as_slice(),
+            vec![WatchChange::Created(renamed.clone())],
+        ),
+        (
+            b"compound-replacement".as_slice(),
+            vec![
+                WatchChange::Created(renamed.clone()),
+                WatchChange::Modified(renamed.clone()),
+            ],
+        ),
     ] {
         mutate_as_a_user_would(|| std::fs::write(destination.join("renamed.bin"), payload))?;
         let maximum_paths = changes.len() as u32;
@@ -398,13 +457,27 @@ async fn explicit_materialization_and_capture_round_trip_sparse_checkout()
         capture_watch_batch(
             &mut checkout,
             WatchBatch::Changes {
-                epoch: 7, first_sequence, next_sequence, changes, original: Default::default(),
+                epoch: 7,
+                first_sequence,
+                next_sequence,
+                changes,
+                original: Default::default(),
             },
-            &CaptureOptions { maximum_paths, ..capture_options.clone() },
-            &crate::CapturePolicy::default(), WorkBudget::UNBOUNDED, &cancellation,
-        ).await?;
-        let replacement = checkout.lookup_no_follow(&renamed, WorkBudget::UNBOUNDED, &cancellation)
-            .await?.value.record.ok_or("replacement disappeared")?;
+            &CaptureOptions {
+                maximum_paths,
+                ..capture_options.clone()
+            },
+            &crate::CapturePolicy::default(),
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
+        .await?;
+        let replacement = checkout
+            .lookup_no_follow(&renamed, WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value
+            .record
+            .ok_or("replacement disappeared")?;
         assert_ne!(replacement.file_id, previous_id);
         previous_id = replacement.file_id;
         first_sequence = next_sequence;
@@ -412,7 +485,10 @@ async fn explicit_materialization_and_capture_round_trip_sparse_checkout()
 
     let dirty_baseline = capture_baseline(
         &mut checkout,
-        &CaptureOptions { maximum_paths: 16, ..capture_options.clone() },
+        &CaptureOptions {
+            maximum_paths: 16,
+            ..capture_options.clone()
+        },
         &crate::CapturePolicy::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -443,7 +519,10 @@ async fn explicit_materialization_and_capture_round_trip_sparse_checkout()
     .map_err(|error| std::io::Error::other(format!("host baseline write: {error}")))?;
     let baseline = capture_baseline(
         &mut checkout,
-        &CaptureOptions { maximum_paths: 16, ..capture_options.clone() },
+        &CaptureOptions {
+            maximum_paths: 16,
+            ..capture_options.clone()
+        },
         &crate::CapturePolicy::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -543,7 +622,10 @@ async fn explicit_materialization_and_capture_round_trip_sparse_checkout()
             ],
             original: Default::default(),
         },
-        &CaptureOptions { maximum_paths: 2, ..capture_options.clone() },
+        &CaptureOptions {
+            maximum_paths: 2,
+            ..capture_options.clone()
+        },
         &crate::CapturePolicy::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -577,7 +659,10 @@ async fn explicit_materialization_and_capture_round_trip_sparse_checkout()
             ],
             original: Default::default(),
         },
-        &CaptureOptions { maximum_paths: 2, ..capture_options.clone() },
+        &CaptureOptions {
+            maximum_paths: 2,
+            ..capture_options.clone()
+        },
         &crate::CapturePolicy::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
@@ -625,7 +710,6 @@ async fn explicit_materialization_and_capture_round_trip_sparse_checkout()
     assert!(matches!(swapped.error, CaptureError::RootChanged));
     Ok(())
 }
-
 
 #[tokio::test]
 async fn coalesced_parent_child_removals_capture_deepest_first()
@@ -709,7 +793,6 @@ async fn coalesced_parent_child_removals_capture_deepest_first()
     );
     Ok(())
 }
-
 
 // Stale creation hints must preserve existing directories and their children.
 #[tokio::test]
@@ -795,7 +878,6 @@ async fn stale_created_hints_for_existing_directory_capture_exactly()
     Ok(())
 }
 
-
 #[tokio::test]
 async fn windows_created_and_modified_hint_captures_one_new_file()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -857,7 +939,6 @@ async fn windows_created_and_modified_hint_captures_one_new_file()
     Ok(())
 }
 
-
 #[cfg(unix)]
 #[tokio::test]
 async fn posix_fifo_and_socket_materialize_and_capture_exactly()
@@ -865,7 +946,11 @@ async fn posix_fifo_and_socket_materialize_and_capture_exactly()
     use std::os::unix::fs::FileTypeExt;
 
     let limits = VolumeLimits::default();
-    let config = VolumeConfig { profile: FilesystemProfile::Posix, limits, ..VolumeConfig::portable(Lifecycle::Ephemeral) };
+    let config = VolumeConfig {
+        profile: FilesystemProfile::Posix,
+        limits,
+        ..VolumeConfig::portable(Lifecycle::Ephemeral)
+    };
     let cancellation = CancellationToken::new();
     let fs = Fs::memory();
     let source = fs
@@ -895,10 +980,26 @@ async fn posix_fifo_and_socket_materialize_and_capture_exactly()
         limits,
     )?;
     source_checkout
-        .create(crate::AuthoredMutation::CreateEmptySpecial { path: fifo.clone(), kind: crate::kernel::FileKind::Fifo, metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)
+        .create(
+            crate::AuthoredMutation::CreateEmptySpecial {
+                path: fifo.clone(),
+                kind: crate::kernel::FileKind::Fifo,
+                metadata: crate::kernel::FileMetadata::default(),
+            },
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?;
     source_checkout
-        .create(crate::AuthoredMutation::CreateEmptySpecial { path: socket.clone(), kind: crate::kernel::FileKind::Socket, metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)
+        .create(
+            crate::AuthoredMutation::CreateEmptySpecial {
+                path: socket.clone(),
+                kind: crate::kernel::FileKind::Socket,
+                metadata: crate::kernel::FileMetadata::default(),
+            },
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        )
         .await?;
 
     let temporary = tempfile::tempdir()?;

@@ -48,14 +48,18 @@ impl LocalCoreStateStore {
     /// Exact generations retained by original forks and completed selected imports.
     pub(crate) async fn lazy_retained_generations(
         &self,
-    ) -> Result<Vec<(crate::GenerationId, crate::model::VolumeConfig)>, LocalCoreStateStoreError> {
+    ) -> Result<Vec<(crate::GenerationId, crate::model::VolumeConfig)>, LocalCoreStateStoreError>
+    {
         self.transaction(|root| {
             let root = &root;
             root.with_log(|log| {
-                let mut workspaces = log.resident_keys(|key| match key {
-                    RecordKey::LazyWorkspace(id) => Some(id),
-                    _ => None,
-                }).into_iter().collect::<BTreeSet<_>>();
+                let mut workspaces = log
+                    .resident_keys(|key| match key {
+                        RecordKey::LazyWorkspace(id) => Some(id),
+                        _ => None,
+                    })
+                    .into_iter()
+                    .collect::<BTreeSet<_>>();
                 for stem in family_stems(root, LAZY_WORKSPACE_FAMILY)? {
                     if let Ok(bytes) = <[u8; 16]>::try_from(stem.as_slice()) {
                         workspaces.insert(WorkspaceId::from_bytes(bytes));
@@ -73,13 +77,17 @@ impl LocalCoreStateStore {
                         generations.extend([
                             (completed.snapshot.authored_generation, completed.config),
                             (completed.destination.authored_generation, completed.config),
-                            (completed.source.authored_generation, completed.source_config),
+                            (
+                                completed.source.authored_generation,
+                                completed.source_config,
+                            ),
                         ]);
                     }
                 }
                 Ok(generations)
             })
-        }).await
+        })
+        .await
     }
 }
 
@@ -111,15 +119,18 @@ impl LocalCoreStateStore {
                     let lineage = log.get::<WorkspaceLineageRecord>(root, workspace)?;
                     let lazy = log.get::<LazyWorkspaceState>(root, workspace)?;
                     let git = read_locked::<GitCompatState>(
-                        &root.record(GIT_COMPAT_NAMESPACE, &workspace.into_bytes()),
+                        &root.record(GIT_COMPAT_NAMESPACE, &workspace.into_bytes())?,
                     )?;
                     if lineage.is_none() && lazy.is_none() && git.is_none() {
                         continue;
                     }
                     // A durable freeze is retention metadata, not evidence that
                     // a destination filesystem workspace was ever created.
-                    if lineage.is_none() && git.is_none()
-                        && lazy.as_ref().and_then(|state| state.fork_origin)
+                    if lineage.is_none()
+                        && git.is_none()
+                        && lazy
+                            .as_ref()
+                            .and_then(|state| state.fork_origin)
                             .is_some_and(|origin| origin.phase == crate::LazyForkPhase::Prepared)
                     {
                         continue;
@@ -127,11 +138,15 @@ impl LocalCoreStateStore {
                     let mut parents: Vec<_> = lineage
                         .and_then(|record| record.parent_workspace_id)
                         .into_iter()
-                        .chain(lazy.as_ref().and_then(|state| state.fork_origin
-                            .map(|origin| origin.snapshot.workspace_id)
-                            .or(state.parent_workspace_id)))
+                        .chain(lazy.as_ref().and_then(|state| {
+                            state
+                                .fork_origin
+                                .map(|origin| origin.snapshot.workspace_id)
+                                .or(state.parent_workspace_id)
+                        }))
                         .collect();
-                    if let Some(completed) = lazy.and_then(|state| state.completed_selected_import) {
+                    if let Some(completed) = lazy.and_then(|state| state.completed_selected_import)
+                    {
                         for parent in [
                             completed.snapshot.workspace_id,
                             completed.destination.workspace_id,
@@ -165,7 +180,7 @@ impl LocalCoreStateStore {
             })?;
             // Unsynchronized: a removal a crash undoes is found again by the
             // next collection.
-            let paths = root.record(GIT_COMPAT_NAMESPACE, &workspace.into_bytes());
+            let paths = root.record(GIT_COMPAT_NAMESPACE, &workspace.into_bytes())?;
             for path in [
                 &paths.temporary,
                 &paths.previous,
@@ -321,7 +336,7 @@ pub(super) fn sweep_nodes<T: LazyNode>(
             continue;
         }
         // Unsynchronized: a removal a crash undoes leaves only garbage.
-        let paths = root.record(T::FAMILY, &address);
+        let paths = root.record(T::FAMILY, &address)?;
         for path in [
             &paths.temporary,
             &paths.previous,
@@ -341,7 +356,7 @@ pub(super) fn load_content_addressed<T: DeserializeOwned + Serialize>(
     family: &str,
     address: [u8; 32],
 ) -> Result<Option<T>, LocalCoreStateStoreError> {
-    let Some(value) = read_locked(&namespace.record(family, &address))? else {
+    let Some(value) = read_locked(&namespace.record(family, &address)?)? else {
         return Ok(None);
     };
     verify_content_address(address, &value)?;
@@ -358,6 +373,8 @@ pub(super) fn verify_content_address<T: Serialize>(
     Ok(())
 }
 
-pub(super) fn content_address<T: Serialize>(value: &T) -> Result<[u8; 32], LocalCoreStateStoreError> {
+pub(super) fn content_address<T: Serialize>(
+    value: &T,
+) -> Result<[u8; 32], LocalCoreStateStoreError> {
     Ok(*blake3::hash(&serde_json::to_vec(value)?).as_bytes())
 }

@@ -206,11 +206,10 @@ impl<'a> PiControlHost<'a> {
         if context.output_volume() != Some(scratch) {
             return Err(denied("selected native output is not its original sealed private scratch"));
         }
-        if !context.scope().grants().contains(&scratch.capability(acyclic_harness::conversation::VolumeOperation::Write)?) {
+        if !context.scope().grants().contains(&scratch.capability(acyclic_harness::conversation::VolumeOperation::Write, &mut None)?) {
             return Err(denied("selected native context lacks its original private scratch WRITE grant"));
         }
-        owner.native_view_owner().require_volume_grant_with_native_work(scratch,
-            acyclic_harness::conversation::VolumeOperation::Write, work)?;
+        owner.native_view_owner().require_volume_grant(scratch, acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         let cancellation = work.cancellation();
         let encoded = crate::pi_root_provider::guarded_pi_bytes(&payload,
             crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, work)?;
@@ -448,16 +447,27 @@ impl PiControlHost<'_> {
         else if destination == self.protected.policy().root_task { self.root_binding()? }
         else { &foreign_binding.as_ref().ok_or_else(|| denied("explicit destination binding unavailable"))?.0 };
     let volume = destination_binding.project_volumes.get(key).ok_or_else(|| denied("destination lacks this actual project"))?;
-    let write_capability = volume.capability_with_native_work(acyclic_harness::conversation::VolumeOperation::Write, work)?;
+    let write_capability = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = volume.capability(acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     if !context.scope().grants().contains(&write_capability.0) {
         return Err(denied("current caller has no actual WRITE grant for the explicit destination"));
     }
     let authorization = self.protected.conversation_authority_with_native_work(
         input.caller, binding.agent_id, context.scope().grants(), work)?;
-    let verifier = authorization.0.1.verifier_with_native_work(work)?;
+    let verifier = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = authorization.0.1.verifier(&mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     let scope = &authorization.0.2;
-    let destination_grant = acyclic_harness::conversation::ContentGrant::verify_with_native_work(
-        &verifier.0, scope, volume, acyclic_harness::conversation::VolumeOperation::Write, work)?;
+    let destination_grant = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let grant = acyclic_harness::conversation::ContentGrant::verify(&verifier.0, scope, volume, acyclic_harness::conversation::VolumeOperation::Write, u64::MAX, &mut Some(&mut io))?;
+        (grant, io.into_custody())
+    };
     if destination != input.caller && destination == self.protected.policy().root_task {
         return Err(denied("delegated Root mutation requires its original mediated Root workflow command"));
     }
@@ -491,7 +501,7 @@ impl PiControlHost<'_> {
             .ok_or_else(|| denied("mounted destination lost its original issued context"))?;
         let guard = live.context.volume_callback_guard_with_native_work(
             &live.owner, &live.original_work).await?;
-        Some(guard.for_volume(&live.owner, volume, true, &publication_work)?)
+        Some(guard.for_volume(&live.owner, volume, true, &publication_work)?.0)
     } else { None };
     let publication = if let Some(view) = self.native.live_view(destination) {
         view.project_publication(volume).ok_or_else(|| denied("destination lacks its ORIGINAL project publication permit"))?
@@ -541,7 +551,7 @@ impl PiControlHost<'_> {
     owner.native_view_owner().verify_with_native_work(work).await?;
     destination_owner.native_view_owner().verify_with_native_work(work).await?;
     let completed = if let Some(mount) = &mount {
-        let result = mount.selected_import_snapshot_with_work(fs_operation, &publication_work, cancellation).await;
+        let result = mount.selected_import_snapshot(fs_operation, &publication_work, cancellation).await;
         if let Err(acyclic_fs::NativeMountError::Source(error)) = &result {
             if matches!(error.semantic_error(), acyclic_fs::MountSourceError::OriginalSnapshotUnavailable
                 | acyclic_fs::MountSourceError::Indeterminate) {
@@ -627,7 +637,11 @@ impl PiControlHost<'_> {
     }
     let fs_operation = acyclic_fs::OperationId::from_bytes(operation.into_bytes());
     let operation_directory = crate::util::root_materialization_directory_with_native_work(&retained.path, fs_operation, work)?;
-    let root_volume = volume.clone_with_native_work(work)?;
+    let root_volume = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = volume.copy(&mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     let root_path = work.copy_path(&retained.path).map_err(native_error)?;
     let root = PiOriginalWritebackRoot { task: root_task, volume: root_volume.0, workspace: original.workspace_id,
         identity, path: root_path.0, operation_directory: operation_directory.0,
@@ -740,7 +754,11 @@ pub(crate) async fn read_imported_selected_files(
     let created = retained.roots.get(key).ok_or_else(|| denied("prepared evidence lost its protected creator allocation"))?
         .created().map_err(Error::Unauthorized)?;
     let receipt = &descriptor.import_receipt;
-    let storage_name = volume.storage_name_with_native_work(work)?;
+    let storage_name = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = volume.storage_name(&mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     if binding.task_id != protected.policy().root_task || descriptor.command.caller != binding.task_id
         || descriptor.session != binding.native_session_id || receipt.caller != binding.task_id
         || receipt.source != descriptor.command.source || receipt.root != key || &receipt.destination != volume
@@ -753,13 +771,25 @@ pub(crate) async fn read_imported_selected_files(
         || storage_name.0 != root.workspace.workspace().name().as_str() {
         return Err(denied("operator evidence does not bind the actual original selected import receipt"));
     }
-    let capability = volume.capability_with_native_work(VolumeOperation::Read, work)?;
-    let grants = acyclic_harness::core::Capabilities::new_with_native_work([capability.0.as_str()], work)?;
+    let capability = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = volume.capability(VolumeOperation::Read, &mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
+    let grants = acyclic_harness::Capabilities::new_with_native_work([capability.0.as_str()], work)?;
     let authorization = protected.conversation_authority_with_native_work(
         binding.task_id, binding.agent_id, &grants.0, work)?;
-    let verifier = authorization.0.1.verifier_with_native_work(work)?;
+    let verifier = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = authorization.0.1.verifier(&mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     let scope = &authorization.0.2;
-    let _read_grant = ContentGrant::verify_with_native_work(&verifier.0, scope, volume, VolumeOperation::Read, work)?;
+    let _read_grant = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let grant = ContentGrant::verify(&verifier.0, scope, volume, VolumeOperation::Read, u64::MAX, &mut Some(&mut io))?;
+        (grant, io.into_custody())
+    };
     let cancellation = work.cancellation();
     let generation = root.workspace.workspace().generation(
         descriptor.imported, work, cancellation).await.map_err(|error| native_workspace_error((error, None)))?;
@@ -811,13 +841,16 @@ pub(crate) async fn read_imported_selected_files(
     let start = evidence.map(|request| request.path.as_str());
     for &path in &paths.0 {
         if start.is_some_and(|start| path < start) { continue; }
-        acyclic_harness::conversation::validate_content_path(path)?;
+        acyclic_harness::conversation::validate_content_path(path, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         let selected = descriptor.command.paths.iter().any(|prefix| path == prefix
             || path.strip_prefix(prefix).is_some_and(|suffix| suffix.starts_with('/')));
         if !selected { return Err(denied("candidate evidence edit escaped the explicitly selected paths")); }
         cancellation.check().map_err(|_| native_error(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
-        let _current_read_grant = ContentGrant::verify_with_native_work(
-            &verifier.0, scope, volume, VolumeOperation::Read, work)?;
+        let _current_read_grant = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let grant = ContentGrant::verify(&verifier.0, scope, volume, VolumeOperation::Read, u64::MAX, &mut Some(&mut io))?;
+            (grant, io.into_custody())
+        };
         let absolute = work.display(&format_args!("/{path}")).map_err(native_error)?;
         let stat = match generation.stat(&absolute.0, work, cancellation).await.map_err(|error| (error, None)) {
             Ok(stat) => stat,

@@ -25,17 +25,32 @@ impl WorkspaceLineageStore for LocalCoreStateStore {
         workspace_id: WorkspaceId,
         original: &crate::materializer::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
-    ) -> Result<Option<NativeOwnedCoreState<WorkspaceLineageRecord>>,
-        (crate::lineage::WorkspaceLineageError<Self::Error>, Option<crate::materializer::NativeAllocation>)> {
-        native_records::check(original, cancellation).map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))?;
+    ) -> Result<
+        Option<NativeOwnedCoreState<WorkspaceLineageRecord>>,
+        (
+            crate::lineage::WorkspaceLineageError<Self::Error>,
+            Option<crate::materializer::NativeAllocation>,
+        ),
+    > {
+        native_records::check(original, cancellation)
+            .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))?;
         let cancellation = cancellation.clone();
-        self.materialization(original.clone()).transaction(move |root| {
-            let root = &root;
-            let work = root._allocation.as_ref().expect("bound native work").work();
-            root.with_log(|log| {
-                native_records::load_native_lineage(&root, log, workspace_id, work, &cancellation)
+        self.materialization(original.clone())
+            .transaction(move |root| {
+                let root = &root;
+                let work = root._allocation.as_ref().expect("bound native work").work();
+                root.with_log(|log| {
+                    native_records::load_native_lineage(
+                        &root,
+                        log,
+                        workspace_id,
+                        work,
+                        &cancellation,
+                    )
+                })
             })
-        }).await.map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))
+            .await
+            .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -46,20 +61,38 @@ impl WorkspaceLineageStore for LocalCoreStateStore {
         replacement: NativeOwnedCoreState<WorkspaceLineageRecord>,
         original: &crate::materializer::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
-    ) -> Result<bool,
-        (crate::lineage::WorkspaceLineageError<Self::Error>, Option<crate::materializer::NativeAllocation>)> {
-        native_records::check(original, cancellation).map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))?;
-        let replacement = native_records::checked_packet(
-            replacement, original, |value| native_records::native_lineage_owned_bytes(value, original),
-        ).map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))?;
+    ) -> Result<
+        bool,
+        (
+            crate::lineage::WorkspaceLineageError<Self::Error>,
+            Option<crate::materializer::NativeAllocation>,
+        ),
+    > {
+        native_records::check(original, cancellation)
+            .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))?;
+        let replacement = native_records::checked_packet(replacement, original, |value| {
+            native_records::native_lineage_owned_bytes(value, original)
+        })
+        .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))?;
         let cancellation = cancellation.clone();
-        self.materialization(original.clone()).transaction(move |root| {
-            let root = &root;
-            let work = root._allocation.as_ref().expect("bound native work").work();
-            root.with_log(|log| {
-                native_records::compare_native_lineage(&root, log, workspace_id, expected_revision, replacement, work, &cancellation)
+        self.materialization(original.clone())
+            .transaction(move |root| {
+                let root = &root;
+                let work = root._allocation.as_ref().expect("bound native work").work();
+                root.with_log(|log| {
+                    native_records::compare_native_lineage(
+                        &root,
+                        log,
+                        workspace_id,
+                        expected_revision,
+                        replacement,
+                        work,
+                        &cancellation,
+                    )
+                })
             })
-        }).await.map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))
+            .await
+            .map_err(|error| (crate::lineage::WorkspaceLineageError::Store(error), None))
     }
 }
 
@@ -79,17 +112,35 @@ impl WorkspaceContextStore for LocalCoreStateStore {
         context_id: WorkspaceContextId,
         original: &crate::materializer::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
-    ) -> Result<Option<NativeOwnedCoreState<WorkspaceContext>>,
-        (crate::workspace_context::WorkspaceContextError<Self::Error>, Option<crate::materializer::NativeAllocation>)> {
-        native_records::check(original, cancellation).map_err(|error| (crate::workspace_context::WorkspaceContextError::Store(error), None))?;
+    ) -> Result<
+        Option<NativeOwnedCoreState<WorkspaceContext>>,
+        (
+            crate::workspace_context::WorkspaceContextError<Self::Error>,
+            Option<crate::materializer::NativeAllocation>,
+        ),
+    > {
+        native_records::check(original, cancellation).map_err(|error| {
+            (
+                crate::workspace_context::WorkspaceContextError::Store(error),
+                None,
+            )
+        })?;
         let cancellation = cancellation.clone();
-        self.materialization(original.clone()).transaction(move |root| {
-            let root = &root;
-            let work = root._allocation.as_ref().expect("bound native work").work();
-            root.with_log(|log| {
-                native_records::load_native_context(&root, log, context_id, work, &cancellation)
+        self.materialization(original.clone())
+            .transaction(move |root| {
+                let root = &root;
+                let work = root._allocation.as_ref().expect("bound native work").work();
+                root.with_log(|log| {
+                    native_records::load_native_context(&root, log, context_id, work, &cancellation)
+                })
             })
-        }).await.map_err(|error| (crate::workspace_context::WorkspaceContextError::Store(error), None))
+            .await
+            .map_err(|error| {
+                (
+                    crate::workspace_context::WorkspaceContextError::Store(error),
+                    None,
+                )
+            })
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -100,20 +151,52 @@ impl WorkspaceContextStore for LocalCoreStateStore {
         replacement: NativeOwnedCoreState<WorkspaceContext>,
         original: &crate::materializer::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
-    ) -> Result<bool,
-        (crate::workspace_context::WorkspaceContextError<Self::Error>, Option<crate::materializer::NativeAllocation>)> {
-        native_records::check(original, cancellation).map_err(|error| (crate::workspace_context::WorkspaceContextError::Store(error), None))?;
-        let replacement = native_records::checked_packet(
-            replacement, original, |value| native_records::native_context_owned_bytes(value, original),
-        ).map_err(|error| (crate::workspace_context::WorkspaceContextError::Store(error), None))?;
+    ) -> Result<
+        bool,
+        (
+            crate::workspace_context::WorkspaceContextError<Self::Error>,
+            Option<crate::materializer::NativeAllocation>,
+        ),
+    > {
+        native_records::check(original, cancellation).map_err(|error| {
+            (
+                crate::workspace_context::WorkspaceContextError::Store(error),
+                None,
+            )
+        })?;
+        let replacement = native_records::checked_packet(replacement, original, |value| {
+            native_records::native_context_owned_bytes(value, original)
+        })
+        .map_err(|error| {
+            (
+                crate::workspace_context::WorkspaceContextError::Store(error),
+                None,
+            )
+        })?;
         let cancellation = cancellation.clone();
-        self.materialization(original.clone()).transaction(move |root| {
-            let root = &root;
-            let work = root._allocation.as_ref().expect("bound native work").work();
-            root.with_log(|log| {
-                native_records::compare_native_context(&root, log, context_id, expected_revision, replacement, work, &cancellation)
+        self.materialization(original.clone())
+            .transaction(move |root| {
+                let root = &root;
+                let work = root._allocation.as_ref().expect("bound native work").work();
+                root.with_log(|log| {
+                    native_records::compare_native_context(
+                        &root,
+                        log,
+                        context_id,
+                        expected_revision,
+                        replacement,
+                        work,
+                        &cancellation,
+                    )
+                })
             })
-        }).await.map_err(|error| (crate::workspace_context::WorkspaceContextError::Store(error), None))
+            .await
+            .map_err(|error| {
+                (
+                    crate::workspace_context::WorkspaceContextError::Store(error),
+                    None,
+                )
+            })
     }
 
     async fn list(&self) -> Result<Vec<WorkspaceContext>, Self::Error> {
@@ -333,7 +416,10 @@ impl Owner {
     pub(super) fn resident<T: Logged>(&self, id: T::Id) -> Option<Option<T>> {
         let residents = self.residents.read().ok()?;
         let value = residents.get(&T::key(id))?;
-        if matches!(value, Some(RecordValue::FlatContext(_)) | Some(RecordValue::FlatChildren(_))) {
+        if matches!(
+            value,
+            Some(RecordValue::FlatContext(_)) | Some(RecordValue::FlatChildren(_))
+        ) {
             return None;
         }
         Some(value.as_ref().and_then(T::from_value).cloned())
@@ -347,44 +433,59 @@ impl Owner {
 }
 
 impl Namespace {
-    pub(super) fn with_log<T>(&self, operation: impl FnOnce(&mut CoreLog) -> Result<T, LocalCoreStateStoreError>) -> Result<T, LocalCoreStateStoreError> {
+    pub(super) fn with_log<T>(
+        &self,
+        operation: impl FnOnce(&mut CoreLog) -> Result<T, LocalCoreStateStoreError>,
+    ) -> Result<T, LocalCoreStateStoreError> {
         match &self.admission {
             Admission::Shared { .. } => {
                 let execute = |residents, allocation| {
                     let mut log = CoreLog::open(self, residents)?;
                     log.residents_control = allocation;
                     let result = operation(&mut log);
-                    if !log.dirty.is_empty() && !log.broken { drop(log.checkpoint(self)); }
+                    if !log.dirty.is_empty() && !log.broken {
+                        drop(log.checkpoint(self));
+                    }
                     result
                 };
-                match self._allocation.as_ref().map(|allocation| allocation.work()) {
-                Some(work) => {
-                    let (paths, allocation) = self.measured_record(CORE_LOG_FAMILY, &[0; 16], work)?;
-                    materialization_lock(paths, allocation, work, |_| {
-                        let control = work.claim(std::mem::size_of::<RwLock<Residents>>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
-                        execute(Arc::default(), Some(control))
-                    })
+                match self
+                    ._allocation
+                    .as_ref()
+                    .map(|allocation| allocation.work())
+                {
+                    Some(work) => {
+                        let (paths, allocation) = self.record(CORE_LOG_FAMILY, &[0; 16], work)?;
+                        materialization_lock(paths, work, |_| {
+                            let control = work.claim(
+                                std::mem::size_of::<RwLock<Residents>>() as u64,
+                                1,
+                                crate::WorkCounters::UNCHARGED,
+                            )?;
+                            execute(Arc::default(), Some(control))
+                        })
+                    }
+                    None => with_lock(&self.record(CORE_LOG_FAMILY, &[0; 16])?, || {
+                        execute(Arc::default(), None)
+                    }),
                 }
-                None => with_lock(&core_log_paths(self), || execute(Arc::default(), None)),
-                }
-            },
+            }
             Admission::Owned(owner) => {
                 let mut slot = owner.log();
                 let mut log = match slot.take().filter(|log| !log.broken) {
                     Some(log) => log,
                     None => CoreLog::open(self, Arc::clone(&owner.residents))?,
                 };
-                let result = if log.sequence >= OWNED_CHECKPOINT { log.checkpoint(self) } else { Ok(()) }
-                    .and_then(|()| operation(&mut log));
+                let result = if log.sequence >= OWNED_CHECKPOINT {
+                    log.checkpoint(self)
+                } else {
+                    Ok(())
+                }
+                .and_then(|()| operation(&mut log));
                 *slot = Some(log);
                 result
             }
         }
     }
-}
-
-pub(super) fn core_log_paths(root: &Namespace) -> RecordPaths<'_> {
-    root.record(CORE_LOG_FAMILY, &[0; 16])
 }
 
 pub(super) fn context_children_index_ready(

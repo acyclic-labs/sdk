@@ -146,7 +146,7 @@ pub(crate) fn sync_segment_directory(
     publication: &mut Publication,
 ) -> Result<(), NativeObjectsError> {
     let parent = publication_path(root, "segments", publication)?;
-    if let Some(meter) = &publication.meter {
+    if let Some((meter, _)) = &publication.native {
         meter.check()?;
         meter.admit_read(0)?;
         let mut options = OpenOptions::new();
@@ -172,12 +172,8 @@ pub(crate) fn sync_publication(
     durability: LocalDurability,
     publication: &Publication,
 ) -> Result<(), NativeObjectsError> {
-    match &publication.meter {
-        Some(meter) => acyclic_native_runtime::sync_file(
-            file, native_durability(durability), Some(meter.as_ref()),
-        )?,
-        None => sync_file(file, durability)?,
-    }
+    acyclic_native_runtime::sync_file(file, native_durability(durability),
+        publication.native.as_ref().map(|(meter, _)| meter.as_ref()))?;
     Ok(())
 }
 
@@ -188,7 +184,7 @@ pub(crate) fn write_publication(
     bytes: &[u8],
     publication: &mut Publication,
 ) -> Result<(), NativeObjectsError> {
-    if let Some(meter) = &publication.meter {
+    if let Some((meter, _)) = &publication.native {
         acyclic_native_runtime::write_all_at(file, offset, bytes, Some((meter.as_ref(), false)))?;
         let end = offset.checked_add(bytes.len() as u64)
             .ok_or_else(|| std::io::Error::other("publication offset overflow"))?;
@@ -271,7 +267,7 @@ fn publication_namespace<T>(
     publication: &Publication,
     work: impl FnOnce() -> std::io::Result<T>,
 ) -> Result<T, NativeObjectsError> {
-    if let Some(meter) = &publication.meter {
+    if let Some((meter, _)) = &publication.native {
         meter.check()?;
         meter.admit_write(0)?;
     }
@@ -284,7 +280,7 @@ fn publication_probe<T>(
     publication: &Publication,
     work: impl FnOnce() -> std::io::Result<T>,
 ) -> Result<T, NativeObjectsError> {
-    if let Some(meter) = &publication.meter {
+    if let Some((meter, _)) = &publication.native {
         meter.check()?;
         meter.admit_read(0)?;
     }
@@ -376,7 +372,7 @@ fn write_segment_inner<B: AsRef<[u8]>>(
             let mut options = OpenOptions::new();
             options.create_new(true).write(true);
             #[cfg(windows)]
-            if publication.meter.is_some() {
+            if publication.native.is_some() {
                 use std::os::windows::fs::OpenOptionsExt as _;
                 options.custom_flags(0x4000_0000);
             }
@@ -390,35 +386,27 @@ fn write_segment_inner<B: AsRef<[u8]>>(
     }
     let (temporary, mut file) = opened.ok_or_else(invalid)?;
     let write_result = (|| -> Result<(), NativeObjectsError> {
-        if let Some(meter) = &publication.meter {
+        if let Some((meter, _)) = &publication.native {
             acyclic_native_runtime::write_all_at(&file, 0, &metadata, Some((meter.as_ref(), true)))?;
             for ((_, body), offset) in bodies.iter().zip(&offsets) {
                 acyclic_native_runtime::write_all_at(
                     &file, *offset, body.as_ref(), Some((meter.as_ref(), true)),
                 )?;
             }
-            acyclic_native_runtime::sync_file(
-                &file, native_durability(durability), Some(meter.as_ref()),
-            )?;
         } else {
             file.write_all(&metadata)?;
             for (_, body) in bodies { file.write_all(body.as_ref())?; }
-            sync_file(&file, durability)?;
         }
-        Ok(())
+        sync_publication(&file, durability, publication)
     })();
     drop(file);
     if let Err(error) = write_result {
         let _ = publication_namespace(publication, || fs::remove_file(&temporary));
         return Err(error);
     }
-    // Use the same no-replace engine with original pathname custody.
-    let published = match &publication.meter {
-        Some(meter) => acyclic_native_runtime::publish_new(
-            &temporary, &destination, Some(meter),
-        ),
-        None => acyclic_native_runtime::publish_new(&temporary, &destination, None),
-    }.map_err(NativeObjectsError::from);
+    let published = acyclic_native_runtime::publish_new(
+        &temporary, &destination, publication.native.as_ref().map(|(meter, _)| meter),
+    ).map_err(NativeObjectsError::from);
     match published {
         Ok(()) => {}
         Err(error) if !error.has_payload() && matches!(&error.cause, NativeObjectsCause::Admission(cause) if cause.kind() == std::io::ErrorKind::AlreadyExists) =>
@@ -448,12 +436,12 @@ fn validate_segment_publication(
     let mut hasher = blake3::Hasher::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
-        if let Some(meter) = &publication.meter {
+        if let Some((meter, _)) = &publication.native {
             meter.check()?;
             meter.admit_read(buffer.len())?;
         }
         let read = file.read(&mut buffer)?;
-        if let Some(meter) = &publication.meter { meter.record_read(read)?; }
+        if let Some((meter, _)) = &publication.native { meter.record_read(read)?; }
         if read == 0 { break; }
         publication.codec(0, 0, read, || { hasher.update(&buffer[..read]); })?;
     }
@@ -1043,11 +1031,6 @@ fn hex(bytes: &[u8]) -> String {
         output.push(char::from(DIGITS[(byte & 0x0f) as usize]));
     }
     output
-}
-
-/// Splits a hex-encoded digest `identity` into its two-character storage-directory prefix and the remaining suffix used as the file stem.
-fn sync_file(file: &File, durability: LocalDurability) -> std::io::Result<()> {
-    acyclic_native_runtime::sync_file(file, native_durability(durability), None)
 }
 
 pub(crate) fn native_durability(durability: LocalDurability) -> acyclic_native_runtime::Durability {

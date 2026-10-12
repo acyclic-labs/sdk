@@ -119,43 +119,6 @@ pub(crate) enum Error {
     Work(#[from] WorkError),
 }
 
-pub(crate) async fn read_page<S, F>(
-    store: &S,
-    page: ObjectId,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-    allocations: &mut AllocationLedger,
-    work: &mut WorkCounters,
-) -> Result<OwnedPage<F>, Error>
-where
-    S: AsyncObjectStore,
-    F: Format,
-{
-    read_page_with_custody::<S, F>(store, page, limits, budget, cancellation, allocations, work, None).await
-}
-
-pub(crate) async fn read_page_with_custody<S, F>(
-    store: &S,
-    page: ObjectId,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-    allocations: &mut AllocationLedger,
-    work: &mut WorkCounters,
-    data_custody: Option<&super::ProofDataCustody>,
-) -> Result<OwnedPage<F>, Error>
-where
-    S: AsyncObjectStore,
-    F: Format,
-{
-    let mut accounting = super::allocation::KernelAccounting::borrowed_standalone(
-        allocations, work, budget, cancellation,
-    );
-    read_page_with_accounting::<S, F>(store, page, limits, &mut accounting, cancellation, data_custody)
-        .await.map(|(page, _)| page).map_err(standalone_batch_error)
-}
-
 pub(crate) async fn read_page_with_accounting<S: AsyncObjectStore, F: Format>(
     store: &S, page: ObjectId, limits: DecodeLimits,
     accounting: &mut super::allocation::KernelAccounting<'_>,
@@ -269,7 +232,7 @@ async fn read_cold_standalone<S: AsyncObjectStore>(
         move |budget| async move {
             AsyncObjectStore::read_with_custody(
                 store, page, maximum_bytes, budget, cancellation,
-                data_custody.map(crate::async_storage::ObjectReadObservation::new),
+                data_custody,
             ).await
                 .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, Error::Storage))
         },
@@ -496,27 +459,6 @@ pub(crate) struct PageBatch<'a, S: AsyncObjectStore, F: Format> {
     format: PhantomData<F>,
     source_allocation: super::allocation::KernelOwnedAllocation,
     read_allocation: super::allocation::KernelOwnedAllocation,
-}
-
-pub(crate) async fn read_pages<'a, S, F, I>(
-    store: &'a S,
-    pages: I,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-    allocations: &mut AllocationLedger,
-    work: &mut WorkCounters,
-) -> Result<PageBatch<'a, S, F>, Error>
-where
-    S: AsyncObjectStore,
-    F: Format,
-    I: ExactSizeIterator<Item = ObjectId>,
-{
-    let mut accounting = super::allocation::KernelAccounting::borrowed_standalone(
-        allocations, work, budget, cancellation,
-    );
-    read_pages_with_accounting(store, pages, limits, &mut accounting, cancellation, None)
-        .await.map_err(standalone_batch_error)
 }
 
 pub(crate) async fn read_pages_with_accounting<'a, S, F, I>(
@@ -875,21 +817,6 @@ fn batch_retained_bytes(reads: &[ObjectRead], source_bytes: u64) -> Result<(u64,
 }
 
 impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
-    pub(crate) fn next(
-        &mut self,
-        limits: DecodeLimits,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-        allocations: &mut AllocationLedger,
-        work: &mut WorkCounters,
-    ) -> Result<OwnedPage<F>, Error> {
-        let mut accounting = super::allocation::KernelAccounting::borrowed_standalone(
-            allocations, work, budget, cancellation,
-        );
-        self.next_with_accounting(limits, &mut accounting, cancellation)
-            .map(|(page, _)| page).map_err(standalone_batch_error)
-    }
-
     pub(crate) fn next_with_accounting(
         &mut self,
         limits: DecodeLimits,
@@ -943,12 +870,6 @@ impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
         decoded
     }
 
-    pub(crate) fn finish(mut self, allocations: &mut AllocationLedger) -> Result<(), Error> {
-        let valid = self.reads.len() == 0 && self.sources.len() == 0;
-        self.release_pending(Some(allocations))?;
-        if valid { Ok(()) } else { Err(invalid_batch_result()) }
-    }
-
     pub(crate) fn finish_with_accounting(
         mut self,
         accounting: &mut super::allocation::KernelAccounting<'_>,
@@ -959,10 +880,6 @@ impl<S: AsyncObjectStore, F: Format> PageBatch<'_, S, F> {
         cancellation.check()?;
         accounting.check()?;
         if valid { Ok(()) } else { Err(accounted_leaf_error(invalid_batch_result())) }
-    }
-
-    pub(crate) fn discard(mut self, allocations: &mut AllocationLedger) -> Result<(), Error> {
-        self.release_pending(Some(allocations))
     }
 
     pub(crate) fn discard_with_accounting(
@@ -1022,20 +939,6 @@ fn batch_storage_error(error: ObjectStoreError) -> crate::FsError {
         #[cfg(not(target_arch = "wasm32"))]
         ObjectStoreError::Native(error) => crate::FsError::NativeKernel(error),
         error => error.into(),
-    }
-}
-
-fn standalone_batch_error(error: crate::FsError) -> Error {
-    match error {
-        crate::FsError::Cancelled(_) => Error::Storage(ObjectStoreError::Cancelled),
-        crate::FsError::Work(error) => Error::Work(error),
-        crate::FsError::Object(error) => Error::Storage(error),
-        crate::FsError::Decode(CanonicalDecodeError::AllocationFailed) => Error::AllocationFailed,
-        crate::FsError::PendingMutationAllocationFailed => Error::AllocationFailed,
-        crate::FsError::Decode(error) => Error::Decode(error),
-        #[cfg(not(target_arch = "wasm32"))]
-        crate::FsError::NativeKernel(error) => Error::Storage(ObjectStoreError::Native(error)),
-        _ => unreachable!("a standalone page batch only returns kernel errors"),
     }
 }
 

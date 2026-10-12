@@ -1,5 +1,6 @@
 //! Native composition of existing local providers, task admission and wire handles.
 #![allow(missing_docs, reason = "private binary configuration and composition, not a public SDK contract")]
+use acyclic_harness::runtime::TaskSpawner as _;
 
 use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
 use acyclic_harness::runtime::TaskStateProvider;
@@ -19,7 +20,7 @@ use acyclic_harness::{
     model::{ModelContent, ModelMessage, ModelRole},
     resources::ProviderRef,
     resource_preparation::ResourcePreparationRequest,
-    runtime::{DurableTaskHost as _, RuntimeScope, RuntimeTask, TaskContext, TaskDefinition, TaskRegistry, TaskRunLimits},
+    runtime::{RuntimeScope, RuntimeTask, TaskContext, TaskDefinition, TaskRegistry, TaskRunLimits},
     scheduler::{LeaseFence, SessionLimits},
     store::{HistoryReadLimits, HistoryReader, StreamAggregate},
     wire,
@@ -248,8 +249,7 @@ impl NativeSession {
         let mut context = config.context.clone();
         if context.discovered.is_none() {
             if let Some(discovery) = &context.discovery {
-                let reader = FilesystemContentVerifier::new(files.clone(), &config.owner.verifier()?,
-                    &config.owner.scope, MAX_FRAME_BYTES as u64, None)?;
+                let reader = FilesystemContentVerifier::new(files.clone(), &config.owner.verifier()?, &config.owner.scope, MAX_FRAME_BYTES as u64, None)?;
                 context.discovered = Some(discovery.capture(&reader).await?);
             }
         }
@@ -269,8 +269,7 @@ impl NativeSession {
 
     pub async fn configure_context(&self, mut context: WorkflowContext) -> Result<String> {
         if let Some(discovery) = &context.discovery {
-            let reader = FilesystemContentVerifier::new(self.files.clone(), &self.config.owner.verifier()?,
-                &self.config.owner.scope, MAX_FRAME_BYTES as u64, None)?;
+            let reader = FilesystemContentVerifier::new(self.files.clone(), &self.config.owner.verifier()?, &self.config.owner.scope, MAX_FRAME_BYTES as u64, None)?;
             context.discovered = Some(discovery.capture(&reader).await?);
         }
         context.pipeline()?;
@@ -349,10 +348,7 @@ impl NativeSession {
         if bytes.len() > MAX_FRAME_BYTES {
             return Err(Error::Invalid("published prompt command exceeds terminal bounds".into()));
         }
-        let publisher = FilesystemContentPublisher::new(
-            self.files.clone(), &self.config.private_volume, &self.config.owner.verifier()?,
-            &self.config.owner.scope, MAX_FRAME_BYTES as u64, None,
-        )?;
+        let publisher = FilesystemContentPublisher::new(self.files.clone(), &self.config.private_volume, &self.config.owner.verifier()?, &self.config.owner.scope, MAX_FRAME_BYTES as u64, None)?;
         let payload = publisher.stage_once(operation, &format!("graphcoder-inputs/{operation}.json"),
             &bytes, "application/json", "GraphCoder prompt command").await?;
         Ok(WorkflowCommand { operation_id: operation,
@@ -443,15 +439,12 @@ impl NativeSession {
         let child_binding = self.config.observed_authorities.iter()
             .find(|binding| binding.authority == report.request.child)
             .ok_or_else(|| Error::Unsupported("explicit child conversation provider binding unavailable".into()))?;
-        let content = Arc::new(FilesystemContentVerifier::new(
-            self.files.clone(), &parent_binding.owner.verifier()?, &parent_binding.owner.scope,
-            MAX_FRAME_BYTES as u64, None,
-        )?);
+        let content = FilesystemContentVerifier::new(self.files.clone(), &parent_binding.owner.verifier()?, &parent_binding.owner.scope, MAX_FRAME_BYTES as u64, None)?;
         let mut parent = StreamAggregate::open(
             &self.stream, parent_binding.owner.authority.clone(), parent_binding.owner.verifier()?,
             SchemaRegistry::default(), None, HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 }, acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?.with_content_verifier(content)
             .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
-                Arc::new(FilesystemForkVerifier::new(self.files.clone(), MAX_FRAME_BYTES as u64)?),
+                FilesystemForkVerifier::new(self.files.clone(), MAX_FRAME_BYTES as u64, None, None)?,
                 Arc::new(StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut None)?),
             ], &mut None)?));
         let mut child = StreamAggregate::open(
@@ -529,16 +522,14 @@ impl HarnessWireApi for NativeSession {
             let wire_authority = encode_authority(&authority);
             let binding = self.binding(&wire_authority)?;
             let verifier = binding.verifier()?;
-            let reader = Arc::new(FilesystemContentVerifier::new(
-                self.files.clone(), &verifier, &binding.scope, MAX_FRAME_BYTES as u64, None,
-            )?);
+            let reader = FilesystemContentVerifier::new(self.files.clone(), &verifier, &binding.scope, MAX_FRAME_BYTES as u64, None)?;
             let mut aggregate = StreamAggregate::open(&self.stream, authority, verifier, SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?
                 .with_content_verifier(reader)
                 .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
-                    Arc::new(FilesystemForkVerifier::new(self.files.clone(), MAX_FRAME_BYTES as u64)?),
+                    FilesystemForkVerifier::new(self.files.clone(), MAX_FRAME_BYTES as u64, None, None)?,
                     Arc::new(StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut None)?),
                 ], &mut None)?))
-                .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(self.files.clone())));
+                .with_merge_verifier(FilesystemProjectMergeVerifier::new(self.files.clone(), None)?);
             let (state, error) = match aggregate.execute(command, #[cfg(feature = "filesystem")] None, &mut None).await {
                 Ok(_) => (wire::AdmissionState::Accepted, None),
                 Err(error @ Error::Indeterminate(_)) => (wire::AdmissionState::Indeterminate, Some(acyclic_harness::encode_error(&error))),

@@ -173,7 +173,7 @@ where
     let mut tasks = session_tasks(state, work)?;
     let pi_definition = PiTaskMachine::new(work)?.definition(work)?;
     let preparation_definition = if tasks.0.iter().any(|task| task.preparation.is_some()) {
-        Some(acyclic_harness::filesystem::ForkPreparationMachine::new_with_native_work(work)?.definition_with_native_work(work)?)
+        Some(std::sync::Arc::new(acyclic_harness::filesystem::ForkPreparationMachine::new()).definition()?)
     } else { None };
     for task in &mut tasks.0 {
         if let Some(preparation) = task.preparation {
@@ -185,7 +185,7 @@ where
             let child = decode_recovery_value::<PiTaskInput>(
                 std::mem::take(&mut request.0.child.input), acyclic_harness::JsonValueSchema::None, work)?;
             if admission.0.task != *preparation_definition.as_ref()
-                .expect("retained preparation definition").0.identity() || admission.0.parent != task.parent
+                .expect("retained preparation definition").identity() || admission.0.parent != task.parent
                 || request.0.child.parent != task.parent
                 || request.0.child.operation_id.into_bytes() != task.binding.task_id.into_bytes()
                 || child.0.binding != *task.binding
@@ -208,7 +208,7 @@ where
             None => PiTaskOrigin::RootState(state),
             Some(parent) => PiTaskOrigin::Child(parent),
         };
-        let input = authenticate_pi_task_inner(runtime, task.binding, origin, work, pi_definition.0.identity()).await?;
+        let input = authenticate_pi_task_inner(runtime, task.binding, origin, work, pi_definition.identity()).await?;
         authenticate_original_alias(runtime, task.binding.task_id, input.0.1,
             &input.0.0, task.alias, work).await?;
     }
@@ -219,7 +219,13 @@ where
     let mut observations = Vec::with_capacity(tasks.0.len());
     for task in tasks.0 {
         if let Some(preparation) = task.preparation {
-            let recovered = runtime.task_host().recover_work_with_native_work(preparation, work).await?;
+            let recovered = (async {
+                let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+                acyclic_harness::store::history::HistoryIo::retain_owned(&mut io,
+                    std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(std::mem::size_of::<acyclic_harness::filesystem::TaskWorkerAttempt>()) as u64)?;
+                let value = runtime.task_host().recover_work(preparation, &mut Some(&mut io)).await?;
+                Ok::<_, acyclic_harness::Error>((value, io.into_custody()))
+            }).await?;
             let phase = match recovered.0 {
                 WorkPull::Claimed(_) => PiPreparationPhase::Reserved,
                 WorkPull::Unresolved { .. } => PiPreparationPhase::Uncertain,
@@ -240,7 +246,13 @@ where
             continue;
         }
         let task_id = task.binding.task_id;
-        let mut recovered = runtime.task_host().recover_work_with_native_work(task_id, work).await?;
+        let mut recovered = (async {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            acyclic_harness::store::history::HistoryIo::retain_owned(&mut io,
+                std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(std::mem::size_of::<acyclic_harness::filesystem::TaskWorkerAttempt>()) as u64)?;
+            let value = runtime.task_host().recover_work(task_id, &mut Some(&mut io)).await?;
+            Ok::<_, acyclic_harness::Error>((value, io.into_custody()))
+        }).await?;
         custody.absorb(&mut recovered.1).map_err(native_error)?;
         let observation = match recovered.0 {
             WorkPull::Claimed(lease) => PiTaskObservation::Reserved { lease },
@@ -320,7 +332,7 @@ where
     O: acyclic_fs::AsyncObjectStore + 'static,
 {
     let definition = PiTaskMachine::new(work)?.definition(work)?;
-    let admitted = authenticate_pi_task_inner(runtime, binding, origin, work, definition.0.identity()).await?;
+    let admitted = authenticate_pi_task_inner(runtime, binding, origin, work, definition.identity()).await?;
     Ok((admitted.0.0, admitted.1))
 }
 
@@ -363,17 +375,29 @@ where
         .chain(std::iter::once(&binding.scratch.volume))
         .chain(binding.results.as_ref().map(|result| &result.volume))
     {
-        let read = volume.capability_with_native_work(acyclic_harness::conversation::VolumeOperation::Read, work)?;
+        let read = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = volume.capability(acyclic_harness::conversation::VolumeOperation::Read, &mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         if !admission.0.grants.contains(&read.0) {
             return Err(invalid("Pi selection lacks its original read grant"));
         }
     }
-    let scratch_write = binding.scratch.volume.capability_with_native_work(acyclic_harness::conversation::VolumeOperation::Write, work)?;
+    let scratch_write = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = binding.scratch.volume.capability(acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     if !admission.0.grants.contains(&scratch_write.0) {
         return Err(invalid("Pi scratch lacks its original write grant"));
     }
     if let Some(result) = &binding.results {
-        let write = result.volume.capability_with_native_work(acyclic_harness::conversation::VolumeOperation::Write, work)?;
+        let write = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = result.volume.capability(acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         if !admission.0.grants.contains(&write.0) {
             return Err(invalid("Pi result storage lacks its original created write grant"));
         }
@@ -415,8 +439,8 @@ fn decode_recovery_value<T: serde::de::DeserializeOwned>(
         maximum_bytes: super::MAXIMUM_ADAPTER_STATE_BYTES,
         maximum_items: remaining.items_examined, maximum_depth: 64,
     };
-    let result = acyclic_harness::json_from_value_owned_bounded_native_trusted::<T, _>(
-        value, bounds, std::mem::size_of::<T>() as u64,
+    let result = acyclic_harness::json_from_value_bounded::<T, _>(
+        std::borrow::Cow::Owned(value), bounds, std::mem::size_of::<T>() as u64,
         acyclic_harness::wire::ErrorCode::Invalid, schema, &mut |charge| {
             if let acyclic_harness::JsonCodecCharge::Admission { maximum_owned_bytes, value_shape } = charge {
                 let (additional, diagnostics) = recovery_conversion_quota(value_shape)?;
@@ -482,7 +506,7 @@ fn recovery_conversion_quota(shape: acyclic_harness::JsonValueShape) -> Result<(
                 "source", "selected", "configurations", "Limits", "struct Limits",
             ]))?)?;
     let diagnostics = acyclic_harness::json_typed_diagnostic_owned_bytes(
-        shape, labels, Some(acyclic_harness::ErrorCode::Invalid))?;
+        shape, labels, Some(acyclic_harness::wire::ErrorCode::Invalid))?;
     Ok((checked_quota(typed, additional)?, diagnostics))
 }
 

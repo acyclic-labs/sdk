@@ -1,7 +1,7 @@
 use super::*;
-use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
-    use crate::model::{Lifecycle, VolumeConfig, VolumeLimits};
 use crate::VolumeId;
+use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
+use crate::model::{Lifecycle, VolumeConfig, VolumeLimits};
 
 #[tokio::test]
 async fn identical_regular_payloads_use_native_clone_without_aliasing()
@@ -19,16 +19,18 @@ async fn identical_regular_payloads_use_native_clone_without_aliasing()
             tempfile::tempdir()?
         }
     };
-    let clone_available =
-        crate::probe_native_storage_capabilities(directory.path())?.block_cloning;
+    let clone_available = crate::probe_native_storage_capabilities(directory.path())?.block_cloning;
     let limits = VolumeLimits::default();
     let cancellation = CancellationToken::new();
     let volume = super::super::tests::memory_volume(
-            VolumeId::from_bytes([73; 16]),
-            VolumeConfig { limits, ..VolumeConfig::portable(Lifecycle::Ephemeral) },
-            &cancellation,
-        )
-        .await?;
+        VolumeId::from_bytes([73; 16]),
+        VolumeConfig {
+            limits,
+            ..VolumeConfig::portable(Lifecycle::Ephemeral)
+        },
+        &cancellation,
+    )
+    .await?;
     let mut checkout = super::super::tests::private_checkout(&volume, &cancellation).await?;
     // The payload deliberately ends between cluster boundaries: Windows
     // must clone the aligned body and copy the short tail.
@@ -43,7 +45,15 @@ async fn identical_regular_payloads_use_native_clone_without_aliasing()
             limits,
         )?;
         checkout
-            .create(crate::AuthoredMutation::CreateFile { path: path, bytes: (bytes.clone()).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)
+            .create(
+                crate::AuthoredMutation::CreateFile {
+                    path: path,
+                    bytes: (bytes.clone()).into(),
+                    metadata: crate::kernel::FileMetadata::default(),
+                },
+                WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
             .await?;
     }
     let destination = directory.path().join("view");

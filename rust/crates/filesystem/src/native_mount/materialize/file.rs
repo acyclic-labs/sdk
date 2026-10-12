@@ -9,14 +9,20 @@ pub(super) async fn write_generation_bytes<E, F, Fut>(
     before_effect: &mut Option<&mut F>,
 ) -> Result<u64, E>
 where
-    E: From<MaterializeError>, F: FnMut(NativeMaterializationActionPhase) -> Fut,
+    E: From<MaterializeError>,
+    F: FnMut(NativeMaterializationActionPhase) -> Fut,
     Fut: Future<Output = Result<(), E>>,
 {
     generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
     let length = bytes.len() as u64;
-    let custody = receipt.custody.split_off(owned_bytes as u64).map_err(materialize_native_error)?;
+    let custody = receipt
+        .custody
+        .split_off(owned_bytes as u64)
+        .map_err(materialize_native_error)?;
     let meter = receipt.custody.work().runtime_meter();
-    let write = file.write_async(offset, bytes, meter, custody).map_err(materialize_runtime_error)?;
+    let write = file
+        .write_async(offset, bytes, meter, custody)
+        .map_err(materialize_runtime_error)?;
     write.await.map_err(materialize_runtime_error)?;
     generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
     Ok(length)
@@ -28,20 +34,32 @@ pub(super) async fn sync_generation_file<E, F, Fut>(
     before_effect: &mut Option<&mut F>,
 ) -> Result<(), E>
 where
-    E: From<MaterializeError>, F: FnMut(NativeMaterializationActionPhase) -> Fut,
+    E: From<MaterializeError>,
+    F: FnMut(NativeMaterializationActionPhase) -> Fut,
     Fut: Future<Output = Result<(), E>>,
 {
     generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
     let meter = receipt.custody.work().runtime_meter();
-    let sync = file.sync_async(acyclic_native_runtime::Durability::Full, Some(meter)).map_err(materialize_runtime_error)?;
+    let sync = file
+        .sync_async(acyclic_native_runtime::Durability::Full, Some(meter))
+        .map_err(materialize_runtime_error)?;
     sync.await.map_err(materialize_runtime_error)?;
     generation_action(before_effect, NativeMaterializationActionPhase::Completed).await
 }
 
 #[cfg(windows)]
-pub(super) fn mark_sparse_measured(file: &File, meter: &dyn acyclic_native_runtime::NativeReadMeter) -> std::io::Result<()> {
+pub(super) fn mark_sparse_measured(
+    file: &File,
+    meter: &dyn acyclic_native_runtime::NativeReadMeter,
+) -> std::io::Result<()> {
     let mut output = [];
-    acyclic_native_runtime::device_control_in_place(file, windows::Win32::System::Ioctl::FSCTL_SET_SPARSE, &[], &mut output, Some((meter, acyclic_native_runtime::NativeOperationKind::Write)))?;
+    acyclic_native_runtime::device_control_in_place(
+        file,
+        windows::Win32::System::Ioctl::FSCTL_SET_SPARSE,
+        &[],
+        &mut output,
+        Some((meter, acyclic_native_runtime::NativeOperationKind::Write)),
+    )?;
     Ok(())
 }
 
@@ -64,8 +82,11 @@ pub(super) async fn materialize_sparse_file<A, O, E, F, Fut>(
     before_effect: &mut Option<&mut F>,
 ) -> Result<FileMetadata, E>
 where
-    A: AsyncAuthorityStore, O: AsyncObjectStore, E: From<MaterializeError>,
-    F: FnMut(NativeMaterializationActionPhase) -> Fut, Fut: Future<Output = Result<(), E>>,
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+    E: From<MaterializeError>,
+    F: FnMut(NativeMaterializationActionPhase) -> Fut,
+    Fut: Future<Output = Result<(), E>>,
 {
     let resolved = read_source!(reader, receipt, remaining, value,
         reader.resolve_file_ranges_with_native_work(std::slice::from_ref(path), receipt.custody.work(), cancellation)
@@ -76,8 +97,15 @@ where
         },
     );
     let resolved_bytes = vec_bytes(&resolved);
-    let resolved = resolved.into_iter().next().flatten().ok_or(MaterializeError::MissingPath)?;
-    receipt.custody.release(resolved_bytes as u64).map_err(materialize_native_error)?;
+    let resolved = resolved
+        .into_iter()
+        .next()
+        .flatten()
+        .ok_or(MaterializeError::MissingPath)?;
+    receipt
+        .custody
+        .release(resolved_bytes as u64)
+        .map_err(materialize_native_error)?;
     let metadata = resolved.description().metadata;
     let mut offset = 0_u64;
     while offset < logical_bytes {
@@ -103,33 +131,82 @@ where
                 ExtentKind::Hole => {
                     #[cfg(target_os = "macos")]
                     {
-                        generation_action(before_effect, NativeMaterializationActionPhase::Before).await?;
+                        generation_action(before_effect, NativeMaterializationActionPhase::Before)
+                            .await?;
                         let meter = receipt.custody.work().runtime_meter();
-                        let control = file.control_async(move |handle, meter| { let meter = meter.expect("metered control");
-                            crate::native_host::punch_hole(handle, span.offset, span.length, Some(meter))
-                        }, Some(meter)).map_err(materialize_runtime_error)?;
+                        let control = file
+                            .control_async(
+                                move |handle, meter| {
+                                    let meter = meter.expect("metered control");
+                                    crate::native_host::punch_hole(
+                                        handle,
+                                        span.offset,
+                                        span.length,
+                                        Some(meter),
+                                    )
+                                },
+                                Some(meter),
+                            )
+                            .map_err(materialize_runtime_error)?;
                         control.await.map_err(materialize_runtime_error)?;
-                        generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
+                        generation_action(
+                            before_effect,
+                            NativeMaterializationActionPhase::Completed,
+                        )
+                        .await?;
                     }
                 }
                 ExtentKind::AllocatedZero => queue_zero_writes(
-                    &mut writes, span.offset, span.length, options.transfer_bytes, receipt,
+                    &mut writes,
+                    span.offset,
+                    span.length,
+                    options.transfer_bytes,
+                    receipt,
                 )?,
-                ExtentKind::Content { .. } => receipt.push(&mut reads, ResolvedFileRangeReadRequest {
-                    file: &resolved, range: ByteRange { offset: span.offset, length: span.length },
-                })?,
+                ExtentKind::Content { .. } => receipt.push(
+                    &mut reads,
+                    ResolvedFileRangeReadRequest {
+                        file: &resolved,
+                        range: ByteRange {
+                            offset: span.offset,
+                            length: span.length,
+                        },
+                    },
+                )?,
             }
         }
-        receipt.custody.release(plan_bytes as u64).map_err(materialize_native_error)?;
+        receipt
+            .custody
+            .release(plan_bytes as u64)
+            .map_err(materialize_native_error)?;
         if !reads.is_empty() {
-            read_content_spans(reader, reads, options.maximum_extent_spans, cancellation, receipt, &mut writes).await?;
+            read_content_spans(
+                reader,
+                reads,
+                options.maximum_extent_spans,
+                cancellation,
+                receipt,
+                &mut writes,
+            )
+            .await?;
         }
         let write_bytes = vec_bytes(&writes);
         for write in writes {
-            let written = write_generation_bytes(file, write.offset, write.bytes, write.owned_bytes, receipt, before_effect).await?;
+            let written = write_generation_bytes(
+                file,
+                write.offset,
+                write.bytes,
+                write.owned_bytes,
+                receipt,
+                before_effect,
+            )
+            .await?;
             account_written(receipt, written)?;
         }
-        receipt.custody.release(write_bytes as u64).map_err(materialize_native_error)?;
+        receipt
+            .custody
+            .release(write_bytes as u64)
+            .map_err(materialize_native_error)?;
         offset += length;
     }
     Ok(metadata)
@@ -158,14 +235,33 @@ pub(super) async fn read_content_spans<A: AsyncAuthorityStore, O: AsyncObjectSto
     );
     let result_bytes = vec_bytes(&read);
     if reads.len() != read.len() {
-        return Err(MaterializeError::Engine("range batch returned a different number of results"));
+        return Err(MaterializeError::Engine(
+            "range batch returned a different number of results",
+        ));
     }
     for (request, result) in reads.into_iter().zip(read) {
-        let owned_bytes = if reader.validate_native_work(receipt.custody.work()).is_ok() { 0 } else { result.bytes.len() };
-        receipt.push(writes, GenerationWrite { offset: request.range.offset, bytes: result.bytes, owned_bytes })?;
+        let owned_bytes = if reader.validate_native_work(receipt.custody.work()).is_ok() {
+            0
+        } else {
+            result.bytes.len()
+        };
+        receipt.push(
+            writes,
+            GenerationWrite {
+                offset: request.range.offset,
+                bytes: result.bytes,
+                owned_bytes,
+            },
+        )?;
     }
-    receipt.custody.release(request_bytes as u64).map_err(materialize_native_error)?;
-    receipt.custody.release(result_bytes as u64).map_err(materialize_native_error)?;
+    receipt
+        .custody
+        .release(request_bytes as u64)
+        .map_err(materialize_native_error)?;
+    receipt
+        .custody
+        .release(result_bytes as u64)
+        .map_err(materialize_native_error)?;
     Ok(())
 }
 
@@ -182,10 +278,17 @@ pub(super) fn queue_zero_writes(
     let mut position = offset;
     while remaining != 0 {
         let count = remaining.min(chunk_bytes) as usize;
-        receipt.push(writes, GenerationWrite {
-            offset: position, bytes: acyclic_stream::OwnedBytes::from_static(&ZERO_BYTES[..count]), owned_bytes: 0,
-        })?;
-        position = position.checked_add(count as u64).ok_or(MaterializeError::Work(WorkError::Overflow))?;
+        receipt.push(
+            writes,
+            GenerationWrite {
+                offset: position,
+                bytes: acyclic_stream::OwnedBytes::from_static(&ZERO_BYTES[..count]),
+                owned_bytes: 0,
+            },
+        )?;
+        position = position
+            .checked_add(count as u64)
+            .ok_or(MaterializeError::Work(WorkError::Overflow))?;
         remaining -= count as u64;
     }
     Ok(())

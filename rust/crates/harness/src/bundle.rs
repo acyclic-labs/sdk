@@ -264,7 +264,7 @@ impl HarnessBuilder {
                 "builder already captured its original extension selection".into(),
             ));
         }
-        let original = agent.original_extension_binding()?;
+        let original = (agent.extension_admission()?, agent.schemas().clone());
         if let Some(bound) = self.bound_scope.take() {
             self.bound_scope = Some(bound.with_original_extensions(original)?);
         } else {
@@ -854,7 +854,9 @@ mod tests {
         }
     }
     impl ToolProjection for ForbiddenStockTools {
-        fn project(&self, _: &ToolInvocation, _: &ToolResult) -> Result<Value> {
+        fn project(&self, _: &ToolInvocation, _: &ToolResult,
+            work: crate::NativeWork<'_>) -> Result<(Value, crate::NativeCustody)> {
+            self.supports_native_projection(work)?;
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Err(Error::Unsupported("stock tool projection forbidden".into()))
         }
@@ -875,15 +877,15 @@ mod tests {
         let file = FileRef::new(
             VolumeRef::new(
                 ProviderRef::new("example".into(), "filesystem".into(), "1".into(), &mut None)?,
-                "custom-turn",
+                "custom-turn".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes(1_u128.to_be_bytes())),
-            )?,
-            "artifact.txt",
-            "version-1",
-            FileDescriptor::from_bytes(b"custom artifact", "text/plain")?,
-            "artifact.txt",
-        )?;
+             &mut None)?,
+            "artifact.txt".into(),
+            "version-1".into(),
+            FileDescriptor::from_bytes(b"custom artifact", "text/plain", &mut None)?,
+            "artifact.txt".into(),
+         &mut None)?;
         let inputs = (1_u32..=2)
             .map(|index| {
                 let content = ModelContent::Parts(vec![
@@ -1051,7 +1053,7 @@ mod tests {
                     .scope()
                     .extension_schema_registry()
                     .ok_or_else(|| Error::Storage("builder lost original registry".into()))?;
-                Ok(original == expected && context.scope().grants().contains("model:generate"))
+                Ok(original == &expected && context.scope().grants().contains("model:generate"))
             }
         })?;
         let captured = HarnessBuilder::new()
@@ -1175,8 +1177,10 @@ mod tests {
     struct EchoProjection;
 
     impl ToolProjection for EchoProjection {
-        fn project(&self, _: &ToolInvocation, result: &ToolResult) -> Result<Value> {
-            Ok(json!({"kind":"json","value":{"echo": result.value}}))
+        fn project(&self, _: &ToolInvocation, result: &ToolResult,
+            work: crate::NativeWork<'_>) -> Result<(Value, crate::NativeCustody)> {
+            self.supports_native_projection(work)?;
+            Ok((json!({"kind":"json","value":{"echo": result.value}}), None))
         }
     }
 
@@ -1216,7 +1220,7 @@ mod tests {
         let result = tool.executor.execute(invocation.clone()).await?;
         crate::tool::validate_value(&tool.definition.output_schema, &result.value, "echo result", None)?;
         assert_eq!(result.value, json!("original"));
-        let projection = tool.projection.project(&invocation, &result)?;
+        let projection = tool.projection.project(&invocation, &result, None)?.0;
         tool.definition.validate_projection(&projection, crate::conversation::Limits::default(), None)?;
         assert_eq!(
             projection,

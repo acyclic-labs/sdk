@@ -1,6 +1,5 @@
 use super::*;
 
-
 #[tokio::test]
 async fn committed_change_survives_a_failing_checkpoint() {
     let directory = tempfile::tempdir().expect("temporary directory");
@@ -62,16 +61,12 @@ async fn committed_change_survives_a_failing_checkpoint() {
     );
     drop(owner);
     assert_eq!(
-        WorkspaceLineageStore::load(
-            &LocalCoreStateStore::new(directory.path()),
-            CRASH_WORKSPACE
-        )
-        .await
-        .expect("durable lineage"),
+        WorkspaceLineageStore::load(&LocalCoreStateStore::new(directory.path()), CRASH_WORKSPACE)
+            .await
+            .expect("durable lineage"),
         Some(record)
     );
 }
-
 
 #[tokio::test]
 async fn intact_undecodable_frame_fails_closed_and_is_kept() {
@@ -109,13 +104,18 @@ async fn intact_undecodable_frame_fails_closed_and_is_kept() {
         );
         let namespace = store.namespace().expect("admitted namespace");
         assert_eq!(
-            std::fs::read(core_log_paths(&namespace).current).expect("read core log"),
+            std::fs::read(
+                &namespace
+                    .record(CORE_LOG_FAMILY, &[0; 16])
+                    .expect("record paths")
+                    .current
+            )
+            .expect("read core log"),
             log,
             "{case}: a failed replay must not checkpoint the log away"
         );
     }
 }
-
 
 #[tokio::test]
 async fn deferred_commits_are_visible_at_once_and_durable_on_commit() {
@@ -144,7 +144,10 @@ async fn deferred_commits_are_visible_at_once_and_durable_on_commit() {
     );
     let log = {
         let namespace = owner.namespace().expect("admitted namespace");
-        core_log_paths(&namespace).current
+        &namespace
+            .record(CORE_LOG_FAMILY, &[0; 16])
+            .expect("record paths")
+            .current
     };
     let bytes = std::fs::read(&log).expect("read core log");
     assert_eq!(
@@ -162,12 +165,10 @@ async fn deferred_commits_are_visible_at_once_and_durable_on_commit() {
     );
 }
 
-
 #[test]
 fn owned_core_commits_are_crash_atomic() {
     assert_core_commits_are_crash_atomic(true);
 }
-
 
 #[test]
 fn shared_core_commits_are_crash_atomic() {

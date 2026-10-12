@@ -1,6 +1,5 @@
 use super::*;
 
-
 #[tokio::test(flavor = "current_thread")]
 async fn held_record_lock_is_bounded_without_stalling_unrelated_records() {
     let directory = tempfile::tempdir().expect("local state directory");
@@ -8,7 +7,9 @@ async fn held_record_lock_is_bounded_without_stalling_unrelated_records() {
     let held_id = workspace();
     let other_id = WorkspaceId::from_bytes([0x55; 16]);
     let namespace = store.namespace().expect("admitted namespace");
-    let paths = namespace.record(GIT_COMPAT_NAMESPACE, &held_id.into_bytes());
+    let paths = namespace
+        .record(GIT_COMPAT_NAMESPACE, &held_id.into_bytes())
+        .expect("record paths");
     std::fs::create_dir_all(&paths.directory).expect("lock directory");
     let held = OpenOptions::new()
         .create(true)
@@ -35,7 +36,6 @@ async fn held_record_lock_is_bounded_without_stalling_unrelated_records() {
     FileExt::unlock(&held).expect("release held lock");
 }
 
-
 #[tokio::test]
 async fn state_survives_reopen() {
     let directory = tempfile::tempdir().expect("temporary directory");
@@ -59,15 +59,21 @@ async fn state_survives_reopen() {
     );
     // A shared commit is written back before its lock is released.
     assert!(
-        std::fs::read(core_log_paths(&namespace).current)
-            .expect("core log")
-            .is_empty()
+        std::fs::read(
+            &namespace
+                .record(CORE_LOG_FAMILY, &[0; 16])
+                .expect("record paths")
+                .current
+        )
+        .expect("core log")
+        .is_empty()
     );
     WorkspaceLineageStore::load(&store, workspace())
         .await
         .expect("write the record back");
     let current = namespace
         .record("lineage", &workspace().into_bytes())
+        .expect("record paths")
         .current;
     let reopened = LocalCoreStateStore::new(directory.path());
     assert_eq!(
@@ -83,7 +89,6 @@ async fn state_survives_reopen() {
     );
 }
 
-
 #[tokio::test]
 async fn lazy_overlay_load_rejects_content_address_mismatch() {
     let directory = tempfile::tempdir().expect("temporary directory");
@@ -98,6 +103,7 @@ async fn lazy_overlay_load_rejects_content_address_mismatch() {
         .namespace()
         .expect("admitted namespace")
         .record("lazy-overlays", &overlay.into_bytes())
+        .expect("record paths")
         .current;
     std::fs::write(
         &paths,
@@ -111,7 +117,6 @@ async fn lazy_overlay_load_rejects_content_address_mismatch() {
         Err(LocalCoreStateStoreError::Integrity)
     ));
 }
-
 
 #[tokio::test]
 async fn immutable_nodes_are_served_from_memory_after_first_use() {
@@ -140,7 +145,6 @@ async fn immutable_nodes_are_served_from_memory_after_first_use() {
         "a memoized address still rejects a different value"
     );
 }
-
 
 #[tokio::test]
 async fn empty_nodes_are_implied_without_being_stored() {
@@ -181,7 +185,6 @@ async fn empty_nodes_are_implied_without_being_stored() {
     );
 }
 
-
 #[tokio::test]
 async fn git_compatibility_delete_is_revision_fenced_and_durable() {
     let directory = tempfile::tempdir().expect("temporary directory");
@@ -218,34 +221,50 @@ async fn git_compatibility_delete_is_revision_fenced_and_durable() {
     );
 }
 
-
 #[tokio::test]
 async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_on_restart() {
     let directory = tempfile::tempdir().expect("native core namespace");
     let id = WorkspaceId::from_bytes([0xb1; 16]);
     let mut state = lazy_state(id, 1);
     let snapshot = crate::LazySnapshotRef::new(
-        id, crate::GenerationId::new(Digest::from_bytes([0xb2; 32])),
-        state.source, state.overlay, state.shadows,
+        id,
+        crate::GenerationId::new(Digest::from_bytes([0xb2; 32])),
+        state.source,
+        state.overlay,
+        state.shadows,
     );
     state.completed_selected_import = Some(crate::lazy_workspace::CompletedSelectedImport {
         operation: OperationId::from_bytes([0xb3; 16]),
-        snapshot, destination: snapshot, source: snapshot,
+        snapshot,
+        destination: snapshot,
+        source: snapshot,
         input: Digest::from_bytes([0xb4; 32]),
         config: crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral),
         source_config: crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral),
     });
     let cancellation = crate::CancellationToken::new();
     let work = crate::materializer::NativeMaterializationWork::new(
-        crate::WorkBudget::UNBOUNDED, &cancellation,
-    ).expect("original native meter");
-    work.charge(crate::WorkCounters { bytes_hashed: 5, ..Default::default() }).expect("original prior producer");
+        crate::WorkBudget::UNBOUNDED,
+        &cancellation,
+    )
+    .expect("original native meter");
+    work.charge(crate::WorkCounters {
+        bytes_hashed: 5,
+        ..Default::default()
+    })
+    .expect("original prior producer");
     let store = LocalCoreStateStore::new(directory.path());
-    assert!(store.compare_and_swap_lazy_workspace_with_native_work(
-        id, 0, state.clone(), &work,
-    ).await.expect("native original CAS"));
-    let first = store.load_lazy_workspace_with_native_work(id, &work).await
-        .expect("native original load").expect("actual state");
+    assert!(
+        store
+            .compare_and_swap_lazy_workspace_with_native_work(id, 0, state.clone(), &work,)
+            .await
+            .expect("native original CAS")
+    );
+    let first = store
+        .load_lazy_workspace_with_native_work(id, &work)
+        .await
+        .expect("native original load")
+        .expect("actual state");
     assert_eq!(first.as_state(), &state);
     let (_, allocation) = first.into_parts();
     assert!(work.shares_ledger(allocation.work()));
@@ -254,49 +273,76 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
     let before = work.receipt().object_bytes_written;
     let mut stale = state.clone();
     stale.revision += 1;
-    assert!(!store.compare_and_swap_lazy_workspace_with_native_work(
-        id, 0, stale, &work,
-    ).await.expect("original CAS miss"));
+    assert!(
+        !store
+            .compare_and_swap_lazy_workspace_with_native_work(id, 0, stale, &work,)
+            .await
+            .expect("original CAS miss")
+    );
     assert_eq!(work.receipt().object_bytes_written, before);
     drop(store);
     let restarted = LocalCoreStateStore::new(directory.path());
-    let original = restarted.load_lazy_workspace_with_native_work(id, &work).await
-        .expect("real backend restart").expect("original retained state");
-    assert_eq!(original.as_state().completed_selected_import, state.completed_selected_import);
+    let original = restarted
+        .load_lazy_workspace_with_native_work(id, &work)
+        .await
+        .expect("real backend restart")
+        .expect("original retained state");
+    assert_eq!(
+        original.as_state().completed_selected_import,
+        state.completed_selected_import
+    );
     assert_eq!(original.as_state().source, state.source);
     assert_eq!(original.as_state().workspace_id, id);
 }
-
 
 #[tokio::test]
 async fn native_lazy_state_exact_read_budget_retains_prior_work_and_typed_cancellation() {
     let directory = tempfile::tempdir().expect("native core namespace");
     let id = WorkspaceId::from_bytes([0xb5; 16]);
     let store = LocalCoreStateStore::new(directory.path());
-    assert!(store.compare_and_swap_lazy_workspace(id, 0, lazy_state(id, 1))
-        .await.expect("durable fixture"));
+    assert!(
+        store
+            .compare_and_swap_lazy_workspace(id, 0, lazy_state(id, 1))
+            .await
+            .expect("durable fixture")
+    );
     drop(store);
     let cancellation = crate::CancellationToken::new();
-    let budget = crate::WorkBudget { source_bytes_read: 7, ..crate::WorkBudget::UNBOUNDED };
+    let budget = crate::WorkBudget {
+        source_bytes_read: 7,
+        ..crate::WorkBudget::UNBOUNDED
+    };
     let work = crate::materializer::NativeMaterializationWork::new(budget, &cancellation)
         .expect("original finite meter");
-    work.charge(crate::WorkCounters { bytes_hashed: 5, ..Default::default() }).expect("prior actual work");
+    work.charge(crate::WorkCounters {
+        bytes_hashed: 5,
+        ..Default::default()
+    })
+    .expect("prior actual work");
     let restarted = LocalCoreStateStore::new(directory.path());
-    let error = restarted.load_lazy_workspace_with_native_work(id, &work).await
+    let error = restarted
+        .load_lazy_workspace_with_native_work(id, &work)
+        .await
         .expect_err("actual decoder stops at original exact source allowance");
-    assert!(matches!(error, crate::LazyWorkspaceError::Demand(crate::DemandError::Work(_))));
+    assert!(matches!(
+        error,
+        crate::LazyWorkspaceError::Demand(crate::DemandError::Work(_))
+    ));
     assert_eq!(work.receipt().source_bytes_read, 7);
     assert_eq!(work.receipt().bytes_hashed, 5);
-    work.receipt().verify(budget).expect("all actual spent prefix");
+    work.receipt()
+        .verify(budget)
+        .expect("all actual spent prefix");
     let before = work.receipt();
     cancellation.cancel();
     assert!(matches!(
-        restarted.load_lazy_workspace_with_native_work(id, &work).await,
+        restarted
+            .load_lazy_workspace_with_native_work(id, &work)
+            .await,
         Err(crate::LazyWorkspaceError::Cancelled),
     ));
     assert_eq!(work.receipt(), before);
 }
-
 
 #[tokio::test]
 async fn measured_lazy_family_preserves_pre_cancelled_failures_without_io() {
@@ -309,22 +355,51 @@ async fn measured_lazy_family_preserves_pre_cancelled_failures_without_io() {
     cancellation.cancel();
     let budget = crate::WorkBudget::UNBOUNDED;
     let errors = [
-        store.load_lazy_workspace_measured(workspace, budget, &cancellation).await.unwrap_err(),
-        store.compare_and_swap_lazy_workspace_measured(
-            workspace, 0, lazy_state(workspace, 1), budget, &cancellation,
-        ).await.unwrap_err(),
-        store.load_lazy_overlay_measured(overlay, budget, &cancellation).await.unwrap_err(),
-        store.put_lazy_overlay_measured(overlay, LazyOverlay::Empty, budget, &cancellation).await.unwrap_err(),
-        store.load_lazy_shadow_measured(shadow, budget, &cancellation).await.unwrap_err(),
-        store.put_lazy_shadow_measured(shadow, crate::LazyShadow::Empty, budget, &cancellation).await.unwrap_err(),
+        store
+            .load_lazy_workspace_measured(workspace, budget, &cancellation)
+            .await
+            .unwrap_err(),
+        store
+            .compare_and_swap_lazy_workspace_measured(
+                workspace,
+                0,
+                lazy_state(workspace, 1),
+                budget,
+                &cancellation,
+            )
+            .await
+            .unwrap_err(),
+        store
+            .load_lazy_overlay_measured(overlay, budget, &cancellation)
+            .await
+            .unwrap_err(),
+        store
+            .put_lazy_overlay_measured(overlay, LazyOverlay::Empty, budget, &cancellation)
+            .await
+            .unwrap_err(),
+        store
+            .load_lazy_shadow_measured(shadow, budget, &cancellation)
+            .await
+            .unwrap_err(),
+        store
+            .put_lazy_shadow_measured(shadow, crate::LazyShadow::Empty, budget, &cancellation)
+            .await
+            .unwrap_err(),
     ];
     for error in errors {
-        assert!(matches!(error.semantic_error(), crate::LazyWorkspaceError::Cancelled));
+        assert!(matches!(
+            error.semantic_error(),
+            crate::LazyWorkspaceError::Cancelled
+        ));
         assert_eq!(error.spent_work(), crate::WorkCounters::UNCHARGED);
     }
-    assert!(std::fs::read_dir(directory.path()).expect("namespace entries").next().is_none());
+    assert!(
+        std::fs::read_dir(directory.path())
+            .expect("namespace entries")
+            .next()
+            .is_none()
+    );
 }
-
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
@@ -428,7 +503,6 @@ async fn owned_lazy_workspace_cache_is_never_stale_under_concurrency() {
     }
 }
 
-
 /// Collection removes every node no lazy workspace reaches, keeps every node one does, and a node put again after removal is stored again.
 #[tokio::test(flavor = "multi_thread")]
 async fn lazy_node_collection_keeps_exactly_the_reachable_nodes() {
@@ -450,8 +524,7 @@ async fn lazy_node_collection_keeps_exactly_the_reachable_nodes() {
     );
     // Collection walks the index, not the records it holds.
     let record = vec![1, 2, 3];
-    let metadata =
-        crate::WorkspaceMetadata::from_engine(crate::kernel::FileMetadata::default());
+    let metadata = crate::WorkspaceMetadata::from_engine(crate::kernel::FileMetadata::default());
     let shadow = crate::LazyShadow::Node {
         file_id: crate::foundation::FileId::from_bytes([7; 16]),
         priority: 0,
@@ -537,7 +610,6 @@ async fn lazy_node_collection_keeps_exactly_the_reachable_nodes() {
     );
 }
 
-
 #[tokio::test(flavor = "multi_thread")]
 async fn first_prepared_freeze_rejects_concurrent_source_update_and_collected_roots() {
     for component in 0..3 {
@@ -546,7 +618,10 @@ async fn first_prepared_freeze_rejects_concurrent_source_update_and_collected_ro
         let parent = origin_parent_fixture(&store).await;
         let prepared = prepared_origin_fixture(&parent);
         let advanced = advanced_origin_parent(&parent);
-        let mut updated = LazyWorkspaceState { revision: parent.revision + 1, ..parent.clone() };
+        let mut updated = LazyWorkspaceState {
+            revision: parent.revision + 1,
+            ..parent.clone()
+        };
         match component {
             0 => updated.source = advanced.source,
             1 => updated.overlay = advanced.overlay,
@@ -555,33 +630,72 @@ async fn first_prepared_freeze_rejects_concurrent_source_update_and_collected_ro
         let updater = store.clone();
         let update = updated.clone();
         let expected = parent.revision;
-        assert!(tokio::spawn(async move {
-            updater.compare_and_swap_lazy_workspace(update.workspace_id, expected, update)
-                .await.expect("concurrent source binding update")
-        }).await.expect("update task"));
-        assert_eq!(store.collect_lazy_nodes().await.expect("collect old source roots"), u64::from(component != 0));
+        assert!(
+            tokio::spawn(async move {
+                updater
+                    .compare_and_swap_lazy_workspace(update.workspace_id, expected, update)
+                    .await
+                    .expect("concurrent source binding update")
+            })
+            .await
+            .expect("update task")
+        );
+        assert_eq!(
+            store
+                .collect_lazy_nodes()
+                .await
+                .expect("collect old source roots"),
+            u64::from(component != 0)
+        );
         if component == 1 {
-            assert!(store.load_lazy_overlay(parent.overlay).await.expect("old overlay").is_none());
+            assert!(
+                store
+                    .load_lazy_overlay(parent.overlay)
+                    .await
+                    .expect("old overlay")
+                    .is_none()
+            );
         } else if component == 2 {
-            assert!(store.load_lazy_shadow(parent.shadows).await.expect("old shadow").is_none());
+            assert!(
+                store
+                    .load_lazy_shadow(parent.shadows)
+                    .await
+                    .expect("old shadow")
+                    .is_none()
+            );
         }
 
         let cancellation = crate::CancellationToken::new();
-        let rejected = store.compare_and_swap_lazy_workspace_measured(
-            prepared.workspace_id, 0, prepared.clone(), crate::WorkBudget::UNBOUNDED, &cancellation,
-        ).await.expect("stale freeze is a CAS miss");
+        let rejected = store
+            .compare_and_swap_lazy_workspace_measured(
+                prepared.workspace_id,
+                0,
+                prepared.clone(),
+                crate::WorkBudget::UNBOUNDED,
+                &cancellation,
+            )
+            .await
+            .expect("stale freeze is a CAS miss");
         assert!(!rejected.value);
         assert!(rejected.work.items_examined > 0);
         assert_eq!(rejected.work.object_bytes_written, 0);
-        assert!(store.load_lazy_workspace(prepared.workspace_id).await.expect("child").is_none());
+        assert!(
+            store
+                .load_lazy_workspace(prepared.workspace_id)
+                .await
+                .expect("child")
+                .is_none()
+        );
 
         let refreshed = prepared_origin_fixture(&updated);
-        assert!(store.compare_and_swap_lazy_workspace(
-            refreshed.workspace_id, 0, refreshed,
-        ).await.expect("current source freeze"));
+        assert!(
+            store
+                .compare_and_swap_lazy_workspace(refreshed.workspace_id, 0, refreshed,)
+                .await
+                .expect("current source freeze")
+        );
     }
 }
-
 
 #[tokio::test(flavor = "multi_thread")]
 async fn original_freeze_recovers_without_ack_and_retains_roots_after_parent_changes() {
@@ -591,27 +705,53 @@ async fn original_freeze_recovers_without_ack_and_retains_roots_after_parent_cha
     let prepared = prepared_origin_fixture(&parent);
     // The caller loses the first write's acknowledgement, then recovers
     // only the authentic persisted original record after reopening.
-    let _ = store.compare_and_swap_lazy_workspace(
-        prepared.workspace_id, 0, prepared.clone(),
-    ).await.expect("durable original freeze");
+    let _ = store
+        .compare_and_swap_lazy_workspace(prepared.workspace_id, 0, prepared.clone())
+        .await
+        .expect("durable original freeze");
     drop(store);
     let store = LocalCoreStateStore::open_owned(directory.path()).expect("reopened store");
-    assert_eq!(store.load_lazy_workspace(prepared.workspace_id).await.expect("recover"), Some(prepared.clone()));
+    assert_eq!(
+        store
+            .load_lazy_workspace(prepared.workspace_id)
+            .await
+            .expect("recover"),
+        Some(prepared.clone())
+    );
     let updated = advanced_origin_parent(&parent);
-    assert!(store.compare_and_swap_lazy_workspace(
-        parent.workspace_id, parent.revision, updated.clone(),
-    ).await.expect("advance mutable parent"));
-    assert_eq!(store.collect_lazy_nodes().await.expect("prepared origin roots"), 0);
-    assert!(!store.compare_and_swap_lazy_workspace(
-        prepared.workspace_id, 0, prepared.clone(),
-    ).await.expect("lost acknowledgement retry is revision fenced"));
+    assert!(
+        store
+            .compare_and_swap_lazy_workspace(parent.workspace_id, parent.revision, updated.clone(),)
+            .await
+            .expect("advance mutable parent")
+    );
+    assert_eq!(
+        store
+            .collect_lazy_nodes()
+            .await
+            .expect("prepared origin roots"),
+        0
+    );
+    assert!(
+        !store
+            .compare_and_swap_lazy_workspace(prepared.workspace_id, 0, prepared.clone(),)
+            .await
+            .expect("lost acknowledgement retry is revision fenced")
+    );
 
     let mut committed = prepared.clone();
     committed.revision += 1;
     committed.fork_origin.as_mut().expect("origin").phase = crate::LazyForkPhase::Committed;
-    assert!(store.compare_and_swap_lazy_workspace(
-        committed.workspace_id, prepared.revision, committed.clone(),
-    ).await.expect("commit original without rereading mutable parent"));
+    assert!(
+        store
+            .compare_and_swap_lazy_workspace(
+                committed.workspace_id,
+                prepared.revision,
+                committed.clone(),
+            )
+            .await
+            .expect("commit original without rereading mutable parent")
+    );
     let child = LazyWorkspaceState {
         revision: committed.revision + 1,
         source: updated.source,
@@ -619,34 +759,93 @@ async fn original_freeze_recovers_without_ack_and_retains_roots_after_parent_cha
         shadows: updated.shadows,
         ..committed.clone()
     };
-    assert!(store.compare_and_swap_lazy_workspace(
-        child.workspace_id, committed.revision, child.clone(),
-    ).await.expect("later child observation epoch"));
-    assert_eq!(store.collect_lazy_nodes().await.expect("committed origin roots"), 0);
-    assert!(store.load_lazy_overlay(parent.overlay).await.expect("original overlay retained").is_some());
-    assert!(store.load_lazy_shadow(parent.shadows).await.expect("original shadows retained").is_some());
+    assert!(
+        store
+            .compare_and_swap_lazy_workspace(child.workspace_id, committed.revision, child.clone(),)
+            .await
+            .expect("later child observation epoch")
+    );
+    assert_eq!(
+        store
+            .collect_lazy_nodes()
+            .await
+            .expect("committed origin roots"),
+        0
+    );
+    assert!(
+        store
+            .load_lazy_overlay(parent.overlay)
+            .await
+            .expect("original overlay retained")
+            .is_some()
+    );
+    assert!(
+        store
+            .load_lazy_shadow(parent.shadows)
+            .await
+            .expect("original shadows retained")
+            .is_some()
+    );
     let origin = prepared.fork_origin.expect("original");
-    assert_eq!(store.lazy_retained_generations().await.expect("original generation roots"),
-        [(origin.snapshot.authored_generation, origin.config)]);
+    assert_eq!(
+        store
+            .lazy_retained_generations()
+            .await
+            .expect("original generation roots"),
+        [(origin.snapshot.authored_generation, origin.config)]
+    );
 
-    let next = LazyWorkspaceState { revision: child.revision + 1, ..child.clone() };
+    let next = LazyWorkspaceState {
+        revision: child.revision + 1,
+        ..child.clone()
+    };
     let mut removed = next.clone();
     removed.fork_origin = None;
     let mut new_operation = next.clone();
-    new_operation.fork_origin.as_mut().expect("origin").operation_id = OperationId::from_bytes([0xb0; 16]);
+    new_operation
+        .fork_origin
+        .as_mut()
+        .expect("origin")
+        .operation_id = OperationId::from_bytes([0xb0; 16]);
     let mut new_config = next.clone();
-    new_config.fork_origin.as_mut().expect("origin").config.limits.maximum_read_bytes += 1;
+    new_config
+        .fork_origin
+        .as_mut()
+        .expect("origin")
+        .config
+        .limits
+        .maximum_read_bytes += 1;
     let mut new_snapshot = next.clone();
-    new_snapshot.fork_origin.as_mut().expect("origin").snapshot.authored_generation =
-        crate::GenerationId::new(Digest::from_bytes([0xb1; 32]));
+    new_snapshot
+        .fork_origin
+        .as_mut()
+        .expect("origin")
+        .snapshot
+        .authored_generation = crate::GenerationId::new(Digest::from_bytes([0xb1; 32]));
     let mut new_parent = next.clone();
     new_parent.parent_workspace_id = Some(WorkspaceId::from_bytes([0xb2; 16]));
     let mut regressed = next;
     regressed.fork_origin.as_mut().expect("origin").phase = crate::LazyForkPhase::Prepared;
-    for replacement in [removed, new_operation, new_config, new_snapshot, new_parent, regressed] {
-        assert!(!store.compare_and_swap_lazy_workspace(
-            child.workspace_id, child.revision, replacement,
-        ).await.expect("immutable original rejects replacement"));
+    for replacement in [
+        removed,
+        new_operation,
+        new_config,
+        new_snapshot,
+        new_parent,
+        regressed,
+    ] {
+        assert!(
+            !store
+                .compare_and_swap_lazy_workspace(child.workspace_id, child.revision, replacement,)
+                .await
+                .expect("immutable original rejects replacement")
+        );
     }
-    assert_eq!(store.load_lazy_workspace(child.workspace_id).await.expect("unchanged child"), Some(child));
+    assert_eq!(
+        store
+            .load_lazy_workspace(child.workspace_id)
+            .await
+            .expect("unchanged child"),
+        Some(child)
+    );
 }

@@ -1,9 +1,6 @@
 use super::*;
 
-/// Files of one record.
-///
-/// Borrowing the namespace that derived them confines every record access to
-/// an admitted transaction.
+/// Record files confined to their admitted namespace.
 #[derive(Debug)]
 pub(super) struct RecordPaths<'a> {
     pub(super) directory: PathBuf,
@@ -12,6 +9,7 @@ pub(super) struct RecordPaths<'a> {
     pub(super) temporary: PathBuf,
     pub(super) lock: PathBuf,
     pub(super) namespace: PhantomData<&'a Namespace>,
+    pub(super) allocation: Option<crate::materializer::NativeAllocation>,
 }
 
 pub(super) fn compare_and_swap<T: DeserializeOwned + Serialize + Revisioned>(
@@ -146,7 +144,9 @@ pub(super) fn promote_previous(paths: &RecordPaths) -> Result<(), LocalCoreState
     Ok(())
 }
 
-pub(super) fn read_json<T: DeserializeOwned>(path: &Path) -> Result<Option<T>, LocalCoreStateStoreError> {
+pub(super) fn read_json<T: DeserializeOwned>(
+    path: &Path,
+) -> Result<Option<T>, LocalCoreStateStoreError> {
     let mut file = match File::open(path) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -263,4 +263,3 @@ pub(super) fn remove_if_present(path: &Path) -> Result<(), std::io::Error> {
 pub(super) fn sync_directory(path: &Path) -> Result<(), std::io::Error> {
     acyclic_native_runtime::sync_parent(path, acyclic_native_runtime::Durability::Full)
 }
-
