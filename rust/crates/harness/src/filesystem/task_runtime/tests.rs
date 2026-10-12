@@ -294,9 +294,14 @@ impl Fixture {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(WorkLease, acyclic_fs::NativeAllocation)> {
         let operation = self.admit_only(runtime, kind, command).await?;
-        let pulled = runtime.task_host().pull_operation_with_native_work(&Worker {
+        let pulled = {
+            let mut operation_io = crate::store::native_work_io(work)?;
+            crate::store::HistoryIo::retain_owned(&mut operation_io, std::mem::size_of::<crate::distributed::WorkPull>().max(std::mem::size_of::<crate::filesystem::TaskWorkerAttempt>()) as u64)?;
+            let output = runtime.task_host().pull_operation(&Worker {
             id: "deadline-worker".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new(),
-        }, operation, work).await?;
+        }, operation, &mut Some(&mut operation_io)).await?;
+            (output, operation_io.into_custody())
+        };
         match pulled {
             (WorkPull::Claimed(lease), custody) => Ok((lease, custody)),
             (other, custody) => {
