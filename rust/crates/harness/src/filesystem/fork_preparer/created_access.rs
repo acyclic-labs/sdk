@@ -522,13 +522,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         let absolute = crate::contract::preparation_format(format_args!("/{path}"), Some(io))?;
         let hold = io.guard_owned(absolute.capacity() as u64)?;
         let absolute = (absolute, hold);
-        let future = source.backing.read(snapshot, &absolute.0, maximum, io)?;
-        let frame = match &future {
-            crate::store::history::HistoryContentFuture::Ordinary { frame_bytes, .. } => Some(io.guard_owned(*frame_bytes)?),
-            crate::store::history::HistoryContentFuture::Native(_) => None,
-        };
-        let result = future.await;
-        drop(frame);
+        let result = io.finish_future(source.backing.read(snapshot, &absolute.0, maximum, io)?).await;
         drop(absolute);
         result
     }
@@ -790,10 +784,9 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 ) -> Result<AuthenticatedAllocation> {
     let owned;
     let io = match io {
-        Some(io) => io,
+        Some(io) => { request.validate(&mut None)?; io }
         None => { owned = PreparationIo::new(request, &CancellationToken::new())?; &owned }
     };
-    request.validate(&mut None)?;
     proof.validate(&mut None)?;
     if request.provider != host.provider || proof.provider != host.provider
         || request.creation_grant != capability::FORK_PUBLISH
@@ -818,6 +811,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         return Err(Error::Unauthorized("fork payload is not the exact admitted request".into()));
     }
     drop(decoded);
+    let digest = *bounded_io::digest(&encoded, Some(io))?.as_bytes();
     drop(encoded);
     drop(encoded_hold);
     if request.resources.len() != creation_volumes(&fork).count() {
@@ -851,20 +845,12 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .ok_or_else(|| Error::Unauthorized("fork allocation has no completed report".into()))?;
     let mut observer = io.history_io();
     let seed = report.into_seed(&mut Some(&mut observer))?;
-    let encoded_hold;
-    let encoded = io.encode(&fork, record_limit, false)?;
-    encoded_hold = io.guard_bytes(&encoded)?;
     let canonical_hold;
     let canonical = io.encode(request, request.maximum_bytes, true)?;
     canonical_hold = io.guard_bytes(&canonical)?;
-    let hashing = WorkCounters { bytes_hashed: (encoded.len() + canonical.len()) as u64,
-        ..WorkCounters::default() };
-    io.preflight(hashing)?;
-    let digest = *blake3::hash(&encoded).as_bytes();
-    let request_digest = *blake3::hash(&canonical).as_bytes();
-    io.charge(hashing)?;
-    drop((encoded, canonical));
-    drop((encoded_hold, canonical_hold));
+    let request_digest = *bounded_io::digest(&canonical, Some(io))?.as_bytes();
+    drop(canonical);
+    drop(canonical_hold);
     let binding = seed_digest(&seed, record_limit, Some(io))?;
     let mut selected: Option<AuthenticatedAllocation> = None;
     let mut original_origin: Option<ResourceCreationOrigin> = None;

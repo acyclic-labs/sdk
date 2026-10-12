@@ -686,16 +686,13 @@ impl PreparationIo {
         &self, future: crate::store::history::HistoryContentFuture<'_, T>,
     ) -> Result<T> {
         let frame = match &future {
-            crate::store::history::HistoryContentFuture::Ordinary { frame_bytes, .. } => *frame_bytes,
+            crate::store::history::HistoryContentFuture::Ordinary { frame_bytes, .. } => Some(self.guard_owned(*frame_bytes)?),
             #[cfg(not(target_arch = "wasm32"))]
-            crate::store::history::HistoryContentFuture::Native(_) => 0,
+            crate::store::history::HistoryContentFuture::Native(_) => None,
         };
         let result = future.await;
-        let released = if frame == 0 { Ok(()) } else { self.release(frame) };
-        match result {
-            Ok(value) => released.map(|()| value),
-            Err(error) => { let _ = released; Err(error) }
-        }
+        drop(frame);
+        result
     }
 
     pub(crate) async fn verify_publication_lease(
@@ -1643,6 +1640,19 @@ mod tests {
     use crate::conversation::{VolumeClass, VolumeOwner};
     use crate::core::{AggregateKind, AuthorityIssuer};
     use acyclic_fs::Fs;
+
+    #[tokio::test]
+    async fn dropping_pending_completion_releases_its_frame() -> Result<()> {
+        let io = PreparationIo::from_budget(acyclic_fs::performance::work_budget(100_000, 16_000_000), &CancellationToken::new())?;
+        let before = io.owned_bytes()?;
+        let future = io.history_future(|| async { std::future::pending::<()>().await; Ok(()) })?;
+        assert!(io.owned_bytes()? > before);
+        let mut completion = Box::pin(io.finish_future(future));
+        assert!(futures::poll!(&mut completion).is_pending());
+        drop(completion);
+        assert_eq!(io.owned_bytes()?, before);
+        Ok(())
+    }
 
     #[tokio::test]
     async fn finite_ordinary_owner_callback_retains_full_failure_and_real_sdk_prefix() -> Result<()> {
