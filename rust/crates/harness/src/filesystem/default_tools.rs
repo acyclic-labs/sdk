@@ -1373,7 +1373,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                         io.absorb_native_custody(custody)?;
                         break 'generation reference;
                     }
-                    break 'generation binding.filesystem.generation_ref(generation)?;
+                    break 'generation binding.filesystem.generation_ref_id(generation.id())?;
                 };
                 let status = if matches!(&outcome, JoinOutcome::NoChanges(_)) { "no_changes" } else { "stale_target" };
                 encode(&Generation { status, generation: &reference }, output_io)

@@ -80,11 +80,11 @@ async fn restored_applied_plan_observes_original_receipt_without_second_write() 
     let effect = OperationId::from_bytes([21; 16]);
     let first = controller.apply_project_merge(&inspected, effect, BTreeMap::new()).await?.0;
     let JoinOutcome::Applied(first) = first else { return Err(Error::Invalid("expected real Filesystem publication".into())); };
-    let result = fixture.host.generation_ref(first.generation())?;
+    let result = fixture.host.generation_ref_id(first.generation().id())?;
     let restored = controller.prepare_project_import(&fixture.source, &fixture.source_generation, Some(&target)).await?;
     let retried = controller.apply_project_merge(&restored, effect, BTreeMap::new()).await?.0;
     let JoinOutcome::AlreadyApplied(retried) = retried else { return Err(Error::Invalid("retry did not observe original publication".into())); };
-    assert_eq!(fixture.host.generation_ref(retried.generation())?, result);
+    assert_eq!(fixture.host.generation_ref_id(retried.generation().id())?, result);
     let project = workspace_ref(fixture.project.provider().clone(), &fixture.project.storage_name()?)?;
     assert_eq!(fixture.host.resolve(&project).await?.generation, result);
     Ok(())
@@ -300,7 +300,7 @@ async fn inherited_grant_preflight_reuses_real_materializer_without_child_effect
         &fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.project, None)?;
     assert!(fixture.host.resolve(&child_workspace).await.is_err());
     let projected = controller.inherited_reference_grants(fixture.parent.reducer(), child_agent, &[],
-        1, 8, 8192, 16, reader.as_ref(), None).await?;
+        1, 8, 8192, 16, reader.as_ref(), None).await?.0;
     assert!(fixture.host.resolve(&child_workspace).await.is_err());
     assert_eq!(projected.len(), 3);
     let member = projected.iter().find(|grant| grant.file == attachment)

@@ -1482,7 +1482,7 @@ pub(in crate::filesystem) fn generation_ref<A: AsyncAuthorityStore, O: AsyncObje
         strings(io, &[host.provider.namespace(), host.provider.family(), host.provider.version()])?;
         io.retain_owned(32)?;
     }
-    host.generation_ref(generation)
+    host.generation_ref_id(generation.id())
 }
 
 /// Pins the acknowledged immutable generation with its original typed cause.
@@ -1655,7 +1655,7 @@ mod tests {
                 Ok(())
             },
         ).await?;
-        assert_eq!(host.read(&initial.workspace, Some(&host.generation_ref(&accepted)?), "/file", 32).await?.as_ref(), b"owned");
+        assert_eq!(host.read(&initial.workspace, Some(&host.generation_ref_id(accepted.id())?), "/file", 32).await?.as_ref(), b"owned");
         Ok(())
     }
 
