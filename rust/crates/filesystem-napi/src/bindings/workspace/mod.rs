@@ -549,41 +549,30 @@ impl NativeWorkspace {
 pub(in crate::bindings) fn native_workspace_rebase_result(
     outcome: WorkspaceRebase<LocalAuthorityBackend, LocalObjectBackend>,
 ) -> NativeWorkspaceRebaseResult {
-    let generation =
-        |status: &str, generation: Generation<LocalAuthorityBackend, LocalObjectBackend>| {
-            NativeWorkspaceRebaseResult {
-                status: status.to_owned(),
-                generation_id: Some(Buffer::from(generation.id().digest().into_bytes().to_vec())),
-                conflicts: Vec::new(),
-                truncated: false,
-            }
-        };
-    match outcome {
-        WorkspaceRebase::Rebased(value) => generation("rebased", value),
-        WorkspaceRebase::AlreadyRebased(value) => generation("already-rebased", value),
-        WorkspaceRebase::Current(value) => generation("current", value),
-        WorkspaceRebase::Stale(value) => generation("stale", value),
+    let (status, generation) = match outcome {
+        WorkspaceRebase::Rebased(value) => ("rebased", Some(value)),
+        WorkspaceRebase::AlreadyRebased(value) => ("already-rebased", Some(value)),
+        WorkspaceRebase::Current(value) => ("current", Some(value)),
+        WorkspaceRebase::Stale(value) => ("stale", Some(value)),
         WorkspaceRebase::Conflicted {
             conflicts,
             truncated,
-        } => NativeWorkspaceRebaseResult {
-            status: "conflicted".to_owned(),
-            generation_id: None,
-            conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
-            truncated,
-        },
-        WorkspaceRebase::Fenced => NativeWorkspaceRebaseResult {
-            status: "fenced".to_owned(),
-            generation_id: None,
-            conflicts: Vec::new(),
-            truncated: false,
-        },
-        WorkspaceRebase::IdempotencyConflict => NativeWorkspaceRebaseResult {
-            status: "idempotency-conflict".to_owned(),
-            generation_id: None,
-            conflicts: Vec::new(),
-            truncated: false,
-        },
+        } => {
+            return NativeWorkspaceRebaseResult {
+                status: "conflicted".to_owned(),
+                generation_id: None,
+                conflicts: conflicts.into_iter().map(encode_merge_conflict).collect(),
+                truncated,
+            };
+        }
+        WorkspaceRebase::Fenced => ("fenced", None),
+        WorkspaceRebase::IdempotencyConflict => ("idempotency-conflict", None),
+    };
+    NativeWorkspaceRebaseResult {
+        status: status.to_owned(),
+        generation_id: generation.map(|value| native_generation_buffer(value.id())),
+        conflicts: Vec::new(),
+        truncated: false,
     }
 }
 

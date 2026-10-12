@@ -1,5 +1,7 @@
 use super::*;
 
+use super::*;
+
 use crate::kernel::{FileMetadata, MetadataField};
 
 use crate::{Digest, Fs, WorkspaceName};
@@ -8,7 +10,7 @@ use std::sync::Mutex;
 
 #[derive(Debug, Error)]
 #[error("test executor failure")]
-pub(super) struct TestExecutorError;
+struct TestExecutorError;
 
 pub(super) struct TestExecutor {
     result: Result<GitFilesystemResult, TestExecutorError>,
@@ -50,33 +52,6 @@ impl GitFilesystemExecutor for TestExecutor {
     }
 }
 
-async fn publish_fixture(
-    mut transaction: crate::Transaction<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,
-) -> Generation<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend> {
-    let outcome = transaction
-        .commit(
-            None,
-            crate::PublicationPermit::Unrestricted,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok::<_, crate::OperationFailure<WorkspaceError>>(
-                    crate::OperationReceipt {
-                        value: (),
-                        work: crate::WorkCounters::UNCHARGED,
-                    },
-                ))
-            },
-        )
-        .await
-        .expect("publish fixture")
-        .value;
-    let TransactionCommit::Committed(generation) = outcome else {
-        panic!("fixture did not commit");
-    };
-    generation
-}
-
 pub(super) fn generation(byte: u8) -> GenerationId {
     GenerationId::new(Digest::from_bytes([byte; 32]))
 }
@@ -84,14 +59,8 @@ pub(super) fn generation(byte: u8) -> GenerationId {
 pub(super) fn workspace() -> WorkspaceId {
     WorkspaceId::derive(
         [9; 16],
-        &WorkspaceName::new("repo", WorkBudget::UNBOUNDED, &CancellationToken::new())
-            .expect("valid test workspace")
-            .value,
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
+        &WorkspaceName::new("repo").expect("valid test workspace"),
     )
-    .expect("workspace identity")
-    .value
 }
 
 pub(super) fn tree(byte: u8) -> GitTreeRef {
@@ -294,6 +263,53 @@ pub(super) fn assert_nested_typescript_projection(
         let field = natural_field_name(key);
         assert_json_value_matches_typescript_hint(declaration, field, child);
     }
+}
+async fn memory_workspace(
+    name: &str,
+) -> Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend> {
+    Fs::memory()
+        .create_workspace(name, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .expect("workspace")
+        .value
+}
+
+async fn begin_fixture(
+    workspace: &Workspace<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,
+    key: IdempotencyKey,
+) -> crate::Transaction<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend> {
+    workspace
+        .begin_transaction(key, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
+        .expect("transaction")
+        .value
+}
+
+async fn publish_fixture(
+    mut transaction: crate::Transaction<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend>,
+) -> Generation<crate::MemoryAuthorityBackend, crate::MemoryObjectBackend> {
+    let outcome = transaction
+        .commit(
+            None,
+            crate::PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+            |_| {
+                std::future::ready(Ok::<_, crate::OperationFailure<WorkspaceError>>(
+                    crate::OperationReceipt {
+                        value: (),
+                        work: crate::WorkCounters::UNCHARGED,
+                    },
+                ))
+            },
+        )
+        .await
+        .expect("publish fixture")
+        .value;
+    let TransactionCommit::Committed(generation) = outcome else {
+        panic!("fixture did not commit");
+    };
+    generation
 }
 
 mod argv;
