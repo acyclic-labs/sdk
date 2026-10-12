@@ -14,9 +14,8 @@ import type {
 } from "../src/contracts.js";
 import * as GeneratedWasm from "../generated/wasm/acyclic_fs_wasm.js";
 import {
-  adaptWasmFs,
-  adaptWasmWorkspaceContextRegistry,
-} from "../src/wasm-adapter.js";
+  adaptFs,
+} from "../src/filesystem-adapter.js";
 import { openBrowserOperationWindowCoordinator } from "../src/browser.js";
 import { DEFAULT_MEMORY_FS_OPTIONS, openMemoryFs } from "../src/memory-node.js";
 import { nodeWasmBindings } from "../src/wasm-node.js";
@@ -41,7 +40,7 @@ describe("WASM adapter canonical boundaries", () => {
       async resolve() { return snapshot(9007199254740993n); },
     } as unknown as WasmRawWorkspaceContextRegistry;
 
-    const context = await adaptWasmWorkspaceContextRegistry(raw).resolve(Uint8Array.from(identity(1)));
+    const context = await adaptWorkspaceContextRegistry(raw).resolve(Uint8Array.from(identity(1)));
     expect(context.revision).toBe(9007199254740993n);
   });
 
@@ -51,7 +50,7 @@ describe("WASM adapter canonical boundaries", () => {
     } as unknown as WasmRawWorkspaceContextRegistry;
 
     await expect(
-      adaptWasmWorkspaceContextRegistry(raw).resolve(Uint8Array.from(identity(1))),
+      adaptWorkspaceContextRegistry(raw).resolve(Uint8Array.from(identity(1))),
     ).rejects.toThrow("context identity must be a 16-byte identity");
   });
 
@@ -69,7 +68,7 @@ describe("WASM adapter canonical boundaries", () => {
           create(WorkspaceContextDiscardSchema, { contextIds: [id(4)] }));
       },
     } as unknown as WasmRawWorkspaceContextRegistry;
-    const registry = adaptWasmWorkspaceContextRegistry(raw);
+    const registry = adaptWorkspaceContextRegistry(raw);
     const context = await registry.registerRoot(Uint8Array.from(identity(1)), [{
       rootId: Uint8Array.from(identity(2)), sourcePath: "/source",
       workspaceId: Uint8Array.from(identity(3)), workspaceName: "primary",
@@ -324,7 +323,7 @@ describe("WASM adapter canonical boundaries", () => {
 
   test("normalizes generated work counters at the public adapter boundary", async () => {
     const rawFs = GeneratedWasm.openMemoryFs(DEFAULT_MEMORY_FS_OPTIONS);
-    const fs = adaptWasmFs(rawFs);
+    const fs = adaptFs(rawFs);
     try {
       const volume = await fs.createVolume(portableVolumeOptions("ephemeral"));
       const checkout = await volume.checkout({
