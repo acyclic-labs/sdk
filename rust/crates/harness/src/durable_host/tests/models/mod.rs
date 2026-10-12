@@ -538,8 +538,6 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
                 .await
                 .is_err()
         );
-        use crate::executor::ExecutionJournal;
-        use crate::workflow::WorkflowJournal;
         for request in pending {
             assert!(matches!(
                 stream.commit(request).await?,
@@ -633,8 +631,6 @@ pub(in crate::durable_host::tests) async fn model_claim_host<P: StreamProvider>(
                 .await
                 .is_err()
         );
-        use crate::executor::{ExecutionEvent, ExecutionJournal};
-        use crate::workflow::WorkflowJournal;
         for request in pending {
             assert!(matches!(
                 stream.commit(request).await?,
