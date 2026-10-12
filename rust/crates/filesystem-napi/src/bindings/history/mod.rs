@@ -237,8 +237,7 @@ impl NativeGeneration {
             &acyclic_fs::CancellationToken::new(),
         ))
         .await
-        .map(|receipt| receipt.value)
-        .map(native_workspace_stat)
+        .map(|receipt| native_workspace_stat(receipt.value))
         .map_err(|failure| napi_error(failure.error))
     }
 
@@ -260,8 +259,7 @@ impl NativeGeneration {
             &acyclic_fs::CancellationToken::new(),
         ))
         .await
-        .map(|receipt| receipt.value.0)
-        .map(native_workspace_directory_page)
+        .map(|receipt| native_workspace_directory_page(receipt.value.0))
         .map_err(|failure| napi_error(failure.error))
     }
 
@@ -273,8 +271,7 @@ impl NativeGeneration {
             &acyclic_fs::CancellationToken::new(),
         ))
         .await
-        .map(|receipt| receipt.value.bytes)
-        .map(|bytes| Buffer::from(bytes.to_vec()))
+        .map(|receipt| Buffer::from(receipt.value.bytes.to_vec()))
         .map_err(|failure| napi_error(failure.error))
     }
 

@@ -164,8 +164,7 @@ impl NativeWorkspace {
                 &acyclic_fs::CancellationToken::new(),
             )
             .await
-            .map(|receipt| receipt.value)
-            .map(|generation| Buffer::from(generation.id().digest().into_bytes().to_vec()))
+            .map(|receipt| Buffer::from(receipt.value.id().digest().into_bytes().to_vec()))
             .map_err(|failure| napi_error(failure.error))
     }
 
@@ -328,8 +327,7 @@ impl NativeWorkspace {
             &acyclic_fs::CancellationToken::new(),
         ))
         .await
-        .map(|receipt| receipt.value)
-        .map(native_workspace_stat)
+        .map(|receipt| native_workspace_stat(receipt.value))
         .map_err(|failure| napi_error(failure.error))
     }
 
@@ -341,8 +339,7 @@ impl NativeWorkspace {
             &acyclic_fs::CancellationToken::new(),
         ))
         .await
-        .map(|receipt| receipt.value.bytes)
-        .map(|bytes| Buffer::from(bytes.to_vec()))
+        .map(|receipt| Buffer::from(receipt.value.bytes.to_vec()))
         .map_err(|failure| napi_error(failure.error))
     }
 
@@ -738,6 +735,13 @@ pub(in crate::bindings) fn native_workspace_name(
     LogicalName::new(encoding, value.bytes.to_vec(), u32::MAX).map_err(napi_error)
 }
 
+pub(in crate::bindings) fn native_workspace_name_value(name: LogicalName) -> NativeWorkspaceName {
+    NativeWorkspaceName {
+        encoding: name.encoding().as_str().to_owned(),
+        bytes: Buffer::from(name.as_bytes().to_vec()),
+    }
+}
+
 pub(in crate::bindings) fn native_workspace_directory_page(
     value: DirectoryPage,
 ) -> NativeWorkspaceDirectoryPage {
@@ -746,10 +750,7 @@ pub(in crate::bindings) fn native_workspace_directory_page(
             .entries
             .into_iter()
             .map(|entry| NativeWorkspaceDirectoryEntry {
-                name: NativeWorkspaceName {
-                    encoding: entry.name.encoding().as_str().to_owned(),
-                    bytes: Buffer::from(entry.name.as_bytes().to_vec()),
-                },
+                name: native_workspace_name_value(entry.name),
                 file_id: Buffer::from(entry.file_id.into_bytes().to_vec()),
                 kind: entry.kind,
             })

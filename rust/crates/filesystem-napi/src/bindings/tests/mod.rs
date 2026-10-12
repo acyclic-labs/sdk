@@ -91,8 +91,8 @@ fn test_config() -> VolumeConfig {
 fn string_paths_and_directory_cursors_use_native_profile() -> Result<()> {
     let mut config = test_config();
     config.profile = FilesystemProfile::Windows;
-    let path = native_path("/ÃƒÂ©.txt", config)?;
-    let cursor = native_name("ÃƒÂ©.txt", config)?;
+    let path = native_path("/ÃƒÆ’Ã‚Â©.txt", config)?;
+    let cursor = native_name("ÃƒÆ’Ã‚Â©.txt", config)?;
     assert_eq!(path.components(), &[cursor]);
     assert_eq!(
         path.components().first().map(LogicalName::encoding),
