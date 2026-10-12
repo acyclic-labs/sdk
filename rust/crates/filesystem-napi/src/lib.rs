@@ -2505,7 +2505,7 @@ impl NativeJoinPlan {
             .apply(ApplyOptions {
                 if_target,
                 idempotency_key,
-            })
+            }, acyclic_fs::PublicationPermit::Unrestricted)
             .await
             .map(native_join_result)
             .map_err(napi_error)

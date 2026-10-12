@@ -565,7 +565,7 @@ where
             if_target: plan.target_head(),
             idempotency_key: operation,
         };
-        let initial = plan.apply_with_permit(options, permit).await?;
+        let initial = plan.apply(options, permit).await?;
         let JoinOutcome::Conflicted {
             conflicts,
             truncated,
@@ -642,7 +642,7 @@ where
                 plan: Box::new(candidate.plan.clone()),
             });
         }
-        plan.apply_candidate_with_permit(options, &candidate, permit)
+        plan.apply_candidate(options, &candidate, permit)
             .await
             .map_err(|error| WorkspaceMultiRootPublisherError::Candidate(error.to_string()))
     }
@@ -939,7 +939,7 @@ where
             )
             .await?;
         let outcome = target
-            .apply_paths_from_with_permit(
+            .apply_paths_from(
                 Some(&projected),
                 Some(&original),
                 &paths,

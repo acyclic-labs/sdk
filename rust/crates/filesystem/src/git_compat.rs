@@ -5408,6 +5408,7 @@ where
             &eligible,
             capture_head.id(),
             IdempotencyKey::from_bytes(apply_bytes),
+            crate::PublicationPermit::Unrestricted,
         )
         .await?
     {

@@ -237,13 +237,13 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
         .await.map_err(|e| Error::Storage(e.to_string()))?, TransactionCommit::Committed(_)));
     let saved = workspace.head().await.map_err(|e| Error::Storage(e.to_string()))?;
     put(&fixture, &project, "src/a.txt", b"later", "restore-later").await?;
-    assert!(matches!(workspace.restore_generation(&saved, saved.id(), acyclic_fs::IdempotencyKey::from_bytes([137; 16]))
+    assert!(matches!(workspace.restore_generation(&saved, saved.id(), acyclic_fs::IdempotencyKey::from_bytes([137; 16]), acyclic_fs::PublicationPermit::Unrestricted)
         .await.map_err(|e| Error::Storage(e.to_string()))?, WorkspaceRestore::Stale(_)));
     let current = workspace.head().await.map_err(|e| Error::Storage(e.to_string()))?;
     let restore_key = acyclic_fs::IdempotencyKey::from_bytes([138; 16]);
-    assert!(matches!(workspace.restore_generation(&saved, current.id(), restore_key).await.map_err(|e| Error::Storage(e.to_string()))?,
+    assert!(matches!(workspace.restore_generation(&saved, current.id(), restore_key, acyclic_fs::PublicationPermit::Unrestricted).await.map_err(|e| Error::Storage(e.to_string()))?,
         WorkspaceRestore::Restored(_)));
-    assert!(matches!(workspace.restore_generation(&saved, current.id(), restore_key).await.map_err(|e| Error::Storage(e.to_string()))?,
+    assert!(matches!(workspace.restore_generation(&saved, current.id(), restore_key, acyclic_fs::PublicationPermit::Unrestricted).await.map_err(|e| Error::Storage(e.to_string()))?,
         WorkspaceRestore::AlreadyRestored(_)));
     let selected_generation = fixture.filesystem.resolve(&crate::filesystem::workspace_ref(project.provider().clone(), &project.storage_name(&mut None)?)?).await?.generation;
     let inspection = runtime.inspect_source(task, task).await?;
