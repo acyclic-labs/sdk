@@ -168,7 +168,6 @@ impl AsyncAuthorityStore for BrowserAuthority {
                 epoch,
                 expected,
                 commit,
-                acyclic_fs,
                 budget,
                 cancellation
             ),
@@ -200,7 +199,7 @@ impl AsyncAuthorityStore for BrowserAuthority {
     ) -> AuthorityResult<bool> {
         forward!(
             self,
-            create_authority_with_first_record(authority, commit, acyclic_fs, budget, cancellation),
+            create_authority_with_first_record(authority, commit, budget, cancellation),
             IndexedDb,
             Memory
         )
@@ -223,7 +222,6 @@ impl AsyncAuthorityStore for BrowserAuthority {
             create_authority_with_first_record_guarded(
                 authority,
                 commit,
-                acyclic_fs,
                 budget,
                 cancellation,
                 guard
@@ -384,13 +382,13 @@ impl AsyncObjectStore for BrowserObjects {
 
     async fn put_hashed(
         &self,
-        object: acyclic_fs::storage::HashedObject,
+        object: HashedObject,
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> ObjectResult<()> {
         forward!(
             self,
-            put_hashed(object, acyclic_fs, storage, budget, cancellation),
+            put_hashed(object, budget, cancellation),
             IndexedDb,
             Opfs,
             Memory
