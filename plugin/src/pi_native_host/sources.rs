@@ -372,7 +372,7 @@ impl PiNativeCommandHost {
         };
         effect
             .owner
-            .verify(false, &mut Some(&mut native_work_io(&original_work)?))
+            .verify(false)
             .await?;
         if effect.owner.task_id() != task
             || effect.context.durable_task_id() != Some(task)
@@ -470,7 +470,7 @@ impl PiNativeCommandHost {
                     .clone();
                 effect
                     .owner
-                    .verify(false, &mut Some(&mut native_work_io(&original_work)?))
+                    .verify(false)
                     .await?;
                 let view = self
                     .live_view(task)
@@ -617,7 +617,7 @@ impl PiNativeCommandHost {
         self.child_admission(task, &work).await?;
         bound
             .owner
-            .verify(false, &mut Some(&mut native_work_io(&work)?))
+            .verify(false)
             .await?;
         Ok(work)
     }

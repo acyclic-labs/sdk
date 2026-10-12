@@ -10,7 +10,6 @@ use crate::{
 };
 use acyclic_fs::{CancellationToken, LazySnapshotRef, WorkCounters};
 use acyclic_harness::runtime::TaskStateProvider;
-use acyclic_harness::store::native_work_io;
 use acyclic_harness::{
     Error, OperationId, Result, TaskId,
     conversation::VolumeRef,
@@ -273,7 +272,7 @@ impl<'a> PiControlHost<'a> {
             .with_invocation_cancellation(work.cancellation())
             .into_native_shared(work)?;
         owner
-            .verify(false, &mut Some(&mut native_work_io(work)?))
+            .verify(false)
             .await?;
         if task == self.protected.policy().root_task
             && !matches!(&input.0.execution, PiTaskExecution::Host { .. })
@@ -498,11 +497,7 @@ impl<'a> PiControlHost<'a> {
                 "selected native context lacks its original private scratch WRITE grant",
             ));
         }
-        owner.require_volume_grant(
-            scratch,
-            acyclic_harness::conversation::VolumeOperation::Write,
-            &mut Some(&mut native_work_io(work)?),
-        )?;
+        owner.require_volume_grant(scratch, acyclic_harness::conversation::VolumeOperation::Write)?;
         let cancellation = work.cancellation();
         let encoded = crate::pi_root_provider::guarded_pi_bytes(
             &payload,
@@ -1092,12 +1087,12 @@ impl PiControlHost<'_> {
             .get(key)
             .ok_or_else(|| denied("destination lacks this actual project"))?;
         let write_capability = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = volume.capability(
                 acyclic_harness::conversation::VolumeOperation::Write,
                 &mut Some(&mut io),
             )?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         if !context.scope().grants().contains(&write_capability.0) {
             return Err(denied(
@@ -1111,12 +1106,12 @@ impl PiControlHost<'_> {
             work,
         )?;
         let verifier = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = authorization.0.1.verifier(&mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         let scope = &authorization.0.2;
-        let mut destination_io = native_work_io(work)?;
+        let mut destination_io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
         let _destination_grant = acyclic_harness::conversation::ContentGrant::verify(
             &verifier.0,
             scope,
@@ -1274,7 +1269,7 @@ impl PiControlHost<'_> {
                 )
                 .await?;
                 owner
-                    .verify(false, &mut Some(&mut native_work_io(work)?))
+                    .verify(false)
                     .await?;
                 (snapshot, custody)
             };
@@ -1309,10 +1304,10 @@ impl PiControlHost<'_> {
         }
         let fs_operation = acyclic_fs::OperationId::from_bytes(import_operation.into_bytes());
         owner
-            .verify(false, &mut Some(&mut native_work_io(work)?))
+            .verify(false)
             .await?;
         destination_owner
-            .verify(false, &mut Some(&mut native_work_io(work)?))
+            .verify(false)
             .await?;
         let completed = if let Some(mount) = &mount {
             let result = mount
@@ -1398,10 +1393,10 @@ impl PiControlHost<'_> {
             operation: import_operation,
         };
         owner
-            .verify(false, &mut Some(&mut native_work_io(work)?))
+            .verify(false)
             .await?;
         destination_owner
-            .verify(false, &mut Some(&mut native_work_io(work)?))
+            .verify(false)
             .await?;
         let staged = crate::pi_root_provider::stage_pi_input(
             &self.protected,
@@ -1414,7 +1409,7 @@ impl PiControlHost<'_> {
         .await?;
         drop(staged);
         owner
-            .verify(false, &mut Some(&mut native_work_io(work)?))
+            .verify(false)
             .await?;
         if !writeback {
             return ready(
@@ -1537,7 +1532,7 @@ impl PiControlHost<'_> {
             fs_operation,
             work,
         )?;
-        let mut root_volume_io = native_work_io(work)?;
+        let mut root_volume_io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
         let root_volume = volume.copy(&mut Some(&mut root_volume_io))?;
         let root_path = work.copy_path(&retained.path)?;
         let root = PiOriginalWritebackRoot {
@@ -1548,7 +1543,7 @@ impl PiControlHost<'_> {
             path: root_path.0,
             operation_directory: operation_directory.0,
             _custody: [
-                root_volume_io.into_custody(),
+                root_volume_io.into_custody()?,
                 root_path.1,
                 operation_directory.1,
             ],
@@ -1679,7 +1674,7 @@ impl PiControlHost<'_> {
                 )
                 .await?;
                 owner
-                    .verify(false, &mut Some(&mut native_work_io(work)?))
+                    .verify(false)
                     .await?;
                 return ready(
                     &PiWritebackResponse {
@@ -1799,7 +1794,7 @@ impl PiControlHost<'_> {
             return Ok(TaskCommandProgress::Pending);
         }
         owner
-            .verify(false, &mut Some(&mut native_work_io(work)?))
+            .verify(false)
             .await?;
         ready(
             &PiWritebackResponse {
@@ -1853,9 +1848,9 @@ pub(crate) async fn read_imported_selected_files(
         .map_err(Error::Unauthorized)?;
     let receipt = &descriptor.import_receipt;
     let storage_name = {
-        let mut io = native_work_io(work)?;
+        let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
         let value = volume.storage_name(&mut Some(&mut io))?;
-        (value, io.into_custody())
+        (value, io.into_custody()?)
     };
     if binding.task_id != protected.policy().root_task
         || descriptor.command.caller != binding.task_id
@@ -1878,9 +1873,9 @@ pub(crate) async fn read_imported_selected_files(
         ));
     }
     let capability = {
-        let mut io = native_work_io(work)?;
+        let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
         let value = volume.capability(VolumeOperation::Read, &mut Some(&mut io))?;
-        (value, io.into_custody())
+        (value, io.into_custody()?)
     };
     let grants =
         acyclic_harness::Capabilities::new_with_native_work([capability.0.as_str()], work)?;
@@ -1891,12 +1886,12 @@ pub(crate) async fn read_imported_selected_files(
         work,
     )?;
     let verifier = {
-        let mut io = native_work_io(work)?;
+        let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
         let value = authorization.0.1.verifier(&mut Some(&mut io))?;
-        (value, io.into_custody())
+        (value, io.into_custody()?)
     };
     let scope = &authorization.0.2;
-    let mut read_io = native_work_io(work)?;
+    let mut read_io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
     let _read_grant = ContentGrant::verify(
         &verifier.0,
         scope,
@@ -2022,7 +2017,7 @@ pub(crate) async fn read_imported_selected_files(
         cancellation.check().map_err(|_| {
             acyclic_harness::Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled)
         })?;
-        let mut current_read_io = native_work_io(work)?;
+        let mut current_read_io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
         let _current_read_grant = ContentGrant::verify(
             &verifier.0,
             scope,
