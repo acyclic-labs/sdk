@@ -6809,8 +6809,7 @@ mod tests {
         });
         super::ProjFsSession::start(&crate::NativeMountRequest {
             mount_id: crate::MountId::new(), volume_id: source.volume_id()?, destination: destination.clone(), writable,
-        }, source.clone(), &materialization, &mut session, &mut retirement, |_| Ok(()))
-            .map_err(|failure| failure.error)?;
+        }, source.clone(), &materialization, &mut session, &mut retirement, |_| Ok(()))?;
         let session = session.expect("successful startup owns its driver");
         Ok((root, destination, session))
     }

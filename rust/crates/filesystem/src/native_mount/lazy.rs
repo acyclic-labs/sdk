@@ -10310,7 +10310,7 @@ mod tests {
         let demand = Arc::new(Counted::new(runtime.block_on(native_source(source.path()))?, false));
         let view = runtime.block_on(mounted_view_of(Arc::clone(&demand), "shared-content-scope"))?;
         let link = mounted(&["link"]);
-        super::adapter::boundary(view.authored.cancellation(), |work| view.create_symbolic_link(&link, crate::kernel::OwnedSourceChunk::claimed((Bytes::from_static(b"../target")).into(), 0), FileMetadata::default(), work))?;
+        super::super::adapter::boundary(view.authored.cancellation(), |work| view.create_symbolic_link(&link, crate::kernel::OwnedSourceChunk::claimed((Bytes::from_static(b"../target")).into(), 0), FileMetadata::default(), work))?;
         let caller = crate::CancellationToken::new();
         let meter = native_control_work(finite_content_budget(), &caller)?.native_read_meter().clone();
         let context = crate::NativeMaterializationWork::from_meter(Arc::clone(&meter));
@@ -10476,7 +10476,7 @@ mod tests {
         assert_eq!(demand.opens.load(Ordering::Acquire), opened + 1);
         let link = mounted(&["authored-link"]);
         let target = Bytes::from_static(b"../opaque-target\xff");
-        super::adapter::boundary(view.authored.cancellation(), |work| view.create_symbolic_link(&link, crate::kernel::OwnedSourceChunk::claimed((target.clone()).into(), 0), FileMetadata::default(), work))?;
+        super::super::adapter::boundary(view.authored.cancellation(), |work| view.create_symbolic_link(&link, crate::kernel::OwnedSourceChunk::claimed((target.clone()).into(), 0), FileMetadata::default(), work))?;
         let lookups = demand.lookups();
         let opened = demand.opens.load(Ordering::Acquire);
         let mut read = native_control_work(finite_content_budget(), &caller)?;

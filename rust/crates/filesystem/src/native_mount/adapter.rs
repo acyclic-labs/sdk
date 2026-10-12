@@ -7584,7 +7584,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         A: 'static,
         O: 'static,
     {
-
+        let native_work = carrier.original_native_work().expect("capture uses its native invocation");
         let (effect, _allocation) = installed_changes(
             &candidate.base, &candidate.checkout, scope, carrier, cancellation,
         ).await?;
@@ -11074,8 +11074,8 @@ mod tests {
         let source = source(FilesystemProfile::Portable)?;
         let path = native_test_path("snapshot-cancellation");
         let created = source.create_file(&path, metadata())?;
-        let record = boundary(&source.cancellation, |work| source.runtime.wait(|| source.record_by_id(created.node.file_id, ViewGate::callback_owner(), &mut NativeDemandCarrier::Native(work))))?;
-        let detached = boundary(&source.cancellation, |work| source.runtime.wait(|| source.detached_file_from_record(record, created.metadata, ViewGate::callback_owner(), &mut NativeDemandCarrier::Native(work))))?;
+        let record = boundary(&source.cancellation, |work| source.runtime.wait(|| async { source.record_by_id(created.node.file_id, ViewGate::callback_owner(), &mut NativeDemandCarrier::Native(work)).await }))?;
+        let detached = boundary(&source.cancellation, |work| source.runtime.wait(|| async { source.detached_file_from_record(record, created.metadata, ViewGate::callback_owner(), &mut NativeDemandCarrier::Native(work)).await }))?;
         source.runtime.block_on(|| async {
             let caller = CancellationToken::new();
             let mut work = crate::demand::DemandWork::new(WorkBudget::default(), &caller);
@@ -11129,8 +11129,8 @@ mod tests {
         let source = source(FilesystemProfile::Portable)?;
         let path = native_test_path("snapshot-held");
         let created = source.create_file(&path, metadata())?;
-        let record = boundary(&source.cancellation, |work| source.runtime.wait(|| source.record_by_id(created.node.file_id, ViewGate::callback_owner(), &mut NativeDemandCarrier::Native(work))))?;
-        let detached = boundary(&source.cancellation, |work| source.runtime.wait(|| source.detached_file_from_record(record, created.metadata, ViewGate::callback_owner(), &mut NativeDemandCarrier::Native(work))))?;
+        let record = boundary(&source.cancellation, |work| source.runtime.wait(|| async { source.record_by_id(created.node.file_id, ViewGate::callback_owner(), &mut NativeDemandCarrier::Native(work)).await }))?;
+        let detached = boundary(&source.cancellation, |work| source.runtime.wait(|| async { source.detached_file_from_record(record, created.metadata, ViewGate::callback_owner(), &mut NativeDemandCarrier::Native(work)).await }))?;
         source.runtime.block_on(|| async {
             let held = detached.state.lock().await;
             let budget = WorkBudget::UNBOUNDED;
