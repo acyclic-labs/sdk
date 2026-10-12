@@ -833,7 +833,7 @@ mod tests {
                     .is_err()
             );
             assert!(registry.definitions()?.is_empty());
-            assert!(registry.get_version("mcp.fixture.a", "1").is_none());
+            assert!(registry.get_version("mcp.fixture.a", "1", None)?.is_none());
             if control < 2 {
                 assert_eq!(approval.reads.load(Ordering::SeqCst), reads);
             }
@@ -864,7 +864,7 @@ mod tests {
         };
         let installer = RuntimeScope::new(scope.capabilities().clone(), Limits::default())?;
         let tool = registry
-            .get("mcp.fixture.a")
+            .get("mcp.fixture.a", None)?
             .ok_or_else(|| Error::NotFound("installed tool".into()))?;
         assert!(matches!(
             tool.executor.authorize(Some(&installer), &invocation),
@@ -928,7 +928,7 @@ mod tests {
                 registry.definitions()?,
                 original.model_definitions(8, 8192)?
             );
-            assert!(registry.get_version("mcp.fixture.a", "2").is_none());
+            assert!(registry.get_version("mcp.fixture.a", "2", None)?.is_none());
         }
         replacement
             .install_scoped(
@@ -948,9 +948,9 @@ mod tests {
             )
             .await?;
         assert!(registry.definitions()?.is_empty());
-        assert!(registry.get_version("mcp.fixture.a", "1").is_some());
-        assert!(registry.get_version("mcp.fixture.b", "1").is_some());
-        assert!(registry.get_version("mcp.fixture.a", "2").is_some());
+        assert!(registry.get_version("mcp.fixture.a", "1", None)?.is_some());
+        assert!(registry.get_version("mcp.fixture.b", "1", None)?.is_some());
+        assert!(registry.get_version("mcp.fixture.a", "2", None)?.is_some());
         Ok(())
     }
 
@@ -1074,7 +1074,7 @@ mod tests {
         let mut registry = ToolRegistry::new();
         catalog("1", &["a"]).install(&mut registry, None, &bound, &projection, 8, 8192)?;
         let tool = registry
-            .get("mcp.fixture.a")
+            .get("mcp.fixture.a", None)?
             .cloned()
             .ok_or_else(|| Error::NotFound("context fixture".into()))?;
         let legacy = Arc::new(Transport::default());
@@ -1089,7 +1089,7 @@ mod tests {
             8192,
         )?;
         let legacy_tool = legacy_registry
-            .get("mcp.fixture.a")
+            .get("mcp.fixture.a", None)?
             .cloned()
             .ok_or_else(|| Error::NotFound("legacy fixture".into()))?;
         let definition = TaskDefinition::live("mcp.context", "1", move |task, (): ()| {
@@ -1149,7 +1149,7 @@ mod tests {
         let old = catalog("1", &["a", "b"]);
         old.install(&mut registry, None, &bound, &projection, 8, 8192)?;
         let pinned = registry
-            .get("mcp.fixture.a")
+            .get("mcp.fixture.a", None)?
             .cloned()
             .ok_or_else(|| Error::NotFound("fixture".into()))?;
         let mut invalid = catalog("2", &["a", "a"]);
@@ -1163,8 +1163,8 @@ mod tests {
         invalid.install(&mut registry, Some(&old), &bound, &projection, 8, 8192)?;
         assert_eq!(registry.definitions()?.len(), 1);
         assert_eq!(registry.definitions()?[0].revision, "2");
-        assert!(registry.get("mcp.fixture.b").is_none());
-        assert!(registry.get_version("mcp.fixture.b", "1").is_some());
+        assert!(registry.get("mcp.fixture.b", None)?.is_none());
+        assert!(registry.get_version("mcp.fixture.b", "1", None)?.is_some());
         assert_eq!(pinned.definition.revision, "1");
         assert_eq!(transport.0.load(Ordering::SeqCst), 0);
         // A stale replacement cannot withdraw a later selection.
@@ -1193,7 +1193,7 @@ mod tests {
         let mut registry = ToolRegistry::new();
         catalog.install(&mut registry, None, &bound, &projection, 8, 8192)?;
         let tool = registry
-            .get("mcp.fixture.a")
+            .get("mcp.fixture.a", None)?
             .ok_or_else(|| Error::NotFound("fixture".into()))?;
         let invocation = ToolInvocation {
             operation_id: OperationId::from_bytes([1; 16]),
@@ -1299,7 +1299,7 @@ mod tests {
         let old_catalog = catalog("1", &["a"]);
         old_catalog.install(&mut registry, None, &old_transport, &projection, 8, 8192)?;
         let admitted = registry
-            .get("mcp.fixture.a")
+            .get("mcp.fixture.a", None)?
             .cloned()
             .ok_or_else(|| Error::NotFound("fixture".into()))?;
         let invocation = ToolInvocation {
@@ -1330,7 +1330,7 @@ mod tests {
             .map_err(|_| Error::Invalid("fixture dropped".into()))?;
         assert_eq!(call.await?.value["structuredContent"]["value"], 11);
         let next = registry
-            .get("mcp.fixture.a")
+            .get("mcp.fixture.a", None)?
             .ok_or_else(|| Error::NotFound("fixture".into()))?;
         assert_eq!(next.definition.revision, "2");
         assert_eq!(
@@ -1366,11 +1366,11 @@ mod tests {
                 for (index, name) in names.iter().enumerate() {
                     let name = format!("mcp.fixture.{name}");
                     assert_eq!(
-                        registry.get_version(&name, "1").is_some(),
+                        registry.get_version(&name, "1", None)?.is_some(),
                         initial & (1 << index) != 0
                     );
                     assert_eq!(
-                        registry.get(&name).is_some(),
+                        registry.get(&name, None)?.is_some(),
                         replacement & (1 << index) != 0
                     );
                 }
@@ -1423,12 +1423,12 @@ mod tests {
                 for name in names {
                     assert!(
                         registry
-                            .get_version(&format!("mcp.fixture.{name}"), "1")
+                            .get_version(&format!("mcp.fixture.{name}"), "1", None)?
                             .is_some()
                     );
                     assert!(
                         registry
-                            .get_version(&format!("mcp.fixture.{name}"), "2")
+                            .get_version(&format!("mcp.fixture.{name}"), "2", None)?
                             .is_some()
                     );
                 }

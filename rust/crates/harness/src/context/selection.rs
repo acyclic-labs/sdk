@@ -394,7 +394,7 @@ impl ContextStage for SelectionStage {
     ) -> BoxFuture<'a, Result<Context>> {
         Box::pin(async move {
             let limits = super::restrict_context_limits(self.limits, limits)?;
-            validate_projected_context(&context, limits)?;
+            super::validate_projected_context_with_io(&context, limits, None)?;
             self.selection.validate(limits)?;
             if let ContextSourceValue::File { file } = &self.selection.source {
                 limits.validate_file(file)?;
@@ -488,7 +488,7 @@ impl ContextStage for SelectionStage {
         }
         crate::NativeFutureBundle::new(work, || async move {
             let limits = super::restrict_context_limits_native(self.limits, limits, work)?;
-            super::validate_projected_context_native(&context.0, limits, work)?;
+            super::validate_projected_context_with_io(&context.0, limits, Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
             self.selection.validate_with_native_work(limits, work)?;
             if let ContextSourceValue::File { file } = &self.selection.source {
                 limits.validate_file_with_native_work(file, work)?;
@@ -514,7 +514,7 @@ pub fn apply_context_projection(
 ) -> Result<Context> {
     let placement = projection_placement(mode, placement);
     let context = place_messages_with_io(context, messages, placement, limits, None)?;
-    validate_projected_context(&context, limits)?;
+    super::validate_projected_context_with_io(&context, limits, None)?;
     Ok(context)
 }
 
@@ -528,7 +528,7 @@ pub(super) fn apply_context_projection_native(
     work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<(Context, acyclic_fs::NativeAllocation)> {
     let context = place_messages_native(context, messages, projection_placement(mode, placement), limits, work)?;
-    super::validate_projected_context_native(&context.0, limits, work)?;
+    super::validate_projected_context_with_io(&context.0, limits, Some(&crate::executor::PreparationIo::from_native_work(work)?))?;
     Ok(context)
 }
 
@@ -754,27 +754,6 @@ fn compose_context_with_io(
         }
     }
     Ok(context)
-}
-
-/// Validates finite projected context bounds, never silently omitting mandatory data.
-pub fn validate_projected_context(context: &Context, limits: Limits) -> Result<()> {
-    limits.validate()?;
-    context.validate_current_input()?;
-    if context.messages.len() > limits.context_messages
-        || context.metadata.len() > limits.attachments
-    {
-        return Err(Error::Invalid(
-            "context projection exceeded declared bounds".into(),
-        ));
-    }
-    crate::contract::validate_json_byte_bound(context, limits.render_bytes)?;
-    for message in &context.messages {
-        message.content.validate_limits(limits)?;
-    }
-    for file in context.metadata.values() {
-        limits.validate_file(file)?;
-    }
-    Ok(())
 }
 
 #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
