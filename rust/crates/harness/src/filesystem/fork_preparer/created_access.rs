@@ -1296,13 +1296,15 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
             io.claim(std::mem::size_of::<RootCreatedFilesystemAccess<A, O>>() as u64)?;
             let custody;
             let writer = if writable {
-                let (volume, custody) = allocation.request.volume.clone_with_native_work(work)?;
-                io.absorb_native_custody(custody)?;
-                Some(FilesystemContentPublisher::new_with_io(self.host.clone(), volume,
+                Some(FilesystemContentPublisher::new(self.host.clone(), &allocation.request.volume,
                     &verifier, &scope, context.original_root().limits.file_bytes, Some(&io))?)
             } else { None };
-            let reader = FilesystemContentVerifier::new_with_io(self.host.clone(), verifier, scope,
+            let temporary = verifier.logical_owned_bytes()?.checked_add(scope.logical_owned_bytes()?)
+                .ok_or_else(|| io.invalid("created reader metadata overflows"))?;
+            let reader = FilesystemContentVerifier::new(self.host.clone(), &verifier, &scope,
                 context.original_root().limits.file_bytes, Some(&io))?;
+            drop((verifier, scope));
+            io.release(temporary)?;
             let capture = io.owned_bytes()?;
             custody = io.into_native_custody(capture)?;
             work.charge(WorkCounters { allocation_operations: 1, ..WorkCounters::default() })?;
@@ -1348,7 +1350,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             let generation_bytes = allocation.generation.logical_owned_bytes()?;
             let resource_bytes = proof.resource.logical_owned_bytes()?;
             let evidence_bytes = proof.evidence.logical_owned_bytes()?;
-            let bytes = allocation.volume.logical_owned_bytes()?.checked_mul(3)
+            let bytes = allocation.volume.logical_owned_bytes()?.checked_mul(2)
                 .and_then(|bytes| bytes.checked_add(generation_bytes))
                 .and_then(|bytes| bytes.checked_add(resource_bytes))
                 .and_then(|bytes| bytes.checked_add(evidence_bytes))
@@ -1373,17 +1375,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             let mut observer = io.history_io();
             self.issuer.verifier_with_work(&mut Some(&mut observer))?
         } else { self.issuer.verifier() };
-        let writer = FilesystemContentPublisher::new_with_io(self.host.clone(), allocation.volume.clone(),
+        let writer = FilesystemContentPublisher::new(self.host.clone(), &allocation.volume,
             &verifier, &scope, request.maximum_bytes, io)?;
-        let reader = FilesystemContentVerifier::new_with_io(self.host.clone(), verifier, scope,
+        let temporary = verifier.logical_owned_bytes()?.checked_add(scope.logical_owned_bytes()?)
+            .ok_or_else(|| bounded_io::failure(io, crate::wire::ErrorCode::Invalid, "created reader metadata overflows"))?;
+        let reader = FilesystemContentVerifier::new(self.host.clone(), &verifier, &scope,
             request.maximum_bytes, io)?;
-        if let Some(io) = io {
-            let owned = reader.logical_owned_bytes()?.checked_add(writer.logical_owned_bytes()?)
-                .ok_or_else(|| Error::Invalid("creator content ownership overflow".into()))?;
-            if owned > io.owned_bytes()? {
-                return Err(Error::Invalid("creator content exceeds its admitted capture quota".into()));
-            }
-        }
+        drop((verifier, scope));
+        if let Some(io) = io { io.release(temporary)?; }
         let access = Arc::new(CreatedFilesystemAccess {
             host: self.host.clone(),
             request: request.clone(), proof: proof.clone(), origin: allocation.origin.clone(),
@@ -1430,14 +1429,13 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 let mut observer = io.history_io();
                 self.issuer.verifier_with_work(&mut Some(&mut observer))?
             } else { self.issuer.verifier() };
-            let verifier = FilesystemContentVerifier::new_with_io(self.host.clone(), verifier, scope, request.maximum_bytes, io)?;
-            if let Some(io) = io {
-                if verifier.logical_owned_bytes()? > io.owned_bytes()? {
-                    return Err(Error::Invalid("creator reference exceeds its admitted capture quota".into()));
-                }
-            }
+            let temporary = verifier.logical_owned_bytes()?.checked_add(scope.logical_owned_bytes()?)
+                .ok_or_else(|| bounded_io::failure(io, crate::wire::ErrorCode::Invalid, "created reader metadata overflows"))?;
+            let reader = FilesystemContentVerifier::new(self.host.clone(), &verifier, &scope, request.maximum_bytes, io)?;
+            drop((verifier, scope));
+            if let Some(io) = io { io.release(temporary)?; }
             let reader = Arc::new(CreatedFilesystemReference {
-                allocation: access.clone(), file: file.clone(), reader: verifier,
+                allocation: access.clone(), file: file.clone(), reader,
             });
             operations.push(CreatedResourceOperation::ReadFile(file.clone()));
             references.push(CreatedReferenceBinding { file, reader });
@@ -1616,7 +1614,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
     fn volume(&self) -> &VolumeRef { self.writer.volume() }
     #[cfg(not(target_arch = "wasm32"))]
     fn supports_native_stage(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        if self.writer.volume() != self.writer.volume() { return Err(Error::Unauthorized("created writer is not its exact bound namespace".into())); }
         self.writer.supports_native_stage(work)
     }
     fn stage<'a>(&'a self, operation: OperationId, path: &'a str, bytes: &'a [u8], media_type: &'a str,
