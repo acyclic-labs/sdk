@@ -47,7 +47,7 @@ pub enum GitCommand {
 /// Inspect one compatibility commit.
     Show {
         /// Object to show, defaulting to `HEAD`.
-        object: Option<GitObjectName>,
+        object: Option<String>,
     } => ("show", r#"{ readonly kind: "show"; readonly object?: string }"#),
 /// Accepted no-op because changes are always staged.
     Add {
@@ -78,14 +78,14 @@ pub enum GitCommand {
 /// Restore paths from an object.
     Restore {
         /// Source object, defaulting to `HEAD`.
-        source: Option<GitObjectName>,
+        source: Option<String>,
         /// Portable paths to restore.
         paths: Vec<String>,
     } => ("restore", r#"{ readonly kind: "restore"; readonly source?: string; readonly paths: readonly string[] }"#),
 /// Move HEAD and optionally the workspace.
     Reset {
         /// Commit-like target.
-        target: GitObjectName,
+        target: String,
         /// Workspace restoration policy.
         mode: GitResetMode,
     } => ("reset", r#"{ readonly kind: "reset"; readonly target: string; readonly mode: GitResetMode }"#),
@@ -110,19 +110,19 @@ pub enum GitCommand {
 /// Apply one commit as a cherry-pick.
     CherryPick {
         /// Commit to apply.
-        object: GitObjectName,
+        object: String,
     } => ("cherry-pick", r#"{ readonly kind: "cherry-pick"; readonly object: string }"#),
 /// Invert one explicit commit.
     Revert {
         /// Commit to invert.
-        object: GitObjectName,
+        object: String,
     } => ("revert", r#"{ readonly kind: "revert"; readonly object: string }"#),
 /// List, create, or delete a lightweight tag.
     Tag {
         /// Optional tag name; omission lists tags.
         name: Option<String>,
         /// Target object, defaulting to `HEAD`.
-        target: Option<GitObjectName>,
+        target: Option<String>,
         /// Whether to delete instead of create.
         delete: bool,
     } => ("tag", r#"{ readonly kind: "tag"; readonly name?: string; readonly target?: string; readonly delete?: boolean }"#),
@@ -146,7 +146,7 @@ pub enum GitCommand {
 /// Export one compatibility tree.
     Archive {
         /// Object to archive, defaulting to the workspace.
-        object: Option<GitObjectName>,
+        object: Option<String>,
     } => ("archive", r#"{ readonly kind: "archive"; readonly object?: string }"#),
 /// Apply a patch to the working workspace.
     Apply {
@@ -171,9 +171,9 @@ pub enum GitCommand {
 /// Find the nearest common explicit compatibility commit.
     MergeBase {
         /// First commit-like object.
-        left: GitObjectName,
+        left: String,
         /// Second commit-like object.
-        right: GitObjectName,
+        right: String,
     } => ("merge-base", r#"{ readonly kind: "merge-base"; readonly left: string; readonly right: string }"#),
 /// List paths tracked by explicit compatibility history.
     LsFiles => ("ls-files", r#"{ readonly kind: "ls-files" }"#),
