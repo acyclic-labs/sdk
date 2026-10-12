@@ -667,7 +667,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     ) -> Result<(&crate::core::SchemaRegistry, [u8; 32])> {
         let runtime = self.host.root_scope.extension_runtime();
         let (schemas, expected) = binding.verify_original(
-            self.extensions.as_ref(), self.host.root_scope.extension_schema_registry_ref(),
+            self.extensions.as_ref(), self.host.root_scope.extension_schema_registry(),
             runtime.as_deref(), io)?;
         let file = &binding.configuration.content;
         self.validate_input_file(file, io)?;
