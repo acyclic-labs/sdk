@@ -173,13 +173,17 @@ async fn device_login_pending_slowdown_then_approval() {
     ]).await;
     let directory = tempfile::tempdir().expect("directory");
     let store = Store::open(&directory.path().join("identity.json")).expect("store");
-    let device = fake
+    let mut device = fake
         .identity
         .device_code("cli", &store)
         .await
         .expect("device code");
     let start = tokio::time::Instant::now();
-    let session = fake.identity.login(&device).await.expect("login");
+    let session = fake
+        .identity
+        .login(&mut device, start)
+        .await
+        .expect("login");
     assert!(start.elapsed() >= Duration::from_secs(8));
     assert_eq!(session.access_token, "access-1");
     fake.done();
@@ -208,7 +212,7 @@ async fn device_denial_and_local_expiry_are_terminal() {
     };
     assert_eq!(
         fake.identity
-            .login(&device)
+            .login(&mut device, tokio::time::Instant::now())
             .await
             .err()
             .expect("denied")
@@ -218,7 +222,7 @@ async fn device_denial_and_local_expiry_are_terminal() {
     device.expires_in = 1;
     assert_eq!(
         fake.identity
-            .login(&device)
+            .login(&mut device, tokio::time::Instant::now())
             .await
             .err()
             .expect("expired")
