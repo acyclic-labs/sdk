@@ -1,4 +1,5 @@
 use super::*;
+use crate::{executor::stock_boundary, wire::ErrorCode};
 
 /// Immutable discovery revision.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -115,7 +116,7 @@ impl DiscoveredContext {
                 .ok_or_else(|| {
                     discovery_error(
                         work,
-                        crate::wire::ErrorCode::Invalid,
+                        ErrorCode::Invalid,
                         "discovered context count overflows",
                     )
                 })?
@@ -132,7 +133,7 @@ impl DiscoveredContext {
             if !names.insert(&skill.name) {
                 return Err(discovery_error(
                     work,
-                    crate::wire::ErrorCode::Conflict,
+                    ErrorCode::Conflict,
                     "discovered skill names are repeated",
                 ));
             }
@@ -156,26 +157,16 @@ impl DiscoveredContext {
             .len()
             .checked_add(usize::from(!self.skills.is_empty()))
             .ok_or_else(|| {
-                crate::executor::stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Invalid,
-                    "discovered context count overflows",
-                )
+                stock_boundary(io, ErrorCode::Invalid, "discovered context count overflows")
             })?;
         if count > limits.context_messages {
-            return Err(crate::executor::stock_boundary(
+            return Err(stock_boundary(
                 io,
-                crate::wire::ErrorCode::Invalid,
+                ErrorCode::Invalid,
                 "discovered context exceeds message bound",
             ));
         }
         let skill_bytes = crate::executor::with_history_io(io, |work| {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if let Some(observer) = work.as_deref_mut()
-                && observer.original_native_work().is_some()
-            {
-                bound_skill_values(&self.skills, limits.render_bytes, observer)?;
-            }
             crate::contract::json_byte_length(&self.skills, limits.render_bytes, work)
         })?;
         crate::executor::with_history_io(io, |work| {
@@ -191,13 +182,10 @@ impl DiscoveredContext {
             let mut messages = (
                 Vec::new(),
                 work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)
-                    .map_err(discovery_work_error)?,
+                    .map_err(Error::from)?,
             );
             let mut backing = super::reserve_context_vec_native(&mut messages.0, count, work)?;
-            messages
-                .1
-                .absorb(&mut backing)
-                .map_err(discovery_work_error)?;
+            messages.1.absorb(&mut backing).map_err(Error::from)?;
             for file in &self.instructions {
                 messages.0.push(ModelMessage {
                     role: ModelRole::System,
@@ -209,10 +197,7 @@ impl DiscoveredContext {
             }
             if !self.skills.is_empty() {
                 let mut text = skill_text_native(&self.skills, skill_bytes, work)?;
-                messages
-                    .1
-                    .absorb(&mut text.1)
-                    .map_err(discovery_work_error)?;
+                messages.1.absorb(&mut text.1).map_err(Error::from)?;
                 messages.0.push(ModelMessage {
                     role: ModelRole::System,
                     content: ModelContent::Text(text.0),

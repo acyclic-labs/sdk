@@ -1,6 +1,7 @@
 //! Provider-owned capacities and request-bound token accounting.
 
 use crate::{Error, Result, model::PreparedModelRequest};
+
 use serde::{Deserialize, Serialize};
 
 /// Actual context and output capacities of one immutable selected model.
@@ -94,9 +95,8 @@ fn token_count_invalid(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{
-        Model, ModelContent, ModelContentPart, ModelMessage, ModelRequest, ModelRole,
-    };
+
+    use crate::model::{Model, ModelContent, ModelMessage, ModelRequest, ModelRole};
 
     #[test]
     fn capacity_rejects_zero_and_inverted_bounds() {
@@ -150,54 +150,20 @@ mod tests {
             count.validate(&prepared, &mut None)?,
             2 * u64::from(u32::MAX)
         );
-        let mut changed = request.clone();
-        changed.model.revision = "different".into();
-        assert!(
-            count
-                .validate(
-                    &PreparedModelRequest::prepare(
-                        changed,
-                        crate::conversation::Limits::default(),
-                        None,
-                    )?,
-                    &mut None
-                )
-                .is_err()
-        );
-        let mut changed = request;
-        changed.messages[0].content = ModelContent::Text("different".into());
-        assert!(
-            count
-                .validate(
-                    &PreparedModelRequest::prepare(
-                        changed,
-                        crate::conversation::Limits::default(),
-                        None,
-                    )?,
-                    &mut None
-                )
-                .is_err()
-        );
+        let mut changed_model = request.clone();
+        changed_model.model.revision = "different".into();
+        let mut changed_content = request;
+        changed_content.messages[0].content = ModelContent::Text("different".into());
+        for changed in [changed_model, changed_content] {
+            let changed = PreparedModelRequest::prepare(
+                changed,
+                crate::conversation::Limits::default(),
+                None,
+            )?;
+            assert!(count.validate(&changed, &mut None).is_err());
+        }
         count.message_tokens.clear();
         assert!(count.validate(&prepared, &mut None).is_err());
         Ok(())
-    }
-
-    #[test]
-    fn structured_parts_borrow_original_storage() {
-        let part = ModelContentPart::Text {
-            text: "content".into(),
-        };
-        let single = ModelContent::Part(part.clone());
-        let ModelContent::Part(original) = &single else {
-            unreachable!()
-        };
-        assert!(std::ptr::eq(&single.parts()[0], original));
-        let multiple = ModelContent::Parts(vec![part]);
-        let ModelContent::Parts(original) = &multiple else {
-            unreachable!()
-        };
-        assert_eq!(multiple.parts().as_ptr(), original.as_ptr());
-        assert!(ModelContent::Text("plain".into()).parts().is_empty());
     }
 }

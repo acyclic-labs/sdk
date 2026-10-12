@@ -1,5 +1,7 @@
 use super::*;
 
+use crate::{executor::stock_boundary, wire::ErrorCode};
+
 /// Resolved view of one durable context revision. Stream retains only `content`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ContextRevision {
@@ -18,6 +20,7 @@ pub struct ContextRevision {
     /// Present only when this revision deterministically compacts another context.
     pub compaction: Option<CompactionReference>,
 }
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct StoredContextRevision {
@@ -28,13 +31,7 @@ struct StoredContextRevision {
     context: FileRef,
     compaction: Option<CompactionReference>,
 }
-#[cfg(feature = "filesystem")]
-impl crate::filesystem::PreparationRecord for StoredContextRevision {
-    fn maximum_slot_bytes() -> u64 {
-        (<Context as crate::filesystem::PreparationRecord>::maximum_slot_bytes())
-            .max(std::mem::size_of::<Self>() as u64)
-    }
-}
+
 /// Stream-backed context source shared by memory, retrieval, skills, and compaction stages.
 pub struct DurableContextProvider {
     provider: Arc<dyn StreamProvider>,
@@ -46,6 +43,15 @@ pub struct DurableContextProvider {
     publisher: Option<Arc<dyn ContentPublisher>>,
     limits: Limits,
 }
+
+#[cfg(feature = "filesystem")]
+impl crate::filesystem::PreparationRecord for StoredContextRevision {
+    fn maximum_slot_bytes() -> u64 {
+        (<Context as crate::filesystem::PreparationRecord>::maximum_slot_bytes())
+            .max(std::mem::size_of::<Self>() as u64)
+    }
+}
+
 impl DurableContextProvider {
     /// Creates a durable provider with a positive per-page work bound over one Stream path.
     pub fn new(
@@ -62,10 +68,7 @@ impl DurableContextProvider {
         limits.validate(&mut None)?;
         crate::contract::validate_component_label(&source, "context source")?;
         crate::contract::validate_component_label(&source_revision, "context source revision")?;
-        if source.trim().is_empty()
-            || source_revision.trim().is_empty()
-            || maximum_page_records == 0
-        {
+        if maximum_page_records == 0 {
             return Err(crate::Error::Invalid(
                 "durable context source, revision, and bound are required".into(),
             ));
@@ -193,31 +196,8 @@ impl DurableContextProvider {
         let (record, encoded) = self
             .stage_revision(revision, context, compaction, &key_bytes)
             .await?;
-        match self
-            .provider
-            .append(AppendRequest {
-                path: self.path.clone(),
-                records: vec![encoded.into()],
-                if_tail: Some(expected_revision),
-                idempotency_key: Some(key),
-            })
-            .await
-            .map_err(|error| crate::Error::Storage(error.to_string()))?
-        {
-            AppendOutcome::Committed(receipt)
-                if receipt.start == expected_revision
-                    && receipt.end == revision
-                    && receipt.tail == revision =>
-            {
-                Ok(record)
-            }
-            AppendOutcome::Committed(_) => Err(crate::Error::Storage(
-                "context append returned an invalid tail".into(),
-            )),
-            AppendOutcome::TailConflict { actual_tail } => Err(crate::Error::Conflict(format!(
-                "context revision {expected_revision} is stale; actual revision is {actual_tail}"
-            ))),
-        }
+        self.commit(expected_revision, vec![encoded], key).await?;
+        Ok(record)
     }
 
     /// Publishes one continuing projection and its exact source in a single CAS.
@@ -234,8 +214,6 @@ impl DurableContextProvider {
         let key_bytes = idempotency_key.into();
         let key = StreamIdempotencyKey::new(key_bytes.clone())
             .map_err(|error| crate::Error::Invalid(error.to_string()))?;
-        validate_projected_context(&source, self.limits, None)?;
-        validate_projected_context(&compacted, self.limits, None)?;
         validate_compaction(&reference, &source, &compacted, None)?;
         validate_context_refs(&source, self.content_verifier.as_ref(), self.limits, None).await?;
         validate_context_refs(
@@ -251,32 +229,26 @@ impl DurableContextProvider {
         let (compacted_record, compacted_bytes) = self
             .stage_revision(compacted_revision, compacted, Some(reference), &key_bytes)
             .await?;
-        let pair = [source_record, compacted_record];
-        match self
-            .provider
-            .append(AppendRequest {
-                path: self.path.clone(),
-                records: vec![source_bytes.into(), compacted_bytes.into()],
-                if_tail: Some(expected_revision),
-                idempotency_key: Some(key),
-            })
-            .await
-            .map_err(|error| crate::Error::Storage(error.to_string()))?
-        {
-            AppendOutcome::Committed(receipt)
-                if receipt.start == expected_revision
-                    && receipt.end == compacted_revision
-                    && receipt.tail == compacted_revision =>
-            {
-                Ok(pair)
-            }
-            AppendOutcome::Committed(_) => Err(crate::Error::Storage(
-                "context append returned an invalid tail".into(),
-            )),
-            AppendOutcome::TailConflict { actual_tail } => Err(crate::Error::Conflict(format!(
-                "context revision {expected_revision} is stale; actual revision is {actual_tail}"
-            ))),
+        self.commit(expected_revision, vec![source_bytes, compacted_bytes], key)
+            .await?;
+        Ok([source_record, compacted_record])
+    }
+
+    /// Captures the current continuing projection and its immutable revision.
+    pub async fn latest_revision(&self) -> Result<Option<ContextRevision>> {
+        let tail = self.tail_revision(None).await?;
+        if tail == 0 {
+            return Ok(None);
         }
+        self.revision(tail).await.map(Some)
+    }
+
+    /// Returns the captured latest context.
+    pub async fn latest(&self) -> Result<Context> {
+        Ok(self
+            .latest_revision()
+            .await?
+            .map_or_else(Context::default, |record| record.context))
     }
 
     /// Captures an immutable read boundary; later appends do not extend this revision.
@@ -291,80 +263,19 @@ impl DurableContextProvider {
         }
     }
 
-    /// Reads one verified page after a cursor through a captured revision.
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.harness.context.page",
-            level = "debug",
-            skip_all,
-            fields(rev = through, items = crate::obs::Empty, outcome = crate::obs::Empty, error.kind = crate::obs::Empty)
-        )
-    )]
+    /// Reads a bounded archival page through a captured revision.
     pub async fn revisions(&self, after: u64, through: u64) -> Result<Vec<ContextRevision>> {
-        crate::obs::outcome(
-            async {
-                if after > through || through > self.tail_revision(None).await? {
-                    return Err(crate::Error::Invalid(
-                        "context page cursor is invalid".into(),
-                    ));
-                }
-                let count = (through - after).min(u64::from(self.maximum_page_records));
-                if count == 0 {
-                    return Ok(Vec::new());
-                }
-                let mut stream = self
-                    .provider
-                    .read(ReadRequest {
-                        path: self.path.clone(),
-                        from: after,
-                        limit: u32::try_from(count).map_err(|_| {
-                            crate::Error::Invalid("context page bound overflow".into())
-                        })?,
-                    })
-                    .await
-                    .map_err(|error| crate::Error::Storage(error.to_string()))?;
-                let mut revisions: Vec<ContextRevision> = Vec::new();
-                while let Some(record) = stream.next().await {
-                    let record =
-                        record.map_err(|error| crate::Error::Storage(error.to_string()))?;
-                    if revisions.len() as u64 >= count
-                        || record.sequence != after + revisions.len() as u64
-                    {
-                        return Err(crate::Error::Storage(
-                            "context page returned an invalid range".into(),
-                        ));
-                    }
-                    let revision = self
-                        .decode_revision(record.sequence, &record.value, self.limits, None)
-                        .await?;
-                    if let Some(reference) = &revision.compaction {
-                        let preceding = if revisions.is_empty() {
-                            if after == 0 {
-                                return Err(crate::Error::Storage(
-                                    "context compaction has no preceding source".into(),
-                                ));
-                            }
-                            Some(self.read_revision(after, self.limits, None).await?)
-                        } else {
-                            None
-                        };
-                        let source = revisions.last().or(preceding.as_ref()).ok_or_else(|| {
-                            crate::Error::Storage("context compaction source is absent".into())
-                        })?;
-                        validate_compaction(reference, &source.context, &revision.context, None)
-                            .map_err(|error| crate::Error::Storage(error.to_string()))?;
-                    }
-                    revisions.push(revision);
-                }
-                if revisions.len() as u64 != count {
-                    return Err(crate::Error::Storage("context page is incomplete".into()));
-                }
-                crate::obs::obs_record!("items" = revisions.len() as u64);
-                Ok(revisions)
-            }
-            .await,
-        )
+        if after > through || through > self.tail_revision(None).await? {
+            return Err(crate::Error::Invalid(
+                "context page cursor is invalid".into(),
+            ));
+        }
+        let count = (through - after).min(u64::from(self.maximum_page_records));
+        let mut page = Vec::new();
+        for offset in 0..count {
+            page.push(self.revision(after + offset + 1).await?);
+        }
+        Ok(page)
     }
 
     async fn decode_revision(
@@ -374,13 +285,10 @@ impl DurableContextProvider {
         limits: Limits,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<ContextRevision> {
+        let invalid = |reason| stock_boundary(io, ErrorCode::Storage, reason);
         let limits = restrict_context_limits(self.limits, limits, io)?;
         if bytes.len() > MAX_RECORD_BYTES {
-            return Err(crate::executor::stock_boundary(
-                io,
-                crate::wire::ErrorCode::Storage,
-                "context record exceeds Stream limit",
-            ));
+            return Err(invalid("context record exceeds Stream limit"));
         }
         let revision: StoredContextRevision = decode_context_json(
             bytes,
@@ -388,21 +296,17 @@ impl DurableContextProvider {
             io,
             "durable context identity, revision or canonical bytes are invalid",
         )?;
-        let next = sequence.checked_add(1).ok_or_else(|| {
-            crate::executor::stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "revision exhausted",
-            )
-        })?;
+        let next = sequence
+            .checked_add(1)
+            .ok_or_else(|| stock_boundary(io, ErrorCode::Invalid, "revision exhausted"))?;
         if revision.format_version != 5
             || revision.revision != next
             || revision.source != self.source
             || revision.source_revision != self.source_revision
         {
-            return Err(crate::executor::stock_boundary(
+            return Err(stock_boundary(
                 io,
-                crate::wire::ErrorCode::Storage,
+                ErrorCode::Storage,
                 "durable context identity, revision or canonical bytes are invalid",
             ));
         }
@@ -410,20 +314,16 @@ impl DurableContextProvider {
         if revision.context.descriptor().media_type() != "application/json"
             || revision.context.descriptor().byte_length() > limits.render_bytes
         {
-            return Err(crate::executor::stock_boundary(
-                io,
-                crate::wire::ErrorCode::Storage,
-                "context payload descriptor is invalid",
-            ));
+            return Err(invalid("context payload descriptor is invalid"));
         }
         verify_file(&revision.context, self.content_verifier.as_ref(), io).await?;
         if !self
             .content_verifier
             .supports_read(revision.context.volume(), io)?
         {
-            return Err(crate::executor::stock_boundary(
+            return Err(stock_boundary(
                 io,
-                crate::wire::ErrorCode::Unsupported,
+                ErrorCode::Unsupported,
                 "context reader has no bounded capability",
             ));
         }
@@ -458,96 +358,6 @@ impl DurableContextProvider {
         })
     }
 
-    async fn read_revision(
-        &self,
-        revision: u64,
-        limits: Limits,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<ContextRevision> {
-        let limits = restrict_context_limits(self.limits, limits, io)?;
-        if revision == 0 {
-            return Err(crate::executor::stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "context revision must be positive",
-            ));
-        }
-        crate::executor::with_history_io(io, |work| {
-            work.as_deref_mut().map_or(Ok(()), |work| work.begin_call())
-        })?;
-        let mut stream = self
-            .provider
-            .read(ReadRequest {
-                path: self.path.clone(),
-                from: revision - 1,
-                limit: 1,
-            })
-            .await
-            .map_err(|error| context_stream_error(error, io))?;
-        #[cfg(feature = "filesystem")]
-        let record_hold;
-        let record = stream
-            .next()
-            .await
-            .ok_or_else(|| {
-                crate::executor::stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Storage,
-                    "context revision is missing",
-                )
-            })?
-            .map_err(|error| context_stream_error(error, io))?;
-        crate::executor::with_history_io(io, |work| {
-            work.as_deref_mut().map_or(Ok(()), |work| {
-                work.receive_record(record.value.len() as u64)
-            })
-        })?;
-        #[cfg(feature = "filesystem")]
-        {
-            record_hold = io
-                .map(|io| io.guard_owned(record.value.len() as u64))
-                .transpose()?;
-        }
-        if record.sequence != revision - 1 {
-            return Err(crate::executor::stock_boundary(
-                io,
-                crate::wire::ErrorCode::Storage,
-                "context revision read returned an invalid range",
-            ));
-        }
-        #[cfg(feature = "filesystem")]
-        let extra_hold;
-        if let Some(extra) = stream.next().await {
-            let extra = extra.map_err(|error| context_stream_error(error, io))?;
-            crate::executor::with_history_io(io, |work| {
-                work.as_deref_mut()
-                    .map_or(Ok(()), |work| work.receive_record(extra.value.len() as u64))
-            })?;
-            #[cfg(feature = "filesystem")]
-            {
-                extra_hold = io
-                    .map(|io| io.guard_owned(extra.value.len() as u64))
-                    .transpose()?;
-            }
-            drop(extra);
-            #[cfg(feature = "filesystem")]
-            drop(extra_hold);
-            return Err(crate::executor::stock_boundary(
-                io,
-                crate::wire::ErrorCode::Storage,
-                "context revision read returned an invalid range",
-            ));
-        }
-        let result = self
-            .decode_revision(record.sequence, &record.value, limits, io)
-            .await?;
-        drop(record);
-        drop(stream);
-        #[cfg(feature = "filesystem")]
-        drop(record_hold);
-        Ok(result)
-    }
-
     /// Loads one pinned revision, checking its source proof with at most two record reads.
     pub async fn revision(&self, revision: u64) -> Result<ContextRevision> {
         self.revision_bounded(revision, self.limits, None).await
@@ -580,23 +390,6 @@ impl DurableContextProvider {
         Ok(record)
     }
 
-    /// Captures the current continuing projection and its immutable revision.
-    pub async fn latest_revision(&self) -> Result<Option<ContextRevision>> {
-        let tail = self.tail_revision(None).await?;
-        if tail == 0 {
-            return Ok(None);
-        }
-        self.revision(tail).await.map(Some)
-    }
-
-    /// Returns the captured latest context. `latest_revision` also retains its pin; `revisions(after, through)` provides explicit bounded archival pages.
-    pub async fn latest(&self) -> Result<Context> {
-        Ok(self
-            .latest_revision()
-            .await?
-            .map_or_else(Context::default, |record| record.context))
-    }
-
     /// Compacts a context on the optional original preparation ledger.
     pub fn compact(
         context: &Context,
@@ -605,34 +398,20 @@ impl DurableContextProvider {
         retention: CompactionRetention,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(Context, CompactionReference)> {
+        let invalid = |reason| stock_boundary(io, ErrorCode::Invalid, reason);
         retention.validate(io)?;
         context.validate_current_input(io)?;
         if max_messages == 0 {
-            return Err(crate::executor::stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "compaction max_messages must be positive",
-            ));
+            return Err(invalid("compaction max_messages must be positive"));
         }
-        let maximum_messages = u32::try_from(max_messages).map_err(|_| {
-            crate::executor::stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "compaction budget exceeds portable count",
-            )
-        })?;
+        let maximum_messages = u32::try_from(max_messages)
+            .map_err(|_| invalid("compaction budget exceeds portable count"))?;
         let source_digest = crate::executor::preparation_digest(context, io)?;
         if let Some(summary) = &summary {
             let covered = context
                 .messages
                 .get(..summary.source_messages as usize)
-                .ok_or_else(|| {
-                    crate::executor::stock_boundary(
-                        io,
-                        crate::wire::ErrorCode::Invalid,
-                        "summary extent exceeds source projection",
-                    )
-                })?;
+                .ok_or_else(|| invalid("summary extent exceeds source projection"))?;
             let summarized = BorrowedContext {
                 messages: ContextMessages {
                     first: covered,
@@ -648,26 +427,23 @@ impl DurableContextProvider {
                 || summary.source_digest != crate::executor::preparation_digest(&summarized, io)?
                 || summary.output.descriptor().media_type() != "text/plain"
             {
-                return Err(crate::executor::stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Invalid,
-                    "summary does not bind its source prefix",
-                ));
+                return Err(invalid("summary does not bind its source prefix"));
             }
         }
-        let (compacted, _) =
-            crate::executor::with_history_io(io, |work| {
-                if context.messages.len() > max_messages
-                    || (summary.is_some() && context.messages.len() == max_messages)
-                {
-                    let summary = summary.as_ref().ok_or_else(|| crate::executor::stock_boundary(
-                    io, crate::wire::ErrorCode::Invalid,
-                    "compaction requires a durable summary; context cannot be silently dropped"))?;
-                    compaction::compact_context(context, max_messages, summary, &retention, work)
-                } else {
-                    compaction::clone_context(context, None, work)
-                }
-            })?;
+        let (compacted, _) = crate::executor::with_history_io(io, |work| {
+            if context.messages.len() > max_messages
+                || (summary.is_some() && context.messages.len() == max_messages)
+            {
+                let summary = summary.as_ref().ok_or_else(|| {
+                    invalid(
+                        "compaction requires a durable summary; context cannot be silently dropped",
+                    )
+                })?;
+                compaction::compact_context(context, max_messages, summary, &retention, work)
+            } else {
+                compaction::clone_context(context, None, work)
+            }
+        })?;
         Ok((
             compacted,
             CompactionReference {
@@ -678,7 +454,106 @@ impl DurableContextProvider {
             },
         ))
     }
+
+    async fn read_revision(
+        &self,
+        revision: u64,
+        limits: Limits,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<ContextRevision> {
+        let limits = restrict_context_limits(self.limits, limits, io)?;
+        let from = revision.checked_sub(1).ok_or_else(|| {
+            stock_boundary(io, ErrorCode::Invalid, "context revision must be positive")
+        })?;
+        crate::executor::with_history_io(io, |work| {
+            work.as_deref_mut().map_or(Ok(()), |work| work.begin_call())
+        })?;
+        let mut stream = self
+            .provider
+            .read(ReadRequest {
+                path: self.path.clone(),
+                from,
+                limit: 1,
+            })
+            .await
+            .map_err(|error| context_stream_error(error, io))?;
+        let missing = || stock_boundary(io, ErrorCode::Storage, "context revision is missing");
+        let record = stream
+            .next()
+            .await
+            .ok_or_else(missing)?
+            .map_err(|error| context_stream_error(error, io))?;
+        crate::executor::with_history_io(io, |work| {
+            work.as_deref_mut().map_or(Ok(()), |work| {
+                work.receive_record(record.value.len() as u64)
+            })
+        })?;
+        #[cfg(feature = "filesystem")]
+        let _record_hold = io
+            .map(|io| io.guard_owned(record.value.len() as u64))
+            .transpose()?;
+        if let Some(extra) = stream.next().await {
+            let extra = extra.map_err(|error| context_stream_error(error, io))?;
+            crate::executor::with_history_io(io, |work| {
+                work.as_deref_mut()
+                    .map_or(Ok(()), |work| work.receive_record(extra.value.len() as u64))
+            })?;
+            #[cfg(feature = "filesystem")]
+            let _extra_hold = io
+                .map(|io| io.guard_owned(extra.value.len() as u64))
+                .transpose()?;
+            return Err(stock_boundary(
+                io,
+                ErrorCode::Storage,
+                "context revision read returned an invalid range",
+            ));
+        }
+        if record.sequence != from {
+            return Err(stock_boundary(
+                io,
+                ErrorCode::Storage,
+                "context revision read returned an invalid range",
+            ));
+        }
+        self.decode_revision(record.sequence, &record.value, limits, io)
+            .await
+    }
+
+    async fn commit(
+        &self,
+        expected: u64,
+        records: Vec<Bytes>,
+        key: StreamIdempotencyKey,
+    ) -> Result<()> {
+        let end = expected
+            .checked_add(records.len() as u64)
+            .ok_or_else(|| crate::Error::Invalid("revision exhausted".into()))?;
+        match self
+            .provider
+            .append(AppendRequest {
+                path: self.path.clone(),
+                records: records.into_iter().map(Into::into).collect(),
+                if_tail: Some(expected),
+                idempotency_key: Some(key),
+            })
+            .await
+            .map_err(|error| crate::Error::Storage(error.to_string()))?
+        {
+            AppendOutcome::Committed(receipt)
+                if receipt.start == expected && receipt.end == end && receipt.tail == end =>
+            {
+                Ok(())
+            }
+            AppendOutcome::Committed(_) => Err(crate::Error::Storage(
+                "context append returned an invalid tail".into(),
+            )),
+            AppendOutcome::TailConflict { actual_tail } => Err(crate::Error::Conflict(format!(
+                "context revision {expected} is stale; actual revision is {actual_tail}"
+            ))),
+        }
+    }
 }
+
 fn context_stream_error(
     source: StreamError,
     io: Option<&crate::executor::PreparationIo>,
@@ -689,7 +564,7 @@ fn context_stream_error(
         .is_some()
     {
         return crate::Error::NativeStream {
-            code: crate::wire::ErrorCode::Storage,
+            code: ErrorCode::Storage,
             source,
             custody: None,
         };
@@ -697,6 +572,7 @@ fn context_stream_error(
     let _ = io;
     crate::Error::Storage(source.to_string())
 }
+
 fn decode_context_json<T: crate::executor::PreparationRecord + serde::Serialize>(
     bytes: &[u8],
     maximum: u64,
@@ -708,7 +584,7 @@ fn decode_context_json<T: crate::executor::PreparationRecord + serde::Serialize>
         Some(io) => crate::filesystem::retain_decoded(io.decode(
             std::marker::PhantomData::<T>,
             bytes,
-            crate::wire::ErrorCode::Storage,
+            ErrorCode::Storage,
         )?),
         _ => crate::contract::json_from_slice(bytes)
             .map_err(|error| crate::Error::Storage(error.to_string()))?,
@@ -724,14 +600,11 @@ fn decode_context_json<T: crate::executor::PreparationRecord + serde::Serialize>
     };
     let _ = maximum;
     if !canonical {
-        return Err(crate::executor::stock_boundary(
-            io,
-            crate::wire::ErrorCode::Storage,
-            reason,
-        ));
+        return Err(stock_boundary(io, ErrorCode::Storage, reason));
     }
     Ok(value)
 }
+
 impl ContextSource for DurableContextProvider {
     fn load<'a>(
         &'a self,

@@ -1,4 +1,5 @@
 use super::*;
+use crate::{executor::stock_boundary, wire::ErrorCode};
 
 pub(crate) fn checked_compaction_budget(
     policy: &ThresholdCompaction,
@@ -8,6 +9,7 @@ pub(crate) fn checked_compaction_budget(
     maximum_messages: usize,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<(usize, usize)> {
+    let invalid = |reason| stock_boundary(io, ErrorCode::Invalid, reason);
     crate::executor::with_history_io(io, |work| {
         let (through, maximum) =
             policy.projection_budget(context, count, maximum_messages, work)?;
@@ -25,37 +27,28 @@ pub(crate) fn checked_compaction_budget(
                         items: 1,
                     })?;
                 }
-                let tokens = count.message_tokens.get(position).ok_or_else(|| {
-                    crate::executor::stock_boundary(
-                        io,
-                        crate::wire::ErrorCode::Invalid,
-                        "mandatory token position is missing",
-                    )
-                })?;
-                total.checked_add(u64::from(*tokens)).ok_or_else(|| {
-                    crate::executor::stock_boundary(
-                        io,
-                        crate::wire::ErrorCode::Invalid,
-                        "mandatory token count overflows",
-                    )
-                })
+                let tokens = count
+                    .message_tokens
+                    .get(position)
+                    .ok_or_else(|| invalid("mandatory token position is missing"))?;
+                total
+                    .checked_add(u64::from(*tokens))
+                    .ok_or_else(|| invalid("mandatory token count overflows"))
             })?;
         if policy.needs_compaction(capacity, mandatory_tokens)? {
-            return Err(crate::executor::stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "mandatory content exceeds selected model capacity",
-            ));
+            return Err(invalid("mandatory content exceeds selected model capacity"));
         }
         Ok((through, maximum))
     })
 }
+
 pub(crate) fn validate_compaction(
     reference: &CompactionReference,
     source: &Context,
     compacted: &Context,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
+    let invalid = |reason| stock_boundary(io, ErrorCode::Invalid, reason);
     crate::executor::with_history_io(io, |work| {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let summary = match &reference.summary {
@@ -74,13 +67,8 @@ pub(crate) fn validate_compaction(
             .roles
             .len()
             .checked_mul(std::mem::size_of::<ModelRole>())
-            .ok_or_else(|| {
-                crate::executor::stock_boundary(
-                    io,
-                    crate::wire::ErrorCode::Invalid,
-                    "compaction retention capacity overflows",
-                )
-            })? as u64;
+            .ok_or_else(|| invalid("compaction retention capacity overflows"))?
+            as u64;
         if let Some(work) = quota.work().as_deref() {
             work.admit_copy(copied)?;
         }
@@ -108,31 +96,27 @@ pub(crate) fn validate_compaction(
             quota.adopt(io.owned_bytes()? - before)?;
         }
         if reference.source_digest != proof.source_digest || reconstructed != *compacted {
-            return Err(crate::executor::stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
+            return Err(invalid(
                 "compaction reference does not bind the source and retained context",
             ));
         }
         Ok(())
     })
 }
+
 pub(crate) fn validate_projected_context(
     context: &Context,
     limits: Limits,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
+    let invalid = |reason| stock_boundary(io, ErrorCode::Invalid, reason);
     crate::executor::with_history_io(io, |work| {
         limits.validate(work)?;
         context.validate_current_input(io)?;
         if context.messages.len() > limits.context_messages
             || context.metadata.len() > limits.attachments
         {
-            return Err(crate::executor::stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "context projection exceeded declared bounds",
-            ));
+            return Err(invalid("context projection exceeded declared bounds"));
         }
         for message in &context.messages {
             message.content.validate_limits(limits, work)?;
@@ -143,15 +127,16 @@ pub(crate) fn validate_projected_context(
         crate::contract::json_byte_length(context, limits.render_bytes, work).map(|_| ())
     })
 }
+
 pub(crate) async fn verify_file(
     file: &FileRef,
     verifier: &dyn ContentResidencyVerifier,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
     if !verifier.supports_read(file.volume(), io)? {
-        return Err(crate::executor::stock_boundary(
+        return Err(stock_boundary(
             io,
-            crate::wire::ErrorCode::Unsupported,
+            ErrorCode::Unsupported,
             "context verifier has no bounded capability",
         ));
     }
@@ -159,12 +144,14 @@ pub(crate) async fn verify_file(
         .verify(file, file.descriptor().byte_length(), io)?
         .await
 }
+
 pub(super) async fn validate_context_refs(
     context: &Context,
     verifier: &dyn ContentResidencyVerifier,
     limits: Limits,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
+    let invalid = |reason| stock_boundary(io, ErrorCode::Invalid, reason);
     validate_projected_context(context, limits, io)?;
     for message in &context.messages {
         for file in message.content.file_refs() {
@@ -176,16 +163,13 @@ pub(super) async fn validate_context_refs(
             || name.len() > crate::COMPONENT_LABEL_MAX_BYTES
             || name.chars().any(char::is_control)
         {
-            return Err(crate::executor::stock_boundary(
-                io,
-                crate::wire::ErrorCode::Invalid,
-                "durable context metadata key is invalid",
-            ));
+            return Err(invalid("durable context metadata key is invalid"));
         }
         verify_file(file, verifier, io).await?;
     }
     Ok(())
 }
+
 /// A source contributes messages only; its unrelated metadata is not imported.
 pub(super) fn validate_source_messages(
     messages: &[ModelMessage],
@@ -204,6 +188,7 @@ pub(super) fn validate_source_messages(
     }
     .validate_bounds(limits, io)
 }
+
 /// A pinned provider allowance can narrow, never widen, the admitted request.
 pub(crate) fn restrict_context_limits(
     pinned: Limits,
