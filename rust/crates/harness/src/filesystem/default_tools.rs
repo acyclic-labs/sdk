@@ -15,7 +15,6 @@ use crate::{
     merge::ProjectMergeReceipt,
     resources::GenerationRef,
     runtime::{DurableTaskHost, RuntimeScope, TaskAdmissionRecord, TaskContext, ToolContext, task_id_for_admission},
-    scheduler::LeaseFence,
     store::StreamAggregate,
     tool::{Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolRegistry, ToolResult},
     workflow::{MachineIdentity, MachineStatus, MachineTransition, ResumableMachine, WorkflowCommand, WorkflowJournal},
@@ -46,8 +45,6 @@ pub struct RecursiveDefaultToolset {
 pub struct RecursiveToolOwner<P, A, O> {
     /// Actual runtime containing the ordinary preparation/child definitions.
     pub runtime: Arc<FilesystemTaskRuntime<P, A, O>>,
-    /// Current caller execution reservation.
-    pub fence: LeaseFence,
     /// The same actual original caller owner used by the workflow journal.
     pub journal_owner: Arc<crate::durable_host::TaskJournalOwner<P>>,
     /// Actual invoking operation token, cancelled when its live future is dropped.
@@ -881,7 +878,6 @@ fn transition_identity(
     if let Some(io) = io { io.retain_owned(std::mem::size_of::<IdempotencyKey>() as u64)?; }
     Ok((operation, IdempotencyKey(key)))
 }
-#[cfg(not(target_arch = "wasm32"))]
 fn recursive_conflict_keys<S: serde::Serializer>(conflicts: &[acyclic_fs::MergeConflict], serializer: S)
     -> std::result::Result<S::Ok, S::Error> {
     use serde::ser::SerializeSeq as _;
@@ -1021,12 +1017,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             }
             drop(admitted);
             owner.0.runtime.task_host().verify_dispatch_owner_with_native_work(
-                caller, &owner.0.fence, work)?.await?;
+                caller, owner.0.journal_owner.task_binding().1, work)?.await?;
             let mut session = self.durable.open_with_native_context(
                 context, invocation, Arc::clone(&owner.0.workflow), work)?.await?;
             for _ in 0..8 {
                 owner.0.runtime.task_host().verify_dispatch_owner_with_native_work(
-                    caller, &owner.0.fence, work)?.await?;
+                    caller, owner.0.journal_owner.task_binding().1, work)?.await?;
                 let state = recursive_decode_with_native_work::<State>(&session.checkpoint().state, work)?;
                 let mut input = match state.0 {
                     State::Complete { value } => return Ok((Some(ToolResult { value }), state.1)),
@@ -1132,7 +1128,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 let transition = session.step_with_native_work(
                     identity.0, identity.1, input.0, input.1, work)?.await?;
                 owner.0.runtime.task_host().verify_dispatch_owner_with_native_work(
-                    caller, &owner.0.fence, work)?.await?;
+                    caller, owner.0.journal_owner.task_binding().1, work)?.await?;
                 match transition.0.status {
                     MachineStatus::Completed { value } => return Ok((Some(ToolResult { value }), transition.1)),
                     MachineStatus::Failed { message } => return Err(Error::NativeDiagnostic {
@@ -1157,11 +1153,11 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             || admitted.run_limits != context.scope().run_limits() {
             return Err(Error::Unauthorized("recursive owner differs from the original admitted caller".into()));
         }
-        owner.runtime.task_host().verify_dispatch_owner(caller, owner.fence.clone()).await?;
+        owner.runtime.task_host().verify_dispatch_owner(caller, owner.journal_owner.task_binding().1.clone()).await?;
         let mut session = self.durable.open(context.clone(), invocation.clone(), owner.workflow.clone()).await?;
         for _ in 0..8 {
             cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-            owner.runtime.task_host().verify_dispatch_owner(caller, owner.fence.clone()).await?;
+            owner.runtime.task_host().verify_dispatch_owner(caller, owner.journal_owner.task_binding().1.clone()).await?;
             let state: State = decode(&session.checkpoint().state, None)?;
             let input = match state {
                 State::Complete { value } => return Ok(Some(ToolResult { value })),
@@ -1219,7 +1215,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             };
             let (operation, key) = transition_identity(invocation.operation_id, session.checkpoint().revision, None)?;
             let transition = session.step(operation, key, input).await?;
-            owner.runtime.task_host().verify_dispatch_owner(caller, owner.fence.clone()).await?;
+            owner.runtime.task_host().verify_dispatch_owner(caller, owner.journal_owner.task_binding().1.clone()).await?;
             match transition.status {
                 MachineStatus::Completed { value } => return Ok(Some(ToolResult { value })),
                 MachineStatus::Failed { message } => return Err(Error::Conflict(message)),
@@ -1370,53 +1366,107 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         Ok(WorkflowCommand { operation_id,
             kind: crate::filesystem::fork_preparer_io::clone_text(command_kind(stage_kind), io)?, payload: file })
     }
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn apply_merge_with_native_work(
+    async fn apply_merge(
         &self, context: &ToolContext, owner: &RecursiveToolOwner<P, A, O>,
         merge: &RecursiveMergeToolPlan, cancellation: &CancellationToken,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<(Option<Value>, acyclic_fs::NativeAllocation)> {
-        let io = super::PreparationIo::from_native_work(work)?;
-        let binding = self.source()?.merge_with_native_work(
-            context, &merge.arguments, Some(merge), cancellation, work)?.await?;
-        validate_merge_binding(context, merge.arguments.source, &binding.0, Some(&io))?;
-        check_merge_binding(merge, &binding.0, Some(&io))?;
-        let controller = ParentProjectController::new(
-            binding.0.filesystem.as_ref(), binding.0.destination.reducer(),
-            &binding.0.verifier, &binding.0.scope, &binding.0.project, Some(&io))?;
-        let inspected = match &binding.0.source_read {
-            Some(handle) => controller.prepare_project_import_at_from_selected_source_with_native_work(
-                &merge.source_project, &merge.source_generation, &merge.expected_target_generation,
-                handle, &owner.journal_owner, context.task(), context.operation_id(), work).await?,
-            None => controller.prepare_project_import_at_with_native_work(
-                &merge.source_project, &merge.source_generation, &merge.expected_target_generation, work).await?,
+        output_io: Option<&super::PreparationIo>,
+    ) -> Result<Value> {
+        #[cfg(not(target_arch = "wasm32"))]
+        let temporary_io = output_io.and_then(super::PreparationIo::original_native_work)
+            .map(super::PreparationIo::from_native_work).transpose()?;
+        #[cfg(not(target_arch = "wasm32"))]
+        let io = temporary_io.as_ref();
+        #[cfg(target_arch = "wasm32")]
+        let io = output_io;
+        #[cfg(not(target_arch = "wasm32"))]
+        let native_work = io.and_then(super::PreparationIo::original_native_work);
+        let binding = 'binding: {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let (Some(io), Some(work)) = (io, native_work) {
+                let (binding, custody) = self.source()?.merge_with_native_work(
+                    context, &merge.arguments, Some(merge), cancellation, work)?.await?;
+                io.absorb_native_custody(custody)?;
+                break 'binding binding;
+            }
+            break 'binding self.source()?.merge(context, &merge.arguments, Some(merge), cancellation).await?;
         };
-        owner.runtime.task_host().verify_dispatch_owner_with_native_work(
-            merge.caller, &owner.fence, work)?.await?;
-        let outcome = if merge.arguments.selections.is_empty() {
-            controller.apply_project_merge_with_native_work(&inspected.0, context.operation_id(), work).await?
-        } else {
+        validate_merge_binding(context, merge.arguments.source, &binding, io)?;
+        check_merge_binding(merge, &binding, io)?;
+        let controller = ParentProjectController::new(binding.filesystem.as_ref(), binding.destination.reducer(),
+            &binding.verifier, &binding.scope, &binding.project, io)?;
+        let inspected = 'inspection: {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let (Some(io), Some(work)) = (io, native_work) {
+                let (inspected, custody) = match &binding.source_read {
+                    Some(handle) => controller.prepare_project_import_at_from_selected_source_with_native_work(
+                        &merge.source_project, &merge.source_generation, &merge.expected_target_generation,
+                        handle, &owner.journal_owner, context.task(), context.operation_id(), work).await?,
+                    None => controller.prepare_project_import_at_with_native_work(
+                        &merge.source_project, &merge.source_generation, &merge.expected_target_generation, work).await?,
+                };
+                io.absorb_native_custody(custody)?;
+                break 'inspection inspected;
+            }
+            break 'inspection match &binding.source_read {
+                Some(handle) => controller.prepare_project_import_at_from_selected_source(
+                    &merge.source_project, &merge.source_generation, &merge.expected_target_generation,
+                    handle, &owner.journal_owner, context.task(), context.operation_id()).await?,
+                None => controller.prepare_project_import_at(
+                    &merge.source_project, &merge.source_generation, &merge.expected_target_generation).await?,
+            };
+        };
+        'owner: {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = native_work {
+                owner.runtime.task_host().verify_dispatch_owner_with_native_work(merge.caller, owner.journal_owner.task_binding().1, work).await?;
+                break 'owner;
+            }
+            cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
+            owner.runtime.task_host().verify_dispatch_owner(merge.caller, owner.journal_owner.task_binding().1.clone()).await?;
+        }
+        let outcome = {
             let mut sides = BTreeMap::new();
             for selection in &merge.arguments.selections {
-                let conflict = super::project_workspaces::decode_conflict(&selection.conflict, Some(&io))?;
+                let conflict = super::project_workspaces::decode_conflict(&selection.conflict, io)?;
                 let side = match selection.side {
                     MergeToolSide::Base => ConflictSide::Base, MergeToolSide::Target => ConflictSide::Ours,
                     MergeToolSide::Source => ConflictSide::Theirs,
                 };
                 if sides.contains_key(&conflict) {
-                    return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                        reason: "merge conflict selected twice" });
+                    return Err(recursive_reject(io, crate::wire::ErrorCode::Invalid, "merge conflict selected twice"));
                 }
-                let bytes = std::mem::size_of::<(acyclic_fs::MergeConflict, ConflictSide)>() as u64;
-                io.retain_owned(bytes)?;
-                io.allocation_attempt(bytes)?;
+                if let Some(io) = io {
+                    let bytes = std::mem::size_of::<(acyclic_fs::MergeConflict, ConflictSide)>() as u64;
+                    io.retain_owned(bytes)?;
+                    io.allocation_attempt(bytes)?;
+                }
                 sides.insert(conflict, side);
             }
-            controller.apply_project_merge_sides_with_native_work(
-                &inspected.0, context.operation_id(), &sides, work).await?
+            'join: {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let (Some(io), Some(work)) = (io, native_work) {
+                    let (outcome, custody) = if sides.is_empty() {
+                        controller.apply_project_merge_with_native_work(&inspected, context.operation_id(), work).await?
+                    } else {
+                        controller.apply_project_merge_sides_with_native_work(&inspected, context.operation_id(), &sides, work).await?
+                    };
+                    io.absorb_native_custody(custody)?;
+                    break 'join outcome;
+                }
+                break 'join if sides.is_empty() {
+                    controller.apply_project_merge(&inspected, context.operation_id()).await?
+                } else { controller.apply_project_merge_sides(&inspected, context.operation_id(), sides).await? };
+            }
         };
-        owner.runtime.task_host().verify_dispatch_owner_with_native_work(
-            merge.caller, &owner.fence, work)?.await?;
+        'owner: {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(work) = native_work {
+                owner.runtime.task_host().verify_dispatch_owner_with_native_work(merge.caller, owner.journal_owner.task_binding().1, work).await?;
+                break 'owner;
+            }
+            owner.runtime.task_host().verify_dispatch_owner(merge.caller, owner.journal_owner.task_binding().1.clone()).await?;
+            cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
+        }
         #[derive(Serialize)]
         struct Applied<'a> { status: &'static str, receipt: &'a ProjectMergeReceipt }
         #[derive(Serialize)]
@@ -1427,24 +1477,40 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             conflicts: &'a [acyclic_fs::MergeConflict], truncated: bool }
         #[derive(Serialize)]
         struct Status { status: &'static str }
-        let value = match &outcome.0 {
+        match &outcome {
             JoinOutcome::Applied(_) | JoinOutcome::AlreadyApplied(_) => {
-                let receipt = controller.merge_receipt_with_native_work(
-                    &inspected.0, &outcome.0, &merge.source, context.operation_id(), &merge.notice, work)?;
-                recursive_encode_with_native_work(&Applied { status: "applied", receipt: &receipt.0 }, work)?
+                let receipt = 'receipt: {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let (Some(io), Some(work)) = (io, native_work) {
+                        let (receipt, custody) = controller.merge_receipt_with_native_work(
+                            &inspected, &outcome, &merge.source, context.operation_id(), &merge.notice, work)?;
+                        io.absorb_native_custody(custody)?;
+                        break 'receipt receipt;
+                    }
+                    break 'receipt controller.merge_receipt(&inspected, &outcome, merge.source.clone(),
+                        context.operation_id(), merge.notice.clone())?;
+                };
+                encode(&Applied { status: "applied", receipt: &receipt }, output_io)
             }
             JoinOutcome::NoChanges(generation) | JoinOutcome::StaleTarget(generation) => {
-                let reference = GenerationRef::new_with_native_work(
-                    binding.0.project.provider(), &generation.id().digest().into_bytes(), None, work)?;
-                let status = if matches!(&outcome.0, JoinOutcome::NoChanges(_)) { "no_changes" } else { "stale_target" };
-                recursive_encode_with_native_work(&Generation { status, generation: &reference.0 }, work)?
+                let reference = 'generation: {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let (Some(io), Some(work)) = (io, native_work) {
+                        let (reference, custody) = GenerationRef::new_with_native_work(
+                            binding.project.provider(), &generation.id().digest().into_bytes(), None, work)?;
+                        io.absorb_native_custody(custody)?;
+                        break 'generation reference;
+                    }
+                    break 'generation binding.filesystem.generation_ref(generation)?;
+                };
+                let status = if matches!(&outcome, JoinOutcome::NoChanges(_)) { "no_changes" } else { "stale_target" };
+                encode(&Generation { status, generation: &reference }, output_io)
             }
-            JoinOutcome::Conflicted { conflicts, truncated } => recursive_encode_with_native_work(
-                &Conflicted { status: "conflicted", conflicts, truncated: *truncated }, work)?,
-            JoinOutcome::Fenced => recursive_encode_with_native_work(&Status { status: "fenced" }, work)?,
-            JoinOutcome::IdempotencyConflict => recursive_encode_with_native_work(&Status { status: "idempotency_conflict" }, work)?,
-        };
-        Ok((Some(value.0), value.1))
+            JoinOutcome::Conflicted { conflicts, truncated } => encode(
+                &Conflicted { status: "conflicted", conflicts, truncated: *truncated }, output_io),
+            JoinOutcome::Fenced => encode(&Status { status: "fenced" }, output_io),
+            JoinOutcome::IdempotencyConflict => encode(&Status { status: "idempotency_conflict" }, output_io),
+        }
     }
 
     async fn publish_fork(
@@ -1600,9 +1666,10 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                             crate::wire::ErrorCode::Unauthorized, "recursive command has no original native task context"))?;
                         let temporary_io = super::PreparationIo::from_native_work(work)?;
                         let history = &mut temporary_io.history_io();
-                        let fence = LeaseFence {
-                            reservation_id: history.clone_text(&owner.fence.reservation_id)?,
-                            placement: history.clone_text(&owner.fence.placement)?,
+                        let original_fence = owner.journal_owner.task_binding().1;
+                        let fence = crate::scheduler::LeaseFence {
+                            reservation_id: history.clone_text(&original_fence.reservation_id)?,
+                            placement: history.clone_text(&original_fence.placement)?,
                         };
                         let command = WorkflowCommand { operation_id: command.operation_id,
                             kind: history.clone_text(&command.kind)?,
@@ -1612,7 +1679,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                             Arc::clone(context), fence, command, payload, work)?.await?;
                     }
                     break 'progress owner.runtime.commands().execute(
-                        context.task().clone(), owner.fence.clone(), command.clone(), payload).await?;
+                        context.task().clone(), owner.journal_owner.task_binding().1.clone(), command.clone(), payload).await?;
                 };
                 match progress {
                     TaskCommandProgress::Ready(value) => {
@@ -1668,46 +1735,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             }
             (Plan::Fork(fork), "fork-publish") => return self.publish_fork(
                 context, owner, fork, report, cancellation, io).await.map(Some),
-            (Plan::Merge(merge), "merge-apply") => {
-                #[cfg(not(target_arch = "wasm32"))]
-                if let (Some(io), Some(work)) = (io, native_work) {
-                    let (value, custody) = self.apply_merge_with_native_work(context, owner, merge, cancellation, work).await?;
-                    io.absorb_native_custody(custody)?;
-                    return Ok(value);
-                }
-                let binding = self.source()?.merge(context, &merge.arguments, Some(merge), cancellation).await?;
-                validate_merge_binding(context, merge.arguments.source, &binding, None)?;
-                check_merge_binding(merge, &binding, None)?;
-                let controller = ParentProjectController::new(binding.filesystem.as_ref(), binding.destination.reducer(), &binding.verifier, &binding.scope, &binding.project, None)?;
-                let inspected = match &binding.source_read {
-                    Some(handle) => controller.prepare_project_import_at_from_selected_source(
-                        &merge.source_project, &merge.source_generation, &merge.expected_target_generation,
-                        handle, &owner.journal_owner, context.task(), context.operation_id()).await?,
-                    None => controller.prepare_project_import_at(
-                        &merge.source_project, &merge.source_generation, &merge.expected_target_generation).await?,
-                };
-                cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-                owner.runtime.task_host().verify_dispatch_owner(merge.caller, owner.fence.clone()).await?;
-                let outcome = if merge.arguments.selections.is_empty() { controller.apply_project_merge(&inspected, context.operation_id()).await? } else {
-                    let mut sides = BTreeMap::new();
-                    for selection in &merge.arguments.selections {
-                        let side = match selection.side { MergeToolSide::Base => ConflictSide::Base, MergeToolSide::Target => ConflictSide::Ours, MergeToolSide::Source => ConflictSide::Theirs };
-                        let conflict = super::project_workspaces::decode_conflict(&selection.conflict, None)?;
-                        if sides.insert(conflict, side).is_some() { return Err(Error::Invalid("merge conflict selected twice".into())); }
-                    }
-                    controller.apply_project_merge_sides(&inspected, context.operation_id(), sides).await?
-                };
-                owner.runtime.task_host().verify_dispatch_owner(merge.caller, owner.fence.clone()).await?;
-                cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
-                let value = match &outcome {
-                    JoinOutcome::Applied(_) | JoinOutcome::AlreadyApplied(_) => json!({"status":"applied","receipt":controller.merge_receipt(&inspected, &outcome, merge.source.clone(), context.operation_id(), merge.notice.clone())?}),
-                    JoinOutcome::NoChanges(generation) => json!({"status":"no_changes","generation":binding.filesystem.generation_ref(generation)?}),
-                    JoinOutcome::StaleTarget(generation) => json!({"status":"stale_target","generation":binding.filesystem.generation_ref(generation)?}),
-                    JoinOutcome::Conflicted { conflicts, truncated } => json!({"status":"conflicted","conflicts":conflicts.iter().map(super::project_workspaces::encode_conflict).collect::<Vec<_>>(),"truncated":truncated}),
-                    JoinOutcome::Fenced => json!({"status":"fenced"}), JoinOutcome::IdempotencyConflict => json!({"status":"idempotency_conflict"}),
-                };
-                return Ok(Some(value));
-            }
+            (Plan::Merge(merge), "merge-apply") => return self.apply_merge(
+                context, owner, merge, cancellation, io).await.map(Some),
             (Plan::Merge(merge), "merge-publish") => return self.publish_merge(
                 context, owner, merge, receipt, cancellation, io).await.map(Some),
             _ => return Err(recursive_reject(io, crate::wire::ErrorCode::Invalid,
@@ -2030,7 +2059,7 @@ where P: StreamProvider {
             }
             #[cfg(target_arch = "wasm32")]
             source.require_selection(context.operation_id(), source_task, &binding.source_project, &binding.source_generation, authorization.native_snapshot.as_ref(), None)?;
-            source.grant().require_with_io(&binding.source_project, VolumeOperation::Read, io)?;
+            source.grant().require(&binding.source_project, VolumeOperation::Read, io)?;
         }
         None => {
             if !recursive_volume_granted(effective.grants(), &binding.source_project, VolumeOperation::Read, io)? {

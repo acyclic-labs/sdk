@@ -428,7 +428,7 @@ where
         if let Some(io) = io {
             let work = io.original_native_work().ok_or_else(|| io.invalid("native runtime configuration has no original work"))?;
             let io = super::PreparationIo::from_native_work(work)?;
-            volume.validate_with_native_work(work)?;
+            volume.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
             if maximum_payload_bytes == 0 {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                     reason: "stock runtime requires a positive payload limit" });
@@ -553,7 +553,7 @@ where
             let work = io.original_native_work().ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid, reason: "native runtime configuration has no original work",
             })?;
-            volume.validate_with_native_work(work)?;
+            volume.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
         } else { volume.validate(&mut None)?; }
         #[cfg(target_arch = "wasm32")]
         volume.validate()?;
@@ -1177,11 +1177,10 @@ where
         invocation: &crate::tool::ToolInvocation,
         cancellation: &acyclic_fs::CancellationToken,
     ) -> Result<super::RecursiveToolOwner<P, A, O>> {
-        let fence = context.task().owned_task_fence()?;
         let workflow = self.workflow_journal_for_tool(context, tool, invocation, cancellation).await?;
         let journal_owner = workflow.task_journal_owner()
             .ok_or_else(|| Error::Unauthorized("recursive tool lacks its original task owner".into()))?;
-        Ok(super::RecursiveToolOwner { runtime:self.clone(), fence, workflow, journal_owner, cancellation:cancellation.clone() })
+        Ok(super::RecursiveToolOwner { runtime:self.clone(), workflow, journal_owner, cancellation:cancellation.clone() })
     }
 
     /// Opens a workflow journal under the exact retained lease and admission.
