@@ -1,0 +1,14 @@
+{
+  "name": "@acyclic-labs/swarm",
+  "version": "0.2.0",
+  "private": false,
+  "license": "Apache-2.0",
+  "description": "Client for Cloud's public Swarm HTTP contract",
+  "repository": { "type": "git", "url": "git+https://github.com/acyclic-labs/sdk.git", "directory": "typescript/packages/swarm" },
+  "type": "module",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "types": "./dist/index.d.ts",
+  "files": ["dist", "README.md", "CHANGELOG.md"],
+  "scripts": { "build": "tsc -b", "test": "tsc -b && node --test test/http.test.mjs", "pack:dry": "bun pm pack --dry-run" },
+  "devDependencies": { "typescript": "7.0.2" }
+}

@@ -156,6 +156,13 @@
         "typescript": "7.0.2",
       },
     },
+    "typescript/packages/swarm": {
+      "name": "@acyclic-labs/swarm",
+      "version": "0.2.0",
+      "devDependencies": {
+        "typescript": "7.0.2",
+      },
+    },
     "typescript/packages/workers": {
       "name": "@acyclic-labs/workers",
       "version": "0.2.0",
@@ -189,6 +196,8 @@
     "@acyclic-labs/sdk": ["@acyclic-labs/sdk@workspace:typescript/packages/sdk"],
 
     "@acyclic-labs/stream": ["@acyclic-labs/stream@workspace:typescript/packages/stream"],
+
+    "@acyclic-labs/swarm": ["@acyclic-labs/swarm@workspace:typescript/packages/swarm"],
 
     "@acyclic-labs/workers": ["@acyclic-labs/workers@workspace:typescript/packages/workers"],
 
