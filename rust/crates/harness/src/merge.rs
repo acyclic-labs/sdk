@@ -275,13 +275,13 @@ impl ProjectMergeReceipt {
             return Err(merge_boundary(work, "project merge receipt has inconsistent identities"));
         }
         self.child.validate_with_work(work)?;
-        self.source_project.validate_with_work(work)?;
-        self.target_project.validate_with_work(work)?;
+        self.source_project.validate(work)?;
+        self.target_project.validate(work)?;
         self.source_generation.validate_with_work(work)?;
         self.expected_target_generation.validate_with_work(work)?;
         self.result_generation.validate_with_work(work)?;
         self.provider_proof.validate_with_work(work)?;
-        self.notice.validate_with_work(work)?;
+        self.notice.validate(work)?;
         if self.notice.kind != MessageKind::Merge {
             return Err(merge_boundary(work, "project merge notice has the wrong kind"));
         }

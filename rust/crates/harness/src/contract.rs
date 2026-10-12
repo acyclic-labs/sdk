@@ -67,7 +67,6 @@ pub(crate) use json::{
     admit_json, admit_json_value_shape, lexical_json_diagnostic_bytes,
     json_owned_value_shape_bounded,
     json_typed_value_decode_owned_bytes, json_value_virtual_owned_bytes,
-    json_from_slice_seed_bounded_trusted,
     owned_logical_bytes,
 };
 mod event_json;
@@ -82,19 +81,17 @@ pub(crate) use snapshot_json::snapshot_json_admission;
 pub use json::{
     JsonBounds, JsonCodecCharge, JsonValueSchema, JsonValueShape,
     canonical_json_bytes_bounded, json_bytes_bounded,
-    json_from_slice_bounded_trusted, json_value_bounded, json_value_decode_owned_bytes,
+    json_from_slice_bounded, json_value_bounded, json_value_decode_owned_bytes,
     sdk_json_diagnostic_bytes,
     json_owned_value_conversion_additional_bytes,
 };
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use json::{
-    json_from_slice_bounded_native_trusted,
-    json_from_value_bounded_native_trusted, json_from_value_owned_bounded_native_trusted,
+    json_from_value_bounded,
 };
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use json::{
     validate_json_byte_bound_native_trusted,
-    json_from_slice_seed_bounded_native_trusted,
     canonical_json_bytes_identity_native_trusted,
     canonical_json_value_into_prepaid_native_trusted,
 };
@@ -1355,7 +1352,6 @@ pub(crate) fn native_work_error_code(cause: &acyclic_fs::NativeTreeMaterializati
         Native::InvalidLayout
         | Native::InvalidPreimage
         | Native::InvalidPath(..)
-        | Native::OverlappingPaths
         | Native::PayloadTooLarge { .. } => ErrorCode::Invalid,
         Native::MissingTarget(..) | Native::MissingPreimage(..) => ErrorCode::NotFound,
         Native::ExternalMutation(..)
@@ -1368,7 +1364,6 @@ pub(crate) fn native_work_error_code(cause: &acyclic_fs::NativeTreeMaterializati
         | Native::OriginalWorkPoisoned
         | Native::MissingCustody
         | Native::Work(_)
-        | Native::Allocation(..)
         | Native::AllocationFailed(_)
         | Native::IndeterminatePreparation => ErrorCode::Storage,
     }

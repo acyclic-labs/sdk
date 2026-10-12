@@ -81,12 +81,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.original_native_work() {
             return crate::NativeFutureBundle::new(work, || async move {
-                self.lazy.validate_snapshot_with_native_work(snapshot, work).await.map_err(Error::from)
+                let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(
+                    work, work.cancellation(),
+                )?;
+                self.lazy.validate_snapshot(snapshot, &accounting).await.map_err(Error::from)
             }).map(crate::store::history::HistoryContentFuture::Native);
         }
         io.history_future(|| async move {
-            io.receive_content(self.lazy.validate_snapshot_measured(snapshot, io.remaining()?, &io.cancellation).await
-                .map_err(|failure| failure.map_error(root_source_error)))
+            let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::new(io.remaining()?, io.cancellation());
+            let result = self.lazy.validate_snapshot(snapshot, &accounting).await;
+            io.receive_content(accounting.measured(result, |error, work| error.with_prior_work(work)
+                .into_measured_failure().map_error(root_source_error)))
         })
     }
     fn read<'a>(&'a self, snapshot: LazySnapshotRef, path: &'a str, maximum: u64,
@@ -101,7 +106,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
             }).map(crate::store::history::HistoryContentFuture::Native);
         }
         io.history_future(|| async move {
-            io.receive_content(self.lazy.read_at_snapshot_measured(snapshot, path, maximum, io.remaining()?, &io.cancellation).await
+            io.receive_content(self.lazy.read_at_snapshot_measured(snapshot, path, maximum, io.remaining()?, io.cancellation()).await
                 .map_err(|failure| failure.map_error(root_source_error)))
         })
     }
@@ -133,7 +138,10 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
         }
         let generation = |commit| match commit {
             acyclic_fs::TransactionCommit::Committed(generation)
-            | acyclic_fs::TransactionCommit::AlreadyCommitted(generation) => generation,
+            | acyclic_fs::TransactionCommit::AlreadyCommitted(generation) => Ok(generation),
+            acyclic_fs::TransactionCommit::Conflict { .. } | acyclic_fs::TransactionCommit::Fenced
+            | acyclic_fs::TransactionCommit::IdempotencyConflict => Err(super::fork_preparer_io::failure(
+                Some(io), crate::wire::ErrorCode::Conflict, "Root upload publication was rejected")),
         };
         if let Some(original) = io.original_native_work() {
             return crate::NativeFutureBundle::new(original, || async move {
@@ -147,7 +155,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
                     snapshot, root_lazy_mutations(mutations), key, permit, original,
                     io.cancellation(), &mut before_mutation,
                 ).await?;
-                Ok((generation(commit), snapshot))
+                Ok((generation(commit)?, snapshot))
             }).map(crate::store::history::HistoryContentFuture::Native);
         }
         io.history_future(|| async move {
@@ -173,7 +181,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
                     io.cancellation(), &mut before_mutation,
                 ).await?
             };
-            Ok((generation(commit), snapshot))
+            Ok((generation(commit)?, snapshot))
         })
     }
 }
@@ -222,7 +230,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
             Some(io) => {
                 io.retain_owned(std::mem::size_of::<Self>() as u64)?;
                 Some(io.take_native_custody(io.owned_bytes()?.checked_sub(before)
-                    .ok_or_else(|| super::fork_preparer_io::invalid(Some(io), "root source custody underflows"))?)?)
+                    .ok_or_else(|| super::fork_preparer_io::failure(Some(io), crate::wire::ErrorCode::Invalid, "root source custody underflows"))?)?)
             }
             None => None,
         };
@@ -277,35 +285,35 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
         &self, context: RootProjectSourceContext<'_>, snapshot: &ProjectSourceSnapshot,
         io: Option<&super::PreparationIo>,
     ) -> Result<()> {
-        use super::fork_preparer_io::{invalid, unauthorized};
+        use super::fork_preparer_io::failure;
         let check_cancellation = || context.cancellation.check().map_err(|_| {
             #[cfg(not(target_arch = "wasm32"))]
             if io.and_then(super::PreparationIo::original_native_work).is_some() {
                 return Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody: None };
             }
-            unauthorized(io, "project source operation cancelled")
+            failure(io, crate::wire::ErrorCode::Unauthorized, "project source operation cancelled")
         });
         if io.is_some() { check_cancellation()?; }
         if context.owner != &self.owner || context.graph_root != self.graph_root
             || !context.created_project_authenticated
         {
-            return Err(unauthorized(io, "project source lacks this graph's authenticated creator"));
+            return Err(failure(io, crate::wire::ErrorCode::Unauthorized, "project source lacks this graph's authenticated creator"));
         }
         if self.native_source(&snapshot.project).is_some() && snapshot.native_snapshot.is_none() {
-            return Err(unauthorized(io, "bound lazy project requires its original native snapshot"));
+            return Err(failure(io, crate::wire::ErrorCode::Unauthorized, "bound lazy project requires its original native snapshot"));
         }
         if io.is_none() {
-            snapshot.project.validate()?;
+            snapshot.project.validate(&mut None)?;
             snapshot.generation.validate()?;
         }
         if snapshot.project.class() != VolumeClass::Project
             || snapshot.project.provider() != &self.host.provider
             || snapshot.generation.as_resource().provider() != &self.host.provider
         {
-            return Err(unauthorized(io, "project source belongs to another namespace or provider"));
+            return Err(failure(io, crate::wire::ErrorCode::Unauthorized, "project source belongs to another namespace or provider"));
         }
         let budget = source_budget(context.maximum_work, context.maximum_bytes)
-            .map_err(|_| invalid(io, "project source requires finite positive admission"))?;
+            .map_err(|_| failure(io, crate::wire::ErrorCode::Invalid, "project source requires finite positive admission"))?;
         let ordinary;
         let io = match io {
             Some(io) => io,
@@ -336,21 +344,21 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
         read[12..].copy_from_slice(digest.as_bytes());
         #[cfg(not(target_arch = "wasm32"))]
         if io.original_native_work().is_some() { io.charge(copying)?; }
-        let name = std::str::from_utf8(&name).map_err(|_| invalid(Some(io), "invalid source namespace digest"))?;
-        let read = std::str::from_utf8(&read).map_err(|_| invalid(Some(io), "invalid source read digest"))?;
+        let name = std::str::from_utf8(&name).map_err(|_| failure(Some(io), crate::wire::ErrorCode::Invalid, "invalid source namespace digest"))?;
+        let read = std::str::from_utf8(&read).map_err(|_| failure(Some(io), crate::wire::ErrorCode::Invalid, "invalid source read digest"))?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.original_native_work() {
             work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
         }
         if !context.source.grants.contains(read) {
-            return Err(unauthorized(Some(io), "selected source admission lacks original project read authority"));
+            return Err(failure(Some(io), crate::wire::ErrorCode::Unauthorized, "selected source admission lacks original project read authority"));
         }
         let opened;
         #[cfg(not(target_arch = "wasm32"))]
         { opened = match io.original_native_work() {
             Some(work) => self.host.filesystem.open_workspace_with_native_work(name, work, context.cancellation)
                 .await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?,
-            None => io.receive(self.host.filesystem.open_workspace_measured(name, io.remaining()?, context.cancellation).await)?,
+            None => io.receive(self.host.filesystem.open_workspace(name, io.remaining()?, context.cancellation).await)?,
         }; }
         #[cfg(target_arch = "wasm32")]
         { opened = io.receive(self.host.filesystem.open_workspace_measured(name, io.remaining()?, context.cancellation).await)?; }
@@ -363,9 +371,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
         drop(selected);
         if let Some(value) = &snapshot.native_snapshot {
             let lazy = self.native_source(&snapshot.project)
-                .ok_or_else(|| unauthorized(Some(io), "native source has no original provider binding"))?;
+                .ok_or_else(|| failure(Some(io), crate::wire::ErrorCode::Unauthorized, "native source has no original provider binding"))?;
             if lazy.backing.workspace_id() != opened.id() {
-                return Err(unauthorized(Some(io), "native source names another original workspace"));
+                return Err(failure(Some(io), crate::wire::ErrorCode::Unauthorized, "native source names another original workspace"));
             }
             let encoded_hold;
             let encoded = source_json(value, bounds, io)?;
@@ -383,16 +391,16 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
                 None => {
                     frozen_hold = None;
                     LazySnapshotRef::deserialize(value)
-                        .map_err(|_| invalid(Some(io), "native source is not a lazy snapshot reference"))?
+                        .map_err(|_| failure(Some(io), crate::wire::ErrorCode::Invalid, "native source is not a lazy snapshot reference"))?
                 }
             };
             #[cfg(target_arch = "wasm32")]
             let frozen = LazySnapshotRef::deserialize(value)
-                .map_err(|_| invalid(Some(io), "native source is not a lazy snapshot reference"))?;
+                .map_err(|_| failure(Some(io), crate::wire::ErrorCode::Invalid, "native source is not a lazy snapshot reference"))?;
             drop(encoded);
             drop(encoded_hold);
             if frozen.workspace_id != opened.id() || frozen.authored_generation != generation_id {
-                return Err(unauthorized(Some(io), "native capture does not match the selected generation"));
+                return Err(failure(Some(io), crate::wire::ErrorCode::Unauthorized, "native capture does not match the selected generation"));
             }
             lazy.backing.validate(frozen, io)?.await?;
             #[cfg(not(target_arch = "wasm32"))]
@@ -448,7 +456,7 @@ fn source_budget(maximum_work: u64, maximum_bytes: u64) -> Result<WorkBudget> {
     if maximum_work == 0 || maximum_work == u64::MAX || maximum_bytes == 0 || maximum_bytes == u64::MAX {
         return Err(Error::Invalid("project source requires finite positive admission".into()));
     }
-    let mut budget = super::finite_budget(maximum_work / 14, maximum_bytes / 9);
+    let mut budget = acyclic_fs::performance::work_budget(maximum_work / 14, maximum_bytes / 9);
     budget.peak_allocation_bytes = maximum_bytes;
     Ok(budget)
 }

@@ -5,7 +5,6 @@
 
 use http_body::Body as _;
 use std::{
-    marker::PhantomData,
     pin::Pin,
     task::{Context, Poll},
 };
@@ -16,29 +15,22 @@ use tonic::{
 };
 use tracing::{Dispatch, Span};
 
-/// Supplies a family's statically named call span without dynamic registration.
-pub trait CallSpan: Clone {
-    /// Opens the RPC span in the originating caller's context.
-    fn span(rpc: Option<&str>) -> Span;
-}
-
 /// A channel whose call span closes exactly once at terminal status or cancellation.
 #[derive(Clone, Debug)]
-pub struct TracedChannel<S, F>(S, PhantomData<F>);
+pub struct TracedChannel<S>(S, fn(Option<&str>) -> Span);
 
-impl<S, F> TracedChannel<S, F> {
+impl<S> TracedChannel<S> {
     /// Wraps one transport without changing its requests or errors.
-    pub fn new(channel: S) -> Self {
-        Self(channel, PhantomData)
+    pub fn new(channel: S, span: fn(Option<&str>) -> Span) -> Self {
+        Self(channel, span)
     }
 }
 
-impl<S, F> Service<http::Request<Body>> for TracedChannel<S, F>
+impl<S> Service<http::Request<Body>> for TracedChannel<S>
 where
     S: Service<http::Request<Body>, Response = http::Response<Body>>,
     S::Future: Send + 'static,
     S::Error: 'static,
-    F: CallSpan,
 {
     type Response = http::Response<Body>;
     type Error = S::Error;
@@ -53,7 +45,7 @@ where
             dispatch: tracing::dispatcher::get_default(Clone::clone),
             caller: Span::current(),
         };
-        let span = F::span(
+        let span = (self.1)(
             request
                 .extensions()
                 .get::<tonic::GrpcMethod<'static>>()

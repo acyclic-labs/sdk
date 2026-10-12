@@ -24,11 +24,6 @@ pub struct AttributeListing {
 }
 
 /// Lists one bounded attribute page through the shared persistent-tree cursor.
-///
-/// # Errors
-///
-/// Fails closed on malformed routing, cycles, invalid bounds, storage failure,
-/// or work outside the admitted budget.
 pub fn list_attributes<S: crate::ImmediateObjectStore>(
     store: &S,
     root: ObjectId,
@@ -50,11 +45,6 @@ pub fn list_attributes<S: crate::ImmediateObjectStore>(
 }
 
 /// Asynchronously executes the same cursor machine as [`list_attributes`].
-///
-/// # Errors
-///
-/// Returns the same typed failures, including cancellation before every
-/// backend boundary.
 pub async fn list_attributes_async<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
@@ -79,7 +69,6 @@ pub async fn list_attributes_async<S: AsyncObjectStore>(
     .map_err(map_failure)
 }
 
-/// Executes the canonical cursor machine with actual original-owned results.
 pub(crate) async fn list_attributes_async_with_accounting<S: AsyncObjectStore>(
     store: &S, root: ObjectId, after: Option<&AttributeName>, maximum_entries: u32,
     limits: DecodeLimits, accounting: &mut super::allocation::KernelAccounting<'_>,

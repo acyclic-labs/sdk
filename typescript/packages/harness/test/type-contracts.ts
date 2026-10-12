@@ -1,6 +1,6 @@
 import type {
   AgentHarness, AgentId, ApprovalBinding, Authority, BrowserAggregate, ClientCommand, Command, ContentBindings, ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, Event, FileRef, ProviderOperationId, HarnessRuntimeSpawner, HarnessRuntimeState, Interaction, InteractionId, InteractionResolution, InteractionTicket, Policy,
-  ForkRequest, ForkSeed, ModelContextSelection, ModelToolDefinition, NativeContracts, OperationId, PolicyDigest, ProjectMergeNotice, ProjectableConversation, ProviderJoinProof, ResourceRef, ResourceRevision, ResumableTask, RuntimeSchema, RuntimeTaskId, TaskContext,
+  ForkRequest, ForkSeed, ModelContextSelection, ModelToolDefinition, NativeContracts, OperationId, PolicyDigest, ProjectableConversation, ProviderJoinProof, ResourceRef, ResourceRevision, ResumableTask, RuntimeSchema, TaskId, TaskContext,
   SharedGrant, TaskGroup, ToolRef, VolumeOwner, VolumeRef, ModelContentPart, ModelEvent, ModelRole,
   NativeModelContent, NativeModelContentPart,
   CompactionPolicy, CompactionRetention, ThresholdCompaction, ModelContextCapacityWire, ModelTokenCountWire, ModelContextCapacity, ModelTokenCount,
@@ -124,7 +124,7 @@ const unlinkedToolResult: ConversationMessage<"tool_result">["reply_to"] = null;
 // @ts-expect-error ordinary user records cannot carry a tool-call identity
 const toolIdOnUser: ConversationMessage<"user">["tool_call_id"] = "call";
 // @ts-expect-error a project merge receipt can only append a merge notice
-const wrongMergeNoticeKind: ProjectMergeNotice["kind"] = "assistant";
+const wrongMergeNoticeKind: ConversationMessage<"merge">["kind"] = "assistant";
 // @ts-expect-error provider identities require a string namespace
 const wrongMergeProofProvider: ProviderJoinProof["provider"] = { ...provider, namespace: 7 };
 // @ts-expect-error a merge proof cannot encode the absence of a provider statement
@@ -234,7 +234,7 @@ function recordedEventCannotExposeBearerProof(event: Event): Uint8Array {
   return event.attestation;
 }
 
-function durableTasksNeedPinnedTypes(harness: AgentHarness, id: RuntimeTaskId): void {
+function durableTasksNeedPinnedTypes(harness: AgentHarness, id: TaskId): void {
   // @ts-expect-error a typed checkpoint transition needs its own pinned state schema
   const missingState: ResumableTask<number, number, number> = { initial: input => input,
     async transition(_context, state) { return { kind: "finish", output: state }; } };
@@ -257,7 +257,7 @@ function toolsNeedTypedAdmission(): void {
     inputSchema: { type: "number" }, outputSchema: { type: "number" } }, (_context, value) => value);
 }
 
-function hostRecoveryCannotInventTypes(host: HarnessRuntimeSpawner & HarnessRuntimeState, id: RuntimeTaskId): void {
+function hostRecoveryCannotInventTypes(host: HarnessRuntimeSpawner & HarnessRuntimeState, id: TaskId): void {
   // @ts-expect-error recovered task output is unknown until its pinned definition validates it
   void host.attach<number>(id, {} as AgentHarness);
   if (host.reconcileBatch) {

@@ -271,19 +271,17 @@ async fn capture<P: StreamProvider + 'static>(
 }.map_err(|error| root_failure(error))?;
                     Ok(acyclic_native_runtime::ProcessInput { bytes, complete: exchange.is_complete() })
                 };
-                let output = {process.wait_with_exchange_observed_with_meter(timeout, maximum,
-                        request.maximum_bytes as usize, &first, buffers, original.runtime_meter(), poll, observe)
-};
+                let output = process.wait_with_output(timeout, maximum,
+                    Some(acyclic_native_runtime::CaptureInput::Exchange { initial: &first, maximum: request.maximum_bytes as usize }),
+                    poll, observe, Some(original.runtime_meter()), Some(buffers));
                 drop(exchange); drop(first); drop(response_custody); drop(exchange_custody);
                 output
             } else if let Some(input) = &invocation.standard_input {
-                {process.wait_with_input_observed_with_meter(timeout, maximum, input,
-                        buffers, original.runtime_meter(), poll)
-}
+                process.wait_with_output(timeout, maximum, Some(acyclic_native_runtime::CaptureInput::Literal(input)),
+                    poll, |_| Ok(acyclic_native_runtime::ProcessInput::default()), Some(original.runtime_meter()), Some(buffers))
             } else {
-                {process.wait_with_output_observed_with_meter(timeout, maximum,
-                        buffers, original.runtime_meter(), poll)
-}
+                process.wait_with_output(timeout, maximum, None,
+                    poll, |_| Ok(acyclic_native_runtime::ProcessInput::default()), Some(original.runtime_meter()), Some(buffers))
             };
             if !process.is_reaped()
                 || output.as_ref().is_err_and(|failure| !failure.cleanup_completed)

@@ -1950,7 +1950,7 @@ impl DarwinMountSession {
         wait.check().map_err(|_| NativeMountError::from(crate::DemandError::Cancelled))?;
         if self.teardown_complete {
             let mut state = self.unmount.state.lock().unwrap_or_else(PoisonError::into_inner);
-            if let Some(retirement) = &mut state.retirement { retirement.retire_with_cleanup_wait(wait)?; }
+            if let Some(retirement) = &mut state.retirement { retirement.retire(Some(wait))?; }
             return Ok(());
         }
         let controller = Arc::clone(&self.unmount);
@@ -2125,7 +2125,7 @@ impl DarwinMountSession {
         if retained.is_none() { *retained = failure; }
         drop(self.resources.take());
         let mut state = self.unmount.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(retirement) = &mut state.retirement { retirement.retire_with_cleanup_wait(wait)?; }
+        if let Some(retirement) = &mut state.retirement { retirement.retire(Some(wait))?; }
         state.physically_retired = state.detached && state.direct.is_none() && state.diskutil.is_none()
             && state.retirement.as_ref().is_none_or(super::NativeMountRetirement::is_retired);
         Ok(())
@@ -2602,7 +2602,7 @@ impl DarwinStopController {
         drop(state.prepared_diskutil.take());
         resources.free_after_loop_quiescence();
         if let Some(retirement) = &mut state.retirement {
-            retirement.retire_accepted_cleanup()?;
+            retirement.retire(None)?;
             if !retirement.is_retired() { return Err(NativeMountError::ControlPending); }
         }
         state.physically_retired = true;
@@ -2783,7 +2783,7 @@ impl DirectUnmountPath {
     }
 
     fn unmount(
-        self, operation: acyclic_native_runtime::OwnedNativeOperationReservation,
+        self, operation: acyclic_native_runtime::NativeOperationReservation<Arc<dyn acyclic_native_runtime::NativeReadMeter>>,
         scope: Option<DarwinStartupMeterScope>, original_work: crate::NativeMaterializationWork,
     ) -> std::io::Result<c_int> {
         let mut owned = (self, operation, scope, original_work);
@@ -2817,7 +2817,7 @@ fn poll_direct(
             backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
         })?;
         let accepted = task.task.take().ok_or(NativeMountError::ControlPending)?;
-        std::task::Poll::Ready(accepted.wait_measured(None, std::future::pending(), || {}))
+        std::task::Poll::Ready(accepted.wait(None, std::future::pending(), || {}))
     } else {
         std::pin::Pin::new(task.task.as_mut().ok_or(NativeMountError::ControlPending)?)
             .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
@@ -2842,7 +2842,7 @@ fn prepare_direct_unmount(
     })?;
     let credit = crate::materializer::NativeOwnedCleanupCredit::from_reserved(credit)?;
     let task_meter = credit.runtime_meter_owner();
-    let operation = acyclic_native_runtime::OwnedNativeOperationReservation::new(
+    let operation = acyclic_native_runtime::NativeOperationReservation::new(
         Arc::clone(&task_meter), acyclic_native_runtime::NativeOperationKind::Write, 1,
     ).map_err(|error| darwin_stop_work_error(native.native_read_meter().take_native_io_failure()
         .unwrap_or_else(|| native_demand_error(error))))?;
@@ -2850,8 +2850,8 @@ fn prepare_direct_unmount(
     let meter = new_detach_meter(&metadata)?;
     let path = DirectUnmountPath::Driver(Arc::clone(resources));
     let original_work = original.allocation_work();
-    let task = acyclic_native_runtime::prepare_blocking_io_measured(
-        move || path.unmount(operation, None, original_work), task_meter,
+    let task = acyclic_native_runtime::run_blocking_io(
+        move || path.unmount(operation, None, original_work), Some((task_meter, true)),
     ).map_err(|error| darwin_stop_work_error(native.native_read_meter().take_native_io_failure()
         .unwrap_or_else(|| native_demand_error(error))))?;
     Ok(DirectUnmountTask {
@@ -2890,14 +2890,14 @@ fn bounded_direct_unmount(
     let original = meter.work.lock().unwrap_or_else(PoisonError::into_inner)
         .as_ref().cloned().ok_or(crate::DemandError::Cancelled)?;
     let task_meter = original.runtime_meter_owner();
-    let operation = acyclic_native_runtime::OwnedNativeOperationReservation::new(
+    let operation = acyclic_native_runtime::NativeOperationReservation::new(
         Arc::clone(&task_meter), acyclic_native_runtime::NativeOperationKind::Write, 1,
     ).map_err(|error| darwin_stop_work_error(original.native_read_meter().take_native_io_failure()
         .unwrap_or_else(|| native_demand_error(error))))?;
     let scope = scope.map(DarwinStartupMeterScope::try_clone_for_io).transpose()?;
     let original_work = original.allocation_work();
-    let task = acyclic_native_runtime::run_blocking_io_measured(
-        move || path.unmount(operation, scope, original_work), task_meter,
+    let task = acyclic_native_runtime::run_blocking_io(
+        move || path.unmount(operation, scope, original_work), Some((task_meter, false)),
     ).map_err(|error| darwin_stop_work_error(original.native_read_meter().take_native_io_failure()
         .unwrap_or_else(|| native_demand_error(error))))?;
     // Custody is installed before even the first readiness probe can be denied.
@@ -2959,7 +2959,7 @@ impl PreparedDiskutilProcess {
         let credit = original.reserve_work(Self::admitted_work()?)?;
         let credit = crate::materializer::NativeOwnedCleanupCredit::from_reserved(credit)?;
         let original_work = original.allocation_work();
-        let frame = acyclic_native_runtime::ProcessTree::prepare_closed_process_measured(
+        let frame = acyclic_native_runtime::ProcessTree::prepare_closed_process(
             3, original_work.runtime_meter_owner(),
         ).map_err(|error| NativeMountError::from(original.runtime_error(error)))?;
         Ok(Self { frame: Some(frame), credit, original_work })
@@ -3024,20 +3024,20 @@ impl DiskutilProcess {
     fn observe(&mut self, meter: &Arc<DetachReadMeter>) -> Result<Option<std::process::ExitStatus>, NativeMountError> {
         if let Some(credit) = &self.owned_credit {
             return self.tree.as_mut().expect("retained process tree")
-                .try_wait_measured(credit.runtime_meter_owner().as_ref())
+                .try_wait(Some(credit.runtime_meter_owner().as_ref()))
                 .map_err(|error| NativeMountError::from(credit.original_work().runtime_error(error)));
         }
-        meter.with_meter(|native| self.tree.as_mut().expect("retained process tree").try_wait_measured(native))
+        meter.with_meter(|native| self.tree.as_mut().expect("retained process tree").try_wait(Some(native)))
             .map_err(|error| darwin_stop_work_error(meter.native_error(error)))
     }
 
     fn terminate(&mut self, meter: &Arc<DetachReadMeter>) -> Result<(), NativeMountError> {
         if let Some(credit) = &self.owned_credit {
             return self.tree.as_mut().expect("retained process tree")
-                .terminate_measured(credit.runtime_meter_owner().as_ref())
+                .terminate(Some(credit.runtime_meter_owner().as_ref()))
                 .map_err(|error| NativeMountError::from(credit.original_work().runtime_error(error)));
         }
-        meter.with_meter(|native| self.tree.as_mut().expect("retained process tree").terminate_measured(native))
+        meter.with_meter(|native| self.tree.as_mut().expect("retained process tree").terminate(Some(native)))
             .map_err(|error| darwin_stop_work_error(meter.native_error(error)))
     }
 }
@@ -3180,7 +3180,7 @@ impl DarwinRecoveryControl {
         }
         if let Some(child) = &mut self.0.diskutil {
             let result = child.tree.as_mut().ok_or(NativeMountError::ControlPending)?
-                .terminate_measured(original.runtime_meter())
+                .terminate(Some(original.runtime_meter()))
                 .map_err(|error| NativeMountError::from(original.runtime_error(error)));
             if let Err(error) = result { return Err(failure.unwrap_or(error)); }
             drop(self.0.diskutil.take());
@@ -5068,12 +5068,12 @@ mod tests {
         let meter = new_detach_meter(&native)?;
         let path = DirectUnmountPath::Recovery(DetachPath::new(temporary.path(), &creator)?);
         let task_meter = creator.runtime_meter_owner();
-        let operation = acyclic_native_runtime::OwnedNativeOperationReservation::new(
+        let operation = acyclic_native_runtime::NativeOperationReservation::new(
             Arc::clone(&task_meter), acyclic_native_runtime::NativeOperationKind::Write, 1,
         ).map_err(|error| creator.runtime_error(error))?;
         let original_work = creator.allocation_work();
-        let accepted = acyclic_native_runtime::prepare_blocking_io_measured(
-            move || path.unmount(operation, None, original_work), task_meter,
+        let accepted = acyclic_native_runtime::run_blocking_io(
+            move || path.unmount(operation, None, original_work), Some((task_meter, true)),
         ).map_err(|error| creator.runtime_error(error))?;
         let mut control = DarwinRecoveryControl::default();
         control.0.direct = Some(DirectUnmountTask {
@@ -5151,22 +5151,7 @@ mod tests {
         std::io::Error::from_raw_os_error(error)
     }
 
-    fn callback_policy() -> crate::WorkBudget {
-        crate::WorkBudget {
-            authority_records_read: 1_000_000, authority_records_appended: 1_000_000,
-            authority_bytes_read: 16_000_000, authority_bytes_written: 16_000_000,
-            object_probes: 1_000_000, backend_read_operations: 1_000_000,
-            backend_write_operations: 1_000_000, durability_operations: 1_000_000,
-            page_reads: 1_000_000, page_writes: 1_000_000,
-            object_bytes_read: 16_000_000, object_bytes_written: 16_000_000,
-            bytes_hashed: 16_000_000, bytes_copied: 16_000_000, bytes_encoded: 16_000_000,
-            source_bytes_read: 16_000_000, source_path_components: 1_000_000,
-            source_entries_visited: 1_000_000, output_bytes: 16_000_000,
-            items_examined: 1_000_000, items_returned: 1_000_000,
-            allocation_operations: 1_000_000, peak_allocation_bytes: 16_000_000,
-            materializations: 1_000_000,
-        }
-    }
+    const CALLBACK_POLICY: crate::WorkBudget = crate::performance::work_budget(1_000_000, 16_000_000);
 
     fn callback_context(source: &Arc<MemorySource>, budget: crate::WorkBudget,
         cancellation: &crate::CancellationToken) -> Result<Arc<DarwinMountContext>, Box<dyn std::error::Error>> {
@@ -5228,7 +5213,7 @@ mod tests {
         let ordinary = Arc::new(MemorySource::new(Arc::clone(&shared), config)?);
         let root_id = ordinary.lookup(&MountPath::root())?.ok_or("root absent")?.node.file_id;
         let original = crate::NativeMaterializationWork::new(
-            callback_policy(), &crate::CancellationToken::new(),
+            CALLBACK_POLICY, &crate::CancellationToken::new(),
         ).map_err(|(cause, _)| cause)?;
         let guard = Arc::new(DarwinAuthoredGuard {
             original: original.clone(), writable: AtomicBool::new(writable),
@@ -5240,7 +5225,7 @@ mod tests {
         let source = source.into_arc_meter(&original)?;
         let context = Arc::new(DarwinMountContext::new(
             source, true, 0, 0, Vec::from([(root_id, ROOT_INODE)]),
-            callback_policy(), &crate::CancellationToken::new(),
+            CALLBACK_POLICY, &crate::CancellationToken::new(),
         )?);
         Ok((ordinary, context, guard, original))
     }
@@ -5299,7 +5284,7 @@ mod tests {
     fn raw_create_denies_actual_path_allocation_before_source_mutation() -> TestResult {
         let (source, _) = checkout_context(MountPublication::Manual)?;
         let cancellation = crate::CancellationToken::new();
-        let context = callback_context(&source, crate::WorkBudget { allocation_operations: 0, ..callback_policy() }, &cancellation)?;
+        let context = callback_context(&source, crate::WorkBudget { allocation_operations: 0, ..CALLBACK_POLICY }, &cancellation)?;
         let path = CString::new("/not-created")?;
         let mut handle = 0;
         // SAFETY: all native argument storage remains valid through the call.
@@ -5318,7 +5303,7 @@ mod tests {
     fn raw_getattr_uses_original_cancellation_and_does_not_poison_absence_probes() -> TestResult {
         let (source, _) = checkout_context(MountPublication::Manual)?;
         let cancellation = crate::CancellationToken::new();
-        let context = callback_context(&source, callback_policy(), &cancellation)?;
+        let context = callback_context(&source, CALLBACK_POLICY, &cancellation)?;
         let path = CString::new("/later")?;
         let mut output = std::mem::MaybeUninit::<NativeStat>::uninit();
         let address = Arc::as_ptr(&context) as usize;
@@ -5347,7 +5332,7 @@ mod tests {
     fn actual_callback_panic_and_receipt_survive_physical_context_retirement() -> TestResult {
         let (source, _) = checkout_context(MountPublication::Manual)?;
         let cancellation = crate::CancellationToken::new();
-        let context = callback_context(&source, callback_policy(), &cancellation)?;
+        let context = callback_context(&source, CALLBACK_POLICY, &cancellation)?;
         let status = context.run_request::<()>(|work| {
             work.charge(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED })?;
             panic!("actual native callback panic");
@@ -5504,11 +5489,11 @@ mod tests {
         let (source, _) = checkout_context(MountPublication::Manual)?;
         let cancellation = crate::CancellationToken::new();
         let context = callback_context(&source, crate::WorkBudget { items_examined: 0,
-            ..callback_policy() }, &cancellation)?;
+            ..CALLBACK_POLICY }, &cancellation)?;
         let original = Arc::new(NativeDemandReadMeter(Mutex::new(
-            DemandWork::new(callback_policy(), &cancellation))));
+            DemandWork::new(CALLBACK_POLICY, &cancellation))));
         let other = Arc::new(NativeDemandReadMeter(Mutex::new(
-            DemandWork::new(callback_policy(), &cancellation))));
+            DemandWork::new(CALLBACK_POLICY, &cancellation))));
         let original = crate::NativeMaterializationWork::from_meter(original);
         let other = crate::NativeMaterializationWork::from_meter(other);
         let active = DarwinStartupMeterScope::new(Arc::clone(&context), &original)?;
@@ -5541,7 +5526,7 @@ mod tests {
         source.create_file(&path, FileMetadata::default())?;
         source.write_range(&path, 0, Bytes::from_static(b"before"))?;
         let cancellation = crate::CancellationToken::new();
-        let context = callback_context(&source, crate::WorkBudget { bytes_copied: 0, ..callback_policy() }, &cancellation)?;
+        let context = callback_context(&source, crate::WorkBudget { bytes_copied: 0, ..CALLBACK_POLICY }, &cancellation)?;
         let native_path = CString::new("/original")?;
         let incoming = b"after";
         // SAFETY: context, terminated path and all readable input bytes remain alive.

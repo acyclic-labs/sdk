@@ -24,7 +24,7 @@ fn put_tree_page(
     ObjectStore::put(
         store,
         object,
-        OwnedBytes::from(encode_tree_page(&page, 8)?),
+        OwnedBytes::from(encode_tree_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(object)
@@ -112,41 +112,36 @@ fn decoded_pages_are_shared_across_operations_and_mutations_copy_on_write()
 
     let mut mutation_allocations = AllocationLedger::default();
     let mut mutation_work = WorkCounters::default();
-    let mutable = crate::async_storage::poll_ready(read_page_mutable::<_, TreeFormat>(
-        &store,
-        page,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-        &mut mutation_allocations,
-        &mut mutation_work,
-    ))
-    .ok_or("immediate mutable read suspended")??;
-    assert!(matches!(mutable.page, PageLease::Owned(_)));
-    assert!(mutable.logical_bytes > 0);
+    let mut accounting = super::super::allocation::KernelAccounting::borrowed_standalone(
+        &mut mutation_allocations, &mut mutation_work, WorkBudget::UNBOUNDED, &cancellation,
+    );
+    let (shared, allocation) = crate::async_storage::poll_ready(read_page_with_accounting::<_, TreeFormat>(
+        &store, page, DecodeLimits::default(), &mut accounting, &cancellation, None,
+    )).ok_or("immediate cached read suspended")??;
+    let ((mut mutable, bytes), mut allocation) = shared.into_owned_with_accounting(allocation, &mut accounting)?;
+    assert!(bytes > 0);
+    if let Page::Leaf(entries) = &mut mutable {
+        entries[0].name = LogicalName::new(NameEncoding::Utf8, b"changed".to_vec(), 255)?;
+    }
+    assert_eq!(only_page_name(&first)?, b"cached");
+    drop(mutable);
+    accounting.release_owned(&mut allocation, bytes)?;
     assert_eq!(mutation_work.backend_read_operations, 0);
-    assert!(mutation_work.bytes_copied >= mutable.logical_bytes);
-    mutation_allocations.release(mutable.logical_bytes)?;
+    assert!(mutation_work.bytes_copied >= bytes);
     assert_eq!(mutation_allocations.live_bytes(), 0);
 
     let mut denied_allocations = AllocationLedger::default();
     let mut denied_work = WorkCounters::default();
-    let denied = crate::async_storage::poll_ready(read_page_mutable::<_, TreeFormat>(
-        &store,
-        page,
-        DecodeLimits::default(),
-        WorkBudget {
-            peak_allocation_bytes: 0,
-            ..WorkBudget::UNBOUNDED
-        },
-        &cancellation,
-        &mut denied_allocations,
-        &mut denied_work,
-    ))
-    .ok_or("immediate denied mutable read suspended")?
-    .err()
-    .ok_or("cached mutable page bypassed its allocation budget")?;
-    assert!(matches!(denied, Error::Allocation(_)));
+    let mut accounting = super::super::allocation::KernelAccounting::borrowed_standalone(
+        &mut denied_allocations, &mut denied_work,
+        WorkBudget { peak_allocation_bytes: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
+    );
+    let (shared, allocation) = crate::async_storage::poll_ready(read_page_with_accounting::<_, TreeFormat>(
+        &store, page, DecodeLimits::default(), &mut accounting, &cancellation, None,
+    )).ok_or("immediate cached read suspended")??;
+    let denied = shared.into_owned_with_accounting(allocation, &mut accounting)
+        .err().ok_or("cached mutable page bypassed its allocation budget")?;
+    assert!(matches!(denied, crate::FsError::Work(_)));
     assert_eq!(denied_allocations.live_bytes(), 0);
     Ok(())
 }
@@ -293,7 +288,7 @@ fn post_read_budget_failure_releases_every_decoded_allocation()
     ObjectStore::put(
         &store,
         object,
-        OwnedBytes::from(encode_tree_page(&page, 8)?),
+        OwnedBytes::from(encode_tree_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
         WorkBudget::UNBOUNDED,
     )?;
     let mut allocations = AllocationLedger::default();
@@ -384,7 +379,7 @@ fn shape_valid_malformed_tree_page_releases_decoded_allocation()
         file_id: FileId::from_bytes([43; 16]),
         kind: FileKind::Regular,
     }]);
-    let mut malformed = encode_tree_page(&page, 8)?;
+    let mut malformed = encode_tree_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     *malformed.last_mut().ok_or("encoded tree page is empty")? = u8::MAX;
     let object = ObjectId {
         kind: ObjectKind::TreePage,

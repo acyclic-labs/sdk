@@ -43,41 +43,7 @@ pub struct ExtentCloneRequest {
 }
 
 /// Clones one logical sparse range without reading or copying content bytes.
-///
-/// The source range is fully planned before any destination object is written,
-/// so overlapping same-file clone has snapshot semantics. Hole, allocated-zero,
-/// and content representations remain distinct. Content spans reuse immutable
-/// blob identities and adjusted offsets.
-///
-/// # Errors
-///
-/// Rejects wrong object classes, empty/overflowing ranges, insufficient span or
-/// mutation bounds, malformed source/destination extent trees, storage errors,
-/// and work outside the admitted budget.
-pub fn clone_extent_range<S: crate::ImmediateObjectStore>(
-    store: &S,
-    request: ExtentCloneRequest,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<ExtentCloneReceipt, ExtentCloneFailure> {
-    let cancellation = CancellationToken::new();
-    crate::async_storage::poll_immediate(clone_extent_range_async(
-        store,
-        request,
-        limits,
-        budget,
-        &cancellation,
-    ))
-}
-
-/// Asynchronously clones a sparse logical range through the canonical planner
-/// and destination path-copy machine.
-///
-/// # Errors
-///
-/// Returns the same bounded failures as [`clone_extent_range`], including
-/// cooperative cancellation before either source reads or destination writes.
-pub async fn clone_extent_range_async<S: crate::AsyncObjectStore>(
+pub async fn clone_extent_range<S: crate::AsyncObjectStore>(
     store: &S,
     request: ExtentCloneRequest,
     limits: DecodeLimits,

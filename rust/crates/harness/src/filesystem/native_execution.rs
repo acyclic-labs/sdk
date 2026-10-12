@@ -984,7 +984,7 @@ impl NativePreparationRoot {
         let (operation_directory, mut operation_custody) = work.path(operation_directory, None)?;
         custody.absorb(&mut operation_custody)?;
         let meter = work.clone();
-        acyclic_native_runtime::run_blocking_io_measured(move || {
+        acyclic_native_runtime::run_blocking_io(move || {
             let backend = acyclic_fs::NativeTreeMaterializationBackend::new(root, operation_directory, Some(custody), meter.clone(), false)?;
             backend.require_initial_empty()?;
             let expected_identity = acyclic_fs::NativeRootIdentity::from_bytes(
@@ -998,7 +998,7 @@ impl NativePreparationRoot {
             let (operation_directory, mut operation_custody) = meter.path(backend.operation_directory_path(), None)?;
             custody.absorb(&mut operation_custody)?;
             Ok::<_, Error>((Self { root, operation_directory, expected_identity, expected_preparation_identity }, custody))
-        }, work.runtime_meter_owner())
+        }, Some((work.runtime_meter_owner(), false)))
             .map_err(|error| Error::from(work.runtime_error(error)))?
             .await.map_err(|error| Error::from(work.runtime_error(error)))?
         })
@@ -1815,8 +1815,7 @@ where
                 Err(error @ Error::NativeWork {
                     cause: acyclic_fs::NativeTreeMaterializationError::Work(_)
                         | acyclic_fs::NativeTreeMaterializationError::Cancelled
-                        | acyclic_fs::NativeTreeMaterializationError::AllocationFailed(_)
-                        | acyclic_fs::NativeTreeMaterializationError::Allocation(_),
+                        | acyclic_fs::NativeTreeMaterializationError::AllocationFailed(_),
                     ..
                 }) => return Err(error),
                 Err(error) if !cleanup => {
@@ -2332,9 +2331,9 @@ async fn native_backend(
     let (operation_directory, mut operation_custody) = work.path(&allocation.operation_directory, None)?;
     custody.absorb(&mut operation_custody)?;
     let meter = work.clone();
-    let backend = acyclic_native_runtime::run_blocking_io_measured(move || {
+    let backend = acyclic_native_runtime::run_blocking_io(move || {
         acyclic_fs::NativeTreeMaterializationBackend::new(root, operation_directory, Some(custody), meter, false)
-    }, work.runtime_meter_owner())
+    }, Some((work.runtime_meter_owner(), false)))
         .map_err(|error| Error::from(work.runtime_error(error)))?
         .await.map_err(|error| Error::from(work.runtime_error(error)))??;
     if require_original && (backend.allocation_identity() != Some(allocation.expected_identity.to_bytes())
@@ -2557,7 +2556,7 @@ impl NativePreparationCompletionTemplate {
 /// Authenticates or publishes the original protected ROOT conversation Bind and returns that exact SDK command's canonical bytes.
 #[allow(clippy::too_many_arguments, reason = "original creator, owner and paid authority are distinct")]
 pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider + 'static>(
-    stream: &acyclic_stream::StreamClient<P>,
+    stream: &std::sync::Arc<P>,
     authority: (crate::core::Authority, crate::core::AuthorityIssuer, Scope),
     authority_custody: acyclic_fs::NativeAllocation,
     owner: &TaskJournalOwner<P>,
@@ -2674,7 +2673,7 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
         }
     }
 
-    fn read_client(&self) -> &acyclic_stream::StreamClient<P> {
+    fn read_client(&self) -> &std::sync::Arc<P> {
         match &self.authority {
             NativePreparationAuthority::Owner { owner, .. } => owner.stream(),
             NativePreparationAuthority::Admission(witness) => witness.prepared_stream(),
@@ -2825,8 +2824,8 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
             self.read_client(), &path, &mut observer,
         ).await? {
             Ok(bounds) => bounds,
-            Err(error) if matches!(error.source(), acyclic_stream::StreamError::NotFound) => return Ok(None),
-            Err(error) => return Err(error.into_error(&observer)),
+            Err(error) if matches!(crate::distributed::sdk_source(&error), acyclic_stream::StreamError::NotFound) => return Ok(None),
+            Err(error) => return Err(crate::distributed::sdk_error(error, &observer)),
         };
         let sequence = match bounds.tail.checked_sub(1) {
             Some(sequence) => sequence,
@@ -2837,7 +2836,7 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
         let stream = crate::store::operations::stream_with_work(self.read_client(), &path, &mut observer)?;
         let mut records = crate::store::operations::read_records_with_work(
             self.read_client(), &stream.stream, sequence, 1, &mut observer,
-        ).await?.map_err(|error| error.into_error(&observer))?;
+        ).await?.map_err(|error| crate::distributed::sdk_error(error, &observer))?;
         let record = records.next(&mut observer).await?
             .ok_or(preparation_error("missing materializer journal"))?;
         if record.value.len() > acyclic_stream::MAX_RECORD_BYTES {
@@ -2898,17 +2897,12 @@ impl<P: StreamProvider> MaterializationJournalStore for NativePreparationStore<'
             items_examined: items,
             ..Default::default()
         })?;
-        let proof = owner.accept_materialization_template_with_native_work(
-            &template, &self.work,
-        ).await?;
-        let mut native_io = crate::store::history::native_work_io(&self.work)
-            .map_err(Error::from)?;
         let prepared = crate::distributed::PreparedMaterializationCommit::prepare(
-            owner.stream(), template, proof, reservation, &self.work, &mut Some(&mut native_io),
+            owner, template, reservation, &self.work,
         ).await?;
         let future = crate::NativeFutureBundle::new(&self.work, || async move {
             let counters = prepared.completion_work()?;
-            prepared.finish(owner.stream(), counters, None).await
+            prepared.finish(&owner.stream(), counters, None).await
         })?;
         Ok(future)
     }

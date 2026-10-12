@@ -4,7 +4,7 @@ mod admission;
 mod client_config;
 /// Source-defined binding configuration, diagnostics and message ceiling.
 pub use client_config::{
-    Failure, MAX_MESSAGE_BYTES, WorkersCallOptions, WorkersClientOptions,
+    BearerAuth, Failure, MAX_MESSAGE_BYTES, WorkersCallOptions, WorkersClientOptions,
     WorkersTransportPreference, export_client_typescript,
 };
 /// Target-selected Rust remote client; FFI features affect only exported bindings.
@@ -44,7 +44,6 @@ pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-workers-v1.bin"));
 
 /// Public JavaScript entrypoint declaration emitted into the TypeScript package.
-/// A module may implement either handler or both; durable jobs never call `fetch`.
 pub const MODULE_TYPESCRIPT_CONTRACT: &str = r#"// Generated from acyclic-workers::MODULE_TYPESCRIPT_CONTRACT. Do not edit.
 export interface WorkerJobContext {
   readonly jobId: string;
@@ -59,11 +58,9 @@ export interface WorkerModule {
 "#;
 
 /// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
-/// Acyclic platform's maximum bearer (12 KiB), so every platform-issued credential fits.
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 
-/// Bearer credentials must be nonblank and at most [`MAX_BEARER_TOKEN_BYTES`]; the HTTP and gRPC
-/// header parsers additionally reject control characters such as CR, LF, and NUL.
+/// Bearer credentials must be nonblank, bounded and header-safe.
 fn valid_token(token: &str) -> bool {
     !token.trim().is_empty() && token.len() <= MAX_BEARER_TOKEN_BYTES
 }
@@ -424,6 +421,7 @@ mod tests {
         use tonic::codegen::Service as _;
         let mut channel = grpc::TracedChannel::new(
             tonic::transport::Endpoint::from_shared(format!("http://{address}"))?.connect_lazy(),
+            grpc::transport_span,
         );
         std::future::poll_fn(|cx| channel.poll_ready(cx)).await?;
         let request = tonic::codegen::http::Request::builder()

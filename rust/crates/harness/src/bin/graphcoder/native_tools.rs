@@ -13,7 +13,7 @@ use acyclic_harness::{
     store::HistoryReadLimits,
     workflow::WorkflowCommand,
 };
-use acyclic_stream::{LocalStream, StreamClient};
+use acyclic_stream::{LocalStream};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -71,7 +71,7 @@ pub struct NativeToolMerge {
 }
 
 /// Translate the trusted native configuration into the existing SDK source.
-pub fn source(config: &Config, stream: StreamClient<LocalStream>, files: Arc<Files>) -> Result<Arc<Source>> {
+pub fn source(config: &Config, stream: std::sync::Arc<LocalStream>, files: Arc<Files>) -> Result<Arc<Source>> {
     if config.tools.callers.len() > 64 || config.tools.forks.len() > 64 || config.tools.merges.len() > 64
         || config.fork_sources.len() > 64 || config.tools.commands.len() > 64
     {
@@ -89,7 +89,7 @@ pub fn source(config: &Config, stream: StreamClient<LocalStream>, files: Arc<Fil
         forks: config.tools.forks.iter().map(|fork| {
             let command = WorkflowCommand::deserialize(&fork.admission.input)
                 .map_err(|error| Error::Invalid(format!("native child model command: {error}")))?;
-            command.validate()?;
+            command.validate(&mut None)?;
             if command.kind != acyclic_harness::filesystem::MODEL_TASK_COMMAND_KIND {
                 return Err(Error::Invalid("native child must retain the actual stock model command".into()));
             }

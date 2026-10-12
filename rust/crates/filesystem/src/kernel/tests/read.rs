@@ -1,11 +1,12 @@
 use super::*;
 use crate::foundation::{Digest, FileId};
-use crate::kernel::{FileKind, NameEncoding, TreeChild, TreePage, encode_tree_page, tree_page_id};
+use crate::kernel::{FileKind, NameEncoding, TreePage, encode_tree_page, tree_page_id};
 use crate::memory::MemoryObjectStore;
 use crate::storage::{ObjectKind, ObjectStore};
 use acyclic_stream::OwnedBytes;
 use std::task::{Context, Poll, Waker};
 
+use crate::kernel::Child;
 fn name(value: &str) -> Result<LogicalName, Box<dyn std::error::Error>> {
     Ok(LogicalName::new(
         NameEncoding::Utf8,
@@ -26,7 +27,7 @@ fn put_page(
     ObjectStore::put(
         store,
         id,
-        OwnedBytes::from(encode_tree_page(page, 16)?),
+        OwnedBytes::from(encode_tree_page(page, 16, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)
@@ -41,8 +42,8 @@ fn lookup_reads_only_one_frontier() -> Result<(), Box<dyn std::error::Error>> {
         kind: FileKind::Regular,
     }]);
     let leaf_id = put_page(&store, &leaf)?;
-    let root = TreePage::Internal(vec![TreeChild {
-        first_name: name("target")?,
+    let root = TreePage::Internal(vec![Child {
+        first: name("target")?,
         page: leaf_id,
     }]);
     let root_id = put_page(&store, &root)?;
@@ -68,8 +69,8 @@ fn budget_stops_before_an_unadmitted_child_read() -> Result<(), Box<dyn std::err
     let leaf_id = put_page(&store, &TreePage::Leaf(Vec::new()))?;
     let root_id = put_page(
         &store,
-        &TreePage::Internal(vec![TreeChild {
-            first_name: name("a")?,
+        &TreePage::Internal(vec![Child {
+            first: name("a")?,
             page: leaf_id,
         }]),
     )?;
@@ -152,8 +153,8 @@ fn forged_parent_lower_bound_fails_closed() -> Result<(), Box<dyn std::error::Er
     )?;
     let root = put_page(
         &store,
-        &TreePage::Internal(vec![TreeChild {
-            first_name: name("a")?,
+        &TreePage::Internal(vec![Child {
+            first: name("a")?,
             page: leaf,
         }]),
     )?;
@@ -238,12 +239,12 @@ fn batch_lookup_reads_each_shared_frontier_once_and_preserves_input_order()
     let root = put_page(
         &store,
         &TreePage::Internal(vec![
-            TreeChild {
-                first_name: name("a")?,
+            Child {
+                first: name("a")?,
                 page: left,
             },
-            TreeChild {
-                first_name: name("m")?,
+            Child {
+                first: name("m")?,
                 page: right,
             },
         ]),
