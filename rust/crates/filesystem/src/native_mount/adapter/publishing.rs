@@ -85,6 +85,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> SharedCheckout<A, O> {
             let verified = before(work);
             let lifetime = source_lifetime.clone();
             futures::future::Either::Right(async move {
+                if lifetime.as_ref().is_some_and(CancellationToken::is_cancelled) {
+                    return Err(E::from(MountSourceError::Stale));
+                }
                 verified.await?;
                 if lifetime.as_ref().is_some_and(CancellationToken::is_cancelled) {
                     return Err(E::from(MountSourceError::Stale));
