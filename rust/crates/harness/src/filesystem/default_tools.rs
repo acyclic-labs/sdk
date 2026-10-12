@@ -57,6 +57,9 @@ pub struct RecursiveToolOwner<P, A, O> {
     pub workflow: Arc<dyn WorkflowJournal>,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
+const NATIVE_SOURCE_REQUIRED: Error = Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, reason: "recursive source has no original native producer" };
+
 /// Real provider configuration for one exact caller and retained source cut.
 pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform {
     /// Binds the actual caller/effect to its owner-controlled workflow journal.
@@ -89,8 +92,7 @@ pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform 
         _tool: &'a ResumableTool, _invocation: &'a ToolInvocation,
         _cancellation: &'a CancellationToken, _work: &'a acyclic_fs::NativeMaterializationWork)
         -> Result<crate::NativeFutureBundle<'a, (RecursiveToolOwner<P, A, O>, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "recursive source has no original native owner producer" })
+        Err(NATIVE_SOURCE_REQUIRED)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -98,8 +100,7 @@ pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform 
         _arguments: &'a ForkToolArguments, _cancellation: &'a CancellationToken,
         _work: &'a acyclic_fs::NativeMaterializationWork)
         -> Result<crate::NativeFutureBundle<'a, (RecursiveForkSourceIntent, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "recursive source has no original native selection producer" })
+        Err(NATIVE_SOURCE_REQUIRED)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -108,8 +109,7 @@ pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform 
         _original: Option<&'a RecursiveForkToolPlan>, _cancellation: &'a CancellationToken,
         _work: &'a acyclic_fs::NativeMaterializationWork)
         -> Result<crate::NativeFutureBundle<'a, (RecursiveForkToolBinding<P, A, O>, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "recursive source has no original native fork producer" })
+        Err(NATIVE_SOURCE_REQUIRED)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -117,8 +117,7 @@ pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform 
         _arguments: &'a MergeToolArguments, _original: Option<&'a RecursiveMergeToolPlan>,
         _cancellation: &'a CancellationToken, _work: &'a acyclic_fs::NativeMaterializationWork)
         -> Result<crate::NativeFutureBundle<'a, (RecursiveMergeToolBinding<P, A, O>, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "recursive source has no original native merge producer" })
+        Err(NATIVE_SOURCE_REQUIRED)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -126,8 +125,7 @@ pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform 
         _preparation: &'a crate::resource_preparation::TaskResourcePreparation,
         _cancellation: &'a CancellationToken, _work: &'a acyclic_fs::NativeMaterializationWork)
         -> Result<crate::NativeFutureBundle<'a, (RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "recursive source has no original native preparation producer" })
+        Err(NATIVE_SOURCE_REQUIRED)
     }
 
     /// Restores only the retained source for passive reconciliation.
@@ -137,8 +135,7 @@ pub trait RecursiveDefaultToolSource<P, A, O>: acyclic_stream::ProviderPlatform 
         _preparation: &'a crate::resource_preparation::TaskResourcePreparation,
         _cancellation: &'a CancellationToken, _work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (RetainedSourceBinding<A, O>, acyclic_fs::NativeAllocation)>> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "recursive source has no original native preparation reconciliation producer" })
+        Err(NATIVE_SOURCE_REQUIRED)
     }
 }
 
