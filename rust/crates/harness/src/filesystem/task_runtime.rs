@@ -422,7 +422,6 @@ where
         creation_providers: &[Arc<dyn crate::resource_preparation::ResourceCreationProvider>],
         resumable_tools: &ResumableToolRegistry, io: Option<&super::PreparationIo>,
     ) -> Result<Self> {
-        let client = Arc::clone(&stream);
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io {
             let work = io.original_native_work().ok_or_else(|| io.invalid("native runtime configuration has no original work"))?;
@@ -436,11 +435,11 @@ where
             let payloads = FilesystemSchedulerPayloadStore::new(filesystem.clone(), volume, verifier, signed, maximum_payload_bytes, Some(&io))?.into_native_shared(work)?;
             let reader = FilesystemContentVerifier::new(filesystem.clone(), verifier, signed, maximum_payload_bytes, Some(&io))?.into_native_shared(work)?;
             let coordinator = DistributedCoordinator::open(
-                &client, reader.clone(), Some(payloads.clone()),
+                &stream, reader.clone(), Some(payloads.clone()),
                 &mut Some(&mut crate::store::history::native_work_io(work)?),
             ).await?;
             let mut host = CoordinatorTaskHost::new_with_native_work(
-                coordinator, client.clone(), payloads, reader.clone(),
+                coordinator, stream.clone(), payloads, reader.clone(),
                 verifier.audience(), signed, verifier, scope, tasks, machines, clock, work,
             )?.with_session_limits(session_limits, Some(work))?
                 .with_resource_creation_providers(creation_providers, Some(work))?;
@@ -477,8 +476,8 @@ where
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(filesystem.clone(), &volume, &verifier, &signed, maximum_payload_bytes, None)?);
         let reader = Arc::new(FilesystemContentVerifier::new(filesystem.clone(), &verifier, &signed, maximum_payload_bytes, None)?);
         let mut host = CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&client, reader.clone(), Some(payloads.clone()), &mut None).await?,
-            client.clone(),
+            DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None).await?,
+            stream.clone(),
             payloads,
             reader.clone(),
             verifier.audience().clone(),

@@ -318,8 +318,7 @@ where
                 reason: "restored source differs from immutable operation approval" });
         }
     }
-    let client = acyclic_stream::StreamClient::new(stream.clone());
-    let reader = crate::store::HistoryReader::new_with_native_work(&client, parent.authority(), verifier, work)?;
+    let reader = crate::store::HistoryReader::new_with_native_work(stream, parent.authority(), verifier, work)?;
     let retained_history = {
         let mut history = io.history_io();
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);

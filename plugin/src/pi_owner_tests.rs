@@ -392,7 +392,7 @@ fn pi_owner_reopen_retains_original_key_policy_and_signed_authority() {
         let authority = reopened.authority().unwrap();
         assert!(reopened.policy == policy());
         assert_eq!(authority.signed, original.signed);
-        authority.verifier.verify(&original.signed).unwrap();
+        authority.verifier.verify(&original.signed, &mut None).unwrap();
         assert!(authority.scope.grants() == original.scope.grants());
         assert_eq!(authority.scope.limits(), original.scope.limits());
         assert_eq!(authority.scope.run_limits(), original.scope.run_limits());
@@ -404,7 +404,7 @@ fn pi_owner_reopen_retains_original_key_policy_and_signed_authority() {
             .authority()
             .unwrap()
             .verifier
-            .verify(&original.signed)
+            .verify(&original.signed, &mut None)
             .is_err()
     );
     assert!({
@@ -624,7 +624,7 @@ fn native_owner_authority_preserves_original_grants_and_scope_names() {
     assert_eq!(conversation.0.2.id(), format!("pi:conversation:{}", owner.policy.root_task));
     assert_eq!(conversation.0.2.agent(), Some(owner.policy.agent));
     assert_eq!(conversation.0.2.capabilities(), &owner.policy.grants);
-    AuthorityIssuer::new(ISSUER, owner.key, conversation.0.0.clone()).verifier().verify(&conversation.0.2).unwrap();
+    AuthorityIssuer::new(ISSUER, owner.key, conversation.0.0.clone()).verifier(&mut None).unwrap().verify(&conversation.0.2, &mut None).unwrap();
     drop(conversation);
     let effect = owner.effect_authority_with_native_work(&work).unwrap();
     assert_eq!(effect.0.2.id(), owner.policy.root_task.to_string());

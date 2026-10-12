@@ -742,7 +742,7 @@ async fn pi_root_runtime_rejects_forged_and_widened_authority_before_admission()
                             id: binding.task_id.to_string(),
                         },
                     )
-                    .verifier();
+                    .verifier(&mut None).unwrap();
                 }
                 "widening" => {
                     authority.scope = RuntimeScope::new(
@@ -771,7 +771,7 @@ async fn pi_root_runtime_rejects_forged_and_widened_authority_before_admission()
                             id: binding.task_id.to_string(),
                         },
                     );
-                    authority.verifier = issuer.verifier();
+                    authority.verifier = issuer.verifier(&mut None).unwrap();
                     authority.signed =
                         issuer.issue("pi-owner", authority.signed.capabilities(), None, None, &mut None).expect("scope proof");
                 }
@@ -784,7 +784,7 @@ async fn pi_root_runtime_rejects_forged_and_widened_authority_before_admission()
                             id: "not-a-task-identity".to_owned(),
                         },
                     );
-                    authority.verifier = issuer.verifier();
+                    authority.verifier = issuer.verifier(&mut None).unwrap();
                     authority.signed = issuer.issue("pi-owner", authority.signed.capabilities(), Some(binding.agent_id), None, &mut None).expect("scope proof");
                 }
                 _ => unreachable!(),

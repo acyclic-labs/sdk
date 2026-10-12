@@ -1,5 +1,5 @@
 /** Ephemeral owner-controlled conversation host; the Rust reducer owns admission. */
-import { Harness, type AgentId, type Command, type Event, type OperationId, type Scope } from "./index.js";
+import { Harness, type AgentId, type Command, type OperationId, type Scope } from "./index.js";
 import type {
   Attachment, ConversationMessage, ConversationMessageId, ConversationState,
   FileRef, Limits, ReferencedAttachments, VolumeRef,
@@ -13,8 +13,6 @@ import { HARNESS_PRIVATE_DIRECTORY_PAGE_DEFAULT, HARNESS_PRIVATE_DIRECTORY_PAGE_
 
 const encoder = new TextEncoder();
 const manifestType = "application/vnd.acyclic.harness.attachments+json";
-const defaultResidentBytes = Number.MAX_SAFE_INTEGER;
-const defaultResidentFiles = Number.MAX_SAFE_INTEGER;
 
 export interface MemoryConversationOptions {
   readonly agent: AgentId;
@@ -58,8 +56,8 @@ export class MemoryConversation {
       issuerKey: options.issuerKey ?? crypto.getRandomValues(new Uint8Array(32)),
     });
     let limits: Limits;
-    const maxResidentBytes = options.maxResidentBytes ?? defaultResidentBytes;
-    const maxResidentFiles = options.maxResidentFiles ?? defaultResidentFiles;
+    const maxResidentBytes = options.maxResidentBytes ?? Number.MAX_SAFE_INTEGER;
+    const maxResidentFiles = options.maxResidentFiles ?? Number.MAX_SAFE_INTEGER;
     try {
       limits = core.contracts.validate("limits", options.limits ?? DEFAULT_LIMITS);
       if (!Number.isSafeInteger(maxResidentBytes) || maxResidentBytes < 0
@@ -360,11 +358,7 @@ export class MemoryConversation {
     if (state.messages.some(message => message.id === noticeId)) return;
     const user = state.messages.find(message => message.id === userId && message.kind === "user");
     if (user === undefined) throw new TypeError("terminal turn has no admitted user message");
-    // Terminalization must remain possible under every valid narrowed limit,
-    // including file_bytes/path_bytes == 1. The marker is control-plane data:
-    // its one-byte body and display name retain the outcome while its ref path
-    // falls back to the admitted user path when no short path is available.
-    // The detached staging path never becomes the provider's path head.
+    // Detached one-byte terminal markers use a bounded path without changing its head.
     const marker = encoder.encode(outcome === "failed" ? "f" : "c");
     const preferredPath = `turns/${operationId}/terminal`;
     const path = encoder.encode(preferredPath).byteLength <= limits.path_bytes
