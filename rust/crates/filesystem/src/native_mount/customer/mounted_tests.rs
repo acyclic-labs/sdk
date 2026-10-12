@@ -1,7 +1,7 @@
 use super::*;
 use crate::demand::native::NativeDemandSource;
-use crate::lazy_workspace::LazyReadonlyNode;
 use crate::kernel::NamespacePath;
+use crate::lazy_workspace::LazyReadonlyNode;
 use crate::model::{FilesystemProfile, VolumeLimits};
 use crate::{Fs, MemoryLazyWorkspaceStore};
 #[tokio::test(flavor = "multi_thread")]

@@ -35,7 +35,10 @@ impl<'de> Deserialize<'de> for GitCommitId {
         let value = String::deserialize(deserializer)?;
         let bytes = hex::decode(&value).map_err(serde::de::Error::custom)?;
         let bytes: [u8; 32] = bytes.try_into().map_err(|bytes: Vec<u8>| {
-            serde::de::Error::custom(format!("Git compatibility commit ID has {} bytes instead of 32", bytes.len()))
+            serde::de::Error::custom(format!(
+                "Git compatibility commit ID has {} bytes instead of 32",
+                bytes.len()
+            ))
         })?;
         Ok(Self(bytes))
     }
@@ -93,7 +96,10 @@ pub struct GitCommit {
 }
 
 impl GitCommit {
-    #[allow(clippy::too_many_arguments, reason = "each argument is one field of the recorded commit")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each argument is one field of the recorded commit"
+    )]
     /// Constructs and hashes an explicit compatibility commit.
     pub fn new(
         tree: GitTreeRef,
@@ -117,11 +123,19 @@ impl GitCommit {
             hasher.update(proof.initial_generation.digest().as_bytes());
             hasher.update(&proof.operation_id.into_bytes());
         }
-        hasher.update(&u64::try_from(tracked_paths.len()).unwrap_or(u64::MAX).to_le_bytes());
+        hasher.update(
+            &u64::try_from(tracked_paths.len())
+                .unwrap_or(u64::MAX)
+                .to_le_bytes(),
+        );
         for path in &tracked_paths {
             hash_bytes(&mut hasher, path.as_bytes());
         }
-        hasher.update(&u64::try_from(parents.len()).unwrap_or(u64::MAX).to_le_bytes());
+        hasher.update(
+            &u64::try_from(parents.len())
+                .unwrap_or(u64::MAX)
+                .to_le_bytes(),
+        );
         for parent in &parents {
             hasher.update(&parent.0);
         }
@@ -190,7 +204,10 @@ impl GitTreeRef {
     /// Constructs an exact authored tree reference.
     #[must_use]
     pub const fn exact(workspace_id: WorkspaceId, generation: GenerationId) -> Self {
-        Self::Exact(GitGenerationRef { workspace_id, generation })
+        Self::Exact(GitGenerationRef {
+            workspace_id,
+            generation,
+        })
     }
     /// Workspace owning the authored component.
     #[must_use]
