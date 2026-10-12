@@ -18,30 +18,6 @@ pub enum DrivenJoinError {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn source_changes(
-        &self,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<GenerationDiff>, WorkspaceError> {
-        self.source_head
-            .workspace
-            .volume
-            .fs
-            .workspace_join_changes(
-                self.base.id,
-                &self.source_head,
-                self.maximum_changes,
-                budget,
-                cancellation,
-            )
-            .await
-            .map(|receipt| crate::OperationReceipt {
-                value: receipt.value.0,
-                work: receipt.work,
-            })
-    }
-
     /// Expands exact kernel conflicts into immutable, driver-ready values.
     pub async fn describe_conflicts(
         &self,

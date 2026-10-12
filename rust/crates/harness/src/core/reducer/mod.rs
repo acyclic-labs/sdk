@@ -38,7 +38,11 @@ impl Reducer {
         }
     }
 
-    pub(in crate::core) fn replace_extension_state(&mut self, record: &ExtensionRecord, revision: u64) {
+    pub(in crate::core) fn replace_extension_state(
+        &mut self,
+        record: &ExtensionRecord,
+        revision: u64,
+    ) {
         let reference = EventReference {
             authority: self.authority.clone(),
             revision,

@@ -13,18 +13,6 @@ fn node_kind(file_type: crate::native_host::HostFileType) -> SourceNodeKind {
     .unwrap_or(SourceNodeKind::Unsupported)
 }
 
-#[cfg(unix)]
-fn os_string_bytes(value: &std::ffi::OsStr) -> Vec<u8> {
-    use std::os::unix::ffi::OsStrExt as _;
-    value.as_bytes().to_vec()
-}
-
-#[cfg(windows)]
-fn os_string_bytes(value: &std::ffi::OsStr) -> Vec<u8> {
-    use std::os::windows::ffi::OsStrExt as _;
-    value.encode_wide().flat_map(u16::to_le_bytes).collect()
-}
-
 fn version(metadata: &HostStat) -> SourceVersion {
     let mut hash = blake3::Hasher::new();
     hash.update(b"acyclic-fs-native-source-version-v1\0");
