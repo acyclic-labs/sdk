@@ -1663,7 +1663,7 @@ async fn native_stock_source_provenance_and_cancelled_preparation_are_not_author
         let claim = workspace_ref(fixture.filesystem_provider.clone(),
             &format!("fork-allocation-{}", created.private.storage_name(&mut None)?))?;
         let bytes = fixture.filesystem.read(&claim, None, "/claim.json", 65_536).await?;
-        let mut source: Value = crate::contract::json_from_slice(&bytes)?;
+        let mut source: Value = crate::contract::json_from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
         match change {
             0 => source["task_origin"]["owner"]["id"] = serde_json::json!("foreign-owner"),
             1 => source["task_origin"]["preparation_task"] = serde_json::to_value(TaskId::from_bytes([85; 16])).unwrap(),

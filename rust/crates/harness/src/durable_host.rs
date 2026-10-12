@@ -6459,8 +6459,8 @@ pub(crate) mod tests {
         let request = payloads.stage(operation, "request", b"{}", None)?.await?;
         let schema = FileRef::new(
             request.volume().clone(),
-            request.path(),
-            request.version(),
+            request.path().into(),
+            request.version().into(),
             FileDescriptor::from_bytes(b"{}", "application/schema+json", &mut None)?,
             "schema.json".into(),
          &mut None)?;
