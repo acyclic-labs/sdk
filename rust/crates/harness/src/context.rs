@@ -896,7 +896,7 @@ fn context_stream_error(source: StreamError, io: Option<&crate::executor::Prepar
     crate::Error::Storage(source.to_string())
 }
 
-fn decode_context_json<T: crate::executor::PreparationRecord>(
+fn decode_context_json<T: crate::executor::PreparationRecord + serde::Serialize>(
     bytes: &[u8], maximum: u64, io: Option<&crate::executor::PreparationIo>,
     reason: &'static str,
 ) -> Result<T> {
