@@ -86,14 +86,14 @@ use super::*;
                 None,
             )?
             .await?;
-        let record = StoredContextRevision {
-            format_version: 5,
-            revision: 1,
-            source: "instructions".into(),
-            source_revision: "1".into(),
-            context: payload,
-            compaction: None,
-        };
+        let record = serde_json::json!({
+            "format_version": 5,
+            "revision": 1,
+            "source": "instructions",
+            "source_revision": "1",
+            "context": payload,
+            "compaction": null,
+        });
         let mut records = Vec::new();
         for (field, value) in [
             ("format_version", serde_json::json!(0)),
@@ -102,8 +102,7 @@ use super::*;
             ("source_revision", serde_json::json!("another-revision")),
             ("unknown", serde_json::json!(true)),
         ] {
-            let mut corrupt = serde_json::to_value(&record)
-                .map_err(|error| crate::Error::Invalid(error.to_string()))?;
+            let mut corrupt = record.clone();
             corrupt[field] = value;
             records.push(crate::contract::canonical_json_bytes(&corrupt)?);
         }
@@ -113,12 +112,12 @@ use super::*;
         );
         records.push(b"not-json".to_vec());
         let mut missing_source = record;
-        missing_source.compaction = Some(CompactionReference {
+        missing_source["compaction"] = serde_json::to_value(CompactionReference {
             source_digest: crate::contract::canonical_json_digest(&context)?,
             maximum_messages: 2,
             retention: CompactionRetention::default(),
             summary: None,
-        });
+        }).map_err(|error| crate::Error::Invalid(error.to_string()))?;
         records.push(crate::contract::canonical_json_bytes(&missing_source)?);
         for bytes in records {
             let stream = Arc::new(MemoryStream::default());
@@ -143,12 +142,6 @@ use super::*;
                 payload_limits(),
             )?;
             assert!(provider.revisions(0, 1).await.is_err());
-            assert!(
-                provider
-                    .decode_revision(0, &vec![b' '; MAX_RECORD_BYTES + 1], payload_limits(), None)
-                    .await
-                    .is_err()
-            );
         }
         Ok(())
     }

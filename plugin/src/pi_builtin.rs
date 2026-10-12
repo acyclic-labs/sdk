@@ -634,7 +634,7 @@ fn logical_path(path: &Path, work: &NativeMaterializationWork) -> Result<(String
         value.push_str(part);
     }
     work.charge(WorkCounters { bytes_copied: value.len() as u64, ..WorkCounters::default() }).map_err(native_error)?;
-    acyclic_harness::conversation::validate_content_path(&value)?;
+    acyclic_harness::conversation::validate_content_path(&value, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
     Ok((value, custody))
 }
 

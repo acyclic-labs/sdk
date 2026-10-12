@@ -341,7 +341,7 @@ impl FusePhysicalSession {
             }
         };
         // Callbacks retain their original grants and cancellation.
-        let _active = FuseStartupMeterScope::new(core, &callback_native)?;
+        let _active = NativeMountWorkScope::new(core, &callback_native)?;
         let started_io = |actual| -> Result<(), NativeMountError> {
             match native {
                 Some(native) => native.charge(actual)?,

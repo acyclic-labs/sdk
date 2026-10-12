@@ -477,7 +477,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
     }
 
     fn writer(&self) -> Result<&FilesystemContentPublisher<A, O>> {
-        self.writer.as_ref().ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "original Root content has no declared publication authority" })
+        self.writer.as_deref().ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, reason: "original Root content has no declared publication authority" })
     }
 
     fn publication_lease(&self) -> Result<&Arc<dyn crate::resource_preparation::CreatedTaskLease>> {
@@ -655,7 +655,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
                 return self.list_snapshot_directory(volume, prefix, path, generation, after, maximum_entries).await;
             }
             self.authenticate(volume, io).await?;
-            ContentResidencyVerifier::list_private_directory(&self.reader, volume, prefix, path,
+            ContentResidencyVerifier::list_private_directory(self.reader.as_ref(), volume, prefix, path,
                 generation, after, maximum_entries, io)?.await
         })
     }
@@ -671,7 +671,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
                 Ok((file, bytes, hold))
             } else {
                 self.authenticate(volume, io).await?;
-                ContentResidencyVerifier::read_private_path(&self.reader, volume, prefix, path,
+                ContentResidencyVerifier::read_private_path(self.reader.as_ref(), volume, prefix, path,
                     generation, maximum_bytes, io)?.await
             }
         })
@@ -1341,7 +1341,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
         io: Option<&'a PreparationIo>) -> Result<BoundedContentFuture<'a, PrivateDirectoryPage>> {
         BoundedContentFuture::new(io, || async move {
             self.reauthenticate(volume, io).await?;
-            ContentResidencyVerifier::list_private_directory(&self.reader, volume, prefix, path,
+            ContentResidencyVerifier::list_private_directory(self.reader.as_ref(), volume, prefix, path,
                 generation, after, maximum_entries, io)?.await
         })
     }
@@ -1350,7 +1350,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentRes
         -> Result<BoundedContentFuture<'a, (FileRef, acyclic_stream::OwnedBytes, Option<ContentHold<'io>>)>> where 'io: 'a {
         BoundedContentFuture::new(io, || async move {
             self.reauthenticate(volume, io).await?;
-            ContentResidencyVerifier::read_private_path(&self.reader, volume, prefix, path,
+            ContentResidencyVerifier::read_private_path(self.reader.as_ref(), volume, prefix, path,
                 generation, maximum_bytes.min(self.request.maximum_bytes), io)?.await
         })
     }

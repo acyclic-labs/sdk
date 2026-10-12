@@ -66,13 +66,15 @@ pub(super) struct ProjectionCore {
     pub(super) allocation_custody: Option<crate::demand::NativeMountAllocationCustody>,
 }
 
-pub(in crate::native_mount) struct FuseStartupMeterScope {
+/// Retains the original callback meter for accepted native I/O.
+#[must_use]
+pub struct NativeMountWorkScope {
     pub(super) core: Arc<ProjectionCore>,
     pub(super) meter: crate::NativeMaterializationWork,
     pub(super) generation: u64,
 }
 
-impl FuseStartupMeterScope {
+impl NativeMountWorkScope {
     pub(super) fn new(
         core: &Arc<ProjectionCore>,
         meter: &crate::NativeMaterializationWork,
@@ -90,12 +92,12 @@ impl FuseStartupMeterScope {
         })
     }
     /// Retains the original callback meter for accepted I/O.
-    pub(in crate::native_mount) fn try_clone_for_io(&self) -> Result<Self, NativeMountError> {
+    pub fn try_clone_for_io(&self) -> Result<Self, NativeMountError> {
         Self::new(&self.core, &self.meter)
     }
 }
 
-impl Drop for FuseStartupMeterScope {
+impl Drop for NativeMountWorkScope {
     fn drop(&mut self) {
         self.core
             .startup_meter

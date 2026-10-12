@@ -747,7 +747,7 @@ impl GitFilesystemExecutor for PluginGitExecutor<'_> {
                 })
             }
             GitFilesystemAction::ApplyPatch { patch } => {
-                let generation = match apply_git_patch_with_permit(
+                let generation = match apply_git_patch(
                     &self.current,
                     patch,
                     IdempotencyKey::from_bytes(operation_id.into_bytes()),

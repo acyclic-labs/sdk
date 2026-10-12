@@ -97,7 +97,14 @@ impl PiOperatorRequest {
             Err(error) => return Err(operator_decode_error(error, custody)),
         };
         let mut session = work.display(session).map_err(native_error)?;
-        let mut scope = Scope::from_value_with_native_work(scope_value, work)?;
+        let mut scope_custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
+        let decoded = json_from_value_bounded::<Scope, _>(std::borrow::Cow::Borrowed(scope_value), bounds, 0,
+            acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None,
+            &mut |charge| operator_decode_charge(charge, work, &mut scope_custody));
+        let mut scope = match decoded {
+            Ok(scope) => (scope, scope_custody),
+            Err(error) => return Err(operator_decode_error(error, scope_custody)),
+        };
         let mut request = (Self { session_id: session.0, body, operator: scope.0 }, custody);
         request.1.absorb(&mut session.1).map_err(native_error)?;
         request.1.absorb(&mut scope.1).map_err(native_error)?;
@@ -143,7 +150,7 @@ pub(crate) fn build_control_request(owner: &PiOwnerConfig, cwd: PathBuf,
 
 pub(crate) fn verify_request(owner: &PiOwnerConfig, session: &str, request: &PiOperatorRequest,
     work: &NativeMaterializationWork) -> Result<()> {
-    owner.authority()?.verifier.verify(&request.operator)?;
+    owner.authority()?.verifier.verify(&request.operator, &mut None)?;
     let hash_custody = body_hash(&request.body, work)?;
     let hash = &hash_custody.0;
     if request.session_id != session || request.body.session() != session

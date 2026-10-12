@@ -189,8 +189,11 @@ impl PiSession {
         if !self.state.pending.iter().any(|pending| pending.fork_key == operations.fork.into_bytes()) {
             if let Some(plan) = &plan {
                 let root_waiting = if caller == owner.policy().root_task {
-                    let (suspension, suspension_custody) = self.runtime.runtime.task_host()
-                        .workflow_suspension_with_native_work(caller, &work).await?;
+                    let (suspension, suspension_custody) = (async {
+                        let mut io = acyclic_harness::store::history::native_work_io(&work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+                        let value = self.runtime.runtime.task_host().workflow_suspension(caller, &mut Some(&mut io)).await?;
+                        Ok::<_, acyclic_harness::Error>((value, io.into_custody()))
+                    }).await?;
                     let suspension = suspension;
                     let waiting = suspension.as_ref()
                         .is_some_and(|suspension| suspension.waiting_command == Some(original));
@@ -369,11 +372,11 @@ impl PiSession {
         }
         let volume_provider = selected_project.provider().clone();
         let project = VolumeRef::new(volume_provider.clone(), format!("project-{task}"), VolumeClass::Project,
-            VolumeOwner::Project(root_key.clone()))?;
-        let scratch = VolumeRef::new(volume_provider.clone(), "scratch", VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(operations.agent))?;
-        let results = VolumeRef::new(volume_provider, "native-results", VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(operations.agent))?;
+            VolumeOwner::Project(root_key.clone()), &mut None)?;
+        let scratch = VolumeRef::new(volume_provider.clone(), "scratch".into(), VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(operations.agent), &mut None)?;
+        let results = VolumeRef::new(volume_provider, "native-results".into(), VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(operations.agent), &mut None)?;
         let paths = pi_native::planned_native_paths(&self.resources, &self.state.root_session_id, task, Some(&root_key), work)?;
         let paths = &paths.0;
         let cut = pi_native::PiNativeSourceCut::deserialize(arguments.get("cut").ok_or_else(|| acyclic_harness::Error::Invalid("Pi spawn has no actual original SDK native source cut".to_owned()))?).map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
@@ -422,17 +425,17 @@ impl PiSession {
         let Some((reference, reference_custody)) = reference else { return Ok(None); };
         // Owned data is declared after its guard so unwinding destroys data first.
         let reference = reference;
-        let authority = owner.authority()?;
+        let (authority, _authority_custody) = owner.authority_with_native_work(work)?;
         let maximum = owner.policy().maximum_payload_bytes.min(MAXIMUM_ADAPTER_STATE_BYTES);
-        let reader = FilesystemContentVerifier::new(self.filesystem.clone(), &authority.verifier, &authority.signed, maximum, None)?;
-        let (bytes, bytes_custody) = reader.read_with_native_work(&reference, maximum, work).await?;
-        let bytes = bytes;
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+        let reader = FilesystemContentVerifier::new(self.filesystem.clone(), &authority.verifier,
+            &authority.signed, maximum, Some(&io))?;
+        let bytes = acyclic_harness::conversation::ContentResidencyVerifier::read(reader.as_ref(), &reference, maximum, Some(&io))?.await?;
         let owned = std::mem::size_of::<T>() as u64;
         let (value, custody) = pi_root_provider::guarded_pi_decode(
             &bytes, maximum, owned, acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None,
             schema_label_bytes, work)?;
         drop(bytes);
-        drop(bytes_custody);
         drop(reference);
         drop(reference_custody);
         Ok(Some((value, custody)))
@@ -618,7 +621,7 @@ impl PiSession {
             return Err(acyclic_harness::Error::Invalid("Pi retained child has no successful original creator outcome".to_owned()));
         };
         let report: acyclic_harness::fork::ForkReport = serde_json::from_value(value).map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
-        report.validate()?;
+        report.validate(&mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         let (request, request_custody) = pi_root_provider::guarded_pi_value(&report.request, maximum_owned_bytes, work)?;
         let request = request;
         if request != plan.request.payload {
@@ -650,7 +653,7 @@ impl PiSession {
         {
             return Err(acyclic_harness::Error::Invalid("Pi creator substituted its original child binding or workspace".to_owned()));
         }
-        prepared.report.validate()?;
+        prepared.report.validate(&mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         binding.validate(None, [key.as_str()], false)?;
         let route = SpawnBorrowedRoute { task_binding: PluginTaskBinding::Pi(binding), agent_id: &commit.alias,
             turn_id: &commit.sdk_operation, context_id: operations.fork.into_bytes(),

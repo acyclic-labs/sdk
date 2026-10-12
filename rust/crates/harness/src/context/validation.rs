@@ -80,7 +80,7 @@ pub(crate) fn validate_projected_context(
         crate::contract::validate_trusted_json_byte_bound(context, limits.render_bytes, work)
     })
 }
-pub(super) async fn verify_file(
+pub(crate) async fn verify_file(
     file: &FileRef, verifier: &dyn ContentResidencyVerifier,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
@@ -90,7 +90,7 @@ pub(super) async fn verify_file(
     }
     verifier.verify(file, file.descriptor().byte_length(), io)?.await
 }
-async fn validate_context_refs(
+pub(super) async fn validate_context_refs(
     context: &Context, verifier: &dyn ContentResidencyVerifier, limits: Limits,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {

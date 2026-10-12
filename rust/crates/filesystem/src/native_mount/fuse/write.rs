@@ -421,12 +421,7 @@ pub(super) fn copy_open_range(
                 ));
             }
             Err(NativeMountError::Source(
-                MountSourceError::Unsupported(_)
-                | MountSourceError::NativeUnsupported
-                | MountSourceError::NativeText {
-                    kind: crate::native_mount::NativeSourceTextKind::Unsupported,
-                    ..
-                },
+                MountSourceError::Unsupported(_) | MountSourceError::NativeUnsupported,
             )) => {}
             Err(error) => return Err(error),
         }

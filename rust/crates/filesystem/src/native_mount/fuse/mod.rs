@@ -104,7 +104,7 @@ use invalidation::*;
 mod state;
 use state::*;
 mod core;
-pub(super) use core::FuseStartupMeterScope;
+pub use core::NativeMountWorkScope;
 use core::*;
 mod retirement;
 use retirement::*;

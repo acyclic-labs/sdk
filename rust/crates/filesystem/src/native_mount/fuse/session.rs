@@ -45,7 +45,7 @@ impl FuseSession {
             metadata.st_gid,
             source_work,
         )?;
-        let _startup = FuseStartupMeterScope::new(&core, source_work)?;
+        let _startup = NativeMountWorkScope::new(&core, source_work)?;
         core.source
             .observe_view_with_meter(Arc::<ProjectionCore>::downgrade(&core), source_work)?;
         let mut config = Config::default();
@@ -179,14 +179,14 @@ impl FuseSession {
     pub(in crate::native_mount) fn begin_original_work(
         &self,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<FuseStartupMeterScope, NativeMountError> {
+    ) -> Result<NativeMountWorkScope, NativeMountError> {
         let loan = FuseDriverLoan::take(&self.control)?;
         let physical = loan.physical.as_ref().expect("actual physical driver loan");
         if physical.session.is_none() {
             return Err(NativeMountError::Lifecycle("session is stopped"));
         }
         work.admit(crate::WorkCounters::UNCHARGED)?;
-        FuseStartupMeterScope::new(&self.control.core, work)
+        NativeMountWorkScope::new(&self.control.core, work)
     }
     pub(in crate::native_mount) fn native_root_identity(
         &self,
@@ -207,7 +207,7 @@ impl FuseSession {
         let _loan = FuseDriverLoan::take(&self.control)?;
         let result = self.control.core.request(|work| {
             let _active = if self.control.core.active_meter().is_none() {
-                Some(FuseStartupMeterScope::new(&self.control.core, work)?)
+                Some(NativeMountWorkScope::new(&self.control.core, work)?)
             } else {
                 None
             };
@@ -313,7 +313,7 @@ impl FuseSession {
     ) -> Result<(), NativeMountError> {
         let _loan = FuseDriverLoan::take(&self.control)?;
         native.admit(crate::WorkCounters::UNCHARGED)?;
-        let _active = FuseStartupMeterScope::new(&self.control.core, native)?;
+        let _active = NativeMountWorkScope::new(&self.control.core, native)?;
         self.control.core.source.fence_changes_with_meter(native)?;
         let mut state = self
             .control

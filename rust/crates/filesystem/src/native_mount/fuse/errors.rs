@@ -165,9 +165,6 @@ pub(super) fn native_callback_errno(error: &NativeMountError) -> i32 {
                 MountSourceError::NativeWorkspaceCause(error) => {
                     crate::native_mount::native_workspace_errno(&error.source)
                 }
-                MountSourceError::NativeText { kind, .. } => {
-                    crate::native_mount::native_source_text_errno(*kind)
-                }
                 MountSourceError::Io(error, _) => error.raw_os_error().unwrap_or(libc::EIO),
                 MountSourceError::Allocation(_)
                 | MountSourceError::NamespacePath(

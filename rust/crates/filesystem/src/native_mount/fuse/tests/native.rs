@@ -479,7 +479,7 @@ pub(super) fn active_callback_borrows_original_meter_without_future_receipt_doub
                 0,
                 work,
             )?;
-            let _active = crate::native_mount::fuse::FuseStartupMeterScope::new(&core, work)?;
+            let _active = crate::native_mount::fuse::NativeMountWorkScope::new(&core, work)?;
             let result = core.request(|callback_work| {
                 assert!(Arc::ptr_eq(
                     callback_work.native_read_meter(),

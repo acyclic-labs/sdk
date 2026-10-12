@@ -29,7 +29,7 @@ pub(super) fn linux_changes_around_the_mount_reach_every_kernel_cache()
     crate::native_mount::adapter::boundary(around.cancellation(), |work| {
         around.create_file(&name("added"), FileMetadata::default(), None, work)
     })?;
-    session.revalidate()?;
+    session.revalidate(&fuse_fixture_work())?;
     assert_eq!(std::fs::read(&mounted)?, b"other");
     assert!(added.is_file());
     assert_eq!(listing(temporary.path())?, ["added", "file"]);
@@ -161,7 +161,7 @@ pub(super) fn linux_listings_resume_across_pages_and_readers()
             work,
         )
     })?;
-    session.revalidate()?;
+    session.revalidate(&fuse_fixture_work())?;
     expected.push("added".to_owned());
     expected.sort();
     assert_eq!(names(&many)?, expected);
@@ -283,7 +283,7 @@ pub(super) fn linux_rebind_reaches_every_kernel_cache() -> Result<(), Box<dyn st
     })?;
     writer.sync()?;
     runtime.block_on(reader.advance_to_head_async())?;
-    session.revalidate()?;
+    session.revalidate(&fuse_fixture_work())?;
     assert_eq!(std::fs::read(&mounted)?, b"other");
     assert!(added.is_file());
     assert_eq!(listing(temporary.path())?, ["added", "file"]);
