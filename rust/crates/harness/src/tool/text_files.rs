@@ -528,7 +528,7 @@ impl TextTool {
             TextKind::Read(options) => {
                 let input = super::decode_with_native_work::<ReadInput>(&invocation.arguments, work)?;
                 let read = context.read_file_with_native_work(&input.0.file, work).await?;
-                let source = std::str::from_utf8(&read.0)
+                let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("text tool requires UTF-8 content"))?;
                 let mut allocation = super::edit::AlgorithmWork::native(work, std::mem::size_of::<TextSelection>())?;
                 let value = ReadResult {
@@ -542,7 +542,7 @@ impl TextTool {
             TextKind::Search(options) => {
                 let input = super::decode_with_native_work::<SearchInput>(&invocation.arguments, work)?;
                 let read = context.read_file_with_native_work(&input.0.file, work).await?;
-                let source = std::str::from_utf8(&read.0)
+                let source = std::str::from_utf8(read.as_ref())
                     .map_err(|_| native::invalid("text tool requires UTF-8 content"))?;
                 let mut allocation = super::edit::AlgorithmWork::native(work, std::mem::size_of::<SearchMatches>())?;
                 let value = SearchResult {

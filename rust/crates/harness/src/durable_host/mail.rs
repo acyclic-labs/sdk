@@ -33,6 +33,21 @@ fn require_original(io: Option<&PreparationIo>) -> Result<()> {
         "mail observer requires its original native work"))
 }
 
+pub(crate) fn received_copy_operation(task: TaskId, receive: OperationId,
+    io: Option<&PreparationIo>) -> Result<OperationId> {
+    require_original(io)?;
+    let domain = b"acyclic.harness.received-copy.v1\0";
+    #[cfg(feature = "filesystem")]
+    if let Some(io) = io { io.history_io().hashed_bytes(domain.len() as u64 + 32)?; }
+    let mut hash = blake3::Hasher::new();
+    hash.update(domain);
+    hash.update(&task.into_bytes());
+    hash.update(&receive.into_bytes());
+    let mut id = [0; 16];
+    id.copy_from_slice(&hash.finalize().as_bytes()[..16]);
+    Ok(OperationId::from_bytes(id))
+}
+
 fn encode<T: Serialize + ?Sized>(value: &T, maximum: u64, io: Option<&PreparationIo>) -> Result<OwnedBytes> {
     require_original(io)?;
     if io.is_none() { crate::contract::validate_json_byte_bound(value, maximum)?; }

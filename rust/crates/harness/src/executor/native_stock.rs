@@ -687,61 +687,6 @@ impl NativeStockExecutor {
         native_progress(&self.stock, context, input, journal, work, true, self.interactions.as_ref())
     }
 
-    /// Executes one independently admitted model step through the shared engine.
-    pub fn model_step_with_native_context<'a>(
-        &'a self, context: &'a Arc<crate::runtime::NativeTaskContext>, journal: &'a dyn ExecutionJournal,
-        input: &'a TurnInput, step: u32, prior: &'a [ModelMessage],
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Vec<ModelEvent>, acyclic_fs::NativeAllocation)>> {
-        self.admit_execution(context, input, journal, work)?;
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            io.absorb_native_custody(work.retain_owned(std::mem::size_of::<Vec<ModelEvent>>() as u64)?)?;
-            let events = {
-                let session = native_session(&self.stock, context, input.operation_id, &io,
-                    self.stock.reconciliation_only, self.interactions.as_ref());
-                session.model_step(journal, input, step, prior).await?
-            };
-            let retained = native_events_owned_bytes(&events)?;
-            work.remaining()?;
-            Ok((events, io.into_native_custody(retained)?))
-        })
-    }
-
-    /// Freezes the same complete tool batch for original-owner fork publication.
-    pub fn completed_tool_batch_prefix_with_native_context<'a>(
-        &'a self, context: &'a Arc<crate::runtime::NativeTaskContext>, journal: &'a dyn ExecutionJournal,
-        input: &'a TurnInput, step: u32, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (crate::model::PreparedModelRequest, acyclic_fs::NativeAllocation)>> {
-        self.completed_tool_prefix_native(context, journal, input, step, None, work)
-    }
-
-    /// Freezes only the original admitted prefix through this exact completed call.
-    pub fn completed_tool_prefix_with_native_context<'a>(
-        &'a self, context: &'a Arc<crate::runtime::NativeTaskContext>, journal: &'a dyn ExecutionJournal,
-        input: &'a TurnInput, step: u32, call: &'a str, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (crate::model::PreparedModelRequest, acyclic_fs::NativeAllocation)>> {
-        self.completed_tool_prefix_native(context, journal, input, step, Some(call), work)
-    }
-
-    fn completed_tool_prefix_native<'a>(
-        &'a self, context: &'a Arc<crate::runtime::NativeTaskContext>, journal: &'a dyn ExecutionJournal,
-        input: &'a TurnInput, step: u32, through: Option<&'a str>, work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (crate::model::PreparedModelRequest, acyclic_fs::NativeAllocation)>> {
-        self.admit_execution(context, input, journal, work)?;
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            io.absorb_native_custody(work.retain_owned(std::mem::size_of::<crate::model::PreparedModelRequest>() as u64)?)?;
-            let prepared = {
-                let session = native_session(&self.stock, context, input.operation_id, &io,
-                    self.stock.reconciliation_only, self.interactions.as_ref());
-                session.completed_tool_prefix_through(journal, input, step, through).await?
-            };
-            let retained = prepared.logical_owned_bytes()?;
-            work.remaining()?;
-            Ok((prepared, io.into_native_custody(retained)?))
-        })
-    }
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]

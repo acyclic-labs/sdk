@@ -53,7 +53,7 @@ mod execution_journal;
 pub use execution_journal::FilesystemExecutionJournal;
 mod fork_preparer;
 use fork_preparer::bounded_io as fork_preparer_io;
-pub(crate) use fork_preparer::OriginalForkAllocationClaim;
+pub(crate) use fork_preparer::AllocationClaim;
 pub(crate) use fork_preparer::bounded_io::{preparation_slot_bytes, PreparationIo, UploadRecord, PreparationRecord, ReservedDecoded, DecodeReservation};
 mod summary_fork;
 pub use fork_preparer::{FilesystemForkPreparer, FilesystemResourceCreationProvider, FilesystemRootBootstrapAllocation};
@@ -2078,6 +2078,7 @@ impl UploadRecord for JoinCommitWitness {
 }
 
 impl fork_preparer_io::PreparationRecord for JoinCommitWitness {
+    fn diagnostic_label_bytes() -> u64 { crate::contract::preparation_serde_diagnostic_label_bytes() }
     fn maximum_slot_bytes() -> u64 {
         std::mem::size_of::<serde_json::Value>().max(std::mem::size_of::<Self>()) as u64
     }
@@ -3404,6 +3405,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
             code: crate::wire::ErrorCode::Storage,
             reason: "join witness decoder did not admit its statement",
         })?.into_retained();
+        drop(statement_guard);
         drop(encoded);
         drop(encoded_guard);
         drop(witness_custody);
@@ -4242,9 +4244,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                         ).await?
                     } else {
                         let mut before_publication = || io.verify_publication_lease(lease);
-                        fork_preparer_io::apply_generation_measured_guarded(
+                        fork_preparer_io::publish_generation(
                             self, &workspace, expected_generation, &mutations,
-                            idempotency_key, io, &mut before_publication,
+                            idempotency_key, Some(io), &mut before_publication,
                         ).await?
                     }
                 } else {
@@ -4263,9 +4265,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(lease) = publication_lease {
                     let mut before_publication = || lease.verify();
-                    fork_preparer_io::apply_generation_ordinary_guarded(
+                    fork_preparer_io::publish_generation(
                         self, &workspace, expected_generation, &mutations,
-                        idempotency_key, &mut before_publication,
+                        idempotency_key, None, &mut before_publication,
                     ).await?
                 } else {
                     self.apply_generation(

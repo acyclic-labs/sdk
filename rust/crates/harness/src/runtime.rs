@@ -214,42 +214,15 @@ impl<I, O> TaskDefinition<I, O> {
 
     /// Declares a dependency available at admission.
     pub fn requires(mut self, requirement: impl Into<String>) -> Result<Self> {
-        self.requires_with_io(std::borrow::Cow::Owned(requirement.into()), None)?;
+        let requirement = requirement.into();
+        if requirement.is_empty() || requirement.chars().any(char::is_whitespace) {
+            return Err(Error::Invalid("task requirement is invalid".into()));
+        }
+        self.requirements.insert(requirement);
+        self.refresh_digest()?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         { self.native_definition_source = None; }
         Ok(self)
-    }
-
-    fn requires_with_io(
-        &mut self, requirement: std::borrow::Cow<'_, str>,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<u64> {
-        inspect_task_metadata(io, 1)?;
-        if requirement.is_empty() || requirement.chars().any(char::is_whitespace) {
-            return Err(task_workflow_error(task_original_work(io)?,
-                crate::wire::ErrorCode::Invalid, "task requirement is invalid"));
-        }
-        let requirement = match requirement {
-            std::borrow::Cow::Owned(requirement) => Some(requirement),
-            std::borrow::Cow::Borrowed(requirement) => {
-                inspect_task_metadata(io, 1)?;
-                if self.requirements.contains(requirement) {
-                    None
-                } else {
-                    #[cfg(feature = "filesystem")]
-                    if let Some(io) = io {
-                        io.retain_owned(std::mem::size_of::<String>() as u64)?;
-                    }
-                    Some(task_copy_text(requirement, io)?)
-                }
-            }
-        };
-        if let Some(requirement) = requirement {
-            self.requirements.insert(requirement);
-        }
-        let retained = crate::workflow::workflow_owned_bytes(io)?;
-        self.refresh_digest_with_io(io)?;
-        Ok(retained)
     }
 
     fn refresh_digest(&mut self) -> Result<()> {
@@ -564,7 +537,7 @@ fn inspect_task_metadata(io: Option<&crate::executor::PreparationIo>, items: u64
         use crate::store::history::HistoryIo as _;
         let mut observer = io.history_io();
         observer.check_cancellation()?;
-        observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items })?;
+        crate::store::history::HistoryIo::codec_charge(&mut observer, crate::contract::JsonCodecCharge::Inspect { items })?;
     }
     #[cfg(not(feature = "filesystem"))]
     let _ = (io, items);
@@ -637,13 +610,7 @@ async fn validate_task_open_admission(
     harness: &AgentHarness, record: &TaskAdmissionRecord,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(work) = task_original_work(io)? {
-        return harness.validate_observed_admission_with_native_work(record, work).await;
-    }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    let _ = io;
-    harness.validate_observed_admission(record).await
+    harness.validate_observed_admission(record, io).await
 }
 
 fn initialize_task_machine(
@@ -2637,6 +2604,20 @@ pub trait DurableTaskHost: acyclic_stream::ProviderPlatform {
             Err(Error::Unsupported(
                 "durable task context authentication is not bound".into(),
             ))
+        })
+    }
+
+    /// Reconstructs an authenticated scope on its original native ledger.
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    fn resume_scope_with_native_work<'a>(
+        &'a self,
+        _task: TaskId,
+        _operation: OperationId,
+        _work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, (RuntimeScope, acyclic_fs::NativeAllocation)>> {
+        Err(Error::NativeBoundary {
+            code: crate::wire::ErrorCode::Unsupported,
+            reason: "task state has no original-ledger scope producer",
         })
     }
 
@@ -5370,7 +5351,57 @@ enum IssuedContextPurpose {
 }
 
 impl AgentHarness {
-    async fn validate_observed_admission(&self, observed: &TaskAdmissionRecord) -> Result<()> {
+    async fn validate_observed_admission(
+        &self, observed: &TaskAdmissionRecord, io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<()> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = task_original_work(io)? {
+            let mut observer = crate::store::history::native_work_io(work)
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            observed.validate_with_work(&mut Some(&mut observer))?;
+            self.tasks.validate_durable_admission_with_work(
+                &observed.task, &observed.machine, Some(&observed.input_schema),
+                &observed.output_schema, Some(&observed.input), &mut Some(&mut observer),
+            )?;
+            if observed.resource_proofs.is_empty() {
+                self.scope.validate_narrowing_with_native_work(&observed.grants, &observed.limits, work)?;
+                self.scope.validate_run_limit_attenuation_with_native_work(&observed.run_limits, work)?;
+            } else {
+                let state = self.state.as_ref().ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unsupported,
+                    reason: "resource-derived admission state is not bound",
+                })?;
+                let admitted = state.resume_scope_with_native_work(
+                    observed.task_id(), observed.operation_id, work,
+                )?.await?;
+                if !admitted.1.matches_work(work) {
+                    return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                        reason: "resumed scope differs from its original metadata ledger" });
+                }
+                let observed_digest = observed.canonical_digest_with_work(&mut Some(&mut observer))?;
+                if admitted.0.created_access.as_ref().is_none_or(|access|
+                    access.admission_digest != observed_digest)
+                {
+                    return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                        reason: "resource scope seal differs from observed admission" });
+                }
+                self.validate_native_resumed_scope(&admitted.0, observed.operation_id, work)?;
+            }
+            if observed.policy != self.policy_identity
+                || observed.extensions.as_ref() != self.scope.extensions()
+            {
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
+                    reason: "retained admission changed owner bindings" });
+            }
+            return match (&self.execution, observed.execution.as_ref()) {
+                (Some(provider), Some(placement)) if &placement.provider == provider.identity_with_native_work(work)? => Ok(()),
+                (None, None) => Ok(()),
+                _ => Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
+                    reason: "retained execution route differs from runtime" }),
+            };
+        }
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let _ = io;
         observed.validate()?;
         self.tasks.validate_durable_admission(
             &observed.task,
@@ -5464,7 +5495,7 @@ impl AgentHarness {
                 "operation belongs to another admission request".into(),
             ));
         }
-        self.validate_observed_admission(&observed).await?;
+        self.validate_observed_admission(&observed, None).await?;
         let extension_leases = self.retain_task_extensions_existing(definition, scope)?;
         Ok(Some(Admission::Accepted(RuntimeTask::Durable {
             task_id,
@@ -5620,7 +5651,7 @@ impl AgentHarness {
             .as_ref()
             .ok_or_else(|| Error::Unsupported("durable task state host is not bound".into()))?;
         match host.observe_admission(task_id).await {
-            Ok(observed) if observed == *expected => self.validate_observed_admission(&observed).await,
+            Ok(observed) if observed == *expected => self.validate_observed_admission(&observed, None).await,
             Ok(_) => Err(Error::Conflict(
                 "spawner and state host admission bindings differ".into(),
             )),
@@ -6488,7 +6519,7 @@ impl AgentHarness {
                 "spawner reconciled another operation".into(),
             ));
         }
-        self.validate_observed_admission(&admission).await?;
+        self.validate_observed_admission(&admission, None).await?;
         let identity = admission.task.clone();
         let registered = self
             .tasks
@@ -6501,7 +6532,7 @@ impl AgentHarness {
             ));
         }
         match host.observe_admission(task_id).await {
-            Ok(observed) if observed == admission => self.validate_observed_admission(&observed).await?,
+            Ok(observed) if observed == admission => self.validate_observed_admission(&observed, None).await?,
             Ok(_) => {
                 return Err(Error::Conflict(
                     "spawner and state host admission bindings differ".into(),
@@ -6534,7 +6565,7 @@ impl AgentHarness {
             .as_ref()
             .ok_or_else(|| Error::Unsupported("durable task state is not bound".into()))?;
         let observed = host.observe_admission(task_id).await?;
-        self.validate_observed_admission(&observed).await?;
+        self.validate_observed_admission(&observed, None).await?;
         if observed.task != definition.identity
             || observed.output_schema != definition.output_schema
         {
@@ -6606,7 +6637,8 @@ impl AgentHarness {
         )?;
         let bytes = (std::mem::size_of::<TaskAdmissionRecord>() as u64)
             .checked_add(record.logical_owned_bytes()?)
-            .ok_or_else(RuntimeScope::native_metadata_overflow)?;
+            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "native admission metadata overflows" })?;
         let custody = crate::store::history::HistoryIo::take_native_custody(&mut io, bytes)?;
         Ok((record, custody))
     }
@@ -6649,7 +6681,8 @@ impl AgentHarness {
         record.validate_with_work(&mut Some(&mut io))?;
         let bytes = (std::mem::size_of::<TaskAdmissionRecord>() as u64)
             .checked_add(record.logical_owned_bytes()?)
-            .ok_or_else(RuntimeScope::native_metadata_overflow)?;
+            .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                reason: "native admission metadata overflows" })?;
         let custody = io.take_native_custody(bytes)?;
         Ok((record, custody))
     }
@@ -7847,9 +7880,7 @@ impl TaskContext {
     async fn verify_bound_file_with_native_work(
         &self, file: &FileRef, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
-        let (bytes, custody) = self.read_file_with_native_work(file, work).await?;
-        drop(bytes);
-        drop(custody);
+        drop(self.read_file_with_native_work(file, work).await?);
         Ok(())
     }
 
@@ -8211,7 +8242,7 @@ impl TaskContext {
             }
             let output = writer.stage_once_with_native_work(
                 operation_id,path,bytes,media_type,display_name,work,
-            ).await?;
+            )?.await?;
             let file = &output.0;
             self.scope.limits.validate_file(file)?;
             if file.volume() != writer.volume() || file.path() != path
@@ -11689,7 +11720,7 @@ mod tests {
         changed_schema.input_schema =
             serde_json::json!({"type": "object", "additionalProperties": true});
         assert!(matches!(
-            harness.validate_observed_admission(&changed_schema).await,
+            harness.validate_observed_admission(&changed_schema, None).await,
             Err(Error::Conflict(_))
         ));
         Ok(())

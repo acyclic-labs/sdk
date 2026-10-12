@@ -1,9 +1,4 @@
 //! Positional I/O for arbitrary Apple file handles.
-//!
-//! These functions run on the runtime's bounded I/O workers, never on the
-//! service executor. Dispatch I/O is not valid for an arbitrary `File` here:
-//! its random-channel offsets are relative to the descriptor's cursor, and
-//! `/dev/fd/N` aliases that cursor rather than creating an independent one.
 
 use crate::{OwnedRead, OwnedWrite};
 use bytes::Bytes;
@@ -77,37 +72,17 @@ pub(super) fn write_all_batch_owned(file: &File, writes: Vec<OwnedWrite>) -> io:
     Ok(())
 }
 
-#[allow(unsafe_code, reason = "one admitted positional write on a live held descriptor")]
-pub(super) fn write_at_measured(
-    file: &File, offset: u64, bytes: &[u8], meter: &dyn crate::NativeReadMeter,
-) -> io::Result<usize> {
-    use std::os::fd::AsRawFd as _;
-    validate_range(offset, bytes.len())?;
-    let mut transfer = crate::NativeByteReservation::new(
-        meter, crate::NativeOperationKind::Write, bytes.len(),
-    )?;
-    meter.admit_write(0)?;
-    // SAFETY: the held descriptor and borrowed payload live through this syscall.
-    let result = unsafe {
-        libc::pwrite(file.as_raw_fd(), bytes.as_ptr().cast(), bytes.len(), offset as libc::off_t)
-    };
-    if result < 0 { return Err(io::Error::last_os_error()); }
-    let count = result as usize;
-    transfer.record(count)?;
-    Ok(count)
-}
-
-#[allow(unsafe_code, reason = "one admitted resize on a live held descriptor")]
+#[allow(unsafe_code)]
 pub(super) fn set_len_once(file: &File, size: u64) -> io::Result<()> {
     use std::os::fd::AsRawFd as _;
     let size = libc::off_t::try_from(size)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "file length exceeds native range"))?;
+        .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
     // SAFETY: ftruncate only acts on the live descriptor.
     if unsafe { libc::ftruncate(file.as_raw_fd(), size) } == 0 { Ok(()) }
     else { Err(io::Error::last_os_error()) }
 }
 
-#[allow(unsafe_code, reason = "one admitted durability request on a live held descriptor")]
+#[allow(unsafe_code)]
 pub(super) fn sync_once(file: &File, durability: crate::Durability) -> io::Result<()> {
     use std::os::fd::AsRawFd as _;
     // SAFETY: both operations act only on the live descriptor.

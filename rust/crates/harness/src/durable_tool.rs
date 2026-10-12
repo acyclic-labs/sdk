@@ -15,6 +15,15 @@ use crate::{
     },
 };
 use serde_json::Value;
+
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+impl crate::filesystem::UploadRecord for Value {
+    fn diagnostic_label_bytes() -> u64 { 0 }
+    fn json_value_schema() -> crate::contract::JsonValueSchema { crate::contract::JsonValueSchema::Root }
+    fn logical_owned_bytes(&self) -> Result<u64> {
+        Ok(crate::tool::value_owned_bytes(self)? - std::mem::size_of::<Self>() as u64)
+    }
+}
 use std::{collections::BTreeMap, sync::Arc};
 
 /// A version-pinned tool implemented as a deterministic serialized state machine.
@@ -52,21 +61,6 @@ impl ResumableToolRegistry {
     #[must_use]
     pub fn get(&self, name: &str, revision: &str) -> Option<&ResumableTool> {
         self.0.get(&(name.to_owned(), revision.to_owned()))
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn get_with_native_work(
-        &self, name: &str, revision: &str,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Option<&ResumableTool>> {
-        let (name, name_hold) = work.display(name)?;
-        let (revision, revision_hold) = work.display(revision)?;
-        let key = (name, revision);
-        let found = self.0.get(&key);
-        drop(key);
-        drop(revision_hold);
-        drop(name_hold);
-        Ok(found)
     }
 
     /// Iterates registered definitions in deterministic identity order.
@@ -1123,7 +1117,7 @@ fn tool_json_bound<T: serde::Serialize>(
     if let Some(io) = io {
         let encoded_hold;
         let encoded = io.encode_json(value, maximum, true)?;
-        encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
+        encoded_hold = io.guard_bytes(&encoded)?;
         drop(encoded);
         drop(encoded_hold);
         return Ok(());

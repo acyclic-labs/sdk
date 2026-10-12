@@ -1255,7 +1255,11 @@ pub(in crate::filesystem) fn source_bytes_from_vec(bytes: Vec<u8>, io: Option<&P
         return acyclic_stream::OwnedBytes::from_vec_with_guard(bytes, custody, original.runtime_meter_owner())
             .map_err(|failure| {
                 let error = failure.into_error();
-                Error::NativeWork { cause: original.runtime_error(error), custody: None }
+                Error::NativeWork { cause: match error {
+                    acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error),
+                    acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
+                    | acyclic_stream::PreparedOwnedBytesError::NotUnique => acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+                }, custody: None }
             });
     }
     let _ = io;
@@ -1565,14 +1569,7 @@ pub(in crate::filesystem) async fn apply_generation_task_guarded<A: AsyncAuthori
         if let Some(preparation) = preparation { preparation.verify_creation().await?; }
         Ok(())
     };
-    match io {
-        Some(io) => apply_generation_measured_guarded(
-            host, reference, expected, mutations, key, io, &mut before,
-        ).await,
-        None => apply_generation_ordinary_guarded(
-            host, reference, expected, mutations, key, &mut before,
-        ).await,
-    }
+    publish_generation(host, reference, expected, mutations, key, io, &mut before).await
 }
 
 pub(in crate::filesystem) async fn apply<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -1687,39 +1684,19 @@ where
     }
 }
 
-/// Runs the original ordinary transaction engine with its actual owner check at every authoritative seal and stale retry, without a native ledger.
-pub(in crate::filesystem) async fn apply_generation_ordinary_guarded<A, O, F, Fut>(
+pub(in crate::filesystem) async fn publish_generation<A, O, F, Fut>(
     host: &FilesystemHost<A, O>, reference: &WorkspaceRef,
     expected: Option<&crate::resources::GenerationRef>, mutations: &[WorkspaceMutation],
-    key: &IdempotencyKey, before_publication: &mut F,
+    key: &IdempotencyKey, io: Option<&PreparationIo>, before_publication: &mut F,
 ) -> Result<acyclic_fs::Generation<A, O>>
-where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
-    F: FnMut() -> Fut + Send,
-    Fut: std::future::Future<Output = Result<()>> + Send,
+where A: AsyncAuthorityStore, O: AsyncObjectStore,
+    F: FnMut() -> Fut + Send, Fut: Future<Output = Result<()>> + Send,
 {
-    host.apply_generation_guarded(
-        reference, expected, mutations, key, before_publication,
-    ).await
-}
-
-/// Uses the finite ordinary transaction with an owner callback borrowing this exact PreparationIo/history observer and its original cancellation token.
-pub(in crate::filesystem) async fn apply_generation_measured_guarded<A, O, F, Fut>(
-    host: &FilesystemHost<A, O>, reference: &WorkspaceRef,
-    expected: Option<&crate::resources::GenerationRef>, mutations: &[WorkspaceMutation],
-    key: &IdempotencyKey, io: &PreparationIo, before_publication: &mut F,
-) -> Result<acyclic_fs::Generation<A, O>>
-where
-    A: AsyncAuthorityStore,
-    O: AsyncObjectStore,
-    F: FnMut() -> Fut + Send,
-    Fut: Future<Output = Result<()>> + Send,
-{
+    let Some(io) = io else {
+        return host.apply_generation_guarded(reference, expected, mutations, key, before_publication).await;
+    };
     let workspace = open(host, reference, io).await?;
-    apply_generation_ordinary_measured(
-        host, &workspace, expected, mutations, key, io, before_publication,
-    ).await
+    apply_generation_ordinary_measured(host, &workspace, expected, mutations, key, io, before_publication).await
 }
 
 fn exclude_publication_callback(mut work: WorkCounters, callback: WorkCounters) -> Result<WorkCounters> {
@@ -1787,7 +1764,7 @@ where
         original.spent(hashing)
             .map_err(Error::from)?;
         let mut transaction = workspace.begin_pinned_transaction_with_native_work(
-            &pinned, acyclic_fs::OperationId::from_bytes(operation.into_bytes()), original, &io.cancellation,
+            &pinned, operation, original, &io.cancellation,
         ).await.map_err(native_workspace_error)?;
         for mutation in mutations {
             before_publication(original).await?;
@@ -2008,9 +1985,9 @@ mod tests {
         let mutations = [WorkspaceMutation::PutFile { path: "/file".into(), bytes: b"owned".to_vec() }];
         let cancellation = CancellationToken::new();
         let denied_io = PreparationIo::from_budget(publication_budget(), &cancellation)?;
-        let denied = apply_generation_measured_guarded(
+        let denied = publish_generation(
             &host, &initial.workspace, Some(&initial.generation), &mutations,
-            &IdempotencyKey::new("expired-owner-publication")?, &denied_io,
+            &IdempotencyKey::new("expired-owner-publication")?, Some(&denied_io),
             &mut || async {
                 let _checked = open(&host, &initial.workspace, &denied_io).await?;
                 Err(Error::Indeterminate(crate::OperationId::from_bytes([113; 16])))
@@ -2022,9 +1999,9 @@ mod tests {
         assert!(denied_io.receipt().bytes_hashed > 0);
         assert_eq!(denied_io.receipt().authority_records_appended, 0);
         let accepted_io = PreparationIo::from_budget(publication_budget(), &cancellation)?;
-        let accepted = apply_generation_measured_guarded(
+        let accepted = publish_generation(
             &host, &initial.workspace, Some(&initial.generation), &mutations,
-            &IdempotencyKey::new("live-owner-publication")?, &accepted_io,
+            &IdempotencyKey::new("live-owner-publication")?, Some(&accepted_io),
             &mut || async {
                 let _checked = open(&host, &initial.workspace, &accepted_io).await?;
                 Ok(())
@@ -2264,9 +2241,9 @@ impl crate::store::history::HistoryIo for &PreparationIo {
         io.history_future(|| async move {
             let bytes = io.receive_content(verifier.read_measured(reference, reference.descriptor().byte_length(),
                 io.remaining()?, &io.cancellation).await)?;
-            let retained = bytes.capacity() as u64;
+            let retained = bytes.retained_capacity().unwrap_or(0) as u64;
             io.retain_owned(retained)?;
-            Ok((acyclic_stream::OwnedBytes::from(bytes), retained))
+            Ok((bytes, retained))
         })
     }
 }

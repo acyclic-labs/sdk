@@ -48,7 +48,7 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
         host.provider.validate_with_native_work(work)?;
-        let mut custody = work.claim_allocation(std::mem::size_of::<Self>() as u64, 0)
+        let mut custody = work.retain_owned(std::mem::size_of::<Self>() as u64)
             .map_err(Error::from)?;
         let (issuer, mut issuer_custody) = issuer.clone_with_native_work(work)?;
         custody.absorb(&mut issuer_custody)
@@ -323,107 +323,76 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             }
             drop(journal);
             drop(journal_hold);
-            let canonical_digest = context.original_admission_digest();
-            let root_task = root.original_task();
-            let root_agent = root.agent();
-            let result = self.finish_root_bootstrap(owner.root_bootstrap_owner(), root_task, root_agent,
-                canonical_digest, witness, volume, role, operation, config, initial_generation,
-                selected_generation, native_snapshot, native_import.map(|(source, _)| source.clone()),
-                writable, publication_lease, record, io);
+            let admission_digest = context.original_admission_digest();
+            let agent = root.agent();
+            let root = root.original_task();
+            let native_source = native_import.map(|(source, _)| source.clone());
+            io.claim(std::mem::size_of::<FilesystemRootBootstrapAllocation<A, O>>() as u64)?;
+            let (owner, audience) = {
+                let mut observer = io.history_io();
+                (crate::store::history::HistoryIo::clone_authority(&mut observer, owner.root_bootstrap_owner())?,
+                    crate::store::history::HistoryIo::clone_authority(&mut observer, witness.binding().audience())?)
+            };
+            let creator = {
+                let mut observer = io.history_io();
+                self.issuer.verifier_with_work(&mut Some(&mut observer))?
+            };
+            let work = io.original_native_work().ok_or(native_error(crate::wire::ErrorCode::Invalid, "Root bootstrap requires its original native ledger"))?;
+            let (volume, volume_custody) = volume.clone_with_native_work(work)?;
+            io.absorb_native_custody(volume_custody)?;
+            let (generation, generation_custody) = GenerationRef::new_with_native_work(
+                &self.host.provider, &selected_generation.digest().into_bytes(), None, work,
+            )?;
+            io.absorb_native_custody(generation_custody)?;
+            let evidence = allocation_ref(&self.host.provider, &volume, Some(&io))?.into_resource();
+            let snapshot = if let Some(snapshot) = native_snapshot {
+                let remaining = io.remaining()?;
+                let value = crate::contract::json_value_bounded(&snapshot, crate::contract::JsonBounds {
+                    maximum_bytes: remaining.bytes_encoded, maximum_items: remaining.items_examined, maximum_depth: 32,
+                }, Some(crate::wire::ErrorCode::Invalid), &mut |charge| io.codec_charge(charge, true))?;
+                io.release(std::mem::size_of::<serde_json::Value>() as u64)?;
+                Some(value)
+            } else { None };
+            let request = crate::resource_preparation::RootBootstrapContentRequest {
+                root_operation: OperationId::from_bytes(root.into_bytes()), graph_root: root, role,
+                volume, evidence, generation, native_snapshot: snapshot,
+            };
+            let hashing = WorkCounters { bytes_hashed: record.len() as u64, ..WorkCounters::default() };
+            io.preflight(hashing)?;
+            let record_digest = *blake3::hash(&record).as_bytes();
+            io.charge(hashing)?;
+            drop(record);
+            let retained = io.owned_bytes()?;
+            let custody = io.into_native_custody(retained)?;
             drop(original_root);
             drop(original_custody);
-            result
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn finish_root_bootstrap(
-        &self, coordinator_owner: &Authority, root: TaskId, agent: crate::AgentId,
-        admission_digest: [u8; 32], witness: crate::durable_host::RootBootstrapBindingWitness,
-        volume: &VolumeRef, role: crate::resource_preparation::RootBootstrapContentRole,
-        operation: acyclic_fs::OperationId, config: acyclic_fs::VolumeConfig,
-        initial_generation: acyclic_fs::GenerationId, selected_generation: acyclic_fs::GenerationId,
-        native_snapshot: Option<acyclic_fs::LazySnapshotRef>,
-        native_source: Option<super::super::root_source::FsRootNativeSource<A, O>>, writable: bool,
-        publication_lease: Option<Arc<dyn crate::resource_preparation::CreatedTaskLease>>,
-        record: acyclic_stream::OwnedBytes, io: PreparationIo,
-    ) -> Result<FilesystemRootBootstrapAllocation<A, O>> {
-        io.claim(std::mem::size_of::<FilesystemRootBootstrapAllocation<A, O>>() as u64)?;
-        let (owner, audience) = {
-            let mut observer = io.history_io();
-            (crate::store::history::HistoryIo::clone_authority(&mut observer, coordinator_owner)?,
-                crate::store::history::HistoryIo::clone_authority(&mut observer, witness.binding().audience())?)
-        };
-        let creator = {
-            let mut observer = io.history_io();
-            self.issuer.verifier_with_work(&mut Some(&mut observer))?
-        };
-        let work = io.original_native_work().ok_or(native_error(crate::wire::ErrorCode::Invalid, "Root bootstrap requires its original native ledger"))?;
-        let (volume, volume_custody) = volume.clone_with_native_work(work)?;
-        io.absorb_native_custody(volume_custody)?;
-        let (generation, generation_custody) = GenerationRef::new_with_native_work(
-            &self.host.provider, &selected_generation.digest().into_bytes(), None, work,
-        )?;
-        io.absorb_native_custody(generation_custody)?;
-        let evidence = allocation_ref(&self.host.provider, &volume, Some(&io))?.into_resource();
-        let snapshot = if let Some(snapshot) = native_snapshot {
-            let remaining = io.remaining()?;
-            let value = crate::contract::json_value_bounded(&snapshot, crate::contract::JsonBounds {
-                maximum_bytes: remaining.bytes_encoded, maximum_items: remaining.items_examined, maximum_depth: 32,
-            }, Some(crate::wire::ErrorCode::Invalid), &mut |charge| io.codec_charge(charge, true))?;
-            io.release(std::mem::size_of::<serde_json::Value>() as u64)?;
-            Some(value)
-        } else { None };
-        let request = crate::resource_preparation::RootBootstrapContentRequest {
-            root_operation: OperationId::from_bytes(root.into_bytes()), graph_root: root, role,
-            volume, evidence, generation, native_snapshot: snapshot,
-        };
-        let hashing = WorkCounters { bytes_hashed: record.len() as u64, ..WorkCounters::default() };
-        io.preflight(hashing)?;
-        let record_digest = *blake3::hash(&record).as_bytes();
-        io.charge(hashing)?;
-        drop(record);
-        let retained = io.owned_bytes()?;
-        let custody = io.into_native_custody(retained)?;
-        Ok(FilesystemRootBootstrapAllocation {
-            host: self.host.clone(), owner, audience, creator, root, admission_digest, agent, role, request,
-            operation, config, initial_generation, selected_generation, native_snapshot, native_source, writable,
-            publication_lease,
-            record_digest, witness, _custody: custody,
+            Ok(FilesystemRootBootstrapAllocation {
+                host: self.host.clone(), owner, audience, creator, root, admission_digest, agent, role, request,
+                operation, config, initial_generation, selected_generation, native_snapshot, native_source, writable,
+                publication_lease,
+                record_digest, witness, _custody: custody,
+            })
         })
     }
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemRootBootstrapAllocation<A, O> {
-    async fn read_authenticated_record(&self, io: &PreparationIo, maximum: u64) -> Result<acyclic_stream::OwnedBytes> {
-        let journal_hold;
+    pub(crate) async fn authenticate_record(&self, io: &PreparationIo) -> Result<()> {
         let journal = allocation_ref(&self.host.provider, &self.request.volume, Some(io))?;
-        journal_hold = io.guard_owned(journal.logical_owned_bytes()?)?;
-        let bytes_hold;
-        let bytes = bounded_io::read(&self.host, &journal, "/root-bootstrap.json", maximum, Some(io)).await?;
-        bytes_hold = io.guard_bytes(&bytes)?;
+        let journal_hold = io.guard_owned(journal.logical_owned_bytes()?)?;
+        let bytes = bounded_io::read(&self.host, &journal, "/root-bootstrap.json", MAX_REQUEST_BYTES, Some(io)).await?;
+        let bytes_hold = io.guard_bytes(&bytes)?;
         let hashing = WorkCounters { bytes_hashed: bytes.len() as u64, ..WorkCounters::default() };
         io.preflight(hashing)?;
         let exact = *blake3::hash(&bytes).as_bytes() == self.record_digest;
         io.charge(hashing)?;
+        drop(bytes);
+        drop(bytes_hold);
         drop(journal);
         drop(journal_hold);
         if !exact {
-            #[cfg(not(target_arch = "wasm32"))]
-            if io.original_native_work().is_some() {
-                return Err(native_error(crate::wire::ErrorCode::Unauthorized, "protected original Root bootstrap association changed"));
-            }
-            return Err(Error::Unauthorized("protected original Root bootstrap association changed".into()));
+            return Err(bounded_io::unauthorized(Some(io), "protected original Root bootstrap association changed"));
         }
-        if let Some(hold) = bytes_hold { hold.into_retained(); }
-        Ok(bytes)
-    }
-
-    pub(crate) async fn authenticate_record(&self, io: &PreparationIo) -> Result<()> {
-        let bytes = self.read_authenticated_record(io, MAX_REQUEST_BYTES).await?;
-        let hold = io.guard_bytes(&bytes)?;
-        drop(bytes);
-        drop(hold);
         Ok(())
     }
 
@@ -973,23 +942,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ContentPub
     }
 }
 
-fn preparation_journal(
-    host_provider: &ProviderRef, operation: OperationId, io: &PreparationIo,
-) -> Result<WorkspaceRef> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(work) = io.original_native_work() {
-        let (name, name_custody) = work.display(&format_args!(
-            "harness-fork-preparation-{operation}"))
-            .map_err(Error::from)?;
-        io.absorb_native_custody(name_custody)?;
-        let (key, key_custody) = work.copy_bytes(name.as_bytes())
-            .map_err(Error::from)?;
-        io.absorb_native_custody(key_custody)?;
-        return WorkspaceRef::new(host_provider.clone_with_io(io)?, key, None);
-    }
-    workspace_ref(host_provider.clone(), &format!("harness-fork-preparation-{operation}"))
-}
-
 fn original_creation_key(
     operation: OperationId, digest: [u8; 32], role: &ForkAllocationRole, io: &PreparationIo,
 ) -> Result<IdempotencyKey> {
@@ -998,15 +950,8 @@ fn original_creation_key(
         ForkAllocationRole::Project => "project",
         ForkAllocationRole::Result => "result",
     };
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(work) = io.original_native_work() {
-        let (text, custody) = work.display(&format_args!(
-            "fork:{operation}:{}:{suffix}", blake3::Hash::from(digest)))
-            .map_err(Error::from)?;
-        io.absorb_native_custody(custody)?;
-        return IdempotencyKey::new(text);
-    }
-    IdempotencyKey::new(format!("fork:{operation}:{}:{suffix}", blake3::Hash::from(digest)))
+    IdempotencyKey::new(bounded_io::format_text(
+        format_args!("fork:{operation}:{}:{suffix}", blake3::Hash::from(digest)), Some(io))?)
 }
 
 struct AuthenticatedAllocation {
@@ -1088,7 +1033,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     if evidence.as_resource() != &proof.evidence {
         return Err(Error::Unauthorized("proof does not name this protected allocation journal".into()));
     }
-    let journal = preparation_journal(&host.provider, fork.operation_id, io)?;
+    let journal = preparation_journal(&host.provider, fork.operation_id, Some(io))?;
     if !read_request_claim(host, &journal, &fork, record_limit, Some(io)).await? {
         return Err(Error::Unauthorized("fork preparation request is not retained".into()));
     }

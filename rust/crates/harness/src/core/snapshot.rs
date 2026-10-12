@@ -626,7 +626,7 @@ impl Snapshot {
         } else { 0 };
         let mut quota = crate::wire_codec::CodecQuota::new(work, reservation)?;
         let native_custody = SnapshotCustody::default();
-        let conversation = self.projection.conversation.clone_with_work(quota.work())?;
+        let conversation = self.projection.conversation.copy(quota.work(), None)?.0;
         let copied = Self {
             format_version: self.format_version,
             authority: self.authority.clone(),
@@ -699,7 +699,7 @@ impl Snapshot {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut copied = Self::empty_intrinsic(self.authority.kind, self.revision, self.projection.lifecycle,
             self.projection.active_extension_revision, self.projection.effects_archived, quota.work())?;
-        let (conversation, retained) = self.projection.conversation.clone_with_work_and_custody(quota.work())?;
+        let (conversation, retained) = self.projection.conversation.copy(quota.work(), None)?;
         copied.projection.conversation = conversation;
         quota.adopt(retained)?;
         copied.authority = super::native_custody::copy_authority(&self.authority, &mut quota)?;
@@ -1066,7 +1066,7 @@ impl Reducer {
             self.active_extension_revision, self.effects_archived, quota.work())?;
         let (conversation, retained) = match self.resident_checkpoint_selection() {
             Some(selection) => self.conversation.checkpointed_suffix(selection, quota.work(), None)?,
-            None => self.conversation.clone_with_work_and_custody(quota.work())?,
+            None => self.conversation.copy(quota.work(), None)?,
         };
         snapshot.projection.conversation = conversation;
         quota.adopt(retained)?;
@@ -1138,7 +1138,7 @@ impl Reducer {
         let checkpoint_selection = self.resident_checkpoint_selection();
         match checkpoint_selection {
             Some(selection) => self.conversation.checkpointed_suffix(selection, work, None).map(|(state, _)| state),
-            None => self.conversation.clone_with_work(work),
+            None => self.conversation.copy(work, None).map(|(state, _)| state),
         }
     }
 
@@ -1645,42 +1645,6 @@ mod tests {
                 action: super::super::Action::TransitionLifecycle {
                     to, reason: Some(format!("{index}:{}", "owned canonical lifecycle reason".repeat(128))),
                 },
-            })?;
-        }
-        Ok((reducer, issuer))
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn conversation_fixture() -> Result<(Reducer, AuthorityIssuer)> {
-        use crate::conversation::{ConversationMessage, FileDescriptor, MessageKind,
-            VolumeClass, VolumeOwner, VolumeRef};
-        let authority = Authority { kind: AggregateKind::Conversation, id: "snapshot-conversation".into() };
-        let issuer = AuthorityIssuer::new("snapshot-conversation-owner", [24; 32], authority.clone());
-        let mut reducer = Reducer::new(authority, issuer.verifier(), SchemaRegistry::new());
-        let agent = crate::AgentId::from_bytes([9; 16]);
-        let content = FileRef::new(
-            VolumeRef::new(crate::resources::ProviderRef::new("test", "filesystem", "2")?,
-                "snapshot-content", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?,
-            "conversation/input.json", "generation-1",
-            FileDescriptor::from_bytes(br#"{"text":"owned conversation clone input"}"#, "application/json")?,
-            "input.json",
-        )?;
-        let actions = [
-            super::super::Action::BindConversation { agent },
-            super::super::Action::AppendConversationMessage { message: Box::new(ConversationMessage {
-                id: uuid::Uuid::from_bytes([10; 16]), sequence: 1, kind: MessageKind::User,
-                content, attachments: Vec::new().into(), reply_to: None,
-                tool_call_id: None, extensions: BTreeMap::new(),
-            }) },
-        ];
-        for (index, action) in actions.into_iter().enumerate() {
-            reducer.apply(super::super::Command {
-                operation_id: crate::OperationId::from_bytes([index as u8 + 11; 16]),
-                idempotency_key: crate::IdempotencyKey::new(format!("snapshot-conversation-{index}"))?,
-                expected_revision: index as u64,
-                scope: issuer.root("snapshot-conversation",
-                    crate::Capabilities::new(["conversation:bind", "conversation:append"])),
-                causal_parent: None, action,
             })?;
         }
         Ok((reducer, issuer))
