@@ -7643,6 +7643,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             ).await?;
         }
         let checkout = self.checkout.read_current_state().await;
+        let native_work = carrier.original_native_work().ok_or(MountSourceError::NativeWork(
+            crate::NativeTreeMaterializationError::MissingCustody,
+        ))?;
         let bytes = checkout.proof_data_bytes(&mut crate::kernel::allocation::KernelAccounting::native(
             &native_work, cancellation,
         )).map_err(|error| match error {
