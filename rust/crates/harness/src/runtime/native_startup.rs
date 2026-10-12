@@ -46,14 +46,10 @@ pub(super) fn content_write(
     let Some(writer) = content.and_then(|binding| binding.writer.as_ref()) else { return Ok(false); };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io {
-        let work = io.original_native_work().ok_or(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "startup requires its original native work",
-        })?;
-        let grant = writer.volume().capability_with_native_work(VolumeOperation::Write, work)?;
-        return Ok(scope.grants.contains(&grant.0));
+        let grant = writer.volume().capability(VolumeOperation::Write, &mut Some(&mut io.history_io()))?;
+        return Ok(scope.grants.contains(&grant));
     }
     let _ = io;
-    Ok(writer.volume().capability(VolumeOperation::Write)
+    Ok(writer.volume().capability(VolumeOperation::Write, &mut None)
         .is_ok_and(|grant| scope.grants.contains(&grant)))
 }

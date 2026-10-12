@@ -39,7 +39,7 @@ import { copyBatchLookupEntries, copyDirectoryPage, copyDirectoryRecordPage, cop
   projectFileKind } from "./binding-results.js";
 import { bigintRecord, copyWork, copyWorkspaceStat, copyWorkspaceDirectoryPage, copyWorkspaceExtentPlan, copyFileExtentPlan, copyCheckoutCommit, copyLiveMutation, copyLiveTransaction, copyTransactionResult, copyTransactionRebase, copyRebaseResult } from "./workspace-copies.js";
 import { adaptJoinPlanBase, workspaceOperations } from "./workspace-operations.js";
-import { observed, type AcyclicObserver } from "./observe.js";
+import { observed, type AcyclicObserver } from "@acyclic-labs/actors/observe";
 
 export function createFilesystemAdapter(extensions: {
   checkout?: (raw: WasmRawCheckout) => Partial<FsCheckout>;

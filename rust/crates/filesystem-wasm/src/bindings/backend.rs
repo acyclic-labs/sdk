@@ -163,14 +163,7 @@ impl AsyncAuthorityStore for BrowserAuthority {
     ) -> AuthorityResult<AppendOutcome> {
         forward!(
             self,
-            compare_and_append(
-                authority_id,
-                epoch,
-                expected,
-                commit,
-                budget,
-                cancellation
-            ),
+            compare_and_append(authority_id, epoch, expected, commit, budget, cancellation),
             IndexedDb,
             Memory
         )

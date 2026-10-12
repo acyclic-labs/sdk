@@ -1080,7 +1080,7 @@ fn native_merge_preserves_concurrent_bindings_hardlinks_and_parent_lineage()
         .and_then(|change| change.after).ok_or("merged directory missing")?;
     let entries = directory_entries(Some(merged_directory)).ok_or("merged directory payload missing")?;
     let read = ObjectStore::read(&store, entries, DecodeLimits::default().maximum_object_bytes, WorkBudget::UNBOUNDED)?;
-    let TreePage::Leaf(entries) = super::super::decode_tree_page(&read.value.bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), crate::kernel::TreePage::Leaf, crate::kernel::TreePage::Internal, |first_name, page| crate::kernel::TreeChild { first_name, page }, |child| &child.first_name)?
+    let TreePage::Leaf(entries) = super::super::decode_tree_page(&read.value.bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
         else { return Err("small merged directory was not a leaf".into()); };
     assert_eq!(entries.len(), 4);
     assert!(entries.iter().any(|entry| entry.name.as_bytes() == b"left" && entry.file_id == a));

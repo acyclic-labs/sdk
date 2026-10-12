@@ -1,4 +1,4 @@
-import { resolveObserver } from "./observe.js";
+import { resolveObserver } from "@acyclic-labs/actors/observe";
 import type { BrowserFsOptions, FsVolumeEngine, WasmBindings } from "./contracts.js";
 import type {
   OperationWindowCoordinator,
@@ -11,7 +11,7 @@ import {
 export type * from "./public-types.js";
 export { DEFAULT_OBJECT_CACHE_OPTIONS, DEFAULT_VOLUME_LIMITS, portableVolumeOptions } from "./contracts.js";
 export { CrossVolumeError, MountedView } from "./mounted.js";
-export { performanceObserver } from "./observe.js";
+export { performanceObserver } from "@acyclic-labs/actors/observe";
 export type { MountedCheckout, MountedSnapshot } from "./mounted.js";
 
 let bindingsPromise: Promise<WasmBindings> | undefined;

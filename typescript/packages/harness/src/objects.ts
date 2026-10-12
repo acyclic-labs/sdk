@@ -41,7 +41,7 @@ export class ObjectContentStore {
 
   static async create(options: ObjectContentOptions): Promise<ObjectContentStore> {
     const authority = options.authority;
-    const volume = authority.validateVolumeRef(options.volume);
+    const volume = authority.contracts.validate("volume_ref", options.volume);
     const ownerScope = freezeScope(options.ownerScope);
     const scope = freezeScope(options.scope);
     const bucket = Object.freeze({ ...options.bucket, bucket: options.bucket.bucket === undefined
@@ -85,7 +85,7 @@ export class ObjectContentStore {
   bindings(): ContentBindings {
     const base: ContentBindings = {
       validate: (file, limits) => { this.#validate(file, limits); },
-      verify: (file, bytes) => this.options.authority.verifyFileBytes(file, bytes),
+      verify: (file, bytes) => this.options.authority.contracts.verifyFileBytes(file, bytes),
       read: file => this.read(file),
       fileReadCapability: file => this.options.authority.fileReadCapability(file),
       volumeReadCapability: volume => this.options.authority.volumeCapability(volume, "read"),
@@ -111,7 +111,7 @@ export class ObjectContentStore {
       || bytes.byteLength > this.options.maximumBytes) {
       throw new TypeError("Objects upload identity or size is invalid");
     }
-    const descriptor = this.options.authority.fileDescriptor(bytes, mediaType);
+    const descriptor = this.options.authority.contracts.fileDescriptor(bytes, mediaType);
     const content = this.#identity(descriptor, displayName);
     const reference = this.#validate({ volume: this.options.volume, path, version: content,
       descriptor, display_name: displayName });
@@ -164,27 +164,27 @@ export class ObjectContentStore {
       || result.header.contentRange !== undefined || !(result.body instanceof Uint8Array)) {
       throw new Error("Objects returned another file length, metadata or a partial body");
     }
-    this.options.authority.verifyFileBytes(file, result.body);
+    this.options.authority.contracts.verifyFileBytes(file, result.body);
     return Uint8Array.from(result.body);
   }
 
   /** Load a pinned list; a supplied resolver may route foreign refs to their owning provider. */
   async loadManifest(reference: FileRef, itemCount: number,
     resolve: (file: FileRef) => Promise<Uint8Array> = file => this.read(file)): Promise<readonly Attachment[]> {
-    const items = this.options.authority.decodeAttachmentManifest(reference, await this.read(reference), itemCount);
-    for (const item of items) this.options.authority.verifyFileBytes(item.file, await resolve(item.file));
+    const items = this.options.authority.contracts.decodeAttachmentManifest(reference, await this.read(reference), itemCount);
+    for (const item of items) this.options.authority.contracts.verifyFileBytes(item.file, await resolve(item.file));
     return items;
   }
 
   #identity(descriptor: FileRef["descriptor"], displayName: string): string {
     // Same Rust canonical JSON+BLAKE3 tuple as the native Harness adapter.
-    return Array.from(this.options.authority.canonicalJsonDigest([descriptor, displayName]),
+    return Array.from(this.options.authority.contracts.digestCanonicalJson([descriptor, displayName]),
       byte => byte.toString(16).padStart(2, "0")).join("");
   }
 
   async #pinUpload(operationId: string, file: FileRef): Promise<void> {
-    const intent = this.options.authority.canonicalJsonDigest([file.path, file.descriptor, file.display_name]);
-    const operation = Array.from(this.options.authority.canonicalJsonDigest(["harness-upload-intent-v1", operationId]),
+    const intent = this.options.authority.contracts.digestCanonicalJson([file.path, file.descriptor, file.display_name]);
+    const operation = Array.from(this.options.authority.contracts.digestCanonicalJson(["harness-upload-intent-v1", operationId]),
       byte => byte.toString(16).padStart(2, "0")).join("");
     const objectKey = `${this.#namespace}/.system/uploads/${operation}`;
     const contentType = "application/vnd.acyclic.harness.upload-intent-v1";
@@ -218,7 +218,7 @@ export class ObjectContentStore {
   }
 
   #validate(reference: FileRef, limits?: Limits): FileRef {
-    const file = this.options.authority.validateFileRef(reference);
+    const file = this.options.authority.contracts.validate("file_ref", reference);
     if (limits !== undefined) this.options.authority.validateFileUnderLimits(file, limits);
     return file;
   }
