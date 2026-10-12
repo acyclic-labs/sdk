@@ -3640,8 +3640,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(original) = io.original_native_work() {
                     original.spent(hash).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                    opened.operation_generation_with_native_work(acyclic_fs::OperationId::from_bytes(key.into_bytes()), original, io.cancellation()).await
-                        .map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?
+                    opened.operation_generation(key, original, io.cancellation()).await
+                        .map_err(|source| Error::NativeWorkspace { source, custody: None })?
                 } else {
                     io.charge(hash)?;
                     io.receive(opened.operation_generation(key, io.remaining()?, io.cancellation()).await)?

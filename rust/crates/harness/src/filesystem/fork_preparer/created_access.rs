@@ -962,7 +962,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let creation_key = original_creation_key(fork.operation_id, digest, &role, io)?;
         let key = bounded_io::operation_key(&creation_key, Some(io))?;
         let initial = bounded_io::filesystem_call!(io, original,
-            original_workspace.operation_generation_with_native_work(acyclic_fs::OperationId::from_bytes(key.into_bytes()), original, io.cancellation()),
+            async { original_workspace.operation_generation(key, original, io.cancellation()).await.map_err(|error| (error, None)) },
             original_workspace.operation_generation(key, io.remaining()?, io.cancellation()))?;
         let initial = initial.ok_or_else(|| Error::Unauthorized("original fork allocation operation is missing".into()))?;
         let generation = bounded_io::generation_ref(host, &initial, Some(io))?;

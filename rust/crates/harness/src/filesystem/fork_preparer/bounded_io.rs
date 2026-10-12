@@ -1169,7 +1169,7 @@ pub(in crate::filesystem) async fn operation_generation<A: AsyncAuthorityStore, 
     let workspace = open(host, reference, io).await?;
     let operation = operation_key(key, Some(io))?;
     filesystem_call!(io, original,
-        workspace.operation_generation_with_native_work(acyclic_fs::OperationId::from_bytes(operation.into_bytes()), original, io.cancellation()),
+        async { workspace.operation_generation(operation, original, io.cancellation()).await.map_err(|error| (error, None)) },
         workspace.operation_generation(operation, io.remaining()?, io.cancellation()))
 }
 
@@ -1646,7 +1646,7 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
         #[cfg(target_arch = "wasm32")]
         let forked = io.receive(workspace.fork(&child_name, options, acyclic_fs::PublicationPermit::Unrestricted, io.remaining()?, io.cancellation(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }))).await)?;
         let initial = filesystem_call!(io, original,
-            forked.operation_generation_with_native_work(acyclic_fs::OperationId::from_bytes(operation.into_bytes()), original, io.cancellation()),
+            async { forked.operation_generation(operation, original, io.cancellation()).await.map_err(|error| (error, None)) },
             forked.operation_generation(operation, io.remaining()?, io.cancellation()))?;
         let initial = initial.ok_or_else(|| failure(Some(io), crate::wire::ErrorCode::Storage,
             "fork creation has no durable original generation"))?;
