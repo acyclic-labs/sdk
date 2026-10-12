@@ -9,7 +9,7 @@ use crate::{
     distributed::{SchedulerPayloadStore as _, WorkLease, WorkPull, Worker},
     resources::ProviderRef,
     runtime::{TaskDefinition, ToolContext},
-    scheduler::ResourceSnapshot,
+    scheduler::ResourceRequest,
     tool::{Tool, ToolExecutor, ToolInvocation, ToolProjection, ToolResult},
     workflow::{MachineIdentity, MachineTransition, ResumableMachine},
 };
@@ -416,7 +416,7 @@ impl Fixture {
             .task_host()
             .pull_work(&Worker {
                 id: "deadline-worker".into(),
-                available: ResourceSnapshot::default(),
+                available: ResourceRequest::default(),
                 labels: BTreeMap::new(),
             })
             .await?
@@ -498,7 +498,7 @@ impl Fixture {
     ) -> Result<(WorkLease, acyclic_fs::NativeAllocation)> {
         let operation = self.admit_only(runtime, kind, command).await?;
         let pulled = {
-            let mut operation_io = crate::store::native_work_io(work)?;
+            let mut operation_io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(work)?);
             crate::store::HistoryIo::retain_owned(
                 &mut operation_io,
                 std::mem::size_of::<crate::distributed::WorkPull>()
@@ -510,7 +510,7 @@ impl Fixture {
                 .pull_operation(
                     &Worker {
                         id: "deadline-worker".into(),
-                        available: ResourceSnapshot::default(),
+                        available: ResourceRequest::default(),
                         labels: BTreeMap::new(),
                     },
                     operation,
@@ -1694,7 +1694,7 @@ async fn genuine_stock_native_context_preserves_mcp_current_and_settlement_sourc
         .expire_task_deadline(
             task,
             Some(&fence),
-            &mut Some(&mut crate::store::native_work_io(&work)?),
+            &mut Some(&mut crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&work)?)),
         )
         .await?;
     let settlement = runtime

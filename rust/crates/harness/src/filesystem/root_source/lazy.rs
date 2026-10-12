@@ -214,7 +214,7 @@ where
         let publish = || async move {
             use acyclic_fs::facade::FsWork;
             use crate::filesystem::WorkspaceMutation;
-            io.verify_publication_lease(lease.as_ref()).await?;
+            lease.verify(Some(io))?.await?;
             let mut accounting = (&io).accounting(io.cancellation());
             let result = self.lazy.validate_snapshot(snapshot, &mut accounting);
             let (result, recorded) = (&io).finish(result, &accounting);
@@ -224,7 +224,7 @@ where
             let pinned = io.sdk(workspace.generation(snapshot.authored_generation, io, io.cancellation()).await)?;
             let mut transaction = io.sdk(workspace.begin_pinned_transaction(&pinned, key, io, io.cancellation()).await)?;
             for mutation in mutations {
-                io.verify_publication_lease(lease.as_ref()).await?;
+                lease.verify(Some(io))?.await?;
                 let mut identity = None;
                 if let WorkspaceMutation::PutFile { path, .. } = mutation {
                     if let Some((parent, _)) = path.rsplit_once('/') {
@@ -263,14 +263,20 @@ where
                 let mut before = move |work: &acyclic_fs::NativeMaterializationWork| {
                     let original = work.clone();
                     let lease = Arc::clone(&lease);
-                    async move { lease.verify_with_native_work(&original)?.await }
+                    async move {
+                        let io = crate::filesystem::PreparationIo::from_native_work(&original)?;
+                        lease.verify(Some(&io))?.await
+                    }
                 };
                 transaction.commit_with_native_work(None, permit, original, io.cancellation(), &mut before).await?
             } else {
                 let before = |budget| async move {
                     let callback = crate::filesystem::PreparationIo::from_budget(budget, io.cancellation())
                         .map_err(acyclic_fs::OperationFailure::before_work)?;
-                    let result = callback.verify_publication_lease(lease.as_ref()).await;
+                    let result = match lease.verify(Some(&callback)) {
+                        Ok(future) => future.await,
+                        Err(error) => Err(error),
+                    };
                     result.map(|value| acyclic_fs::OperationReceipt { value, work: callback.receipt() })
                         .map_err(|error| acyclic_fs::OperationFailure::new(error, callback.receipt()))
                 };

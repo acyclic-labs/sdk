@@ -15,7 +15,7 @@ pub(super) async fn open<P: StreamProvider>(client: &Arc<P>) -> Result<Distribut
 pub(super) fn worker(id: &str) -> Worker {
     Worker {
         id: id.into(),
-        available: ResourceSnapshot::default(),
+        available: ResourceRequest::default(),
         labels: BTreeMap::new(),
     }
 }

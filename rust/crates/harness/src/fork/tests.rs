@@ -177,7 +177,7 @@ fn physical_fork_clone_partial_denial_releases_only_new_fields_and_cancels_befor
     };
     let native = NativeMaterializationWork::new(limited, &CancellationToken::new())
         .expect("fork-copy ledger");
-    let mut io = crate::store::history::native_work_io(&native).expect("fork-copy observer");
+    let mut io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&native)?).expect("fork-copy observer");
     let held = io.clone_text("held")?;
     assert!(matches!(
         request.copy(&mut Some(&mut io)),
@@ -203,7 +203,7 @@ fn physical_fork_clone_partial_denial_releases_only_new_fields_and_cancels_befor
         })?;
     let token = CancellationToken::new();
     let cancelled = NativeMaterializationWork::new(budget, &token).expect("original fork ledger");
-    let mut io = crate::store::history::native_work_io(&cancelled).expect("cancelled observer");
+    let mut io = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_native_work(&cancelled)?).expect("cancelled observer");
     let before = cancelled.receipt();
     token.cancel();
     assert!(request.copy(&mut Some(&mut io)).is_err());
@@ -502,7 +502,7 @@ fn fork_history_must_be_exact_parent_prefix() -> Result<()> {
     seed.attached_agents.push(attached);
     seed.validate(&mut None)?;
     let access = seed.attached_read_capabilities(attached)?;
-    assert!(access.contains(&inherited.read_capability()?));
+    assert!(access.contains(&inherited.read_capability(&mut None)?));
     assert!(
         !access.contains(
             &seed

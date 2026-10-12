@@ -219,7 +219,7 @@ async fn check_preparation_budget(configured: bool, foreign_proof: bool) -> Resu
     let unbound = crate::resource_preparation::ResourceCreationProofRef {
         provider: request.provider.clone(),
         preparation: prep,
-        resource: request.resources[0].clone(),
+        resource: request.resources().next().expect("resource").clone(),
         evidence: ResourceRef::new(
             ResourceKind::Stream,
             request.provider.clone(),

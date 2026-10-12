@@ -202,17 +202,28 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             let mut quota = crate::wire_codec::CodecQuota::new(&mut observer, 0)?;
             let input = crate::core::copy_value(&record.input, &mut quota)?;
             quota.transfer();
-            let (next, transition, custody) =
-                self.host
-                    .machines
-                    .step_with_native_work(&record.prior, input, work)?;
+            let proof_io = crate::filesystem::PreparationIo::from_native_work(work)?;
+            let result = self.host.machines.step(
+                &record.prior,
+                std::borrow::Cow::Owned(input),
+                Some(&proof_io),
+            );
+            let retained = result.as_ref().map_or(0, |(_, _, checkpoint, transition)| {
+                checkpoint.saturating_add(*transition)
+            });
+            let ((next, transition, _, _), custody) =
+                crate::workflow::finish_native_io(result, proof_io, retained)?;
             (next, transition, Some(custody))
         } else {
-            let (next, transition) = self.host.machines.step(&record.prior, &record.input)?;
+            let (next, transition, _, _) = self.host.machines.step(
+                &record.prior, std::borrow::Cow::Borrowed(&record.input), None,
+            )?;
             (next, transition, None)
         };
         #[cfg(target_arch = "wasm32")]
-        let proof = self.host.machines.step(&record.prior, &record.input)?;
+        let proof = self.host.machines.step(
+            &record.prior, std::borrow::Cow::Borrowed(&record.input), None,
+        )?;
         if proof.0 != record.next || proof.1 != record.transition {
             return Err(conflict("workflow transition differs from pinned machine"));
         }

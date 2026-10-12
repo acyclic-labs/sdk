@@ -400,7 +400,7 @@ pub(super) fn recursive_exact_file_granted(
 ) -> Result<bool> {
     match io {
         Some(io) => io.contains_capability(grants, file, "file:read:"),
-        None => Ok(grants.contains(&file.read_capability()?)),
+        None => Ok(grants.contains(&file.read_capability(&mut None)?)),
     }
 }
 
