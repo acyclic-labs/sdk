@@ -689,12 +689,12 @@ impl StockExecutor {
     /// Summarizes with the same stock admission, accounting and recovery engine.
     pub async fn summarize(&self, journal: &dyn ExecutionJournal, operation: OperationId,
         source: crate::context::Context, instruction: ModelContent) -> Result<crate::context::ContextSummary> {
-        StockExecution::ordinary(self).summarize(journal, operation, source, instruction).await
+        StockExecution::ordinary(self).summarize(journal, None, operation, 0, source, instruction).await
     }
     /// Summarizes inside the parent's existing execution journal.
     pub async fn summarize_in_turn(&self, journal: &dyn ExecutionJournal, input: &TurnInput, step: u32,
         source: crate::context::Context, instruction: ModelContent) -> Result<crate::context::ContextSummary> {
-        StockExecution::ordinary(self).summarize_in_turn(journal, input, step, source, instruction).await
+        StockExecution::ordinary(self).summarize(journal, Some(input), input.operation_id, step, source, instruction).await
     }
     /// Executes a retained/reconciled/admitted model step through the stock engine.
     pub async fn model_step(&self, journal: &dyn ExecutionJournal, input: &TurnInput,

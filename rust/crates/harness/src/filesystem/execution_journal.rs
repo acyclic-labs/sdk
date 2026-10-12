@@ -1559,7 +1559,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                         }
                         parsed.into_retained()
                     }
-                    None => decode_json(&bytes)?,
+                    None => decode_json(&bytes, None)?.into_retained(),
                 });
             }
         }
