@@ -208,6 +208,29 @@ impl Store {
         Ok(self.credentials(endpoint)?.agent)
     }
 
+    fn login_agent_for(
+        &self,
+        endpoint: &str,
+        device: &DeviceCode,
+    ) -> Result<Option<agent::Agent>, Error> {
+        let agent = self.login_agent(endpoint)?;
+        let identity = agent
+            .as_ref()
+            .map(|agent| {
+                agent
+                    .registration()
+                    .map(|registration| (registration.org_id.clone(), registration.key_id.clone()))
+            })
+            .transpose();
+        if identity.as_ref().ok() != Some(&device.agent_identity) {
+            return Err(Error::new(
+                "credentials_changed",
+                "agent changed while device approval was pending",
+            ));
+        }
+        Ok(agent)
+    }
+
     fn read(&self, endpoint: &str) -> Result<Session, Error> {
         self.credentials(endpoint)?
             .session
@@ -240,7 +263,7 @@ impl Store {
         let mut credentials = Credentials {
             endpoint: endpoint.to_owned(),
             session: None,
-            agent: self.login_agent(endpoint)?,
+            agent: self.login_agent_for(endpoint, device)?,
         };
         if let Some((org_id, key_id)) = &device.upgrade {
             match &mut credentials.agent {
@@ -395,6 +418,8 @@ struct DeviceCode {
     #[serde(skip)]
     upgrade: Option<(String, String)>,
     #[serde(skip)]
+    agent_identity: Option<(String, String)>,
+    #[serde(skip)]
     reconcile_upgrade: bool,
     #[serde(skip)]
     upgrade_tier: Option<String>,
@@ -491,11 +516,20 @@ impl Identity {
     async fn device_code(&self, kind: &str, store: &Store) -> Result<DeviceCode, Error> {
         let verifier = random_secret()?;
         let mut upgrade = None;
+        let agent = store.login_agent(&self.endpoint)?;
+        let agent_identity = agent
+            .as_ref()
+            .map(|agent| {
+                agent
+                    .registration()
+                    .map(|registration| (registration.org_id.clone(), registration.key_id.clone()))
+            })
+            .transpose()?;
         let mut body = serde_json::Map::from_iter([
             ("client_kind".to_owned(), json!(kind)),
             ("code_challenge".to_owned(), json!(challenge(&verifier))),
         ]);
-        if let Some(agent) = store.login_agent(&self.endpoint)?
+        if let Some(agent) = agent
             && agent.registration()?.tier == "agent"
         {
             let registration = agent.registration()?;
@@ -545,6 +579,7 @@ impl Identity {
         }
         device.verifier = verifier;
         device.upgrade = upgrade;
+        device.agent_identity = agent_identity;
         device.reconcile_upgrade = reconcile_upgrade;
         Ok(device)
     }

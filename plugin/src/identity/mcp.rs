@@ -121,7 +121,12 @@ impl Server {
                     .pending
                     .as_mut()
                     .ok_or_else(|| Error::new("login_required", "call identity_login first"))?;
-                let session = match self.identity.login(device, *started, cancelled).await {
+                let session = match async {
+                    store.login_agent_for(&self.identity.endpoint, device)?;
+                    self.identity.login(device, *started, cancelled).await
+                }
+                .await
+                {
                     Ok(session) => session,
                     Err(error) => {
                         if !error.status.is_some_and(|status| status.is_server_error())
@@ -474,6 +479,61 @@ mod tests {
         .expect("device");
         server.pending = Some((device, tokio::time::Instant::now()));
         server.initialized = true;
+    }
+
+    #[tokio::test]
+    async fn unsigned_login_rejects_concurrent_agent_before_exchanging_device_code() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let router = axum::Router::new().fallback(move || {
+            observed.fetch_add(1, Ordering::SeqCst);
+            async {
+                axum::Json(json!({"device_code": "device", "user_code": "ABCD",
+                    "verification_uri": "https://example.test", "expires_in": 60, "interval": 1}))
+            }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let endpoint = format!("http://{}", listener.local_addr().expect("address"));
+        let task = tokio::spawn(async move {
+            axum::serve(listener, router).await.expect("serve");
+        });
+        let directory = tempfile::tempdir().expect("directory");
+        let path = directory.path().join("identity.json");
+        let mut server = server(path.clone());
+        server.identity = Identity::new(&endpoint).expect("identity");
+        server
+            .call("identity_login")
+            .await
+            .expect("unsigned login starts");
+        let credentials: Credentials = serde_json::from_value(json!({
+            "endpoint": endpoint, "session": null,
+            "agent": {"status": "active", "private_key": "new-agent-key", "registration": {
+                "user_id": "user", "org_id": "org", "key_id": "key", "account_id": "account",
+                "birth": "birth", "certificate": "certificate", "tier": "agent", "expires_at": 900}}
+        }))
+        .expect("signup credentials");
+        {
+            let store =
+                Store::open(&path).expect("concurrent CLI signup acquires the released lock");
+            store.save(&credentials).expect("signup saves agent");
+        }
+        let before = std::fs::read(&path).expect("saved agent");
+        let error = server
+            .call("identity_login_complete")
+            .await
+            .expect_err("identity changed");
+        assert_eq!(error.code, "credentials_changed");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "device token must not be consumed"
+        );
+        assert!(server.pending.is_none());
+        assert_eq!(std::fs::read(&path).expect("retained agent"), before);
+        task.abort();
     }
 
     #[tokio::test]

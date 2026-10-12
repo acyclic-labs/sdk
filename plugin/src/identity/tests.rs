@@ -210,6 +210,7 @@ async fn device_denial_and_local_expiry_are_terminal() {
         interval: 1,
         verifier: "test-verifier".to_owned(),
         upgrade: None,
+        agent_identity: None,
         reconcile_upgrade: false,
         upgrade_tier: None,
     };
@@ -630,7 +631,7 @@ async fn failed_agent_rotation_save_preserves_key_without_spent_token() {
 }
 
 #[test]
-fn unsigned_login_never_upgrades_an_agent_added_after_login_started() {
+fn login_rejects_changed_agent_and_only_applies_the_signed_upgrade() {
     let directory = tempfile::tempdir().expect("directory");
     let store = Store::open(&directory.path().join("identity.json")).expect("store");
     let endpoint = "https://example.test";
@@ -641,9 +642,16 @@ fn unsigned_login_never_upgrades_an_agent_added_after_login_started() {
         serde_json::from_value(json!({"device_code": "device", "user_code": "code",
         "verification_uri": endpoint, "expires_in": 60, "interval": 1}))
         .expect("device");
-    store
-        .complete_login(endpoint, session("access", "refresh", 900), &device)
-        .expect("unsigned login");
+    let before = fs::read(&store.path).expect("saved agent");
+    assert_eq!(
+        store
+            .complete_login(endpoint, session("access", "refresh", 900), &device)
+            .err()
+            .expect("agent added during approval")
+            .code,
+        "credentials_changed"
+    );
+    assert_eq!(fs::read(&store.path).expect("retained agent"), before);
     assert_eq!(
         store
             .credentials(endpoint)
@@ -655,6 +663,7 @@ fn unsigned_login_never_upgrades_an_agent_added_after_login_started() {
             .tier,
         "agent"
     );
+    device.agent_identity = Some(("org".to_owned(), "key".to_owned()));
     device.upgrade = Some(("other-org".to_owned(), "key".to_owned()));
     assert_eq!(
         store
@@ -753,6 +762,7 @@ async fn recovered_login_keeps_issued_tokens_when_the_tier_read_fails() {
         "verification_uri": "https://example.test", "expires_in": 60}))
         .expect("device");
     device.upgrade = Some(("org".to_owned(), "key".to_owned()));
+    device.agent_identity = device.upgrade.clone();
     device.reconcile_upgrade = true;
     assert!(
         fake.identity
