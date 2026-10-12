@@ -124,8 +124,6 @@ interface ContractValues {
   readonly project_merge_receipt: ProjectMergeReceipt;
 }
 
-type SimpleContract = Exclude<keyof ContractValues, "conversation_message" | "interaction_resolution">;
-type FixedSimpleContract = Exclude<SimpleContract, "provider_ref" | "volume_ref" | "file_ref" | "resource_ref">;
 /** Rust performs admission validation; TypeScript preserves the exact public shape. */
 export class NativeContracts {
   static #instance: NativeContracts | undefined;
@@ -166,7 +164,8 @@ export class NativeContracts {
   validate<Class extends VolumeClass, Family extends string>(kind: "volume_ref", value: VolumeRef<Class, Family>): VolumeRef<Class, Family>;
   validate<Class extends VolumeClass, Family extends string>(kind: "file_ref", value: FileRef<Class, Family>): FileRef<Class, Family>;
   validate<Kind extends ResourceKind>(kind: "resource_ref", value: ResourceRef<Kind>): ResourceRef<Kind>;
-  validate<K extends FixedSimpleContract>(kind: K, value: ContractValues[K]): ContractValues[K];
+  validate<K extends Exclude<keyof ContractValues, "conversation_message" | "interaction_resolution"
+    | "provider_ref" | "volume_ref" | "file_ref" | "resource_ref">>(kind: K, value: ContractValues[K]): ContractValues[K];
   validate<Kind extends MessageKind>(kind: "conversation_message", value: ConversationMessage<Kind>, limits: Limits): ConversationMessage<Kind>;
   validate(kind: "interaction_resolution", value: InteractionResolution,
     ticket: InteractionTicket): InteractionResolution;
@@ -351,13 +350,13 @@ export class NativeContracts {
       || !Array.isArray(admittedState.calls) || typeof admittedState.completed !== "boolean") {
       throw new TypeError("native model event admission returned an invalid state");
     }
-    let event = admitted.event as ModelEvent;
+    let projectedEvent = admitted.event as ModelEvent;
     if (admitted.event.kind === "tool_call") {
       const { call_id: callId, ...rest } = admitted.event;
-      event = { ...rest, callId } as ModelEvent;
+      projectedEvent = { ...rest, callId } as ModelEvent;
     }
     return freezeNative({
-      event,
+      event: projectedEvent,
       state: { ...admittedState, calls: [...admittedState.calls] },
     });
   }

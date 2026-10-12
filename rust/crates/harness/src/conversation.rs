@@ -959,7 +959,7 @@ impl<T> std::future::Future for BoundedContentFuture<'_, T> {
     }
 }
 
-fn content_error(io: Option<&ContentIo>, code: crate::wire::ErrorCode, reason: &'static str) -> Error {
+pub(crate) fn content_error(io: Option<&ContentIo>, code: crate::wire::ErrorCode, reason: &'static str) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if io.is_some_and(|io| io.original_native_work().is_some()) {
         return Error::NativeBoundary { code, reason };

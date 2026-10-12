@@ -5,7 +5,7 @@ use crate::{Error, OperationId, Result, conversation::FileRef};
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::sync::Mutex;
+use std::{borrow::Cow, sync::Mutex};
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -348,15 +348,14 @@ impl MachineRegistry {
         checkpoint: &MachineCheckpoint,
         input: &Value,
     ) -> Result<(MachineCheckpoint, MachineTransition)> {
-        self.step_with_io(checkpoint, input, None, None)
+        self.step_with_io(checkpoint, Cow::Borrowed(input), None)
             .map(|(next, transition, _, _)| (next, transition))
     }
 
     fn step_with_io(
         &self,
         checkpoint: &MachineCheckpoint,
-        input: &Value,
-        #[allow(unused_variables)] native_input: Option<Value>,
+        input: Cow<'_, Value>,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<(MachineCheckpoint, MachineTransition, u64, u64)> {
         let native = cfg!(all(feature = "filesystem", not(target_arch = "wasm32"))) && io.is_some();
@@ -369,19 +368,19 @@ impl MachineRegistry {
             let work = io.original_native_work().ok_or_else(|| native_workflow_unsupported(
                 "native state requires the original ledger",
             ))?;
-            let input = native_input.ok_or_else(|| native_workflow_unsupported(
-                "native state requires owned input",
-            ))?;
+            let Cow::Owned(input) = input else {
+                return Err(native_workflow_unsupported("native state requires owned input"));
+            };
             let (transition, custody) =
                 machine.transition_with_native_work(&checkpoint.state, input, work)?;
             transition_retained = custody.bytes();
             io.absorb_native_custody(custody)?;
             transition
         } else {
-            machine.transition(&checkpoint.state, input)?
+            machine.transition(&checkpoint.state, &input)?
         };
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let transition = machine.transition(&checkpoint.state, input)?;
+        let transition = machine.transition(&checkpoint.state, &input)?;
         crate::contract::validate_json_schema_value(machine.state_schema(), &transition.state, "machine state", io)?;
         validate_commands(&transition.commands, io)?;
         let before = workflow_owned_bytes(io)?;
@@ -445,7 +444,7 @@ impl MachineRegistry {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(MachineCheckpoint, MachineTransition, acyclic_fs::NativeAllocation)> {
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let result = self.step_with_io(checkpoint, &Value::Null, Some(input), Some(&io));
+        let result = self.step_with_io(checkpoint, Cow::Owned(input), Some(&io));
         let retained = result.as_ref().map_or(0, |(_, _, checkpoint, transition)| {
             checkpoint.saturating_add(*transition)
         });
@@ -486,11 +485,10 @@ impl MachineRegistry {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let io = proof_io.as_ref().or(io);
         let result = (|| {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            let native_input = io.map(|io| crate::model::clone_value(&record.input, Some(io))).transpose()?;
-            #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-            let native_input = None;
-            let (next, transition, retained, _) = self.step_with_io(checkpoint, &record.input, native_input, io)?;
+            let input = if cfg!(all(feature = "filesystem", not(target_arch = "wasm32"))) && io.is_some() {
+                Cow::Owned(crate::model::clone_value(&record.input, io)?)
+            } else { Cow::Borrowed(&record.input) };
+            let (next, transition, retained, _) = self.step_with_io(checkpoint, input, io)?;
             if next != record.next || transition != record.transition {
                 return Err(workflow_error(io, crate::wire::ErrorCode::Conflict, "workflow history disagrees with its pinned machine"));
             }
@@ -1114,17 +1112,17 @@ impl DurableWorkflowHost {
         if self.reserved_operations.contains(&operation_id) {
             return Err(workflow_error(io, crate::wire::ErrorCode::Conflict, "workflow step reuses a command identity"));
         }
-        // The durable v2 envelope retains both input and machine state.
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let (input, native_input) = if io.is_some() {
-            (crate::model::clone_value(&input, io)?, Some(input))
+        let retained_input;
+        let machine_input = if cfg!(all(feature = "filesystem", not(target_arch = "wasm32"))) && io.is_some() {
+            retained_input = crate::model::clone_value(&input, io)?;
+            Cow::Owned(input)
         } else {
-            (input, None)
+            retained_input = input;
+            Cow::Borrowed(&retained_input)
         };
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let native_input = None;
         let (next, transition, checkpoint_retained, transition_retained) =
-            self.registry.step_with_io(&self.checkpoint, &input, native_input, io)?;
+            self.registry.step_with_io(&self.checkpoint, machine_input, io)?;
+        let input = retained_input;
         check(&transition)?;
         let record = WorkflowRecord {
             operation_id,
