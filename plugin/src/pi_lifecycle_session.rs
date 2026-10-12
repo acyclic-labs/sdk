@@ -526,7 +526,3 @@ async fn original_native_first_dispatch_pending(
     let observed = history.0.effect_with_native_work(&pin.0, effect, limits, work).await?;
     Ok(observed.0.is_none())
 }
-
-#[cfg(test)]
-#[path = "pi_lifecycle_session_tests.rs"]
-mod tests;

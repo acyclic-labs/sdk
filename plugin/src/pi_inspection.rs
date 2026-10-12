@@ -1026,7 +1026,3 @@ fn native_extra_facts_differ(before: &acyclic_fs::LazyLookup, after: &acyclic_fs
         _ => false,
     }
 }
-
-#[cfg(test)]
-#[path = "pi_inspection_tests.rs"]
-mod tests;

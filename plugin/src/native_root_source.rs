@@ -689,7 +689,7 @@ mod tests {
 
     #[tokio::test]
     async fn native_root_resume_reuses_and_reopens_the_same_registered_source() {
-        let fixture = crate::pi_fork::tests::Fixture::new(None).await;
+        let fixture = crate::pi_fork::tests::Fixture::new().await;
         let (path, original, expected) = selection(&fixture);
         let registry = SharedRootRegistry::default();
         let work = NativeMaterializationWork::new(budget(), &CancellationToken::new()).unwrap();
@@ -719,7 +719,7 @@ mod tests {
 
     #[tokio::test]
     async fn native_source_backing_outlives_the_returned_physical_root() {
-        let fixture = crate::pi_fork::tests::Fixture::new(None).await;
+        let fixture = crate::pi_fork::tests::Fixture::new().await;
         let (path, original, expected) = selection(&fixture);
         let registry = SharedRootRegistry::default();
         let work = NativeMaterializationWork::new(budget(), &CancellationToken::new()).unwrap();
@@ -739,7 +739,7 @@ mod tests {
 
     #[tokio::test]
     async fn native_root_cancellation_and_quota_preserve_the_original_prefix() {
-        let fixture = crate::pi_fork::tests::Fixture::new(None).await;
+        let fixture = crate::pi_fork::tests::Fixture::new().await;
         let (path, original, _) = selection(&fixture);
         let registry = SharedRootRegistry::default();
         let cancellation = CancellationToken::new();
@@ -767,7 +767,7 @@ mod tests {
     #[tokio::test]
     async fn a_source_reference_never_substitutes_for_the_original_root_read_grant() {
         use acyclic_harness::conversation::{VolumeClass, VolumeOperation, VolumeOwner, VolumeRef};
-        let fixture = crate::pi_fork::tests::Fixture::new(None).await;
+        let fixture = crate::pi_fork::tests::Fixture::new().await;
         let (path, original, expected) = selection(&fixture);
         let project = fixture.root_request.binding.project_volumes.values().next().unwrap();
         let foreign = VolumeRef::new(project.provider().clone(), "not-original-source".into(),
@@ -787,7 +787,7 @@ mod tests {
 
     #[tokio::test]
     async fn native_resume_rejects_registered_source_identity_and_root_replacement() {
-        let fixture = crate::pi_fork::tests::Fixture::new(None).await;
+        let fixture = crate::pi_fork::tests::Fixture::new().await;
         let (path, original, expected) = selection(&fixture);
         let registry = SharedRootRegistry::default();
         let work = NativeMaterializationWork::new(budget(), &CancellationToken::new()).unwrap();
@@ -813,7 +813,7 @@ mod tests {
 
     #[tokio::test]
     async fn failed_native_admission_retains_sdk_owners_until_actual_pending_shutdown() {
-        let fixture = crate::pi_fork::tests::Fixture::new(None).await;
+        let fixture = crate::pi_fork::tests::Fixture::new().await;
         let (path, original, _) = selection(&fixture);
         let registry = SharedRootRegistry::default();
         let cancellation = CancellationToken::new();
@@ -851,7 +851,7 @@ mod tests {
     }
     #[tokio::test]
     async fn native_observation_publishes_the_same_source_with_real_batch_custody() {
-        let fixture = crate::pi_fork::tests::Fixture::new(None).await;
+        let fixture = crate::pi_fork::tests::Fixture::new().await;
         let (path, original, _) = selection(&fixture);
         let registry = SharedRootRegistry::default();
         let birth = NativeMaterializationWork::new(budget(), &CancellationToken::new()).unwrap();
@@ -886,7 +886,7 @@ mod tests {
 
     #[tokio::test]
     async fn native_observation_denial_does_not_consume_pending_watch_changes() {
-        let fixture = crate::pi_fork::tests::Fixture::new(None).await;
+        let fixture = crate::pi_fork::tests::Fixture::new().await;
         let (path, original, _) = selection(&fixture);
         let registry = SharedRootRegistry::default();
         let birth = NativeMaterializationWork::new(budget(), &CancellationToken::new()).unwrap();
@@ -930,7 +930,7 @@ mod tests {
 
     #[tokio::test]
     async fn native_observation_rejected_after_io_keeps_actual_source_epoch_consistent() {
-        let fixture = crate::pi_fork::tests::Fixture::new(None).await;
+        let fixture = crate::pi_fork::tests::Fixture::new().await;
         let (path, original, _) = selection(&fixture);
         let registry = SharedRootRegistry::default();
         let birth = NativeMaterializationWork::new(budget(), &CancellationToken::new()).unwrap();
@@ -993,7 +993,7 @@ mod tests {
             Ok(())
         }
 
-        let fixture = crate::pi_fork::tests::Fixture::new(None).await;
+        let fixture = crate::pi_fork::tests::Fixture::new().await;
         let (path, original, _) = selection(&fixture);
         let registry = SharedRootRegistry::default();
         let birth = NativeMaterializationWork::new(budget(), &CancellationToken::new()).unwrap();

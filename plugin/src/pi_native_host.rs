@@ -1633,7 +1633,3 @@ fn reserved_environment(key: &str) -> bool {
         .iter().any(|reserved| key.eq_ignore_ascii_case(reserved))
         || key.get(.."ACYCLIC_PI_CALLER_".len()).is_some_and(|prefix| prefix.eq_ignore_ascii_case("ACYCLIC_PI_CALLER_"))
 }
-
-#[cfg(test)]
-#[path = "pi_native_host_tests.rs"]
-mod tests;

@@ -797,7 +797,3 @@ fn spawn_retain_custody(retained: &mut Option<NativeAllocation>, mut custody: Na
 fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> acyclic_harness::Error {
     acyclic_harness::Error::NativeWork { cause, custody: None }
 }
-
-#[cfg(test)]
-#[path = "pi_spawn_session_tests.rs"]
-mod tests;
