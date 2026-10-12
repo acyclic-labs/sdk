@@ -6853,8 +6853,9 @@ where
                 let paid = allocation.split_off(allocation.bytes())?;
                 let operations = std::mem::take(pending);
                 *pending_bytes = 0;
-                transaction.checkout.apply_authored_bulk_transaction_with_native_work(
-                    operations, paid, original, cancellation,
+                transaction.checkout.apply_authored_bulk_transaction_with_accounting(
+                    crate::kernel::Owned { value: operations, bytes: paid.bytes(), allocation: crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(paid) },
+                    &mut crate::kernel::allocation::KernelAccounting::native(original, cancellation), cancellation,
                 ).await.map_err(|error| native_workspace_error(WorkspaceError::from(error)))
             }).await?;
             return Ok(work);
@@ -10795,7 +10796,7 @@ where
             } else {
                 let allocation = accounting.take_native_owned(transferred_bytes)?
                     .ok_or(LazyWorkspaceError::NativeLedgerMismatch)?;
-                checkout.mutate_with_native_work(operations, allocation, original, cancellation)
+                checkout.mutate_owned_with_accounting(crate::kernel::Owned { value: operations, bytes: allocation.bytes(), allocation: crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) }, &mut crate::kernel::allocation::KernelAccounting::native(original, cancellation), cancellation)
                     .await.map_err(native_filesystem_error)?;
             }
             let mut logical_owned_bytes = (paths.capacity() as u64)

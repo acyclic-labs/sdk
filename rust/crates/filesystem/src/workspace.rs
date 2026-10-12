@@ -2584,7 +2584,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         let outcome = if self.requires_rebase {
             self.checkout.retry_stale_commit_with_native_work(self.idempotency_key.operation_id(), permit, original, cancellation, before_publication, None, context, operation_evidence, original_fingerprint_permit).await?
         } else {
-            Some(self.checkout.commit_with_native_work(self.idempotency_key.operation_id(), context, operation_evidence, original_fingerprint_permit, permit, original, cancellation, (*before_publication).clone()).await?)
+            let mut before_publication = (*before_publication).clone();
+            let mode = self.checkout.mode();
+            if mode.access != crate::model::AccessMode::ReadWrite || mode.mutations != crate::model::MutationMode::PrivateOverlay {
+                return Err(E::from(FsError::MutationNotAllowed));
+            }
+            Some(self.checkout.publish_pending_with_native_work(self.idempotency_key.operation_id(), context, operation_evidence, original_fingerprint_permit, permit, original, cancellation, &mut before_publication, None).await?)
         };
         if let Some(value) = outcome.and_then(|outcome| self.commit_outcome_value(outcome)) {
             return Ok(value);

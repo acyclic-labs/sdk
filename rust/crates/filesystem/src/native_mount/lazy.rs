@@ -4012,7 +4012,7 @@ where
                     expected_file_id: MetadataField::Value(*removed_id),
                 });
                 let (operations, allocation) = operations.take_native_parts()?;
-                candidate.mutate_with_native_work(operations, allocation, &original, cancellation)
+                candidate.mutate_owned_with_accounting(crate::kernel::Owned { value: operations, bytes: allocation.bytes(), allocation: crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) }, &mut crate::kernel::allocation::KernelAccounting::native(&original, cancellation), cancellation)
                     .await.map_err(mount_engine_error)?;
             } else {
                 let (budget, prior_live) = work.sdk_scope()?;
@@ -4047,7 +4047,7 @@ where
                 });
                 if let Some(original) = work.meter.original_native_work() {
                     let (operations, allocation) = replacements.take_native_parts()?;
-                    candidate.mutate_with_native_work(operations, allocation, &original, cancellation)
+                    candidate.mutate_owned_with_accounting(crate::kernel::Owned { value: operations, bytes: allocation.bytes(), allocation: crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) }, &mut crate::kernel::allocation::KernelAccounting::native(&original, cancellation), cancellation)
                         .await.map_err(mount_engine_error)?;
                 } else {
                     let (budget, prior_live) = work.sdk_scope()?;
