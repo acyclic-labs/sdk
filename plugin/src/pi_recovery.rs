@@ -173,7 +173,7 @@ where
     let mut tasks = session_tasks(state, work)?;
     let pi_definition = PiTaskMachine::new(work)?.definition(work)?;
     let preparation_definition = if tasks.0.iter().any(|task| task.preparation.is_some()) {
-        Some(acyclic_harness::filesystem::ForkPreparationMachine::new_with_native_work(work)?.definition_with_native_work(work)?)
+        Some(std::sync::Arc::new(acyclic_harness::filesystem::ForkPreparationMachine::new()).definition()?)
     } else { None };
     for task in &mut tasks.0 {
         if let Some(preparation) = task.preparation {
@@ -185,7 +185,7 @@ where
             let child = decode_recovery_value::<PiTaskInput>(
                 std::mem::take(&mut request.0.child.input), acyclic_harness::JsonValueSchema::None, work)?;
             if admission.0.task != *preparation_definition.as_ref()
-                .expect("retained preparation definition").0.identity() || admission.0.parent != task.parent
+                .expect("retained preparation definition").identity() || admission.0.parent != task.parent
                 || request.0.child.parent != task.parent
                 || request.0.child.operation_id.into_bytes() != task.binding.task_id.into_bytes()
                 || child.0.binding != *task.binding

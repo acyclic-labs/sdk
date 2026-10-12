@@ -95,8 +95,14 @@ impl Fixture {
         drop(command_custody);
         let (worker_id, worker_id_custody) = startup.display(&format_args!("pi-root-provider-worker")).unwrap();
         let worker = Worker { id: worker_id, available: Default::default(), labels: Default::default() };
-        let (first, lease_custody) = runtime.runtime.run_operation_with_native_work(
-            &worker, task, &runtime.runtime.commands(), 1, &startup).await.unwrap();
+        let (first, lease_custody) = (async {
+            let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&startup)?;
+            let value = runtime.runtime.run_operation(&worker, task, &runtime.runtime.commands(), 1, Some(&io)).await?;
+            let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+                return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "worker run requires original native custody" });
+            };
+            Ok::<_, acyclic_harness::Error>((value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)))
+        }).await.unwrap();
         drop(worker);
         drop(worker_id_custody);
         let TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease }) = first.unwrap() else {
@@ -118,7 +124,7 @@ impl Fixture {
 
     async fn execute(&self) -> Result<(EffectStatus, NativeAllocation)> {
         let current = Arc::clone(self.provider.journal_owner.as_ref().unwrap());
-        let content = self.provider.preparation.context.content_residency_verifier_with_native_work(current, &self.startup)?;
+        let content = acyclic_harness::runtime::content_residency_verifier(std::sync::Arc::clone(&self.provider.preparation.context), current, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(&self.startup)?))?;
         let (authority, custody) = self.owner.effect_authority_with_native_work(&self.startup)?;
         let effects = crate::pi_owner::root_effects_with_native_work(self.stream.clone(), authority, custody,
             content, self.provider.clone(), &self.startup)?;
@@ -743,9 +749,15 @@ async fn pi_operator_input_original_upload_is_root_only_even_for_actual_created_
     let coordinator = fixture.coordinator(&crate::pi_fork::tests::work()).unwrap();
     let child = fixture.advance_with(&coordinator, &fixture.context, &fixture.journal,
         &fixture.fence, &plan, fixture.root_handle.workspace.clone(), allocation_budget(), CancellationToken::new()).await.unwrap().unwrap();
-    let attempt = fixture.runtime.runtime.run_operation_with_native_work(&Worker { id: "operator-child-read-denial".into(),
-        available: Default::default(), labels: Default::default() }, child.binding.task_id,
-        &fixture.runtime.runtime.commands(), 1, &native).await.unwrap();
+    let attempt = (async {
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&native)?;
+        let value = fixture.runtime.runtime.run_operation(&Worker { id: "operator-child-read-denial".into(),
+        available: Default::default(), labels: Default::default() }, child.binding.task_id, &fixture.runtime.runtime.commands(), 1, Some(&io)).await?;
+        let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+            return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "worker run requires original native custody" });
+        };
+        Ok::<_, acyclic_harness::Error>((value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)))
+    }).await.unwrap();
     let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = attempt.0 else { panic!("actual created child lease"); };
     let context = fixture.runtime.runtime.task_context(child.binding.task_id, LeaseFence::from(&lease.reservation)).await.unwrap();
     assert!(context.scope().grants().contains(&fixture.owner.policy().journal.directory_read_capability(ROOT_INPUT_DIRECTORY, &mut None).unwrap()));

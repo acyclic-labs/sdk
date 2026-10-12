@@ -99,9 +99,8 @@ pub(crate) async fn open_prepared_approval(runtime: &PiNativeRuntime, filesystem
         (value, io.into_custody())
     };
     let current = runtime.runtime.task_host().journal_owner_with_native_work(binding.task_id, fence, work).await?;
-    let journal = Journal::for_task_with_native_work(current, descriptor.operation, context.context().id(), Arc::clone(filesystem),
-        &protected.policy().journal, &storage.0.verifier, &storage.0.signed, protected.policy().maximum_payload_bytes, work)?
-        .with_interaction_owner_with_native_work(&verifier.0, &SchemaRegistry::new(), &authority.0.2, descriptor.private_volume, work)?;
+    let journal = Journal::for_task(current, descriptor.operation, context.context().id(), Arc::clone(filesystem), &protected.policy().journal, &storage.0.verifier, &storage.0.signed, protected.policy().maximum_payload_bytes, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?))?
+        .with_interaction_owner(&verifier.0, &SchemaRegistry::new(), &authority.0.2, descriptor.private_volume, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?))?;
     let (prompt, _prompt_custody) = work.display(&format_args!("Publish selected Pi writeback {}", descriptor.command.sdk_operation))
         .map_err(native_error)?;
     let interaction = Interaction::Approval { prompt, operation_id: descriptor.operation,

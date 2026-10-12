@@ -913,10 +913,17 @@ async fn pi_real_preparation_pending_reserved_and_succeeded_never_report_future_
     } if *task_id == plan.commit.child.task_id && *preparation == plan.preparation.task_id()));
     drop(observed);
     assert_eq!(query.live_allocation_bytes(), query_baseline);
-    let partial = fixture.runtime.runtime.run_operation_with_native_work(&Worker {
+    let partial = (async {
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&query)?;
+        let value = fixture.runtime.runtime.run_operation(&Worker {
         id: "pi-preparing-observation".into(), available: ResourceSnapshot::default(),
         labels: BTreeMap::new(),
-    }, plan.preparation.task_id(), &fixture.runtime.runtime.commands(), 1, &query).await.unwrap();
+    }, plan.preparation.task_id(), &fixture.runtime.runtime.commands(), 1, Some(&io)).await?;
+        let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+            return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "worker run requires original native custody" });
+        };
+        Ok::<_, acyclic_harness::Error>((value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)))
+    }).await.unwrap();
     assert!(matches!(partial.0, Some( acyclic_harness::filesystem::TaskWorkerAttempt::Progress(
         acyclic_harness::filesystem::TaskWorkerOutcome::Yielded { .. }))));
     drop(partial);
@@ -1042,10 +1049,17 @@ async fn pi_real_root_committed_control_reopen_keeps_original_context_and_next_a
     ).await.unwrap();
     let suspension = reopened.runtime.task_host().workflow_suspension(task).await.unwrap().unwrap();
     reopened.runtime.task_host().resume_workflow(task, suspension.revision, input, acyclic_harness::IdempotencyKey::new("pi-root-control/distinct-next").unwrap(), None).await.unwrap();
-    let next = reopened.runtime.run_operation_with_native_work(&Worker {
+    let next = (async {
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&reopen_work)?;
+        let value = reopened.runtime.run_operation(&Worker {
         id: "pi-root-control-next".into(), available: ResourceSnapshot::default(),
         labels: BTreeMap::new(),
-    }, task, &reopened.runtime.commands(), 8, &reopen_work).await.unwrap();
+    }, task, &reopened.runtime.commands(), 8, Some(&io)).await?;
+        let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+            return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "worker run requires original native custody" });
+        };
+        Ok::<_, acyclic_harness::Error>((value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)))
+    }).await.unwrap();
     assert!(matches!(next.0, Some(acyclic_harness::filesystem::TaskWorkerAttempt::Progress(
         acyclic_harness::filesystem::TaskWorkerOutcome::Suspended { .. }))));
     let next = reopened.runtime.observe_workflow_checkpoint(task).await.unwrap();

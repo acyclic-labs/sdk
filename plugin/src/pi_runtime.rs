@@ -215,8 +215,8 @@ where
         let mut tasks = TaskRegistry::default();
         let definition = machine.definition(work)?;
         tasks.register(definition)?;
-        let fork_machine = acyclic_harness::filesystem::ForkPreparationMachine::new_with_native_work(work)?;
-        let fork = fork_machine.definition_with_native_work(work)?;
+        let fork_machine = Arc::new(acyclic_harness::filesystem::ForkPreparationMachine::new());
+        let fork = fork_machine.definition()?;
         tasks.register(fork)?;
         let fork_definition = tasks.get_version("acyclic.fork_preparation", "1", Some(work))?;
         let definition = tasks.get_version::<PiTaskInput, FileRef>("acyclic.pi", "1", Some(work))?;
@@ -226,11 +226,12 @@ where
         let creation = FilesystemResourceCreationProvider::new(Arc::clone(&filesystem), &authority.0.issuer, Some(work))?.into_native_shared(work)?;
         let creation_providers: [Arc<dyn acyclic_harness::resource_preparation::ResourceCreationProvider>; 1] = [creation];
         let clock = Arc::new(acyclic_stream::SystemUnixMillisClock);
-        let runtime = FilesystemTaskRuntime::open_with_creation_providers_with_native_work(
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+        let runtime = FilesystemTaskRuntime::open(
             stream, filesystem, journal, &authority.0.verifier, &authority.0.signed,
-            &authority.0.scope, &tasks, &machines.0, &tools.0, &resumable_tools,
+            &authority.0.scope, &tasks, &machines.0, &tools.0,
             authority.0.session_limits, authority.0.concurrency, authority.0.maximum_payload_bytes,
-            clock, None, &creation_providers, work,
+            clock, None, &creation_providers, &resumable_tools, Some(&io),
         ).await?;
         Ok(Self {
             runtime, definition, fork_definition,

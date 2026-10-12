@@ -645,9 +645,14 @@ impl PiNativeCommandHost {
                 worker = Worker {
                     id, available: ResourceSnapshot::default(), labels: BTreeMap::new(),
                 };
-                let result = self.runtime.runtime.run_operation_with_native_work(
-                    &worker, task, self, 8, &work,
-                ).await;
+                let result = (async {
+                    let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
+                    let value = self.runtime.runtime.run_operation(&worker, task, self, 8, Some(&io)).await?;
+                    let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+                        return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "worker run requires original native custody" });
+                    };
+                    Ok::<_, acyclic_harness::Error>((value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)))
+                }).await;
                 drop(worker);
                 drop(worker_custody);
                 result
@@ -1123,11 +1128,8 @@ impl PiNativeCommandHost {
         let result = input.binding.results.as_ref().ok_or_else(|| unauthorized("Pi approval has no original result volume"))?;
         let journal_owner = self.runtime.runtime.task_host()
             .journal_owner_with_native_work(owner.task_id(), &context.owned_task_fence()?, work).await?;
-        Journal::for_task_with_native_work(journal_owner, command, self.filesystem.clone(),
-            &self.protected.policy().journal, &storage.0.verifier, &storage.0.signed,
-            self.protected.policy().maximum_payload_bytes.min(context.scope().limits().file_bytes), work)?
-            .with_interaction_owner_with_native_work(&interaction_verifier.0, &SchemaRegistry::new(),
-                &conversation.0.2, &result.volume, work)?.into_native_shared(work)
+        Journal::for_task(journal_owner, command, context.id(), self.filesystem.clone(), &self.protected.policy().journal, &storage.0.verifier, &storage.0.signed, self.protected.policy().maximum_payload_bytes.min(context.scope().limits().file_bytes), Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?))?
+            .with_interaction_owner(&interaction_verifier.0, &SchemaRegistry::new(), &conversation.0.2, &result.volume, Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?))?.into_native_shared(work)
     }
 
     fn authority(&self, context: &TaskContext, input: &PiTaskInput, journal: Arc<Journal>,
@@ -1155,7 +1157,7 @@ impl PiNativeCommandHost {
         let authorization = self.protected.conversation_authority_with_native_work(input.binding.task_id,
             input.binding.agent_id, context.scope().grants(), work)?;
         let mut registry = EffectRegistry::new(Some(work))?
-            .with_result_resolver_with_native_work(content.clone(), work)?;
+            .with_result_resolver(content.clone());
         registry.register_with_native_work(provider.clone(), work)?;
         let ((audience, issuer, scope), custody) = authorization;
         Effects::new_with_native_work(self.stream.clone(), audience, issuer, scope,

@@ -248,7 +248,7 @@ impl Fixture {
     }
     fn effects(&self, provider: &Arc<NativeProcessProvider<LocalStream>>, work: &NativeMaterializationWork) -> Result<ConversationEffectHost<LocalStream>> {
         let mut registry = acyclic_harness::effects::EffectRegistry::new(Some(work))?
-            .with_result_resolver_with_native_work(self.content.clone(), work)?;
+            .with_result_resolver(self.content.clone());
         registry.register_with_native_work(provider.clone(), work)?;
         let audience_id = work.display("pi-native-provider-test").map_err(native_error)?;
         let audience = (Authority { kind: AggregateKind::Conversation, id: audience_id.0 }, audience_id.1);

@@ -101,7 +101,14 @@ impl Fixture {
             owner.authority_with_native_work(&startup_work).unwrap(), &startup_work).await.unwrap());
         let _root_admission = runtime.admit_root(&root_binding, &request.root, &command.0, &startup_work).await.unwrap();
         let worker = Worker { id: "pi-fork-fixture".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new() };
-        let first = runtime.runtime.run_operation_with_native_work(&worker, task, &runtime.runtime.commands(), 1, &startup_work).await.unwrap();
+        let first = (async {
+            let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&startup_work)?;
+            let value = runtime.runtime.run_operation(&worker, task, &runtime.runtime.commands(), 1, Some(&io)).await?;
+            let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+                return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "worker run requires original native custody" });
+            };
+            Ok::<_, acyclic_harness::Error>((value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)))
+        }).await.unwrap();
         let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = first.0 else { panic!("root allocation lease"); };
         let dispatch_fence = LeaseFence::from(&lease.reservation);
         let dispatch_context = runtime.runtime.task_context_with_native_work(task, &dispatch_fence, &startup_work).await.unwrap();
@@ -112,7 +119,7 @@ impl Fixture {
         Ok::<_, acyclic_harness::Error>((preparation, owner))
     }.await.unwrap();
         let journal = journal.into_native_shared(&startup_work).unwrap();
-        let content = dispatch_context.content_residency_verifier_with_native_work(journal.clone(), &startup_work).unwrap();
+        let content = acyclic_harness::runtime::content_residency_verifier(std::sync::Arc::clone(&dispatch_context), journal.clone(), Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(&startup_work).unwrap())).unwrap();
         let effect_authorization = owner.effect_authority_with_native_work(&startup_work).unwrap();
         let root_provider = crate::pi_root_provider::root_provider(owner.clone(), &resources, filesystem.clone(), stream.clone(), preparation, Some(journal), startup_work.clone()).unwrap();
         let effects = crate::pi_owner::root_effects_with_native_work(stream.clone(), effect_authorization.0,
@@ -139,7 +146,14 @@ impl Fixture {
         observed.1.absorb(&mut control.1).unwrap();
         let suspension = runtime.runtime.task_host().workflow_suspension(task).await.unwrap().unwrap();
         runtime.runtime.task_host().resume_workflow(task, suspension.revision, control.0, IdempotencyKey::new("pi-fork-test/original-parent-owner").unwrap(), None).await.unwrap();
-        let mut first = runtime.runtime.run_operation_with_native_work(&worker, task, &runtime.runtime.commands(), 1, &startup_work).await.unwrap();
+        let mut first = (async {
+            let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&startup_work)?;
+            let value = runtime.runtime.run_operation(&worker, task, &runtime.runtime.commands(), 1, Some(&io)).await?;
+            let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+                return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "worker run requires original native custody" });
+            };
+            Ok::<_, acyclic_harness::Error>((value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)))
+        }).await.unwrap();
         observed.1.absorb(&mut first.1).unwrap();
         let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = first.0 else { panic!("original parent control lease"); };
         let fence = LeaseFence::from(&lease.reservation);
@@ -483,8 +497,14 @@ async fn original_preparation_task_partial_checkpoint_reopens_without_early_chil
     let host = fixture.runtime.runtime.task_host();
     let worker_name = work.display("fork-partial-original").unwrap();
     let worker = Worker { id: worker_name.0, available: ResourceSnapshot::default(), labels: BTreeMap::new() };
-    let partial = fixture.runtime.runtime.run_operation_with_native_work(&worker, plan.preparation.task_id(),
-        &fixture.runtime.runtime.commands(), 1, work).await.unwrap();
+    let partial = (async {
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+        let value = fixture.runtime.runtime.run_operation(&worker, plan.preparation.task_id(), &fixture.runtime.runtime.commands(), 1, Some(&io)).await?;
+        let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+            return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "worker run requires original native custody" });
+        };
+        Ok::<_, acyclic_harness::Error>((value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)))
+    }).await.unwrap();
     assert!(matches!(partial.0, Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { .. }))));
     assert!(host.observe_admission(plan.request.child.task_id()).await.is_err());
     assert!(fixture.resources.fs.open_workspace_with_native_work(&plan.commit.child.scratch.volume.storage_name(&mut None).unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new()).await.is_err());
@@ -548,8 +568,14 @@ async fn explicit_root_sibling_and_descendant_sources_use_operation_read_proofs_
 
     let worker = Worker { id: "actual-child-caller".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new() };
     let original = work();
-    let attempt = fixture.runtime.runtime.run_operation_with_native_work(&worker, first.binding.task_id,
-        &fixture.runtime.runtime.commands(), 1, &original).await.unwrap();
+    let attempt = (async {
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&original)?;
+        let value = fixture.runtime.runtime.run_operation(&worker, first.binding.task_id, &fixture.runtime.runtime.commands(), 1, Some(&io)).await?;
+        let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+            return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "worker run requires original native custody" });
+        };
+        Ok::<_, acyclic_harness::Error>((value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)))
+    }).await.unwrap();
     let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = attempt.0 else { panic!("original child native command owner"); };
     let fence = LeaseFence::from(&lease.reservation);
     let journal = Arc::new(fixture.runtime.runtime.task_host().journal_owner(first.binding.task_id, fence.clone()).await.unwrap());
@@ -635,8 +661,14 @@ async fn cold_pre_first_dispatch_restores_only_under_actual_child_owner_and_exis
         fixture.stream.clone(), &fixture.resources, fixture.owner.clone(), &work).unwrap();
     let worker_name = work.display("cold-native-child-owner").unwrap();
     let worker = Worker { id: worker_name.0, available: ResourceSnapshot::default(), labels: BTreeMap::new() };
-    let attempt = fixture.runtime.runtime.run_operation_with_native_work(&worker, first.binding.task_id,
-        &fixture.runtime.runtime.commands(), 1, &work).await.unwrap();
+    let attempt = (async {
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
+        let value = fixture.runtime.runtime.run_operation(&worker, first.binding.task_id, &fixture.runtime.runtime.commands(), 1, Some(&io)).await?;
+        let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+            return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "worker run requires original native custody" });
+        };
+        Ok::<_, acyclic_harness::Error>((value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)))
+    }).await.unwrap();
     let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = attempt.0 else { panic!("actual child owner"); };
     let (reservation_id, mut custody) = work.display(&lease.reservation.id).unwrap();
     let (placement, mut placement_custody) = work.display(&lease.reservation.placement).unwrap();

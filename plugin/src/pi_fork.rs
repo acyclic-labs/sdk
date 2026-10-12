@@ -446,7 +446,7 @@ impl PiForkCoordinator {
         let checkpoint_path = work.display(&format_args!("pi-fork/{original}/source-checkpoint.json"))
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let checkpoint = (context).stage_file_once_with_native_work(derived(original, "source-checkpoint", &self.work)?, &checkpoint_path.0, &checkpoint_bytes.0, "application/json", "Pi original caller cut", &self.work).await?;
-        let resolver = shared.content_residency_verifier_with_native_work(owner.clone(), work)?;
+        let resolver = acyclic_harness::runtime::content_residency_verifier(std::sync::Arc::clone(shared), owner.clone(), Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?))?;
         let stream_provider = acyclic_harness::resources::ProviderRef::new_with_native_work("local", "stream", "1", work)?;
         let source_binding = acyclic_harness::filesystem::recursive_fork_source_with_native_work(self.filesystem.clone(),
             &self.stream, parent.into_reducer(), &verifier.0, signed, context, &caller_snapshot.0,
@@ -741,7 +741,7 @@ impl PiForkCoordinator {
                 context, authorization, work)?.await?),
             None => None,
         };
-        let resolver = shared.content_residency_verifier_with_native_work(owner.clone(), work)?;
+        let resolver = acyclic_harness::runtime::content_residency_verifier(std::sync::Arc::clone(shared), owner.clone(), Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?))?;
         let verifier = {
             let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
             let value = authority.0.1.verifier(&mut Some(&mut io))?;
@@ -828,8 +828,14 @@ impl PiForkCoordinator {
                     let worker_id = work.display(&format_args!("pi-fork:{}", self.resources.instance_id))
                         .map_err(|cause| Error::NativeWork { cause, custody: None })?;
                     let worker = Worker { id: worker_id.0, available: ResourceSnapshot::default(), labels: BTreeMap::new() };
-                    let result = self.runtime.runtime.run_operation_with_native_work(&worker,
-                        plan.preparation.task_id(), &commands, 8, work).await?;
+                    let result = (async {
+                        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(work)?;
+                        let value = self.runtime.runtime.run_operation(&worker, plan.preparation.task_id(), &commands, 8, Some(&io)).await?;
+                        let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+                            return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "worker run requires original native custody" });
+                        };
+                        Ok::<_, acyclic_harness::Error>((value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)))
+                    }).await?;
                     drop(result);
                 }
             }

@@ -150,8 +150,14 @@ async fn actual_admitted_child_cannot_read_root_only_operator_proof_or_upgrade_i
         labels: Default::default() };
     let attempt_custody;
     let attempt;
-    (attempt, attempt_custody) = fixture.runtime.runtime.run_operation_with_native_work(&worker,
-        child.binding.task_id, &fixture.runtime.runtime.commands(), 1, &work).await.unwrap();
+    (attempt, attempt_custody) = (async {
+        let io = acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?;
+        let value = fixture.runtime.runtime.run_operation(&worker, child.binding.task_id, &fixture.runtime.runtime.commands(), 1, Some(&io)).await?;
+        let acyclic_harness::filesystem::PreparationIo::Native { custody, .. } = io else {
+            return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "worker run requires original native custody" });
+        };
+        Ok::<_, acyclic_harness::Error>((value, custody.into_inner().unwrap_or_else(std::sync::PoisonError::into_inner)))
+    }).await.unwrap();
     let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = attempt else {
         panic!("actual admitted child command lease");
     };
