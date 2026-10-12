@@ -24,28 +24,7 @@ pub struct DirectoryPage {
 }
 
 /// Returns one bounded ordered directory page and an exact continuation fact.
-pub fn list_tree_entries<S: crate::ImmediateObjectStore>(
-    store: &S,
-    root: ObjectId,
-    after: Option<&LogicalName>,
-    maximum_entries: u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<DirectoryPage, DirectoryReadFailure> {
-    persistent_pagination::paginate::<S, TreeFormat>(
-        store,
-        root,
-        after,
-        maximum_entries,
-        limits,
-        budget,
-    )
-    .map(to_page)
-    .map_err(map_failure)
-}
-
-/// Asynchronously executes the same cursor machine as [`list_tree_entries`].
-pub async fn list_tree_entries_async<S: AsyncObjectStore>(
+pub async fn list_tree_entries<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     after: Option<&LogicalName>,

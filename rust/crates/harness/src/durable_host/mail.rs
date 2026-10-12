@@ -1,6 +1,7 @@
 //! The original v3 atomic mail engine with optional original SDK observation.
 
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::distributed::{sdk_error, sdk_source};
 use crate::executor::PreparationIo;
 #[cfg(feature = "filesystem")]
@@ -65,7 +66,7 @@ fn encode<T: Serialize + ?Sized>(value: &T, maximum: u64, io: Option<&Preparatio
 fn decode<T: MailRecord>(bytes: &[u8], io: Option<&PreparationIo>) -> Result<T> {
     require_original(io)?;
     #[cfg(feature = "filesystem")]
-    if let Some(io) = io { return Ok(crate::filesystem::retain_decoded(io.decode_preparation::<T>(bytes, crate::wire::ErrorCode::Storage)?)); }
+    if let Some(io) = io { return Ok(crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<T>, bytes, crate::wire::ErrorCode::Storage)?)); }
     crate::contract::json_from_slice(bytes).map_err(|error| Error::Storage(error.to_string()))
 }
 

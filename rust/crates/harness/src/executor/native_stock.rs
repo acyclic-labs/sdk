@@ -1,5 +1,6 @@
 //! Original-work admission and custody for the shared stock execution engine.
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::projection::ModelContextSelection;
 use std::fmt::{Arguments, Write as _};
 
@@ -800,23 +801,18 @@ pub(super) async fn stock_reconcile_tool(tool: &crate::tool::Tool,
     }
 }
 
-pub(super) fn stock_projection_content(definition: &crate::tool::ToolDefinition, value: &Value,
-    limits: Limits, io: Option<&PreparationIo>) -> Result<crate::model::ToolResultContent> {
-    definition.validate_projection(value, limits, io)
-}
-
 pub(super) fn stock_project_tool(tool: &crate::tool::Tool, invocation: &ToolInvocation, result: &ToolResult,
     limits: Limits, io: Option<&PreparationIo>) -> Result<(Value, crate::model::ToolResultContent)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io && let Some(work) = io.original_native_work() {
         let (value, custody) = tool.projection.project_with_native_work(invocation, result, work)?;
         io.absorb_native_custody(custody)?;
-        let content = stock_projection_content(&tool.definition, &value, limits, Some(io))?;
+        let content = tool.definition.validate_projection(&value, limits, Some(io))?;
         io.check_json_byte_bound(&value, limits.render_bytes)?;
         return Ok((value, content));
     }
     let value = tool.projection.project(invocation, result)?;
-    let content = stock_projection_content(&tool.definition, &value, limits, io)?;
+    let content = tool.definition.validate_projection(&value, limits, io)?;
     if crate::contract::canonical_json_bytes(&value)?.len() as u64 > limits.render_bytes {
         return Err(Error::Invalid("tool projection exceeds render limit".into()));
     }
@@ -1042,7 +1038,7 @@ pub(crate) fn completed_tool_projection_with_native_work<'a>(
     }
     crate::NativeFutureBundle::new(work, || async move {
         let io = PreparationIo::from_native_work(work)?;
-        let content = completed_tool_projection(journal, records, step, expected, tools, Some(limits), Some(&io)).await?;
+        let content = completed_tool_projection(journal, records, step, expected, tools, limits, Some(&io)).await?;
         let retained = content.logical_owned_bytes()?;
         work.remaining()?;
         Ok((content, io.into_native_custody(retained)?))

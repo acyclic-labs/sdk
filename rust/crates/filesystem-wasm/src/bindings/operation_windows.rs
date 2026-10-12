@@ -10,7 +10,7 @@ use acyclic_fs::{
 #[wasm_bindgen]
 pub struct BrowserOperationWindowCoordinator {
     inner: OperationWindowCoordinator<BrowserAuthority>,
-    owner: BrowserEngine,
+    owner: Fs<BrowserAuthority, CachedObjectStore<BrowserObjects>>,
 }
 
 #[derive(Deserialize, Serialize, Tsify)]

@@ -4,6 +4,7 @@ use crate::{PendingSpawn, PendingSpawnLifecycle, PluginTaskBinding, ServiceResou
     pi_native_host::PiNativeFilesystem,
     pi_owner::PiOwnerConfig, pi_root_provider::PiRootHandle,
     pi_task::{PiTaskInput, PiTaskExecution}};
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_fs::{LazySnapshotRef, WorkBudget, WorkCounters, NativeMaterializationWork};
 use acyclic_harness::{Error, Result, TaskId, OperationId,
     durable_host::TaskJournalOwner, filesystem::{TaskCommandProgress, ForkPreparationLimits},
@@ -136,38 +137,20 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
     async fn context(&self, shared: Arc<NativeTaskContext>, fence: &LeaseFence,
         work: &NativeMaterializationWork)
         -> Result<((Arc<NativeTaskContext>, Arc<TaskJournalOwner<LocalStream>>, PiTaskInput), acyclic_fs::NativeAllocation)> {
-        self.runtime.verify_owner_with_native_work(&self.protected, work)?;
-        let context = shared.context();
-        let task = context.durable_task_id().ok_or_else(|| unauthorized("Pi fork control has no original task"))?;
-        let mut admission = self.runtime.runtime.task_host().observe_admission_with_native_work(task, work).await?;
-        if admission.0.task_id() != task || admission.0.task != *self.runtime.definition.identity()
-            || context.scope().grants() != &admission.0.grants || context.scope().limits() != admission.0.limits
-            || context.scope().run_limits() != admission.0.run_limits || context.owned_task_fence()? != *fence {
-            return Err(unauthorized("Pi fork control differs from its original admission or fence"));
-        }
-        let maximum = self.protected.policy().maximum_payload_bytes.min(admission.0.limits.file_bytes);
-        let bytes = crate::pi_root_provider::canonical_pi_value(&admission.0.input, maximum, work)?;
-        let mut input = crate::pi_root_provider::guarded_pi_decode::<PiTaskInput>(&bytes.0, maximum,
-            self.protected.policy().maximum_payload_bytes, acyclic_harness::JsonValueSchema::None,
-            crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES, work)?;
-        if input.0.binding.task_id != task {
-            return Err(unauthorized("Pi fork control substituted its admitted task binding"));
-        }
-        let owner = self.runtime.runtime.task_host().journal_owner_with_native_work(task, fence, work).await?
-            .into_native_shared(work)?;
-        owner.verify_with_native_work(false, work).await?;
+        let caller = self.caller(shared.context(), fence, work).await?;
+        let (owner, input, _) = &caller;
+        let task = owner.task_id();
         let shared = if task == self.protected.policy().root_task {
-            let PiTaskExecution::Host { root, .. } = &input.0.execution else {
+            let PiTaskExecution::Host { root, .. } = &input.execution else {
                 return Err(unauthorized("Pi original root input substituted a child"));
             };
-            crate::pi_root_provider::bind_root_output_context_with_native_work(shared, &owner,
+            crate::pi_root_provider::bind_root_output_context_with_native_work(shared, owner,
                 self.protected.clone(), self.resources, self.filesystem.clone(), self.stream.clone(),
-                &input.0.binding, root, work).await?
+                &input.binding, root, work).await?
         } else {
-            shared.with_output_volume_with_native_work(&input.0.binding.scratch.volume, work)?
+            shared.with_output_volume_with_native_work(&input.binding.scratch.volume, work)?
         };
-        admission.1.absorb(&mut input.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(((shared, owner, input.0), admission.1))
+        Ok(((shared, caller.0, caller.1), caller.2))
     }
 
 
@@ -176,7 +159,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         let maximum = self.protected.policy().maximum_payload_bytes;
         let bytes = crate::pi_root_provider::canonical_pi_value(value, maximum, work)?;
         let (value, custody) = crate::pi_root_provider::guarded_pi_decode(&bytes.0, maximum, maximum,
-            acyclic_harness::JsonValueSchema::None, label_bytes, work)?;
+            acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, label_bytes, work)?;
         Ok((value, custody))
     }
 
@@ -434,7 +417,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             let bytes = self.coordinator(&work)?.read_original_input(&reference.0).await?;
             let decoded: (ObservedSource, _) = crate::pi_root_provider::guarded_pi_decode(bytes.as_ref(),
                 self.protected.policy().maximum_payload_bytes, self.protected.policy().maximum_payload_bytes,
-                acyclic_harness::JsonValueSchema::None, OBSERVED_SOURCE_DIAGNOSTIC_LABEL_BYTES, &work)?;
+                acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, OBSERVED_SOURCE_DIAGNOSTIC_LABEL_BYTES, &work)?;
             let observed = &decoded.0;
             if observed.caller != input.caller || observed.sdk_operation != input.sdk_operation || observed.root_key != input.root_key {
                 return Err(unauthorized("Pi original Root observation retry changed its source request"));

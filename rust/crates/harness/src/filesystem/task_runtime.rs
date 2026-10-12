@@ -4,6 +4,7 @@ use super::{
     FilesystemContentVerifier, FilesystemExecutionJournal, FilesystemHost,
     FilesystemInteractionHost, FilesystemSchedulerPayloadStore, FilesystemWorkflowJournal,
 };
+use crate::runtime::TaskStateProvider;
 use crate::{
     Error, IdempotencyKey, OperationId, Outcome, Result, TaskId,
     context::ContextPipeline,
@@ -422,7 +423,6 @@ where
         creation_providers: &[Arc<dyn crate::resource_preparation::ResourceCreationProvider>],
         resumable_tools: &ResumableToolRegistry, io: Option<&super::PreparationIo>,
     ) -> Result<Self> {
-        let client = acyclic_stream::StreamClient::new(stream.clone());
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(io) = io {
             let work = io.original_native_work().ok_or_else(|| io.invalid("native runtime configuration has no original work"))?;
@@ -436,11 +436,11 @@ where
             let payloads = FilesystemSchedulerPayloadStore::new(filesystem.clone(), volume, verifier, signed, maximum_payload_bytes, Some(&io))?.into_native_shared(work)?;
             let reader = FilesystemContentVerifier::new(filesystem.clone(), verifier, signed, maximum_payload_bytes, Some(&io))?.into_native_shared(work)?;
             let coordinator = DistributedCoordinator::open(
-                &client, reader.clone(), Some(payloads.clone()),
+                &stream, reader.clone(), Some(payloads.clone()),
                 &mut Some(&mut crate::store::history::native_work_io(work)?),
             ).await?;
             let mut host = CoordinatorTaskHost::new_with_native_work(
-                coordinator, client.clone(), payloads, reader.clone(),
+                coordinator, stream.clone(), payloads, reader.clone(),
                 verifier.audience(), signed, verifier, scope, tasks, machines, clock, work,
             )?.with_session_limits(session_limits, Some(work))?
                 .with_resource_creation_providers(creation_providers, Some(work))?;
@@ -477,8 +477,8 @@ where
         let payloads = Arc::new(FilesystemSchedulerPayloadStore::new(filesystem.clone(), &volume, &verifier, &signed, maximum_payload_bytes, None)?);
         let reader = Arc::new(FilesystemContentVerifier::new(filesystem.clone(), &verifier, &signed, maximum_payload_bytes, None)?);
         let mut host = CoordinatorTaskHost::new(
-            DistributedCoordinator::open(&client, reader.clone(), Some(payloads.clone()), &mut None).await?,
-            client.clone(),
+            DistributedCoordinator::open(&stream, reader.clone(), Some(payloads.clone()), &mut None).await?,
+            stream.clone(),
             payloads,
             reader.clone(),
             verifier.audience().clone(),
@@ -822,7 +822,7 @@ where
                             drop(projection);
                         }
                         _ => { crate::executor::completed_tool_projection(journal.as_ref(), &records, step,
-                            &invocation, &request.request().tools, None, io).await?; }
+                            &invocation, &request.request().tools, crate::conversation::Limits::default(), io).await?; }
                     }
                     continue;
                 }
@@ -1535,7 +1535,7 @@ where
                 Some(io), crate::wire::ErrorCode::Unsupported, "native wait payload requires original observer",
             ))?;
             let body = context.context().read_file_with_native_work(&command.payload, work).await?;
-            crate::filesystem::retain_decoded(io.decode_preparation::<Value>(&body, crate::wire::ErrorCode::Storage)?)
+            crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<Value>, &body, crate::wire::ErrorCode::Storage)?)
         } else {
             crate::contract::json_from_slice(&context.context().read_file(&command.payload).await?)
                 .map_err(|error| Error::Invalid(format!("invalid wait command JSON: {error}")))?
@@ -1899,7 +1899,7 @@ where
                         });
                     }
                     let body = shared.context().read_file_with_native_work(&command.payload, work).await?;
-                    let payload = crate::filesystem::retain_decoded(io.decode_preparation::<Value>(&body, crate::wire::ErrorCode::Storage)?);
+                    let payload = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<Value>, &body, crate::wire::ErrorCode::Storage)?);
                     drop(body);
                     commands.execute_with_native_work(
                         Arc::clone(shared), observed::clone_fence(fence, Some(io))?,

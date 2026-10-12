@@ -1,5 +1,6 @@
 
 use super::*;
+use acyclic_harness::runtime::TaskStateProvider;
 use crate::{pi_root_inputs::PiRootPreparation, pi_runtime::PiTaskRuntime};
 use acyclic_harness::{
     IdempotencyKey, OperationId, effect_host::TaskEffectPlan, workflow::WorkflowCommand,
@@ -9,7 +10,7 @@ use std::sync::Arc;
 
 type Host = FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
 type Runtime =
-    PiTaskRuntime<LocalStream, acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>;
+    PiTaskRuntime<LocalStream>;
 
 struct Fixture {
     runtime: Runtime,
@@ -167,8 +168,8 @@ impl Fixture {
         let command = alter_command(case, &owner, &filesystem, &request, staged.0).await;
         let filesystem = Arc::new(filesystem);
         let runtime = open_runtime(session.path(), &owner, filesystem.clone(), &work).await;
-        let admission = runtime.admit_root_with_native_work(
-            request.binding.clone(), request.root.clone(), command.clone(), &work,
+        let admission = runtime.admit_root(
+            &request.binding, &request.root, &command, &work,
         ).await.unwrap();
         assert!(matches!(admission.0, acyclic_harness::Admission::Accepted(_)));
         drop(admission);
@@ -194,13 +195,7 @@ impl Fixture {
     }
 
     async fn load(&self) -> Result<PiRootPreparation> {
-        PiRootPreparation::load(
-            &self.private_root, Path::new(""),
-            &self.runtime,
-            &self.filesystem,
-            &self.request,
-            &self.work,
-        )
+        PiRootPreparation::load(&self.private_root, Path::new(""), &self.runtime, &self.filesystem, &(self.request).binding, crate::pi_recovery::PiTaskOrigin::Root(&(self.request).root), None, &self.work)
         .await
     }
 
@@ -259,50 +254,41 @@ async fn pi_preparation_dispatch_requires_current_uncancelled_original_execution
     let context = fixture.runtime.runtime.task_context_with_native_work(
         fixture.request.binding.task_id, &fence, &fixture.work,
     ).await.unwrap();
-    let (preparation, owner) = PiRootPreparation::load_for_dispatch(
-        &fixture.private_root, Path::new(""),
-        &fixture.runtime,
-        &fixture.filesystem,
-        &fixture.request,
-        &fence,
-        context.clone(),
-        &fixture.work,
-    )
+    let (preparation, owner) = async {
+        let preparation = PiRootPreparation::load(&fixture.private_root, Path::new(""), &fixture.runtime, &fixture.filesystem, &(fixture.request).binding, crate::pi_recovery::PiTaskOrigin::Root(&(fixture.request).root), Some(context.clone()), &fixture.work).await?;
+        let owner = (&fixture.runtime).runtime.task_host().journal_owner_with_native_work((fixture.request).binding.task_id, &fence, &fixture.work).await?;
+        owner.verify_with_native_work(false, &fixture.work).await?;
+        Ok::<_, acyclic_harness::Error>((preparation, owner))
+    }
     .await
     .unwrap();
-    assert_eq!(preparation.request(), &fixture.request);
-    assert_eq!(preparation.command(), &fixture.command);
-    assert_eq!(preparation.native_context().context().durable_task_id(), context.context().durable_task_id());
-    assert_eq!(preparation.native_context().context().scope().grants(), context.context().scope().grants());
+    assert_eq!(&preparation.request, &fixture.request);
+    assert_eq!(&preparation.command, &fixture.command);
+    assert_eq!(preparation.context.context().durable_task_id(), context.context().durable_task_id());
+    assert_eq!(preparation.context.context().scope().grants(), context.context().scope().grants());
     owner.verify_dispatch().await.unwrap();
 
     let mut stale = fence.clone();
     stale.reservation_id.push_str("-stale");
     assert!(
-        PiRootPreparation::load_for_dispatch(
-            &fixture.private_root, Path::new(""),
-            &fixture.runtime,
-            &fixture.filesystem,
-            &fixture.request,
-            &stale,
-            context.clone(),
-            &fixture.work,
-        )
+        async {
+        let preparation = PiRootPreparation::load(&fixture.private_root, Path::new(""), &fixture.runtime, &fixture.filesystem, &(fixture.request).binding, crate::pi_recovery::PiTaskOrigin::Root(&(fixture.request).root), Some(context.clone()), &fixture.work).await?;
+        let owner = (&fixture.runtime).runtime.task_host().journal_owner_with_native_work((fixture.request).binding.task_id, &stale, &fixture.work).await?;
+        owner.verify_with_native_work(false, &fixture.work).await?;
+        Ok::<_, acyclic_harness::Error>((preparation, owner))
+    }
         .await
         .is_err()
     );
     host.cancel(fixture.request.binding.task_id).await.unwrap();
     assert!(owner.verify_dispatch().await.is_err());
     assert!(
-        PiRootPreparation::load_for_dispatch(
-            &fixture.private_root, Path::new(""),
-            &fixture.runtime,
-            &fixture.filesystem,
-            &fixture.request,
-            &fence,
-            context,
-            &fixture.work,
-        )
+        async {
+        let preparation = PiRootPreparation::load(&fixture.private_root, Path::new(""), &fixture.runtime, &fixture.filesystem, &(fixture.request).binding, crate::pi_recovery::PiTaskOrigin::Root(&(fixture.request).root), Some(context), &fixture.work).await?;
+        let owner = (&fixture.runtime).runtime.task_host().journal_owner_with_native_work((fixture.request).binding.task_id, &fence, &fixture.work).await?;
+        owner.verify_with_native_work(false, &fixture.work).await?;
+        Ok::<_, acyclic_harness::Error>((preparation, owner))
+    }
         .await
         .is_err()
     );
@@ -336,9 +322,9 @@ async fn pi_preparation_reads_original_pins_after_changed_heads_and_cold_reopen(
     let fixture = Fixture::new("").await;
     fixture.assert_idle().await;
     let loaded = fixture.load().await.unwrap();
-    assert_eq!(loaded.command(), &fixture.command);
-    assert_eq!(loaded.request(), &fixture.request);
-    assert_eq!(loaded.plan().provider, ROOT_ALLOCATION_PROVIDER);
+    assert_eq!(&loaded.command, &fixture.command);
+    assert_eq!(&loaded.request, &fixture.request);
+    assert_eq!(loaded.plan.provider.as_str(), ROOT_ALLOCATION_PROVIDER);
     drop(loaded);
     let mut changed = fixture.request.clone();
     changed.binding.native_session_id = "changed-head".to_owned();
@@ -359,12 +345,12 @@ async fn pi_preparation_reads_original_pins_after_changed_heads_and_cold_reopen(
     )
     .await;
     let head = fixture.head().await;
-    assert_eq!(fixture.load().await.unwrap().request(), &fixture.request);
+    assert_eq!(&fixture.load().await.unwrap().request, &fixture.request);
     assert_eq!(fixture.head().await, head);
     fixture.assert_idle().await;
     let fixture = fixture.reopen().await;
-    assert_eq!(fixture.load().await.unwrap().request(), &fixture.request);
-    assert_eq!(fixture.load().await.unwrap().command(), &fixture.command);
+    assert_eq!(&fixture.load().await.unwrap().request, &fixture.request);
+    assert_eq!(&fixture.load().await.unwrap().command, &fixture.command);
     assert_eq!(fixture.head().await, head);
     fixture.assert_idle().await;
 }
@@ -383,17 +369,11 @@ async fn pi_preparation_rejects_other_original_keys_and_any_policy_drift() {
             "depth" => owner.policy.session_limits.depth += 1,
             _ => unreachable!(),
         }
-        owner.save_new(other.path()).unwrap();
+        crate::pi_owner::tests::publish_owner(&(owner), other.path(), &acyclic_fs::NativeMaterializationWork::new(crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap()).unwrap();
         let private_root = acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(
             other.path(), &fixture.work,
         ).unwrap();
-        let result = PiRootPreparation::load(
-            &private_root, Path::new(""),
-            &fixture.runtime,
-            &fixture.filesystem,
-            &fixture.request,
-            &fixture.work,
-        )
+        let result = PiRootPreparation::load(&private_root, Path::new(""), &fixture.runtime, &fixture.filesystem, &(fixture.request).binding, crate::pi_recovery::PiTaskOrigin::Root(&(fixture.request).root), None, &fixture.work)
         .await;
         assert!(
             matches!(result, Err(Error::Unauthorized(_))),
@@ -445,24 +425,20 @@ async fn pi_preparation_native_state_retains_original_root_and_shared_context() 
         ..AdapterState::default()
     };
     let head = fixture.head().await;
-    let original = PiRootPreparation::load_native_from_state(
-        &fixture.private_root, Path::new(""), &fixture.runtime, &fixture.filesystem, &state, None, &fixture.work,
-    ).await.unwrap();
-    assert_eq!(original.request(), &fixture.request);
-    assert_eq!(original.command(), &fixture.command);
-    let context = original.native_context().clone();
-    let supplied = PiRootPreparation::load_native_from_state(
-        &fixture.private_root, Path::new(""), &fixture.runtime, &fixture.filesystem, &state,
-        Some(context.clone()), &fixture.work,
-    ).await.unwrap();
-    assert_eq!(supplied.native_context().context().durable_task_id(), context.context().durable_task_id());
-    assert_eq!(supplied.native_context().context().scope().grants(), context.context().scope().grants());
-    assert_eq!(supplied.request(), &fixture.request);
+    let original = async { let crate::PluginTaskBinding::Pi(binding) = &(state).task_binding else { return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi root preparation requires a Pi state binding" }); }; PiRootPreparation::load(&fixture.private_root, Path::new(""), &fixture.runtime, &fixture.filesystem, binding, crate::pi_recovery::PiTaskOrigin::RootState(&state), None, &fixture.work).await }.await.unwrap();
+    assert_eq!(&original.request, &fixture.request);
+    assert_eq!(&original.command, &fixture.command);
+    let context = original.context.clone();
+    let supplied = async { let crate::PluginTaskBinding::Pi(binding) = &(state).task_binding else { return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi root preparation requires a Pi state binding" }); }; PiRootPreparation::load(&fixture.private_root, Path::new(""), &fixture.runtime, &fixture.filesystem, binding, crate::pi_recovery::PiTaskOrigin::RootState(&state), Some(context.clone()), &fixture.work).await }.await.unwrap();
+    assert_eq!(supplied.context.context().durable_task_id(), context.context().durable_task_id());
+    assert_eq!(supplied.context.context().scope().grants(), context.context().scope().grants());
+    assert_eq!(&supplied.request, &fixture.request);
     state.roots.values_mut().next().unwrap().path.push("not-original");
-    assert!(PiRootPreparation::load_native_from_state(
-        &fixture.private_root, Path::new(""), &fixture.runtime, &fixture.filesystem, &state,
-        Some(context), &fixture.work,
-    ).await.is_err());
+    assert!(async {
+        let crate::PluginTaskBinding::Pi(binding) = &(state).task_binding else {
+            return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi root preparation requires a Pi state binding" });
+        };
+        PiRootPreparation::load(&fixture.private_root, Path::new(""), &fixture.runtime, &fixture.filesystem, binding, crate::pi_recovery::PiTaskOrigin::RootState(&state), Some(context), &fixture.work).await
+    }.await.is_err());
     assert_eq!(fixture.head().await, head);
 }
-

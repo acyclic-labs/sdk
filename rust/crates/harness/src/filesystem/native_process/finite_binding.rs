@@ -54,7 +54,7 @@ fn arc<T>(value: T, io: &PreparationIo) -> Result<Arc<T>> {
     Ok(Arc::new(value))
 }
 
-impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
+impl<P: StreamProvider> NativeProcessProvider<P> {
     /// Binds this exact prepared namespace to its original finite work family.
     pub fn new<'a>(
         owner: Arc<TaskJournalOwner<P>>, command: OperationId, plan: &'a TaskEffectPlan,
@@ -85,7 +85,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                 return Err(validation_error(Some(&io), crate::wire::ErrorCode::Invalid, "native request must be JSON content"));
             }
             let bytes = authority.content.read(&plan.request, owner.input_limits().file_bytes, Some(&io))?.await?;
-            let request = crate::filesystem::retain_decoded(io.decode_preparation::<NativeProcessRequest>(
+            let request = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<NativeProcessRequest>,
                 bytes.as_ref(), crate::wire::ErrorCode::Invalid)?);
             drop(bytes);
             request.view.validate_with_io(Some(&io))?;
@@ -113,7 +113,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                     "effect schema must be JSON schema content"));
             }
             let schema = authority.content.read(&plan.result_schema, owner.input_limits().file_bytes, Some(&io))?.await?;
-            let decoded = io.decode_preparation::<serde_json::Value>(schema.as_ref(), crate::wire::ErrorCode::Invalid)?;
+            let decoded = io.decode(std::marker::PhantomData::<serde_json::Value>, schema.as_ref(), crate::wire::ErrorCode::Invalid)?;
             crate::contract::compile_json_schema(&decoded.0, "effect result", Some(&io))?;
             let result_schema = crate::filesystem::retain_decoded(decoded);
             drop(schema);
@@ -134,7 +134,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
 }
 
 
-pub(super) fn assemble<P: StreamProvider + 'static>(
+pub(super) fn assemble<P: StreamProvider>(
     io: PreparationIo, owner: Arc<TaskJournalOwner<P>>, command: OperationId, plan: TaskEffectPlan,
     invocation: Option<Invocation<P>>, approval: InteractionId,
     authority: NativeProcessAuthority, work: &NativeMaterializationWork,

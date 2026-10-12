@@ -4,7 +4,7 @@ use crate::filesystem::native_execution::NativeViewPublicationError;
 use std::process::{Command, Stdio};
 
 #[inline(never)]
-pub(super) async fn execute<P: StreamProvider + 'static>(
+pub(super) async fn execute<P: StreamProvider>(
     owner: &Arc<TaskJournalOwner<P>>, view: &dyn NativeProcessView<P>,
     authority: &NativeProcessAuthority, request: &Arc<NativeProcessRequest>,
     dispatch: &EffectDispatch, schema: &serde_json::Value,
@@ -46,7 +46,7 @@ pub(super) async fn execute<P: StreamProvider + 'static>(
             let bytes = {
                 let io = crate::filesystem::PreparationIo::from_native_work(original)?;
                 let bytes = io.encode(&captured, u64::from(request.maximum_result_bytes), true)?;
-                let decoded = io.decode_preparation::<serde_json::Value>(
+                let decoded = io.decode(std::marker::PhantomData::<serde_json::Value>,
                     &bytes, crate::wire::ErrorCode::Invalid)?;
                 crate::contract::validate_json_schema_value(schema, &decoded.0, "native process result", Some(&io))?;
                 drop(decoded);
@@ -157,7 +157,7 @@ fn grants<P: StreamProvider>(owner: &TaskJournalOwner<P>, manifest: &NativeViewM
     Ok(())
 }
 
-async fn capture<P: StreamProvider + 'static>(
+async fn capture<P: StreamProvider>(
     owner: &Arc<TaskJournalOwner<P>>, request: &Arc<NativeProcessRequest>,
     supervisor: &Arc<NativeSupervisorControl>, cancellation: &acyclic_fs::CancellationToken,
     original: &NativeMaterializationWork,
@@ -196,10 +196,10 @@ async fn capture<P: StreamProvider + 'static>(
     let capture = move || {
         let (buffers, scopes, custody) = inputs;
         let mut custody = custody;
-        let failure = Mutex::new(None);
-        let root_failure = |error: Error| {
-            *failure.lock().expect("capture failure custody") = Some(error);
-            std::io::Error::from(std::io::ErrorKind::Other)
+        let failure = std::cell::RefCell::new(None);
+        let root_failure = |error: Error, kind: std::io::ErrorKind| {
+            *failure.borrow_mut() = Some(error);
+            std::io::Error::from(kind)
         };
         let check = || -> std::io::Result<()> {
             let result = runtime.block_on(tokio::time::timeout(
@@ -207,29 +207,22 @@ async fn capture<P: StreamProvider + 'static>(
                     cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
                     check_owner.verify_with_native_work(false, &original).await
                 }));
-            match result {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(error)) => { *failure.lock().expect("capture failure custody") = Some(error); Err(std::io::ErrorKind::Interrupted.into()) },
-                Err(error) => {
-                    *failure.lock().expect("capture failure custody") =
-                        Some(Error::NativeTimeout { source: error, custody: None });
-                    Err(std::io::ErrorKind::Interrupted.into())
-                }
-            }
+            result.unwrap_or_else(|source| Err(Error::NativeTimeout { source, custody: None }))
+                .map_err(|error| root_failure(error, std::io::ErrorKind::Interrupted))
         };
         let output = (|| -> std::io::Result<_> {
             check()?;
             let exchange = invocation.mcp_stdio.as_ref().map(|request|
                 request.exchange(Some(&original)))
-                .transpose().map_err(|error| root_failure(error))?;
+                .transpose().map_err(|error| root_failure(error, std::io::ErrorKind::Other))?;
             let _command_custody = {
                 let mut bytes = invocation.executable.as_os_str().len().checked_add(invocation.cwd.as_os_str().len()).ok_or(std::io::ErrorKind::OutOfMemory)?;
                 for argument in &invocation.argv { bytes = bytes.checked_add(argument.len()).ok_or(std::io::ErrorKind::OutOfMemory)?; }
                 for (key, value) in &invocation.environment { bytes = bytes.checked_add(key.len()).and_then(|bytes| bytes.checked_add(value.len())).ok_or(std::io::ErrorKind::OutOfMemory)?; }
                 original.charge(WorkCounters { bytes_copied: bytes as u64,
                     items_examined: (invocation.argv.len() + invocation.environment.len()) as u64, ..WorkCounters::default() })
-                    .map_err(|error| root_failure(Error::from(error)))?;
-                original.claim(bytes as u64).map_err(|error| root_failure(Error::from(error)))?
+                    .map_err(|error| root_failure(Error::from(error), std::io::ErrorKind::Other))?;
+                original.claim(bytes as u64).map_err(|error| root_failure(Error::from(error), std::io::ErrorKind::Other))?
 
 };
             let mut command = Command::new(&invocation.executable);
@@ -238,7 +231,7 @@ async fn capture<P: StreamProvider + 'static>(
                 .stdout(Stdio::piped()).stderr(Stdio::piped());
             check()?;
             capture_supervisor.record_quiescence(false)?;
-            let process_custody = original.retain_owned(0).map_err(|error| root_failure(Error::from(error)))?;
+            let process_custody = original.retain_owned(0).map_err(|error| root_failure(Error::from(error), std::io::ErrorKind::Other))?;
             let mut process = None;
             let spawned = {acyclic_native_runtime::spawn_process_tree_with_meter_custody(
                     &mut command, original.runtime_meter(), &mut process,
@@ -272,7 +265,7 @@ async fn capture<P: StreamProvider + 'static>(
                 let observe = |chunk: &[u8]| {
                     response_custody.take();
                     let bytes = {exchange.push(chunk, Some(&original)).map(|(bytes, guard)| { response_custody = guard; bytes })
-}.map_err(|error| root_failure(error))?;
+}.map_err(|error| root_failure(error, std::io::ErrorKind::Other))?;
                     Ok(acyclic_native_runtime::ProcessInput { bytes, complete: exchange.is_complete() })
                 };
                 let output = process.wait_with_output(timeout, maximum,
@@ -280,11 +273,9 @@ async fn capture<P: StreamProvider + 'static>(
                     poll, observe, Some(original.runtime_meter()), Some(buffers));
                 drop(exchange); drop(first); drop(response_custody); drop(exchange_custody);
                 output
-            } else if let Some(input) = &invocation.standard_input {
-                process.wait_with_output(timeout, maximum, Some(acyclic_native_runtime::CaptureInput::Literal(input)),
-                    poll, |_| Ok(acyclic_native_runtime::ProcessInput::default()), Some(original.runtime_meter()), Some(buffers))
             } else {
-                process.wait_with_output(timeout, maximum, None,
+                let input = invocation.standard_input.as_deref().map(acyclic_native_runtime::CaptureInput::Literal);
+                process.wait_with_output(timeout, maximum, input,
                     poll, |_| Ok(acyclic_native_runtime::ProcessInput::default()), Some(original.runtime_meter()), Some(buffers))
             };
             if !process.is_reaped()
@@ -303,9 +294,9 @@ async fn capture<P: StreamProvider + 'static>(
             Err(_) => 0,
         };
         if let Err(error) = custody.substitute(retained as u64) {
-            *failure.lock().expect("capture failure custody") = Some(Error::from(error));
+            *failure.borrow_mut() = Some(Error::from(error));
         }
-        (output, failure.into_inner().expect("capture failure custody"), custody)
+        (output, failure.into_inner(), custody)
     };
     let mut task = (capture, invocation_work.retain_owned(0)?);
     let bytes = std::mem::size_of_val(&task) as u64;

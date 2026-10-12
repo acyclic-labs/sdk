@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::filesystem::NativeProcessStopKind;
 use crate::{
     conversation::{ContentGrant, ContentPublisher, VolumeOperation},
@@ -3821,7 +3822,7 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
             fixture.files.write(&destination, "/release-check.txt", b"settled").await?;
         } else {
             let receipt = reserved?;
-            assert!(matches!(receipt.permit(), acyclic_fs::PublicationPermit::Reservation {
+            assert!(matches!(receipt.0, acyclic_fs::PublicationPermit::Reservation {
                 operation_id, ..
             } if operation_id == operation.to_bytes()));
             let before_query = work.receipt().backend_write_operations;
@@ -3847,7 +3848,7 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
                 &work, &cancellation, &cleanup_cancellation,
             ).await?;
             let recovered = reopened.ok_or_else(|| Error::NotFound("actual original SDK gate after query".into()))?;
-            assert_eq!(recovered.permit(), receipt.permit());
+            assert_eq!(recovered.0, receipt.0);
             assert_eq!(work.receipt().backend_write_operations, before_query);
             drop(recovered);
             let foreign = fixture.owner.recover_publication(
@@ -3858,7 +3859,7 @@ async fn native_publication_factory_pins_original_generation_and_retains_denied_
             assert!(foreign.is_none());
             assert_eq!(work.receipt().backend_write_operations, before_query);
             let denied_work = test_work(budget, &cleanup_cancellation)?;
-            let mut failed = receipt.into_cleanup().release(&fixture.owner, &denied_work, &cleanup_cancellation).await
+            let mut failed = receipt.1.release(&fixture.owner, &denied_work, &cleanup_cancellation).await
                 .err().ok_or_else(|| Error::Storage("foreign cleanup family denial was not exercised".into()))?;
             let retained = crate::filesystem::NativePublicationReservationFailure::<MemoryAuthorityBackend, MemoryObjectBackend>
                 ::from_error(&failed).expect("whole denied cleanup owner and cause");

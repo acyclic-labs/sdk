@@ -121,7 +121,46 @@ impl Client {
         output: &str,
         request: &I,
     ) -> Result<O, Error> {
-        let result = self.exchange(route, input, output, request).await;
+        let result = async {
+            let descriptor = self
+                .descriptors
+                .get_message_by_name(input)
+                .ok_or(Error::MalformedResponse)?;
+            let message = DynamicMessage::decode(descriptor, request.encode_to_vec().as_slice())
+                .map_err(|_| Error::InvalidArgument)?;
+            let body = serde_json::to_vec(&message).map_err(|_| Error::InvalidArgument)?;
+            let mut response = self
+                .transport
+                .post(
+                    self.endpoint
+                        .join(route)
+                        .map_err(|_| Error::InvalidArgument)?,
+                )
+                .header(AUTHORIZATION, self.authorization.clone())
+                .header("content-type", "application/json")
+                .body(body)
+                .send()
+                .await?;
+            let status = response.status();
+            #[cfg(not(target_arch = "wasm32"))]
+            tracing::Span::current().record("http.status", status.as_u16());
+            let bytes = acyclic_workers::http::response_body(&mut response, self.maximum)
+                .await?.ok_or(Error::ResponseTooLarge)?;
+            if !status.is_success() {
+                let detail = self
+                    .decode::<wire::Error>("acyclic.actors.v1.Error", &bytes)
+                    .ok()
+                    .filter(|detail| {
+                        wire::ErrorCode::try_from(detail.code)
+                            .is_ok_and(|code| code != wire::ErrorCode::Unspecified)
+                    });
+                return Err(Error::Service {
+                    status: status.as_u16(),
+                    detail,
+                });
+            }
+            self.decode(output, &bytes)
+        }.await;
         #[cfg(not(target_arch = "wasm32"))]
         {
             let span = tracing::Span::current();
@@ -133,53 +172,6 @@ impl Client {
             };
         }
         result
-    }
-
-    async fn exchange<I: Message, O: Message + Default>(
-        &self,
-        route: &str,
-        input: &str,
-        output: &str,
-        request: &I,
-    ) -> Result<O, Error> {
-        let descriptor = self
-            .descriptors
-            .get_message_by_name(input)
-            .ok_or(Error::MalformedResponse)?;
-        let message = DynamicMessage::decode(descriptor, request.encode_to_vec().as_slice())
-            .map_err(|_| Error::InvalidArgument)?;
-        let body = serde_json::to_vec(&message).map_err(|_| Error::InvalidArgument)?;
-        let mut response = self
-            .transport
-            .post(
-                self.endpoint
-                    .join(route)
-                    .map_err(|_| Error::InvalidArgument)?,
-            )
-            .header(AUTHORIZATION, self.authorization.clone())
-            .header("content-type", "application/json")
-            .body(body)
-            .send()
-            .await?;
-        let status = response.status();
-        #[cfg(not(target_arch = "wasm32"))]
-        tracing::Span::current().record("http.status", status.as_u16());
-        let bytes = acyclic_workers::http::response_body(&mut response, self.maximum)
-            .await?.ok_or(Error::ResponseTooLarge)?;
-        if !status.is_success() {
-            let detail = self
-                .decode::<wire::Error>("acyclic.actors.v1.Error", &bytes)
-                .ok()
-                .filter(|detail| {
-                    wire::ErrorCode::try_from(detail.code)
-                        .is_ok_and(|code| code != wire::ErrorCode::Unspecified)
-                });
-            return Err(Error::Service {
-                status: status.as_u16(),
-                detail,
-            });
-        }
-        self.decode(output, &bytes)
     }
 
     fn decode<O: Message + Default>(&self, name: &str, bytes: &[u8]) -> Result<O, Error> {

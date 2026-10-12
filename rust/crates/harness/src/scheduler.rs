@@ -606,62 +606,31 @@ impl Scheduler {
         Ok(())
     }
 
-    pub(crate) fn operation_ready_for(
-        &self,
-        operation_id: OperationId,
-        capacity: &ResourceSnapshot,
-        labels: &BTreeMap<String, String>,
-        owner: Option<&Authority>,
-    ) -> bool {
-        self.operations
-            .get(&operation_id)
-            .is_some_and(|operation| self.ready_operation(operation, capacity, labels, owner))
-    }
-
-    fn ready_operation(
-        &self,
-        operation: &OperationState,
-        capacity: &ResourceSnapshot,
-        labels: &BTreeMap<String, String>,
-        owner: Option<&Authority>,
+    pub(crate) fn is_ready(
+        &self, operation: &OperationState, capacity: &ResourceSnapshot,
+        labels: &BTreeMap<String, String>, owner: Option<&Authority>,
     ) -> bool {
         owner.is_none_or(|owner| operation.spec.owner.authority() == owner)
-            && self.resources_ready(operation, capacity, labels)
-            && self
-                .require_session_capacity(operation.spec.operation_id, &mut None)
-                .is_ok()
+            && matches!(operation.phase, OperationPhase::WaitingForDependencies | OperationPhase::WaitingForCapacity)
+            && !operation.cancellation_requested
+            && self.dependencies_succeeded(operation)
+            && operation.spec.placement.iter().all(|(key, value)| labels.get(key) == Some(value))
+            && operation.spec.resources.0.iter().all(|(resource, requested)| {
+                let admitted = operation.reservation.as_ref()
+                    .and_then(|reservation| reservation.admitted.0.get(resource)).copied().unwrap_or(0);
+                requested.saturating_sub(admitted) <= capacity.0.get(resource).copied().unwrap_or(0)
+            })
+            && self.require_session_capacity(operation.spec.operation_id, &mut None).is_ok()
     }
 
     /// Iterates placement- and owner-matched operations that can acquire capacity.
     pub fn ready<'a>(
-        &'a self,
-        capacity: &'a ResourceSnapshot,
-        labels: &'a BTreeMap<String, String>,
-        owner: Option<&'a Authority>,
+        &'a self, capacity: &'a ResourceSnapshot,
+        labels: &'a BTreeMap<String, String>, owner: Option<&'a Authority>,
     ) -> impl Iterator<Item = OperationId> + 'a {
-        self.operations
-            .values()
-            .filter(move |operation| self.ready_operation(operation, capacity, labels, owner))
+        self.operations.values()
+            .filter(move |operation| self.is_ready(operation, capacity, labels, owner))
             .map(|operation| operation.spec.operation_id)
-    }
-
-    fn resources_ready(
-        &self,
-        operation: &OperationState,
-        capacity: &ResourceSnapshot,
-        labels: &BTreeMap<String, String>,
-    ) -> bool {
-        matches!(
-            operation.phase,
-            OperationPhase::WaitingForDependencies | OperationPhase::WaitingForCapacity
-        ) && !operation.cancellation_requested
-            && self.dependencies_succeeded(operation)
-            && operation
-                .spec
-                .placement
-                .iter()
-                .all(|(key, value)| labels.get(key) == Some(value))
-            && remaining_resources_fit(operation, capacity)
     }
 
     /// Subtracts held placement resources on the optional observer.
@@ -1711,23 +1680,6 @@ impl Scheduler {
         }
         Ok(false)
     }
-}
-
-fn remaining_resources_fit(operation: &OperationState, capacity: &ResourceSnapshot) -> bool {
-    operation
-        .spec
-        .resources
-        .0
-        .iter()
-        .all(|(resource, requested)| {
-            let admitted = operation
-                .reservation
-                .as_ref()
-                .and_then(|reservation| reservation.admitted.0.get(resource))
-                .copied()
-                .unwrap_or(0);
-            requested.saturating_sub(admitted) <= capacity.0.get(resource).copied().unwrap_or(0)
-        })
 }
 
 /// Deterministic output of join/race/quorum/reduce inspection.

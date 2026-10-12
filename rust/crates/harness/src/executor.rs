@@ -870,25 +870,16 @@ fn stock_context_prefix(
 ) -> Result<crate::context::Context> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io {
-        let work = io.original_native_work().ok_or_else(|| {
+        io.original_native_work().ok_or_else(|| {
             stock_boundary(io.into(), crate::wire::ErrorCode::Unsupported, "stock summary prefix requires original native work")
         })?;
-        let (prefix, custody) = crate::context::clone_context_prefix_native(context, through, work)?;
-        io.absorb_native_custody(custody)?;
-        return Ok(prefix);
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     if io.is_some() {
         return Err(stock_boundary(io.into(), crate::wire::ErrorCode::Unsupported, "native stock summary prefix is unavailable"));
     }
-    Ok(crate::context::Context {
-        messages: context.messages.get(..through)
-            .ok_or_else(|| stock_boundary(io.into(), crate::wire::ErrorCode::Invalid, "summary prefix exceeds source projection"))?
-            .to_vec(),
-        metadata: context.metadata.clone(),
-        current_input_index: context.current_input_index
-            .filter(|index| (*index as usize) < through),
-    })
+    with_history_io(io, |work|
+        crate::context::clone_context_prefix(context, through, work).map(|(prefix, _)| prefix))
 }
 
 fn stock_json_bound<T: Serialize>(
@@ -1286,7 +1277,7 @@ impl StockExecution<'_> {
         }
         for invocation in calls {
             let projection = completed_tool_projection(
-                journal, &records, step, &invocation, &request.tools, Some(self.stock.limits), self.io(),
+                journal, &records, step, &invocation, &request.tools, self.stock.limits, self.io(),
             ).await?;
             stock_vec_push(&mut request.messages,
                 ModelMessage {
@@ -2567,7 +2558,7 @@ impl StockExecution<'_> {
             let result = load_json::<ToolResult>(journal, completed.0, self.io()).await?.into_retained();
             crate::contract::validate_json_schema_value(&tool.definition.output_schema, &result.value, "tool output", self.io())?;
             let projection = load_json::<Value>(journal, completed.1, self.io()).await?.into_retained();
-            stock_projection_content(&tool.definition, &projection, self.stock.limits, self.io())?
+            tool.definition.validate_projection(&projection, self.stock.limits, self.io())?
         } else {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let Some(progress) = self.settle_native_tool_policy(
@@ -3002,12 +2993,8 @@ impl Executor for StockExecutor {
 pub(crate) async fn completed_tool_projection(
     journal: &dyn ExecutionJournal, records: &[ExecutionRecord], step: u32,
     expected: &ToolInvocation, tools: &[crate::tool::ToolDefinition],
-    limits: Option<Limits>, io: Option<&PreparationIo>,
+    limits: Limits, io: Option<&PreparationIo>,
 ) -> Result<crate::model::ToolResultContent> {
-    if stock_is_native(io) && limits.is_none() {
-        return Err(stock_boundary(io, crate::wire::ErrorCode::Invalid,
-            "native tool projection requires its original limits"));
-    }
     let invocation = records
         .iter()
         .find_map(|record| match &record.event {
@@ -3041,10 +3028,7 @@ pub(crate) async fn completed_tool_projection(
     let result = load_json::<ToolResult>(journal, result, io).await?.into_retained();
     let projection = load_json::<Value>(journal, projection, io).await?.into_retained();
     crate::contract::validate_json_schema_value(&definition.output_schema, &result.value, "tool output", io)?;
-    match limits {
-        Some(limits) => stock_projection_content(definition, &projection, limits, io),
-        None => definition.validate_projection(&projection, Limits::default(), io),
-    }
+    definition.validate_projection(&projection, limits, io)
 }
 
 /// Validated retained model artifacts without provider dispatch.
@@ -3791,7 +3775,7 @@ pub(crate) fn decode_json<'a, T: PreparationRecord>(
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         {
-            let parsed = io.decode_preparation::<Value>(bytes, crate::wire::ErrorCode::Storage)?;
+            let parsed = io.decode(std::marker::PhantomData::<Value>, bytes, crate::wire::ErrorCode::Storage)?;
             let _canonical_hold;
             let canonical = io.encode(&parsed.0, bytes.len() as u64, true)?;
             _canonical_hold = io.guard_bytes(&canonical)?;
@@ -3800,7 +3784,7 @@ pub(crate) fn decode_json<'a, T: PreparationRecord>(
                     "execution journal JSON is not canonical"));
             }
         }
-        let (value, hold) = io.decode_preparation::<T>(bytes, crate::wire::ErrorCode::Storage)?;
+        let (value, hold) = io.decode(std::marker::PhantomData::<T>, bytes, crate::wire::ErrorCode::Storage)?;
         return Ok(LoadedPreparation { value, hold: Some(hold) });
     }
     #[cfg(not(feature = "filesystem"))]
@@ -6601,7 +6585,7 @@ mod tests {
                 )
                 .await?;
             let records = journal.replay(operation, 0, 64).await?;
-            let retained = completed_tool_projection(&journal, &records, 0, &invocation, std::slice::from_ref(&definition), None, None)
+            let retained = completed_tool_projection(&journal, &records, 0, &invocation, std::slice::from_ref(&definition), Limits::default(), None)
             .await;
             if accepted {
                 assert_eq!(
@@ -6746,11 +6730,41 @@ mod tests {
                     Ok(())
                 })
             }
+        }
+
+        impl crate::runtime::TaskStateProvider for DispatchObserver {
             fn outcome<'a>(&'a self, _: TaskId) -> BoxFuture<'a, Result<Option<Outcome<Value>>>> {
                 Box::pin(async { Err(Error::Unsupported("test observer".into())) })
             }
             fn cancel<'a>(&'a self, _: TaskId) -> BoxFuture<'a, Result<()>> {
                 Box::pin(async { Err(Error::Unsupported("test observer".into())) })
+            }
+
+            fn policy_identity(&self) -> Option<ComponentIdentity> {
+                None
+            }
+
+            fn observe_admission<'a>(
+                &'a self,
+                _task_id: TaskId,
+            ) -> BoxFuture<'a, Result<crate::runtime::TaskAdmissionRecord>> {
+                Box::pin(async {
+                    Err(Error::Unsupported(
+                        "full durable admission observation is not bound".into(),
+                    ))
+                })
+            }
+
+            fn resume_scope<'a>(
+                &'a self,
+                _task_id: TaskId,
+                _operation_id: OperationId,
+            ) -> BoxFuture<'a, Result<RuntimeScope>> {
+                Box::pin(async {
+                    Err(Error::Unsupported(
+                        "durable task context authentication is not bound".into(),
+                    ))
+                })
             }
         }
         let host = Arc::new(DispatchObserver {

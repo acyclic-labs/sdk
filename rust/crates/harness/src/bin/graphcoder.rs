@@ -436,7 +436,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             let fork: acyclic_harness::fork::ForkRequest =
                 serde_json::from_value(request.request.payload.clone())
                     .map_err(|error| Error::Invalid(format!("invalid exact fork request: {error}")))?;
-            fork.validate()?;
+            fork.validate(&mut None)?;
             writeln!(output, "preparation-attempt operation={} caller-task={} new-child-agent={} child-admission-operation={} fork-operation={}",
                 request.operation, request.parent, fork.child_agent,
                 request.request.child.operation_id, fork.operation_id)

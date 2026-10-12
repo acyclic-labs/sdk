@@ -11,7 +11,7 @@ use acyclic_harness::{
 };
 use acyclic_stream::{LocalStream};
 
-type Runtime = pi_runtime::PiTaskRuntime<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
+type Runtime = pi_runtime::PiTaskRuntime<LocalStream>;
 type Filesystem = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
 type RootProvider = pi_root_provider::PiRootProvider<LocalStream>;
 
@@ -123,7 +123,7 @@ impl<'a> PiWorkflowHost<'a> {
         let owner = pi_owner::PiOwnerConfig::load_with_native_work(&self.resources.private_state_root, self.directory, work)?;
         self.runtime.verify_owner_with_native_work(&owner, work)?;
         let effect = acyclic_harness::effect_host::task_effect_id_with_native_work(
-            owner.policy().root_task, pi_root_inputs::preparation_operation_with_native_work(owner.policy().root_task, work)?, work,
+            owner.policy().root_task, pi_root_inputs::preparation_operation(owner.policy().root_task, work)?, work,
         )?;
         provider.observe_allocation_with_native_work(
             acyclic_harness::EffectAttemptId::from_bytes(effect.into_bytes()), work,
@@ -259,10 +259,11 @@ impl<'a> PiWorkflowHost<'a> {
                 reason: "Pi Root controls require their original Root context",
             });
         }
-        let preparation = pi_root_inputs::PiRootPreparation::load(
-                &self.resources.private_state_root, self.directory, &self.runtime, self.retained,
-                Some(Arc::clone(&context)), work,
-            ).await?;
+        let PluginTaskBinding::Pi(binding) = &self.retained.task_binding else {
+            return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid,
+                reason: "Pi root preparation requires a Pi state binding" });
+        };
+        let preparation = pi_root_inputs::PiRootPreparation::load(&self.resources.private_state_root, self.directory, &self.runtime, &self.filesystem, binding, pi_recovery::PiTaskOrigin::RootState(self.retained), Some(Arc::clone(&context)), work).await?;
         let owner = self.runtime.runtime.task_host().journal_owner_with_native_work(
             preparation.request.binding.task_id, fence, work).await?;
         owner.verify_with_native_work(false, work).await?;
@@ -284,10 +285,11 @@ impl<'a> PiWorkflowHost<'a> {
                 reason: "Pi root effect belongs to another task",
             });
         }
-        let preparation = pi_root_inputs::PiRootPreparation::load(
-                &self.resources.private_state_root, self.directory, &self.runtime, self.retained,
-                Some(Arc::clone(&context)), work,
-            ).await?;
+        let PluginTaskBinding::Pi(binding) = &self.retained.task_binding else {
+            return Err(acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid,
+                reason: "Pi root preparation requires a Pi state binding" });
+        };
+        let preparation = pi_root_inputs::PiRootPreparation::load(&self.resources.private_state_root, self.directory, &self.runtime, &self.filesystem, binding, pi_recovery::PiTaskOrigin::RootState(self.retained), Some(Arc::clone(&context)), work).await?;
         let journal_owner = self.runtime.runtime.task_host().journal_owner_with_native_work(
             preparation.request.binding.task_id, fence, work).await?;
         journal_owner.verify_with_native_work(false, work).await?;
@@ -338,7 +340,7 @@ impl<'a> PiWorkflowHost<'a> {
             .into_native_shared(work)?;
         self.runtime.verify_owner_with_native_work(&owner, work)?;
         if task == owner.policy().root_task
-            && command.operation_id == pi_root_inputs::preparation_operation_with_native_work(task, work)?
+            && command.operation_id == pi_root_inputs::preparation_operation(task, work)?
         {
             let effects = self.root_effects(
                 Arc::clone(&context), &fence, &command, &payload, owner, work,

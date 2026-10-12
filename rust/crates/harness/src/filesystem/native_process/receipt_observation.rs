@@ -123,7 +123,7 @@ fn decode(bytes: &[u8], io: &super::super::PreparationIo,
     custody: &mut NativeAllocation,
 ) -> Result<Receipt> {
     if bytes.len() > acyclic_stream::MAX_RECORD_BYTES { return Err(receipt_error("native receipt exceeds Stream limit")); }
-    let decoded = io.decode_preparation::<Receipt>(bytes, crate::wire::ErrorCode::Storage)?;
+    let decoded = io.decode(std::marker::PhantomData::<Receipt>, bytes, crate::wire::ErrorCode::Storage)?;
     let (receipt, mut payload) = crate::filesystem::native_decoded(decoded)?;
     payload.substitute(receipt_bytes(&receipt)?)?;
     custody.absorb(&mut payload)?;
@@ -214,7 +214,7 @@ pub(super) async fn authenticate_core_launch<P: StreamProvider>(
     check(work)
 }
 
-impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
+impl<P: StreamProvider> NativeProcessProvider<P> {
     pub(super) async fn request(
         &self, work: &NativeMaterializationWork,
     ) -> Result<(Cow<'_, NativeProcessRequest>, Option<NativeAllocation>)> {

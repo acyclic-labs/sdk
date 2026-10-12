@@ -3,7 +3,7 @@ use crate::foundation::VolumeId;
 use crate::kernel::{
     BlobChunkRef, BlobNode, BlobPage, CheckoutDependencies, Dependency, Extent, ExtentPage,
     FileKind, FileMetadata, FileTablePage, InlineFileData, LogicalName, MetadataField,
-    NameEncoding, RebaseDecision, TreeEntry, TreePage, classify_rebase, encode_blob_page,
+    NameEncoding, RebaseDecision, TreeEntry, TreePage, classify_rebase_async, encode_blob_page,
     encode_extent_page, encode_file_metadata, encode_file_table_page, encode_generation_root, encode_tree_page,
 };
 use crate::memory::MemoryObjectStore;
@@ -344,34 +344,37 @@ fn sparse_probe_fixture(
     })
 }
 
-#[test]
-fn immutable_summaries_are_cached_without_becoming_authority()
+#[tokio::test]
+async fn immutable_summaries_are_cached_without_becoming_authority()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, file_id, metadata) = fixture(&store, None)?;
     let probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
-    let first = probe.probe(
+    let first = probe.probe_async(
         generation,
         &DependencyRegion::Metadata(file_id),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(first.value, DependencyState::Present(metadata.digest));
     assert_eq!(first.work.backend_read_operations, 2);
-    let cached = probe.probe(
+    let cached = probe.probe_async(
         generation,
         &DependencyRegion::Metadata(file_id),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(cached.value, first.value);
-    assert_eq!(cached.work, WorkCounters::default());
-    let absent = probe.probe(
+    assert_eq!(cached.work.backend_read_operations, 0);
+    let absent = probe.probe_async(
         generation,
         &DependencyRegion::DirectoryName {
             directory_id: file_id,
             name: LogicalName::new(NameEncoding::Utf8, b"absent".to_vec(), 255)?,
         },
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(absent.value, DependencyState::Absent);
     assert_eq!(absent.work.page_reads, 1);
     assert_eq!(absent.work.backend_read_operations, 1);
@@ -413,7 +416,7 @@ fn immutable_summaries_are_cached_without_becoming_authority()
 }
 
 #[test]
-fn poisoned_summary_caches_fail_closed_for_sync_and_async_probes()
+fn poisoned_summary_caches_fail_closed()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, file_id, _) = fixture(&store, None)?;
@@ -421,24 +424,11 @@ fn poisoned_summary_caches_fail_closed_for_sync_and_async_probes()
 
     let generation_probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
     let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _guard = generation_probe
-            .generations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _async_guard = generation_probe.async_generations.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         std::panic::resume_unwind(Box::new("poison generation summary cache"));
     }));
     assert!(poisoned.is_err());
-    let failure = generation_probe
-        .probe(generation, &region, WorkBudget::UNBOUNDED)
-        .err()
-        .ok_or("poisoned synchronous generation cache probe succeeded")?;
-    assert!(matches!(
-        failure.error,
-        AuthenticatedProbeError::CachePoisoned
-    ));
-    assert_eq!(*failure.work, WorkCounters::default());
     let cancellation = CancellationToken::new();
     let failure = crate::async_storage::poll_ready(generation_probe.probe_async(
         generation,
@@ -457,24 +447,11 @@ fn poisoned_summary_caches_fail_closed_for_sync_and_async_probes()
 
     let record_probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
     let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _guard = record_probe
-            .records
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let _async_guard = record_probe.async_records.lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         std::panic::resume_unwind(Box::new("poison record summary cache"));
     }));
     assert!(poisoned.is_err());
-    let failure = record_probe
-        .probe(generation, &region, WorkBudget::UNBOUNDED)
-        .err()
-        .ok_or("poisoned synchronous record cache probe succeeded")?;
-    assert!(matches!(
-        failure.error,
-        AuthenticatedProbeError::CachePoisoned
-    ));
-    assert_eq!(*failure.work, WorkCounters::default());
     let failure = crate::async_storage::poll_ready(record_probe.probe_async(
         generation,
         &region,
@@ -492,8 +469,8 @@ fn poisoned_summary_caches_fail_closed_for_sync_and_async_probes()
     Ok(())
 }
 
-#[test]
-fn inserted_directory_entry_conflicts_with_an_observed_empty_page()
+#[tokio::test]
+async fn inserted_directory_entry_conflicts_with_an_observed_empty_page()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (base, directory_id, _) = fixture(&store, None)?;
@@ -504,7 +481,7 @@ fn inserted_directory_entry_conflicts_with_an_observed_empty_page()
         after: None,
         maximum_entries: 8,
     };
-    let captured = probe.probe(base, &region, WorkBudget::UNBOUNDED)?;
+    let captured = probe.probe_async(base, &region, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     let dependencies = CheckoutDependencies::new(
         [Dependency {
             region: region.clone(),
@@ -513,14 +490,15 @@ fn inserted_directory_entry_conflicts_with_an_observed_empty_page()
         [],
         1,
     )?;
-    let decision = classify_rebase(
+    let decision = classify_rebase_async(
         &probe,
         base,
         candidate,
         &dependencies,
         1,
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert!(matches!(
         decision.decision,
         RebaseDecision::Conflicted {
@@ -529,81 +507,43 @@ fn inserted_directory_entry_conflicts_with_an_observed_empty_page()
         } if conflicts.len() == 1 && conflicts[0].region == region
     ));
 
-    let async_probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
-    let cancellation = CancellationToken::new();
-    let mut future = std::pin::pin!(super::super::classify_rebase_async(
-        &async_probe,
-        base,
-        candidate,
-        &dependencies,
-        1,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    let waker = Waker::noop();
-    let mut context = Context::from_waker(waker);
-    let Poll::Ready(asynchronous) = future.as_mut().poll(&mut context) else {
-        return Err("memory-backed asynchronous rebase remained pending".into());
-    };
-    let asynchronous = asynchronous?;
-    assert_eq!(asynchronous.decision, decision.decision);
-    assert!(asynchronous.work.allocation_operations > decision.work.allocation_operations);
-    let mut semantic_work = asynchronous.work;
-    semantic_work.allocation_operations = decision.work.allocation_operations;
-    semantic_work.peak_allocation_bytes = decision.work.peak_allocation_bytes;
-    semantic_work.items_examined = decision.work.items_examined;
-    semantic_work.bytes_copied = decision.work.bytes_copied;
-    assert_eq!(semantic_work, decision.work);
     Ok(())
 }
 
-#[test]
-fn content_digest_is_layout_independent_and_hash_budget_is_exact()
+#[tokio::test]
+async fn content_digest_is_layout_independent_and_hash_budget_is_exact()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
-    let data = InlineFileData::new(&[0; 8])?;
+    let (_, file_id, metadata) = fixture(&store, None)?;
     let domain = b"acyclic-fs-dependency-content-range-v1\0";
     let hash_bytes = u64::try_from(domain.len())?.saturating_add(16);
     let exact_budget = WorkBudget {
         bytes_hashed: hash_bytes,
         ..WorkBudget::UNBOUNDED
     };
-    let inline = AuthenticatedGenerationProbe::<MemoryObjectStore>::inline_content_state(
-        data,
-        0,
-        8,
-        exact_budget,
-        WorkCounters::default(),
-    )?;
-    let sparse = probe.hash_content_spans(
-        vec![super::super::ExtentSlice {
+    let inline = capture_content_range_bytes(&[0; 8], 8, exact_budget)?;
+    let extents = put(&store, ObjectKind::ExtentPage, encode_extent_page(
+        &ExtentPage::Leaf(vec![Extent {
             offset: 0,
             length: 8,
-            source_end: 8,
             kind: ExtentKind::Hole,
-        }],
-        8,
-        WorkCounters {
-            bytes_hashed: hash_bytes,
-            ..WorkCounters::default()
-        },
-        exact_budget,
-        WorkCounters::default(),
-    )?;
+        }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed,
+    )?)?;
+    let sparse = probe.capture_record_async(
+        Some(FileRecord { file_id, kind: FileKind::Regular, link_count: 1, metadata,
+            payload: FilePayload::Regular { logical_bytes: 8, extents } }),
+        &DependencyRegion::ContentRange { file_id, offset: 0, length: 8 },
+        WorkBudget::UNBOUNDED, &CancellationToken::new(),
+    ).await?;
     assert_eq!(inline.value, sparse.value);
     assert_eq!(inline.work.bytes_hashed, hash_bytes);
-    assert_eq!(sparse.work.bytes_hashed, hash_bytes);
-
-    let failure = AuthenticatedGenerationProbe::<MemoryObjectStore>::inline_content_state(
-        data,
-        0,
-        8,
+    let failure = capture_content_range_bytes(
+        &[0; 8], 8,
         WorkBudget {
             bytes_hashed: hash_bytes - 1,
             ..WorkBudget::UNBOUNDED
         },
-        WorkCounters::default(),
     )
     .err()
     .ok_or("underbudgeted inline hash unexpectedly succeeded")?;
@@ -683,8 +623,8 @@ fn canonical_content_range_surface_matches_golden_vector_and_fails_before_work()
     Ok(())
 }
 
-#[test]
-fn probe_limits_reject_oversized_dependencies_before_backend_work()
+#[tokio::test]
+async fn probe_limits_reject_oversized_dependencies_before_backend_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let probe = AuthenticatedGenerationProbe::new(
@@ -698,7 +638,7 @@ fn probe_limits_reject_oversized_dependencies_before_backend_work()
     let generation = GenerationId::new(Digest::from_bytes([1; 32]));
     let file_id = FileId::from_bytes([2; 16]);
     let content = probe
-        .probe(
+        .probe_async(
             generation,
             &DependencyRegion::ContentRange {
                 file_id,
@@ -706,7 +646,9 @@ fn probe_limits_reject_oversized_dependencies_before_backend_work()
                 length: 9,
             },
             WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
         )
+        .await
         .err()
         .ok_or("oversized content dependency unexpectedly succeeded")?;
     assert!(matches!(
@@ -716,7 +658,7 @@ fn probe_limits_reject_oversized_dependencies_before_backend_work()
     assert_eq!(*content.work, WorkCounters::default());
 
     let directory = probe
-        .probe(
+        .probe_async(
             generation,
             &DependencyRegion::DirectoryRange {
                 directory_id: file_id,
@@ -724,7 +666,9 @@ fn probe_limits_reject_oversized_dependencies_before_backend_work()
                 maximum_entries: 3,
             },
             WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
         )
+        .await
         .err()
         .ok_or("oversized directory dependency unexpectedly succeeded")?;
     assert!(matches!(
@@ -734,7 +678,7 @@ fn probe_limits_reject_oversized_dependencies_before_backend_work()
     assert_eq!(*directory.work, WorkCounters::default());
 
     let empty = probe
-        .probe(
+        .probe_async(
             generation,
             &DependencyRegion::ContentRange {
                 file_id,
@@ -742,7 +686,9 @@ fn probe_limits_reject_oversized_dependencies_before_backend_work()
                 length: 0,
             },
             WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
         )
+        .await
         .err()
         .ok_or("empty content dependency unexpectedly succeeded")?;
     assert!(matches!(
@@ -752,7 +698,7 @@ fn probe_limits_reject_oversized_dependencies_before_backend_work()
     assert_eq!(*empty.work, WorkCounters::default());
 
     let overflow = probe
-        .probe(
+        .probe_async(
             generation,
             &DependencyRegion::ContentRange {
                 file_id,
@@ -760,7 +706,9 @@ fn probe_limits_reject_oversized_dependencies_before_backend_work()
                 length: 1,
             },
             WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
         )
+        .await
         .err()
         .ok_or("overflowing content dependency unexpectedly succeeded")?;
     assert!(matches!(
@@ -770,7 +718,7 @@ fn probe_limits_reject_oversized_dependencies_before_backend_work()
     assert_eq!(*overflow.work, WorkCounters::default());
 
     let zero_page = probe
-        .probe(
+        .probe_async(
             generation,
             &DependencyRegion::DirectoryRange {
                 directory_id: file_id,
@@ -778,7 +726,9 @@ fn probe_limits_reject_oversized_dependencies_before_backend_work()
                 maximum_entries: 0,
             },
             WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
         )
+        .await
         .err()
         .ok_or("zero-entry directory dependency unexpectedly succeeded")?;
     assert!(matches!(
@@ -830,8 +780,8 @@ fn every_zero_probe_bound_is_rejected_before_cache_or_backend_access() {
     }
 }
 
-#[test]
-fn bounded_summary_cache_eviction_reauthenticates_without_changing_state()
+#[tokio::test]
+async fn bounded_summary_cache_eviction_reauthenticates_without_changing_state()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation_a, file_id, metadata) = fixture(&store, None)?;
@@ -845,34 +795,35 @@ fn bounded_summary_cache_eviction_reauthenticates_without_changing_state()
         },
     )?;
     let region = DependencyRegion::Metadata(file_id);
-    let first = probe.probe(generation_a, &region, WorkBudget::UNBOUNDED)?;
+    let first = probe.probe_async(generation_a, &region, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     assert_eq!(first.value, DependencyState::Present(metadata.digest));
     assert!(first.work.backend_read_operations > 0);
-    let cached = probe.probe(generation_a, &region, WorkBudget::UNBOUNDED)?;
+    let cached = probe.probe_async(generation_a, &region, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     assert_eq!(cached.value, first.value);
-    assert_eq!(cached.work, WorkCounters::default());
-    let other = probe.probe(generation_b, &region, WorkBudget::UNBOUNDED)?;
+    assert_eq!(cached.work.backend_read_operations, 0);
+    let other = probe.probe_async(generation_b, &region, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     assert_eq!(other.value, first.value);
     assert!(other.work.backend_read_operations > 0);
-    let reauthenticated = probe.probe(generation_a, &region, WorkBudget::UNBOUNDED)?;
+    let reauthenticated = probe.probe_async(generation_a, &region, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     assert_eq!(reauthenticated.value, first.value);
     assert!(reauthenticated.work.backend_read_operations > 0);
     Ok(())
 }
 
-#[test]
-fn non_regular_dependency_regions_use_authenticated_record_state()
+#[tokio::test]
+async fn non_regular_dependency_regions_use_authenticated_record_state()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, file_ids) = non_regular_fixture(&store)?;
     let name = LogicalName::new(NameEncoding::Utf8, b"not-a-directory-entry".to_vec(), 255)?;
     for file_id in file_ids {
         let baseline_probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
-        let baseline = baseline_probe.probe(
+        let baseline = baseline_probe.probe_async(
             generation,
             &DependencyRegion::FileRecord(file_id),
             WorkBudget::UNBOUNDED,
-        )?;
+            &CancellationToken::new(),
+        ).await?;
         let regions = [
             DependencyRegion::FileLength(file_id),
             DependencyRegion::ContentRange {
@@ -896,12 +847,6 @@ fn non_regular_dependency_regions_use_authenticated_record_state()
             },
         ];
         for region in regions {
-            let synchronous_probe =
-                AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
-            let synchronous =
-                synchronous_probe.probe(generation, &region, WorkBudget::UNBOUNDED)?;
-            assert_eq!(synchronous.value, baseline.value);
-
             let asynchronous_probe =
                 AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
             let asynchronous = crate::async_storage::poll_ready(asynchronous_probe.probe_async(
@@ -911,39 +856,41 @@ fn non_regular_dependency_regions_use_authenticated_record_state()
                 &CancellationToken::new(),
             ))
             .ok_or("memory-backed dependency probe remained pending")??;
-            assert_eq!(asynchronous.value, synchronous.value);
+            assert_eq!(asynchronous.value, baseline.value);
         }
     }
     Ok(())
 }
 
-#[test]
-fn inline_content_probe_rejects_overflow_and_eof_before_hashing()
+#[tokio::test]
+async fn inline_content_probe_rejects_overflow_and_eof_before_hashing()
 -> Result<(), Box<dyn std::error::Error>> {
-    let data = InlineFileData::new(b"abcdefgh")?;
+    let store = MemoryObjectStore::default();
+    let probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
+    let file_id = FileId::from_bytes([1; 16]);
+    let record = Some(FileRecord {
+        file_id, kind: FileKind::Regular, link_count: 1,
+        metadata: ObjectId { kind: ObjectKind::Metadata, digest: Digest::from_bytes([0; 32]) },
+        payload: FilePayload::InlineRegular(InlineFileData::new(b"abcdefgh")?),
+    });
     for (offset, length) in [(u64::MAX, 1), (7, 2)] {
-        let failure = AuthenticatedGenerationProbe::<MemoryObjectStore>::inline_content_state(
-            data,
-            offset,
-            length,
-            WorkBudget::UNBOUNDED,
-            WorkCounters::default(),
-        )
+        let failure = probe.capture_record_async(
+            record, &DependencyRegion::ContentRange { file_id, offset, length },
+            WorkBudget::UNBOUNDED, &CancellationToken::new(),
+        ).await
         .err()
         .ok_or("invalid inline content range unexpectedly succeeded")?;
-        assert!(matches!(
-            failure.error,
-            AuthenticatedProbeError::Extent(ExtentReadError::InvalidRange)
-        ));
+        if offset == u64::MAX {
+            assert!(matches!(failure.error, AuthenticatedProbeError::InvalidDependency(DependencyError::RangeOverflow)));
+        } else {
+            assert!(matches!(failure.error, AuthenticatedProbeError::Extent(ExtentReadError::InvalidRange)));
+        }
         assert_eq!(*failure.work, WorkCounters::default());
     }
-    let exact = AuthenticatedGenerationProbe::<MemoryObjectStore>::inline_content_state(
-        data,
-        4,
-        4,
-        WorkBudget::UNBOUNDED,
-        WorkCounters::default(),
-    )?;
+    let exact = probe.capture_record_async(
+        record, &DependencyRegion::ContentRange { file_id, offset: 4, length: 4 },
+        WorkBudget::UNBOUNDED, &CancellationToken::new(),
+    ).await?;
     assert!(matches!(exact.value, DependencyState::Present(_)));
     assert_eq!(exact.work.backend_read_operations, 0);
     assert!(exact.work.bytes_hashed > 4);
@@ -951,7 +898,7 @@ fn inline_content_probe_rejects_overflow_and_eof_before_hashing()
 }
 
 #[test]
-fn every_sparse_dependency_region_has_identical_sync_and_async_evidence()
+fn every_sparse_dependency_region_preserves_ordinary_and_native_evidence()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let SparseProbeFixture {
@@ -1024,8 +971,6 @@ fn every_sparse_dependency_region_has_identical_sync_and_async_evidence()
     ];
     let mut page_states = Vec::new();
     for region in regions {
-        let synchronous_probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
-        let synchronous = synchronous_probe.probe(generation, &region, WorkBudget::UNBOUNDED)?;
         let asynchronous_probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
         let asynchronous = crate::async_storage::poll_ready(asynchronous_probe.probe_async(
             generation,
@@ -1034,7 +979,6 @@ fn every_sparse_dependency_region_has_identical_sync_and_async_evidence()
             &CancellationToken::new(),
         ))
         .ok_or("memory-backed sparse probe remained pending")??;
-        assert_eq!(asynchronous.value, synchronous.value);
         #[cfg(not(target_arch = "wasm32"))]
         {
             let cancellation = CancellationToken::new();
@@ -1054,7 +998,7 @@ fn every_sparse_dependency_region_has_identical_sync_and_async_evidence()
             assert_eq!(original.live_allocation_bytes(), baseline);
         }
         if matches!(region, DependencyRegion::DirectoryRange { .. }) {
-            page_states.push(synchronous.value);
+            page_states.push(asynchronous.value);
         }
     }
     assert_eq!(page_states.len(), 2);
@@ -1113,14 +1057,15 @@ fn bounded_batch_capture_reuses_generation_and_record_frontiers()
     Ok(())
 }
 
-#[test]
-fn authenticated_batch_admits_dependency_copy_before_output_push()
+#[tokio::test]
+async fn authenticated_batch_admits_dependency_copy_before_output_push()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, file_id, metadata) = fixture(&store, None)?;
     let probe = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
-    let (record, _) = probe.record(generation, file_id, WorkBudget::UNBOUNDED)?;
     let cancellation = CancellationToken::new();
+    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
+    let record = probe.record_with_accounting(generation, file_id, &mut accounting, &cancellation).await?;
     for budget in [
         WorkBudget { bytes_copied: 0, ..WorkBudget::UNBOUNDED },
         WorkBudget { items_returned: 0, ..WorkBudget::UNBOUNDED },
@@ -1270,15 +1215,15 @@ fn original_probe_denies_before_backend_and_retires_panic_temporaries()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn original_probe_generation_caches_preserve_dependency_conflicts()
+#[tokio::test]
+async fn original_probe_generation_caches_preserve_dependency_conflicts()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (base, directory_id, _) = fixture(&store, None)?;
     let (candidate, _, _) = fixture(&store, Some("phantom"))?;
     let region = DependencyRegion::DirectoryRange { directory_id, after: None, maximum_entries: 8 };
     let ordinary = AuthenticatedGenerationProbe::new(&store, ProbeLimits::default())?;
-    let expected = ordinary.probe(base, &region, WorkBudget::UNBOUNDED)?.value;
+    let expected = ordinary.probe_async(base, &region, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?.value;
     let dependencies = CheckoutDependencies::new([Dependency { region: region.clone(), expected }], [], 1)?;
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)

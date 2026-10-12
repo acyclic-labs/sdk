@@ -6,6 +6,7 @@
 )]
 
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs, LocalOptions};
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::context::ContextPipeline;
 use acyclic_harness::conversation::{
     ContentResidencyVerifier, Limits, VolumeClass, VolumeOperation, VolumeOwner, VolumeRef,

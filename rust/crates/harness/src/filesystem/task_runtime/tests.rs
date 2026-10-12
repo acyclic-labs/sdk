@@ -1,6 +1,7 @@
 //! Native controls exercise the ordinary admitted runtime and real journals.
 
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::{
     Admission, AgentId, Capabilities,
     conversation::{Limits, VolumeClass, VolumeOperation, VolumeOwner},
@@ -147,7 +148,7 @@ impl ResumableMachine for Machine {
             let encoded_hold;
             let encoded = io.encode(&state["command"], io.remaining()?.bytes_encoded, false)?;
             encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
-            let command = crate::filesystem::retain_decoded(io.decode_preparation::<WorkflowCommand>(&encoded, crate::wire::ErrorCode::Storage)?);
+            let command = crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<WorkflowCommand>, &encoded, crate::wire::ErrorCode::Storage)?);
             drop(encoded);
             drop(encoded_hold);
             command

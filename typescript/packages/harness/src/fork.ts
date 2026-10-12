@@ -7,7 +7,6 @@ import { NativeContracts } from "./native-contracts.js";
 import type { ResourceKind } from "./enums.js";
 export type { ResourceKind } from "./enums.js";
 import type { AgentId, Authority, OperationId, Scope, TaskId } from "./index.js";
-import { MAX_FORK_INHERITED_MESSAGES } from "./limits-contract.js";
 export {
   MAX_FORK_AGENTS,
   MAX_FORK_ATTACHMENT_MANIFEST_BYTES,
@@ -28,11 +27,6 @@ export interface ResourceRef<Kind extends ResourceKind = ResourceKind> {
   readonly provider: ResourceProvider<Kind>;
   readonly key: readonly number[];
   readonly version: string | null;
-}
-
-/** Validates and detaches a provider-owned immutable resource address in Rust. */
-export async function resourceRef<Kind extends ResourceKind>(value: ResourceRef<Kind>): Promise<ResourceRef<Kind>> {
-  return (await NativeContracts.create()).validate("resource_ref", value);
 }
 
 export type ResourceRevision =
@@ -193,24 +187,6 @@ export interface ForkSeed extends Omit<ForkRequest, "selections" | "preparation"
   /** Manifest bytes and listed members are independently read-authorized. */
   readonly attachment_manifests: readonly FileRef[];
 }
-
-/** Rust alone converts the complete capture report to its child-visible seed. */
-export async function forkSeed(report: ForkReport): Promise<ForkSeed> {
-  checkInheritedMessageLimit(report.inherited_through_sequence);
-  return (await NativeContracts.create()).forkSeed(report);
-}
-
-export async function validateForkRequest(request: ForkRequest): Promise<void> {
-  (await NativeContracts.create()).validate("fork_request", request);
-}
-
-export async function validateForkSeed(seed: ForkSeed): Promise<void> {
-  (await NativeContracts.create()).validate("fork_seed", seed);
-}
-export async function validateForkReport(report: ForkReport): Promise<void> {
-  checkInheritedMessageLimit(report.inherited_through_sequence);
-  (await NativeContracts.create()).validate("fork_report", report);
-}
 /** Pinned refs that the owning provider may authorize for an attached reader.
  * This is an access plan, not a bearer token or a byte-resolution grant. */
 export async function forkReadableReferences(seed: ForkSeed, reader: AgentId): Promise<readonly FileRef[]> {
@@ -240,10 +216,4 @@ export async function forkReadableReferences(seed: ForkSeed, reader: AgentId): P
     if (ownerRead || sharedRead || projectRead) refs.set(identity(manifest), manifest);
   }
   return Object.freeze([...refs.values()]);
-}
-
-function checkInheritedMessageLimit(sequence: bigint): void {
-  if (sequence > MAX_FORK_INHERITED_MESSAGES) {
-    throw new TypeError("inherited message limit exceeds protocol cap");
-  }
 }

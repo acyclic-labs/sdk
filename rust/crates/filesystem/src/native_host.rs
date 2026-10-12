@@ -1560,7 +1560,7 @@ impl HostRoot {
 
     pub(crate) fn create_file<W: crate::demand::SourceDemandReadWork>(&self, path: &Path, work: &mut W) -> Result<File, DemandError> {
         #[cfg(windows)]
-        { with_wide_path_with_work(path, work, |path, work| self.create_file_wide_measured(path, work)) }
+        { with_wide_path_with_work(path, work, |path, work| self.create_windows_file_wide_measured(path, false, false, work)) }
         #[cfg(unix)]
         {
             with_unix_parent_leaf(&self.directory, path, work, |parent, leaf, work| {
@@ -1934,6 +1934,7 @@ fn sync_windows_metadata_held_with_work<W: NativeHostWork>(
     use windows::Win32::Storage::FileSystem::{
         FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES, SYNCHRONIZE,
         FILE_ATTRIBUTE_READONLY, FILE_ATTRIBUTE_NORMAL, FILE_BASIC_INFO,
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_GENERIC_WRITE,
     };
     let file = open_windows_held_with_work(parent, name,
         FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
@@ -1946,7 +1947,7 @@ fn sync_windows_metadata_held_with_work<W: NativeHostWork>(
     }
     let current = query_windows_basic_info_with_work(&file, work)?;
     let writable = if current.FileAttributes & FILE_ATTRIBUTE_READONLY.0 == 0 {
-        reopen_windows_writable_with_work(&file, work)?
+        reopen_windows_file(&file, FILE_GENERIC_WRITE, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, work)?
     } else {
         // The reservation withholds a real write slot from all shared-meter clones.
         let restore = work.reserve_cleanup_write()?;
@@ -1961,7 +1962,7 @@ fn sync_windows_metadata_held_with_work<W: NativeHostWork>(
             ..Default::default()
         };
         let reopened = match set_windows_basic_info(&file, information) {
-            Ok(()) => reopen_windows_writable_with_work(&file, work),
+            Ok(()) => reopen_windows_file(&file, FILE_GENERIC_WRITE, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, work),
             Err(error) => Err(error.into()),
         };
         // ReOpenFile acts on this same pinned object, never its current path.
@@ -1986,19 +1987,21 @@ fn sync_windows_metadata_held_with_work<W: NativeHostWork>(
 }
 
 #[cfg(windows)]
-fn reopen_windows_writable_with_work<W: NativeHostWork>(file: &File, work: &mut W)
+fn reopen_windows_file<W: NativeHostWork>(file: &File,
+    access: windows::Win32::Storage::FileSystem::FILE_ACCESS_RIGHTS,
+    flags: windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES, work: &mut W)
     -> Result<File, W::Error> {
     use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _};
     use windows::Win32::Foundation::HANDLE;
     use windows::Win32::Storage::FileSystem::{
-        ReOpenFile, FILE_GENERIC_WRITE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-        FILE_SHARE_DELETE, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        ReOpenFile, FILE_SHARE_READ, FILE_SHARE_WRITE,
+        FILE_SHARE_DELETE,
     };
     work.attempt_io( WorkCounters { backend_read_operations: 1, ..WorkCounters::UNCHARGED }, || {
         // SAFETY: the live handle pins the same inode across rename/replacement.
-        let handle = unsafe { ReOpenFile(HANDLE(file.as_raw_handle()), FILE_GENERIC_WRITE.0,
+        let handle = unsafe { ReOpenFile(HANDLE(file.as_raw_handle()), access.0,
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
-            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT) }
+            flags) }
             .map_err(|error| io::Error::from_raw_os_error(error.code().0 & 0xffff))?;
         // SAFETY: successful ReOpenFile transferred a new exclusively owned handle.
         Ok(unsafe { File::from_raw_handle(handle.0) })
@@ -4540,7 +4543,7 @@ impl HostRoot {
                     }, None).expect("unmetered task construction cannot fail")
                     .await??,
                 );
-                copy_windows_file_worker(&source_root, &source, &staged, &sender).await?;
+                copy_windows_file_worker(source_root, source, &staged, &sender).await?;
                 if sender.is_closed() {
                     return Err(io::Error::new(io::ErrorKind::Interrupted, "copy cancelled"));
                 }
@@ -5072,7 +5075,6 @@ fn verify_windows_basic_info(
 #[cfg(windows)]
 pub(crate) struct StagedWindowsFile {
     parent: Dir,
-    name: std::path::PathBuf,
     /// Deletes the staged name when closed.
     guard: File,
 }
@@ -5115,25 +5117,7 @@ impl StagedWindowsFile {
             .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
             .custom_flags(FILE_FLAG_DELETE_ON_CLOSE.0);
         let guard = parent.open_with(&name, &options)?.into_std();
-        Ok(Self {
-            parent,
-            name,
-            guard,
-        })
-    }
-
-    pub(crate) fn open_writer(&self, overlapped: bool) -> io::Result<File> {
-        use cap_std::fs::OpenOptionsExt as _;
-        use windows::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
-
-        let mut options = OpenOptions::new();
-        options.write(true);
-        if overlapped {
-            options.custom_flags(FILE_FLAG_OVERLAPPED.0);
-        }
-        self.parent
-            .open_with(&self.name, &options)
-            .map(cap_std::fs::File::into_std)
+        Ok(Self { parent, guard })
     }
 
     pub(crate) fn publish(&self, name: &OsStr) -> io::Result<()> {
@@ -5499,14 +5483,6 @@ pub(crate) fn rename_windows_leaf_measured<W: crate::demand::SourceDemandReadWor
 
 #[cfg(windows)]
 impl HostRoot {
-    pub(crate) fn create_overlapped_file<W: crate::demand::SourceDemandReadWork>(&self, path: &Path, work: &mut W) -> Result<File, DemandError> {
-        with_wide_path_with_work(path, work, |path, work| self.create_overlapped_file_wide_measured(path, work))
-    }
-
-    pub(crate) fn create_file_wide_measured<W: crate::demand::SourceDemandReadWork>(&self, path: &[u16], work: &mut W) -> Result<File, DemandError> {
-        self.create_windows_file_wide_measured(path, false, false, work)
-    }
-
     pub(crate) fn create_overlapped_file_wide_measured<W: crate::demand::SourceDemandReadWork>(&self, path: &[u16], work: &mut W) -> Result<File, DemandError> {
         self.create_windows_file_wide_measured(path, true, false, work)
     }
@@ -5621,51 +5597,40 @@ const STAGING_PREFIX: &str = ".acyclic-copy-";
 
 #[cfg(windows)]
 async fn copy_windows_file_worker(
-    source_root: &HostRoot,
-    source_path: &Path,
+    source_root: HostRoot,
+    source_path: std::path::PathBuf,
     staged: &std::sync::Arc<StagedWindowsFile>,
     receiver: &tokio::sync::oneshot::Sender<io::Result<()>>,
 ) -> io::Result<()> {
     use acyclic_native_runtime::{NativeFile, OwnedRead, OwnedWrite};
+    use windows::Win32::Storage::FileSystem::{FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_OVERLAPPED};
 
     const CHUNK: usize = 1024 * 1024;
-    let read_root = HostRoot {
-        directory: source_root.directory.try_clone()?, identity: source_root.identity,
-    };
-    let source_path_owned = source_path.to_path_buf();
-    let (source, identity, length) = acyclic_native_runtime::run_blocking_io(move || {
+    let (mut source, length) = acyclic_native_runtime::run_blocking_io(move || {
         let mut work = ordinary_work();
-        let source = read_root.open_file_positional_with_work(&source_path_owned, &mut work)?.into_std();
-        let stat = read_root.stat_file_with_work(&source, &mut work)?;
+        let source = source_root.open_file_positional_with_work(&source_path, &mut work)?.into_std();
+        let stat = source_root.stat_file_with_work(&source, &mut work)?;
         if !stat.file_type().is_file() || stat.file_attributes() & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
             return Err(DemandError::InvalidRequest);
         }
-        Ok::<_, DemandError>((source, stat.identity()?, stat.len()))
+        Ok::<_, DemandError>((source, stat.len()))
     }, None).expect("unmetered task construction cannot fail")
     .await?.map_err(ordinary_error)?;
     if receiver.is_closed() {
         return Err(io::Error::new(io::ErrorKind::Interrupted, "copy cancelled"));
     }
     if clonable_windows_length(length) {
-        let clone_source = HostRoot {
-            directory: source_root.directory.try_clone()?,
-            identity: source_root.identity,
-        };
-        let clone_source_path = source_path.to_path_buf();
         let clone_target = std::sync::Arc::clone(staged);
-        if acyclic_native_runtime::run_blocking_io(move || {
+        let (returned, cloned) = acyclic_native_runtime::run_blocking_io(move || {
             let mut work = ordinary_work();
-            let source = clone_source.open_file(&clone_source_path, &mut work)?.into_std();
-            let stat = clone_source.stat_file_with_work(&source, &mut work)?;
-            if !stat.file_type().is_file() || stat.file_attributes() & windows::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
-                return Err(DemandError::InvalidRequest);
-            }
-            if stat.identity()? != identity { return Err(io::Error::other("copy source identity changed").into()); }
-            let target = clone_target.open_writer(false)?;
-            clone_windows_file(&source, &target, length, &mut work)
+            let clone_source = reopen_windows_file(&source, FILE_GENERIC_READ, FILE_FLAG_OPEN_REPARSE_POINT, &mut work)?;
+            let target = reopen_windows_file(&clone_target.guard, FILE_GENERIC_WRITE, Default::default(), &mut work)?;
+            let cloned = clone_windows_file(&clone_source, &target, length, &mut work)?;
+            Ok::<_, DemandError>((source, cloned))
         }, None).expect("unmetered task construction cannot fail")
-        .await?.map_err(ordinary_error)?
-        {
+        .await?.map_err(ordinary_error)?;
+        source = returned;
+        if cloned {
             return Ok(());
         }
         if receiver.is_closed() {
@@ -5674,7 +5639,9 @@ async fn copy_windows_file_worker(
     }
     let writer = std::sync::Arc::clone(staged);
     let destination =
-        acyclic_native_runtime::run_blocking_io(move || writer.open_writer(true), None).expect("unmetered task construction cannot fail").await??;
+        acyclic_native_runtime::run_blocking_io(move || reopen_windows_file(&writer.guard, FILE_GENERIC_WRITE,
+            FILE_FLAG_OVERLAPPED, &mut ordinary_work()).map_err(ordinary_error),
+            None).expect("unmetered task construction cannot fail").await??;
     // SAFETY: both handles were opened with FILE_FLAG_OVERLAPPED and are transferred once; no independent I/O is performed after this point.
     let source = unsafe { NativeFile::from_overlapped_file_unchecked(source, None).map_err(|(error, _)| error)? };
     // SAFETY: as above.
@@ -7280,7 +7247,8 @@ mod windows_clone_tests {
             directory,
             cap_std::ambient_authority(),
         )?)?;
-        staged.open_writer(false)?.write_all(b"partial copy")?;
+        super::reopen_windows_file(&staged.guard, windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE, Default::default(), &mut super::ordinary_work())
+            .map_err(super::ordinary_error)?.write_all(b"partial copy")?;
         std::process::abort();
     }
 
@@ -7314,7 +7282,8 @@ mod windows_clone_tests {
         let parent =
             cap_std::fs::Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())?;
         let staged = super::StagedWindowsFile::create(parent)?;
-        staged.open_writer(false)?.write_all(b"complete copy")?;
+        super::reopen_windows_file(&staged.guard, windows::Win32::Storage::FileSystem::FILE_GENERIC_WRITE, Default::default(), &mut super::ordinary_work())
+            .map_err(super::ordinary_error)?.write_all(b"complete copy")?;
         staged.publish(std::ffi::OsStr::new("copy"))?;
         assert_eq!(
             staged
@@ -7346,11 +7315,12 @@ mod windows_clone_tests {
         let parent =
             cap_std::fs::Dir::open_ambient_dir(temporary.path(), cap_std::ambient_authority())?;
         let staged = super::StagedWindowsFile::create(parent)?;
+        let name = std::fs::read_dir(temporary.path())?.next().expect("created staged file")?.file_name();
         // A scanner opening the staged file shares everything, as this does.
         let held = std::fs::OpenOptions::new()
             .read(true)
             .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0)
-            .open(temporary.path().join(&staged.name))?;
+            .open(temporary.path().join(name))?;
         drop(staged);
         let names = std::fs::read_dir(temporary.path())?.count();
         drop(held);
@@ -7715,7 +7685,8 @@ mod windows_clone_tests {
         let directory = tempfile::tempdir()?;
         let root = HostRoot::open(directory.path(), &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         let path = Path::new("overlapped.bin");
-        let file = root.create_overlapped_file(path, &mut super::ordinary_work()).map_err(super::ordinary_error)?;
+        let file = super::with_wide_path_with_work(path, &mut super::ordinary_work(),
+            |path, work| root.create_overlapped_file_wide_measured(path, work)).map_err(super::ordinary_error)?;
         // SAFETY: HostRoot used FILE_FLAG_OVERLAPPED and this new handle is transferred directly, with no other I/O or completion-port owner.
         let native = unsafe { NativeFile::from_overlapped_file_unchecked(file, None).map_err(|(error, _)| error)? };
         native.set_len_async(8, None).expect("unmetered unit construction cannot fail").await?;

@@ -4392,7 +4392,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> GitCapturedGeneration<A, O> {
         }
         let expected_child = parent
             .workspace()
-            .fork_workspace_id(child.name().as_str())
+            .volume.fs.workspace_id(child.name().as_str())
             .map_err(WorkspaceError::from)?;
         if child.id() != expected_child {
             return Err(GitCaptureError::Conflict);
@@ -7837,8 +7837,8 @@ mod tests {
             Some(previous_capture.generation.workspace_id()),
             "incremental capture must fork from the prior filtered capture"
         );
-        let reopened = crate::DistributedFs::new(fs.clone(), state_store)
-            .workspace(captured.generation.workspace_id())
+        let reopened = crate::WorkspaceGraph::new(state_store)
+            .workspace(&fs, captured.generation.workspace_id(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await
             .expect("reopen filtered capture from durable lineage");
         reopened
