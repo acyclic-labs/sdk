@@ -237,10 +237,13 @@ async fn transport(
         let mut cancelled = false;
         let operation = server.request(&request);
         tokio::pin!(operation);
+        let mut completed = false;
+        let outcome: io::Result<bool> = async {
         loop {
             tokio::select! {
                 biased;
                 response = &mut operation => {
+                    completed = true;
                     if !cancelled && let Some(response) = response {
                         send_response(&mut output, &response).await?;
                     }
@@ -248,9 +251,7 @@ async fn transport(
                 }
                 frame = read_frame(&mut input, &mut line) => {
                     let Some(frame) = frame? else {
-                        if let Some(sender) = cancellation.take() { let _ = sender.send(()); }
-                        if finish_on_cancel { let _ = (&mut operation).await; }
-                        return Ok(());
+                        return Ok(true);
                     };
                     let Ok(incoming) = serde_json::from_slice::<Value>(&frame) else {
                             send_response(&mut output, &rpc_error(&Value::Null, -32700, "Parse error")).await?;
@@ -283,6 +284,21 @@ async fn transport(
                     }
                 }
             }
+        }
+        Ok(false)
+        }.await;
+        if !matches!(outcome, Ok(false)) {
+            if let Some(sender) = cancellation.take() {
+                let _ = sender.send(());
+            }
+            if finish_on_cancel && !completed {
+                let _ = (&mut operation).await;
+            }
+        }
+        match outcome {
+            Ok(false) => {}
+            Ok(true) => return Ok(()),
+            Err(error) => return Err(error),
         }
     }
     Ok(())
@@ -343,7 +359,7 @@ mod tests {
                 .and_then(Value::as_array)
                 .expect("tools")
                 .len(),
-            6
+            5
         );
         let unknown = server
             .request(&json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
@@ -563,5 +579,200 @@ mod tests {
         );
         client.get_mut().shutdown().await.expect("EOF");
         task.await.expect("transport task").expect("transport");
+    }
+
+    struct CountedInput<R> {
+        input: R,
+        count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        failed: std::sync::Arc<tokio::sync::Notify>,
+    }
+
+    impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for CountedInput<R> {
+        fn poll_read(
+            mut self: std::pin::Pin<&mut Self>,
+            context: &mut std::task::Context<'_>,
+            buffer: &mut tokio::io::ReadBuf<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            let before = buffer.filled().len();
+            let result = std::pin::Pin::new(&mut self.input).poll_read(context, buffer);
+            let read = buffer.filled().len() - before;
+            if self
+                .count
+                .fetch_add(read, std::sync::atomic::Ordering::Relaxed)
+                + read
+                > 1024 * 1024
+            {
+                self.failed.notify_one();
+            }
+            result
+        }
+    }
+
+    struct BrokenOutput<W> {
+        output: W,
+        broken: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        failed: std::sync::Arc<tokio::sync::Notify>,
+    }
+
+    impl<W: tokio::io::AsyncWrite + Unpin> tokio::io::AsyncWrite for BrokenOutput<W> {
+        fn poll_write(
+            mut self: std::pin::Pin<&mut Self>,
+            context: &mut std::task::Context<'_>,
+            bytes: &[u8],
+        ) -> std::task::Poll<io::Result<usize>> {
+            if self.broken.load(std::sync::atomic::Ordering::Relaxed) {
+                self.failed.notify_one();
+                return std::task::Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()));
+            }
+            std::pin::Pin::new(&mut self.output).poll_write(context, bytes)
+        }
+        fn poll_flush(
+            mut self: std::pin::Pin<&mut Self>,
+            context: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::pin::Pin::new(&mut self.output).poll_flush(context)
+        }
+        fn poll_shutdown(
+            mut self: std::pin::Pin<&mut Self>,
+            context: &mut std::task::Context<'_>,
+        ) -> std::task::Poll<io::Result<()>> {
+            std::pin::Pin::new(&mut self.output).poll_shutdown(context)
+        }
+    }
+
+    #[tokio::test]
+    async fn transport_errors_drain_consumed_device_and_refresh_exchanges() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, AtomicUsize, Ordering},
+        };
+        for login in [false, true] {
+            for fault in ["oversized", "ping", "cancel"] {
+                let consumed = Arc::new(tokio::sync::Notify::new());
+                let released = Arc::new(tokio::sync::Notify::new());
+                let notify = consumed.clone();
+                let release = released.clone();
+                let router = axum::Router::new().fallback(move || {
+                    let notify = notify.clone();
+                    let release = release.clone();
+                    async move {
+                        notify.notify_one();
+                        release.notified().await;
+                        axum::Json(json!({"access_token": "issued", "refresh_token": "rotated",
+                            "token_type": "Bearer", "expires_in": 900}))
+                    }
+                });
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+                    .await
+                    .expect("bind");
+                let endpoint = format!("http://{}", listener.local_addr().expect("address"));
+                let http = tokio::spawn(async move {
+                    axum::serve(listener, router).await.expect("serve");
+                });
+                let directory = tempfile::tempdir().expect("directory");
+                let path = directory.path().join("identity.json");
+                let mut server = server(path.clone());
+                server.identity = Identity::new(&endpoint).expect("identity");
+                pending(&mut server);
+                if !login {
+                    Store::open(&path)
+                        .expect("store")
+                        .write(
+                            &endpoint,
+                            Session {
+                                access_token: "expired".to_owned(),
+                                refresh_token: "original".to_owned(),
+                                expires_at: 0,
+                            },
+                        )
+                        .expect("seed");
+                }
+                let (mut client, connection) = tokio::io::duplex(64 * 1024);
+                let (input, output) = tokio::io::split(connection);
+                let count = Arc::new(AtomicUsize::new(0));
+                let broken = Arc::new(AtomicBool::new(false));
+                let failed = Arc::new(tokio::sync::Notify::new());
+                let task = tokio::spawn(transport(
+                    server,
+                    CountedInput {
+                        input,
+                        count: count.clone(),
+                        failed: failed.clone(),
+                    },
+                    BrokenOutput {
+                        output,
+                        broken: broken.clone(),
+                        failed: failed.clone(),
+                    },
+                ));
+                let name = if login {
+                    "identity_login_complete"
+                } else {
+                    "identity_refresh"
+                };
+                client
+                    .write_all(
+                        format!(
+                            "{}\n",
+                            json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                    "params": {"name": name}})
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .expect("request");
+                tokio::time::timeout(Duration::from_secs(3), consumed.notified())
+                    .await
+                    .expect("consumed");
+                if fault == "oversized" {
+                    count.store(0, Ordering::Relaxed);
+                    client
+                        .write_all(&vec![b'x'; 1024 * 1024 + 1])
+                        .await
+                        .expect("oversized frame");
+                } else {
+                    broken.store(true, Ordering::Relaxed);
+                    let request = if fault == "ping" {
+                        json!({"jsonrpc": "2.0", "id": 2, "method": "ping"})
+                    } else {
+                        json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 1}})
+                    };
+                    client
+                        .write_all(format!("{request}\n").as_bytes())
+                        .await
+                        .expect("control");
+                }
+                tokio::time::timeout(Duration::from_secs(3), failed.notified())
+                    .await
+                    .expect("transport fault reached");
+                assert!(
+                    !task.is_finished(),
+                    "{name}/{fault} must drain before returning the transport error"
+                );
+                released.notify_one();
+                let error = tokio::time::timeout(Duration::from_secs(3), task)
+                    .await
+                    .expect("drained")
+                    .expect("transport task")
+                    .expect_err("transport error");
+                assert_eq!(
+                    error.kind(),
+                    if fault == "oversized" {
+                        io::ErrorKind::Other
+                    } else {
+                        io::ErrorKind::BrokenPipe
+                    }
+                );
+                assert_eq!(
+                    Store::open(&path)
+                        .expect("unlocked store")
+                        .read(&endpoint)
+                        .expect("saved")
+                        .refresh_token,
+                    "rotated"
+                );
+                http.abort();
+            }
+        }
     }
 }

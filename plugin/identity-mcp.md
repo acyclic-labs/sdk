@@ -36,7 +36,9 @@ requires a new approval flow. Completion keeps the approval after retryable tran
 the approval for retry. A dispatched exchange finishes and saves successful
 credentials before releasing the operation, even after cancellation or stdin EOF.
 Refreshes finish and save rotated credentials under the same protection,
-including refreshes started by identity and organization reads. Credential locking and rotation use the same
+including refreshes started by identity and organization reads. Oversized input
+frames and output errors also drain dispatched exchanges before returning the
+transport error. Credential locking and rotation use the same
 implementation as the CLI.
 
 Successful tools return text JSON plus `structuredContent`. API failures are
