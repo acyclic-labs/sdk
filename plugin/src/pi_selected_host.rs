@@ -464,8 +464,11 @@ impl PiControlHost<'_> {
         (value, io.into_custody())
     };
     let scope = &authorization.0.2;
-    let destination_grant = acyclic_harness::conversation::ContentGrant::verify_with_native_work(
-        &verifier.0, scope, volume, acyclic_harness::conversation::VolumeOperation::Write, work)?;
+    let destination_grant = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let grant = acyclic_harness::conversation::ContentGrant::verify(&verifier.0, scope, volume, acyclic_harness::conversation::VolumeOperation::Write, u64::MAX, &mut Some(&mut io))?;
+        (grant, io.into_custody())
+    };
     if destination != input.caller && destination == self.protected.policy().root_task {
         return Err(denied("delegated Root mutation requires its original mediated Root workflow command"));
     }
@@ -783,7 +786,11 @@ pub(crate) async fn read_imported_selected_files(
         (value, io.into_custody())
     };
     let scope = &authorization.0.2;
-    let _read_grant = ContentGrant::verify_with_native_work(&verifier.0, scope, volume, VolumeOperation::Read, work)?;
+    let _read_grant = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let grant = ContentGrant::verify(&verifier.0, scope, volume, VolumeOperation::Read, u64::MAX, &mut Some(&mut io))?;
+        (grant, io.into_custody())
+    };
     let cancellation = work.cancellation();
     let generation = root.workspace.workspace().generation(
         descriptor.imported, work, cancellation).await.map_err(|error| native_workspace_error((error, None)))?;
@@ -840,8 +847,11 @@ pub(crate) async fn read_imported_selected_files(
             || path.strip_prefix(prefix).is_some_and(|suffix| suffix.starts_with('/')));
         if !selected { return Err(denied("candidate evidence edit escaped the explicitly selected paths")); }
         cancellation.check().map_err(|_| native_error(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
-        let _current_read_grant = ContentGrant::verify_with_native_work(
-            &verifier.0, scope, volume, VolumeOperation::Read, work)?;
+        let _current_read_grant = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let grant = ContentGrant::verify(&verifier.0, scope, volume, VolumeOperation::Read, u64::MAX, &mut Some(&mut io))?;
+            (grant, io.into_custody())
+        };
         let absolute = work.display(&format_args!("/{path}")).map_err(native_error)?;
         let stat = match generation.stat(&absolute.0, work, cancellation).await.map_err(|error| (error, None)) {
             Ok(stat) => stat,

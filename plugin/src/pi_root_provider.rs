@@ -495,9 +495,11 @@ fn pi_input_write_grant_with_native_work(
 ) -> Result<(ContentGrant, NativeAllocation)> {
     let authority = owner.authority_with_native_work(work)?;
     let authority = (authority.0, authority.1);
-    let grant = ContentGrant::verify_with_native_work(
-        &authority.0.verifier, &authority.0.signed, &owner.policy().journal,
-        VolumeOperation::Write, work)?;
+    let grant = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let grant = ContentGrant::verify(&authority.0.verifier, &authority.0.signed, &owner.policy().journal, VolumeOperation::Write, u64::MAX, &mut Some(&mut io))?;
+        (grant, io.into_custody())
+    };
     Ok((grant.0, grant.1))
 }
 

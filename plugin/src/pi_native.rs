@@ -914,7 +914,7 @@ impl PiNativeRootSeed {
         }
         creator.authorize_settlement_with_native_work(owner, meter).await?;
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-            ContentGrant::verify(bindings[0].verifier, bindings[0].scope, &self.scratch, operation)?;
+            ContentGrant::verify(bindings[0].verifier, bindings[0].scope, &self.scratch, operation, u64::MAX, &mut Some(&mut acyclic_harness::store::history::native_work_io(meter).map_err(|cause| Error::NativeWork { cause, custody: None })?))?;
             owner.require_volume_grant_with_native_work(&self.scratch, operation, meter)?;
         }
         let bytes = shared.context().read_file_with_native_work(session, meter).await?;
@@ -1001,7 +1001,7 @@ impl PiNativeRootSeed {
         let volume = binding.project_volumes.get(root_key).ok_or_else(|| invalid("Pi lazy project is not selected by the original child"))?;
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
             if operation == VolumeOperation::Write && !writable { continue; }
-            ContentGrant::verify(&authority.0, &authority.1, volume, operation)?;
+            ContentGrant::verify(&authority.0, &authority.1, volume, operation, u64::MAX, &mut Some(&mut acyclic_harness::store::history::native_work_io(meter).map_err(|cause| Error::NativeWork { cause, custody: None })?))?;
             owner.require_volume_grant_with_native_work(volume, operation, meter)?;
         }
         let allocation = self.witnessed_allocation()?;

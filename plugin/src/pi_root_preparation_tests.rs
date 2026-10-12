@@ -55,6 +55,8 @@ async fn replace(
         &authority.signed,
         &owner.policy.journal,
         VolumeOperation::Write,
+        u64::MAX,
+        &mut None,
     )
     .unwrap();
     filesystem
@@ -92,6 +94,7 @@ async fn alter_command(
         &authority.signed,
         &owner.policy.journal,
         ROOT_INPUT_DIRECTORY,
+        &mut None,
     )
     .unwrap();
     let mut plan: TaskEffectPlan = serde_json::from_slice(

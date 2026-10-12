@@ -124,7 +124,7 @@ async fn pi_root_input_staging_reuses_original_upload_and_narrow_read_authority(
             &task_scope,
             &owner.policy.journal,
             VolumeOperation::Write
-        )
+        , u64::MAX, &mut None)
         .is_err()
     );
     for path in [
@@ -213,6 +213,7 @@ async fn pi_root_command_pins_actual_artifacts_in_original_admission_and_reopen(
         &authority.signed,
         &owner.policy.journal,
         ROOT_INPUT_DIRECTORY,
+        &mut None,
     )
     .unwrap();
     let plan: TaskEffectPlan = serde_json::from_slice(
@@ -633,7 +634,7 @@ fn native_owner_authority_preserves_original_grants_and_scope_names() {
     assert_eq!(effect.0.2.agent(), Some(owner.policy.agent));
     assert_eq!(effect.0.2.capabilities(), &owner.policy.grants);
     let verifier = owner.effect_verifier_with_native_work(&work).unwrap();
-    verifier.0.verify_with_native_work(&effect.0.2, &work).unwrap();
+    verifier.0.verify(&effect.0.2, &mut Some(&mut acyclic_harness::store::history::native_work_io(&work).unwrap())).unwrap();
     drop(verifier);
     drop(effect);
     assert_eq!(work.live_allocation_bytes(), baseline);

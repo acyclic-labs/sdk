@@ -210,8 +210,11 @@ pub(crate) async fn build_writeback_generations<'a>(
     let context = native_context.context();
 
     authenticate_root(root, context, owner, verifier, scope, native_work).await?;
-    let _read_grant = acyclic_harness::conversation::ContentGrant::verify_with_native_work(
-        verifier, scope, &root.volume, acyclic_harness::conversation::VolumeOperation::Read, native_work)?;
+    let _read_grant = {
+        let mut io = acyclic_harness::store::history::native_work_io(native_work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let grant = acyclic_harness::conversation::ContentGrant::verify(verifier, scope, &root.volume, acyclic_harness::conversation::VolumeOperation::Read, u64::MAX, &mut Some(&mut io))?;
+        (grant, io.into_custody())
+    };
     let storage_name = {
         let mut io = acyclic_harness::store::history::native_work_io(native_work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
         let value = root.volume.storage_name(&mut Some(&mut io))?;
@@ -518,8 +521,11 @@ async fn authenticate_root(
     {
         return Err(selected_unauthorized("writeback does not own the ORIGINAL root task and destination"));
     }
-    let _grant = acyclic_harness::conversation::ContentGrant::verify_with_native_work(
-        verifier, scope, &root.volume, acyclic_harness::conversation::VolumeOperation::Write, native_work)?;
+    let _grant = {
+        let mut io = acyclic_harness::store::history::native_work_io(native_work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let grant = acyclic_harness::conversation::ContentGrant::verify(verifier, scope, &root.volume, acyclic_harness::conversation::VolumeOperation::Write, u64::MAX, &mut Some(&mut io))?;
+        (grant, io.into_custody())
+    };
     native_owner.require_volume_grant_with_native_work(&root.volume,
         acyclic_harness::conversation::VolumeOperation::Write, native_work)?;
     Ok(())
@@ -779,8 +785,11 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
     {
         return Err(selected_unauthorized("native import lacks its original destination WRITE grant or selected checkpoint"));
     }
-    let _grant = acyclic_harness::conversation::ContentGrant::verify_with_native_work(
-        verifier, scope, destination_volume, acyclic_harness::conversation::VolumeOperation::Write, native_work)?;
+    let _grant = {
+        let mut io = acyclic_harness::store::history::native_work_io(native_work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let grant = acyclic_harness::conversation::ContentGrant::verify(verifier, scope, destination_volume, acyclic_harness::conversation::VolumeOperation::Write, u64::MAX, &mut Some(&mut io))?;
+        (grant, io.into_custody())
+    };
     let retained = (paths.len() as u64).checked_mul(
         (std::mem::size_of::<acyclic_fs::kernel::NamespacePath>() + std::mem::size_of::<&str>()) as u64,
     ).ok_or_else(|| selected_invalid("selected namespace container size overflow"))?;

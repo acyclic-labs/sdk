@@ -138,7 +138,7 @@ impl Fixture {
         let mut aggregate = StreamAggregate::open(&stream, issuer.verifier(&mut None).unwrap().audience().clone(), issuer.verifier(&mut None).unwrap(), SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
         aggregate.execute(Command { operation_id: OperationId::from_bytes([26; 16]), idempotency_key: IdempotencyKey::new("pi-native-bind")?,
             expected_revision: 0, scope: scope.clone(), causal_parent: None, action: Action::BindConversation { agent } }, None, &mut None).await?;
-        let grant = ContentGrant::verify(&issuer.verifier(&mut None).unwrap(), &scope, &scratch, VolumeOperation::Write)?;
+        let grant = ContentGrant::verify(&issuer.verifier(&mut None).unwrap(), &scope, &scratch, VolumeOperation::Write, u64::MAX, &mut None)?;
         let cancellation = CancellationToken::new();
         let budget = super::super::native_root_source::budget();
         let work = NativeMaterializationWork::new(budget, &cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;

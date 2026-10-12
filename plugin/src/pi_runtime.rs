@@ -86,13 +86,13 @@ impl PiRuntimeAuthority {
     pub(crate) fn validate_with_native_work(
         &self, journal: &VolumeRef, work: &acyclic_fs::NativeMaterializationWork,
     ) -> acyclic_harness::Result<(AgentId, TaskId)> {
-        self.verifier.verify_with_native_work(&self.signed, work)?;
+        self.verifier.verify(&self.signed, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         let original = {
             let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
             let value = self.issuer.verifier(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
-        let verification = original.0.verify_with_native_work(&self.signed, work);
+        let verification = original.0.verify(&self.signed, &mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?));
         drop(original.0);
         drop(original.1);
         verification?;
