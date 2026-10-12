@@ -16,6 +16,7 @@ pub use machine::{MachineIdentity, MachineRegistry, ResumableMachine};
 pub use memory::MemoryWorkflowJournal;
 pub use records::{MachineCheckpoint, MachineStatus, MachineTransition, WorkflowAdmission,
     WorkflowCommand, WorkflowCommitOutcome, WorkflowRecord};
+pub(crate) use copies::workflow_copy_identity;
 pub(crate) use io::workflow_owned_bytes;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use io::finish_native_io;
