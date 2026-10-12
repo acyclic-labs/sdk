@@ -1,5 +1,4 @@
 //! Native Pi fork controls over the one retained catalog and task journal.
-//! Preparation admission precedes the catalog power-loss barrier; creation never does.
 use crate::{AdapterState, PendingSpawn, PendingSpawnLifecycle, PluginTaskBinding, ServiceResources,
     pi_fork::{PiForkCoordinator, PiForkOperations, PiForkPlan, PreparedPiFork, RetainedSpawnCommit, original_operation_with_native_work, derived_with_native_work},
     pi_native_host::{PiNativeCommandHost, PiNativeRuntime, PiNativeFilesystem},
@@ -159,7 +158,7 @@ impl<'a> PiForkHost<'a> {
     }
 
     fn coordinator(&self, work: &NativeMaterializationWork) -> Result<PiForkCoordinator> {
-        PiForkCoordinator::new_with_native_work(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
+        PiForkCoordinator::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
             self.resources, self.protected.clone(), work)
     }
 
@@ -176,7 +175,7 @@ impl<'a> PiForkHost<'a> {
             return Err(unauthorized("Pi fork control differs from its original admission or fence"));
         }
         let maximum = self.protected.policy().maximum_payload_bytes.min(admission.0.limits.file_bytes);
-        let bytes = crate::pi_root_provider::canonical_pi_value_with_native_work(&admission.0.input, maximum, work)?;
+        let bytes = crate::pi_root_provider::canonical_pi_value(&admission.0.input, maximum, work)?;
         let mut input = crate::pi_root_provider::guarded_pi_decode::<PiTaskInput>(&bytes.0, maximum,
             self.protected.policy().maximum_payload_bytes, acyclic_harness::JsonValueSchema::None,
             crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES, work)?;
@@ -209,7 +208,7 @@ impl<'a> PiForkHost<'a> {
     fn decode<T: serde::de::DeserializeOwned, S: Serialize>(&self, value: &S,
         label_bytes: u64, work: &NativeMaterializationWork) -> Result<NativeOwned<T>> {
         let maximum = self.protected.policy().maximum_payload_bytes;
-        let bytes = crate::pi_root_provider::canonical_pi_value_with_native_work(value, maximum, work)?;
+        let bytes = crate::pi_root_provider::canonical_pi_value(value, maximum, work)?;
         let (value, custody) = crate::pi_root_provider::guarded_pi_decode(&bytes.0, maximum, maximum,
             acyclic_harness::JsonValueSchema::None, label_bytes, work)?;
         Ok(NativeOwned { value, custody })
@@ -471,8 +470,8 @@ impl<'a> PiForkHost<'a> {
         crate::pi_inspection::authorize_selected_source(&self.runtime.runtime, self.protected.policy().root_task,
             context, owner, input.caller, self.protected.policy().session_limits.depth, work).await?;
         let actual = self.roots.get(&input.root_key).ok_or_else(|| invalid("Pi observed root has no actual lazy producer"))?;
-        if let Some(reference) = crate::pi_root_provider::observe_pi_input_with_native_work(&self.protected, &self.filesystem, command.operation_id, "root-source-observation", &work).await? {
-            let bytes = self.coordinator(&work)?.read_original_input(&reference.0, remaining(&work)?, &cancel).await?;
+        if let Some(reference) = crate::pi_root_provider::observe_pi_input(&self.protected, &self.filesystem, command.operation_id, "root-source-observation", &work).await? {
+            let bytes = self.coordinator(&work)?.read_original_input(&reference.0).await?;
             let decoded: (ObservedSource, _) = crate::pi_root_provider::guarded_pi_decode(bytes.as_ref(),
                 self.protected.policy().maximum_payload_bytes, self.protected.policy().maximum_payload_bytes,
                 acyclic_harness::JsonValueSchema::None, OBSERVED_SOURCE_DIAGNOSTIC_LABEL_BYTES, &work)?;
@@ -489,7 +488,7 @@ impl<'a> PiForkHost<'a> {
         owner.verify_with_native_work(false, &work).await?;
         let observed = ObservedSource { caller: input.caller, sdk_operation: input.sdk_operation,
             root_key: input.root_key, snapshot };
-        let _published = crate::pi_root_provider::stage_pi_input_with_native_work(&self.protected, &self.filesystem, command.operation_id, "root-source-observation", &observed, &work).await?;
+        let _published = crate::pi_root_provider::stage_pi_input(&self.protected, &self.filesystem, command.operation_id, "root-source-observation", &observed, &work).await?;
         owner.verify_with_native_work(false, &work).await?;
         ready(&PiObservedSourceReply { snapshot: observed.snapshot, root_key: &observed.root_key }, &work)
     }
@@ -536,7 +535,7 @@ pub(crate) async fn freeze_created_root_source(
         return Err(unauthorized("Root source substituted its original admitted bootstrap input"));
     };
     let maximum = protected.policy().maximum_payload_bytes;
-    let bytes = crate::pi_root_provider::canonical_pi_value_with_native_work(
+    let bytes = crate::pi_root_provider::canonical_pi_value(
         &BorrowedRootRequest { binding: &input.binding, root }, maximum, work)?;
     let request = crate::pi_root_provider::guarded_pi_decode::<PiRootRequest>(&bytes.0, maximum, maximum,
         acyclic_harness::JsonValueSchema::None,
@@ -587,4 +586,3 @@ fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
 fn remaining(work: &NativeMaterializationWork) -> Result<WorkBudget> {
     work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })
 }
-

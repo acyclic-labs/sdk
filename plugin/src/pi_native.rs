@@ -1,10 +1,7 @@
 //! Pi's pinned native command over the existing task/effect and namespace owners.
-//! Native processes are trusted effects; a mount is not a process sandbox.
 
 use super::{PiScratchAllocation, PiTaskBinding};
 use acyclic_fs::{CancellationToken, LazyMount, NativeMaterializationWork, PublicationPermit, WorkBudget, WorkCounters};
-#[cfg(test)]
-use acyclic_fs::{MeasuredResult, OperationFailure, OperationReceipt};
 use acyclic_harness::{
     EffectAttemptId, Error, InteractionId, NativeFutureBundle, OperationId, Result,
     conversation::{ContentGrant, FileRef, VolumeOperation, VolumeRef},
@@ -17,7 +14,7 @@ use acyclic_harness::{
         NATIVE_PROCESS_EFFECT_KIND, NativePreparationReceipt, NativePreparationRoot,
         NativeProcessAuthority, NativeProcessDrainProof, NativeProcessProvider, NativeProcessReceipt, NativeReceiptError,
         NativeProcessRequest, NativeProcessView, NativeViewManifest, NativeViewOptions,
-        NativeViewOwner, NativeVolumeNamespace, NativeVolumeView, NativeTaskViewDrainReceipt,
+        NativeVolumeNamespace, NativeVolumeView, NativeTaskViewDrainReceipt,
         NativeVolumeMapping, NativeExistingLazyVolume, TaskSourceInspection,
     },
     runtime::{TaskContext, NativeTaskContext, NativeVolumeCallbackGuard},
@@ -35,13 +32,12 @@ use serde_json::Value;
 #[cfg(test)]
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, path::{Component, Path, PathBuf}, sync::{Arc, Mutex}};
+use std::{collections::BTreeMap, path::{Component, Path, PathBuf}, sync::Arc};
 
 pub(crate) const PI_NATIVE_PROVIDER: &str = "acyclic.pi.native";
 pub(crate) const PI_NATIVE_VERSION: &str = "1.1.0";
 
-/// References only. The authenticated factory, not these strings, allocates
-/// or attests the actual original task's private native namespace.
+/// References only.
 pub(crate) struct PiNativePaths {
     pub(crate) cwd: PathBuf,
     pub(crate) session_file: PathBuf,
@@ -190,7 +186,6 @@ fn native_root_route(key: &str) -> Result<String> {
 pub(crate) enum PiNativeSourceMode { CallerTool, Scratch }
 
 /// Exact native source selection retained in the original child admission.
-/// This is provenance, never a recursive caller credential.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub(crate) struct PiNativeSourceCut {
@@ -206,9 +201,7 @@ pub(crate) struct PiNativeSourceCut {
     pub(crate) sha256: String,
 }
 
-/// Closed launch graph diagnostic inventory: original derives, camel-case
-/// source fields, snake-case mode tags and pinned serde primitive expectations.
-/// No Binding/FileRef or arbitrary Value fields occur in this graph.
+/// Closed launch graph diagnostic inventory: original derives, camel-case source fields, snake-case mode tags and pinned serde primitive expectations.
 pub(crate) const PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES: u64 =
     super::pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
         "PiNativeLaunchIntent", "struct PiNativeLaunchIntent", "agent_alias", "child_session_id",
@@ -253,24 +246,12 @@ struct NativeHeader {
 impl PiNativeSourceCut {
     /// Strictly checks the actual native bytes before Filesystem publication.
     /// Pi itself remains the owner of projection/compaction/tool-exchange rules.
-    pub(crate) fn validate_session(
-        &self, child: &str, cwd: &Path, bytes: &[u8], maximum_entries: u32, maximum_bytes: u64,
-    ) -> Result<()> {
-        self.validate_session_original(child, cwd, bytes, maximum_entries, maximum_bytes, None)
-    }
 
-    pub(crate) fn validate_session_with_work(
+    pub(crate) fn validate_session(
         &self, child: &str, cwd: &Path, bytes: &[u8], maximum_entries: u32, maximum_bytes: u64,
         work: &NativeMaterializationWork,
     ) -> Result<()> {
-        self.validate_session_original(child, cwd, bytes, maximum_entries, maximum_bytes, Some(work))
-    }
-
-    fn validate_session_original(
-        &self, child: &str, cwd: &Path, bytes: &[u8], maximum_entries: u32, maximum_bytes: u64,
-        work: Option<&NativeMaterializationWork>,
-    ) -> Result<()> {
-        if let Some(work) = work { work.remaining().map_err(native_error)?; }
+        work.remaining().map_err(native_error)?;
         if maximum_entries == 0 || maximum_bytes == 0 || bytes.len() as u64 > maximum_bytes
             || self.entries_json.len() as u64 > maximum_bytes || !cwd.is_absolute()
             || child.is_empty() || self.parent_session_id.is_empty() || child == self.parent_session_id
@@ -279,9 +260,7 @@ impl PiNativeSourceCut {
             return Err(invalid("Pi native session differs from its original source cut or bounds"));
         }
         let mut digest = [0_u8; 64];
-        if let Some(work) = work {
-            work.charge(WorkCounters { bytes_hashed: self.entries_json.len() as u64, ..Default::default() }).map_err(native_error)?;
-        }
+        work.charge(WorkCounters { bytes_hashed: self.entries_json.len() as u64, ..Default::default() }).map_err(native_error)?;
         hex::encode_to_slice(Sha256::digest(self.entries_json.as_bytes()), &mut digest)
             .expect("SHA256 hexadecimal output has its fixed exact extent");
         if self.sha256.as_bytes() != digest {
@@ -289,26 +268,19 @@ impl PiNativeSourceCut {
         }
         let selected = native_cut_decode::<Vec<Value>>(self.entries_json.as_bytes(), maximum_bytes,
             std::mem::size_of::<Vec<Value>>() as u64, JsonValueSchema::Root, 0, work)?;
-        if selected.value.len() as u64 > u64::from(maximum_entries) {
+        if selected.0.len() as u64 > u64::from(maximum_entries) {
             return Err(invalid("Pi native source cut exceeds its entry allowance"));
         }
         match self.mode {
             PiNativeSourceMode::CallerTool if self.owner_entry_id.as_deref().is_some_and(|owner| !owner.is_empty())
                 && self.source_leaf_id.as_deref().is_some_and(|leaf| !leaf.is_empty()) => {}
             PiNativeSourceMode::Scratch if self.owner_entry_id.is_none() && self.source_leaf_id.is_none()
-                && self.parent_leaf_id.is_none() && selected.value.is_empty() => {}
+                && self.parent_leaf_id.is_none() && selected.0.is_empty() => {}
             _ => return Err(invalid("Pi native source mode differs from its authentic SDK selection")),
         }
         let mut previous: Option<&str> = None;
-        let ids = match work {
-            Some(work) => {
-                let ids = pi_native_vec(selected.value.len(), work)?;
-                NativeCutDecoded { value: ids.0, _custody: Some(ids.1) }
-            }
-            None => NativeCutDecoded { value: Vec::with_capacity(selected.value.len()), _custody: None },
-        };
-        let mut ids = ids;
-        for entry in &selected.value {
+        let mut ids = pi_native_vec(selected.0.len(), work)?;
+        for entry in &selected.0 {
             let id = entry.get("id").and_then(Value::as_str)
                 .ok_or_else(|| invalid("Pi native source entry has no identity"))?;
             let parent = entry.get("parentId").ok_or_else(|| invalid("Pi native source entry has no parent"))?;
@@ -320,13 +292,10 @@ impl PiNativeSourceCut {
                 return Err(invalid("Pi native source is not the exact selected parent chain"));
             }
             previous = Some(id);
-            ids.value.push(id);
+            ids.0.push(id);
         }
-        match work {
-            Some(work) => native_sort_entry_ids(&mut ids.value, work)?,
-            None => ids.value.sort_unstable(),
-        }
-        if ids.value.windows(2).any(|pair| pair[0] == pair[1]) {
+        native_sort_entry_ids(&mut ids.0, work)?;
+        if ids.0.windows(2).any(|pair| pair[0] == pair[1]) {
             return Err(invalid("Pi native source repeats an entry identity"));
         }
         if previous != self.parent_leaf_id.as_deref() {
@@ -340,16 +309,16 @@ impl PiNativeSourceCut {
         let header = native_cut_decode::<NativeHeader>(
             lines.next().ok_or_else(|| invalid("Pi child header is absent"))?.as_bytes(), maximum_bytes,
             std::mem::size_of::<NativeHeader>() as u64, JsonValueSchema::None, NATIVE_HEADER_DIAGNOSTIC_LABEL_BYTES, work)?;
-        if header.value.kind != "session" || header.value.version != 3 || header.value.id != child
-            || header.value.timestamp != self.captured_at || Path::new(&header.value.cwd) != cwd
+        if header.0.kind != "session" || header.0.version != 3 || header.0.id != child
+            || header.0.timestamp != self.captured_at || Path::new(&header.0.cwd) != cwd
         {
             return Err(invalid("Pi child header differs from its prepared native identity"));
         }
-        for entry in &selected.value {
+        for entry in &selected.0 {
             let actual = native_cut_decode::<Value>(
                 lines.next().ok_or_else(|| invalid("Pi child lost a source entry"))?.as_bytes(), maximum_bytes,
                 std::mem::size_of::<Value>() as u64, JsonValueSchema::Root, 0, work)?;
-            if &actual.value != entry {
+            if &actual.0 != entry {
                 return Err(invalid("Pi child entry differs from its original native source"));
             }
         }
@@ -360,24 +329,13 @@ impl PiNativeSourceCut {
     }
 }
 
-struct NativeCutDecoded<T> { value: T, _custody: Option<acyclic_fs::NativeAllocation> }
-
 fn native_cut_decode<T: serde::de::DeserializeOwned>(
     bytes: &[u8], maximum: u64, audited_fixed_bytes: u64, schema: JsonValueSchema,
-    diagnostic_label_bytes: u64, work: Option<&NativeMaterializationWork>,
-) -> Result<NativeCutDecoded<T>> {
-    match work {
-        Some(work) => {
-            let decoded = super::pi_root_provider::guarded_pi_decode(
-                bytes, maximum, audited_fixed_bytes, schema, diagnostic_label_bytes, work)?;
-            Ok(NativeCutDecoded { value: decoded.0, _custody: Some(decoded.1) })
-        }
-        None => Ok(NativeCutDecoded { value: serde_json::from_slice(bytes).map_err(decode_error)?, _custody: None }),
-    }
+    diagnostic_label_bytes: u64, work: &NativeMaterializationWork,
+) -> Result<(T, acyclic_fs::NativeAllocation)> {
+    super::pi_root_provider::guarded_pi_decode(bytes, maximum, audited_fixed_bytes, schema, diagnostic_label_bytes, work)
 }
 
-/// In-place heap ordering permits the original quota/cancellation error to stop
-/// before the next comparison, without a fallible comparator lying to sort.
 fn native_sort_entry_ids(ids: &mut [&str], work: &NativeMaterializationWork) -> Result<()> {
     fn sift(ids: &mut [&str], mut root: usize, end: usize, work: &NativeMaterializationWork) -> Result<()> {
         loop {
@@ -400,8 +358,7 @@ fn native_sort_entry_ids(ids: &mut [&str], work: &NativeMaterializationWork) -> 
     Ok(())
 }
 
-/// Captured once by the original root SDK bootstrap and kept only in the
-/// protected Pi owner file. It contains no task grant or journal signing key.
+/// Captured once by the original root SDK bootstrap and kept only in the protected Pi owner file.
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiNativeHostRuntime {
@@ -424,8 +381,6 @@ pub(crate) struct PiNativeCaptureLimits {
 }
 
 /// Fixed native policy captured in the immutable seed, never a spawn override.
-/// Recursive startup/RPC has a three-minute wall allowance; capture remains
-/// below both the original root's file admission and its canonical payload cap.
 pub(crate) fn capture_limits(actual_root_limits: acyclic_harness::conversation::Limits, maximum_payload: u64) -> Result<PiNativeCaptureLimits> {
     actual_root_limits.validate()?;
     let result = actual_root_limits.file_bytes.min(maximum_payload)
@@ -575,7 +530,7 @@ impl PiNativeHostRuntime {
     ) -> Result<(PiNativeInvocation, acyclic_fs::NativeAllocation)> {
         work.remaining().map_err(native_error)?;
         self.validate_with_native_work(work)?;
-        intent.validate_with_work(work)?;
+        intent.validate(work)?;
         require_caller_environment(caller_environment)?;
         let persisted = &intent.invocation;
         if persisted.version != self.version || persisted.executable != self.executable
@@ -635,8 +590,7 @@ fn is_caller_environment(key: &str) -> bool {
         || key.get(..prefix.len()).is_some_and(|head| head.eq_ignore_ascii_case(prefix))
 }
 
-/// Host-selected complete invocation. The protected service authenticates the
-/// scoped child caller before supplying its environment; IDs/cwd are not proof.
+/// Host-selected complete invocation.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiNativeInvocation {
@@ -764,8 +718,7 @@ fn native_argv_path<E: serde::ser::Error>(path: &Path) -> std::result::Result<&s
     path.to_str().ok_or_else(|| E::custom("Pi invocation path is not UTF-8"))
 }
 
-/// Seeded immutable input consumed only through the actual created child's
-/// TaskContext. Parent and child native IDs are intentionally separate fields.
+/// Seeded immutable input consumed only through the actual created child's TaskContext.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiNativeLaunchIntent {
@@ -781,17 +734,8 @@ pub(crate) struct PiNativeLaunchIntent {
 }
 
 impl PiNativeLaunchIntent {
-    pub(crate) async fn load(context: &TaskContext, reference: &FileRef) -> Result<Self> {
-        if context.durable_task_id().is_none() || reference.descriptor().media_type() != "application/json" {
-            return Err(invalid("Pi launch input requires its actual durable child content binding"));
-        }
-        let bytes = context.read_file(reference).await?;
-        let intent: Self = serde_json::from_slice(&bytes).map_err(decode_error)?;
-        intent.validate()?;
-        Ok(intent)
-    }
 
-    pub(crate) async fn load_with_work(
+    pub(crate) async fn load(
         context: &TaskContext, reference: &FileRef, work: &NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         if context.durable_task_id().is_none() || reference.descriptor().media_type() != "application/json" {
@@ -801,19 +745,11 @@ impl PiNativeLaunchIntent {
         let maximum = context.scope().limits().file_bytes.min(super::MAXIMUM_ADAPTER_STATE_BYTES);
         let intent = super::pi_root_provider::guarded_pi_decode::<Self>(
             bytes.as_ref(), maximum, std::mem::size_of::<Self>() as u64, JsonValueSchema::None, PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES, work)?;
-        intent.0.validate_with_work(work)?;
+        intent.0.validate(work)?;
         Ok(intent)
     }
 
-    pub(crate) fn validate(&self) -> Result<()> {
-        self.validate_original(None)
-    }
-
-    pub(crate) fn validate_with_work(&self, work: &NativeMaterializationWork) -> Result<()> {
-        self.validate_original(Some(work))
-    }
-
-    fn validate_original(&self, work: Option<&NativeMaterializationWork>) -> Result<()> {
+    pub(crate) fn validate(&self, work: &NativeMaterializationWork) -> Result<()> {
         if self.agent_alias.is_empty() || self.agent_alias.len() > 128
             || !self.agent_alias.bytes().all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
         {
@@ -825,14 +761,14 @@ impl PiNativeLaunchIntent {
         {
             return Err(invalid("Pi session path or original context allowance is invalid"));
         }
-        self.source.validate_session_original(&self.child_session_id, &self.invocation.cwd,
+        self.source.validate_session(&self.child_session_id, &self.invocation.cwd,
             self.session_bytes.as_bytes(), self.maximum_entries, self.maximum_bytes, work)
     }
 
     /// The approved CLI locator and staged SDK bytes must name the same leaf.
     pub(crate) fn request_with_work(&self, binding: &PiTaskBinding, manifest: &NativeViewManifest,
         work: &NativeMaterializationWork) -> Result<(NativeProcessRequest, acyclic_fs::NativeAllocation)> {
-        self.validate_with_work(work)?;
+        self.validate(work)?;
         let scratch = manifest.volumes.iter().find(|mapping| mapping.volume == binding.scratch.volume)
             .ok_or_else(|| invalid("Pi launch has no original scratch mapping"))?;
         if self.invocation.session_file.strip_prefix(&scratch.path).ok() != Some(Path::new(&self.session_path)) {
@@ -843,10 +779,10 @@ impl PiNativeLaunchIntent {
 
     /// Publishes on the caller's original work and retains the actual FileRef
     /// ownership through the prepared generation's final consumer.
-    pub(crate) async fn publish_session_with_work(
+    pub(crate) async fn publish_session(
         &self, context: &TaskContext, operation: OperationId, work: &NativeMaterializationWork,
     ) -> Result<(FileRef, acyclic_fs::NativeAllocation)> {
-        self.validate_with_work(work)?;
+        self.validate(work)?;
         if context.durable_task_id().is_none() {
             return Err(invalid("Pi session publication requires its admitted child"));
         }
@@ -855,9 +791,8 @@ impl PiNativeLaunchIntent {
     }
 }
 
-/// Child task content is bound through created-resource access, not a root
-/// signed scope pre-granted to guessed future child volume names.
-pub(crate) async fn stage_context_command_with_work(
+/// Child task content is bound through created-resource access, not a root signed scope pre-granted to guessed future child volume names.
+pub(crate) async fn stage_command(
     context: &TaskContext, command: OperationId, request: &NativeProcessRequest, work: &NativeMaterializationWork,
 ) -> Result<(WorkflowCommand, TaskEffectPlan, acyclic_fs::NativeAllocation)> {
     if context.durable_task_id().is_none() { return Err(invalid("Pi native launch requires its original durable TaskContext")); }
@@ -1017,8 +952,7 @@ pub(crate) fn native_plan_operation(command: OperationId) -> Result<OperationId>
     native_artifact_operation(command, "plan")
 }
 
-/// One real provider for one original admitted command. No process handle,
-/// launch ledger, retry state or success-from-path inference is kept here.
+/// One real provider for one original admitted command.
 pub(crate) struct PiNativeRunner<P: StreamProvider> {
     owner: Arc<TaskJournalOwner<P>>,
     command: OperationId,
@@ -1271,9 +1205,7 @@ impl<P: StreamProvider + 'static> PiNativeRunner<P> {
     }
 }
 
-/// The production policy is the original admitted native-effect capability,
-/// restricted to the immutable protected host and this exact request. Approval
-/// is an ordinary resolved interaction, not a replacement approval ledger.
+/// The production policy is the original admitted native-effect capability, restricted to the immutable protected host and this exact request.
 #[allow(clippy::too_many_arguments, reason = "original task, immutable request and existing interaction owner")]
 pub(crate) async fn approve_command<P, A, O>(
     protected: &super::pi_owner::PiOwnerConfig, owner: &TaskJournalOwner<P>, context: &TaskContext,
@@ -1341,7 +1273,6 @@ fn native_fixed_text(arguments: std::fmt::Arguments<'_>) -> Result<NativeFixedTe
 }
 
 /// Uses the actual existing scratch materializer and its original task journal.
-/// Host allocation/witness is separate and must come from authenticated prepare.
 pub(crate) fn prepare_scratch_with_work<'a, P, A, O>(
     owner: &'a TaskJournalOwner<P>, guards: &'a [NativeVolumeCallbackGuard<P>],
     allocation: &'a NativePreparationRoot, options: &'a NativeViewOptions,
@@ -1353,8 +1284,7 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'sta
     NativeVolumeView::prepare_with_native_work(owner, guards, allocation, options, bindings, work)
 }
 
-/// Created only by the original authenticated native preparation below. The
-/// physical observations alone are not a directory-disposal capability.
+/// Created only by the original authenticated native preparation below.
 pub(crate) struct PiPreparedScratch<A, O> {
     pub(crate) view: Arc<NativeVolumeView<A, O>>,
     pub(crate) allocation: NativePreparationRoot,
@@ -1388,16 +1318,6 @@ impl PiNativeRootSeed {
 
     pub(crate) fn preparation_root(&self) -> Option<&NativePreparationRoot> {
         self.allocation.as_ref()
-    }
-
-    pub(crate) fn creation_status(&self, index: usize) -> Option<acyclic_fs::materializer::NativeOwnedRootStatus> {
-        self.packet.status(index)
-    }
-
-    pub(crate) fn creation_parent_count(&self) -> usize { self.packet.parent_count() }
-
-    pub(crate) fn creation_parent_status(&self, index: usize) -> Option<acyclic_fs::materializer::NativeOwnedRootParentStatus> {
-        self.packet.parent_status(index)
     }
 
     pub(crate) async fn create_directories_into_with_work<'a, P, A, O>(
@@ -1837,7 +1757,7 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
             reason: "Pi native seed metadata differs from its original admitted child" });
     }
     protected.authority_with_native_work(meter)?;
-    intent.validate_with_work(meter)?;
+    intent.validate(meter)?;
     let mut session_generation = [0; 32];
     hex::decode_to_slice(session.version(), &mut session_generation).map_err(|_| Error::NativeBoundary {
         code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi session has no original filesystem generation",
@@ -1879,86 +1799,10 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
         service_identity: None, _metadata_custody: custody })
 }
 
-pub(crate) fn cleanup_scratch_with_work<'a, P, A, O>(
-    owner: &'a TaskJournalOwner<P>, allocation: &'a NativePreparationRoot, work: &'a NativeMaterializationWork,
-) -> Result<NativeFutureBundle<'a, Option<NativePreparationReceipt>>>
-where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
-      O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
-{
-    NativeVolumeView::<A, O>::cleanup_preparation_with_native_work(owner, allocation, work)
-}
-
-/// Publishes original source-bound bytes through existing immutable FS content.
-#[cfg(test)]
-#[allow(clippy::too_many_arguments, reason = "exact native provenance and explicit finite provider authorities")]
-pub(crate) async fn publish_session<A, O>(
-    filesystem: &FilesystemHost<A, O>, volume: &VolumeRef, grant: &ContentGrant,
-    source: &PiNativeSourceCut, child: &str, cwd: &Path, path: &str, bytes: &[u8],
-    maximum_entries: u32, maximum_bytes: u64, operation: &IdempotencyKey,
-    budget: WorkBudget, cancellation: &CancellationToken,
-) -> MeasuredResult<OperationReceipt<FileRef>, Error>
-where A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::AsyncObjectStore,
-{
-    source.validate_session(child, cwd, bytes, maximum_entries, maximum_bytes).map_err(OperationFailure::before_work)?;
-    filesystem.put_content_measured(volume, grant, path, bytes, "application/x-ndjson", "Pi child session", maximum_bytes, operation, budget, cancellation).await
-}
-
-/// Three immutable artifacts use the existing operation-upload metadata engine.
-/// A lost publication ACK is recovered by the same exact command/idempotency key.
-#[cfg(test)]
-pub(crate) async fn stage_command<A, O>(
-    filesystem: &FilesystemHost<A, O>, volume: &VolumeRef, grant: &ContentGrant,
-    command: OperationId, request: &NativeProcessRequest, maximum_bytes: u64,
-    budget: WorkBudget, cancellation: &CancellationToken,
-) -> MeasuredResult<OperationReceipt<(WorkflowCommand, TaskEffectPlan)>, Error>
-where A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::AsyncObjectStore,
-{
-    let mut work = WorkCounters::default();
-    let request_reference = stage_artifact(filesystem, volume, grant, command, "request", request, "application/json", maximum_bytes, budget, cancellation, &mut work).await?;
-    let result_schema = stage_artifact(filesystem, volume, grant, command, "schema", &result_schema().map_err(|error| OperationFailure::new(error, work))?, "application/schema+json", maximum_bytes, budget, cancellation, &mut work).await?;
-    let plan = TaskEffectPlan { provider: PI_NATIVE_PROVIDER.to_owned(), guarantee: EffectGuarantee::AtMostOnce,
-        effect_kind: NATIVE_PROCESS_EFFECT_KIND.to_owned(), request: request_reference, result_schema };
-    let payload = stage_artifact(filesystem, volume, grant, command, "plan", &plan, "application/json", maximum_bytes, budget, cancellation, &mut work).await?;
-    Ok(OperationReceipt { value: (WorkflowCommand { operation_id: command, kind: EFFECT_TASK_COMMAND_KIND.to_owned(), payload }, plan), work })
-}
-
-#[cfg(test)]
-#[allow(clippy::too_many_arguments, reason = "bounded immutable publication carries the original upload operation")]
-async fn stage_artifact<A, O, T: Serialize>(
-    filesystem: &FilesystemHost<A, O>, volume: &VolumeRef, grant: &ContentGrant, command: OperationId,
-    role: &str, value: &T, media_type: &str, maximum_bytes: u64, budget: WorkBudget,
-    cancellation: &CancellationToken, work: &mut WorkCounters,
-) -> MeasuredResult<FileRef, Error>
-where A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::AsyncObjectStore,
-{
-    let bytes = encode_artifact(value, maximum_bytes).map_err(|error| OperationFailure::new(error, *work))?;
-    if maximum_bytes == 0 || bytes.len() as u64 > maximum_bytes {
-        return Err(OperationFailure::new(invalid("Pi native effect artifact exceeds its byte bound"), *work));
-    }
-    let operation = IdempotencyKey::new(format!("pi-native:{command}:{role}"))
-        .map_err(|error| OperationFailure::new(error, *work))?;
-    let remaining = work.remaining(budget).map_err(|error| OperationFailure::new(invalid(&error.to_string()), *work))?;
-    let result = filesystem.put_content_measured(volume, grant, &format!("pi-native/{command}/{role}.json"), &bytes,
-        media_type, role, maximum_bytes, &operation, remaining, cancellation).await;
-    match result {
-        Ok(receipt) => { *work = work.checked_add(receipt.work).map_err(|error| OperationFailure::new(invalid(&error.to_string()), *work))?; Ok(receipt.value) }
-        Err(failure) => Err(failure.map_with_prior_work(*work, |error| error)),
-    }
-}
-
 fn result_schema() -> Result<&'static serde_json::value::RawValue> {
     // A borrowed, immutable schema: the trusted codec owns only its admitted
     // output bytes, never an intermediate json! Value tree.
     serde_json::from_str(r#"{"type":"object","additionalProperties":false,"required":["success","exit_code","stdout","stderr","stop"],"properties":{"success":{"type":"boolean"},"exit_code":{"type":["integer","null"]},"stdout":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255}},"stderr":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255}},"stop":{"oneOf":[{"type":"null"},{"type":"object","additionalProperties":false,"required":["kind","message","cleanup_completed"],"properties":{"kind":{"enum":["output_limit","timeout","control_stopped","capture_failed"]},"message":{"type":"string"},"cleanup_completed":{"type":"boolean"}}}]}}}"#).map_err(decode_error)
-}
-
-#[cfg(test)]
-fn encode_artifact(value: &impl Serialize, maximum_bytes: u64) -> Result<Vec<u8>> {
-    if maximum_bytes == 0 { return Err(invalid("Pi artifact requires a positive byte bound")); }
-    let maximum = maximum_bytes.min(super::MAXIMUM_ADAPTER_STATE_BYTES);
-    let mut output = super::BoundedJsonBuffer::with_limit(usize::try_from(maximum).map_err(|error| invalid(&error.to_string()))?);
-    serde_json::to_writer(&mut output, value).map_err(decode_error)?;
-    Ok(output.bytes)
 }
 
 fn pi_native_string(value: &str, work: &NativeMaterializationWork) -> Result<(String, acyclic_fs::NativeAllocation)> {
@@ -1986,39 +1830,6 @@ fn pi_native_vec<T>(capacity: usize, work: &NativeMaterializationWork) -> Result
         return Err(Error::NativeWork { cause, custody: Some(custody) });
     }
     Ok((value, custody))
-}
-
-/// The SDK lends its actual invocation carrier outside the work mutex. Root
-/// owner/grant IO uses that same complete ledger; no budget, receipt, allocation
-/// loan, cancellation root or diagnostic is reconstructed at this boundary.
-pub(crate) async fn lazy_publication_guard<P: StreamProvider>(
-    owner: NativeViewOwner<'_, P>, volume: &VolumeRef, verifier: &AuthorityVerifier, scope: &Scope,
-    work: acyclic_fs::native_mount::NativeMountMeterWork, original_error: &Mutex<Option<Error>>,
-) -> std::result::Result<(), acyclic_fs::native_mount::MountSourceError> {
-    let work = work.native_materialization_work();
-    let result = async {
-        owner.verify_with_native_work(&work).await?;
-        ContentGrant::verify(verifier, scope, volume, VolumeOperation::Write)?;
-        owner.require_volume_grant_with_native_work(volume, VolumeOperation::Write, &work)?;
-        Ok(())
-    }.await;
-    result.map_err(|error| retain_publication_guard_error(error, original_error))
-}
-
-fn retain_publication_guard_error(
-    error: Error, original_error: &Mutex<Option<Error>>,
-) -> acyclic_fs::native_mount::MountSourceError {
-    use acyclic_fs::{NativeTreeMaterializationError, native_mount::MountSourceError};
-    let signal = match &error {
-        Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. } => MountSourceError::Cancelled,
-        Error::NativeWork { cause: NativeTreeMaterializationError::Work(work), .. } => MountSourceError::Work(*work),
-        _ => MountSourceError::Stale,
-    };
-    // Stale is only the SDK callback's interruption signal. The public boundary
-    // returns this entire original Root error, including any retained custody.
-    let mut original = original_error.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if original.is_none() { *original = Some(error); }
-    signal
 }
 
 #[cfg(test)]

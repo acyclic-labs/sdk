@@ -1,6 +1,6 @@
 //! Pi controls borrow the original task mailbox, never a service-local inbox.
 use super::{pi_owner::PiOwnerConfig, pi_root_provider::{
-    stage_pi_input_with_native_work, guarded_pi_decode, guarded_pi_value}};
+    stage_pi_input, guarded_pi_decode, guarded_pi_value}};
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, LocalAuthorityBackend, LocalObjectBackend,
     NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError, WorkCounters};
 use acyclic_harness::{Error, OperationId, Outcome, Result, TaskId,
@@ -17,8 +17,7 @@ pub(crate) const MAXIMUM_PI_MAIL_BYTES: u64 = 65_536;
 #[serde(rename_all = "snake_case")]
 pub(crate) enum PiMailKind { Message, Steer }
 
-/// First-party immutable payload. Sender identity is the actual fenced mailbox
-/// publisher, not a field supplied by Pi or the root service.
+/// First-party immutable payload.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiMailEnvelope {
@@ -28,7 +27,6 @@ pub(crate) struct PiMailEnvelope {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PiMailPayload { sender: TaskId, envelope: PiMailEnvelope }
-
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -80,9 +78,7 @@ fn validate_envelope(envelope: &PiMailEnvelope) -> Result<()> {
     Ok(())
 }
 
-/// Parent supplies its retained graph check. This stages only immutable inputs
-/// with protected original-owner authority; it does not send as that root.
-/// The returned command MUST be executed by caller's original workflow/lease.
+/// Parent supplies its retained graph check.
 #[allow(clippy::too_many_arguments, reason = "explicit original task and protected immutable input owner")]
 pub(crate) async fn prepare_send<P: StreamProvider, F: FnOnce(TaskId, TaskId) -> Result<()>>(
     context: &TaskContext, owner: &TaskJournalOwner<P>, protected: &PiOwnerConfig,
@@ -97,8 +93,7 @@ pub(crate) async fn prepare_send<P: StreamProvider, F: FnOnce(TaskId, TaskId) ->
     Ok((command.value, command.custody))
 }
 
-/// Trusted actor input staging for a passive root. No mail is dispatched here;
-/// the resulting command still needs its original task's fresh execution owner.
+/// Trusted actor input staging for a passive root.
 #[allow(clippy::too_many_arguments, reason = "original protected actor and exact immutable sender/recipient input")]
 pub(crate) async fn stage_send(
     protected: &PiOwnerConfig,
@@ -108,10 +103,10 @@ pub(crate) async fn stage_send(
 ) -> Result<(WorkflowCommand, NativeAllocation)> {
     validate_envelope(&envelope)?;
     let stored = PiMailPayload { sender: caller, envelope };
-    let staged = owned(stage_pi_input_with_native_work(
+    let staged = owned(stage_pi_input(
         protected, filesystem, operation, "mail-envelope", &stored, work).await?);
     let payload = MailSendTaskCommand { recipient, payload: staged.value };
-    let mut command = owned(stage_pi_input_with_native_work(
+    let mut command = owned(stage_pi_input(
         protected, filesystem, operation, "mail-send", &payload, work).await?);
     drop(payload);
     drop(staged.custody);
@@ -129,8 +124,7 @@ pub(crate) async fn stage_send(
     Ok((WorkflowCommand { operation_id: operation, kind, payload: command.value }, command.custody))
 }
 
-/// A normal control command; the hosting root must resume its original passive
-/// checkpoint before executing it. Children use their native process lease.
+/// A normal control command; the hosting root must resume its original passive checkpoint before executing it.
 pub(crate) async fn execute_send<P, A, O>(runtime: &FilesystemTaskRuntime<P, A, O>,
     context: TaskContext, owner: &TaskJournalOwner<P>, fence: LeaseFence, command: WorkflowCommand,
     work: &NativeMaterializationWork,
@@ -180,7 +174,6 @@ fn decode<T: NativeMailboxDto>(
 }
 
 /// Passive polling acquires no reservation and charges no workflow task steps.
-/// The service supplies its authenticated retained caller binding, never tool JSON.
 pub(crate) async fn receive<P, A, O>(runtime: &FilesystemTaskRuntime<P, A, O>,
     caller: &super::PiTaskBinding, after: u64, maximum: u32, work: &NativeMaterializationWork,
 ) -> Result<(Option<PiMailboxReceive>, NativeAllocation)>
@@ -212,9 +205,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     Ok((Some(PiMailboxReceive { item, sender: payload.value.sender, envelope: payload.value.envelope }), items.custody))
 }
 
-
 /// Passive wait uses only the original admitted task and bounded own inbox.
-/// No process future or execution lease is created by a wait/poll request.
 pub(crate) async fn wait<P, A, O, F>(runtime: &FilesystemTaskRuntime<P, A, O>,
     caller: &super::PiTaskBinding, requested: TaskId, after: u64, authorize: F,
     work: &NativeMaterializationWork,

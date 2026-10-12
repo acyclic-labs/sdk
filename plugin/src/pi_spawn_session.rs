@@ -1,8 +1,4 @@
 //! SpawnCommit consumes the original SDK cut and ordinary fork preparation.
-//! The catalog barriers precede creator execution and native background dispatch.
-//! SDK reply custody spans source decoding, catalog saves and native registration.
-//! Cached pending/routes retain independent original-ledger custody in the actor;
-//! backing custody outlives its physical deque, and failed promotion restores both.
 
 use super::*;
 use acyclic_fs::{LazySnapshotRef, NativeAllocation, NativeMaterializationWork};
@@ -129,7 +125,7 @@ impl PiSession {
         let task = commit.child.task_id;
         let cancellation = work.cancellation();
         let mut retained_custody = Some(commit_custody);
-        let coordinator = pi_fork::PiForkCoordinator::new_with_native_work(self.runtime.clone(), self.filesystem.clone(),
+        let coordinator = pi_fork::PiForkCoordinator::new(self.runtime.clone(), self.filesystem.clone(),
             self.stream.clone(), &self.resources, native.original_owner(), &work)?;
         let plan = coordinator.load_original_plan(original, work.remaining().map_err(native_error)?, &cancellation)
             .await?;
@@ -456,7 +452,7 @@ impl PiSession {
         let launch = pi_native::PiNativeLaunchIntent { agent_alias: alias.clone(), child_session_id: child_session_id.clone(),
             source: cut, invocation, session_path: "session.jsonl".to_owned(), session_bytes,
             maximum_entries: 4096, maximum_bytes };
-        launch.validate()?;
+        launch.validate(&work)?;
         let child = PiTaskBinding { native_session_id: child_session_id, task_id: task, agent_id: operations.agent,
             project_volumes: BTreeMap::from([(root_key, project)]),
             scratch: PiScratchBinding { volume: scratch, allocation: PiScratchAllocation::Preparing },
@@ -469,7 +465,7 @@ impl PiSession {
         &self, owner: &pi_owner::PiOwnerConfig, operation: acyclic_harness::OperationId, label: &str,
         work: &NativeMaterializationWork,
     ) -> acyclic_harness::Result<Option<(T, NativeAllocation)>> {
-        let reference = pi_root_provider::observe_pi_input_with_native_work(
+        let reference = pi_root_provider::observe_pi_input(
             owner, &self.filesystem, operation, label, work).await?;
         let Some((reference, reference_custody)) = reference else { return Ok(None); };
         // Owned data is declared after its guard so unwinding destroys data first.
@@ -495,7 +491,7 @@ impl PiSession {
         &self, owner: &pi_owner::PiOwnerConfig, operation: acyclic_harness::OperationId, kind: &str, payload: &T,
         work: &NativeMaterializationWork,
     ) -> acyclic_harness::Result<(WorkflowCommand, NativeAllocation)> {
-        let (payload, custody) = pi_root_provider::stage_pi_input_with_native_work(
+        let (payload, custody) = pi_root_provider::stage_pi_input(
             owner, &self.filesystem, operation, "command", payload, work).await?;
         Ok((WorkflowCommand { operation_id: operation, kind: kind.to_owned(), payload }, custody))
     }
@@ -506,7 +502,7 @@ impl PiSession {
     ) -> acyclic_harness::Result<(Option<(Value, NativeAllocation)>, Option<(Vec<PendingSpawn>, NativeAllocation)>, Option<pi_fork::PreparedPiFork>)> {
         let fork = pi_fork_host::PiForkHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
             &self.resources, native.original_owner(), &self.state, &self.roots, native.clone());
-        let selected = pi_selected_host::PiSelectedHost::new_with_native_work(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
+        let selected = pi_selected_host::PiSelectedHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
             &self.resources, native.original_owner(), &self.state, &self.roots, native, work)?;
         let workflow = pi_workflow::PiWorkflowHost::new(&self.relative_directory, self.runtime.clone(), self.filesystem.clone(),
             self.stream.clone(), &self.resources, &self.state).with_controls(&fork, &selected).with_work(work.clone());
@@ -717,7 +713,7 @@ impl PiSession {
                 published_generation: prepared.native_lazy.authored_generation.digest().into_bytes() } },
             mount_path: &pending.mount_path, lifecycle: RouteLifecycle::Mounting };
         if self.state.routes.contains_key(&commit.alias) { return Err(acyclic_harness::Error::Invalid("Pi created alias was already registered".to_owned())); }
-        let (bytes, bytes_custody) = pi_root_provider::canonical_pi_value_with_native_work(
+        let (bytes, bytes_custody) = pi_root_provider::canonical_pi_value(
             &(commit.alias.as_str(), &route), MAXIMUM_ADAPTER_STATE_BYTES, work)?;
         let bytes = bytes;
         let ((route_key, route), mut route_custody): ((String, Route), NativeAllocation) =

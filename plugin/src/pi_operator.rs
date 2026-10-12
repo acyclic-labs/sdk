@@ -113,29 +113,24 @@ impl PiOperatorRequest {
     }
 }
 
-
 fn invalid(message: impl Into<String>) -> Error { Error::Invalid(message.into()) }
 fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error { Error::NativeWork { cause, custody: None } }
-pub(crate) fn accept<T>(work: &NativeMaterializationWork,
-    result: acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<T>, Error>) -> Result<T> {
-    match result {
-        Ok(receipt) => { work.spent(receipt.work).map_err(native_error)?; Ok(receipt.value) }
-        Err(failure) => { work.spent(*failure.work).map_err(native_error)?;
-            Err(failure.error) }
-    }
-}
-pub(crate) fn body_hash(body: &PiOperatorBody, work: &NativeMaterializationWork) -> Result<String> {
+pub(crate) fn body_hash(body: &PiOperatorBody, work: &NativeMaterializationWork) -> Result<(String, NativeAllocation)> {
     if body.session().is_empty() || body.session().len() > 512 || body.operation().is_empty()
         || body.operation().len() > 512 { return Err(invalid("operator requires its bounded original session and SDK operation")); }
     canonical_hash(body, work)
 }
-fn canonical_hash<T: Serialize>(body: &T, work: &NativeMaterializationWork) -> Result<String> {
-    let mut budget = work.remaining().map_err(native_error)?;
-    budget.bytes_encoded = budget.bytes_encoded.min(crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64);
-    accept(work, pi_root_provider::digest_pi_value(body, budget, work.cancellation()))
+fn canonical_hash<T: Serialize>(body: &T, work: &NativeMaterializationWork) -> Result<(String, NativeAllocation)> {
+    let maximum = work.remaining().map_err(native_error)?.bytes_encoded.min(crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64);
+    let bytes = pi_root_provider::canonical_pi_value(body, maximum, work)?;
+    work.charge(WorkCounters { bytes_hashed: bytes.0.len() as u64, ..WorkCounters::UNCHARGED }).map_err(native_error)?;
+    let digest = blake3::hash(&bytes.0);
+    drop(bytes.0);
+    drop(bytes.1);
+    work.display(&format_args!("{}", digest.to_hex())).map_err(native_error)
 }
 pub(crate) fn approval_body_hash(prepared: &PiPreparedApproval, digest: &str,
-    decision: PiOperatorDecision, work: &NativeMaterializationWork) -> Result<String> {
+    decision: PiOperatorDecision, work: &NativeMaterializationWork) -> Result<(String, NativeAllocation)> {
     #[derive(Serialize)]
     struct BorrowedApproval<'a> {
         action: &'static str, prepared: &'a PiPreparedApproval, digest: &'a str, decision: PiOperatorDecision,
@@ -146,7 +141,8 @@ fn capability(body: &PiOperatorBody, hash: &str) -> String { format!("pi:operato
 
 pub(crate) fn build_control_request(owner: &PiOwnerConfig, cwd: PathBuf,
     body: PiOperatorBody, work: &NativeMaterializationWork) -> Result<(ControlRequest, acyclic_fs::NativeAllocation)> {
-    let hash = body_hash(&body, work)?;
+    let hash_custody = body_hash(&body, work)?;
+    let hash = &hash_custody.0;
     let authority = owner.authority()?;
     let operator = authority.issuer.root_for_agent(owner.policy().agent,
         format!("pi:operator:{}:{hash}", body.session()), Capabilities::new([capability(&body, &hash)]));
@@ -165,7 +161,8 @@ pub(crate) fn build_control_request(owner: &PiOwnerConfig, cwd: PathBuf,
 pub(crate) fn verify_request(owner: &PiOwnerConfig, session: &str, request: &PiOperatorRequest,
     work: &NativeMaterializationWork) -> Result<()> {
     owner.authority()?.verifier.verify(&request.operator)?;
-    let hash = body_hash(&request.body, work)?;
+    let hash_custody = body_hash(&request.body, work)?;
+    let hash = &hash_custody.0;
     if request.session_id != session || request.body.session() != session
         || request.operator.agent() != Some(owner.policy().agent)
         || request.operator.id() != format!("pi:operator:{session}:{hash}")
@@ -266,8 +263,7 @@ pub(crate) const fn prepared_labels_bytes() -> u64 {
     ])
 }
 
-/// Audited closed operator DTO quota, including its internally tagged body and
-/// adjacent VolumeOwner content. Logical admission is not physical allocation.
+/// Audited closed operator DTO quota, including its internally tagged body and adjacent VolumeOwner content.
 fn operator_owned_quota(items: u64, input_bytes: u64, scratch: u64) -> Result<u64> {
     let body_labels_bytes = pi_root_provider::pi_serde_diagnostic_labels_bytes(&[
         "PiOperatorBody", "PiOperatorFileEvidence", "PiOperatorFileCursor", "PiOperatorDecision",

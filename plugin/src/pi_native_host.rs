@@ -1,15 +1,4 @@
 //! Native Pi commands composed with the original task, effect and filesystem owners.
-//! This host retains live capabilities only; routes and durable recovery live in the
-//! existing admission, preparation, content-upload and effect journals.
-//! Operator selection and lifecycle methods borrow the caller's original work
-//! span; nested cleanup never creates another ledger or wraps constructor denial.
-//! Pi dispatch requires the SDK's checked native-command lane and frozen task
-//! context. Background driver results carry their original query/attempt custody;
-//! consumers must drop the attempt, lease and result value before that custody.
-//! Live-source and binding queries use that same span and retain original binding
-//! DTO custody; a source query never substitutes a new scope or current head.
-//! Finite lazy service construction funds resource metadata and the real known
-//! host payload; the original protected owner is shared without credential copies.
 
 use crate::{LocalAuthorityBackend, LocalObjectBackend,
     LocalLazyWorkspace, LocalSingleMount, PiScratchAllocation, PiTaskBinding, ServiceResources,
@@ -53,7 +42,6 @@ pub(crate) struct PiNativeLiveSource {
 }
 
 /// Catalog identity plus an already authenticated selected source capability.
-/// Neither paths nor the source's current head are used to reconstruct identity.
 pub(crate) struct PiNativeColdLocator {
     pub(crate) parent: TaskId,
     pub(crate) sdk_operation: String,
@@ -257,16 +245,8 @@ pub(crate) struct PiNativeCommandHost {
 }
 
 impl PiNativeCommandHost {
-    pub(crate) fn new(runtime: Arc<PiNativeRuntime>, filesystem: Arc<PiNativeFilesystem>,
-        stream: StreamClient<LocalStream>, resources: ServiceResources, protected: Arc<PiOwnerConfig>,
-    ) -> Result<Arc<Self>> {
-        runtime.verify_owner(&protected)?;
-        protected.native_runtime()?.validate()?;
-        Ok(Arc::new(Self { runtime, filesystem, stream, resources, protected,
-            entries: RwLock::new(BTreeMap::new()), _factory_custody: None }))
-    }
 
-    pub(crate) fn new_with_native_work(runtime: Arc<PiNativeRuntime>, filesystem: Arc<PiNativeFilesystem>,
+    pub(crate) fn new(runtime: Arc<PiNativeRuntime>, filesystem: Arc<PiNativeFilesystem>,
         stream: StreamClient<LocalStream>, resources: &ServiceResources, protected: PiOwnerConfig,
         work: &NativeMaterializationWork,
     ) -> Result<Arc<Self>> {
@@ -414,7 +394,7 @@ impl PiNativeCommandHost {
         let locator = entry.cold.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
             .ok_or_else(|| unauthorized("Pi cold child has no authenticated original source capability"))?;
         self.bind_invocation_work(owner.task_id(), work).await?;
-        let coordinator = PiForkCoordinator::new_with_native_work(self.runtime.clone(), self.filesystem.clone(),
+        let coordinator = PiForkCoordinator::new(self.runtime.clone(), self.filesystem.clone(),
             self.stream.clone(), &self.resources, Arc::clone(&self.protected), work)?;
         let original = pi_fork::original_operation_with_native_work(self.protected.policy().root_task,
             locator.parent, &locator.sdk_operation, work)?;
@@ -479,7 +459,7 @@ impl PiNativeCommandHost {
     fn copy_binding_with_work(&self, prepared: &PreparedNative, work: &NativeMaterializationWork)
         -> Result<(PiTaskBinding, NativeAllocation)> {
         let maximum = self.protected.policy().maximum_payload_bytes.min(prepared.admission.limits.file_bytes);
-        let bytes = crate::pi_root_provider::canonical_pi_value_with_native_work(&prepared.binding, maximum, work)?;
+        let bytes = crate::pi_root_provider::canonical_pi_value(&prepared.binding, maximum, work)?;
         crate::pi_root_provider::guarded_pi_decode::<PiTaskBinding>(
             &bytes.0, maximum, self.protected.policy().maximum_payload_bytes, JsonValueSchema::None,
             crate::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES, work,
@@ -662,14 +642,6 @@ impl PiNativeCommandHost {
         Some(permit)
     }
 
-    /// The same token already held by this caller's actual native FS view.
-    /// A prepared-only or stopped source cannot supply a caller invocation token.
-    pub(crate) fn invocation_cancellation(&self, task: TaskId) -> Result<Option<CancellationToken>> {
-        let Some(view) = self.live_view(task) else { return Ok(None); };
-        Ok(Some(<PiNativeLiveView as acyclic_harness::filesystem::NativeProcessView<LocalStream>>
-            ::operation_cancellation(view.as_ref()).clone()))
-    }
-
     /// Borrow the original live invocation ledger; never initialize another cap
     /// for an IO event, prepared-only child, terminal task or selected source.
     pub(crate) async fn invocation_work(&self, task: TaskId) -> Result<NativeMaterializationWork> {
@@ -691,24 +663,6 @@ impl PiNativeCommandHost {
         self.child_admission_with_work(task, &work).await?;
         bound.owner.verify_with_native_work(false, &work).await?;
         Ok(work)
-    }
-
-    /// Returns only the original runner's warm owner. Terminal queries retain
-    /// their real outcome custody; no lease, fence or source scope is recreated.
-    pub(crate) async fn invocation_owner(&self, task: TaskId,
-        work: &NativeMaterializationWork,
-    ) -> Result<Arc<TaskJournalOwner<LocalStream>>> {
-        self.child_admission_with_work(task, work).await?;
-        let entry = self.find_entry(task).ok_or_else(|| unauthorized("Pi owner has no original native handles"))?;
-        let bound = entry.handles.lock().await.effect.clone()
-            .ok_or_else(|| unauthorized("Pi owner has no original native runner"))?;
-        let owner = bound.runner.original_owner();
-        if owner.task_id() != task || bound.context().durable_task_id() != Some(task) {
-            return Err(unauthorized("Pi owner differs from its original task and context"));
-        }
-        let outcome = owner.outcome_with_native_work(work).await?;
-        if outcome.0.is_none() { owner.verify_with_native_work(false, work).await?; }
-        Ok(Arc::clone(owner))
     }
 
     pub(crate) async fn request_scratch_disposal(&self, task: TaskId) -> Result<()> {
@@ -1155,7 +1109,7 @@ impl PiNativeCommandHost {
         let mut admission = self.runtime.runtime.task_host()
             .observe_admission_with_native_work(task, work).await?;
         let maximum = self.protected.policy().maximum_payload_bytes.min(admission.0.limits.file_bytes);
-        let bytes = crate::pi_root_provider::canonical_pi_value_with_native_work(
+        let bytes = crate::pi_root_provider::canonical_pi_value(
             &admission.0.input, maximum, work,
         )?;
         let mut input = crate::pi_root_provider::guarded_pi_decode::<PiTaskInput>(
@@ -1221,9 +1175,9 @@ impl PiNativeCommandHost {
         {
             return Err(unauthorized("Pi native command, scope or fence differs from its original admission"));
         }
-        let original = PiNativeLaunchIntent::load_with_work(context, &command.payload, work).await?;
+        let original = PiNativeLaunchIntent::load(context, &command.payload, work).await?;
         let maximum = self.protected.policy().maximum_payload_bytes.min(context.scope().limits().file_bytes);
-        let supplied_bytes = crate::pi_root_provider::canonical_pi_value_with_native_work(&payload, maximum, work)?;
+        let supplied_bytes = crate::pi_root_provider::canonical_pi_value(&payload, maximum, work)?;
         let supplied = crate::pi_root_provider::guarded_pi_decode::<PiNativeLaunchIntent>(
             &supplied_bytes.0, maximum, self.protected.policy().maximum_payload_bytes,
             JsonValueSchema::None, pi_native::PI_NATIVE_LAUNCH_DIAGNOSTIC_LABEL_BYTES, work,
@@ -1311,7 +1265,7 @@ impl PiNativeCommandHost {
             request: &effect.request, result_schema: &effect.result_schema,
         };
         let maximum = self.protected.policy().maximum_payload_bytes.min(context.scope().limits().file_bytes);
-        let bytes = crate::pi_root_provider::canonical_pi_value_with_native_work(&borrowed, maximum, work)?;
+        let bytes = crate::pi_root_provider::canonical_pi_value(&borrowed, maximum, work)?;
         let plan = crate::pi_root_provider::guarded_pi_decode::<TaskEffectPlan>(
             &bytes.0, maximum, self.protected.policy().maximum_payload_bytes, JsonValueSchema::None,
             crate::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES, work,
@@ -1368,7 +1322,7 @@ impl PiNativeCommandHost {
         let prepared = self.prepared(owner.task_id()).ok_or_else(||
             unauthorized("Pi native first dispatch requires actual reopened sealed preparation capabilities"))?;
         validate_child_binding(&prepared.binding, &input.binding)?;
-        intent.validate_with_work(work)?;
+        intent.validate(work)?;
         if intent.invocation.environment.keys().any(|key| reserved_environment(key)) {
             return Err(unauthorized("Pi retained invocation supplied a replacement caller credential"));
         }
@@ -1384,7 +1338,7 @@ impl PiNativeCommandHost {
             return Err(unauthorized("Pi native capture differs from its original protected root bounds"));
         }
         let maximum = self.protected.policy().maximum_payload_bytes.min(root_admission.0.limits.file_bytes);
-        let root_bytes = crate::pi_root_provider::canonical_pi_value_with_native_work(
+        let root_bytes = crate::pi_root_provider::canonical_pi_value(
             &root_admission.0.input, maximum, work,
         )?;
         let root = crate::pi_root_provider::guarded_pi_decode::<PiTaskInput>(
@@ -1392,7 +1346,7 @@ impl PiNativeCommandHost {
             crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES, work,
         )?;
         let root_session = &root.0.binding.native_session_id;
-        let caller_environment = pi_caller::issued_environment_with_work(
+        let caller_environment = pi_caller::issued_environment(
             &self.protected, &root_session, &prepared.binding, work,
         )?;
         let mut invocation = self.protected.native_runtime_with_native_work(work)?
@@ -1423,7 +1377,7 @@ impl PiNativeCommandHost {
                 let scratch_context = Arc::clone(&shared).with_output_volume_with_native_work(
                     &prepared.binding.scratch.volume, work)?;
                 if handles.session.is_none() {
-                    handles.session = Some(intent.publish_session_with_work(scratch_context.context(),
+                    handles.session = Some(intent.publish_session(scratch_context.context(),
                         command.operation_id, work).await?);
                 }
                 let generation = generation(&handles.session.as_ref()
@@ -1516,7 +1470,7 @@ impl PiNativeCommandHost {
         let result_volume = &prepared.binding.results.as_ref().ok_or_else(|| unauthorized("Pi result selection vanished"))?.volume;
         let result_context = Arc::clone(&shared).with_output_volume_with_native_work(result_volume, work)?;
         let request = intent.request_with_work(&prepared.binding, view.manifest(), work)?;
-        let (stock, plan, staged_custody) = pi_native::stage_context_command_with_work(result_context.context(),
+        let (stock, plan, staged_custody) = pi_native::stage_command(result_context.context(),
             command.operation_id, &request.0, work).await?;
         let journal = self.journal(&owner, context, input, command.operation_id, work).await?;
         let approval = pi_native::approve_command(&self.protected, &owner, context, &prepared.binding,
