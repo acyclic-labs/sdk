@@ -1,4 +1,5 @@
 use super::*;
+use crate::{executor::stock_boundary, wire::ErrorCode};
 
 /// Replaceable memory/retrieval/skill source used by reusable stock stages.
 pub trait ContextSource: acyclic_stream::ProviderPlatform {
@@ -15,6 +16,7 @@ pub trait ContextSource: acyclic_stream::ProviderPlatform {
         false
     }
 }
+
 /// Placement of source messages relative to existing context.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -25,6 +27,7 @@ pub enum ContextPlacement {
     /// Insert after current messages.
     Append,
 }
+
 /// Reusable stage for memory, retrieval, or skills.
 pub struct SourceStage {
     name: String,
@@ -32,6 +35,7 @@ pub struct SourceStage {
     source: Arc<dyn ContextSource>,
     placement: ContextPlacement,
 }
+
 impl SourceStage {
     /// Creates a named source stage; `memory`, `retrieval`, and `skills` are ordinary names.
     #[must_use]
@@ -61,13 +65,13 @@ impl SourceStage {
         work.remaining()?;
         if !crate::is_valid_component_label(name) || !crate::is_valid_component_label(revision) {
             return Err(crate::Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
+                code: ErrorCode::Invalid,
                 reason: "context source identity is invalid",
             });
         }
         if !source.supports_native() {
             return Err(crate::Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
+                code: ErrorCode::Unsupported,
                 reason: "context source has no native capability",
             });
         }
@@ -86,26 +90,16 @@ impl SourceStage {
             io.into_custody()?,
         ))
     }
-
-    fn contract_value(&self) -> Value {
-        serde_json::json!({
-            "name": self.name,
-            "revision": self.revision,
-            "placement": match self.placement {
-                ContextPlacement::Prepend => "prepend",
-                ContextPlacement::Append => "append",
-            },
-        })
-    }
 }
+
 impl ContextStage for SourceStage {
     fn validate(&self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
         if !crate::is_valid_component_label(&self.name)
             || !crate::is_valid_component_label(&self.revision)
         {
-            return Err(crate::executor::stock_boundary(
+            return Err(stock_boundary(
                 io,
-                crate::wire::ErrorCode::Invalid,
+                ErrorCode::Invalid,
                 "context source identity is invalid",
             ));
         }
@@ -115,9 +109,9 @@ impl ContextStage for SourceStage {
             .is_some()
             && !self.source.supports_native()
         {
-            return Err(crate::executor::stock_boundary(
+            return Err(stock_boundary(
                 io,
-                crate::wire::ErrorCode::Unsupported,
+                ErrorCode::Unsupported,
                 "context source has no native capability",
             ));
         }
@@ -129,57 +123,25 @@ impl ContextStage for SourceStage {
     }
 
     fn contract(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Value> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let custody =
-            if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
-                self.validate(io)?;
-                let placement = match self.placement {
-                    ContextPlacement::Prepend => "prepend",
-                    ContextPlacement::Append => "append",
-                };
-                let text_bytes = [
-                    "name",
-                    "revision",
-                    "placement",
-                    self.name.as_str(),
-                    self.revision.as_str(),
-                    placement,
-                ]
-                .iter()
-                .try_fold(0_u64, |count, text| count.checked_add(text.len() as u64))
-                .ok_or_else(|| {
-                    crate::executor::stock_boundary(
-                        io,
-                        crate::wire::ErrorCode::Invalid,
-                        "context contract storage overflows",
-                    )
-                })?;
-                let owned = text_bytes
-                    .checked_add(3 * std::mem::size_of::<(String, Value)>() as u64)
-                    .ok_or_else(|| {
-                        crate::executor::stock_boundary(
-                            io,
-                            crate::wire::ErrorCode::Invalid,
-                            "context contract storage overflows",
-                        )
-                    })?;
-                let custody = work.claim(owned, 0, acyclic_fs::WorkCounters::default())?;
-                work.charge(acyclic_fs::WorkCounters {
-                    bytes_copied: text_bytes,
-                    allocation_operations: 6,
-                    ..acyclic_fs::WorkCounters::default()
-                })?;
-                Some(custody)
-            } else {
-                None
-            };
-        let _ = io;
-        let value = self.contract_value();
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(custody) = custody {
-            io.expect("native ledger").absorb_native_custody(custody)?;
+        self.validate(io)?;
+        #[derive(Serialize)]
+        struct Contract<'a> {
+            name: &'a str,
+            revision: &'a str,
+            placement: ContextPlacement,
         }
-        Ok(value)
+        let contract = Contract {
+            name: &self.name,
+            revision: &self.revision,
+            placement: self.placement,
+        };
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = io.and_then(crate::executor::PreparationIo::original_native_work) {
+            let (value, custody) = context_contract_native(&contract, work)?;
+            io.expect("native ledger").absorb_native_custody(custody)?;
+            return Ok(value);
+        }
+        serde_json::to_value(contract).map_err(|error| crate::Error::Invalid(error.to_string()))
     }
 
     fn apply<'a>(

@@ -38,6 +38,7 @@ impl<'a> NativeStreamOutput<WireMeter<'a>> {
         Ok(owned)
     }
 
+    #[cfg(feature = "local")]
     pub(crate) fn ensure_vector<T>(
         &mut self,
         values: &mut Vec<T>,
@@ -82,6 +83,7 @@ impl<'a> NativeStreamOutput<WireMeter<'a>> {
         Ok(())
     }
 
+    #[cfg(feature = "local")]
     pub(crate) fn retire(&mut self, bytes: usize) -> std::io::Result<()> {
         #[cfg(target_arch = "wasm32")]
         let _ = bytes;

@@ -195,6 +195,7 @@ impl Drop for SourceDirectoryPublication {
 }
 impl SourceDirectoryPublication {
     fn retire(&mut self) -> Result<(), DemandError> {
+        self.state.take();
         if let Some(original) = self.original.take() {
             original.with_original_leaf(|work| {
                 work.complete(publication_cleanup(), publication_cleanup())
