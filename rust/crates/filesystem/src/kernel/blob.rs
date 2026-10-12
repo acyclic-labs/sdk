@@ -14,14 +14,11 @@ use super::codec::{DecodedPageKind, DecodedPageShape};
 use crate::async_storage::{AsyncObjectStore, DecodedCacheKey};
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
-use crate::heap_future::in_heap;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::speculation::{ResidencyHint, ResidencyReason};
 use crate::storage::{
-    ByteRange, HashedObject, ObjectId, ObjectKind, ObjectReadRequest,
-    ObjectReadRetention, ObjectStoreError, object_digest,
+    ByteRange, HashedObject, ObjectId, ObjectKind, ObjectReadRequest, ObjectStoreError, object_digest,
 };
-use bytes::Bytes;
 use std::future::Future;
 use std::io::Read;
 use std::mem::size_of;

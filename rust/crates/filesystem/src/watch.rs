@@ -367,13 +367,13 @@ impl NativeWatchDriver {
     }
 
     fn watch_with_work<W: crate::demand::SourceDemandReadWork>(
-        &mut self, path: &Path, mode: RecursiveMode, work: &mut W,
+        &mut self, path: &Path, _mode: RecursiveMode, work: &mut W,
     ) -> Result<(), crate::demand::DemandError> {
         work.check()?;
         match self {
             #[cfg(target_os = "linux")]
             Self::Source { watcher, root, .. } => {
-                if mode != RecursiveMode::NonRecursive {
+                if _mode != RecursiveMode::NonRecursive {
                     return Err(NativeWatchError::BoundedObservationUnavailable.into());
                 }
                 let relative = path.strip_prefix(root)
@@ -627,7 +627,7 @@ fn namespace_hint_names_with_work<'a, W: crate::demand::SourceDemandReadWork>(
     }
     let backing = count.checked_mul(size_of::<LogicalName>()).ok_or(WorkError::Overflow)? as u64;
     let allocation = if let Some(original) = &original {
-        Some(original.claim_allocation(backing, u64::from(backing != 0), WorkCounters::UNCHARGED)?)
+        Some(original.claim_allocation(backing, u64::from(backing != 0), WorkCounters::UNCHARGED).map_err(crate::native_name::original_name_error)?)
     } else {
         work.allocate(backing)?;
         None

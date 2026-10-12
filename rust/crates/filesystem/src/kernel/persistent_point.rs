@@ -6,7 +6,7 @@ use super::persistent_btree::{Format, Page, children_within, leaf_within};
 use super::{DecodeLimits, persistent_io};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
-use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters};
+use crate::performance::{OperationFailure, OperationReceipt, WorkBudget};
 use crate::storage::ObjectId;
 
 pub(crate) type Failure = OperationFailure<Error>;

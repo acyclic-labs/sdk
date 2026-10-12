@@ -8,8 +8,7 @@
 
 use super::provider_stack;
 use super::{
-    DIRECTORY_PAGE_SIZE, MountContentPin, MountFilesystem, MountLookup,
-    MountNode, MountNodeKind, MountPath, MountSourceError, NativeMountError, NativeMountRequest,
+    DIRECTORY_PAGE_SIZE, MountContentPin, MountFilesystem, MountLookup, MountNodeKind, MountPath, MountSourceError, NativeMountError, NativeMountRequest,
     ViewObserver, ViewOrigin, ViewStamp,
 };
 use crate::FileId;

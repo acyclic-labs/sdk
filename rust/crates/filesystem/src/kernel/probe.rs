@@ -4,8 +4,8 @@
 use super::{
     AsyncRebaseProbe, BlobReadError, DecodeLimits, Dependency, DependencyError, DependencyRegion,
     DependencyState, DirectoryReadError, ExtentKind, ExtentReadError, ExtentSeekRequest,
-    ExtentSeekTarget, FilePayload, FileRecord, FileRecordReadError, GenerationRoot, ProbeReceipt,
-    TreeReadError, decode_generation_root,
+    ExtentSeekTarget, FilePayload, FileRecord, FileRecordReadError, ProbeReceipt,
+    TreeReadError,
 };
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
 use super::persistent_point::{Owned, retire_allocation};

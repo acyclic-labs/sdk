@@ -7,7 +7,6 @@ use super::persistent_point::{Owned, retire_allocation};
 use super::search::{binary_search_with_accounting, partition_point_with_accounting};
 use super::{
     CanonicalDecodeError, DecodeLimits, Extent, ExtentChild, ExtentKind, ExtentPage,
-    encode_extent_page,
 };
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;

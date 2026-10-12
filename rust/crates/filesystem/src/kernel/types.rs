@@ -408,7 +408,7 @@ impl LogicalName {
                 lowercase_unicode(
                     value,
                     &mut AllocationLedger::default(),
-                    &mut WorkCounters::UNCHARGED,
+                    &mut WorkCounters::default(),
                     WorkBudget::UNBOUNDED,
                     None,
                 ).expect("unbounded canonical lowercase allocation succeeds")

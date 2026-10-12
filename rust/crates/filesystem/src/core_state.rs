@@ -2075,9 +2075,9 @@ impl CoreLog {
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<Self, LocalCoreStateStoreError> {
         residents.write().unwrap_or_else(PoisonError::into_inner).adopt_native(work)?;
-        let (paths, mut paths_allocation) = root.measured_record(CORE_LOG_FAMILY, &[0; 16], work)?;
+        let (paths, paths_allocation) = root.measured_record(CORE_LOG_FAMILY, &[0; 16], work)?;
         crate::native_host::create_directories(&paths.directory, &mut &*work)?;
-        let mut file = match materialization_open_options(
+        let file = match materialization_open_options(
             &paths.current, &crate::native_host::NativeOpenOptions::ReadWriteCreateNew, work,
         ) {
             Ok(file) => { materialization_sync(&paths.directory, work)?; file }

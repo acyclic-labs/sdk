@@ -12,7 +12,6 @@ use crate::{
     OperationFailure, OperationReceipt, PinnedReader, ResolvedFileRangeReadRequest, WorkBudget,
     WorkCounters, WorkError,
 };
-use bytes::Bytes;
 #[cfg(unix)]
 use std::ffi::OsStr;
 use std::fs::File;

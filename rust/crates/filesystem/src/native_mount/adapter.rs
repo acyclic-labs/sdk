@@ -7584,7 +7584,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         A: 'static,
         O: 'static,
     {
-        let native_work = carrier.original_native_work().expect("capture uses its native invocation");
+        carrier.original_native_work().expect("capture uses its native invocation");
         let (effect, _allocation) = installed_changes(
             &candidate.base, &candidate.checkout, scope, carrier, cancellation,
         ).await?;

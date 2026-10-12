@@ -39,7 +39,7 @@ pub(crate) use view_gate::ViewGateReadAdmissions;
 
 mod view_ledger;
 pub(crate) use view_ledger::ViewObserverAdmissions;
-pub(crate) use view_ledger::{ViewLedger, ViewLedgerAdmission, ViewLedgerAdmissions};
+pub(crate) use view_ledger::{ViewLedgerAdmission, ViewLedgerAdmissions};
 pub use view_ledger::{ViewObserver, ViewOrigin, ViewStamp};
 
 mod lazy;
