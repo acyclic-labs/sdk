@@ -147,10 +147,7 @@ pub(super) fn with_normalized_windows_root_name<W: NativeHostWork, T>(
         };
         let begin = 8 + skip - prefix.len();
         let result = (|| {
-            let copied = WorkCounters {
-                bytes_copied: prefix.len() as u64 * 2,
-                ..WorkCounters::UNCHARGED
-            };
+            let copied = copy_work(prefix.len() as u64 * 2);
             work.admit(copied)?;
             buffer[begin..begin + prefix.len()].copy_from_slice(prefix);
             work.record(copied)?;
@@ -212,28 +209,6 @@ pub(crate) fn encode_root_path_name<W: NativeHostWork>(
 }
 
 #[cfg(windows)]
-pub(crate) fn normalize_root_wide<W: NativeHostWork>(
-    path: &Path,
-    work: &mut W,
-) -> Result<(Vec<u16>, W::Allocation), W::Error> {
-    let (name, live_bytes) = encode_root_path_name(path, work)?;
-    let short_absolute = path.is_absolute() && name.len() < 248;
-    if short_absolute || name.starts_with(&[92, 92, 63, 92]) || name.starts_with(&[92, 63, 63, 92])
-    {
-        return Ok((name, live_bytes));
-    }
-    let result = normalize_root_wide_name(&name, path.is_absolute(), work);
-    drop(name);
-    if let Err(error) = work.release(live_bytes) {
-        if let Ok((output, allocation)) = result {
-            drop(output);
-            work.release(allocation)?;
-        }
-        return Err(error);
-    }
-    result
-}
-#[cfg(windows)]
 pub(crate) fn normalize_root_wide_name<W: NativeHostWork>(
     name: &[u16],
     absolute: bool,
@@ -242,10 +217,7 @@ pub(crate) fn normalize_root_wide_name<W: NativeHostWork>(
     let mut owned = None;
     let result = with_normalized_windows_root_name(name, !absolute, work, |name, work| {
         let bytes = name.len() as u64 * 2;
-        let copied = WorkCounters {
-            bytes_copied: bytes,
-            ..WorkCounters::UNCHARGED
-        };
+        let copied = copy_work(bytes);
         work.admit(copied)?;
         let (mut output, allocation) = buffer(name.len(), work)?;
         let copied_result = (|| {

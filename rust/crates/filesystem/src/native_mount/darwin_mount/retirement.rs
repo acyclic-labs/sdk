@@ -3,8 +3,11 @@ use crate::materializer::NativeWorkReservation;
 
 pub(super) struct DarwinStopController {
     pub(super) state: Mutex<StopState>,
+    pub(super) observer: NativeWorkReservation,
     pub(super) changed: Condvar,
     pub(super) requested: AtomicBool,
+    pub(super) mounted: AtomicBool,
+    pub(super) provider_exited: AtomicBool,
     _allocation: crate::NativeAllocation,
 }
 
@@ -12,12 +15,9 @@ pub(super) struct StopState {
     pub(super) control: DarwinRecoveryControl,
     pub(super) probe: MountProbe,
     pub(super) credit: NativeWorkReservation,
-    pub(super) observer: Option<NativeWorkReservation>,
-    pub(super) start_wait: Option<NativeWorkReservation>,
-    retained_wait: Option<NativeWorkReservation>,
+    pub(super) waits: NativeWorkReservation,
     pub(super) retirement: Option<crate::native_mount::NativeMountRetirement>,
     pub(super) failure: Option<NativeMountError>,
-    pub(super) ready: bool,
 }
 
 impl DarwinStopController {
@@ -72,8 +72,7 @@ impl DarwinStopController {
         let state = StopState {
             control: DarwinRecoveryControl {
                 prepared_direct: Some(DirectDetach::new(
-                    Some(Arc::clone(resources)),
-                    destination,
+                    Arc::clone(&resources.startup.destination),
                     original,
                 )?),
                 prepared_diskutil: Some(Diskutil::prepare(original)?),
@@ -81,12 +80,12 @@ impl DarwinStopController {
             },
             probe,
             credit,
-            observer: Some(observer),
-            start_wait: Some(original.reserve_work(READ_WORK)?),
-            retained_wait: Some(original.reserve_work(READ_WORK)?),
+            waits: original.reserve_work(crate::WorkCounters {
+                backend_read_operations: 2,
+                ..crate::WorkCounters::UNCHARGED
+            })?,
             retirement: None,
             failure: None,
-            ready: false,
         };
         let allocation = original.claim(
             (std::mem::size_of::<Self>() + 2 * std::mem::size_of::<usize>()) as u64,
@@ -95,22 +94,30 @@ impl DarwinStopController {
         )?;
         Ok(Arc::new(Self {
             state: Mutex::new(state),
+            observer,
             changed: Condvar::new(),
             requested: AtomicBool::new(false),
+            mounted: AtomicBool::new(false),
+            provider_exited: AtomicBool::new(false),
             _allocation: allocation,
         }))
+    }
+
+    pub(super) fn wait_until(&self, timeout: Duration, done: impl Fn() -> bool) {
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        drop(
+            self.changed
+                .wait_timeout_while(state, timeout, |_| !done())
+                .unwrap_or_else(PoisonError::into_inner),
+        );
     }
 
     pub(super) fn retire(
         state: &mut StopState,
         resources: &Arc<DriverSessionResources>,
     ) -> Result<(), NativeMountError> {
-        let original = state.credit.loan(None).original_work();
         let loan = state.credit.loan(None);
-        let work = ProbeWork {
-            original: &original,
-            cleanup: Some(&loan),
-        };
+        let work = ProbeWork::Cleanup(&loan);
         if !state.control.detached || state.control.controls_pending() {
             let destination = Path::new(std::ffi::OsStr::from_bytes(
                 resources.startup.destination.as_bytes(),
@@ -141,11 +148,7 @@ impl DarwinStopController {
             Ok(()) => return,
             Err(error) => state.failure = Some(error),
         }
-        let mut wait = state
-            .retained_wait
-            .take()
-            .expect("birth-paid retained-owner wait");
-        wait.started_drop_io(READ_WORK);
+        state.waits.started_drop_io(READ_WORK);
         state = self
             .changed
             .wait_while(state, |state| {
@@ -163,6 +166,13 @@ impl DarwinStopController {
                 }
             })
             .unwrap_or_else(PoisonError::into_inner);
-        state.retained_wait = Some(wait);
+        drop(state);
     }
+}
+
+pub(super) unsafe extern "C" fn report_mounted(controller: *mut c_void) {
+    // SAFETY: the loop retains this controller through the native callback.
+    let controller = unsafe { &*controller.cast_const().cast::<DarwinStopController>() };
+    controller.mounted.store(true, Ordering::Release);
+    controller.changed.notify_all();
 }

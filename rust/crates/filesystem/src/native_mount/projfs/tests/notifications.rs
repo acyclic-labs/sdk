@@ -57,12 +57,7 @@ async fn native_watcher_observes_both_projected_rename_paths()
     use std::time::{Duration, Instant};
 
     let root = tempfile::tempdir()?;
-    let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-    let workspace = engine
-        .create_workspace("watch-projfs", WorkBudget::UNBOUNDED, work.cancellation())
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let workspace = local_workspace(root.path(), "watch-projfs", &work).await?;
     workspace
         .write("/original.txt", Bytes::from_static(b"original"))
         .await?;
@@ -70,10 +65,7 @@ async fn native_watcher_observes_both_projected_rename_paths()
     let destination = root.path().join("projection");
     std::fs::create_dir(&destination)?;
     let mount = workspace
-        .mount(
-            &destination,
-            MountOptions::read_write().publication(MountPublication::Manual),
-        )
+        .mount(&destination, manual_mount_options())
         .await?;
     let original = destination.join("original.txt");
     assert_eq!(std::fs::read(&original)?, b"original");
@@ -159,20 +151,10 @@ async fn nested_new_directory_hardlink_and_rename_publish() -> Result<(), Box<dy
 {
     let work = setup_work()?;
     let root = tempfile::tempdir()?;
-    let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-    let workspace = engine
-        .create_workspace("nested-projfs", WorkBudget::UNBOUNDED, work.cancellation())
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let workspace = local_workspace(root.path(), "nested-projfs", &work).await?;
     let path = root.path().join("mount");
     std::fs::create_dir(&path)?;
-    let mount = workspace
-        .mount(
-            &path,
-            MountOptions::read_write().publication(MountPublication::Manual),
-        )
-        .await?;
+    let mount = workspace.mount(&path, manual_mount_options()).await?;
     let nested = path.join("target").join("debug").join("deps");
     std::fs::create_dir_all(&nested)?;
     let source = nested.join("unit.o");
@@ -197,16 +179,7 @@ async fn enumeration_survives_concurrent_projected_writes() -> Result<(), Box<dy
 {
     let work = setup_work()?;
     let root = tempfile::tempdir()?;
-    let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-    let workspace = engine
-        .create_workspace(
-            "enumeration-rebase",
-            WorkBudget::UNBOUNDED,
-            work.cancellation(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let workspace = local_workspace(root.path(), "enumeration-rebase", &work).await?;
     let mut transaction = workspace
         .begin_transaction(IdempotencyKey::new(), &work, work.cancellation())
         .await?;
@@ -249,12 +222,7 @@ async fn enumeration_survives_concurrent_projected_writes() -> Result<(), Box<dy
         .map_err(|failure| failure.error)?;
     let path = root.path().join("mount");
     std::fs::create_dir(&path)?;
-    let mount = workspace
-        .mount(
-            &path,
-            MountOptions::read_write().publication(MountPublication::Manual),
-        )
-        .await?;
+    let mount = workspace.mount(&path, manual_mount_options()).await?;
     let initial = std::fs::read_dir(&path)?
         .map(|entry| entry.map(|entry| entry.file_name()))
         .collect::<std::io::Result<Vec<_>>>()?;

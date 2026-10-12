@@ -104,6 +104,23 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             .map_err(WorkspaceError::from)
     }
 
+    /// Retains the inspected identity of a staged file.
+    pub async fn preserve_file_identity<W: crate::facade::FsWork>(
+        &mut self,
+        path: &str,
+        file_id: FileId,
+        work: W,
+        cancellation: &CancellationToken,
+    ) -> W::Output<(), WorkspaceError> {
+        self.mutate(
+            path,
+            |path| Ok(AuthoredMutation::Reidentify { path, file_id }),
+            work,
+            cancellation,
+        )
+        .await
+    }
+
     pub(super) async fn mutate<W: crate::facade::FsWork>(
         &mut self,
         path: &str,

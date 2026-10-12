@@ -55,13 +55,11 @@ export class JsonlWireTransport implements WireTransport {
   }
 }
 
-export type WebSocketFactory = (url: string, protocols: string[]) => WebSocket;
-
 export class WebSocketWireTransport implements WireTransport {
   constructor(
     readonly url: string,
     readonly negotiation: HandshakeRequest,
-    readonly factory: WebSocketFactory = (url, protocols) => new WebSocket(url, protocols),
+    readonly factory: (url: string, protocols: string[]) => WebSocket = (url, protocols) => new WebSocket(url, protocols),
     /** Ceiling, in UTF-8 bytes, for each server message. */
     readonly maximumMessageBytes = Number.MAX_SAFE_INTEGER,
   ) {

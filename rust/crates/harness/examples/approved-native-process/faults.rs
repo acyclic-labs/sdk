@@ -408,8 +408,8 @@ async fn verify_pending_task(
     let recovery = super::recovered_effects(stream, files, &task, seed, &issuer).await?;
     if recovery
         .effects
-        .reconcile_task_effect(&recovery.owner, seed.command, &seed.plan)
-        .await?
+        .reconcile_task_effect(&recovery.owner, seed.command, &seed.plan, None)
+        .await.map(|result| result.0)?
         != EffectStatus::Indeterminate
     {
         return Err("cancelled host-death reconciliation became an authoritative result".into());

@@ -91,7 +91,9 @@ pub(super) async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
             } else {
                 Vec::new()
             };
-            reserve_chunk_slot(&mut conditions, 1, work)?;
+            if let Some(observer) = work.as_deref_mut() {
+                crate::store::history::reserve(&mut conditions, 1, observer)?;
+            }
             retained +=
                 conditions.capacity() as u64 * std::mem::size_of::<CommitCondition>() as u64;
             conditions.push(CommitCondition::Absent { path: path.clone() });
@@ -100,7 +102,9 @@ pub(super) async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
             } else {
                 Vec::new()
             };
-            reserve_chunk_slot(&mut records, 1, work)?;
+            if let Some(observer) = work.as_deref_mut() {
+                crate::store::history::reserve(&mut records, 1, observer)?;
+            }
             retained += records.capacity() as u64 * std::mem::size_of::<OwnedBytes>() as u64;
             records.push(bytes.clone());
             let mut mutations = if work.is_none() {
@@ -108,7 +112,9 @@ pub(super) async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
             } else {
                 Vec::new()
             };
-            reserve_chunk_slot(&mut mutations, 1, work)?;
+            if let Some(observer) = work.as_deref_mut() {
+                crate::store::history::reserve(&mut mutations, 1, observer)?;
+            }
             retained += mutations.capacity() as u64 * std::mem::size_of::<CommitMutation>() as u64;
             mutations.push(CommitMutation::Append {
                 path: path.clone(),

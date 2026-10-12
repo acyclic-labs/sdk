@@ -1,10 +1,4 @@
 //! Journaled pathwise application and crash recovery.
-//!
-//! Merge publication changes an authenticated workspace head atomically. A
-//! native checkout still needs pathwise host operations, which cannot be made
-//! atomic by an operating system. This module centralizes the durable protocol:
-//! capture every preimage before the first mutation, record progress after each
-//! operation, and complete or roll back deterministically after interruption.
 
 use crate::record_store::{MAXIMUM_CAS_ATTEMPTS, next_revision};
 use crate::{GenerationId, OperationId};
@@ -95,13 +89,15 @@ mod paths;
 #[cfg(not(target_arch = "wasm32"))]
 pub use paths::*;
 
+#[cfg(not(target_arch = "wasm32"))]
 mod witness;
-pub use witness::*;
+#[cfg(not(target_arch = "wasm32"))]
+use witness::*;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod metadata;
 #[cfg(not(target_arch = "wasm32"))]
-pub use metadata::*;
+use metadata::*;
 
 #[cfg(all(
     feature = "local",

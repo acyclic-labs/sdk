@@ -324,10 +324,12 @@ mod native_custody_controls {
         let work =
             NativeMaterializationWork::new(budget(), &cancellation).expect("original ledger");
         let baseline = work.live_allocation_bytes();
-        let mut io = crate::store::history::native_work_io(&work).expect("original observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&work)?,
+        );
         let ((decoded_authority, decoded_event), _) = decode_event(&bytes, &mut Some(&mut io))?;
         assert_eq!((&decoded_authority, &decoded_event), (&authority, &event));
-        let custody = io.into_custody();
+        let custody = io.into_custody()?;
         drop(decoded_event);
         drop(decoded_authority);
         drop(custody);
@@ -353,15 +355,17 @@ mod native_custody_controls {
         let cancellation = CancellationToken::new();
         let work =
             NativeMaterializationWork::new(allowance, &cancellation).expect("original ledger");
-        let mut io = crate::store::history::native_work_io(&work).expect("original observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&work)?,
+        );
         let error = decode_event(&bytes, &mut Some(&mut io))
             .expect_err("closed payload admission must deny before original Deserialize");
         assert!(!matches!(
             error,
-            Error::NativeDecode { .. } | Error::NativeProstDecode { .. }
+            Error::NativeJson { .. } | Error::NativeProstDecode { .. }
         ));
         drop(error);
-        assert_eq!(io.into_custody().bytes(), 0);
+        assert_eq!(io.into_custody()?.bytes(), 0);
         Ok(())
     }
 
@@ -378,9 +382,11 @@ mod native_custody_controls {
         let work =
             NativeMaterializationWork::new(budget(), &cancellation).expect("original ledger");
         let baseline = work.live_allocation_bytes();
-        let mut io = crate::store::history::native_work_io(&work).expect("original observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&work)?,
+        );
         let error = decode_event(&bytes, &mut Some(&mut io)).expect_err("original typed cause");
-        let Error::NativeDecode {
+        let Error::NativeJson {
             code,
             source,
             custody: Some(custody),
@@ -392,7 +398,7 @@ mod native_custody_controls {
         assert_eq!(source.classify(), original.classify());
         assert!(work.shares_ledger(custody.work()));
         assert!(custody.bytes() > 0);
-        assert_eq!(io.into_custody().bytes(), 0);
+        assert_eq!(io.into_custody()?.bytes(), 0);
         assert_eq!(work.live_allocation_bytes(), baseline + custody.bytes());
         drop(source);
         assert_eq!(work.live_allocation_bytes(), baseline + custody.bytes());
@@ -410,7 +416,9 @@ mod native_custody_controls {
         let work =
             NativeMaterializationWork::new(budget(), &cancellation).expect("original ledger");
         let baseline = work.live_allocation_bytes();
-        let mut io = crate::store::history::native_work_io(&work).expect("original observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&work)?,
+        );
         let error = decode_event(&bytes, &mut Some(&mut io)).expect_err("original prost failure");
         let Error::NativeProstDecode {
             code,
@@ -421,7 +429,7 @@ mod native_custody_controls {
             panic!("original prost source and guard required");
         };
         assert_eq!(code, wire::ErrorCode::Storage);
-        assert_eq!(io.into_custody().bytes(), 0);
+        assert_eq!(io.into_custody()?.bytes(), 0);
         assert!(custody.bytes() > 0);
         assert_eq!(work.live_allocation_bytes(), baseline + custody.bytes());
         drop(source);
@@ -439,7 +447,9 @@ mod native_custody_controls {
         let work =
             NativeMaterializationWork::new(budget(), &cancellation).expect("original ledger");
         let baseline = work.live_allocation_bytes();
-        let mut io = crate::store::history::native_work_io(&work).expect("original observer");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&work)?,
+        );
         let error = decode_event(&bytes, &mut Some(&mut io)).expect_err("canonical tamper");
         assert!(matches!(
             error,
@@ -449,7 +459,7 @@ mod native_custody_controls {
             }
         ));
         drop(error);
-        assert_eq!(io.into_custody().bytes(), 0);
+        assert_eq!(io.into_custody()?.bytes(), 0);
         assert_eq!(work.live_allocation_bytes(), baseline);
         Ok(())
     }

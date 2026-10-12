@@ -1,10 +1,8 @@
 use super::*;
 
-/// Orders completed native mutations against source flushes.
 pub(super) struct FlushLedger {
     pub(super) completed: AtomicU64,
     pub(super) flushed: AtomicU64,
-    /// Serializes flushes: a waiter that a finished flush already covered returns without flushing again, so concurrent syncs share one flush.
     pub(super) flushing: Mutex<()>,
 }
 
@@ -17,7 +15,6 @@ impl FlushLedger {
         }
     }
 
-    /// Records one completed (or failed, possibly partial) mutation and returns its sequence.
     pub(in crate::native_mount) fn record(&self) -> u64 {
         self.completed.fetch_add(1, Ordering::AcqRel) + 1
     }
@@ -26,7 +23,6 @@ impl FlushLedger {
         self.completed.load(Ordering::Acquire)
     }
 
-    /// Makes every mutation up to `required` durable, flushing the source only when no earlier successful flush already covers it.
     pub(in crate::native_mount) fn flush_through(
         &self,
         required: u64,

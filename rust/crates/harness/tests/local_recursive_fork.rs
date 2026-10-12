@@ -159,7 +159,7 @@ where
         .map(str::to_owned)
         .collect::<Vec<_>>();
     for file in approved {
-        capabilities.push(file.read_capability()?);
+        capabilities.push(file.read_capability(&mut None)?);
     }
     let read_scope = issuer.issue("prefix-owner-approved-reader", &Capabilities::new(capabilities), Some(agent), None, &mut None).expect("scope proof");
     let reader = FilesystemContentVerifier::new(host.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &read_scope, 64 * 1024, None)?;

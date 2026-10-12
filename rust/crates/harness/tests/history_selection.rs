@@ -65,6 +65,8 @@ fn bounded_candidate_selection_rejects_orphan_results_before_mutating_history() 
         None,
         false,
         true,
+        None,
+        None,
     )
     .expect_err("default turn admitted history beyond its explicit bound");
     let selected = prepare_turn(
@@ -79,6 +81,8 @@ fn bounded_candidate_selection_rejects_orphan_results_before_mutating_history() 
         None,
         false,
         true,
+        None,
+        None,
     )?;
     assert_eq!(
         selected.selection.message_ids,

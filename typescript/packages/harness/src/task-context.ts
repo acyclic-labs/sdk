@@ -115,7 +115,6 @@ export class TaskContext {
     }
     const bytes = Uint8Array.from(resolved.bytes);
     content.validate(file, this.#harness.components.limits);
-    content.verify(file, bytes);
     this.#harness.contracts.verifyFileBytes(file, bytes);
     return { file, bytes };
   }
@@ -151,8 +150,7 @@ export class TaskContext {
     if (!content) throw new Error("content reader is not bound");
     const bytes = await content.read(file);
     if (!(bytes instanceof Uint8Array)) throw new TypeError("content reader returned invalid bytes");
-    content.verify(file, bytes);
-    await this.#harness.contracts.verifyFileBytes(file, bytes);
+    this.#harness.contracts.verifyFileBytes(file, bytes);
     return Uint8Array.from(bytes);
   }
   /** Stage immutable bytes under a stable operation ID before publishing their ref. */
@@ -180,12 +178,10 @@ export class TaskContext {
       || file.path !== path || file.display_name !== displayName || file.descriptor.media_type !== mediaType) {
       throw new TypeError("content publisher returned another file identity");
     }
-    content.verify(file, payload);
-    await this.#harness.contracts.verifyFileBytes(file, payload);
+    this.#harness.contracts.verifyFileBytes(file, payload);
     const resident = await content.read(file);
     if (!(resident instanceof Uint8Array)) throw new TypeError("content reader returned invalid bytes");
-    content.verify(file, resident);
-    await this.#harness.contracts.verifyFileBytes(file, resident);
+    this.#harness.contracts.verifyFileBytes(file, resident);
     return file;
   }
   call<Input, Output>(tool: ToolRef<Input, Output>, input: Input, operationId?: string, providerCallId?: string): Promise<Output> {

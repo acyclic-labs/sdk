@@ -18,7 +18,7 @@ impl AcceptedCompletionIo {
         reservation: NativeWorkReservation,
         custody: NativeAllocation,
     ) -> Result<Self> {
-        if !reservation.matches_work(original) || !custody.work().shares_allocation_context(original) {
+        if !reservation.work().shares_allocation_context(original) || !custody.work().shares_allocation_context(original) {
             return Err(Error::NativeWork {
                 cause: NativeTreeMaterializationError::InvalidLayout,
                 custody: Some(custody),

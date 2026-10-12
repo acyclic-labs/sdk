@@ -167,7 +167,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                             "volume:read:",
                         )?)
                 {
-                    return Err(fork_preparer_io::failure(
+                    return Err(stock_boundary(
                         Some(&io),
                         crate::wire::ErrorCode::Unauthorized,
                         "project import source is not currently readable by this parent",
@@ -435,14 +435,14 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
                 Some(crate::wire::ErrorCode::Storage),
                 &mut |charge| io.codec_charge(charge, false),
             ) {
-                Err(Error::NativeEncode {
+                Err(Error::NativeJson {
                     code,
                     source,
                     custody: None,
                 }) => {
                     let custody = io.take_native_custody(diagnostics.bytes())?;
                     diagnostics.into_retained();
-                    return Err(Error::NativeEncode {
+                    return Err(Error::NativeJson {
                         code,
                         source,
                         custody: Some(custody),
@@ -468,11 +468,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             )?;
             let operation_bytes = filesystem_key.into_bytes();
             let mut provider_operation_id = Vec::new();
-            fork_preparer_io::reserve(
-                &mut provider_operation_id,
-                operation_bytes.len(),
-                Some(&io),
-            )?;
+            crate::filesystem::PreparationIo::reserve(&mut provider_operation_id, operation_bytes.len(), Some(&io))?;
             let copy = acyclic_fs::WorkCounters {
                 bytes_copied: operation_bytes.len() as u64,
                 ..Default::default()
@@ -481,7 +477,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             io.charge(copy)?;
             provider_operation_id.extend_from_slice(&operation_bytes);
             let provider = self.host.provider.clone_with_io(&io)?;
-            let format = fork_preparer_io::clone_text(FILESYSTEM_JOIN_PROOF_FORMAT, Some(&io))?;
+            let format = stock_string_copy(FILESYSTEM_JOIN_PROOF_FORMAT, Some(&io))?;
             let mut observer = io.history_io();
             let mut history_work = Some(&mut observer as &mut dyn crate::store::history::HistoryIo);
             let mut quota = crate::wire_codec::CodecQuota::new(&mut history_work, 0)?;
@@ -602,3 +598,5 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         }
     }
 }
+
+use crate::executor::{stock_boundary, stock_string_copy};

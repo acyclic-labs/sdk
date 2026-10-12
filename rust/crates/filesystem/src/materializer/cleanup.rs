@@ -1,15 +1,11 @@
 use super::*;
 use std::sync::Arc;
 
+#[derive(Debug)]
 pub(crate) struct NativeCleanupWrite {
     pub(super) meter: NativeMaterializationWork,
     pub(super) additional_resource: Option<Arc<NativeResourceAllowance>>,
     pub(super) reserved: bool,
-}
-impl std::fmt::Debug for NativeCleanupWrite {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NativeCleanupWrite").finish_non_exhaustive()
-    }
 }
 impl NativeCleanupWrite {
     pub(crate) fn bind_current_work(

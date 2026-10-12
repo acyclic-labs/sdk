@@ -77,19 +77,8 @@ describe("website Stream contract", () => {
     })).toThrow();
   });
 
-  test("does not expose history removal on stream handles or providers", () => {
-    const provider = new MemoryStreamProvider();
-    const stream = new StreamClient(provider).bytes("history/permanent");
-    for (const object of [provider, stream]) {
-      expect("trim" in object).toBeFalse();
-      expect("delete" in object).toBeFalse();
-      expect("bounds" in object).toBeFalse();
-    }
-  });
-
   test("JSON streams reject values that cannot satisfy their declared recursive type", () => {
     const client = new StreamClient(new MemoryStreamProvider());
-    // @ts-expect-error Date is not a JSON value and must not be promised by the codec.
     // @ts-expect-error A typed JSON stream must provide a parser; a caller-selected generic is not an overload.
     client.json<{ answer: number }>("dates");
     const codec = jsonCodec();

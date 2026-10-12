@@ -103,7 +103,7 @@ impl MemoryStore {
             descriptor.byte_length(),
             descriptor.media_type(),
             &display_name,
-        ))?;
+        ), u64::MAX, &mut None)?;
         let reference = FileRef::new(
             self.volume.clone(),
             path.to_owned(),

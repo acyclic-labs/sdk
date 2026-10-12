@@ -13,6 +13,33 @@ fn reserve_failures_keep_errno_and_retained_typed_cause() {
             .try_reserve(usize::MAX)
             .expect_err("capacity overflow")
     };
+    for failure in [
+        NativeMountError::Materialization(crate::NativeTreeMaterializationError::AllocationFailed(
+            reserve(),
+        )),
+        NativeMountError::Source(MountSourceError::NativeWork(
+            crate::NativeTreeMaterializationError::AllocationFailed(reserve()),
+        )),
+        NativeMountError::Source(MountSourceError::Filesystem(
+            crate::FsError::HandleAllocationFailed,
+        )),
+    ] {
+        assert_eq!(native_callback_errno(&failure), libc::ENOMEM);
+        assert!(super::super::fatal_handler_error(&failure));
+        let cloned = super::super::clone_fatal_handler_error(&failure)
+            .expect("a direct reserve failure must remain available to the caller and observer");
+        assert_eq!(native_callback_errno(&cloned), libc::ENOMEM);
+        assert!(matches!(
+            cloned,
+            NativeMountError::Materialization(
+                crate::NativeTreeMaterializationError::AllocationFailed(_)
+            ) | NativeMountError::Source(MountSourceError::NativeWork(
+                crate::NativeTreeMaterializationError::AllocationFailed(_)
+            )) | NativeMountError::Source(MountSourceError::Filesystem(
+                crate::FsError::HandleAllocationFailed
+            ))
+        ));
+    }
     assert_eq!(
         native_callback_errno(&NativeMountError::Allocation(reserve())),
         libc::ENOMEM
@@ -133,10 +160,6 @@ pub(super) fn shared_sources(
     ))
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("installed FUSE callback owner has no authored WRITE permission")]
-pub(super) struct FuseWriteDenied;
-
 pub(super) struct FuseWriteGuard {
     pub(super) original: crate::NativeMaterializationWork,
     pub(super) writable: std::sync::atomic::AtomicBool,
@@ -166,14 +189,14 @@ impl crate::native_mount::NativeMountCallbackGuard for FuseWriteGuard {
         if !self.writable.load(std::sync::atomic::Ordering::Acquire) {
             return Err(
                 crate::native_mount::NativeMountCallbackReservation::prepare(work)?
-                    .into_error(FuseWriteDenied),
+                    .into_error(std::io::Error::from(std::io::ErrorKind::PermissionDenied)),
             );
         }
         crate::native_mount::NativeMountCallbackFuture::new_guarded(work, move || async move {
             if self.writable.load(std::sync::atomic::Ordering::Acquire) {
                 Ok(())
             } else {
-                Err(FuseWriteDenied)
+                Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
             }
         })
     }
@@ -849,7 +872,7 @@ pub(super) fn preborn_helpers_retain_custody_through_cancellation_and_spawn_refu
         )
         .map_err(|(cause, _)| cause)?;
         let mut helper =
-            crate::native_mount::fuse::FuseRetirementHelper::prepare_program(program, &original)?;
+            crate::native_mount::fuse::FuseRetirementHelper::prepare(program, &original)?;
         let before = original.receipt();
         cancellation.cancel();
         let result = helper.retire(c"/unused", None);

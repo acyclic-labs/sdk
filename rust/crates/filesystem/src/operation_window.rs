@@ -1857,7 +1857,7 @@ mod tests {
                     payload: Bytes::from_static(b"first"),
                 },
                 permit: first.publication_permit(),
-            }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::compare_and_append(&authority, __authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
+            }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::compare_and_append(&authority, __authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })
         .expect("guarded rejection")
         .value;
         assert!(matches!(rejected, crate::AppendOutcome::Fenced { .. }));
@@ -1872,7 +1872,7 @@ mod tests {
                     payload: Bytes::from_static(b"second"),
                 },
                 permit: second.publication_permit(),
-            }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::compare_and_append(&authority, __authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
+            }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::compare_and_append(&authority, __authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })
         .expect("guarded append")
         .value;
         assert!(matches!(committed, crate::AppendOutcome::Committed(_)));
@@ -1890,7 +1890,7 @@ mod tests {
                     payload: Bytes::from_static(b"cross-authority"),
                 },
                 permit: second.publication_permit(),
-            }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::compare_and_append(&authority, __authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
+            }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::compare_and_append(&authority, __authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })
         .expect("cross-authority lease is a semantic fence")
         .value;
         assert!(matches!(rejected, crate::AppendOutcome::Fenced { .. }));
@@ -1936,7 +1936,7 @@ mod tests {
                     payload: Bytes::from_static(b"expired"),
                 },
                 permit: lease.publication_permit(),
-            }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::compare_and_append(&authority, __authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
+            }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::compare_and_append(&authority, __authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })
         .expect("deadline is a semantic fence")
         .value;
         assert!(matches!(outcome, crate::AppendOutcome::Fenced { .. }));
@@ -2005,7 +2005,7 @@ mod tests {
                                     payload: Bytes::from_static(b"first"),
                                 },
                                 permit: first.publication_permit(),
-                            }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::compare_and_append(&authority, __authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
+                            }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::compare_and_append(&authority, __authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })
                         .expect("publish")
                         .value;
                         assert_eq!(
@@ -2052,7 +2052,7 @@ mod tests {
                             payload: Bytes::from_static(b"peer"),
                         },
                         permit: lease.publication_permit(),
-                    }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::compare_and_append(&authority, __authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
+                    }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::compare_and_append(&authority, __authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })
                 .expect("peer publish")
                 .value;
                 assert!(
@@ -2158,7 +2158,7 @@ mod tests {
                         payload: Bytes::from_static(b"renewal-control"),
                     },
                     permit,
-                }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::compare_and_append(&authority, __authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)).map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) })
+                }, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.1, __authority_args.2); let __authority_result =  AsyncAuthorityStore::compare_and_append(&authority, __authority_args.0, &mut __authority_work, None::<&mut ()>).await.map_err(|error| error.into_error(std::convert::identity)); __authority_work.receipt(__authority_result) })
             .expect("guarded publication")
             .value;
             if expected_commit {

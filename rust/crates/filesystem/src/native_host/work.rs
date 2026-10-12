@@ -13,7 +13,14 @@ pub(super) const ITEM: WorkCounters = WorkCounters {
     ..WorkCounters::UNCHARGED
 };
 
-pub(super) fn buffer<T, W: NativeHostWork>(
+pub(super) fn copy_work(bytes: u64) -> WorkCounters {
+    WorkCounters {
+        bytes_copied: bytes,
+        ..WorkCounters::UNCHARGED
+    }
+}
+
+pub(crate) fn buffer<T, W: NativeHostWork>(
     capacity: usize,
     work: &mut W,
 ) -> Result<(Vec<T>, W::Allocation), W::Error> {
@@ -215,38 +222,12 @@ impl NativeHostWork for &NativeMaterializationWork {
     }
 }
 
-pub(crate) struct NativeOwned<T> {
-    pub(crate) data: T,
-    pub(crate) _allocation: NativeAllocation,
-}
-
-impl<T> std::ops::Deref for NativeOwned<T> {
-    type Target = T;
-    fn deref(&self) -> &T {
-        &self.data
-    }
-}
-
-pub(crate) fn native_buffer<T>(
-    capacity: usize,
-    mut work: &NativeMaterializationWork,
-) -> Result<NativeOwned<Vec<T>>, NativeTreeMaterializationError> {
-    let (data, allocation) = buffer(capacity, &mut work)?;
-    Ok(NativeOwned {
-        data,
-        _allocation: allocation,
-    })
-}
-
 pub(crate) fn clone_path<W: NativeHostWork>(
     path: &Path,
     work: &mut W,
 ) -> Result<(std::path::PathBuf, W::Allocation), W::Error> {
     let bytes = path.as_os_str().len();
-    let delta = WorkCounters {
-        bytes_copied: bytes as u64,
-        ..WorkCounters::UNCHARGED
-    };
+    let delta = copy_work(bytes as u64);
     let mut allocation = work.claim(bytes as u64)?;
     let mut name = OsString::new();
     let result = (|| {

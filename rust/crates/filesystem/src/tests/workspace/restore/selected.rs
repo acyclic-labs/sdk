@@ -3,181 +3,95 @@ use super::*;
 #[tokio::test]
 async fn path_restore_reuses_exact_records_and_preserves_unselected_state()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace(
-            "restore-paths",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("restore-paths", B, &cancel)
         .await?
         .value;
     let mut transaction = workspace
-        .begin_transaction(
-            IdempotencyKey::from_bytes([0x60; 16]),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .begin_transaction(IdempotencyKey::from_bytes([0x60; 16]), B, &cancel)
         .await?
         .value;
-    transaction
-        .create_dir_all(
-            "/tree",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    transaction.create_dir_all("/tree", B, &cancel).await?.value;
     transaction
         .create_file(
             "/tree/tracked",
-            bytes::Bytes::from_static(b"committed"),
+            OwnedBytes::from_static(b"committed"),
             FileMetadata::default(),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            B,
+            &cancel,
         )
         .await?
         .value;
     transaction
-        .hard_link(
-            "/tree/tracked",
-            "/tree/ignored-link",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .hard_link("/tree/tracked", "/tree/ignored-link", B, &cancel)
         .await?
         .value;
     assert!(matches!(
         transaction
             .commit(
                 None,
-                crate::PublicationPermit::Unrestricted,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-                |_| async {
-                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
-                        crate::OperationReceipt {
-                            value: (),
-                            work: crate::WorkCounters::default(),
-                        },
-                    )
-                }
+                PublicationPermit::Unrestricted,
+                B,
+                &cancel,
+                allow::<WorkspaceError>
             )
             .await?
             .value,
         TransactionCommit::Committed(_)
     ));
     workspace.write_text("/ignored", "live").await?;
-    let committed = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let committed = workspace.head(B, &cancel).await?.value;
     let snapshot = workspace
         .fork::<_, _, crate::WorkspaceError>(
             "restore-paths-snapshot",
             ForkOptions::from_generation(committed, IdempotencyKey::from_bytes([0x61; 16])),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            &mut |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
     snapshot.remove("/ignored").await?;
-    let source = snapshot
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let source = snapshot.head(B, &cancel).await?.value;
 
     workspace.write_text("/tree/tracked", "dirty").await?;
     workspace.write_text("/ignored", "still-live").await?;
-    let dirty = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let dirty = workspace.head(B, &cancel).await?.value;
     let outcome = workspace
         .restore_paths_from(
             &source,
             &["tree/tracked".to_owned()],
             dirty.id(),
             IdempotencyKey::from_bytes([0x62; 16]),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            |_| async {
-                Ok::<_, crate::OperationFailure<crate::FsError>>(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                })
-            },
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            allow::<FsError>,
         )
         .await?
         .value;
     assert!(matches!(outcome, TransactionCommit::Committed(_)));
     assert_eq!(
+        workspace.read("/tree/tracked", 64, B, &cancel).await?.value,
+        OwnedBytes::from_static(b"committed")
+    );
+    assert_eq!(
         workspace
-            .read(
-                "/tree/tracked",
-                64,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .read("/tree/ignored-link", 64, B, &cancel)
             .await?
             .value,
         OwnedBytes::from_static(b"committed")
     );
     assert_eq!(
-        workspace
-            .read(
-                "/tree/ignored-link",
-                64,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value,
-        OwnedBytes::from_static(b"committed")
-    );
-    assert_eq!(
-        workspace
-            .read(
-                "/ignored",
-                64,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value,
+        workspace.read("/ignored", 64, B, &cancel).await?.value,
         OwnedBytes::from_static(b"still-live")
     );
-    let tracked = workspace
-        .stat(
-            "/tree/tracked",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let tracked = workspace.stat("/tree/tracked", B, &cancel).await?.value;
     let linked = workspace
-        .stat(
-            "/tree/ignored-link",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .stat("/tree/ignored-link", B, &cancel)
         .await?
         .value;
     assert_eq!(tracked.file_id, linked.file_id);
@@ -187,54 +101,25 @@ async fn path_restore_reuses_exact_records_and_preserves_unselected_state()
 
 #[tokio::test]
 async fn path_apply_is_three_way_conflict_checked() -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
-    let workspace = fs
-        .create_workspace(
-            "apply-paths",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let workspace = fs.create_workspace("apply-paths", B, &cancel).await?.value;
     workspace.write_text("/file", "base").await?;
-    let base = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let base = workspace.head(B, &cancel).await?.value;
     let source_workspace = workspace
         .fork::<_, _, crate::WorkspaceError>(
             "apply-paths-source",
             ForkOptions::from_generation(base.clone(), IdempotencyKey::from_bytes([0x63; 16])),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            &mut |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
     source_workspace.write_text("/file", "source").await?;
-    let source = source_workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
-    let current = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let source = source_workspace.head(B, &cancel).await?.value;
+    let current = workspace.head(B, &cancel).await?.value;
     assert!(matches!(
         workspace
             .apply_paths_from(
@@ -243,40 +128,22 @@ async fn path_apply_is_three_way_conflict_checked() -> Result<(), Box<dyn Error>
                 &["file".to_owned()],
                 current.id(),
                 IdempotencyKey::from_bytes([0x64; 16]),
-                crate::PublicationPermit::Unrestricted,
+                PublicationPermit::Unrestricted
             )
             .await?,
         WorkspacePathApply::Applied(_)
     ));
     assert_eq!(
-        workspace
-            .read(
-                "/file",
-                64,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value,
+        workspace.read("/file", 64, B, &cancel).await?.value,
         OwnedBytes::from_static(b"source")
     );
 
     let conflicting = fs
-        .create_workspace(
-            "apply-paths-conflict",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("apply-paths-conflict", B, &cancel)
         .await?
         .value;
     conflicting.write_text("/file", "base").await?;
-    let conflict_base = conflicting
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let conflict_base = conflicting.head(B, &cancel).await?.value;
     let conflict_source = conflicting
         .fork::<_, _, crate::WorkspaceError>(
             "apply-paths-conflict-source",
@@ -284,34 +151,17 @@ async fn path_apply_is_three_way_conflict_checked() -> Result<(), Box<dyn Error>
                 conflict_base.clone(),
                 IdempotencyKey::from_bytes([0x65; 16]),
             ),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            &mut |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
     conflict_source.write_text("/file", "source").await?;
-    let conflict_source = conflict_source
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let conflict_source = conflict_source.head(B, &cancel).await?.value;
     conflicting.write_text("/file", "ours").await?;
-    let conflict_current = conflicting
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let conflict_current = conflicting.head(B, &cancel).await?.value;
     let WorkspacePathApply::Conflicted(conflicts) = conflicting
         .apply_paths_from(
             Some(&conflict_base),
@@ -319,7 +169,7 @@ async fn path_apply_is_three_way_conflict_checked() -> Result<(), Box<dyn Error>
             &["file".to_owned()],
             conflict_current.id(),
             IdempotencyKey::from_bytes([0x66; 16]),
-            crate::PublicationPermit::Unrestricted,
+            PublicationPermit::Unrestricted,
         )
         .await?
     else {
@@ -334,70 +184,47 @@ async fn path_apply_is_three_way_conflict_checked() -> Result<(), Box<dyn Error>
 #[tokio::test]
 async fn selected_restore_guard_failure_retains_original_head_and_exact_outside_state()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace(
-            "guarded-selected-restore",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("guarded-selected-restore", B, &cancel)
         .await?
         .value;
     let mut seed = workspace
-        .begin_transaction(
-            IdempotencyKey::new(),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .begin_transaction(IdempotencyKey::new(), B, &cancel)
         .await?
         .value;
-    seed.create_dir_all(
-        "/tree",
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )
-    .await?
-    .value;
+    seed.create_dir_all("/tree", B, &cancel).await?.value;
     seed.write(
         "/tree/file",
         bytes::Bytes::from_static(b"source"),
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
+        B,
+        &cancel,
     )
     .await?
     .value;
-    seed.hard_link(
-        "/tree/file",
-        "/tree/alias",
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )
-    .await?
-    .value;
+    seed.hard_link("/tree/file", "/tree/alias", B, &cancel)
+        .await?
+        .value;
     seed.set_metadata(
         "/tree/file",
         FileMetadata {
             posix_mode: MetadataField::Value(0o640),
             ..FileMetadata::default()
         },
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
+        B,
+        &cancel,
     )
     .await?
     .value;
-    seed.write(
-        "/outside",
-        bytes::Bytes::from_static(b"base"),
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )
-    .await?
-    .value;
+    seed.write("/outside", bytes::Bytes::from_static(b"base"), B, &cancel)
+        .await?
+        .value;
     seed.commit(
         None,
         crate::PublicationPermit::Unrestricted,
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
+        B,
+        &cancel,
         |_| async {
             Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
                 value: (),
@@ -407,59 +234,36 @@ async fn selected_restore_guard_failure_retains_original_head_and_exact_outside_
     )
     .await?
     .value;
-    let source = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
-    let source_metadata = source
-        .stat(
-            "/tree/file",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value
-        .metadata;
+    let source = workspace.head(B, &cancel).await?.value;
+    let source_metadata = source.stat("/tree/file", B, &cancel).await?.value.metadata;
     let mut live = workspace
-        .begin_transaction(
-            IdempotencyKey::new(),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .begin_transaction(IdempotencyKey::new(), B, &cancel)
         .await?
         .value;
     live.write(
         "/tree/file",
         bytes::Bytes::from_static(b"dirty"),
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
+        B,
+        &cancel,
     )
     .await?
     .value;
     live.write(
         "/removed",
         bytes::Bytes::from_static(b"remove me"),
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
+        B,
+        &cancel,
     )
     .await?
     .value;
-    live.write(
-        "/outside",
-        bytes::Bytes::from_static(b"user"),
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )
-    .await?
-    .value;
+    live.write("/outside", bytes::Bytes::from_static(b"user"), B, &cancel)
+        .await?
+        .value;
     live.commit(
         None,
         crate::PublicationPermit::Unrestricted,
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
+        B,
+        &cancel,
         |_| async {
             Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
                 value: (),
@@ -469,13 +273,7 @@ async fn selected_restore_guard_failure_retains_original_head_and_exact_outside_
     )
     .await?
     .value;
-    let dirty = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let dirty = workspace.head(B, &cancel).await?.value;
     let selected = vec!["tree/file".to_owned(), "removed".to_owned()];
     let budget = selected_transaction_budget();
     let key = IdempotencyKey::new();
@@ -521,25 +319,10 @@ async fn selected_restore_guard_failure_retains_original_head_and_exact_outside_
     assert!(failed.work.allocation_operations > 0);
     assert!(failed.work.bytes_copied > 0);
     failed.work.verify(budget)?;
+    assert_eq!(workspace.head(B, &cancel).await?.value.id(), dirty.id());
     assert_eq!(
         workspace
-            .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .id(),
-        dirty.id()
-    );
-    assert_eq!(
-        workspace
-            .read(
-                "/tree/file",
-                32,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .read("/tree/file", 32, B, &cancel)
             .await?
             .value
             .as_ref(),
@@ -547,12 +330,7 @@ async fn selected_restore_guard_failure_retains_original_head_and_exact_outside_
     );
     assert_eq!(
         workspace
-            .read(
-                "/removed",
-                32,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .read("/removed", 32, B, &cancel)
             .await?
             .value
             .as_ref(),
@@ -560,12 +338,7 @@ async fn selected_restore_guard_failure_retains_original_head_and_exact_outside_
     );
     assert_eq!(
         workspace
-            .read(
-                "/outside",
-                32,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .read("/outside", 32, B, &cancel)
             .await?
             .value
             .as_ref(),
@@ -594,17 +367,7 @@ async fn selected_restore_guard_failure_retains_original_head_and_exact_outside_
     assert!(
         matches!(&conflicted.value, TransactionCommit::Conflict { actual } if actual.id() == dirty.id())
     );
-    assert_eq!(
-        workspace
-            .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .id(),
-        dirty.id()
-    );
+    assert_eq!(workspace.head(B, &cancel).await?.value.id(), dirty.id());
     let volume = workspace.volume.clone();
     let guard_cancellation = cancellation.clone();
     let restored = workspace
@@ -641,12 +404,7 @@ async fn selected_restore_guard_failure_retains_original_head_and_exact_outside_
     assert!(matches!(restored.value, TransactionCommit::Committed(_)));
     assert_eq!(
         workspace
-            .read(
-                "/tree/file",
-                32,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .read("/tree/file", 32, B, &cancel)
             .await?
             .value
             .as_ref(),
@@ -654,12 +412,7 @@ async fn selected_restore_guard_failure_retains_original_head_and_exact_outside_
     );
     assert_eq!(
         workspace
-            .read(
-                "/tree/alias",
-                32,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .read("/tree/alias", 32, B, &cancel)
             .await?
             .value
             .as_ref(),
@@ -667,11 +420,7 @@ async fn selected_restore_guard_failure_retains_original_head_and_exact_outside_
     );
     assert_eq!(
         workspace
-            .stat(
-                "/tree/file",
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .stat("/tree/file", B, &cancel)
             .await?
             .value
             .metadata,
@@ -679,32 +428,19 @@ async fn selected_restore_guard_failure_retains_original_head_and_exact_outside_
     );
     assert_eq!(
         workspace
-            .stat(
-                "/tree/file",
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .stat("/tree/file", B, &cancel)
             .await?
             .value
             .file_id,
         workspace
-            .stat(
-                "/tree/alias",
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .stat("/tree/alias", B, &cancel)
             .await?
             .value
             .file_id
     );
     assert!(matches!(
         workspace
-            .read(
-                "/removed",
-                32,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .read("/removed", 32, B, &cancel)
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error),
@@ -712,12 +448,7 @@ async fn selected_restore_guard_failure_retains_original_head_and_exact_outside_
     ));
     assert_eq!(
         workspace
-            .read(
-                "/outside",
-                32,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .read("/outside", 32, B, &cancel)
             .await?
             .value
             .as_ref(),
@@ -725,12 +456,7 @@ async fn selected_restore_guard_failure_retains_original_head_and_exact_outside_
     );
     assert_eq!(
         source
-            .read(
-                "/tree/file",
-                32,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .read("/tree/file", 32, B, &cancel)
             .await?
             .value
             .as_ref(),
@@ -743,35 +469,20 @@ async fn selected_restore_guard_failure_retains_original_head_and_exact_outside_
 #[tokio::test]
 async fn native_selected_restore_honors_the_real_retained_authority_reservation()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace(
-            "native-selected-reservation",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("native-selected-reservation", B, &cancel)
         .await?
         .value;
     workspace
         .write("/selected", bytes::Bytes::from_static(b"frozen"))
         .await?;
-    let frozen = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let frozen = workspace.head(B, &cancel).await?.value;
     workspace
         .write("/selected", bytes::Bytes::from_static(b"current"))
         .await?;
-    let current = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let current = workspace.head(B, &cancel).await?.value;
     let cancellation = CancellationToken::new();
     let original =
         crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
@@ -804,27 +515,9 @@ async fn native_selected_restore_honors_the_real_retained_authority_reservation(
         denied,
         Ok(TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_))
     ));
+    assert_eq!(workspace.head(B, &cancel).await?.value.id(), current.id());
     assert_eq!(
-        workspace
-            .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .id(),
-        current.id()
-    );
-    assert_eq!(
-        workspace
-            .read(
-                "/selected",
-                7,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value,
+        workspace.read("/selected", 7, B, &cancel).await?.value,
         OwnedBytes::from_static(b"current")
     );
     assert_eq!(
@@ -853,15 +546,7 @@ async fn native_selected_restore_honors_the_real_retained_authority_reservation(
         TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_)
     ));
     assert_eq!(
-        workspace
-            .read(
-                "/selected",
-                6,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value,
+        workspace.read("/selected", 6, B, &cancel).await?.value,
         OwnedBytes::from_static(b"frozen")
     );
     workspace

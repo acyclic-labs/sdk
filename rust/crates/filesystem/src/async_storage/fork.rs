@@ -147,7 +147,7 @@ pub(crate) async fn first_record<S: AsyncAuthorityStore + ?Sized, G: AuthorityGu
     };
     let identity = (commit.operation_id, commit.fingerprint);
     seal(guard.as_deref_mut(), work).await?;
-    let (appended, allocation) = store
+    let appended = store
         .compare_and_append(
             GuardedAppend {
                 authority_id: authority,
@@ -186,7 +186,6 @@ pub(crate) async fn first_record<S: AsyncAuthorityStore + ?Sized, G: AuthorityGu
         }
         AppendOutcome::Fenced { .. } | AppendOutcome::IdempotencyConflict { .. } => false,
     };
-    drop(allocation);
     if matches && retry {
         seal(guard.as_deref_mut(), work).await?;
     }

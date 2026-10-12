@@ -3,30 +3,21 @@ use super::*;
 #[tokio::test]
 async fn selected_fork_invalid_native_paths_preflight_before_allocation_and_reads()
 -> Result<(), Box<dyn std::error::Error>> {
+    let cancel = CancellationToken::new();
     use crate::workspace::WorkspaceError;
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace(
-            "selected-fork-invalid-paths",
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
+        .create_workspace("selected-fork-invalid-paths", B, &cancel)
         .await?
         .value;
     workspace.write_text("/file", "body").await?;
-    let source = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let source = workspace.head(B, &cancel).await?.value;
     let cancellation = CancellationToken::new();
     let checkout = workspace
         .checkout(
             GenerationSelector::Exact(source.id()),
             CheckoutMode::read_only_pinned(),
-            WorkBudget::UNBOUNDED,
+            B,
             &cancellation,
         )
         .await?
@@ -47,7 +38,7 @@ async fn selected_fork_invalid_native_paths_preflight_before_allocation_and_read
         let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(
             WorkBudget {
                 allocation_operations: 0,
-                ..WorkBudget::UNBOUNDED
+                ..B
             },
             &cancellation,
         );
@@ -76,51 +67,30 @@ async fn selected_fork_invalid_native_paths_preflight_before_allocation_and_read
 #[tokio::test]
 async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_semantics()
 -> Result<(), Box<dyn std::error::Error>> {
+    let cancel = CancellationToken::new();
     use crate::workspace::{ForkOptions, WorkspaceError};
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace(
-            "selected-fork-closure-controls",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("selected-fork-closure-controls", B, &cancel)
         .await?
         .value;
     let mut transaction = workspace
-        .begin_transaction(
-            crate::IdempotencyKey::new(),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .begin_transaction(crate::IdempotencyKey::new(), B, &cancel)
         .await?
         .value;
     transaction
-        .create_dir_all(
-            "/tree/nested",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_dir_all("/tree/nested", B, &cancel)
         .await?
         .value;
     transaction
         .write_text("/tree/nested/file", "linked body")
         .await?;
     transaction
-        .hard_link(
-            "/tree/nested/file",
-            "/tree/nested/alias",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .hard_link("/tree/nested/file", "/tree/nested/alias", B, &cancel)
         .await?
         .value;
     transaction
-        .hard_link(
-            "/tree/nested/file",
-            "/outside-alias",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .hard_link("/tree/nested/file", "/outside-alias", B, &cancel)
         .await?
         .value;
     transaction.write_text("/omitted", "not inherited").await?;
@@ -128,8 +98,8 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
         .commit(
             None,
             crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            B,
+            &cancel,
             |_| async {
                 Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
                     value: (),
@@ -139,13 +109,7 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
         )
         .await?
         .value;
-    let source = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let source = workspace.head(B, &cancel).await?.value;
     let paths = vec![
         "/tree".to_owned(),
         "/tree/nested/file".to_owned(),
@@ -157,8 +121,8 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
             ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
                 .inherit_paths(paths.clone()),
             crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            B,
+            &cancel,
             &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
@@ -168,96 +132,36 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
         )
         .await?
         .value;
-    let initial = child
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let initial = child.head(B, &cancel).await?.value;
     assert_eq!(
         (child
-            .read(
-                "/tree/nested/alias",
-                32,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
+            .read("/tree/nested/alias", 32, B, &cancel)
             .await?
             .value)
             .as_ref(),
         b"linked body"
     );
-    assert!(
-        child
-            .read(
-                "/outside-alias",
-                32,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
-            .await
-            .is_err()
-    );
-    assert!(
-        child
-            .read(
-                "/omitted",
-                32,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
-            .await
-            .is_err()
-    );
-    let file = initial
-        .stat(
-            "/tree/nested/file",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
-    let alias = initial
-        .stat(
-            "/tree/nested/alias",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    assert!(child.read("/outside-alias", 32, B, &cancel).await.is_err());
+    assert!(child.read("/omitted", 32, B, &cancel).await.is_err());
+    let file = initial.stat("/tree/nested/file", B, &cancel).await?.value;
+    let alias = initial.stat("/tree/nested/alias", B, &cancel).await?.value;
     assert_eq!(file.file_id, alias.file_id);
     assert_eq!(file.link_count, 2);
     assert!(
         initial
-            .matches_fork_selection(
-                &source,
-                Some(paths.clone()),
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .matches_fork_selection(&source, Some(paths.clone()), B, &cancel)
             .await?
             .value
     );
     assert!(
         initial
-            .matches_fork_selection(
-                &source,
-                Some(vec!["/tree".to_owned()]),
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .matches_fork_selection(&source, Some(vec!["/tree".to_owned()]), B, &cancel)
             .await?
             .value
     );
     let cancellation = CancellationToken::new();
     let baseline = initial
-        .matches_fork_selection(
-            &source,
-            Some(paths.clone()),
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )
+        .matches_fork_selection(&source, Some(paths.clone()), B, &cancellation)
         .await?;
     assert!(baseline.value);
     assert!(baseline.work.allocation_operations > 0);
@@ -316,8 +220,8 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
             ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
                 .inherit_paths(vec!["/tree".to_owned(), "/".to_owned(), "/".to_owned()]),
             crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            B,
+            &cancel,
             &mut |_| {
                 std::future::ready(Ok(crate::OperationReceipt {
                     value: (),
@@ -327,41 +231,20 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
         )
         .await?
         .value;
-    let all = all
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let all = all.head(B, &cancel).await?.value;
     assert!(
-        all.matches_fork_selection(
-            &source,
-            None,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await?
-        .value
+        all.matches_fork_selection(&source, None, B, &cancel)
+            .await?
+            .value
     );
     assert!(
-        all.matches_fork_selection(
-            &source,
-            Some(vec!["/".to_owned()]),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await?
-        .value
+        all.matches_fork_selection(&source, Some(vec!["/".to_owned()]), B, &cancel)
+            .await?
+            .value
     );
     assert!(
         !initial
-            .matches_fork_selection(
-                &source,
-                Some(vec!["/".to_owned()]),
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .matches_fork_selection(&source, Some(vec!["/".to_owned()]), B, &cancel)
             .await?
             .value
     );
@@ -371,6 +254,7 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
 #[tokio::test]
 async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed_prefix()
 -> Result<(), Box<dyn std::error::Error>> {
+    let cancel = CancellationToken::new();
     use crate::workspace::{ForkOptions, WorkspaceError};
     let tracked = Arc::new(std::sync::Mutex::new(None));
     let reads = Arc::new(AtomicUsize::new(0));
@@ -384,20 +268,13 @@ async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed
         },
         EmbeddedCapabilities::MEMORY,
     );
-    let workspace = (fs.create_workspace(
-        "selected-fork-verification-gates",
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ))
-    .await?
-    .value;
+    let workspace = (fs.create_workspace("selected-fork-verification-gates", B, &cancel))
+        .await?
+        .value;
     (workspace.write_text("/file", "body")).await?;
     let source = (async {
         workspace
-            .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
+            .head(B, &cancel)
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)
@@ -408,8 +285,8 @@ async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed
         ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
             .inherit_paths(vec!["/file".to_owned()]),
         crate::PublicationPermit::Unrestricted,
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
+        B,
+        &cancel,
         &mut |_| {
             std::future::ready(Ok(crate::OperationReceipt {
                 value: (),
@@ -421,10 +298,7 @@ async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed
     .value;
     let initial = (async {
         child
-            .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
+            .head(B, &cancel)
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)
@@ -440,7 +314,7 @@ async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed
         WorkBudget::default(),
         WorkBudget {
             allocation_operations: 0,
-            ..WorkBudget::UNBOUNDED
+            ..B
         },
     ] {
         let failed = (initial.matches_fork_selection(
@@ -459,15 +333,11 @@ async fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed
     }
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let failed = (initial.matches_fork_selection(
-        &source,
-        Some(vec!["/file".to_owned()]),
-        WorkBudget::UNBOUNDED,
-        &cancelled,
-    ))
-    .await
-    .err()
-    .ok_or("verification ignored cancellation")?;
+    let failed =
+        (initial.matches_fork_selection(&source, Some(vec!["/file".to_owned()]), B, &cancelled))
+            .await
+            .err()
+            .ok_or("verification ignored cancellation")?;
     assert!(matches!(failed.error, WorkspaceError::Cancelled(_)));
     assert_eq!(failed.work.allocation_operations, 0);
     assert_eq!(failed.work.backend_read_operations, 0);

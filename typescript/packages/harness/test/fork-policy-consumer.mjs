@@ -12,7 +12,7 @@ export async function exerciseForkPolicy(Harness, parentOptions, contracts) {
   const volume = { provider, id: "parent-private", class: "agent_private", owner: { kind: "agent", id: parentAgent } };
   const file = contracts.validate("file_ref", { volume, path: "request.txt", version: "1",
     descriptor: contracts.fileDescriptor(new TextEncoder().encode("parent"), "text/plain"), display_name: "request.txt" });
-  const scope = harness.issueScopeForAgent(parentAgent, "fork-policy", ["conversation:bind", "conversation:append", harness.fileReadCapability(file)]);
+  const scope = harness.issueScope("fork-policy", ["conversation:bind", "conversation:append", harness.fileReadCapability(file)], parentAgent);
   const command = (operation_id, action) => ({ authority, operation_id, idempotency_key: operation_id,
     expected_revision: harness.head()[1], scope, causal_parent: null, action });
   const message = (id, sequence) => ({ id, sequence, kind: "user", content: file, attachments: { kind: "inline", items: [] },

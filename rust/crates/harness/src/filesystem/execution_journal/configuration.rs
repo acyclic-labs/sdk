@@ -164,7 +164,7 @@ where
             }
             Error::Invalid(reason.into())
         };
-        crate::filesystem::fork_preparer_io::item(io, 0)?;
+        crate::model::charge_items(io, 1)?;
         if volume.class() != VolumeClass::AgentPrivate
             || volume.provider() != &host.provider
             || maximum_payload_bytes == 0

@@ -3,64 +3,35 @@ use super::*;
 #[tokio::test]
 async fn pinned_directory_discovery_does_not_scan_ten_thousand_retained_workspaces()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace(
-            "discovered-agent",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("discovered-agent", B, &cancel)
         .await?
         .value;
     workspace.write_text("/visible.txt", "visible").await?;
-    let pinned = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let pinned = workspace.head(B, &cancel).await?.value;
     let cancellation = CancellationToken::new();
     let before = pinned
-        .list_directory("/", None, 1, WorkBudget::UNBOUNDED, &cancellation)
-        .await
-        .map(|receipt| crate::OperationReceipt {
-            value: receipt.value.0,
-            work: receipt.work,
-        })?;
+        .list_directory("/", None, 1, B, &cancellation)
+        .await?;
     let mut retained = Vec::with_capacity(10_000);
     for index in 0..10_000 {
         let other = fs
-            .create_workspace(
-                &format!("retained-agent-{index}"),
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
+            .create_workspace(&format!("retained-agent-{index}"), B, &cancel)
             .await?
             .value;
-        retained.push(
-            other
-                .head(
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                )
-                .await?
-                .value,
-        );
+        retained.push(other.head(B, &cancel).await?.value);
     }
     workspace
         .write_text("/late.txt", "not in pinned view")
         .await?;
     let after = pinned
-        .list_directory("/", None, 1, WorkBudget::UNBOUNDED, &cancellation)
-        .await
-        .map(|receipt| crate::OperationReceipt {
-            value: receipt.value.0,
-            work: receipt.work,
-        })?;
+        .list_directory("/", None, 1, B, &cancellation)
+        .await?;
     assert_eq!(retained.len(), 10_000);
-    assert_eq!(before.value, after.value);
-    assert_eq!(after.value.entries.len(), 1);
+    assert_eq!(before.value.0, after.value.0);
+    assert_eq!(after.value.0.entries.len(), 1);
     assert!(after.work.backend_read_operations <= before.work.backend_read_operations);
     assert!(after.work.page_reads <= before.work.page_reads);
     assert_eq!(after.work.source_entries_visited, 0);
@@ -70,50 +41,38 @@ async fn pinned_directory_discovery_does_not_scan_ten_thousand_retained_workspac
 
 #[test]
 fn names_are_canonical_bounded_and_path_independent() -> Result<(), Box<dyn Error>> {
-    let composed = WorkspaceName::new(
-        "caf\u{e9}",
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )?
-    .value;
-    let decomposed = WorkspaceName::new(
-        "cafe\u{301}",
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )?
-    .value;
+    let cancel = CancellationToken::new();
+    let composed = WorkspaceName::new("caf\u{e9}", B, &cancel)?.value;
+    let decomposed = WorkspaceName::new("cafe\u{301}", B, &cancel)?.value;
     assert_eq!(composed, decomposed);
     assert_eq!(composed.as_str(), "caf\u{e9}");
-    assert!(matches!(
-        WorkspaceName::new(
-            "",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error),
-        Err(WorkspaceError::Name(WorkspaceNameError::Empty))
-    ));
-    assert!(matches!(
-        WorkspaceName::new(
-            "..",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error),
-        Err(WorkspaceError::Name(WorkspaceNameError::Reserved))
-    ));
-    assert!(matches!(
-        WorkspaceName::new(
-            "parent/child",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error),
-        Err(WorkspaceError::Name(WorkspaceNameError::InvalidCharacter))
-    ));
+    assert_eq!(
+        WorkspaceName::new("", B, &cancel)
+            .map(|receipt| receipt.value)
+            .map_err(|failure| match failure.error {
+                WorkspaceError::Name(error) => error,
+                error => panic!("{error}"),
+            }),
+        Err(WorkspaceNameError::Empty)
+    );
+    assert_eq!(
+        WorkspaceName::new("..", B, &cancel)
+            .map(|receipt| receipt.value)
+            .map_err(|failure| match failure.error {
+                WorkspaceError::Name(error) => error,
+                error => panic!("{error}"),
+            }),
+        Err(WorkspaceNameError::Reserved)
+    );
+    assert_eq!(
+        WorkspaceName::new("parent/child", B, &cancel)
+            .map(|receipt| receipt.value)
+            .map_err(|failure| match failure.error {
+                WorkspaceError::Name(error) => error,
+                error => panic!("{error}"),
+            }),
+        Err(WorkspaceNameError::InvalidCharacter)
+    );
     Ok(())
 }
 
@@ -132,13 +91,13 @@ fn workspace_names_preserve_nfc_and_cancellation() -> Result<(), Box<dyn Error>>
         "a\u{301}\u{300}",
     ] {
         let expected: String = spelling.nfc().collect();
-        let normalized = WorkspaceName::new(spelling, WorkBudget::UNBOUNDED, &cancellation)?;
+        let normalized = WorkspaceName::new(spelling, B, &cancellation)?;
         assert_eq!(normalized.value.as_str(), expected);
         assert!(normalized.work.peak_allocation_bytes >= normalized.value.retained_bytes());
     }
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let failure = WorkspaceName::new("name", WorkBudget::UNBOUNDED, &cancelled)
+    let failure = WorkspaceName::new("name", B, &cancelled)
         .err()
         .ok_or("cancelled canonical name unexpectedly admitted")?;
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
@@ -148,51 +107,24 @@ fn workspace_names_preserve_nfc_and_cancellation() -> Result<(), Box<dyn Error>>
 
 #[test]
 fn identity_is_deterministic_and_namespace_scoped() -> Result<(), Box<dyn Error>> {
-    let name = WorkspaceName::new(
-        "repo",
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )?
-    .value;
-    let first = WorkspaceId::derive(
-        [1; 16],
-        &name,
-        crate::WorkBudget::UNBOUNDED,
-        &crate::CancellationToken::new(),
-    )?
-    .value;
+    let cancel = CancellationToken::new();
+    let name = WorkspaceName::new("repo", B, &cancel)?.value;
+    let first = WorkspaceId::derive([1; 16], &name, B, &cancel)?.value;
     assert_eq!(
         first,
-        WorkspaceId::derive(
-            [1; 16],
-            &name,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )?
-        .value
+        WorkspaceId::derive([1; 16], &name, B, &cancel)?.value
     );
     assert_ne!(
         first,
-        WorkspaceId::derive(
-            [2; 16],
-            &name,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )?
-        .value
+        WorkspaceId::derive([2; 16], &name, B, &cancel)?.value
     );
     assert_ne!(
         first,
         WorkspaceId::derive(
             [1; 16],
-            &WorkspaceName::new(
-                "other",
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )?
-            .value,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
+            &WorkspaceName::new("other", B, &cancel)?.value,
+            B,
+            &cancel
         )?
         .value
     );
@@ -201,36 +133,19 @@ fn identity_is_deterministic_and_namespace_scoped() -> Result<(), Box<dyn Error>
 
 #[tokio::test]
 async fn named_workspace_opens_and_forks_one_exact_generation() -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
-    let main = fs
-        .create_workspace(
-            "repo",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
-    let base = main
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let main = fs.create_workspace("repo", B, &cancel).await?.value;
+    let base = main.head(B, &cancel).await?.value;
     let fork_key = IdempotencyKey::from_bytes([0x42; 16]);
     let fork = main
         .fork::<_, _, crate::WorkspaceError>(
             "agent-42",
             ForkOptions::from_generation(base.clone(), fork_key),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            &mut |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
@@ -238,73 +153,34 @@ async fn named_workspace_opens_and_forks_one_exact_generation() -> Result<(), Bo
         .fork::<_, _, crate::WorkspaceError>(
             "agent-42",
             ForkOptions::from_generation(base.clone(), fork_key),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            &mut |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
     assert_eq!(
-        fs.open_workspace(
-            "repo",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await?
-        .value
-        .id(),
+        fs.open_workspace("repo", B, &cancel).await?.value.id(),
         main.id()
     );
     assert_ne!(fork.id(), main.id());
-    assert_ne!(
-        fork.head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await?
-        .value
-        .id(),
-        base.id()
-    );
+    assert_ne!(fork.head(B, &cancel).await?.value.id(), base.id());
     assert_eq!(retried.id(), fork.id());
     assert_eq!(
-        retried
-            .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .id(),
-        fork.head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await?
-        .value
-        .id()
+        retried.head(B, &cancel).await?.value.id(),
+        fork.head(B, &cancel).await?.value.id()
     );
     assert!(
         main.fork::<_, _, crate::WorkspaceError>(
             "agent-42",
             ForkOptions::from_generation(base, IdempotencyKey::from_bytes([0x43; 16])),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            &mut |_| std::future::ready(Ok(crate::OperationReceipt {
-                value: (),
-                work: crate::WorkCounters::UNCHARGED
-            }))
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            &mut allow::<FsError>
         )
         .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
         .is_err()
     );
     Ok(())
@@ -312,6 +188,7 @@ async fn named_workspace_opens_and_forks_one_exact_generation() -> Result<(), Bo
 
 #[tokio::test]
 async fn string_workspace_paths_match_native_namespace_names() -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     for profile in [
         crate::model::FilesystemProfile::Posix,
         crate::model::FilesystemProfile::Windows,
@@ -322,32 +199,32 @@ async fn string_workspace_paths_match_native_namespace_names() -> Result<(), Box
             ..VolumeConfig::portable(Lifecycle::Ephemeral)
         };
         let workspace = fs
-            .create_workspace_with_config(
-                "native-path",
-                config,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-            )
+            .create_workspace_with_config("native-path", config, B, &cancel)
             .await?
             .value;
-        workspace.write_text("/ÃƒÂ©.txt", "native").await?;
+        workspace
+            .write_text("/ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©.txt", "native")
+            .await?;
         let mut checkout = workspace
             .checkout(
                 GenerationSelector::Head,
                 CheckoutMode::read_only_pinned(),
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
+                B,
+                &cancel,
             )
             .await?
             .value;
         let path = NamespacePath::from_portable_in_profile(
-            &PortablePath::parse("/ÃƒÂ©.txt", config.limits)?,
+            &PortablePath::parse(
+                "/ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©.txt",
+                config.limits,
+            )?,
             profile,
             config.limits,
         )?;
         assert!(
             checkout
-                .lookup_no_follow(&path, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .lookup_no_follow(&path, B, &cancel)
                 .await?
                 .value
                 .record
@@ -360,32 +237,16 @@ async fn string_workspace_paths_match_native_namespace_names() -> Result<(), Box
 #[tokio::test]
 async fn generation_lookup_paths_preserves_order_absence_and_duplicates()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
-    let workspace = fs
-        .create_workspace(
-            "lookup-paths",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let workspace = fs.create_workspace("lookup-paths", B, &cancel).await?.value;
     workspace.write_text("/present", "body").await?;
-    let generation = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let generation = workspace.head(B, &cancel).await?.value;
     let config = crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral);
     let present = customer_path("/present", config)?;
     let absent = customer_path("/absent", config)?;
     let records = generation
-        .lookup_paths(
-            &[present.clone(), absent, present.clone()],
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
+        .lookup_paths(&[present.clone(), absent, present.clone()], B, &cancel)
         .await?;
     assert_eq!(records.value.len(), 3);
     assert!(records.value[0].is_some());
@@ -395,17 +256,13 @@ async fn generation_lookup_paths_preserves_order_absence_and_duplicates()
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     let cancelled_failure = generation
-        .lookup_paths(
-            std::slice::from_ref(&present),
-            WorkBudget::UNBOUNDED,
-            &cancelled,
-        )
+        .lookup_paths(std::slice::from_ref(&present), B, &cancelled)
         .await
         .err()
         .ok_or_else(|| std::io::Error::other("pre-cancelled lookup must fail"))?;
     assert_eq!(*cancelled_failure.work, crate::WorkCounters::default());
     let budget_failure = generation
-        .lookup_paths(&[present], WorkBudget::default(), &CancellationToken::new())
+        .lookup_paths(&[present], WorkBudget::default(), &cancel)
         .await
         .err()
         .ok_or_else(|| std::io::Error::other("zero-budget checkout must fail"))?;
@@ -417,69 +274,33 @@ async fn generation_lookup_paths_preserves_order_absence_and_duplicates()
 #[tokio::test]
 async fn bounded_path_index_hit_never_substitutes_a_false_empty_result()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace(
-            "bounded-path-index",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("bounded-path-index", B, &cancel)
         .await?
         .value;
     let mut transaction = workspace
-        .begin_transaction(
-            IdempotencyKey::new(),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .begin_transaction(IdempotencyKey::new(), B, &cancel)
         .await?
         .value;
     transaction.write_text("/a", "body").await?;
-    transaction
-        .hard_link(
-            "/a",
-            "/b",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    transaction.hard_link("/a", "/b", B, &cancel).await?.value;
     assert!(matches!(
         transaction
             .commit(
                 None,
-                crate::PublicationPermit::Unrestricted,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-                |_| async {
-                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
-                        crate::OperationReceipt {
-                            value: (),
-                            work: crate::WorkCounters::default(),
-                        },
-                    )
-                }
+                PublicationPermit::Unrestricted,
+                B,
+                &cancel,
+                allow::<WorkspaceError>
             )
             .await?
             .value,
         TransactionCommit::Committed(_)
     ));
-    let generation = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
-    let file_id = generation
-        .stat(
-            "/a",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value
-        .file_id;
+    let generation = workspace.head(B, &cancel).await?.value;
+    let file_id = generation.stat("/a", B, &cancel).await?.value.file_id;
 
     let complete = generation
         .namespace_records_for_file_ids([file_id], 16)
@@ -490,7 +311,7 @@ async fn bounded_path_index_hit_never_substitutes_a_false_empty_result()
             .records
             .iter()
             .find(|(id, _)| *id == file_id)
-            .map(|(_, records)| records.len()),
+            .map(|(_, paths)| paths.len()),
         Some(2)
     );
 
@@ -503,7 +324,7 @@ async fn bounded_path_index_hit_never_substitutes_a_false_empty_result()
             .records
             .iter()
             .find(|(id, _)| *id == file_id)
-            .map(|(_, records)| records.len()),
+            .map(|(_, paths)| paths.len()),
         Some(1)
     );
     Ok(())
@@ -512,23 +333,14 @@ async fn bounded_path_index_hit_never_substitutes_a_false_empty_result()
 #[tokio::test]
 async fn generation_reader_resolves_many_paths_from_one_pinned_root() -> Result<(), Box<dyn Error>>
 {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace(
-            "generation-reader",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("generation-reader", B, &cancel)
         .await?
         .value;
     workspace.write_text("/present", "body").await?;
-    let generation = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let generation = workspace.head(B, &cancel).await?.value;
     let config = crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral);
     let present = customer_path("/present", config)?;
     let absent = customer_path("/absent", config)?;
@@ -538,19 +350,15 @@ async fn generation_reader_resolves_many_paths_from_one_pinned_root() -> Result<
         .checkout(
             GenerationSelector::Exact(generation.id()),
             CheckoutMode::read_only_pinned(),
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
+            B,
+            &cancel,
         )
         .await?
         .value
         .pinned_reader()
         .map_err(WorkspaceError::engine)?;
     let descriptions = reader
-        .describe_files(
-            &[present, absent],
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
+        .describe_files(&[present, absent], B, &cancel)
         .await?
         .value;
 
@@ -566,11 +374,12 @@ async fn generation_reader_resolves_many_paths_from_one_pinned_root() -> Result<
 #[tokio::test]
 async fn readonly_creation_lookup_keeps_authentic_initial_generation_and_failed_work()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let config = VolumeConfig::portable(Lifecycle::Ephemeral);
     let operation = IdempotencyKey::from_bytes([0xd4; 16]).operation_id();
     let cancellation = CancellationToken::new();
-    let mut allowances = serde_json::to_value(WorkBudget::UNBOUNDED)?;
+    let mut allowances = serde_json::to_value(B)?;
     for allowance in allowances
         .as_object_mut()
         .expect("budget fields")
@@ -580,32 +389,22 @@ async fn readonly_creation_lookup_keeps_authentic_initial_generation_and_failed_
     }
     let budget: WorkBudget = serde_json::from_value(allowances)?;
     let created = fs
-        .create_workspace_with_operation(
+        .create_workspace_with_operation::<_, _, WorkspaceError>(
             "readonly-original-creation",
             config,
             operation,
             budget,
             &cancellation,
+            None::<&mut ()>,
         )
         .await?
         .value;
     let workspace = fs
-        .open_workspace(
-            "readonly-original-creation",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .open_workspace("readonly-original-creation", B, &cancel)
         .await?
         .value;
     workspace.write_text("/later", "advanced head").await?;
-    let advanced = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value
-        .id();
+    let advanced = workspace.head(B, &cancel).await?.value.id();
     assert_ne!(advanced, created.id());
     let original = fs
         .workspace_for_creation_operation(
@@ -629,17 +428,7 @@ async fn readonly_creation_lookup_keeps_authentic_initial_generation_and_failed_
         Some(workspace.id())
     );
     assert_eq!(original.work.authority_records_appended, 0);
-    assert_eq!(
-        workspace
-            .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .id(),
-        advanced
-    );
+    assert_eq!(workspace.head(B, &cancel).await?.value.id(), advanced);
 
     let wrong_operation = IdempotencyKey::from_bytes([0xd5; 16]).operation_id();
     let mut wrong_config = config;
@@ -675,15 +464,11 @@ async fn readonly_creation_lookup_keeps_authentic_initial_generation_and_failed_
     assert_eq!(missing.work.authority_records_appended, 0);
     missing.work.verify(budget)?;
     assert!(
-        fs.open_workspace(
-            "readonly-missing-creation",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .is_err()
+        fs.open_workspace("readonly-missing-creation", B, &cancel)
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
+            .is_err()
     );
 
     let mut denied = budget;
@@ -702,16 +487,6 @@ async fn readonly_creation_lookup_keeps_authentic_initial_generation_and_failed_
     assert_ne!(*failure.work, crate::WorkCounters::UNCHARGED);
     failure.work.verify(denied)?;
     assert_eq!(failure.work.authority_records_appended, 0);
-    assert_eq!(
-        workspace
-            .head(
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value
-            .id(),
-        advanced
-    );
+    assert_eq!(workspace.head(B, &cancel).await?.value.id(), advanced);
     Ok(())
 }
