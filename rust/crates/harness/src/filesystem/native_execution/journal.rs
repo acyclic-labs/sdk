@@ -71,15 +71,10 @@ async fn read_record<P: StreamProvider>(
         return Ok(None);
     };
     let stream = crate::store::operations::stream(client, path.as_str(), &mut observer)?;
-    let mut records = crate::store::operations::read_records_with_work(
-        client,
-        &stream.0,
-        sequence,
-        1,
-        &mut observer,
-    )
-    .await?
-    .map_err(|error| crate::distributed::sdk_error(error, &observer))?;
+    let mut records =
+        crate::store::operations::read_records(client, stream.0.path(), sequence, 1, &mut observer)
+            .await?
+            .map_err(|error| crate::distributed::sdk_error(error, &observer))?;
     let record = records.next(&mut observer).await?.ok_or_else(invalid)?;
     if record.value.len() > acyclic_stream::MAX_RECORD_BYTES {
         return Err(invalid());
@@ -144,7 +139,9 @@ impl<P: StreamProvider> acyclic_fs::MaterializationJournalStore for Store<P> {
         self.owner
             .verify(
                 false,
-                &mut Some(&mut crate::store::history::native_work_io(&self.work)?),
+                &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(&self.work)?,
+                )),
             )
             .await?;
         let journal = read_record(
@@ -156,7 +153,9 @@ impl<P: StreamProvider> acyclic_fs::MaterializationJournalStore for Store<P> {
         self.owner
             .verify(
                 false,
-                &mut Some(&mut crate::store::history::native_work_io(&self.work)?),
+                &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(&self.work)?,
+                )),
             )
             .await?;
         self.work.set_original_work(

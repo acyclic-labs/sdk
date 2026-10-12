@@ -59,7 +59,9 @@ pub(super) async fn capture<P: StreamProvider + 'static>(
                         .cancellation()
                         .check()
                         .map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled)?;
-                    let mut observer = crate::store::history::native_work_io(&original)?;
+                    let mut observer = crate::store::HistoryWork::new(
+                        crate::filesystem::PreparationIo::from_native_work(&original)?,
+                    );
                     tokio::time::timeout(
                         Duration::from_millis(u64::from(request.control_timeout_ms)),
                         owner.verify(false, &mut Some(&mut observer)),

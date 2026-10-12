@@ -369,7 +369,9 @@ where
         let effect = task_effect_id(
             self.owner.task_binding().0,
             self.command,
-            &mut Some(&mut crate::store::history::native_work_io(self.work())?),
+            &mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(self.work())?,
+            )),
         )?;
         let io = PreparationIo::from_native_work(self.work())?;
         let reader = HistoryReader::new(
@@ -422,7 +424,9 @@ where
         self.owner
             .verify(
                 false,
-                &mut Some(&mut crate::store::history::native_work_io(self.work())?),
+                &mut Some(&mut crate::store::HistoryWork::new(
+                    crate::filesystem::PreparationIo::from_native_work(self.work())?,
+                )),
             )
             .await?;
         let (state, _custody) = self.require_effect(dispatch).await?;
@@ -460,9 +464,9 @@ where
                 .clone_authority(self.authority.verifier.audience())?,
             task,
             command: self.command,
-            fence: fence.clone_with_work(&mut Some(&mut crate::store::history::native_work_io(
-                self.work(),
-            )?))?,
+            fence: fence.clone_with_work(&mut Some(&mut crate::store::HistoryWork::new(
+                crate::filesystem::PreparationIo::from_native_work(self.work())?,
+            )))?,
             approval: self.approval,
             approval_digest: self.request.approval_digest_with_native_work(
                 task,

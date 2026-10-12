@@ -1,9 +1,9 @@
 use super::*;
 
 impl AgentHarness {
-/// Admits a process-local task after validating its registration and input.
+    /// Admits a process-local task after validating its registration and input.
 
-pub async fn spawn<I, O>(
+    pub async fn spawn<I, O>(
         self: &Arc<Self>,
         definition: &Arc<TaskDefinition<I, O>>,
         input: I,
@@ -23,7 +23,7 @@ pub async fn spawn<I, O>(
         .await
     }
 
-pub(super) async fn spawn_in_group<I, O>(
+    pub(super) async fn spawn_in_group<I, O>(
         self: &Arc<Self>,
         group: &TaskGroup,
         scope: RuntimeScope,
@@ -45,7 +45,7 @@ pub(super) async fn spawn_in_group<I, O>(
             .await
     }
 
-pub(crate) async fn spawn_local_with_operation<I, O>(
+    pub(crate) async fn spawn_local_with_operation<I, O>(
         self: &Arc<Self>,
         operation_id: OperationId,
         definition: &Arc<TaskDefinition<I, O>>,
@@ -66,7 +66,7 @@ pub(crate) async fn spawn_local_with_operation<I, O>(
         .await
     }
 
-pub(super) async fn spawn_local_in_group<I, O>(
+    pub(super) async fn spawn_local_in_group<I, O>(
         self: &Arc<Self>,
         group: &TaskGroup,
         scope: RuntimeScope,
@@ -79,10 +79,12 @@ pub(super) async fn spawn_local_in_group<I, O>(
         I: Serialize + Send + 'static,
         O: Serialize + DeserializeOwned + Send + 'static,
     {
-        let registered = self
-            .tasks
-            .get_version::<I, O>(&definition.identity.name, &definition.identity.version,
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
+        let registered = self.tasks.get_version::<I, O>(
+            &definition.identity.name,
+            &definition.identity.version,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            None,
+        )?;
         if !Arc::ptr_eq(&registered, definition) {
             return Err(Error::Conflict(
                 "task definition is not the registered version".into(),
@@ -94,7 +96,12 @@ pub(super) async fn spawn_local_in_group<I, O>(
             ));
         };
         let extension_leases = self.retain_task_extensions(definition, &scope)?;
-        crate::contract::validate_json_schema_value(&definition.input_schema, &serde_json::to_value(&input).map_err(|error| Error::Invalid(error.to_string()))?, "task input", &mut None)?;
+        crate::contract::validate_json_schema_value(
+            &definition.input_schema,
+            &serde_json::to_value(&input).map_err(|error| Error::Invalid(error.to_string()))?,
+            "task input",
+            &mut None,
+        )?;
         let handler = Arc::clone(handler);
         let output_schema = definition.output_schema.clone();
         let runtime = Arc::clone(self);
@@ -124,6 +131,10 @@ pub(super) async fn spawn_local_in_group<I, O>(
                         model_steps: Arc::new((AtomicUsize::new(0), None)),
                         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                         native_metadata_source: None,
+                        #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+                        working_view: std::sync::OnceLock::new(),
+                        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+                        native_custody: None,
                     },
                     input,
                 );
@@ -132,8 +143,13 @@ pub(super) async fn spawn_local_in_group<I, O>(
                     None => run.await?,
                 };
                 drop(extension_leases);
-                crate::contract::validate_json_schema_value(&output_schema, &serde_json::to_value(&output)
-                        .map_err(|error| Error::Invalid(error.to_string()))?, "task output", &mut None)?;
+                crate::contract::validate_json_schema_value(
+                    &output_schema,
+                    &serde_json::to_value(&output)
+                        .map_err(|error| Error::Invalid(error.to_string()))?,
+                    "task output",
+                    &mut None,
+                )?;
                 Ok(output)
             })
             .await;
@@ -148,9 +164,9 @@ pub(super) async fn spawn_local_in_group<I, O>(
         Ok(RuntimeTask::Live(handle))
     }
 
-/// Admits a pinned resumable task through a host; live futures are rejected.
+    /// Admits a pinned resumable task through a host; live futures are rejected.
 
-pub async fn admit<I, O>(
+    pub async fn admit<I, O>(
         self: &Arc<Self>,
         operation_id: OperationId,
         definition: &Arc<TaskDefinition<I, O>>,

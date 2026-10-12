@@ -2,10 +2,7 @@ use super::*;
 
 /// Collects outcomes in input order.
 pub async fn join_all<T>(handles: Vec<TaskHandle<T>>) -> Vec<Outcome<T>> {
-    stream::iter(handles)
-        .then(TaskHandle::result)
-        .collect()
-        .await
+    stream::iter(handles).then(TaskHandle::wait).collect().await
 }
 
 /// Streams outcomes in completion order.

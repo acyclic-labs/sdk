@@ -348,7 +348,7 @@ impl McpToolTransport for ContextTransport {
 
 async fn check_context_dispatch(task: TaskContext, tool: &Tool) -> Result<()> {
     let operation = OperationId::from_bytes([17; 16]);
-    let context = ToolContext::new(task.clone(), operation, "provider-call")?;
+    let context = ToolContext::new(std::sync::Arc::new(task.clone()), operation, "provider-call", None)?;
     let invocation = ToolInvocation {
         operation_id: operation,
         call_id: "provider-call".into(),
@@ -370,13 +370,9 @@ async fn check_context_dispatch(task: TaskContext, tool: &Tool) -> Result<()> {
     assert_eq!(recovered.value["_meta"], expected);
     let denied = task.scoped(Capabilities::new([] as [String; 0]), Limits::default())?;
     for wrong in [
-        ToolContext::new(
-            task.clone(),
-            OperationId::from_bytes([18; 16]),
-            "provider-call",
-        )?,
-        ToolContext::new(task, operation, "different-call")?,
-        ToolContext::new(denied, operation, "provider-call")?,
+        ToolContext::new(std::sync::Arc::new(task.clone()), OperationId::from_bytes([18; 16]), "provider-call", None)?,
+        ToolContext::new(std::sync::Arc::new(task), operation, "different-call", None)?,
+        ToolContext::new(std::sync::Arc::new(denied), operation, "provider-call", None)?,
     ] {
         assert!(matches!(
             tool.executor
@@ -424,7 +420,7 @@ async fn admitted_mcp_tools_preserve_context_and_reject_identity_or_scope_change
         Capabilities::new(["task:spawn:mcp.context@1", "mcp:call:fixture"]),
         Limits::default(),
     )?;
-    let harness = bindings.build()?;
+    let harness = bindings.build(None)?;
     let definition = harness.task::<(), u32>("mcp.context")?;
     assert_eq!(
         harness.spawn(&definition, ()).await?.result().await?,

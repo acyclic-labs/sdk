@@ -2821,8 +2821,10 @@ mod tests {
         scheduler: &mut Scheduler, event: &SchedulerEvent,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
-        let mut io = crate::store::history::native_work_io(work)
-            ?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)
+            ?,
+        );
         scheduler.apply(event, &mut Some(&mut io))
     }
 
@@ -2869,7 +2871,9 @@ mod tests {
         assert_eq!(scheduler, original);
         let work = acyclic_fs::NativeMaterializationWork::new(native_scheduler_budget(), &cancellation)
             .expect("original pre-cancel ledger");
-        let mut io = crate::store::history::native_work_io(&work).expect("original observer before cancellation");
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(&work).expect("original observer before cancellation"),
+        );
         cancellation.cancel();
         let before = work.receipt();
         assert!(scheduler.apply(&valid, &mut Some(&mut io)).expect_err("pre-cancel").is_native_failure());

@@ -28,10 +28,8 @@ impl AgentHarness {
         let identity = admission.task.clone();
         let registered = self
             .tasks
-            .0
-            .get(&(identity.name.clone(), identity.version.clone()))
-            .ok_or_else(|| Error::Conflict("reconciled task is not registered".into()))?;
-        if *registered.workflow_definition.identity() != identity || registered.machine.is_none() {
+            .find(&identity.name, &identity.version, &mut None)?;
+        if *registered.identity() != identity || registered.machine().is_none() {
             return Err(Error::Conflict(
                 "reconciled task implementation changed".into(),
             ));
@@ -156,11 +154,9 @@ impl AgentHarness {
             });
         }
         self.assert_durable_policy_bindings(Some(work))?;
-        let mut io =
-            crate::store::history::native_work_io(work).map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         crate::store::history::HistoryIo::absorb_native_custody(&mut io, input.1)?;
         let record = self.tasks.registered_admission(
             operation,
@@ -210,11 +206,9 @@ impl AgentHarness {
                 reason: "native root admission requires the configured local durable host",
             });
         }
-        let mut io =
-            crate::store::history::native_work_io(work).map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
+        let mut io = crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        );
         use crate::store::history::HistoryIo as _;
         let (value, custody) = input;
         io.absorb_native_custody(custody)?;
@@ -248,101 +242,75 @@ impl AgentHarness {
         Ok((record, custody))
     }
 
-    /// Reopens an admitted task through its exact registered definition without requiring the worker to know its Rust input/output types.
+    /// Reopens the exact registered task definition.
 
     pub async fn open_registered_task(
         self: &Arc<Self>,
         task_id: TaskId,
-        fence: crate::scheduler::LeaseFence,
-        journal: Arc<dyn WorkflowJournal>,
-    ) -> Result<ResumableTaskSession> {
-        self.open_registered_task_body(
-            task_id,
-            RegisteredTaskOpening::Ordinary(fence),
-            journal,
-            None,
-        )
-        .await
-    }
-
-    /// Reopens the actual registered definition on the original native ledger.
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub async fn open_registered_task_with_native_work(
-        self: &Arc<Self>,
-        task_id: TaskId,
         fence: &crate::scheduler::LeaseFence,
         journal: Arc<dyn WorkflowJournal>,
-        context: Arc<NativeTaskContext>,
-        work: &acyclic_fs::NativeMaterializationWork,
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] context: Option<
+            Arc<TaskContext>,
+        >,
     ) -> Result<ResumableTaskSession> {
-        if !context.native_metadata_matches(work)
-            || !Arc::ptr_eq(&context.context().harness, self)
-            || !context
-                .context()
-                .original_task_binding_matches(task_id, fence)
-            || journal.task_binding() != Some((task_id, fence))
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "native workflow context or journal owner differs",
-            });
-        }
-        if !journal.supports_native_work() {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "workflow journal has no native callbacks",
-            });
-        }
-        let identity = journal
-            .original_machine_identity()
-            .ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "native workflow journal has no original admitted identity",
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let selected = if let Some(context) = &context {
+            let work = context.native_work()?;
+            if !Arc::ptr_eq(&context.as_ref().harness, self)
+                || !context
+                    .as_ref()
+                    .original_task_binding_matches(task_id, fence)
+                || journal.task_binding() != Some((task_id, fence))
+            {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "native workflow context or journal owner differs",
+                });
+            }
+            if !journal.supports_native_work() {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unsupported,
+                    reason: "workflow journal has no native callbacks",
+                });
+            }
+            let identity = journal
+                .original_machine_identity()
+                .ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unsupported,
+                    reason: "native workflow journal has no original admitted identity",
+                })?;
+            let io = crate::executor::PreparationIo::from_native_work(work)?;
+            let definition = crate::executor::with_history_io(Some(&io), |observer| {
+                let definition = self
+                    .tasks
+                    .find(&identity.name, &identity.version, observer)?;
+                if definition
+                    .machine()
+                    .map(|machine| machine.identity_with_native_work(work))
+                    .transpose()?
+                    != Some(identity)
+                {
+                    return Err(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Conflict,
+                        reason: "original native task definition changed",
+                    });
+                }
+                Ok(definition)
             })?;
-        let entry = self
-            .tasks
-            .0
-            .iter()
-            .find_map(|((name, version), entry)| {
-                (name == &identity.name
-                    && version == &identity.version
-                    && entry.machine.as_ref() == Some(identity))
-                .then_some(entry)
-            })
-            .ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "original native task definition is unavailable",
-            })?;
-        if entry.native_custody.is_none() {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "registered task metadata lacks native custody",
-            });
-        }
-        let definition = &entry.workflow_definition;
-        definition.require_native_identity(work)?;
-        let opening = RegisteredTaskOpening::Native {
-            fence,
-            context,
-            definition: definition.clone(),
+            Some(definition)
+        } else {
+            None
         };
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let result = self
-            .open_registered_task_body(task_id, opening, journal, Some(&io))
-            .await;
-        let (session, _temporary_custody) = crate::workflow::finish_native_io(result, io, 0)?;
-        Ok(session)
-    }
-
-    pub(super) async fn open_registered_task_body(
-        self: &Arc<Self>,
-        task_id: TaskId,
-        opening: RegisteredTaskOpening<'_>,
-        journal: Arc<dyn WorkflowJournal>,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<ResumableTaskSession> {
-        let native = task_original_work(io)?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let io = context
+            .as_ref()
+            .map(|context| {
+                crate::filesystem::PreparationIo::from_native_work(context.native_work()?)
+            })
+            .transpose()?;
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let io = None;
+        let native = task_original_work(io.as_ref())?;
         let state = self.state.as_ref().ok_or_else(|| {
             task_workflow_error(
                 native,
@@ -364,62 +332,45 @@ impl AgentHarness {
             state.observe_admission(task_id).await?,
             None::<NativeCustody>,
         );
-        self.validate_observed_admission(&retained.0, io).await?;
-        let entry = if io.is_some() {
-            self.tasks.0.iter().find_map(|((name, version), entry)| {
-                (name == &retained.0.task.name && version == &retained.0.task.version)
-                    .then_some(entry)
-            })
-        } else {
-            self.tasks.0.get(&(
-                retained.0.task.name.clone(),
-                retained.0.task.version.clone(),
-            ))
-        }
-        .ok_or_else(|| {
-            task_workflow_error(
-                native,
-                crate::wire::ErrorCode::NotFound,
-                "admitted task definition",
-            )
+        self.validate_observed_admission(&retained.0, io.as_ref())
+            .await?;
+        let definition = crate::executor::with_history_io(io.as_ref(), |observer| {
+            self.tasks
+                .find(&retained.0.task.name, &retained.0.task.version, observer)
         })?;
-        if entry.machine.is_none() {
+        if definition.machine().is_none() {
             return Err(task_workflow_error(
                 native,
                 crate::wire::ErrorCode::Unsupported,
                 "live tasks have no resumable workflow",
             ));
         }
-        let definition = &entry.workflow_definition;
-        match opening {
-            RegisteredTaskOpening::Ordinary(fence) => {
-                let definition = definition.clone();
-                let context = self
-                    .durable_context(task_id, retained.0.operation_id)
-                    .await?;
-                definition.open_workflow(context, fence, journal).await
+
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(context) = context {
+            if !selected.is_some_and(|selected| Arc::ptr_eq(definition, selected)) {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Conflict,
+                    reason: "admitted native task definition changed",
+                });
             }
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            RegisteredTaskOpening::Native {
-                fence,
-                context,
-                definition: selected,
-            } => {
-                if !Arc::ptr_eq(definition, &selected) {
-                    return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Conflict,
-                        reason: "admitted native task definition changed",
-                    });
-                }
-                let work = task_original_work(io)?.ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "native registered opening requires original work",
-                })?;
-                selected
-                    .open_workflow_with_native_work(context, fence, journal, work)?
-                    .await
-            }
+            let io = io.expect("native opening has its IO context");
+            let work = io
+                .original_native_work()
+                .expect("native opening has original work");
+            let result = definition
+                .clone()
+                .open_workflow_with_native_work(context, fence, journal, work)?
+                .await;
+            return crate::workflow::finish_native_io(result, io, 0).map(|(session, _)| session);
         }
+        let context = self
+            .durable_context(task_id, retained.0.operation_id)
+            .await?;
+        definition
+            .clone()
+            .open_workflow(context, fence.clone(), journal)
+            .await
     }
 
     /// Discovers direct durable children from their owner, not from fork or conversation history.

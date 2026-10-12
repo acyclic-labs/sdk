@@ -59,15 +59,10 @@ pub(super) async fn read_receipt<P: StreamProvider>(
     }
     let limit = bounds.tail as u32;
     let stream = crate::store::operations::stream(&client, path.as_str(), &mut observer)?;
-    let mut records = crate::store::operations::read_records_with_work(
-        &client,
-        &stream.0,
-        0,
-        limit,
-        &mut observer,
-    )
-    .await?
-    .map_err(|error| crate::distributed::sdk_error(error, &observer))?;
+    let mut records =
+        crate::store::operations::read_records(&client, stream.0.path(), 0, limit, &mut observer)
+            .await?
+            .map_err(|error| crate::distributed::sdk_error(error, &observer))?;
     let first = records
         .next(&mut observer)
         .await?
