@@ -5,7 +5,7 @@ use acyclic_fs::{CancellationToken, OperationFailure, OperationReceipt, WorkBudg
 use std::sync::Mutex;
 
 /// Per-attempt filesystem work and allocation limits.
-pub(crate) enum PreparationIo {
+pub enum PreparationIo {
     Owned { budget: WorkBudget, work: Mutex<(WorkCounters, u64, Option<OrdinaryPublicationBorrow>)>, cancellation: CancellationToken },
     #[cfg(not(target_arch = "wasm32"))]
     Native { work: acyclic_fs::NativeMaterializationWork, custody: Mutex<acyclic_fs::NativeAllocation> },
@@ -280,7 +280,8 @@ impl PreparationIo {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn from_native_work(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
+    /// Uses the original native ledger for filesystem operations.
+    pub fn from_native_work(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
         work.remaining().map_err(Error::from)?;
         let custody = work.retain_owned(0).map_err(Error::from)?;
         Ok(Self::Native { work: work.clone(), custody: Mutex::new(custody) })
@@ -968,10 +969,6 @@ pub(in crate::filesystem) fn failure(io: Option<&PreparationIo>, code: crate::wi
     }
 }
 
-pub(in crate::filesystem) fn validate_content_path(path: &str, io: Option<&PreparationIo>) -> Result<()> {
-    crate::executor::with_history_io(io, |work| crate::conversation::validate_content_path(path, work))
-}
-
 pub(in crate::filesystem) fn clone_text(value: &str, io: Option<&PreparationIo>) -> Result<String> {
     match io {
         Some(io) => crate::store::history::HistoryIo::clone_text(&mut io.history_io(), value),
@@ -1073,13 +1070,6 @@ pub(in crate::filesystem) fn strings(io: &PreparationIo, values: &[&str]) -> Res
         io.retain_owned(value.len() as u64)?;
     }
     Ok(())
-}
-
-pub(in crate::filesystem) fn clone_file(reference: &FileRef, io: Option<&PreparationIo>) -> Result<FileRef> {
-    match io {
-        Some(io) => reference.copy(&mut Some(&mut io.history_io())),
-        None => Ok(reference.clone()),
-    }
 }
 
 pub(in crate::filesystem) fn reference_key(reference: &FileRef, io: Option<&PreparationIo>) -> Result<String> {

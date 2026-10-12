@@ -286,8 +286,8 @@ impl RootInstrumentation for OrdinaryRootWork<'_> {
     async fn open_source(&mut self, root: &Path, reference: SourceReference,
         watcher: Arc<Mutex<NativeWatch>>) -> Result<Arc<LocalLazySource>, Self::Error> {
         let remaining = self.work.remaining(self.budget).map_err(|error| rejected(error, self.work))?;
-        let source = combine(&mut self.work, NativeDemandSource::open_with_reference_measured(
-            root.to_path_buf(), native_filesystem_profile(), VolumeLimits::default(), reference,
+        let source = combine(&mut self.work, NativeDemandSource::open(
+            std::borrow::Cow::Owned(root.to_path_buf()), native_filesystem_profile(), VolumeLimits::default(), Some(reference),
             Some(watcher as Arc<dyn DemandDirectoryObserver>), remaining, self.cancellation,
         ).await)?;
         Ok(Arc::new(FilteredDemandSource::new(source,
@@ -511,9 +511,9 @@ where G: FnMut() -> F + Send,
     }
     async fn open_source(&mut self, root: &Path, reference: SourceReference,
         watcher: Arc<Mutex<NativeWatch>>) -> RootResult<Arc<LocalLazySource>> {
-        let source = NativeDemandSource::open_with_reference_and_native_work(
-            root, native_filesystem_profile(), VolumeLimits::default(), reference,
-            Some(watcher as Arc<dyn DemandDirectoryObserver>), self.work,
+        let source = NativeDemandSource::open(
+            std::borrow::Cow::Borrowed(root), native_filesystem_profile(), VolumeLimits::default(), Some(reference),
+            Some(watcher as Arc<dyn DemandDirectoryObserver>), self.work, self.work.cancellation(),
         ).await.map_err(native_source_error)?;
         let excluded = native_reserved_paths(self.work)?;
         let mut source = FilteredDemandSource::new_with_native_work(

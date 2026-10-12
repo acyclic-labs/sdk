@@ -503,7 +503,7 @@ async fn execute(command: &str, backend: &mut Option<Backend>, cursor: &mut acyc
             let page = reader.read_page(&cursor, acyclic_harness::store::HistoryReadLimits {
                 maximum_events: terminal::MAX_PAGE_EVENTS as u32,
                 maximum_bytes: terminal::MAX_FRAME_BYTES as u64,
-            }).await?;
+            }, None).await?;
             return Ok(format!("history-json={}\n", serde_json::to_string(&page)
                 .map_err(|error| Error::Invalid(error.to_string()))?));
         }

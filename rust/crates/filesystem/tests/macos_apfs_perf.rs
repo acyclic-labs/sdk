@@ -178,11 +178,11 @@ async fn report_apfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
     let started = Instant::now();
     let demand = Arc::new(
         NativeDemandSource::open(
-            source.path(),
+            std::borrow::Cow::Owned(std::path::Path::new(source.path()).to_path_buf()),
             FilesystemProfile::Portable,
-            VolumeLimits::default(), None, None,
+            VolumeLimits::default(), None, None, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),
         )
-        .await?,
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
     );
     let lazy = LazyWorkspace::attach(
         &fs,

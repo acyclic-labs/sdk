@@ -255,18 +255,22 @@ impl NativeSession {
                     (&binding.to_project, VolumeOperation::Read),
                     (&binding.to_project, VolumeOperation::Write),
                 ] {
-                    let grant = guard_owner.require_volume_grant_measured(
-                        volume, operation, work.remaining()?, guard_cancellation,
-                    );
-                    account_guard(&work, grant)?;
+                    let mut grant_work = acyclic_harness::store::HistoryWork::new(work.remaining()?, guard_cancellation);
+                    let grant = grant_work.preflight().and_then(|()|
+                        guard_owner.require_volume_grant(volume, operation, &mut Some(&mut grant_work)));
+                    account_guard(&work, grant_work.finish(grant))?;
                 }
                 let approval = guard_journal.verify_measured(
                     interaction_id(binding), binding.operation_id, digest,
                     work.remaining()?, guard_cancellation,
                 ).await;
                 account_guard(&work, approval)?;
-                let owner = guard_owner.verify_dispatch_measured(work.remaining()?, guard_cancellation).await;
-                account_guard(&work, owner)
+                let mut owner_work = acyclic_harness::store::HistoryWork::new(work.remaining()?, guard_cancellation);
+                let owner = async {
+                    owner_work.preflight()?;
+                    guard_owner.verify(false, &mut Some(&mut owner_work)).await
+                }.await;
+                account_guard(&work, owner_work.finish(owner))
             }
         };
         match acyclic_fs::publish_native_generation_transition(&from, &to, &state,

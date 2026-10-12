@@ -624,7 +624,7 @@ mod model {
     use super::{diff, entry, name, put};
     use crate::cancellation::CancellationToken;
     use crate::foundation::FileId;
-    use crate::kernel::persistent_pagination::paginate_async;
+    use crate::kernel::persistent_pagination::paginate;
     use crate::kernel::tree_mutation::{TreeFormat, TreeMutation, apply_tree_mutations};
     use crate::kernel::{DecodeLimits, TreeEntry, TreePage};
     use crate::memory::MemoryObjectStore;
@@ -695,10 +695,10 @@ mod model {
         let mut values = Vec::new();
         let mut after = None;
         for _ in 0..=256 {
-            let receipt = paginate_async::<_, TreeFormat>(
+            let receipt = paginate::<_, TreeFormat>(
                 store,
                 root,
-                after.as_ref(),
+                after.as_ref().map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
                 page,
                 LIMITS,
                 WorkBudget::UNBOUNDED,

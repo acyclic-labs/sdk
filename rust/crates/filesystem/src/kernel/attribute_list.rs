@@ -8,6 +8,7 @@ use crate::cancellation::CancellationToken;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::speculation::{ResidencyHint, ResidencyReason};
 use crate::storage::{ObjectId, ObjectStoreError};
+use std::ops::Bound;
 use thiserror::Error;
 
 /// One bounded ordered named-attribute page.
@@ -33,10 +34,10 @@ pub async fn list_attributes<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<AttributeListing, AttributeListFailure> {
-    persistent_pagination::paginate_async::<S, AttributeFormat>(
+    persistent_pagination::paginate::<S, AttributeFormat>(
         store,
         root,
-        after,
+        after.map_or(Bound::Unbounded, Bound::Excluded),
         maximum_entries,
         limits,
         budget,
@@ -53,8 +54,8 @@ pub(crate) async fn list_attributes_async_with_accounting<S: AsyncObjectStore>(
     limits: DecodeLimits, accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken, data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<(AttributeListing, super::allocation::KernelOwnedAllocation), crate::FsError> {
-    persistent_pagination::paginate_async_with_accounting::<S, AttributeFormat>(
-        store, root, after, maximum_entries, limits, accounting, cancellation, data_custody,
+    persistent_pagination::paginate_with_accounting::<S, AttributeFormat>(
+        store, root, after.map_or(Bound::Unbounded, Bound::Excluded), maximum_entries, limits, accounting, cancellation, data_custody,
     ).await.map(|(receipt, allocation)| (to_listing(receipt), allocation))
         .map_err(|error| match error {
             crate::FsError::Directory(error) => crate::FsError::AttributeList(map_error(

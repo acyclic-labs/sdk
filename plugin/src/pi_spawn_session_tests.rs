@@ -51,7 +51,7 @@ async fn preparing_native_seed_is_pure_single_root_and_has_distinct_empty_privat
     let (again, _again_custody) = session.spawn_native_commit(caller, &args, &fixture.owner, &work).unwrap();
     assert!(_commit_custody.work().shares_ledger(&work));
     assert!(_again_custody.work().shares_ledger(&work));
-    assert!(same_spawn_commit(&commit, &again));
+    assert!(commit == again);
     assert_eq!(commit.alias, commit.launch.agent_alias);
     assert_eq!(commit.child.native_session_id, args["native_session_id"].as_str().unwrap());
     assert_eq!(commit.child.project_volumes.len(), 1);

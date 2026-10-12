@@ -224,8 +224,6 @@ pub struct IndexedDbAuthorityStore {
 struct PreparedAppend {
     durable: DurableCommit,
     encoded_commit: Vec<u8>,
-    encoded_operation: Vec<u8>,
-    encoded_head: Vec<u8>,
     work: WorkCounters,
 }
 
@@ -674,11 +672,6 @@ impl IndexedDbAuthorityStore {
         };
         let encoded_commit = encode_commit(&durable).map_err(|error| Self::backend(error, work))?;
         Ok(PreparedAppend {
-            encoded_operation: encode_operation(OperationRecord {
-                sequence,
-                fingerprint: durable.fingerprint,
-            }),
-            encoded_head: encode_head(Head { epoch, sequence, digest }),
             encoded_commit,
             durable,
             work: write_work,
@@ -721,14 +714,20 @@ impl IndexedDbAuthorityStore {
             let operations = transaction
                 .object_store(AUTHORITY_OPERATIONS)
                 .map_err(|error| Self::backend(error, prepared.work))?;
-            Self::write_record(&operations, &operation_key(authority_id, prepared.durable.operation_id), JsValue::from(Uint8Array::from(prepared.encoded_operation.as_slice())), false, cancellation, prepared.work)
+            let encoded = encode_operation(OperationRecord {
+                sequence: prepared.durable.sequence, fingerprint: prepared.durable.fingerprint,
+            });
+            Self::write_record(&operations, &operation_key(authority_id, prepared.durable.operation_id), JsValue::from(Uint8Array::from(encoded.as_slice())), false, cancellation, prepared.work)
             .await?;
         }
         {
             let heads = transaction
                 .object_store(AUTHORITY_HEADS)
                 .map_err(|error| Self::backend(error, prepared.work))?;
-            Self::write_record(&heads, &authority_key(authority_id), JsValue::from(Uint8Array::from(prepared.encoded_head.as_slice())), true, cancellation, prepared.work)
+            let encoded = encode_head(Head {
+                epoch: prepared.durable.epoch, sequence: prepared.durable.sequence, digest: prepared.durable.digest,
+            });
+            Self::write_record(&heads, &authority_key(authority_id), JsValue::from(Uint8Array::from(encoded.as_slice())), true, cancellation, prepared.work)
             .await?;
         }
         Ok(())
@@ -790,231 +789,8 @@ impl IndexedDbAuthorityStore {
         Ok(prepared.work)
     }
 
-    async fn fetch_replay_blobs(
-        &self,
-        authority_id: AuthorityId, after: Sequence, requested: u64, maximum_payload_bytes: u64,
-        budget: WorkBudget, mut work: WorkCounters,
-        cancellation: &CancellationToken,
-    ) -> Result<(Vec<(Sequence, Blob)>, WorkCounters), AuthorityFailure> {
-        let start = after.get() + u64::from(after == Sequence::GENESIS);
-        // The page limit bounds requested to u32::MAX records.
-        let count = requested + u64::from(after != Sequence::GENESIS);
-        let handle_bytes = count * size_of::<(Sequence, Blob)>() as u64;
-        let allocation_work = work
-            .checked_add(WorkCounters {
-                allocation_operations: u64::from(count != 0),
-                peak_allocation_bytes: handle_bytes,
-                ..WorkCounters::default()
-            })
-            .map_err(|error| AuthorityFailure::new(error.into(), work))?;
-        Self::admit(allocation_work, budget)
-            .map_err(|failure| AuthorityFailure::new(failure.error, work))?;
-        let mut blobs = Vec::new();
-        blobs
-            .try_reserve_exact(usize::try_from(count).map_err(|error| Self::backend(error, work))?)
-            .map_err(|error| Self::backend(error, work))?;
-        work = allocation_work;
-        let transaction = transaction(&self.database, &[AUTHORITY_COMMITS], TransactionMode::Readonly)
-            .map_err(|error| Self::backend(error, work))?;
-        let mut returned_payload_bytes = 0_u64;
-        for offset in 0..count {
-            let value = start.checked_add(offset)
-            .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), work))?;
-            let sequence = Sequence::new(value);
-            let prospective = work
-                .checked_add(WorkCounters {
-                    backend_read_operations: 1,
-                    ..WorkCounters::default()
-                })
-                .map_err(|error| AuthorityFailure::new(error.into(), work))?;
-            Self::admit(prospective, budget)?;
-            let blob = {
-                let commits = transaction
-                    .object_store(AUTHORITY_COMMITS)
-                    .map_err(|error| Self::backend(error, work))?;
-                Self::get_blob(
-                    &commits,
-                    &commit_key(authority_id, sequence),
-                    cancellation,
-                    prospective,
-                )
-                .await?
-                .ok_or_else(|| {
-                    Self::corrupt("contiguous authority commit is missing", prospective)
-                })?
-            };
-            work = prospective;
-            let encoded_length = Self::blob_length(&blob, work)?;
-            let payload_length =
-                authority_payload_length(encoded_length, self.maximum_payload_bytes, work)?;
-            if sequence != after {
-                let next_payload = returned_payload_bytes
-                    .checked_add(payload_length)
-                    .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), work))?;
-                if next_payload > maximum_payload_bytes {
-                    if returned_payload_bytes == 0 {
-                        return Err(AuthorityFailure::new(
-                            AuthorityStoreError::ReplayRecordTooLarge {
-                                observed: payload_length,
-                                maximum: maximum_payload_bytes,
-                            },
-                            work,
-                        ));
-                    }
-                    break;
-                }
-                returned_payload_bytes = next_payload;
-            }
-            blobs.push((sequence, blob));
-        }
-        drop(transaction);
-        Ok((blobs, work))
-    }
 
-    async fn decode_replay_blobs(
-        &self,
-        authority_id: AuthorityId,
-        after: Sequence,
-        blobs: Vec<(Sequence, Blob)>,
-        head: Head,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-        mut work: WorkCounters,
-    ) -> AuthorityResult<Vec<DurableCommit>> {
-        let mut previous_digest = crate::Digest::ZERO;
-        let count = blobs.len() as u64;
-        // wasm32 vector lengths and capacities fit these u64 byte counts.
-        let vector_bytes = count * size_of::<DurableCommit>() as u64;
-        let blob_vector_bytes = blobs.capacity() as u64 * size_of::<(Sequence, Blob)>() as u64;
-        let mut retained = vector_bytes + blob_vector_bytes;
-        let prospective = work
-            .checked_add(WorkCounters {
-                allocation_operations: u64::from(count != 0),
-                peak_allocation_bytes: retained,
-                ..WorkCounters::default()
-            })
-            .map_err(|error| AuthorityFailure::new(error.into(), work))?;
-        Self::admit(prospective, budget).map_err(|failure| AuthorityFailure::new(failure.error, work))?;
-        let mut output = Vec::new();
-        output
-            .try_reserve_exact(blobs.len())
-            .map_err(|error| Self::backend(error, work))?;
-        work = prospective;
-        for (sequence, blob) in blobs {
-            let encoded_length = Self::blob_length(&blob, work)?;
-            let payload_length = authority_payload_length(encoded_length, self.maximum_payload_bytes, work)?;
-            let mut read_work = authority_commit_read_work(encoded_length, payload_length);
-            read_work.peak_allocation_bytes = retained
-                .checked_add(read_work.peak_allocation_bytes)
-                .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), work))?;
-            let prospective = work
-                .checked_add(read_work)
-                .map_err(|error| AuthorityFailure::new(error.into(), work))?;
-            Self::admit(prospective, budget)?;
-            let encoded = Self::materialize_blob(
-                &blob,
-                encoded_length,
-                cancellation,
-                prospective,
-            )
-            .await?;
-            let commit = decode_commit_owned(authority_id, encoded, self.maximum_payload_bytes)
-                .map_err(|error| Self::corrupt(error, prospective))?;
-            if commit.sequence != sequence {
-                return Err(Self::corrupt(
-                    "authority commit key does not match its sequence",
-                    prospective,
-                ));
-            }
-            if sequence == after {
-                previous_digest = commit.digest;
-            } else {
-                if commit.previous_digest != previous_digest {
-                    return Err(Self::corrupt(
-                        "authority replay hash chain is discontinuous",
-                        prospective,
-                    ));
-                }
-                previous_digest = commit.digest;
-                // Bytes::slice retains the complete canonical encoded buffer.
-                retained = retained
-                    .checked_add(encoded_length)
-                    .ok_or_else(|| AuthorityFailure::new(crate::WorkError::Overflow.into(), prospective))?;
-                output.push(commit);
-            }
-            work = prospective;
-        }
-        if output
-            .last()
-            .is_some_and(|commit| commit.sequence == head.sequence)
-            && previous_digest != head.digest
-        {
-            return Err(Self::corrupt(
-                "authority head digest does not match its terminal commit",
-                work,
-            ));
-        }
-        Ok(crate::OperationReceipt {
-            value: output,
-            work,
-        })
-    }
 
-    async fn replay_page(
-        &self,
-        authority_id: AuthorityId,
-        after: Sequence,
-        limit: ReplayLimit,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> AuthorityResult<Vec<DurableCommit>> {
-        const MAXIMUM_REPLAY_RECORDS: u32 = 4_096;
-        if limit.records == 0 || limit.payload_bytes == 0 {
-            return Err(AuthorityFailure::before_work(
-                AuthorityStoreError::InvalidReplayLimit,
-            ));
-        }
-        if limit.records > MAXIMUM_REPLAY_RECORDS {
-            return Err(AuthorityFailure::before_work(
-                AuthorityStoreError::Rejected(format!(
-                    "browser replay page has {} records; maximum is {MAXIMUM_REPLAY_RECORDS}",
-                    limit.records
-                )),
-            ));
-        }
-        let head_receipt =
-            AsyncAuthorityStore::head(self, authority_id, budget, cancellation).await?;
-        let head = head_receipt.value;
-        let work = head_receipt.work;
-        if after > head.sequence {
-            return Err(AuthorityFailure::new(
-                AuthorityStoreError::Rejected(
-                    "replay cursor is ahead of authority head".to_owned(),
-                ),
-                work,
-            ));
-        }
-        if after == head.sequence {
-            return Ok(crate::OperationReceipt {
-                value: Vec::new(),
-                work,
-            });
-        }
-        let available = head
-            .sequence
-            .get()
-            .checked_sub(after.get())
-            .ok_or_else(|| Self::corrupt("authority head precedes replay cursor", work))?;
-        let requested = u64::from(limit.records).min(available);
-        let (blobs, work) = self
-            .fetch_replay_blobs(
-                authority_id, after, requested, limit.payload_bytes, budget, work,
-                cancellation,
-            )
-            .await?;
-        self.decode_replay_blobs(authority_id, after, blobs, head, budget, cancellation, work)
-            .await
-    }
 }
 
 impl crate::OperationWindowStore for IndexedDbAuthorityStore {
@@ -1578,8 +1354,181 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> AuthorityResult<Vec<DurableCommit>> {
-        self.replay_page(authority_id, after, limit, budget, cancellation)
-            .await
+        const MAXIMUM_REPLAY_RECORDS: u32 = 4_096;
+        if limit.records == 0 || limit.payload_bytes == 0 {
+            return Err(AuthorityFailure::before_work(
+                AuthorityStoreError::InvalidReplayLimit,
+            ));
+        }
+        if limit.records > MAXIMUM_REPLAY_RECORDS {
+            return Err(AuthorityFailure::before_work(
+                AuthorityStoreError::Rejected(format!(
+                    "browser replay page has {} records; maximum is {MAXIMUM_REPLAY_RECORDS}",
+                    limit.records
+                )),
+            ));
+        }
+        let head_receipt =
+            AsyncAuthorityStore::head(self, authority_id, budget, cancellation).await?;
+        let head = head_receipt.value;
+        let mut work = head_receipt.work;
+        if after > head.sequence {
+            return Err(AuthorityFailure::new(
+                AuthorityStoreError::Rejected(
+                    "replay cursor is ahead of authority head".to_owned(),
+                ),
+                work,
+            ));
+        }
+        if after == head.sequence {
+            return Ok(crate::OperationReceipt {
+                value: Vec::new(),
+                work,
+            });
+        }
+        let available = head.sequence.get() - after.get();
+        let requested = u64::from(limit.records).min(available);
+        let start = after.get() + u64::from(after == Sequence::GENESIS);
+        // The page holds at most 4,097 records, each bounded to u32 payload bytes.
+        let count = requested + u64::from(after != Sequence::GENESIS);
+        let handle_bytes = count * size_of::<(Sequence, Blob)>() as u64;
+        let allocation_work = work
+            .checked_add(WorkCounters {
+                allocation_operations: u64::from(count != 0),
+                peak_allocation_bytes: handle_bytes,
+                ..WorkCounters::default()
+            })
+            .map_err(|error| AuthorityFailure::new(error.into(), work))?;
+        Self::admit(allocation_work, budget)
+            .map_err(|failure| AuthorityFailure::new(failure.error, work))?;
+        let mut blobs = Vec::new();
+        blobs
+            .try_reserve_exact(count as usize)
+            .map_err(|error| Self::backend(error, work))?;
+        work = allocation_work;
+        let transaction = transaction(&self.database, &[AUTHORITY_COMMITS], TransactionMode::Readonly)
+            .map_err(|error| Self::backend(error, work))?;
+        let mut returned_payload_bytes = 0_u64;
+        for offset in 0..count {
+            let sequence = Sequence::new(start + offset);
+            let prospective = work
+                .checked_add(WorkCounters {
+                    backend_read_operations: 1,
+                    ..WorkCounters::default()
+                })
+                .map_err(|error| AuthorityFailure::new(error.into(), work))?;
+            Self::admit(prospective, budget)?;
+            let blob = {
+                let commits = transaction
+                    .object_store(AUTHORITY_COMMITS)
+                    .map_err(|error| Self::backend(error, work))?;
+                Self::get_blob(
+                    &commits,
+                    &commit_key(authority_id, sequence),
+                    cancellation,
+                    prospective,
+                )
+                .await?
+                .ok_or_else(|| {
+                    Self::corrupt("contiguous authority commit is missing", prospective)
+                })?
+            };
+            work = prospective;
+            let encoded_length = Self::blob_length(&blob, work)?;
+            let payload_length =
+                authority_payload_length(encoded_length, self.maximum_payload_bytes, work)?;
+            if sequence != after {
+                let next_payload = returned_payload_bytes + payload_length;
+                if next_payload > limit.payload_bytes {
+                    if returned_payload_bytes == 0 {
+                        return Err(AuthorityFailure::new(
+                            AuthorityStoreError::ReplayRecordTooLarge {
+                                observed: payload_length,
+                                maximum: limit.payload_bytes,
+                            },
+                            work,
+                        ));
+                    }
+                    break;
+                }
+                returned_payload_bytes = next_payload;
+            }
+            blobs.push((sequence, blob));
+        }
+        drop(transaction);
+        let mut previous_digest = crate::Digest::ZERO;
+        let count = blobs.len() as u64;
+        // wasm32 vector lengths and capacities fit these u64 byte counts.
+        let vector_bytes = count * size_of::<DurableCommit>() as u64;
+        let blob_vector_bytes = blobs.capacity() as u64 * size_of::<(Sequence, Blob)>() as u64;
+        let mut retained = vector_bytes + blob_vector_bytes;
+        let prospective = work
+            .checked_add(WorkCounters {
+                allocation_operations: u64::from(count != 0),
+                peak_allocation_bytes: retained,
+                ..WorkCounters::default()
+            })
+            .map_err(|error| AuthorityFailure::new(error.into(), work))?;
+        Self::admit(prospective, budget).map_err(|failure| AuthorityFailure::new(failure.error, work))?;
+        let mut output = Vec::new();
+        output
+            .try_reserve_exact(blobs.len())
+            .map_err(|error| Self::backend(error, work))?;
+        work = prospective;
+        for (sequence, blob) in blobs {
+            let encoded_length = Self::blob_length(&blob, work)?;
+            let payload_length = authority_payload_length(encoded_length, self.maximum_payload_bytes, work)?;
+            let mut read_work = authority_commit_read_work(encoded_length, payload_length);
+            read_work.peak_allocation_bytes += retained;
+            let prospective = work
+                .checked_add(read_work)
+                .map_err(|error| AuthorityFailure::new(error.into(), work))?;
+            Self::admit(prospective, budget)?;
+            let encoded = Self::materialize_blob(
+                &blob,
+                encoded_length,
+                cancellation,
+                prospective,
+            )
+            .await?;
+            let commit = decode_commit_owned(authority_id, encoded, self.maximum_payload_bytes)
+                .map_err(|error| Self::corrupt(error, prospective))?;
+            if commit.sequence != sequence {
+                return Err(Self::corrupt(
+                    "authority commit key does not match its sequence",
+                    prospective,
+                ));
+            }
+            if sequence == after {
+                previous_digest = commit.digest;
+            } else {
+                if commit.previous_digest != previous_digest {
+                    return Err(Self::corrupt(
+                        "authority replay hash chain is discontinuous",
+                        prospective,
+                    ));
+                }
+                previous_digest = commit.digest;
+                // Bytes::slice retains the complete canonical encoded buffer.
+                retained += encoded_length;
+                output.push(commit);
+            }
+            work = prospective;
+        }
+        if output
+            .last()
+            .is_some_and(|commit| commit.sequence == head.sequence)
+            && previous_digest != head.digest
+        {
+            return Err(Self::corrupt(
+                "authority head digest does not match its terminal commit",
+                work,
+            ));
+        }
+        Ok(crate::OperationReceipt {
+            value: output,
+            work,
+        })
     }
 
     async fn fence(
