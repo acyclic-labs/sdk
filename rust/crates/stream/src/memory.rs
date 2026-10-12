@@ -370,7 +370,7 @@ impl MemoryStream {
         &self,
         request: ReadRequest,
         observer: &MemoryObserver,
-    ) -> MemoryResult<ReadHistoryOutput> {
+    ) -> MemoryResult<(MemoryOutput<Vec<Record>>, Option<std::io::Error>)> {
         observer.boundary(false)?;
         let state = self.state.read().await;
         observer.admit_item()?;
@@ -1473,26 +1473,15 @@ fn clone_idempotency_outcome(
     }
 }
 
-struct MemoryRecordIterator {
-    records: std::vec::IntoIter<Record>,
-    terminal: Option<std::io::Error>,
-    _allocation: MemoryAllocation,
-}
-
-impl Iterator for MemoryRecordIterator {
-    type Item = std::io::Result<Record>;
-    fn next(&mut self) -> Option<Self::Item> {
-        if let Some(record) = self.records.next() { return Some(Ok(record)); }
-        self.terminal.take().map(Err)
-    }
-}
-
-fn record_iterator(output: ReadHistoryOutput) -> MemoryRecordIterator {
-    MemoryRecordIterator {
-        records: output.records.value.into_iter(),
-        terminal: output.terminal,
-        _allocation: output.records.allocation,
-    }
+fn record_iterator(
+    (records, mut terminal): (MemoryOutput<Vec<Record>>, Option<std::io::Error>),
+) -> impl Iterator<Item = std::io::Result<Record>> {
+    let mut records = records.map(Vec::into_iter);
+    std::iter::from_fn(move || {
+        // Capture the whole carrier so vector storage drops before its claim.
+        let _retained = &records;
+        records.value.next().map(Ok).or_else(|| terminal.take().map(Err))
+    })
 }
 
 #[cfg_attr(target_arch = "wasm32", async_trait(?Send))]
@@ -1661,25 +1650,12 @@ impl StreamProvider for MemoryStream {
             return Err(StreamError::HierarchyChanged);
         }
         let start = request.after.as_ref().or(request.parent.as_ref());
-        let candidates: Box<dyn Iterator<Item = &StreamPath> + '_> = match start {
-            Some(start) => Box::new(
-                state
-                    .paths
-                    .range((Bound::Excluded(start.clone()), Bound::Unbounded))
-                    .map(|(path, _)| path),
-            ),
-            None => Box::new(state.paths.keys()),
-        };
-        let parent_prefix = request
-            .parent
-            .as_ref()
-            .map(|parent| format!("{}/", parent.as_str()));
-        let mut paths = candidates
-            .take_while(|path| {
-                parent_prefix
-                    .as_ref()
-                    .is_none_or(|prefix| path.as_str().starts_with(prefix))
-            })
+        let lower = start.map_or(Bound::Unbounded, |path| Bound::Excluded(path.as_str()));
+        let mut paths = state.paths.range::<str, _>((lower, Bound::Unbounded))
+            .map(|(path, _)| path)
+            .take_while(|path| request.parent.as_ref().is_none_or(|parent| {
+                path.as_str().strip_prefix(parent.as_str()).is_some_and(|suffix| suffix.starts_with('/'))
+            }))
             .filter(|path| {
                 request.parent.as_ref().map_or_else(
                     || !path.as_str().contains('/'),
@@ -1771,9 +1747,7 @@ impl StreamProvider for MemoryStream {
                 return Ok(Err(error));
             }
             let cursor_meter = Arc::clone(&meter);
-            let cursor = stream::iter(MemoryRecordIterator {
-                records: Vec::new().into_iter(), terminal: None, _allocation: MemoryAllocation::default(),
-            }).map(move |record| record.map(|record| Ok(NativeStreamOutput::new(record, ReadAllocation::empty(&cursor_meter)))));
+            let cursor = stream::iter(record_iterator((MemoryOutput::default(), None))).map(move |record| record.map(|record| Ok(NativeStreamOutput::new(record, ReadAllocation::empty(&cursor_meter)))));
             let allocation = observer.allocate(std::mem::size_of_val(&cursor))?;
             let mut cursor = MemoryOutput { value: Box::pin(cursor), allocation };
             let result = self.read_inner(request, &observer).await.map(|records| {
@@ -2111,18 +2085,13 @@ fn history_window(records: Arc<MemoryOutput<Vec<Record>>>, ceiling: u64) -> Opti
     })
 }
 
-struct ReadHistoryOutput {
-    records: MemoryOutput<Vec<Record>>,
-    terminal: Option<std::io::Error>,
-}
-
 fn read_history(
     history: Option<&Arc<History>>,
     tail: u64,
     from: u64,
     limit: usize,
     observer: &MemoryObserver,
-) -> MemoryResult<ReadHistoryOutput> {
+) -> MemoryResult<(MemoryOutput<Vec<Record>>, Option<std::io::Error>)> {
     // The request limit bounds this stack index.
     let end = tail.min(from.saturating_add(limit as u64));
     let capacity = usize::try_from(end.saturating_sub(from))
@@ -2182,11 +2151,11 @@ fn read_history(
         }
         if terminal.is_some() { break; }
     }
-    Ok(ReadHistoryOutput { records: output, terminal })
+    Ok((output, terminal))
 }
 
 fn is_direct_child(parent: &StreamPath, candidate: &StreamPath) -> bool {
-    candidate.parent().as_ref() == Some(parent)
+    candidate.as_str().rsplit_once('/').map(|(path, _)| path) == Some(parent.as_str())
 }
 
 /// Counts exactly the records and payload bytes the live paths retain, each shared history once.
