@@ -1557,7 +1557,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                         }
                         crate::filesystem::retain_decoded(parsed)
                     }
-                    None => decode_json(&bytes, None)?.into_retained(),
+                    None => decode_json::<ModelEvent>(&bytes, None)?.into_retained(),
                 });
             }
         }
