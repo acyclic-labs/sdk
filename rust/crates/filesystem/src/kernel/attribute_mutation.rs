@@ -35,7 +35,10 @@ impl Format for AttributeFormat {
         limits: DecodeLimits,
         observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
     ) -> Result<Page<Self>, E> {
-        super::attribute::decode_attribute_page(bytes, limits, observe, Page::Leaf, Page::Internal, |first, page| Child { first, page }, |child| &child.first)
+        Ok(match super::attribute::decode_attribute_page(bytes, limits, observe)? {
+            super::AttributePage::Leaf(values) => Page::Leaf(values),
+            super::AttributePage::Internal(children) => Page::Internal(children),
+        })
     }
 
     fn decode_shape(

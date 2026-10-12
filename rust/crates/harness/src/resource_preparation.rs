@@ -173,7 +173,7 @@ impl ResourcePreparationRequest {
         }
         let (request, reserved, original) = decoded?;
         let checked = (|| {
-            request.validate_with_work(work)?;
+            request.validate(work)?;
             let retained = crate::contract::canonical_json_digest_with_work(
                 &request, request.maximum_bytes, work)?;
             if original != retained {
@@ -283,25 +283,10 @@ impl ResourcePreparationRequest {
         }
     }
 
-    /// Checks the complete request before it can be bound to a task lease.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    /// Checks this borrowed request on the supplied original native ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn validate_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        let mut observer = crate::store::history::native_work_io(work)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        self.validate_with_work(&mut Some(&mut observer))
-    }
-
-    /// Validates using the original caller's optional native observer.
-    pub(crate) fn validate_with_work(
+    /// Checks the complete request with the caller's optional work observer.
+    pub fn validate(
         &self,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
         if let Some(observer) = work.as_deref_mut() { observer.check_cancellation()?; }
         self.provider.validate_with_work(work)?;
@@ -349,7 +334,7 @@ impl ResourcePreparationRequest {
             }
         }
         if let Some(authorization) = &self.read_authorization {
-            authorization.validate_with_work(work)?;
+            authorization.validate(work)?;
         }
         if let Some(command) = &self.command {
             command.validate(work)?;
@@ -511,11 +496,8 @@ pub(crate) trait ResourcePreparationLease: acyclic_stream::ProviderPlatform {
 
     #[cfg(not(target_arch = "wasm32"))]
     fn verify_lease_with_native_work<'a>(
-        &'a self, _settlement: bool, _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-            reason: "preparation lease has no original-ledger verifier" })
-    }
+        &'a self, settlement: bool, work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>>;
 }
 
 #[cfg(feature = "filesystem")]
@@ -1098,26 +1080,12 @@ pub(crate) trait CreatedTaskLease: acyclic_stream::ProviderPlatform {
     #[cfg(feature = "filesystem")]
     fn verify_with_io<'a>(
         &'a self,
-        _io: &'a crate::filesystem::PreparationIo,
-    ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>> {
-        #[cfg(not(target_arch = "wasm32"))]
-        return Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "created publication lease has no original preparation verifier",
-        });
-        #[cfg(target_arch = "wasm32")]
-        Err(Error::Unsupported(String::new()))
-    }
+        io: &'a crate::filesystem::PreparationIo,
+    ) -> Result<crate::store::history::HistoryContentFuture<'a, ()>>;
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn verify_with_native_work<'a>(
         &'a self,
-        _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, ()>> {
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "created publication lease has no original native-ledger verifier",
-        })
-    }
-
+        work: &'a acyclic_fs::NativeMaterializationWork,
+    ) -> Result<crate::NativeFutureBundle<'a, ()>>;
 }

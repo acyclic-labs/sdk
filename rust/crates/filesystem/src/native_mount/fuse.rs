@@ -3321,8 +3321,8 @@ fn retire_fuse_driver(
     physical.stop(None, wait)?;
     if let Some(retirement) = loan.retirement.as_mut() {
         match wait {
-            Some(wait) => { retirement.retire_with_cleanup_wait(wait)?; }
-            None => { retirement.retire_accepted_cleanup()?; }
+            Some(wait) => { retirement.retire(Some(wait))?; }
+            None => { retirement.retire(None)?; }
         }
     }
     let retired = loan.retirement.as_ref().is_none_or(super::NativeMountRetirement::is_retired);
@@ -5974,7 +5974,7 @@ mod tests {
             }
         }
         let (source, _) = shared_sources()?;
-        let mut policy = finite_handler_policy();
+        let mut policy = FINITE_HANDLER_POLICY;
         policy.bytes_copied = 0;
         let core = super::ProjectionCore::new(Arc::new(source), empty_projection_state(),
             policy, &crate::CancellationToken::new())?;
@@ -6210,19 +6210,14 @@ mod tests {
         assert_eq!(entry.admit_cached_content(&touched), CachedContent::Current);
     }
 
-    fn finite_cache_budget() -> crate::WorkBudget {
-        crate::WorkBudget {
-            authority_records_read: 0, authority_records_appended: 0,
-            authority_bytes_read: 0, authority_bytes_written: 0,
-            object_probes: 0, backend_read_operations: 0, backend_write_operations: 0,
-            durability_operations: 0, page_reads: 0, page_writes: 0,
-            object_bytes_read: 0, object_bytes_written: 0, bytes_hashed: 0,
-            bytes_copied: 1_000_000, bytes_encoded: 0, source_bytes_read: 0,
-            source_path_components: 10_000, source_entries_visited: 0, output_bytes: 0,
-            items_examined: 10_000, items_returned: 0, allocation_operations: 10_000,
-            peak_allocation_bytes: 1_000_000, materializations: 0,
-        }
-    }
+    const FINITE_CACHE_BUDGET: crate::WorkBudget = crate::WorkBudget {
+        bytes_copied: 1_000_000,
+        source_path_components: 10_000,
+        items_examined: 10_000,
+        allocation_operations: 10_000,
+        peak_allocation_bytes: 1_000_000,
+        ..crate::performance::work_budget(0, 0)
+    };
 
     fn cache_work(budget: crate::WorkBudget, cancellation: &crate::CancellationToken)
         -> crate::NativeMaterializationWork
@@ -6235,7 +6230,7 @@ mod tests {
     #[test]
     fn original_invalidation_tail_survives_refusal_without_copying_or_overtaking() {
         let [held, through] = positions();
-        let work = cache_work(finite_cache_budget(), &crate::CancellationToken::new());
+        let work = cache_work(FINITE_CACHE_BUDGET, &crate::CancellationToken::new());
         let mut deferred = super::fuse_vec(2, &work).expect("original queued capacity");
         deferred.extend([KernelCacheItem::Inode(10), KernelCacheItem::Inode(11)]);
         let mut queue = super::InvalidationQueue {
@@ -6245,7 +6240,7 @@ mod tests {
         let copied = work.native_read_meter().lock().work.bytes_copied;
         let mut in_flight = queue.take_deferred();
         assert_eq!(in_flight.next(), Some(KernelCacheItem::Inode(10)));
-        let mut denied_budget = finite_cache_budget();
+        let mut denied_budget = FINITE_CACHE_BUDGET;
         denied_budget.bytes_copied = 0;
         let denied = cache_work(denied_budget, &crate::CancellationToken::new());
         let failure = super::fuse_clone_path(&name("refused"), &denied).expect_err("real copy refusal");
@@ -6903,7 +6898,7 @@ mod tests {
         let path = name("write-authority");
         let created = around.create_file(&path, FileMetadata::default())?;
         let original = crate::NativeMaterializationWork::new(
-            finite_handler_policy(), &crate::CancellationToken::new(),
+            FINITE_HANDLER_POLICY, &crate::CancellationToken::new(),
         ).map_err(|(cause, _)| cause)?;
         let guard = Arc::new(FuseWriteGuard {
             original: original.clone(), writable: std::sync::atomic::AtomicBool::new(false),
@@ -6914,7 +6909,7 @@ mod tests {
         )?.with_native_callback_guard(guard.clone());
         let source = source.into_arc_meter(&original)?;
         let core = Arc::new(super::ProjectionCore::new(
-            source.clone(), empty_projection_state(), finite_handler_policy(),
+            source.clone(), empty_projection_state(), FINITE_HANDLER_POLICY,
             &crate::CancellationToken::new(),
         )?);
         let projection = super::FuseProjection {
@@ -6964,22 +6959,7 @@ mod tests {
     }
 
 
-    fn finite_handler_policy() -> crate::WorkBudget {
-        crate::WorkBudget {
-            authority_records_read: 1 << 20, authority_records_appended: 1 << 20,
-            authority_bytes_read: 1 << 26, authority_bytes_written: 1 << 26,
-            object_probes: 1 << 20, backend_read_operations: 1 << 20,
-            backend_write_operations: 1 << 20, durability_operations: 1 << 20,
-            page_reads: 1 << 20, page_writes: 1 << 20,
-            object_bytes_read: 1 << 26, object_bytes_written: 1 << 26,
-            bytes_hashed: 1 << 26, bytes_copied: 1 << 26, bytes_encoded: 1 << 26,
-            source_bytes_read: 1 << 26, source_path_components: 1 << 20,
-            source_entries_visited: 1 << 20, output_bytes: 1 << 26,
-            items_examined: 1 << 20, items_returned: 1 << 20,
-            allocation_operations: 1 << 20, peak_allocation_bytes: 1 << 26,
-            materializations: 1 << 20,
-        }
-    }
+    const FINITE_HANDLER_POLICY: crate::WorkBudget = crate::performance::work_budget(1 << 20, 1 << 26);
 
     #[test]
     fn actual_source_effect_precedes_callback_cancellation_failure()
@@ -6990,7 +6970,7 @@ mod tests {
         let source = Arc::new(source);
         let cancellation = crate::CancellationToken::new();
         let core = super::ProjectionCore::new(
-            source.clone(), empty_projection_state(), finite_handler_policy(), &cancellation,
+            source.clone(), empty_projection_state(), FINITE_HANDLER_POLICY, &cancellation,
         )?;
         let scope = core.request("unlink");
         let result = scope.run(|work| {
@@ -7021,7 +7001,7 @@ mod tests {
         let source = Arc::new(source);
         let cancellation = crate::CancellationToken::new();
         let core = super::ProjectionCore::new(
-            source.clone(), empty_projection_state(), finite_handler_policy(), &cancellation,
+            source.clone(), empty_projection_state(), FINITE_HANDLER_POLICY, &cancellation,
         )?;
         let path = name("authentically-absent");
         let scope = core.request("lookup");
@@ -7050,7 +7030,7 @@ mod tests {
         around.create_file(&path, FileMetadata::default())?;
         let source: Arc<dyn MountFilesystem> = Arc::new(source);
         let cancellation = crate::CancellationToken::new();
-        let receipt = super::super::run_native_mount_handler(finite_handler_policy(), &cancellation, |work| {
+        let receipt = super::super::run_native_mount_handler(FINITE_HANDLER_POLICY, &cancellation, |work| {
             let root = source.lookup_with_meter(&MountPath::root(), work)?
                 .ok_or(MountSourceError::NotFound)?;
             let stamp = source.view_stamp_with_meter(work)?;
@@ -7084,12 +7064,12 @@ mod tests {
         let mut session = super::super::mount_native_measured(crate::NativeMountRequest {
             mount_id: crate::MountId::new(), volume_id,
             destination: destination.path().to_path_buf(), writable: true,
-        }, Arc::new(source), finite_handler_policy(), &cancellation).map_err(|(cause, _)| cause)?.value;
+        }, Arc::new(source), FINITE_HANDLER_POLICY, &cancellation).map_err(|(cause, _)| cause)?.value;
         cancellation.cancel();
         let error = std::fs::metadata(destination.path().join("cancelled-native-lookup"))
             .expect_err("installed callback cannot replace the original cancellation root");
         assert_eq!(error.raw_os_error(), Some(libc::ECANCELED));
-        session.stop_measured(finite_handler_policy(), &crate::CancellationToken::new())
+        session.stop_measured(FINITE_HANDLER_POLICY, &crate::CancellationToken::new())
             .map_err(|(cause, _)| cause)?;
         Ok(())
     }
@@ -7104,7 +7084,7 @@ mod tests {
         let opened = source.open_file(&path)?;
         opened.write_range(0, Bytes::from_static(b"original"))?;
         let cancellation = crate::CancellationToken::new();
-        let mut budget = finite_handler_policy();
+        let mut budget = FINITE_HANDLER_POLICY;
         budget.bytes_copied = 0;
         let failure = super::super::run_native_mount_handler(budget, &cancellation, |work| {
             let bytes = super::fuse_source_chunk(b"replacement", work)
@@ -7127,7 +7107,7 @@ mod tests {
         let opened = source.create_file(&path, FileMetadata::default())?;
         let cancellation = crate::CancellationToken::new();
         let deferred = super::super::run_native_mount_handler(
-            finite_handler_policy(), &cancellation, |work| {
+            FINITE_HANDLER_POLICY, &cancellation, |work| {
                 let path = super::fuse_clone_path(&path, work)
                     .map_err(crate::NativeMountError::from)?;
                 let allocation = super::fuse_initialized(
@@ -7147,7 +7127,7 @@ mod tests {
         let rebound = source.create_file(&path, FileMetadata::default())?;
         assert_ne!(rebound.node.file_id, opened.node.file_id);
         let failure = super::super::run_native_mount_handler(
-            finite_handler_policy(), &cancellation,
+            FINITE_HANDLER_POLICY, &cancellation,
             |work| deferred.file(work)?.lookup_with_meter(work).map_err(crate::NativeMountError::Source),
         ).expect_err("a lazy open must not attach its inode to a replacement");
         assert!(matches!(failure.cause,
@@ -7186,13 +7166,13 @@ mod tests {
     -> Result<(), Box<dyn std::error::Error>> {
         let (source, _) = shared_sources()?;
         let core = Arc::new(super::ProjectionCore::new(
-            Arc::new(source), empty_projection_state(), finite_handler_policy(),
+            Arc::new(source), empty_projection_state(), FINITE_HANDLER_POLICY,
             &crate::CancellationToken::new(),
         )?);
         let cancellation = crate::CancellationToken::new();
         let original = crate::NativeMaterializationWork::new(crate::WorkBudget {
             backend_read_operations: 0, backend_write_operations: 1,
-            ..finite_handler_policy()
+            ..FINITE_HANDLER_POLICY
         }, &cancellation).map_err(|(cause, _)| cause)?;
         let birth_cleanup = original.reserve_work(crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
@@ -7250,7 +7230,7 @@ mod tests {
         let original = crate::NativeMaterializationWork::new(
             crate::WorkBudget {
                 backend_read_operations: 16_004, backend_write_operations: 13,
-                ..finite_handler_policy()
+                ..FINITE_HANDLER_POLICY
             }, &cancellation,
         ).map_err(|(cause, _)| cause)?;
         let mut helper = super::FuseRetirementHelper::prepare_program(
@@ -7276,7 +7256,7 @@ mod tests {
         let original = crate::NativeMaterializationWork::new(
             crate::WorkBudget {
                 backend_read_operations: 16_004, backend_write_operations: 13,
-                ..finite_handler_policy()
+                ..FINITE_HANDLER_POLICY
             }, &cancellation,
         ).map_err(|(cause, _)| cause)?;
         let mut helper = super::FuseRetirementHelper::prepare_program(

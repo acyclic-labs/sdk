@@ -28,7 +28,7 @@ use acyclic_fs::{
     EmbeddedCapabilities, Fs,
     browser::{IndexedDbAuthorityStore, IndexedDbObjectStore},
 };
-use acyclic_stream::{BrowserStream, BrowserStreamLimits, MemoryLimits, StreamClient};
+use acyclic_stream::{BrowserStream, BrowserStreamLimits, MemoryLimits};
 use js_sys::{Function, Promise};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -608,7 +608,7 @@ impl WasmTaskRegistry {
 #[wasm_bindgen]
 pub struct WasmTaskRuntime {
     runtime: Arc<BrowserRuntime>,
-    stream: StreamClient<BrowserStream>,
+    stream: std::sync::Arc<BrowserStream>,
     filesystem: Arc<BrowserFilesystem>,
     volume: VolumeRef,
     scope: Scope,
@@ -656,7 +656,7 @@ impl WasmTaskRuntime {
             .map_err(js_error)?,
         );
         let limits = options.stream_limits;
-        let stream = StreamClient::new(Arc::new(
+        let stream = Arc::new(
             BrowserStream::open(
                 &options.stream_database,
                 BrowserStreamLimits {
@@ -674,7 +674,7 @@ impl WasmTaskRuntime {
             )
             .await
             .map_err(|error| js_error(Error::Storage(error.to_string())))?,
-        ));
+        );
         let source = options.recursive_tools.map(|config| {
             let graph_root = config.project_policy_graph_root;
             let source = default_tools::BrowserToolSource::new(

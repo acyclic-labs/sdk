@@ -1243,7 +1243,7 @@ impl ContentForkVerifier {
         match work.as_deref_mut() {
             Some(observer) => crate::store::history::read_content_with_work(
                 observer, self.content.as_ref(), manifest).await,
-            None => self.content.read(manifest).await.map(|bytes| (bytes, 0)),
+            None => self.content.read(manifest, manifest.descriptor().byte_length(), None)?.await.map(|bytes| (bytes, 0)),
         }
     }
 
@@ -1259,7 +1259,7 @@ impl ContentForkVerifier {
         match work.as_deref_mut() {
             Some(observer) => crate::store::history::verify_content_with_work(
                 observer, self.content.as_ref(), file).await,
-            None => self.content.verify(file).await,
+            None => self.content.verify(file, file.descriptor().byte_length(), None)?.await,
         }
     }
 }
@@ -1583,7 +1583,7 @@ impl ResourceRevision {
                         .strip_prefix('/')
                         .ok_or_else(|| fork_provider_boundary(work, crate::wire::ErrorCode::Invalid,
                             "scratch path must be absolute"))?;
-                    crate::conversation::validate_content_path_with_work(relative, work)?;
+                    crate::conversation::validate_content_path(relative, work)?;
                     if relative.split('/').any(|segment| segment == ".system") {
                         return Err(fork_provider_boundary(work, crate::wire::ErrorCode::Unauthorized,
                             "scratch selection includes reserved runtime state"));
@@ -2187,7 +2187,7 @@ impl ForkRequest {
         let _child_path = work.stream_path(&self.child)?;
         self.preparation.validate(self.child_agent, work.work())?;
         if let Some(source) = &self.authorized_source {
-            source.validate_with_work(work.work())?;
+            source.validate(work.work())?;
             if source.operation_id != self.operation_id
                 || !selections.clone().any(|selection| matches!(
                     &selection.revision,
@@ -2792,7 +2792,7 @@ impl ForkSeed {
             self.child_result_volume.as_ref(), self.child_result_generation.as_ref(),
             &self.child_private_volume, self.child_agent, work.work())?;
         if let Some(source) = &self.authorized_source {
-            source.validate_with_work(work.work())?;
+            source.validate(work.work())?;
             if source.operation_id != self.operation_id
                 || !self.resources.iter().any(|capture| matches!(
                     &capture.source,
@@ -3044,7 +3044,7 @@ impl ForkSeed {
         for grant in &self.shared_grants {
             if grant.child_agent == reader {
                 for operation in &grant.operations {
-                    values.push(grant.volume.capability(*operation)?);
+                    values.push(grant.volume.capability(*operation, &mut None)?);
                 }
             }
         }
@@ -3076,12 +3076,12 @@ impl ForkSeed {
         let mut values = references.iter().map(str::to_owned).collect::<Vec<_>>();
         for grant in &self.shared_grants {
             if grant.child_agent == reader && grant.operations.contains(&VolumeOperation::Read) {
-                values.push(grant.volume.capability(VolumeOperation::Read)?);
+                values.push(grant.volume.capability(VolumeOperation::Read, &mut None)?);
             }
         }
         for resource in &self.resources {
             if let ResourceRevision::Project { volume, .. } = &resource.revision {
-                values.push(volume.capability(VolumeOperation::Read)?);
+                values.push(volume.capability(VolumeOperation::Read, &mut None)?);
             }
         }
         Ok(Capabilities::new(values))
@@ -4369,7 +4369,7 @@ mod tests {
         assert!(
             shared_seed
                 .shared_capabilities()?
-                .contains(&shared_volume.capability(VolumeOperation::Read)?)
+                .contains(&shared_volume.capability(VolumeOperation::Read, &mut None)?)
         );
         shared_seed
             .shared_grants

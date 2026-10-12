@@ -30,7 +30,7 @@ use acyclic_harness::{
         MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, ResumableMachine,
     },
 };
-use acyclic_stream::{BoxProviderFuture, MemoryStream, StreamClient};
+use acyclic_stream::{BoxProviderFuture, MemoryStream};
 use serde_json::{Value, json};
 use std::sync::{
     Arc,
@@ -331,7 +331,7 @@ async fn portable_read_replay_checks_original_source_authority_before_journal_io
     let task_definition = tasks.get_version::<u64, u64>("fixture.file_replay", "1")?;
     let mut machines = MachineRegistry::default();
     machines.register(machine)?;
-    let stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let stream = Arc::new(MemoryStream::default());
     let admission = OperationId::from_bytes([84; 16]);
     let task = TaskId::from_bytes(admission.into_bytes());
     let call = OperationId::from_bytes([85; 16]);

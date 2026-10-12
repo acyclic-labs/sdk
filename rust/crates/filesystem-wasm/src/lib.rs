@@ -980,8 +980,8 @@ mod bindings {
                         Box::pin(value.fork(
                             destination,
                             ForkOptions::from_generation(generation, idempotency_key),
-                        ))
-                        .await
+                        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }))))
+                        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                         .map_err(js_error)?,
                     )
                 }
@@ -991,8 +991,8 @@ mod bindings {
                         Box::pin(value.fork(
                             destination,
                             ForkOptions::from_generation(generation, idempotency_key),
-                        ))
-                        .await
+                        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }))))
+                        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                         .map_err(js_error)?,
                     )
                 }
@@ -1002,8 +1002,8 @@ mod bindings {
                         Box::pin(value.fork(
                             destination,
                             ForkOptions::from_generation(generation, idempotency_key),
-                        ))
-                        .await
+                        acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }))))
+                        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                         .map_err(js_error)?,
                     )
                 }
@@ -1037,8 +1037,8 @@ mod bindings {
                             idempotency_key,
                             options.paths.clone(),
                         ),
-                    ))
-                    .await
+                    acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }))))
+                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                     .map_err(js_error)?,
                 ),
                 (
@@ -1052,8 +1052,8 @@ mod bindings {
                             idempotency_key,
                             options.paths.clone(),
                         ),
-                    ))
-                    .await
+                    acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }))))
+                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                     .map_err(js_error)?,
                 ),
                 (
@@ -1067,8 +1067,8 @@ mod bindings {
                             idempotency_key,
                             options.paths.clone(),
                         ),
-                    ))
-                    .await
+                    acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }))))
+                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                     .map_err(js_error)?,
                 ),
                 _ => {
@@ -3583,13 +3583,13 @@ mod bindings {
                             fs.create_volume_with_id(
                                 volume_id,
                                 config,
-                                boundary_budget(),
+                                acyclic_fs::performance::BOUNDARY_BUDGET,
                                 &cancellation,
                             )
                             .await
                         }
                         None => {
-                            fs.create_volume(config, boundary_budget(), &cancellation)
+                            fs.create_volume(config, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                                 .await
                         }
                     }
@@ -3602,13 +3602,13 @@ mod bindings {
                             fs.create_volume_with_id(
                                 volume_id,
                                 config,
-                                boundary_budget(),
+                                acyclic_fs::performance::BOUNDARY_BUDGET,
                                 &cancellation,
                             )
                             .await
                         }
                         None => {
-                            fs.create_volume(config, boundary_budget(), &cancellation)
+                            fs.create_volume(config, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                                 .await
                         }
                     }
@@ -3624,13 +3624,13 @@ mod bindings {
                             fs.create_volume_with_id(
                                 volume_id,
                                 config,
-                                boundary_budget(),
+                                acyclic_fs::performance::BOUNDARY_BUDGET,
                                 &cancellation,
                             )
                             .await
                         }
                         None => {
-                            fs.create_volume(config, boundary_budget(), &cancellation)
+                            fs.create_volume(config, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                                 .await
                         }
                     }
@@ -3659,14 +3659,14 @@ mod bindings {
             let (engine, acquisition_work) = match self.engine.as_ref().ok_or_else(closed_error)? {
                 BrowserEngine::IndexedDb(fs) => {
                     let receipt = fs
-                        .open_volume(volume_id, boundary_budget(), &cancellation)
+                        .open_volume(volume_id, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                         .await
                         .map_err(js_error)?;
                     (BrowserVolumeEngine::IndexedDb(receipt.value), receipt.work)
                 }
                 BrowserEngine::IndexedDbOpfs(fs) => {
                     let receipt = fs
-                        .open_volume(volume_id, boundary_budget(), &cancellation)
+                        .open_volume(volume_id, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                         .await
                         .map_err(js_error)?;
                     (
@@ -3676,7 +3676,7 @@ mod bindings {
                 }
                 BrowserEngine::Memory(fs) => {
                     let receipt = fs
-                        .open_volume(volume_id, boundary_budget(), &cancellation)
+                        .open_volume(volume_id, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                         .await
                         .map_err(js_error)?;
                     (BrowserVolumeEngine::Memory(receipt.value), receipt.work)
@@ -3711,15 +3711,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match self.engine.as_ref().ok_or_else(closed_error)? {
                 BrowserEngine::IndexedDb(fs) => fs
-                    .export_object(object_id, maximum_bytes, boundary_budget(), &cancellation)
+                    .export_object(object_id, maximum_bytes, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserEngine::IndexedDbOpfs(fs) => fs
-                    .export_object(object_id, maximum_bytes, boundary_budget(), &cancellation)
+                    .export_object(object_id, maximum_bytes, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserEngine::Memory(fs) => fs
-                    .export_object(object_id, maximum_bytes, boundary_budget(), &cancellation)
+                    .export_object(object_id, maximum_bytes, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -3746,15 +3746,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match self.engine.as_ref().ok_or_else(closed_error)? {
                 BrowserEngine::IndexedDb(fs) => fs
-                    .import_object(object_id, bytes, boundary_budget(), &cancellation)
+                    .import_object(object_id, bytes, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserEngine::IndexedDbOpfs(fs) => fs
-                    .import_object(object_id, bytes, boundary_budget(), &cancellation)
+                    .import_object(object_id, bytes, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserEngine::Memory(fs) => fs
-                    .import_object(object_id, bytes, boundary_budget(), &cancellation)
+                    .import_object(object_id, bytes, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -3788,7 +3788,7 @@ mod bindings {
                         TransferCursor::new(cursor),
                         maximum_objects,
                         maximum_object_bytes,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -3799,7 +3799,7 @@ mod bindings {
                         TransferCursor::new(cursor),
                         maximum_objects,
                         maximum_object_bytes,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -3810,7 +3810,7 @@ mod bindings {
                         TransferCursor::new(cursor),
                         maximum_objects,
                         maximum_object_bytes,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -3863,7 +3863,7 @@ mod bindings {
                         TransferCursor::new(cursor),
                         &objects,
                         maximum_objects,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -3874,7 +3874,7 @@ mod bindings {
                         TransferCursor::new(cursor),
                         &objects,
                         maximum_objects,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -3885,7 +3885,7 @@ mod bindings {
                         TransferCursor::new(cursor),
                         &objects,
                         maximum_objects,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -3918,14 +3918,14 @@ mod bindings {
             let (engine, acquisition_work) = match self.engine.as_ref().ok_or_else(closed_error)? {
                 BrowserEngine::IndexedDb(fs) => {
                     let receipt = fs
-                        .restore_volume(&manifest, operation_id, boundary_budget(), &cancellation)
+                        .restore_volume(&manifest, operation_id, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                         .await
                         .map_err(js_error)?;
                     (BrowserVolumeEngine::IndexedDb(receipt.value), receipt.work)
                 }
                 BrowserEngine::IndexedDbOpfs(fs) => {
                     let receipt = fs
-                        .restore_volume(&manifest, operation_id, boundary_budget(), &cancellation)
+                        .restore_volume(&manifest, operation_id, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                         .await
                         .map_err(js_error)?;
                     (
@@ -3935,7 +3935,7 @@ mod bindings {
                 }
                 BrowserEngine::Memory(fs) => {
                     let receipt = fs
-                        .restore_volume(&manifest, operation_id, boundary_budget(), &cancellation)
+                        .restore_volume(&manifest, operation_id, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                         .await
                         .map_err(js_error)?;
                     (BrowserVolumeEngine::Memory(receipt.value), receipt.work)
@@ -4021,7 +4021,7 @@ mod bindings {
                     fs.execute_residency(
                         controller.residency(),
                         permit,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &self.cancellation,
                     )
                     .await
@@ -4030,7 +4030,7 @@ mod bindings {
                     fs.execute_residency(
                         controller.residency(),
                         permit,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &self.cancellation,
                     )
                     .await
@@ -4039,7 +4039,7 @@ mod bindings {
                     fs.execute_residency(
                         controller.residency(),
                         permit,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &self.cancellation,
                     )
                     .await
@@ -4234,7 +4234,7 @@ mod bindings {
                         before,
                         after,
                         maximum_changes,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -4244,7 +4244,7 @@ mod bindings {
                         before,
                         after,
                         maximum_changes,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -4254,7 +4254,7 @@ mod bindings {
                         before,
                         after,
                         maximum_changes,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -4280,7 +4280,7 @@ mod bindings {
                         .checkout(
                             GenerationSelector::Head,
                             mode,
-                            boundary_budget(),
+                            acyclic_fs::performance::BOUNDARY_BUDGET,
                             &cancellation,
                         )
                         .await
@@ -4295,7 +4295,7 @@ mod bindings {
                         .checkout(
                             GenerationSelector::Head,
                             mode,
-                            boundary_budget(),
+                            acyclic_fs::performance::BOUNDARY_BUDGET,
                             &cancellation,
                         )
                         .await
@@ -4310,7 +4310,7 @@ mod bindings {
                         .checkout(
                             GenerationSelector::Head,
                             mode,
-                            boundary_budget(),
+                            acyclic_fs::performance::BOUNDARY_BUDGET,
                             &cancellation,
                         )
                         .await
@@ -4397,15 +4397,15 @@ mod bindings {
             let range = ByteRange { offset, length };
             let receipt = match &self.engine {
                 BrowserResolvedFileEngine::IndexedDb(file) => file
-                    .read_range(range, boundary_budget(), &cancellation)
+                    .read_range(range, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserResolvedFileEngine::IndexedDbOpfs(file) => file
-                    .read_range(range, boundary_budget(), &cancellation)
+                    .read_range(range, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserResolvedFileEngine::Memory(file) => file
-                    .read_range(range, boundary_budget(), &cancellation)
+                    .read_range(range, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -4421,15 +4421,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &self.engine {
                 BrowserResolvedFileEngine::IndexedDb(file) => file
-                    .read_symbolic_link(boundary_budget(), &cancellation)
+                    .read_symbolic_link(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserResolvedFileEngine::IndexedDbOpfs(file) => file
-                    .read_symbolic_link(boundary_budget(), &cancellation)
+                    .read_symbolic_link(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserResolvedFileEngine::Memory(file) => file
-                    .read_symbolic_link(boundary_budget(), &cancellation)
+                    .read_symbolic_link(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -4463,7 +4463,7 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .apply_authored_transaction(authored, boundary_budget(), &cancellation)
+                    .apply_authored_transaction(authored, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -4489,15 +4489,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .checkpoint(boundary_budget(), &cancellation)
+                    .checkpoint(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .checkpoint(boundary_budget(), &cancellation)
+                    .checkpoint(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .checkpoint(boundary_budget(), &cancellation)
+                    .checkpoint(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -4515,15 +4515,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .refresh_head(boundary_budget(), &cancellation)
+                    .refresh_head(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .refresh_head(boundary_budget(), &cancellation)
+                    .refresh_head(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .refresh_head(boundary_budget(), &cancellation)
+                    .refresh_head(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -4541,15 +4541,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .refresh_live(boundary_budget(), &cancellation)
+                    .refresh_live(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .refresh_live(boundary_budget(), &cancellation)
+                    .refresh_live(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .refresh_live(boundary_budget(), &cancellation)
+                    .refresh_live(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -4567,15 +4567,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .export_manifest(boundary_budget(), &cancellation)
+                    .export_manifest(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .export_manifest(boundary_budget(), &cancellation)
+                    .export_manifest(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .export_manifest(boundary_budget(), &cancellation)
+                    .export_manifest(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -4609,7 +4609,7 @@ mod bindings {
                         theirs,
                         maximum_changes,
                         maximum_conflicts,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -4619,7 +4619,7 @@ mod bindings {
                         theirs,
                         maximum_changes,
                         maximum_conflicts,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -4629,7 +4629,7 @@ mod bindings {
                         theirs,
                         maximum_changes,
                         maximum_conflicts,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -4655,15 +4655,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .lookup_no_follow(&path, boundary_budget(), &cancellation)
+                    .lookup_no_follow(&path, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .lookup_no_follow(&path, boundary_budget(), &cancellation)
+                    .lookup_no_follow(&path, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .lookup_no_follow(&path, boundary_budget(), &cancellation)
+                    .lookup_no_follow(&path, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -4708,7 +4708,7 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .lookup_batch_no_follow(&paths, boundary_budget(), &cancellation)
+                    .lookup_batch_no_follow(&paths, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -4746,7 +4746,7 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .lookup_no_follow_with_metadata(&path, boundary_budget(), &cancellation)
+                    .lookup_no_follow_with_metadata(&path, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -4780,7 +4780,7 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .read_file_record_by_id(file_id, boundary_budget(), &cancellation)
+                    .read_file_record_by_id(file_id, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -4804,7 +4804,7 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .read_metadata(&path, boundary_budget(), &cancellation)
+                    .read_metadata(&path, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -4829,7 +4829,7 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .read_metadata_by_id(file_id, boundary_budget(), &cancellation)
+                    .read_metadata_by_id(file_id, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -4857,7 +4857,7 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .apply_authored_transaction(vec![acyclic_fs::AuthoredMutation::SetMetadata { path, metadata }], boundary_budget(), &cancellation)
+                    .apply_authored_transaction(vec![acyclic_fs::AuthoredMutation::SetMetadata { path, metadata }], acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -4886,7 +4886,7 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .set_attributes_by_id(file_id, metadata, None, boundary_budget(), &cancellation)
+                    .set_attributes_by_id(file_id, metadata, None, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -4917,7 +4917,7 @@ mod bindings {
                         path,
                         metadata,
                         logical_bytes,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -4950,7 +4950,7 @@ mod bindings {
                         file_id,
                         metadata,
                         logical_bytes,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -4976,7 +4976,7 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .read_named_attribute(&path, &name, boundary_budget(), &cancellation)
+                    .read_named_attribute(&path, &name, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -5017,7 +5017,7 @@ mod bindings {
                         &path,
                         after.as_ref(),
                         maximum_entries,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -5058,7 +5058,7 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .change_named_attribute(path, &name, Some((bytes.as_slice(), mode)), boundary_budget(), &cancellation)
+                    .change_named_attribute(path, &name, Some((bytes.as_slice(), mode)), acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -5085,7 +5085,7 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .change_named_attribute(path, &name, None, boundary_budget(), &cancellation)
+                    .change_named_attribute(path, &name, None, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -5129,7 +5129,7 @@ mod bindings {
                 BrowserCheckoutEngine::IndexedDb(checkout) => {
                     let reader = checkout.pinned_reader().map_err(js_error)?;
                     let receipt = reader
-                        .resolve_files(&parsed, boundary_budget(), &cancellation)
+                        .resolve_files(&parsed, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                         .await
                         .map_err(js_error)?;
                     (
@@ -5148,7 +5148,7 @@ mod bindings {
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => {
                     let reader = checkout.pinned_reader().map_err(js_error)?;
                     let receipt = reader
-                        .resolve_files(&parsed, boundary_budget(), &cancellation)
+                        .resolve_files(&parsed, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                         .await
                         .map_err(js_error)?;
                     (
@@ -5167,7 +5167,7 @@ mod bindings {
                 BrowserCheckoutEngine::Memory(checkout) => {
                     let reader = checkout.pinned_reader().map_err(js_error)?;
                     let receipt = reader
-                        .resolve_files(&parsed, boundary_budget(), &cancellation)
+                        .resolve_files(&parsed, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                         .await
                         .map_err(js_error)?;
                     (
@@ -5210,7 +5210,7 @@ mod bindings {
                     .read_file_range(
                         &path,
                         ByteRange { offset, length },
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -5219,7 +5219,7 @@ mod bindings {
                     .read_file_range(
                         &path,
                         ByteRange { offset, length },
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -5228,7 +5228,7 @@ mod bindings {
                     .read_file_range(
                         &path,
                         ByteRange { offset, length },
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -5260,7 +5260,7 @@ mod bindings {
                     .read_file_range_by_id(
                         file_id,
                         ByteRange { offset, length },
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -5296,7 +5296,7 @@ mod bindings {
                         &path,
                         ByteRange { offset, length },
                         maximum_spans,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -5343,7 +5343,7 @@ mod bindings {
                         file_id,
                         ByteRange { offset, length },
                         maximum_spans,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -5384,7 +5384,7 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .seek_file_extent(&path, offset, target, boundary_budget(), &cancellation)
+                    .seek_file_extent(&path, offset, target, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -5416,7 +5416,7 @@ mod bindings {
                         file_id,
                         offset,
                         target,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -5443,15 +5443,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .read_symbolic_link(&path, boundary_budget(), &cancellation)
+                    .read_symbolic_link(&path, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .read_symbolic_link(&path, boundary_budget(), &cancellation)
+                    .read_symbolic_link(&path, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .read_symbolic_link(&path, boundary_budget(), &cancellation)
+                    .read_symbolic_link(&path, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5476,7 +5476,7 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .read_reparse_point(&path, boundary_budget(), &cancellation)
+                    .read_reparse_point(&path, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -5516,7 +5516,7 @@ mod bindings {
                         &path,
                         after.as_ref(),
                         maximum_entries,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -5526,7 +5526,7 @@ mod bindings {
                         &path,
                         after.as_ref(),
                         maximum_entries,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -5536,7 +5536,7 @@ mod bindings {
                         &path,
                         after.as_ref(),
                         maximum_entries,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -5586,7 +5586,7 @@ mod bindings {
                         &path,
                         after.as_ref(),
                         maximum_entries,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -5629,15 +5629,15 @@ mod bindings {
             let bytes = bytes::Bytes::from(bytes);
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateFile { path: path, bytes: (bytes).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateFile { path: path, bytes: (bytes).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateFile { path: path, bytes: (bytes).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateFile { path: path, bytes: (bytes).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateFile { path: path, bytes: (bytes).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateFile { path: path, bytes: (bytes).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5662,15 +5662,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateDirectory { path: path, metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateDirectory { path: path, metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateDirectory { path: path, metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateDirectory { path: path, metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateDirectory { path: path, metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateDirectory { path: path, metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5697,15 +5697,15 @@ mod bindings {
             let target = bytes::Bytes::from(target);
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateSymbolicLink { path: path, target: (target).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateSymbolicLink { path: path, target: (target).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateSymbolicLink { path: path, target: (target).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateSymbolicLink { path: path, target: (target).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateSymbolicLink { path: path, target: (target).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateSymbolicLink { path: path, target: (target).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5732,15 +5732,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateEmptySpecial { path: path, kind: kind, metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateEmptySpecial { path: path, kind: kind, metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateEmptySpecial { path: path, kind: kind, metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateEmptySpecial { path: path, kind: kind, metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateEmptySpecial { path: path, kind: kind, metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateEmptySpecial { path: path, kind: kind, metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5769,15 +5769,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateDevice { path: path, kind: kind, major: major, minor: minor, metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateDevice { path: path, kind: kind, major: major, minor: minor, metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateDevice { path: path, kind: kind, major: major, minor: minor, metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateDevice { path: path, kind: kind, major: major, minor: minor, metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateDevice { path: path, kind: kind, major: major, minor: minor, metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateDevice { path: path, kind: kind, major: major, minor: minor, metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5800,15 +5800,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateReparsePoint { path: path, payload: (bytes::Bytes::from(payload)).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateReparsePoint { path: path, payload: (bytes::Bytes::from(payload)).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateReparsePoint { path: path, payload: (bytes::Bytes::from(payload)).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateReparsePoint { path: path, payload: (bytes::Bytes::from(payload)).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .create(acyclic_fs::AuthoredMutation::CreateReparsePoint { path: path, payload: (bytes::Bytes::from(payload)).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, boundary_budget(), &cancellation)
+                    .create(acyclic_fs::AuthoredMutation::CreateReparsePoint { path: path, payload: (bytes::Bytes::from(payload)).into(), metadata: acyclic_fs::kernel::FileMetadata::default() }, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5833,15 +5833,15 @@ mod bindings {
             let bytes = bytes::Bytes::from(bytes);
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .change_content(path, acyclic_fs::ContentChange::Write { offset: offset, bytes: (bytes).into() }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
+                    .change_content(path, acyclic_fs::ContentChange::Write { offset: offset, bytes: (bytes).into() }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .change_content(path, acyclic_fs::ContentChange::Write { offset: offset, bytes: (bytes).into() }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
+                    .change_content(path, acyclic_fs::ContentChange::Write { offset: offset, bytes: (bytes).into() }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .change_content(path, acyclic_fs::ContentChange::Write { offset: offset, bytes: (bytes).into() }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
+                    .change_content(path, acyclic_fs::ContentChange::Write { offset: offset, bytes: (bytes).into() }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5869,7 +5869,7 @@ mod bindings {
             let bytes = bytes::Bytes::from(bytes);
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .change_content(file_id, acyclic_fs::ContentChange::Write { offset: offset, bytes: (bytes).into() }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
+                    .change_content(file_id, acyclic_fs::ContentChange::Write { offset: offset, bytes: (bytes).into() }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -5896,15 +5896,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .mutate(vec![acyclic_fs::kernel::Mutation::Remove { path: path, expected_file_id: (expected).map_or(acyclic_fs::kernel::MetadataField::Unavailable, acyclic_fs::kernel::MetadataField::Value) }], boundary_budget(), &cancellation)
+                    .mutate(vec![acyclic_fs::kernel::Mutation::Remove { path: path, expected_file_id: (expected).map_or(acyclic_fs::kernel::MetadataField::Unavailable, acyclic_fs::kernel::MetadataField::Value) }], acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .mutate(vec![acyclic_fs::kernel::Mutation::Remove { path: path, expected_file_id: (expected).map_or(acyclic_fs::kernel::MetadataField::Unavailable, acyclic_fs::kernel::MetadataField::Value) }], boundary_budget(), &cancellation)
+                    .mutate(vec![acyclic_fs::kernel::Mutation::Remove { path: path, expected_file_id: (expected).map_or(acyclic_fs::kernel::MetadataField::Unavailable, acyclic_fs::kernel::MetadataField::Value) }], acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .mutate(vec![acyclic_fs::kernel::Mutation::Remove { path: path, expected_file_id: (expected).map_or(acyclic_fs::kernel::MetadataField::Unavailable, acyclic_fs::kernel::MetadataField::Value) }], boundary_budget(), &cancellation)
+                    .mutate(vec![acyclic_fs::kernel::Mutation::Remove { path: path, expected_file_id: (expected).map_or(acyclic_fs::kernel::MetadataField::Unavailable, acyclic_fs::kernel::MetadataField::Value) }], acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5928,15 +5928,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .mutate(vec![acyclic_fs::kernel::Mutation::Rename { source: source, destination: destination, replace: replace }], boundary_budget(), &cancellation)
+                    .mutate(vec![acyclic_fs::kernel::Mutation::Rename { source: source, destination: destination, replace: replace }], acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .mutate(vec![acyclic_fs::kernel::Mutation::Rename { source: source, destination: destination, replace: replace }], boundary_budget(), &cancellation)
+                    .mutate(vec![acyclic_fs::kernel::Mutation::Rename { source: source, destination: destination, replace: replace }], acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .mutate(vec![acyclic_fs::kernel::Mutation::Rename { source: source, destination: destination, replace: replace }], boundary_budget(), &cancellation)
+                    .mutate(vec![acyclic_fs::kernel::Mutation::Rename { source: source, destination: destination, replace: replace }], acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5960,15 +5960,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .mutate(vec![acyclic_fs::kernel::Mutation::Link { source: source, destination: destination }], boundary_budget(), &cancellation)
+                    .mutate(vec![acyclic_fs::kernel::Mutation::Link { source: source, destination: destination }], acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .mutate(vec![acyclic_fs::kernel::Mutation::Link { source: source, destination: destination }], boundary_budget(), &cancellation)
+                    .mutate(vec![acyclic_fs::kernel::Mutation::Link { source: source, destination: destination }], acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .mutate(vec![acyclic_fs::kernel::Mutation::Link { source: source, destination: destination }], boundary_budget(), &cancellation)
+                    .mutate(vec![acyclic_fs::kernel::Mutation::Link { source: source, destination: destination }], acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -5991,15 +5991,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .change_content(path, acyclic_fs::ContentChange::Resize { logical_bytes: logical_bytes }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
+                    .change_content(path, acyclic_fs::ContentChange::Resize { logical_bytes: logical_bytes }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .change_content(path, acyclic_fs::ContentChange::Resize { logical_bytes: logical_bytes }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
+                    .change_content(path, acyclic_fs::ContentChange::Resize { logical_bytes: logical_bytes }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .change_content(path, acyclic_fs::ContentChange::Resize { logical_bytes: logical_bytes }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
+                    .change_content(path, acyclic_fs::ContentChange::Resize { logical_bytes: logical_bytes }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -6022,7 +6022,7 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .change_content(file_id, acyclic_fs::ContentChange::Resize { logical_bytes: logical_bytes }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
+                    .change_content(file_id, acyclic_fs::ContentChange::Resize { logical_bytes: logical_bytes }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -6048,15 +6048,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .change_content(path, acyclic_fs::ContentChange::ZeroRange { range: ByteRange { offset, length }, allocated: allocated, extend: extend }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
+                    .change_content(path, acyclic_fs::ContentChange::ZeroRange { range: ByteRange { offset, length }, allocated: allocated, extend: extend }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .change_content(path, acyclic_fs::ContentChange::ZeroRange { range: ByteRange { offset, length }, allocated: allocated, extend: extend }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
+                    .change_content(path, acyclic_fs::ContentChange::ZeroRange { range: ByteRange { offset, length }, allocated: allocated, extend: extend }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .change_content(path, acyclic_fs::ContentChange::ZeroRange { range: ByteRange { offset, length }, allocated: allocated, extend: extend }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
+                    .change_content(path, acyclic_fs::ContentChange::ZeroRange { range: ByteRange { offset, length }, allocated: allocated, extend: extend }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -6082,7 +6082,7 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .change_content(file_id, acyclic_fs::ContentChange::ZeroRange { range: ByteRange { offset, length }, allocated: allocated, extend: extend }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
+                    .change_content(file_id, acyclic_fs::ContentChange::ZeroRange { range: ByteRange { offset, length }, allocated: allocated, extend: extend }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -6107,15 +6107,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .change_content(path, acyclic_fs::ContentChange::Preallocate { range: ByteRange { offset, length }, keep_size: keep_size }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
+                    .change_content(path, acyclic_fs::ContentChange::Preallocate { range: ByteRange { offset, length }, keep_size: keep_size }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .change_content(path, acyclic_fs::ContentChange::Preallocate { range: ByteRange { offset, length }, keep_size: keep_size }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
+                    .change_content(path, acyclic_fs::ContentChange::Preallocate { range: ByteRange { offset, length }, keep_size: keep_size }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .change_content(path, acyclic_fs::ContentChange::Preallocate { range: ByteRange { offset, length }, keep_size: keep_size }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
+                    .change_content(path, acyclic_fs::ContentChange::Preallocate { range: ByteRange { offset, length }, keep_size: keep_size }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -6140,7 +6140,7 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .change_content(file_id, acyclic_fs::ContentChange::Preallocate { range: ByteRange { offset, length }, keep_size: keep_size }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
+                    .change_content(file_id, acyclic_fs::ContentChange::Preallocate { range: ByteRange { offset, length }, keep_size: keep_size }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -6172,15 +6172,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .change_content(request.destination, acyclic_fs::ContentChange::CloneFrom { source: request.source, source_offset: request.source_offset, offset: request.destination_offset, length: request.length }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
+                    .change_content(request.destination, acyclic_fs::ContentChange::CloneFrom { source: request.source, source_offset: request.source_offset, offset: request.destination_offset, length: request.length }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .change_content(request.destination, acyclic_fs::ContentChange::CloneFrom { source: request.source, source_offset: request.source_offset, offset: request.destination_offset, length: request.length }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
+                    .change_content(request.destination, acyclic_fs::ContentChange::CloneFrom { source: request.source, source_offset: request.source_offset, offset: request.destination_offset, length: request.length }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .change_content(request.destination, acyclic_fs::ContentChange::CloneFrom { source: request.source, source_offset: request.source_offset, offset: request.destination_offset, length: request.length }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
+                    .change_content(request.destination, acyclic_fs::ContentChange::CloneFrom { source: request.source, source_offset: request.source_offset, offset: request.destination_offset, length: request.length }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -6207,7 +6207,7 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = with_checkout_mut!(&mut self.engine, checkout, {
                 checkout
-                    .change_content(destination_file_id, acyclic_fs::ContentChange::CloneFrom { source: source_file_id, source_offset: source_offset, offset: destination_offset, length: length }, acyclic_fs::ContentTimes::Preserve, boundary_budget(), &cancellation)
+                    .change_content(destination_file_id, acyclic_fs::ContentChange::CloneFrom { source: source_file_id, source_offset: source_offset, offset: destination_offset, length: length }, acyclic_fs::ContentTimes::Preserve, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?
             });
@@ -6232,15 +6232,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .commit(operation_id, None, None, None, permit, boundary_budget(), &cancellation, |_| async { acyclic_fs::FsResult::Ok(acyclic_fs::FsReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }) })
+                    .commit(operation_id, None, None, None, permit, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation, |_| async { acyclic_fs::FsResult::Ok(acyclic_fs::FsReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }) })
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .commit(operation_id, None, None, None, permit, boundary_budget(), &cancellation, |_| async { acyclic_fs::FsResult::Ok(acyclic_fs::FsReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }) })
+                    .commit(operation_id, None, None, None, permit, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation, |_| async { acyclic_fs::FsResult::Ok(acyclic_fs::FsReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }) })
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .commit(operation_id, None, None, None, permit, boundary_budget(), &cancellation, |_| async { acyclic_fs::FsResult::Ok(acyclic_fs::FsReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }) })
+                    .commit(operation_id, None, None, None, permit, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation, |_| async { acyclic_fs::FsResult::Ok(acyclic_fs::FsReceipt { value: (), work: acyclic_fs::WorkCounters::UNCHARGED }) })
                     .await
                     .map_err(js_error)?,
             };
@@ -6275,7 +6275,7 @@ mod bindings {
                         operation_id,
                         maximum_attempts,
                         maximum_conflicts,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -6308,7 +6308,7 @@ mod bindings {
                         operation_id,
                         maximum_attempts,
                         maximum_conflicts,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -6318,7 +6318,7 @@ mod bindings {
                         operation_id,
                         maximum_attempts,
                         maximum_conflicts,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -6328,7 +6328,7 @@ mod bindings {
                         operation_id,
                         maximum_attempts,
                         maximum_conflicts,
-                        boundary_budget(),
+                        acyclic_fs::performance::BOUNDARY_BUDGET,
                         &cancellation,
                     )
                     .await
@@ -6353,15 +6353,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .rebase_head(maximum_conflicts, boundary_budget(), &cancellation)
+                    .rebase_head(maximum_conflicts, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .rebase_head(maximum_conflicts, boundary_budget(), &cancellation)
+                    .rebase_head(maximum_conflicts, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .rebase_head(maximum_conflicts, boundary_budget(), &cancellation)
+                    .rebase_head(maximum_conflicts, acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -6400,15 +6400,15 @@ mod bindings {
             let cancellation = CancellationToken::default();
             let receipt = match &mut self.engine {
                 BrowserCheckoutEngine::IndexedDb(checkout) => checkout
-                    .discard(boundary_budget(), &cancellation)
+                    .discard(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::IndexedDbOpfs(checkout) => checkout
-                    .discard(boundary_budget(), &cancellation)
+                    .discard(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
                 BrowserCheckoutEngine::Memory(checkout) => checkout
-                    .discard(boundary_budget(), &cancellation)
+                    .discard(acyclic_fs::performance::BOUNDARY_BUDGET, &cancellation)
                     .await
                     .map_err(js_error)?,
             };
@@ -7604,37 +7604,6 @@ mod bindings {
             "data" => Ok(ExtentSeekTarget::Data),
             "hole" => Ok(ExtentSeekTarget::Hole),
             _ => Err(js_error("unknown sparse seek target")),
-        }
-    }
-
-    fn boundary_budget() -> WorkBudget {
-        const OPERATIONS: u64 = 1_000_000;
-        const BYTES: u64 = 256 * 1024 * 1024;
-        WorkBudget {
-            authority_records_read: OPERATIONS,
-            authority_records_appended: OPERATIONS,
-            authority_bytes_read: BYTES,
-            authority_bytes_written: BYTES,
-            object_probes: OPERATIONS,
-            backend_read_operations: OPERATIONS,
-            backend_write_operations: OPERATIONS,
-            durability_operations: OPERATIONS,
-            page_reads: OPERATIONS,
-            page_writes: OPERATIONS,
-            object_bytes_read: BYTES,
-            object_bytes_written: BYTES,
-            bytes_hashed: BYTES,
-            bytes_copied: BYTES,
-            bytes_encoded: BYTES,
-            source_bytes_read: BYTES,
-            source_path_components: OPERATIONS,
-            source_entries_visited: OPERATIONS,
-            output_bytes: BYTES,
-            items_examined: OPERATIONS,
-            items_returned: OPERATIONS,
-            allocation_operations: OPERATIONS,
-            peak_allocation_bytes: BYTES,
-            materializations: OPERATIONS,
         }
     }
 

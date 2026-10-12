@@ -56,7 +56,7 @@ impl crate::filesystem::PreparationRecord for ToolResultContent {
 
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 impl crate::filesystem::UploadRecord for ToolResultContent {
     fn diagnostic_label_bytes() -> u64 { model_serde_diagnostic_label_bytes() }
     fn logical_owned_bytes(&self) -> Result<u64> {
@@ -602,17 +602,15 @@ impl ModelContent {
         Ok(())
     }
 
-    pub(crate) fn visit_file_bindings<'a>(
-        &'a self, mut visit: impl FnMut(&'a FileRef, Option<&'a NativeConfigurationBinding>) -> Result<()>,
-    ) -> Result<()> {
-        for (file, policy) in self.file_parts() {
-            visit(file, None)?;
-            if let FileProjectionPolicy::Native(policy) = policy
-                && let Some(binding) = &policy.configuration {
-                visit(&binding.configuration.content, Some(binding))?;
-            }
-        }
-        Ok(())
+    pub(crate) fn file_bindings(&self) -> impl Iterator<Item = (&FileRef, Option<&NativeConfigurationBinding>)> {
+        self.file_parts().flat_map(|(file, policy)| {
+            let binding = match policy {
+                FileProjectionPolicy::Native(policy) => policy.configuration.as_ref(),
+                _ => None,
+            };
+            std::iter::once((file, None)).chain(binding.map(|binding|
+                (&binding.configuration.content, Some(binding))))
+        })
     }
 
     fn file_parts(&self) -> impl Iterator<Item = (&FileRef, &FileProjectionPolicy)> {
@@ -635,14 +633,7 @@ impl ModelContent {
     /// Returns ordered media refs followed by their immutable option refs.
     #[must_use]
     pub fn file_refs(&self) -> impl Iterator<Item = &FileRef> {
-        self.file_parts().flat_map(|(file, policy)| {
-            let configuration = match policy {
-                FileProjectionPolicy::Native(policy) => policy.configuration.as_ref()
-                    .map(|binding| &binding.configuration.content),
-                _ => None,
-            };
-            std::iter::once(file).chain(configuration)
-        })
+        self.file_bindings().map(|(file, _)| file)
     }
 
     /// Detects native media in ordinary data and paired result data.
@@ -654,10 +645,7 @@ impl ModelContent {
     /// Claims that the original authenticated host must verify before dispatch.
     #[must_use]
     pub fn native_configurations(&self) -> impl Iterator<Item = &NativeConfigurationBinding> {
-        self.file_parts().filter_map(|(_, policy)| match policy {
-            FileProjectionPolicy::Native(policy) => policy.configuration.as_ref(),
-            _ => None,
-        })
+        self.file_bindings().filter_map(|(_, binding)| binding)
     }
 
 }
@@ -1109,9 +1097,6 @@ fn model_request_payload_bytes(request: &ModelRequest) -> Result<u64> {
     Ok(bytes)
 }
 
-/// Largest byte count representable by a model request manifest.
-pub const MAX_MODEL_REQUEST_BYTES: u64 = u64::MAX;
-
 /// Complete immutable request to a model provider.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ModelRequest {
@@ -1161,7 +1146,7 @@ impl ModelRequest {
         use crate::tool::ToolInvocation;
         use std::collections::BTreeMap;
 
-        crate::executor::with_history_io(io, |work| limits.validate_with_work(work))?;
+        crate::executor::with_history_io(io, |work| limits.validate(work))?;
         model_step(io, 1)?;
         model_step(io, (self.model.provider.len() as u64)
             .saturating_add(self.model.name.len() as u64)
@@ -1517,7 +1502,7 @@ impl PreparedModelRequest {
         verifier: &dyn crate::conversation::ContentResidencyVerifier,
         limits: crate::conversation::Limits, io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Self> {
-        crate::executor::with_history_io(io, |work| limits.validate_with_work(work))?;
+        crate::executor::with_history_io(io, |work| limits.validate(work))?;
         let mut next = Some(clone_file(prefix, io)?);
         let mut segments = Vec::new();
         let mut visited = std::collections::BTreeSet::new();
@@ -1526,7 +1511,7 @@ impl PreparedModelRequest {
         let mut total_messages = local.messages.len();
         while let Some(reference) = next {
             model_step(io, 1)?;
-            crate::executor::with_history_io(io, |work| reference.validate_with_work(work))?;
+            crate::executor::with_history_io(io, |work| reference.validate(work))?;
             let identity = crate::executor::preparation_digest(&reference, io)?;
             #[cfg(feature = "filesystem")]
             if let Some(io) = io {
@@ -1551,32 +1536,12 @@ impl PreparedModelRequest {
             #[cfg(feature = "filesystem")]
             let _bytes_hold;
             crate::context::verify_file(&reference, verifier, io).await?;
-            let bytes = match io {
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                Some(io) if io.original_native_work().is_some() => {
-                    let work = io.original_native_work().expect("native branch retains original work");
-                    let bytes = verifier.read_with_native_work(
-                        &reference, reference.descriptor().byte_length(), work,
-                    )?.await?;
-                    bytes
-                }
-                #[cfg(feature = "filesystem")]
-                Some(io) => {
-                    io.receive_content(verifier.read_measured(&reference,
-                        reference.descriptor().byte_length(), io.remaining()?, io.cancellation()).await)?
-                }
-                _ => {
-                    verifier.read(&reference).await?
-                }
-            };
+            let bytes = verifier.read(&reference, reference.descriptor().byte_length(), io)?.await?;
             #[cfg(feature = "filesystem")]
             {
                 _bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
             }
-            #[cfg(feature = "filesystem")]
-            reference.descriptor().verify_with_io(&bytes, io)?;
-            #[cfg(not(feature = "filesystem"))]
-            reference.descriptor().verify(&bytes)?;
+            crate::executor::with_history_io(io, |work| reference.descriptor().verify(&bytes, work))?;
             let segment: ModelPrefix = match io {
                 #[cfg(feature = "filesystem")]
                 Some(io) => io.decode_preparation::<ModelPrefix>(&bytes, crate::wire::ErrorCode::Storage)?.into_retained(),
@@ -2118,8 +2083,8 @@ mod tests {
     );
 
     impl crate::conversation::ContentResidencyVerifier for PrefixReader {
-        fn verify<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<()>> {
-            Box::pin(async move {
+        fn verify<'a>(&'a self, file: &'a FileRef, _maximum_bytes: u64, io: Option<&'a crate::executor::PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+            crate::conversation::BoundedContentFuture::new(io, || async move {
                 let capability = file.read_capability()?;
                 if !self.1.contains(&capability) {
                     return Err(Error::Unauthorized("prefix read is not granted".into()));
@@ -2131,8 +2096,8 @@ mod tests {
                 file.descriptor().verify(bytes, &mut None)
             })
         }
-        fn read<'a>(&'a self, file: &'a FileRef) -> BoxFuture<'a, Result<acyclic_stream::OwnedBytes>> {
-            Box::pin(async move {
+        fn read<'a>(&'a self, file: &'a FileRef, _maximum_bytes: u64, io: Option<&'a crate::executor::PreparationIo>) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+            crate::conversation::BoundedContentFuture::new(io, || async move {
                 self.0
                     .get(&file.read_capability()?)
                     .cloned()
@@ -2161,14 +2126,16 @@ mod tests {
         let file = FileRef::new(
             VolumeRef::new(
                 crate::resources::ProviderRef::new("test", "filesystem", "2")?,
-                "private",
+                "private".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes([1; 16])),
+                &mut None,
             )?,
             format!(".system/inherited-conversation/model-prefix/{index}.json"),
             format!("generation-{index}"),
-            FileDescriptor::from_bytes(&bytes, media_type)?,
-            "model-prefix.json",
+            FileDescriptor::from_bytes(&bytes, media_type, &mut None)?,
+            "model-prefix.json".into(),
+            &mut None,
         )?;
         reader.1.insert(file.read_capability()?);
         reader.0.insert(file.read_capability()?, bytes);

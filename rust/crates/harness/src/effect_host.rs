@@ -16,7 +16,7 @@ use crate::{
     },
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
-use acyclic_stream::{StreamClient, StreamProvider};
+use acyclic_stream::{StreamProvider};
 use std::sync::Arc;
 
 /// Immutable provider selection and ref-only request for one task command.
@@ -271,7 +271,7 @@ impl<P: StreamProvider> ObservedEffectAggregate<P> {
 
 /// Resolves a pinned provider attempt into its owning conversation history.
 pub struct ConversationEffectHost<P> {
-    stream: StreamClient<P>,
+    stream: std::sync::Arc<P>,
     authority: Authority,
     issuer: AuthorityIssuer,
     scope: Scope,
@@ -287,7 +287,7 @@ pub struct ConversationEffectHost<P> {
 impl<P: StreamProvider> ConversationEffectHost<P> {
     /// Binds one conversation, its signed effect-run scope and provider catalog.
     pub fn new(
-        stream: StreamClient<P>,
+        stream: std::sync::Arc<P>,
         authority: Authority,
         issuer: AuthorityIssuer,
         scope: Scope,
@@ -349,7 +349,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     #[allow(clippy::too_many_arguments, reason = "same owned conversation binding plus its original custody")]
     pub fn new_with_native_work(
-        stream: StreamClient<P>,
+        stream: std::sync::Arc<P>,
         authority: Authority,
         issuer: AuthorityIssuer,
         scope: Scope,
@@ -456,7 +456,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
     }
 
     async fn aggregate(
-        &self, stream: &StreamClient<P>,
+        &self, stream: &std::sync::Arc<P>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<ObservedEffectAggregate<P>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -657,7 +657,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                 operation_id, idempotency_key: key, expected_revision,
                 scope, causal_parent: None, action: copied_action,
             };
-            match aggregate.aggregate.execute_task_command_with_work(command, owner, custody.work()).await {
+            match aggregate.aggregate.execute(command, Some(owner), custody.work()).await {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 Err(error) if error.is_native_failure() => return Err(error),
                 Err(error) if error.code() == crate::wire::ErrorCode::Conflict => {
@@ -721,15 +721,15 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
             };
             #[cfg(feature = "filesystem")]
             let result = match owner {
-                Some(owner) => aggregate.aggregate.execute_task_command_with_work(
-                    command, owner, command_custody.work()).await,
+                Some(owner) => aggregate.aggregate.execute(
+                    command, Some(owner), command_custody.work()).await,
                 None => {
                     if command_custody.work().is_some() {
                         return Err(effect_error(command_custody.work(),
                             crate::wire::ErrorCode::Unsupported,
                             "observed effect settlement requires its task owner"));
                     }
-                    aggregate.aggregate.execute(command).await
+                    aggregate.aggregate.execute(command, None, command_custody.work()).await
                 },
             };
             #[cfg(not(feature = "filesystem"))]
@@ -739,7 +739,7 @@ impl<P: StreamProvider> ConversationEffectHost<P> {
                         crate::wire::ErrorCode::Unsupported,
                         "native effect settlement requires filesystem task ownership"));
                 }
-                aggregate.aggregate.execute(command).await
+                aggregate.aggregate.execute(command, None, command_custody.work()).await
             };
             drop(command_custody);
             match result {
@@ -817,7 +817,7 @@ mod native_metadata_controls {
             files, issuer.verifier(), scope.clone(),
         ));
         ConversationEffectHost::new(
-            StreamClient::new(Arc::new(MemoryStream::default())),
+            Arc::new(MemoryStream::default()),
             authority, issuer, scope, SchemaRegistry::new(), content, EffectRegistry::new(),
         )
     }

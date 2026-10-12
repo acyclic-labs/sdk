@@ -286,7 +286,7 @@ impl ProjectSourceReadHandle {
     pub(crate) fn seal(authorization: ProjectSourceAuthorization, verifier: &AuthorityVerifier) -> Result<Self> {
         authorization.verify_scope_with_work(verifier, &mut None)?;
         let proof = VerifiedProjectSourceRead { authorization: &authorization };
-        let grant = ContentGrant::from_verified_project_source(&proof);
+        let grant = ContentGrant::from_verified_project_source(&proof, &mut None)?;
         Ok(Self { authorization, grant })
     }
 
@@ -297,7 +297,7 @@ impl ProjectSourceReadHandle {
     ) -> Result<Self> {
         authorization.verify_scope_with_work(verifier, work)?;
         let proof = VerifiedProjectSourceRead { authorization: &authorization };
-        let grant = ContentGrant::from_verified_project_source_with_work(&proof, work)?;
+        let grant = ContentGrant::from_verified_project_source(&proof, work)?;
         Ok(Self { authorization, grant })
     }
 

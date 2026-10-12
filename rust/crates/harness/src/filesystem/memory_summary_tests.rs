@@ -12,6 +12,7 @@ use crate::model::{ModelDispatch, ModelEvent, PreparedModelRequest};
 use crate::resources::StreamRef;
 use crate::store::{HistoryReadLimits, HistoryReader};
 use std::sync::Mutex;
+use acyclic_stream::StreamProvider as _;
 use crate::distributed::{DistributedCoordinator, SchedulerPayloadStore as _};
 use crate::durable_host::CoordinatorTaskHost;
 use crate::runtime::{DurableTaskHost as _, TaskAdmissionRecord, TaskDefinition, TaskRegistry};
@@ -78,21 +79,7 @@ impl ModelProvider for SummaryModel {
     }
 }
 
-fn finite_summary_budget() -> acyclic_fs::WorkBudget {
-    let units = 1_000_000;
-    let bytes = 134_217_728;
-    acyclic_fs::WorkBudget {
-        authority_records_read: units, authority_records_appended: units,
-        authority_bytes_read: bytes, authority_bytes_written: bytes,
-        object_probes: units, backend_read_operations: units, backend_write_operations: units,
-        durability_operations: units, page_reads: units, page_writes: units,
-        object_bytes_read: bytes, object_bytes_written: bytes,
-        bytes_hashed: bytes, bytes_copied: bytes, bytes_encoded: bytes,
-        source_bytes_read: bytes, source_path_components: units, source_entries_visited: units,
-        output_bytes: bytes, items_examined: units, items_returned: units,
-        allocation_operations: units, peak_allocation_bytes: bytes, materializations: units,
-    }
-}
+const FINITE_SUMMARY_BUDGET: acyclic_fs::WorkBudget = acyclic_fs::performance::work_budget(1_000_000, 134_217_728);
 
 struct SummaryLeaseMachine {
     identity: MachineIdentity,
@@ -167,8 +154,8 @@ async fn sealed_summary_preparation(
         Arc::new(acyclic_stream::SystemUnixMillisClock),
     )?.with_session_limits(crate::scheduler::SessionLimits {
         active_tasks: 4, total_tasks: 4, depth: 2, model_steps: 4,
-    })?.with_resource_creation_provider(Arc::new(
-        crate::filesystem::FilesystemResourceCreationProvider::new(storage.host.clone(), issuer)?))?);
+    })?.with_resource_creation_providers(vec![Arc::new(
+        crate::filesystem::FilesystemResourceCreationProvider::new(storage.host.clone(), issuer)?)])?);
     let admission = |operation_id, parent, input| TaskAdmissionRecord {
         resource_proofs: Vec::new(), operation_id, task: identity.clone(), machine: machine.clone(),
         input, input_schema: schema.clone(), output_schema: schema.clone(), parent,
@@ -466,7 +453,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
         ForkHistoryPolicy::Summary(Box::new(selection)),
     )?;
     let cancellation = acyclic_fs::CancellationToken::new();
-    let proof_io = PreparationIo::from_budget(finite_summary_budget(), &cancellation)?;
+    let proof_io = PreparationIo::from_budget(FINITE_SUMMARY_BUDGET, &cancellation)?;
     let proof_hold;
     let finite = preparer.prepare_bound_summary(&request, Some(&proof_io)).await?
         .ok_or_else(|| Error::Invalid("finite Summary source proof missing".into()))?;
@@ -482,7 +469,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     let small_io = PreparationIo::from_budget(acyclic_fs::WorkBudget::default(), &cancellation)?;
     assert!(preparer.prepare_bound_summary(&request, Some(&small_io)).await.is_err());
     assert_eq!(small_io.owned_bytes()?, 0);
-    let cancelled_io = PreparationIo::from_budget(finite_summary_budget(), &cancellation)?;
+    let cancelled_io = PreparationIo::from_budget(FINITE_SUMMARY_BUDGET, &cancellation)?;
     cancellation.cancel();
     assert!(preparer.prepare_bound_summary(&request, Some(&cancelled_io)).await.is_err());
     assert_eq!(cancelled_io.receipt(), acyclic_fs::WorkCounters::default());
@@ -724,7 +711,7 @@ async fn assert_summary_child_import(
             .await
             .is_err()
     );
-    let other_stream = StreamClient::new(Arc::new(MemoryStream::default()));
+    let other_stream = Arc::new(MemoryStream::default());
     let mut unrelated = StreamAggregate::open(
         &other_stream,
         seed.child.clone(),
@@ -819,7 +806,7 @@ async fn assert_summary_child_import(
 }
 
 struct ColdSummaryStream {
-    client: StreamClient<MemoryStream>,
+    client: Arc<MemoryStream>,
     reads: std::sync::atomic::AtomicUsize,
     maximum: std::sync::atomic::AtomicU32,
     fail_read: std::sync::atomic::AtomicUsize,
@@ -840,13 +827,13 @@ impl acyclic_stream::StreamProvider for ColdSummaryStream {
         &self,
         path: acyclic_stream::StreamPath,
     ) -> std::result::Result<u64, acyclic_stream::StreamError> {
-        self.client.stream(path.as_str())?.tail().await
+        self.client.tail(path).await
     }
     async fn bounds(
         &self,
         path: acyclic_stream::StreamPath,
     ) -> std::result::Result<acyclic_stream::StreamBounds, acyclic_stream::StreamError> {
-        self.client.bounds(path.as_str()).await
+        self.client.bounds(path).await
     }
     async fn read(
         &self,
@@ -858,16 +845,13 @@ impl acyclic_stream::StreamProvider for ColdSummaryStream {
         if number == self.fail_read.load(Ordering::SeqCst) {
             return Err(acyclic_stream::StreamError::Unavailable);
         }
-        self.client
-            .stream(request.path.as_str())?
-            .read(request.from, request.limit)
-            .await
+        self.client.read(request).await
     }
     async fn read_commit(
         &self,
         commit: acyclic_stream::CommitId,
     ) -> std::result::Result<acyclic_stream::CommittedEnvelope, acyclic_stream::StreamError> {
-        self.client.provider.read_commit(commit).await
+        self.client.read_commit(commit).await
     }
     async fn append(
         &self,
@@ -1003,7 +987,7 @@ async fn assert_cold_summary_reads(
             maximum: 0.into(),
             fail_read: 0.into(),
         });
-        let client = StreamClient::new(observed.clone());
+        let client = observed.clone();
         let cold_parent = HistoryReader::new(&client, &seed.parent, storage.verifier())?;
         let cold_child = HistoryReader::new(&client, &seed.child, issuer.verifier())?;
         if later_messages == 0 {

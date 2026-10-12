@@ -25,7 +25,6 @@ const modules = [
   "generate-harness-conversation-page-contract.mjs",
   "generate-harness-file-tools-contract.mjs",
   "generate-machines-managed-oci-contract.mjs",
-  "generate-observe.mjs",
 ];
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");

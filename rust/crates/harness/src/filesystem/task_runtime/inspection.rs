@@ -183,11 +183,11 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         snapshot: &crate::source_authorization::ProjectSourceSnapshot,
         budget: acyclic_fs::WorkBudget,
     ) -> Result<TaskSourceInspection<P, A, O>> {
-        handle.require_selection(operation, source, &snapshot.project, &snapshot.generation, snapshot.native_snapshot.as_ref())?;
+        handle.require_selection(operation, source, &snapshot.project, &snapshot.generation, snapshot.native_snapshot.as_ref(), None)?;
         if !budget.has_finite_allowances() {
             return Err(Error::Invalid("selected inspection requires finite caller allowances".into()));
         }
-        budget.verify(crate::filesystem::finite_budget(
+        budget.verify(acyclic_fs::performance::work_budget(
             handle.authorization().maximum_work, handle.authorization().maximum_bytes,
         )).map_err(|error| Error::Invalid(error.to_string()))?;
         owner.verify_project_source_handle(context, &handle).await?;
@@ -220,11 +220,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 reason: "selected source handle custody belongs to another original work" });
         }
         let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        handle.0.require_selection_with_native_work(
-            operation, source, &snapshot.project, &snapshot.generation,
-            snapshot.native_snapshot.as_ref(), work,
-        )?;
-        io.remaining()?.verify(crate::filesystem::finite_budget(
+        handle.0.require_selection(operation, source, &snapshot.project, &snapshot.generation, snapshot.native_snapshot.as_ref(), Some(work))?;
+        io.remaining()?.verify(acyclic_fs::performance::work_budget(
             handle.0.authorization().maximum_work, handle.0.authorization().maximum_bytes,
         )).map_err(|_| Error::NativeBoundary {
             code: crate::wire::ErrorCode::Invalid,

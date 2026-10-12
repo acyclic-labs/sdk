@@ -2799,7 +2799,7 @@ pub struct MeasuredMaterializationStore<'a> {
 pub struct LocalMaterializationActionCompletion {
     journal: Option<crate::materializer::MaterializationJournal>,
     encoding: PreparedMaterializationEncoding,
-    host: crate::native_host::PreparedMaterializationRecord,
+    host: Option<crate::native_host::PreparedMaterializationRecord>,
     record_lock: MaterializationRecordLock,
     _paths: RecordPaths<'static>,
     _namespace: Namespace,
@@ -2825,7 +2825,7 @@ impl Future for LocalMaterializationActionCompletion {
         std::task::Poll::Ready((|| {
             journal.work = this.work.journal_work()?;
             let length = this.encoding.encode(&journal)?;
-            this.host.complete(&this.encoding.bytes[..length])?;
+            this.host.take().ok_or(crate::materializer::NativeTreeMaterializationError::MissingCustody)?.complete(&this.encoding.bytes[..length])?;
             let cleanup = this.record_lock.1.take()
                 .ok_or(crate::materializer::NativeTreeMaterializationError::MissingCustody)?;
             let (unlocked, recorded) = cleanup.attempt_recorded(|| FileExt::unlock(&this.record_lock.0));
@@ -3021,7 +3021,7 @@ impl MaterializationJournalStore for MeasuredMaterializationStore<'_> {
             let RecordPaths { directory, current, previous, temporary, lock, .. } = paths;
             let paths = RecordPaths { directory, current, previous, temporary, lock, namespace: PhantomData };
             Ok(LocalMaterializationActionCompletion {
-                journal: Some(journal), encoding, host, record_lock, _paths: paths, _namespace: namespace,
+                journal: Some(journal), encoding, host: Some(host), record_lock, _paths: paths, _namespace: namespace,
                 work: work.clone(), _paths_custody: paths_custody,
                 _body_custody: body_custody,
             })

@@ -7,20 +7,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 type FaultStream = crate::test_stream::LostSessionAck<MemoryStream>;
 
-fn budget() -> WorkBudget {
-    const LIMIT: u64 = 64 * 1024 * 1024;
-    WorkBudget {
-        authority_records_read: LIMIT, authority_records_appended: LIMIT,
-        authority_bytes_read: LIMIT, authority_bytes_written: LIMIT,
-        object_probes: LIMIT, backend_read_operations: LIMIT, backend_write_operations: LIMIT,
-        durability_operations: LIMIT, page_reads: LIMIT, page_writes: LIMIT,
-        object_bytes_read: LIMIT, object_bytes_written: LIMIT,
-        bytes_hashed: LIMIT, bytes_copied: LIMIT, bytes_encoded: LIMIT,
-        source_bytes_read: LIMIT, source_path_components: LIMIT, source_entries_visited: LIMIT,
-        output_bytes: LIMIT, items_examined: LIMIT, items_returned: LIMIT,
-        allocation_operations: LIMIT, peak_allocation_bytes: LIMIT, materializations: LIMIT,
-    }
-}
+const BUDGET: WorkBudget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024);
 
 #[derive(Default)]
 struct UnmeasuredContent(AtomicUsize);
@@ -34,13 +21,13 @@ impl ContentResidencyVerifier for UnmeasuredContent {
 }
 
 async fn append_source(
-    client: &StreamClient<FaultStream>, revision: u64, key: &str, event: SchedulerEvent, time: u64,
+    client: &std::sync::Arc<FaultStream>, revision: u64, key: &str, event: SchedulerEvent, time: u64,
 ) -> Result<u64> {
     let canonical = crate::contract::canonical_json_bytes(&event)?;
     let bytes = encode(revision, event.operation_id(), key,
         *blake3::hash(&canonical).as_bytes(), canonical, time, &mut None)?;
     let length = bytes.len() as u64;
-    client.stream(COORDINATOR_PATH)?.append_batch(
+    acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?.append_batch(
         vec![OwnedBytes::from(bytes)], Some(revision - 1), None,
     ).await?;
     Ok(length)
@@ -50,7 +37,7 @@ async fn append_source(
 async fn coordinator_quota_and_cancellation_stop_before_the_next_real_sdk_call() -> Result<()> {
     for mode in 0..3 {
         let provider = Arc::new(FaultStream::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let mut coordinator = DistributedCoordinator::open(&client, Arc::new(UnmeasuredContent::default())).await?;
         let bytes = append_source(&client, 1, "measured-quota", SchedulerEvent::Declared {
             spec: Box::new(spec(OperationId::from_bytes([104; 16]), 0)?),
@@ -58,7 +45,7 @@ async fn coordinator_quota_and_cancellation_stop_before_the_next_real_sdk_call()
         provider.reset_io();
         let cancellation = CancellationToken::new();
         if mode == 0 { cancellation.cancel(); }
-        let mut allowance = budget();
+        let mut allowance = BUDGET;
         if mode == 1 { allowance.source_bytes_read = 0; }
         if mode == 2 { allowance.backend_read_operations = 0; }
         let mut work = HistoryWork::new(allowance, &cancellation);
@@ -76,7 +63,7 @@ async fn coordinator_quota_and_cancellation_stop_before_the_next_real_sdk_call()
 #[tokio::test]
 async fn declared_content_without_measured_capability_rejects_before_ordinary_content_io() -> Result<()> {
     let provider = Arc::new(FaultStream::default());
-    let client = StreamClient::new(provider.clone());
+    let client = provider.clone();
     let content = Arc::new(UnmeasuredContent::default());
     let mut coordinator = DistributedCoordinator::open(&client, content.clone()).await?;
     append_source(&client, 1, "unmeasured-content", SchedulerEvent::Declared {
@@ -84,7 +71,7 @@ async fn declared_content_without_measured_capability_rejects_before_ordinary_co
     }, 1).await?;
     provider.reset_io();
     let cancellation = CancellationToken::new();
-    let mut work = HistoryWork::new(budget(), &cancellation);
+    let mut work = HistoryWork::new(BUDGET, &cancellation);
     let result = coordinator.refresh_with_work(&mut Some(&mut work)).await;
     let failure = work.finish(result).expect_err("ordinary verification is not a finite capability");
     assert!(matches!(failure.error, Error::Unsupported(_)));
@@ -97,7 +84,7 @@ async fn declared_content_without_measured_capability_rejects_before_ordinary_co
 }
 
 async fn admitted_fixture(
-    client: &StreamClient<FaultStream>,
+    client: &std::sync::Arc<FaultStream>,
     operation: OperationId,
 ) -> Result<(DistributedCoordinator<FaultStream>, WorkLease)> {
     let mut coordinator = DistributedCoordinator::open(client, Arc::new(UnmeasuredContent::default())).await?;
@@ -113,12 +100,12 @@ async fn admitted_fixture(
 #[tokio::test]
 async fn measured_quiescent_release_requires_witness_and_the_same_owner_verified_revision() -> Result<()> {
     let provider = Arc::new(FaultStream::default());
-    let client = StreamClient::new(provider.clone());
+    let client = provider.clone();
     let operation = OperationId::from_bytes([120; 16]);
     let execution = OperationId::from_bytes([121; 16]);
     let (mut coordinator, lease) = admitted_fixture(&client, operation).await?;
     let cancellation = CancellationToken::new();
-    let mut work = HistoryWork::new(budget(), &cancellation);
+    let mut work = HistoryWork::new(BUDGET, &cancellation);
     provider.reset_io();
     assert!(matches!(coordinator.apply_if_execution_quiescent(
         IdempotencyKey::new("no-workflow-witness")?,
@@ -149,7 +136,7 @@ async fn measured_quiescent_release_requires_witness_and_the_same_owner_verified
 }
 
 async fn historical_source(
-    client: &StreamClient<FaultStream>, operation: OperationId,
+    client: &std::sync::Arc<FaultStream>, operation: OperationId,
 ) -> Result<(Authority, crate::core::AuthorityIssuer, Scope, LeaseFence, u64)> {
     let declaration = spec(operation, 0)?;
     let owner = declaration.owner.authority().clone();
@@ -177,7 +164,7 @@ async fn historical_source(
 #[tokio::test]
 async fn original_reservation_proof_keeps_the_selected_old_origin_without_current_write_authority() -> Result<()> {
     let provider = Arc::new(FaultStream::default());
-    let client = StreamClient::new(provider.clone());
+    let client = provider.clone();
     let operation = OperationId::from_bytes([128; 16]);
     let (owner, issuer, scope, original, time) = historical_source(&client, operation).await?;
     append_source(&client, 4, "original-released", SchedulerEvent::LeaseReleased {
@@ -194,7 +181,7 @@ async fn original_reservation_proof_keeps_the_selected_old_origin_without_curren
     provider.reset_io();
     provider.forbid_writes.store(true, Ordering::SeqCst);
     let cancellation = CancellationToken::new();
-    let native = acyclic_fs::NativeMaterializationWork::new(budget(), &cancellation)
+    let native = acyclic_fs::NativeMaterializationWork::new(BUDGET, &cancellation)
         .expect("original native ledger control");
     let mut observer = crate::store::history::native_work_io(&native)?;
     let proof = original_reservation_proof_with_work(
@@ -212,7 +199,7 @@ async fn original_reservation_proof_keeps_the_selected_old_origin_without_curren
 async fn historical_proof_rejects_ambiguous_started_origins_and_foreign_selectors_without_writes() -> Result<()> {
     for duplicate in [false, true] {
         let provider = Arc::new(FaultStream::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let operation = OperationId::from_bytes([129; 16]);
         let (owner, issuer, scope, mut candidate, time) = historical_source(&client, operation).await?;
         if duplicate {
@@ -225,7 +212,7 @@ async fn historical_proof_rejects_ambiguous_started_origins_and_foreign_selector
         provider.reset_io();
         provider.forbid_writes.store(true, Ordering::SeqCst);
         let cancellation = CancellationToken::new();
-        let mut work = HistoryWork::new(budget(), &cancellation);
+        let mut work = HistoryWork::new(BUDGET, &cancellation);
         let result = original_reservation_proof_with_work(
             &client, &owner, &scope, &issuer.verifier(), operation, &candidate, &mut Some(&mut work),
         ).await;
