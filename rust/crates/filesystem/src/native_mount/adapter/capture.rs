@@ -27,8 +27,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
         if paths.is_empty() {
             return Ok(());
         }
-        let work = capture_meter(crate::performance::BOUNDARY_BUDGET, &self.cancellation)
-            .map_err(|failure| failure.error)?;
+        let work = capture_meter(crate::performance::BOUNDARY_BUDGET, &self.cancellation)?;
         invoke(&self.runtime, &work, || {
             self.capture_host(source_root, paths, identity, scope, None, &work)
         })
@@ -186,8 +185,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CheckoutMo
                         })
                         .map_err(|_| MountSourceError::Cancelled)
                 },
-                None,
-                |publication, _| publication,
             )
             .await?;
         let Some(publication) = publication else {

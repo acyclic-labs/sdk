@@ -8,24 +8,24 @@ async fn bounded_common_ancestor_discovery_is_direction_independent_at_the_front
     let main = fs.create_workspace("lineage-main", B, &cancel).await?.value;
     let base = main.head(B, &cancel).await?.value;
     let left = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "lineage-left",
             ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
     let right = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "lineage-right",
             ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
@@ -80,13 +80,13 @@ async fn live_rebase_advances_fork_lineage_and_preserves_independent_changes()
     let main = fs.create_workspace("main-rebase", B, &cancel).await?.value;
     main.write_text("/base", "base").await?;
     let agent = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "agent-rebase",
             ForkOptions::from_generation(main.head(B, &cancel).await?.value, IdempotencyKey::new()),
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
@@ -138,13 +138,13 @@ async fn live_rebase_conflict_and_non_fork_leave_heads_unchanged() -> Result<(),
         .value;
     main.write_text("/shared", "base").await?;
     let agent = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "agent-conflict",
             ForkOptions::from_generation(main.head(B, &cancel).await?.value, IdempotencyKey::new()),
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>,
+            &mut allow::<FsError>,
         )
         .await?
         .value;
@@ -181,13 +181,13 @@ async fn live_rebase_merges_disjoint_sparse_ranges_without_materializing_file()
     main.write("/shared", bytes::Bytes::from(vec![b'a'; 128]))
         .await?;
     let agent = main
-        .fork(
+        .fork::<_, _, crate::WorkspaceError>(
             "agent-ranges",
             ForkOptions::from_generation(main.head(B, &cancel).await?.value, IdempotencyKey::new()),
             PublicationPermit::Unrestricted,
             B,
             &cancel,
-            allow::<FsError>,
+            &mut allow::<FsError>,
         )
         .await?
         .value;

@@ -164,17 +164,17 @@ fn measured_native_watch_baseline_failures_leave_the_rescan_recoverable()
     watch.abort_rescan(WatchInvalidationReason::NativeRescanRequired)?;
     let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    watch.begin_rescan_with_work(&mut NativeSourceWork::from_native_materialization_work(
+    watch.begin_rescan_with_work(&mut crate::NativeMaterializationWork::clone(
         &work,
     ))?;
     assert!(matches!(
-        watch.finish_rescan_with_work(&mut NativeSourceWork::from_native_materialization_work(
+        watch.finish_rescan_with_work(&mut crate::NativeMaterializationWork::clone(
             &cancelled_work
         )),
         Err(NativeWatchError::Cancelled(_))
     ));
     assert!(matches!(
-        watch.finish_rescan_with_work(&mut NativeSourceWork::from_native_materialization_work(
+        watch.finish_rescan_with_work(&mut crate::NativeMaterializationWork::clone(
             &denied
         )),
         Err(NativeWatchError::Work(_))
@@ -221,7 +221,7 @@ fn measured_native_watch_cleanup_retains_prior_work_and_can_be_retried()
     )
     .map_err(|(error, _)| error)?;
     assert!(matches!(
-        watch.begin_rescan_with_work(&mut NativeSourceWork::from_native_materialization_work(
+        watch.begin_rescan_with_work(&mut crate::NativeMaterializationWork::clone(
             &denied
         )),
         Err(NativeWatchError::Work(_))

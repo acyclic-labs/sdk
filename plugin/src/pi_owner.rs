@@ -104,7 +104,7 @@ impl PiOwnerPolicy {
             0,
             acyclic_fs::WorkCounters::UNCHARGED,
         )?;
-        let mut io = acyclic_harness::store::native_work_io(work)?;
+        let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
         let journal = self.journal.copy(&mut Some(&mut io))?;
         let grants = self.grants.clone_with_native_work(work)?;
         combine_native_metadata((
@@ -120,7 +120,7 @@ impl PiOwnerPolicy {
                 maximum_payload_bytes: self.maximum_payload_bytes,
             },
             slot,
-            [io.into_custody(), grants.1],
+            [io.into_custody()?, grants.1],
         ))
     }
 }
@@ -219,7 +219,7 @@ impl PiOwnerConfig {
     pub(crate) fn into_native_shared(self, work: &NativeMaterializationWork) -> Result<Arc<Self>> {
         work.admit(acyclic_fs::WorkCounters::UNCHARGED)?;
         if !self._native_custody.as_ref().is_some_and(|custody| {
-            custody.matches_work(work) && custody.bytes() >= std::mem::size_of::<Self>() as u64
+            custody.work().shares_allocation_context(work) && custody.bytes() >= std::mem::size_of::<Self>() as u64
         }) {
             return Err(native_invalid(
                 "Pi owner sharing requires its original native metadata custody",
@@ -239,7 +239,7 @@ impl PiOwnerConfig {
             return Err(native_invalid("invalid Pi owner configuration"));
         }
         let storage = {
-            let mut io = acyclic_harness::store::native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             self.policy.session_limits.validate(&mut Some(&mut io))?;
             let grants = [
                 self.policy
@@ -259,7 +259,7 @@ impl PiOwnerConfig {
         };
         let issuer =
             self.issuer_with_native_work(AggregateKind::Task, self.policy.root_task, work)?;
-        let mut io = acyclic_harness::store::native_work_io(work)?;
+        let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
         let verifier = issuer.0.verifier(&mut Some(&mut io))?;
         let signed = issuer.0.issue(
             &verifier.audience().id,
@@ -280,7 +280,7 @@ impl PiOwnerConfig {
         let ((issuer, verifier, signed, scope), custody) = combine_native_metadata((
             (issuer.0, verifier, signed, scope.0),
             issuer.1,
-            [io.into_custody(), scope.1],
+            [io.into_custody()?, scope.1],
         ))?;
         let authority = PiRuntimeAuthority {
             issuer,
@@ -294,7 +294,7 @@ impl PiOwnerConfig {
         };
         authority.validate(
             &self.policy.journal,
-            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)),
         )?;
         Ok(authority)
     }
@@ -334,9 +334,9 @@ impl PiOwnerConfig {
         let issuer =
             self.issuer_with_native_work(AggregateKind::Conversation, self.policy.root_task, work)?;
         let verifier = {
-            let mut io = acyclic_harness::store::history::native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = issuer.0.verifier(&mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         drop(issuer.0);
         drop(issuer.1);
@@ -403,7 +403,7 @@ impl PiOwnerConfig {
         );
         let issuer = self.issuer_with_native_work(AggregateKind::Conversation, task, work)?;
         let scope_id = work.display(&scope_id)?;
-        let mut io = acyclic_harness::store::native_work_io(work)?;
+        let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
         let scope = issuer
             .0
             .issue(&scope_id.0, grants, Some(agent), None, &mut Some(&mut io))?;
@@ -412,7 +412,7 @@ impl PiOwnerConfig {
         combine_native_metadata((
             (audience.0, issuer.0, scope),
             audience.1,
-            [issuer.1, io.into_custody()],
+            [issuer.1, io.into_custody()?],
         ))
     }
 

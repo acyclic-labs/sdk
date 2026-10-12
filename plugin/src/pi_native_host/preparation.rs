@@ -4,7 +4,7 @@ use super::*;
 impl PiNativeCommandHost {
     pub(super) async fn prepare_effect(
         &self,
-        shared: Arc<NativeTaskContext>,
+        shared: Arc<TaskContext>,
         input: &PiTaskInput,
         owner: Arc<TaskJournalOwner<LocalStream>>,
         command: &WorkflowCommand,
@@ -13,7 +13,7 @@ impl PiNativeCommandHost {
         work: &NativeMaterializationWork,
     ) -> Result<Arc<BoundEffect>> {
         let intent = &mut retained_intent.0;
-        let context = shared.context();
+        let context = shared.as_ref();
         self.hydrate_child(
             &shared,
             &owner,
@@ -116,7 +116,7 @@ impl PiNativeCommandHost {
                 if handles.session.is_none() {
                     handles.session = Some(
                         intent
-                            .publish_session(scratch_context.context(), command.operation_id, work)
+                            .publish_session(scratch_context.as_ref(), command.operation_id, work)
                             .await?,
                     );
                 }
@@ -136,9 +136,9 @@ impl PiNativeCommandHost {
                     work,
                 )?;
                 let mut verifier = {
-                    let mut io = acyclic_harness::store::history::native_work_io(work)?;
+                    let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
                     let value = conversation.0.1.verifier(&mut Some(&mut io))?;
-                    (value, io.into_custody())
+                    (value, io.into_custody()?)
                 };
                 conversation.1.absorb(&mut verifier.1)?;
                 let (_, _, scope) = conversation.0;
@@ -265,9 +265,9 @@ impl PiNativeCommandHost {
                     work,
                 )?;
                 let write_capability = {
-                    let mut io = acyclic_harness::store::history::native_work_io(work)?;
+                    let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
                     let value = project.capability(VolumeOperation::Write, &mut Some(&mut io))?;
-                    (value, io.into_custody())
+                    (value, io.into_custody()?)
                 };
                 let writable = context.scope().grants().contains(&write_capability.0);
                 let project_permit = handles
@@ -396,7 +396,7 @@ impl PiNativeCommandHost {
             work,
         )?;
         let staged = pi_native::stage_command(
-            result_context.context(),
+            result_context.as_ref(),
             command.operation_id,
             &request.0,
             work,

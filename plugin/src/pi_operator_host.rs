@@ -9,7 +9,6 @@ use crate::{
     pi_owner::PiOwnerConfig,
 };
 use acyclic_fs::{MaterializationPhase, NativeMaterializationWork};
-use acyclic_harness::store::native_work_io;
 use acyclic_harness::{
     Capabilities, Error, OperationId, Result,
     core::SchemaRegistry,
@@ -17,7 +16,7 @@ use acyclic_harness::{
     executor::ExecutionJournal,
     filesystem::{FilesystemExecutionJournal, TaskCommandProgress},
     interaction::{Interaction, InteractionOutcome, InteractionResponse},
-    runtime::NativeTaskContext,
+    runtime::TaskContext,
     scheduler::LeaseFence,
     tool::ToolApprovalVerifier,
     workflow::WorkflowCommand,
@@ -154,9 +153,9 @@ fn conversation_journal<'a>(
         work,
     )?;
     let verifier = {
-        let mut io = native_work_io(work)?;
+        let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
         let value = authority.0.1.verifier(&mut Some(&mut io))?;
-        (value, io.into_custody())
+        (value, io.into_custody()?)
     };
     Journal::new_with_native_work(
         stream.clone(),
@@ -178,7 +177,7 @@ pub(crate) async fn open_prepared_approval(
     runtime: &PiNativeRuntime,
     filesystem: &Arc<PiNativeFilesystem>,
     protected: &PiOwnerConfig,
-    context: &NativeTaskContext,
+    context: &TaskContext,
     owner: &TaskJournalOwner<LocalStream>,
     binding: &PiTaskBinding,
     descriptor: &PiPreparedApproval<
@@ -193,7 +192,6 @@ pub(crate) async fn open_prepared_approval(
     runtime.verify_owner_with_native_work(protected, work)?;
     protected.validate_root(binding, work)?;
     let (task, fence) = context
-        .context()
         .owned_task_binding_with_native_work(work)?;
     if task != protected.policy().root_task
         || owner.task_id() != task
@@ -205,19 +203,19 @@ pub(crate) async fn open_prepared_approval(
         ));
     }
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false)
         .await?;
     let storage = protected.authority(work)?;
     let authority = protected.conversation_authority_with_native_work(
         binding.task_id,
         binding.agent_id,
-        context.context().scope().grants(),
+        context.scope().grants(),
         work,
     )?;
     let verifier = {
-        let mut io = native_work_io(work)?;
+        let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
         let value = authority.0.1.verifier(&mut Some(&mut io))?;
-        (value, io.into_custody())
+        (value, io.into_custody()?)
     };
     let current = runtime
         .runtime
@@ -227,7 +225,7 @@ pub(crate) async fn open_prepared_approval(
     let journal = Journal::for_task_with_native_work(
         current,
         descriptor.operation,
-        context.context().id(),
+        context.id(),
         Arc::clone(filesystem),
         &protected.policy().journal,
         &storage.verifier,
@@ -263,7 +261,7 @@ pub(crate) async fn open_prepared_approval(
         )?
         .await?;
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false)
         .await?;
     let _staged = crate::pi_root_provider::stage_pi_input(
         protected,
@@ -275,7 +273,7 @@ pub(crate) async fn open_prepared_approval(
     )
     .await?;
     owner
-        .verify(false, &mut Some(&mut native_work_io(work)?))
+        .verify(false)
         .await
 }
 
@@ -755,7 +753,7 @@ pub(crate) async fn passive_status(
 impl<'a> crate::pi_selected_host::PiControlHost<'a> {
     pub(crate) async fn run_operator(
         &self,
-        context: Arc<NativeTaskContext>,
+        context: Arc<TaskContext>,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,
@@ -763,7 +761,6 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         work: &NativeMaterializationWork,
     ) -> Result<TaskCommandProgress> {
         context
-            .context()
             .verify_original_execution_owner_with_native_work(work)?
             .await?;
         let (request, _request_custody) =
@@ -788,7 +785,6 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         };
         let root = self.protected.policy().root_task;
         let (task, current_fence) = context
-            .context()
             .owned_task_binding_with_native_work(work)?;
         if task != root
             || prepared.command.caller != root
@@ -813,7 +809,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             .with_invocation_cancellation(work.cancellation())
             .into_native_shared(work)?;
         owner
-            .verify(false, &mut Some(&mut native_work_io(work)?))
+            .verify(false)
             .await?;
         let (admitted, _admission_custody) = self.admission_input(root, work).await?;
         self.protected.validate_root(&admitted.binding, work)?;
@@ -872,13 +868,13 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
                 reason: None,
             };
             owner
-                .verify(false, &mut Some(&mut native_work_io(work)?))
+                .verify(false)
                 .await?;
             journal
                 .resolve_interaction_with_native_work(id, &response, &responder.0.2, work)?
                 .await?;
             owner
-                .verify(false, &mut Some(&mut native_work_io(work)?))
+                .verify(false)
                 .await?;
         }
         if decision == PiOperatorDecision::Decline {
@@ -943,7 +939,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             TaskCommandProgress::Indeterminate => return Ok(TaskCommandProgress::Indeterminate),
         }
         owner
-            .verify(false, &mut Some(&mut native_work_io(work)?))
+            .verify(false)
             .await?;
         let (status, native) = observe_writeback(
             &self.filesystem,

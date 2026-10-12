@@ -1,6 +1,4 @@
 use super::*;
-use crate::kernel::KernelAccounting;
-
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: LazyWorkspaceStore>
     LazyWorkspace<A, O, D, S>
 {
@@ -10,9 +8,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         path: &str,
         offset: u64,
         target: LazySeekTarget,
-        accounting: &mut KernelAccounting<'_>,
+        ctx: &mut KernelAccounting<'_>,
     ) -> Result<Option<u64>, LazyWorkspaceError> {
-        let lookup = self.lookup(path, accounting).await?;
+        let lookup = self.lookup(path, ctx).await?;
         let result = async {
             let stat = lookup.0.stat();
             if stat.kind != SourceNodeKind::RegularFile {
@@ -34,38 +32,37 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 LazyLookup::Shadow { record, .. } => *record,
                 LazyLookup::Authored { stat, .. } => {
                     let checkout = self
-                        .checkout(crate::model::GenerationSelector::Head, accounting)
+                        .checkout(crate::model::GenerationSelector::Head, ctx)
                         .await?;
                     let record = checkout
                         .value
                         .lookup_file_record_by_id_with_accounting(
                             stat.file_id,
-                            accounting,
-                            cancellation(accounting),
+                            ctx,
+                            cancellation(ctx),
                         )
                         .await;
-                    checkout.retire(accounting)?;
+                    checkout.retire(ctx)?;
                     record?.ok_or(LazyWorkspaceError::NotFound)?
                 }
-                LazyLookup::Source { .. } => unreachable!("dense source returned above"),
-            };
-            let target = match target {
-                LazySeekTarget::Data => crate::kernel::ExtentSeekTarget::Data,
-                LazySeekTarget::Hole => crate::kernel::ExtentSeekTarget::Hole,
+                LazyLookup::Source { .. } => unreachable!(),
             };
             crate::facade::seek_record_extent_with_accounting(
                 &self.workspace.volume,
                 record,
                 offset,
-                target,
-                accounting,
-                cancellation(accounting),
+                match target {
+                    LazySeekTarget::Data => crate::kernel::ExtentSeekTarget::Data,
+                    LazySeekTarget::Hole => crate::kernel::ExtentSeekTarget::Hole,
+                },
+                ctx,
+                cancellation(ctx),
             )
             .await
             .map_err(Into::into)
         }
         .await;
-        self.retire_lookup(lookup, accounting)?;
+        self.retire_lookup(lookup, ctx)?;
         result
     }
 }

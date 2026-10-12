@@ -211,20 +211,6 @@ copy_fields!(
         owned_bytes(value)
     }
 );
-copy_fields!(
-    copy_extension_record,
-    ExtensionRecord,
-    |value: &ExtensionRecord, work| {
-        value.content.validate(work)?;
-        owned_bytes(value)
-    }
-);
-copy_fields!(copy_status, EffectStatus, |value: &EffectStatus, work| {
-    if let EffectStatus::Succeeded { result } = value {
-        result.validate(work)?;
-    }
-    owned_bytes(value)
-});
 copy_fields!(copy_effect, EffectState, |value: &EffectState, work| {
     value.request.validate(work)?;
     value.result_schema.validate(work)?;

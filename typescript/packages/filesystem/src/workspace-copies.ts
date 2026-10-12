@@ -149,8 +149,7 @@ export function copyTransactionResult(value: { readonly createdFileIds: readonly
 }
 
 function copyCommitFields<Status extends string>(value: RawCommitFields, work: WorkCounters,
-  statuses: ReadonlySet<Status>): Omit<RawCommitFields, "status"> & { readonly status: Status; readonly generationId: Uint8Array | undefined;
-    readonly epoch: bigint | undefined; readonly sequence: bigint | undefined; readonly committedFingerprint: Uint8Array | undefined; readonly work: WorkCounters } {
+  statuses: ReadonlySet<Status>): Omit<CommitResult, "status"> & { readonly status: Status } {
   if (!statuses.has(value.status as Status)) throw new TypeError("checkout result has an invalid status");
   return {
     status: value.status as Status,

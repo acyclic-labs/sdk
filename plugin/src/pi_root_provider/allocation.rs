@@ -43,7 +43,7 @@ impl PiRootProvider {
         }
         for (key, path) in paths {
             self.execution_owner()?
-                .verify(false, &mut Some(&mut native_work_io(work)?))
+                .verify(false)
                 .await?;
             self.require_native_creation()?;
             let physical = self
@@ -90,7 +90,7 @@ impl PiRootProvider {
         self.require_native_creation()?;
         let owner = self.execution_owner()?;
         owner
-            .verify(false, &mut Some(&mut native_work_io(work)?))
+            .verify(false)
             .await?;
         self.bind_conversation_with_native_work(effect, attempt, work)
             .await?;
@@ -124,11 +124,11 @@ impl PiRootProvider {
                 let input = &inputs.0[key];
                 self.validate_attachment(input)?;
                 owner
-                    .verify(false, &mut Some(&mut native_work_io(work)?))
+                    .verify(false)
                     .await?;
                 self.require_native_creation()?;
                 let identity = guard_root_preparation_source_with_native_work(
-                    self.preparation.context.context(),
+                    self.preparation.context.as_ref(),
                     owner,
                     &self.preparation,
                     key,
@@ -186,7 +186,7 @@ impl PiRootProvider {
                     ));
                 }
                 owner
-                    .verify(false, &mut Some(&mut native_work_io(work)?))
+                    .verify(false)
                     .await?;
                 self.require_native_creation()?;
                 let workspace = match existing_workspace {
@@ -205,9 +205,9 @@ impl PiRootProvider {
                         let operation =
                             self.creation_operation_with_native_work(effect, attempt, key, work)?;
                         let name = {
-                            let mut io = native_work_io(work)?;
+                            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
                             let value = volume.storage_name(&mut Some(&mut io))?;
-                            (value, io.into_custody())
+                            (value, io.into_custody()?)
                         };
                         acyclic_fs::LazyWorkspace::attach_with_operation_with_native_work(
                             &self.fs,
@@ -245,14 +245,10 @@ impl PiRootProvider {
             }
         }
         owner
-            .verify(false, &mut Some(&mut native_work_io(work)?))
+            .verify(false)
             .await?;
         let volume = &self.preparation.request.binding.scratch.volume;
-        owner.require_volume_grant(
-            volume,
-            VolumeOperation::Write,
-            &mut Some(&mut native_work_io(work)?),
-        )?;
+        owner.require_volume_grant(volume, VolumeOperation::Write)?;
         if self
             .creation_with_native_work(
                 effect,
@@ -266,15 +262,15 @@ impl PiRootProvider {
             .is_none()
         {
             owner
-                .verify(false, &mut Some(&mut native_work_io(work)?))
+                .verify(false)
                 .await?;
             self.require_native_creation()?;
             let operation =
                 self.creation_operation_with_native_work(effect, attempt, "scratch", work)?;
             let name = {
-                let mut io = native_work_io(work)?;
+                let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
                 let value = volume.storage_name(&mut Some(&mut io))?;
-                (value, io.into_custody())
+                (value, io.into_custody()?)
             };
             self.fs
                 .create_workspace_with_operation_with_native_work(
@@ -290,7 +286,7 @@ impl PiRootProvider {
         #[cfg(test)]
         self.test_fault_native("before-result-stage")?;
         owner
-            .verify(false, &mut Some(&mut native_work_io(work)?))
+            .verify(false)
             .await?;
         let observation = self
             .observe_result_with_native_work(effect, attempt, original, true, work)

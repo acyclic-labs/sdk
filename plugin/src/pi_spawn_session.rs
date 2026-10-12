@@ -3,12 +3,11 @@
 use super::*;
 use acyclic_fs::{LazySnapshotRef, NativeAllocation, NativeMaterializationWork};
 use acyclic_harness::runtime::TaskStateProvider;
-use acyclic_harness::store::native_work_io;
 use acyclic_harness::{
     conversation::ContentResidencyVerifier,
     conversation::{VolumeClass, VolumeOwner, VolumeRef},
     filesystem::{PreparationIo, TaskCommandProgress},
-    runtime::NativeTaskContext,
+    runtime::TaskContext,
     workflow::WorkflowCommand,
 };
 use serde::de::DeserializeOwned;
@@ -223,7 +222,7 @@ impl PiSession {
                 )
             })?;
             if live.prepared.binding != *self.binding(caller)?
-                || live.context.context().durable_task_id() != Some(caller)
+                || live.context.durable_task_id() != Some(caller)
             {
                 return Err(acyclic_harness::Error::Invalid(
                     "Pi recursive spawn changed its original caller binding".to_owned(),
@@ -242,10 +241,7 @@ impl PiSession {
                 ));
             }
             live.owner
-                .verify(
-                    false,
-                    &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
-                )
+                .verify(false)
                 .await?;
             Some(live)
         };
@@ -430,7 +426,7 @@ impl PiSession {
             }
             let (acknowledgement, pending, prepared) = if let Some(live) = &live {
                 live.owner
-                    .verify(false, &mut Some(&mut native_work_io(&work)?))
+                    .verify(false)
                     .await?;
                 self.spawn_child_step(
                     owner,
@@ -531,7 +527,7 @@ impl PiSession {
         }
         if let Some(live) = &live {
             live.owner
-                .verify(false, &mut Some(&mut native_work_io(&work)?))
+                .verify(false)
                 .await?;
         }
         self.spawn_save_created(&commit, operations, &prepared, &work)?;
@@ -939,7 +935,7 @@ impl PiSession {
         &self,
         owner: &pi_owner::PiOwnerConfig,
         native: Arc<pi_native_host::PiNativeCommandHost>,
-        context: &Arc<NativeTaskContext>,
+        context: &Arc<TaskContext>,
         command: WorkflowCommand,
         reconcile: bool,
         task: TaskId,
@@ -951,7 +947,7 @@ impl PiSession {
         Option<pi_fork::PreparedPiFork>,
     )> {
         let fork = self.command_host(work, Some(native))?;
-        let fence = context.context().owned_task_fence()?;
+        let fence = context.owned_task_fence()?;
         let (payload, mut input_custody) =
             pi_root_provider::guarded_pi_value(input, owner.policy().maximum_payload_bytes, work)?;
         let progress = fork
@@ -1018,9 +1014,9 @@ impl PiSession {
         )?;
         let paths = paths;
         let (workspace, workspace_custody) = {
-            let mut io = native_work_io(work)?;
+            let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
             let value = project.storage_name(&mut Some(&mut io))?;
-            (value, io.into_custody())
+            (value, io.into_custody()?)
         };
         let workspace = workspace;
         if !matches!(&pending.task_binding, PluginTaskBinding::Pi(binding) if binding.as_ref() == &commit.child)
@@ -1276,9 +1272,9 @@ impl PiSession {
         }
         prepared
             .report
-            .validate(&mut Some(&mut acyclic_harness::store::native_work_io(
+            .validate(&mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(
                 work,
-            )?))?;
+            )?)))?;
         binding.validate(None, [key.as_str()], false)?;
         let route = SpawnBorrowedRoute {
             task_binding: PluginTaskBinding::Pi(binding),
@@ -1435,7 +1431,7 @@ impl PiSession {
         let native_effect = acyclic_harness::effect_host::task_effect_id(
             commit.child.task_id,
             operations.native,
-            &mut Some(&mut native_work_io(work)?),
+            &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)),
         )?;
         let body = SpawnObservation {
             operation: &commit.sdk_operation,

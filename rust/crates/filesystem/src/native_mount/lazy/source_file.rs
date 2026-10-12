@@ -109,7 +109,7 @@ where
                             &self.authored,
                             &self.path,
                             self.expected_source,
-                            carrier,
+                            work,
                         )
                         .await?;
                         self.authored
@@ -135,13 +135,7 @@ where
         length: u64,
         work: &crate::NativeMaterializationWork,
     ) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError> {
-        crate::demand::read_file(
-            &*self.source_file,
-            offset,
-            length,
-            work,
-            work.cancellation(),
-        )
+        self.source_file.read_range(offset, length, &mut crate::kernel::KernelAccounting::native(work, work.cancellation()))
         .map_err(mount_demand_error)
     }
 }
@@ -200,7 +194,7 @@ where
                 }
             };
             if length == 0 {
-                return carrier.empty_source_chunk();
+                return Ok(crate::kernel::OwnedSourceChunk::intrinsic(OwnedBytes::new(), 0));
             }
             self.read_source(offset, length, work)
         })
@@ -341,7 +335,7 @@ where
         ),
         MountSourceError,
     > {
-        self.observe(work, false, |file, node, carrier| {
+        self.observe(work, false, |file, node, _| {
             if let Some(file) = file {
                 return file.read_sparse_range(offset, length, work);
             }

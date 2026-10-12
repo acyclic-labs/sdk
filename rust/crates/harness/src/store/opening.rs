@@ -2,7 +2,6 @@ use super::*;
 
 impl<P: StreamProvider> StreamAggregate<P> {
     /// Restores an authenticated aggregate at a bounded committed cut.
-
     #[allow(
         clippy::too_many_arguments,
         reason = "canonical restore inputs and observer"
@@ -119,85 +118,126 @@ impl<P: StreamProvider> StreamAggregate<P> {
         maximum_bytes: u64,
         work: &mut Option<&mut dyn history::HistoryIo>,
     ) -> Result<()> {
-        if maximum_bytes == 0 {
-            return Err(Error::Invalid(
-                "projection suffix exceeds byte allowance".into(),
-            ));
-        }
-        let cursor = HistoryCursor {
-            authority: match work.as_deref_mut() {
-                Some(work) => work.clone_authority(reducer.authority())?,
-                None => reducer.authority().clone(),
-            },
-            after_revision: reducer.revision(),
-            through_revision: through,
+        use crate::{
+            wire::ErrorCode::{Invalid, Storage},
+            wire_codec::CodecQuota,
         };
-        let (page, records, mut used, events_retained_bytes) = reader
-            .read_page_with_work(
-                &cursor,
-                HistoryReadLimits {
-                    maximum_events,
-                    maximum_bytes,
-                },
-                true,
-                work.as_mut()
-                    .map(|observer| &mut **observer as &mut dyn history::HistoryIo),
-            )
-            .await?;
-        let cursor_bytes = cursor.authority.id.capacity() as u64;
-        drop(cursor);
-        if let Some(work) = work.as_deref_mut() {
-            work.release_owned(cursor_bytes)?;
-        }
-        if page.cursor.after_revision != through {
-            return Err(Error::Invalid(
-                "projection suffix exceeds byte allowance".into(),
+        let start = reducer.revision();
+        if maximum_bytes == 0 || through < start || through - start > u64::from(maximum_events) {
+            return Err(guarded_boundary(
+                work,
+                Invalid,
+                "projection suffix exceeds read allowance",
             ));
         }
-        let event_bytes =
-            (page.events.capacity() * std::mem::size_of::<crate::core::Event>()) as u64;
-        let record_capacity =
-            (records.capacity() * std::mem::size_of::<operations::ObservedRecord>()) as u64;
-        let page_cursor_bytes = page.cursor.authority.id.capacity() as u64;
-        drop(page.cursor);
-        if let Some(work) = work.as_deref_mut() {
-            work.release_owned(page_cursor_bytes)?;
+        if through
+            > operations::tail_optional_with_work(client, &reader.path, work)
+                .await?
+                .unwrap_or(0)
+        {
+            return Err(guarded_boundary(
+                work,
+                Invalid,
+                "history cursor exceeds committed tail",
+            ));
         }
-        for (event, record) in page.events.into_iter().zip(records) {
+        let mut records =
+            operations::read_records(client, &reader.path, start, (through - start) as u32, work)
+                .await?
+                .map_err(|error| crate::store::operations::stream_error_with_work(error, work))?;
+        let mut used = 0_u64;
+        let mut output_bytes = 0_u64;
+        loop {
+            let mut quota = CodecQuota::from_retained(work, 0);
+            if let Some(io) = quota.work().as_deref() {
+                io.check_cancellation()?;
+            }
+            let Some(record) = records.next(quota.work()).await? else {
+                break;
+            };
+            let raw = operations::sdk_record_retained_bytes(&record, quota.work());
+            quota.adopt(raw)?;
+            if reducer.revision() >= through || record.sequence != reducer.revision() {
+                return Err(guarded_boundary(
+                    quota.work(),
+                    Storage,
+                    "history page is not bounded and contiguous",
+                ));
+            }
+            output_bytes = output_bytes
+                .checked_add(record.value.len() as u64)
+                .ok_or_else(|| {
+                    guarded_boundary(
+                        quota.work(),
+                        Invalid,
+                        "projection suffix exceeds byte allowance",
+                    )
+                })?;
+            used = used
+                .checked_add(record.value.len() as u64)
+                .filter(|total| *total <= maximum_bytes)
+                .ok_or_else(|| {
+                    guarded_boundary(
+                        quota.work(),
+                        Invalid,
+                        "projection suffix exceeds byte allowance",
+                    )
+                })?;
+            let (event, held) = history::verify_history_record_with_retained_quota(
+                &reader.verifier,
+                reducer.authority(),
+                reducer.revision(),
+                &record,
+                quota.work(),
+            )?;
+            quota.adopt(held)?;
+            if let Some(io) = quota.work().as_deref_mut() {
+                io.admit_output(output_bytes, reducer.revision() - start + 1)?;
+            }
             let (indexed, bytes) = effects::retirement_proof_with_work(
                 client,
                 reducer.authority(),
                 &event,
                 &record,
                 maximum_bytes.saturating_sub(used),
-                work,
+                quota.work(),
             )
             .await?;
             used = used
                 .checked_add(bytes)
                 .filter(|total| *total <= maximum_bytes)
-                .ok_or_else(|| Error::Invalid("projection suffix exceeds byte allowance".into()))?;
-            let (cloned, clone_owned) = crate::wire_codec::CodecQuota::produce(work, |quota| crate::core::copy_event(&event, quota))?;
-            drop(reducer.apply_committed(cloned, work)?);
-            if let Some(work) = work.as_deref_mut() {
-                work.release_owned(clone_owned)?;
-            }
+                .ok_or_else(|| {
+                    guarded_boundary(
+                        quota.work(),
+                        Invalid,
+                        "projection suffix exceeds byte allowance",
+                    )
+                })?;
+            let applied = reducer.apply_committed(event, quota.work())?;
             if indexed {
-                reducer.mark_indexed_terminal_effect_with_work(&event, work)?;
+                let ApplyResult::Applied { event } = &applied else {
+                    return Err(guarded_boundary(
+                        quota.work(),
+                        Storage,
+                        "projection suffix replayed its successor",
+                    ));
+                };
+                reducer.mark_indexed_terminal_effect_with_work(event, quota.work())?;
             }
             reducer.enforce_terminal_effect_limit()?;
-            drop(event);
-            let record_bytes = operations::sdk_record_retained_bytes(&record, work);
+            drop(applied);
             drop(record);
-            if let Some(work) = work.as_deref_mut() {
-                work.release_owned(record_bytes)?;
-            }
         }
-        if let Some(work) = work.as_deref_mut() {
-            work.release_owned(events_retained_bytes)?;
-            work.release_owned(event_bytes)?;
-            work.release_owned(record_capacity)?;
-            work.check_cancellation()?;
+        if reducer.revision() != through {
+            return Err(guarded_boundary(
+                work,
+                Storage,
+                "history page stopped before its pinned boundary",
+            ));
+        }
+        if let Some(io) = work.as_deref_mut() {
+            io.check_cancellation()?;
+            io.stage_output(output_bytes, through - start)?;
         }
         Ok(())
     }

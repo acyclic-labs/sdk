@@ -1,35 +1,6 @@
 use super::*;
 
 impl LocalCoreStateStore {
-    pub(super) async fn load_lazy_logged(
-        &self,
-        id: WorkspaceId,
-        work: crate::materializer::NativeMaterializationWork,
-    ) -> Result<Option<LazyWorkspaceState>, LocalCoreStateStoreError> {
-        work.charge(crate::WorkCounters::default())?;
-        if let Ownership::Owned(owner) = &self.ownership {
-            let residents = owner
-                .residents
-                .read()
-                .unwrap_or_else(PoisonError::into_inner);
-            for record in &residents.0 {
-                work.charge(crate::WorkCounters {
-                    items_examined: 1,
-                    ..Default::default()
-                })?;
-                if record.key == RecordKey::LazyWorkspace(id) {
-                    return Ok(record
-                        .value
-                        .as_ref()
-                        .and_then(LazyWorkspaceState::from_value));
-                }
-            }
-        }
-        self.materialization(work)
-            .transaction(move |root| root.with_log(|log| log.get::<LazyWorkspaceState>(&root, id)))
-            .await
-    }
-
     pub(super) async fn swap_lazy_logged(
         &self,
         id: WorkspaceId,
@@ -112,10 +83,12 @@ impl LocalCoreStateStore {
                         }
                     }
                     let mut change = Change::new(work)?;
-                    change.put_scalar(
-                        RecordKey::LazyWorkspace(id),
-                        Some(RecordValue::LazyWorkspace(replacement)),
-                        work,
+                    change.put(
+                        (
+                            RecordKey::LazyWorkspace(id),
+                            Some(RecordValue::LazyWorkspace(replacement)),
+                        )
+                            .into(),
                     )?;
                     log.commit(&root, change)?;
                     Ok(true)

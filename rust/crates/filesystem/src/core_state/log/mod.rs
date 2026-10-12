@@ -48,11 +48,14 @@ impl CoreLog {
             let work = allocation.work();
             return self
                 .get_native_value(root, key, work, work.cancellation())?
-                .map(|owned| T::from_value((&owned.0)).ok_or(LocalCoreStateStoreError::Integrity))
+                .map(|owned| T::from_value(owned.0).ok_or(LocalCoreStateStoreError::Integrity))
                 .transpose();
         }
-        if let Some(value) = self.residents().get(&key) {
-            return Ok(value.as_ref().and_then(T::from_value));
+        {
+            let residents = self.residents();
+            if let Some(index) = residents.position(key, None)? {
+                return Ok(residents.0[index].value.clone().and_then(T::from_value));
+            }
         }
         let paths = key.paths(root)?;
         let value = read_json::<Option<T>>(&paths.current, maximum_bytes)?.flatten();

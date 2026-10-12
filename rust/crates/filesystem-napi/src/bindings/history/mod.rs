@@ -82,12 +82,11 @@ impl NativeChangeSet {
         maximum_changes: NapiU32,
     ) -> Result<NativeChangeSet> {
         let maximum_changes = maximum_changes.into_inner();
-
-        self.inner
-            .compose(&next.inner, maximum_changes)
-            .await
-            .map(|inner| NativeChangeSet { inner })
-            .map_err(napi_error)
+        sdk_value!(unbounded_future!(
+            self.inner,
+            compose(&next.inner, maximum_changes)
+        ))
+        .map(|inner| NativeChangeSet { inner })
     }
 }
 
@@ -124,7 +123,7 @@ impl NativeJoinPlan {
                 ApplyOptions {
                     if_target,
                     idempotency_key,
-                },
+                }, std::collections::BTreeMap::new(),
                 acyclic_fs::PublicationPermit::Unrestricted,
             )
             .await

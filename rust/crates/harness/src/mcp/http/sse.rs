@@ -69,10 +69,9 @@ pub(super) async fn response(
             policy: policy.clone(),
             message: value,
         };
-        let callback_operation = callback.validate()?;
         let admitted = admission.admit(context.clone(), &callback).fuse();
         futures::pin_mut!(admitted);
-        let reply = loop {
+        let (callback_operation, reply) = loop {
             if !stream_open {
                 break admitted.await?;
             }
@@ -102,7 +101,6 @@ pub(super) async fn response(
                 }
             }
         };
-        callback.validate_reply(&reply)?;
         let request: McpHttpRequest =
             transport.request("POST", crate::contract::canonical_json_bytes(&reply)?)?;
         let acknowledgement = transport

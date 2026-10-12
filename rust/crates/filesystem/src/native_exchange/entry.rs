@@ -1,83 +1,71 @@
 use super::*;
-use crate::native_host::NativeHostWork;
+use crate::demand::{DemandError, SourceDemandReadWork};
+use crate::native_host::{self as host};
 
-pub(super) fn attempted<W: NativeHostWork, T>(
-    work: &mut W,
-    delta: crate::WorkCounters,
-    operation: impl FnOnce() -> std::io::Result<T>,
-) -> Result<T, W::Error> {
-    work.admit(delta)?;
-    // Charge the attempt immediately before the syscall.
-    work.record(delta)?;
-    operation().map_err(Into::into)
-}
-/// Exchanges entries through their original held parents and the existing scratch/witness protocol.
-pub(crate) fn exchange_native_entries<W: NativeHostWork>(
+/// Exchanges two entries through their original held parents.
+pub(crate) fn exchange_native_entries<W: SourceDemandReadWork>(
     left: &cap_std::fs::Dir,
     left_name: &Path,
     right: &cap_std::fs::Dir,
     right_name: &Path,
     work: &mut W,
-) -> Result<(), W::Error>
-where
-    W::Error: From<NativeExchangeError>,
-{
-    validate_leaf(left_name).map_err(W::Error::from)?;
-    validate_leaf(right_name).map_err(W::Error::from)?;
+) -> Result<(), DemandError> {
+    validate_leaf(left_name)?;
+    validate_leaf(right_name)?;
+    #[cfg(windows)]
+    {
+        exchange_windows_held(left, left_name, right, right_name, work)
+    }
     #[cfg(unix)]
     {
         let roots = [
-            crate::native_host::entry_identity(left, left_name, work)?
+            host::entry_identity(left, left_name, work)?
                 .ok_or(NativeExchangeError::InvalidLayout)?,
-            crate::native_host::entry_identity(right, right_name, work)?
+            host::entry_identity(right, right_name, work)?
                 .ok_or(NativeExchangeError::InvalidLayout)?,
         ];
-        exchange_kernel_held(left, left_name, right, right_name, work)?;
-        if crate::native_host::entry_identity(left, left_name, work)? != Some(roots[1])
-            || crate::native_host::entry_identity(right, right_name, work)? != Some(roots[0])
+        exchange_kernel(left, left_name, right, right_name, work)?;
+        if host::entry_identity(left, left_name, work)? != Some(roots[1])
+            || host::entry_identity(right, right_name, work)? != Some(roots[0])
         {
             return Err(NativeExchangeError::IncompatibleJournal.into());
         }
-        crate::native_host::sync_directory_held(left, work)?;
-        crate::native_host::sync_directory_held(right, work)?;
+        host::sync_directory_held(left, work)?;
+        host::sync_directory_held(right, work)
+    }
+}
+
+pub(super) fn validate_leaf(name: &Path) -> Result<(), NativeExchangeError> {
+    let mut parts = name.components();
+    if matches!(parts.next(), Some(std::path::Component::Normal(_))) && parts.next().is_none() {
         Ok(())
+    } else {
+        Err(NativeExchangeError::InvalidLayout)
     }
-    #[cfg(windows)]
-    exchange_windows_held(left, left_name, right, right_name, work)
 }
-pub(super) fn validate_leaf(path: &Path) -> Result<(), NativeExchangeError> {
-    let mut components = path.components();
-    if !matches!(components.next(), Some(std::path::Component::Normal(_)))
-        || components.next().is_some()
-    {
-        return Err(NativeExchangeError::InvalidLayout);
-    }
-    Ok(())
-}
+
 #[cfg(unix)]
 #[allow(
     unsafe_code,
-    reason = "atomic exchange uses live held parents and single native leaf names"
+    reason = "held descriptors and checked leaf names stay live"
 )]
-pub(super) fn exchange_kernel_held<W: NativeHostWork>(
+fn exchange_kernel<W: SourceDemandReadWork>(
     left: &cap_std::fs::Dir,
     left_name: &Path,
     right: &cap_std::fs::Dir,
     right_name: &Path,
     work: &mut W,
-) -> Result<(), W::Error> {
-    use std::os::fd::AsRawFd as _;
-    crate::native_host::unix_name(left_name.as_os_str(), work, |left_name, work| {
-        crate::native_host::unix_name(right_name.as_os_str(), work, |right_name, work| {
-            attempted(
-                work,
+) -> Result<(), DemandError> {
+    use std::os::fd::AsRawFd;
+    host::unix_name(left_name.as_os_str(), work, |left_name, work| {
+        host::unix_name(right_name.as_os_str(), work, |right_name, work| {
+            work.attempt_io(
                 crate::WorkCounters {
                     backend_write_operations: 1,
                     ..crate::WorkCounters::UNCHARGED
                 },
                 || {
-                    // SAFETY: held descriptors and NUL-terminated leaf names remain
-                    // live for the whole operation; neither parent is reconstructed.
+                    // SAFETY: held parent descriptors and NUL-terminated names outlive the call.
                     #[cfg(target_os = "linux")]
                     let result = unsafe {
                         libc::syscall(
@@ -109,39 +97,28 @@ pub(super) fn exchange_kernel_held<W: NativeHostWork>(
         })
     })
 }
-/// Recovers only the physical preimages named by the surviving entry witness.
-pub(crate) fn recover_native_entry_exchange<W: NativeHostWork>(
+
+/// Recovers the exact entry request recorded under the held parent.
+pub(crate) fn recover_native_entry_exchange<W: SourceDemandReadWork>(
     parent: &cap_std::fs::Dir,
     name: &Path,
     work: &mut W,
-) -> Result<(), W::Error>
-where
-    W::Error: From<NativeExchangeError>,
-{
-    validate_leaf(name).map_err(W::Error::from)?;
+) -> Result<(), DemandError> {
+    validate_leaf(name)?;
     #[cfg(windows)]
     {
-        let scratch = service_name(name, ".acyclic-exchange", work)?;
-        let scratch_name = scratch.0.as_path();
-        let result = (|| {
-            let witness = service_name(name, ".acyclic-exchange-witness", work)?;
-            let witness_name = witness.0.as_path();
-            let result = (|| {
-                if crate::native_host::entry_identity(parent, witness_name, work)?.is_none() {
-                    if crate::native_host::entry_identity(parent, scratch_name, work)?.is_some() {
-                        return Err(NativeExchangeError::IncompatibleJournal.into());
-                    }
-                    return Ok(());
+        with_service_name(name, ".acyclic-exchange", work, |scratch, work| {
+            with_service_name(name, ".acyclic-exchange-witness", work, |witness, work| {
+                if host::entry_identity(parent, witness, work)?.is_none() {
+                    return if host::entry_identity(parent, scratch, work)?.is_some() {
+                        Err(NativeExchangeError::IncompatibleJournal.into())
+                    } else {
+                        Ok(())
+                    };
                 }
-                recover_entry_held(parent, name, scratch_name, witness_name, None, work).map(|_| ())
-            })();
-            drop(witness.0);
-            work.release(witness.1)?;
-            result
-        })();
-        drop(scratch.0);
-        work.release(scratch.1)?;
-        result
+                recover_entry_held(parent, name, scratch, witness, None, work).map(|_| ())
+            })
+        })
     }
     #[cfg(unix)]
     {
