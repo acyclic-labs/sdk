@@ -12,7 +12,7 @@ use crate::{
     ConflictSide, DefaultTextMergeDriver, DriverError, ForkOptions, GenerationId, IdempotencyKey,
     JoinOutcome, MemoryMergeResolutionCache, MergeDriver, MergeDriverRegistry,
     MergePlanResolutionError, MergeResolution, OperationId, PublicationPermit,
-    PublicationReservation, ReservationOutcome, UnpublishedMergeCandidate, WorkBudget, Workspace,
+    PublicationReservation, UnpublishedMergeCandidate, WorkBudget, Workspace,
     WorkspaceContextError, WorkspaceContextId, WorkspaceContextRegistry, WorkspaceContextStore,
     WorkspaceDelete, WorkspaceError, WorkspaceGraph, WorkspaceId, WorkspaceLineageError,
     WorkspaceLineageStore, WorkspaceName, WorkspaceRootId,
@@ -30,8 +30,7 @@ pub(crate) const MULTI_ROOT_VERSION: u32 = 1;
 pub struct MultiRootMergeRoot {
     /// Workspace whose pinned generation is being published.
     pub source_workspace_id: WorkspaceId,
-    /// Optional filtered compatibility fork authenticated as a direct child of
-    /// `source_workspace_id`. Ordinary filesystem joins leave this absent.
+    /// Optional filtered compatibility fork authenticated as a direct child of `source_workspace_id`.
     pub merge_workspace_id: Option<WorkspaceId>,
     /// Child generation captured when planning began.
     pub source_generation: GenerationId,
@@ -41,8 +40,7 @@ pub struct MultiRootMergeRoot {
     pub target_generation: GenerationId,
     /// Three-way common ancestor authenticated by the per-root join plan.
     pub base_generation: GenerationId,
-    /// Caller-selected child-wins binding paths pinned with the publication
-    /// journal. This does not alter ordinary filesystem merge semantics.
+    /// Caller-selected child-wins binding paths pinned with the publication journal.
     pub child_wins_bindings: BTreeSet<String>,
 }
 
@@ -68,8 +66,7 @@ pub struct MultiRootMergeCandidate {
     pub resolutions: BTreeMap<WorkspaceRootId, BTreeMap<ConflictKey, MergeResolution>>,
 }
 
-/// Opaque durable reservation proving that one target was validated and
-/// fenced for an exact publication operation.
+/// Opaque durable reservation proving that one target was validated and fenced for an exact publication operation.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct MultiRootFence {
     /// Publisher-defined stable reservation token.
@@ -173,7 +170,6 @@ pub trait MultiRootPublicationStore: Send + Sync {
     ) -> impl Future<Output = Result<Vec<OperationId>, Self::Error>> + ProviderTask;
 
     /// Removes a terminal record only when its exact revision still matches.
-    /// Failed physical cleanup leaves the record intact for restart recovery.
     fn compare_and_delete(
         &self,
         operation_id: OperationId,
@@ -200,8 +196,7 @@ pub trait MultiRootPublisher: Send + Sync {
     /// Publisher error.
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Atomically validates and reserves the exact pinned target. Repeating
-    /// this call for one operation must return the same live reservation.
+    /// Atomically validates and reserves the exact pinned target.
     fn prepare(
         &self,
         operation_id: OperationId,
@@ -265,9 +260,7 @@ pub trait MultiRootPublisher: Send + Sync {
         fence: &MultiRootFence,
     ) -> impl Future<Output = Result<MultiRootPublishRoot, Self::Error>> + ProviderTask;
 
-    /// Reclaims terminal per-root recovery state after the all-roots Applied
-    /// decision is durable. It must be idempotent because restart recovery
-    /// retries cleanup independently of logical publication.
+    /// Reclaims terminal per-root recovery state after the all-roots Applied decision is durable.
     fn finalize(
         &self,
         _operation_id: OperationId,
@@ -291,10 +284,6 @@ pub trait WorkspaceResolver<A, O>: Send + Sync {
 }
 
 /// Applies one logically published root generation to its host checkout.
-///
-/// Implementations are injected capabilities: the coordinator owns retry and
-/// ordering, while a native host may use the core journaled materializer and
-/// a non-native host may deliberately provide no physical checkout.
 pub trait MultiRootMaterializer<A, O>: Send + Sync {
     /// Materialization failure.
     type Error: std::error::Error + Send + Sync + 'static;
@@ -309,8 +298,7 @@ pub trait MultiRootMaterializer<A, O>: Send + Sync {
         to: GenerationId,
     ) -> impl Future<Output = Result<(), Self::Error>> + ProviderTask;
 
-    /// Reclaims terminal physical recovery state. Logical publication is
-    /// already durable when this runs, so failures are retried on recovery.
+    /// Reclaims terminal physical recovery state.
     fn finalize(
         &self,
         _operation_id: OperationId,
@@ -321,10 +309,6 @@ pub trait MultiRootMaterializer<A, O>: Send + Sync {
 }
 
 /// SDK-owned publisher over ordinary immutable workspace joins.
-///
-/// Preparation validates pinned inputs and resolutions against a disposable
-/// SDK workspace. It never changes the target. Publication then repeats the
-/// same deterministic join through the target's fenced authority CAS.
 pub struct WorkspaceMultiRootPublisher<A, O, R> {
     resolver: R,
     merge_drivers: Option<std::sync::Arc<MergeDriverRegistry>>,
@@ -334,10 +318,6 @@ pub struct WorkspaceMultiRootPublisher<A, O, R> {
 }
 
 /// Workspace publisher composed with an injected physical materializer.
-///
-/// Logical publication happens first under the durable all-roots decision.
-/// If materialization is interrupted, retry discovers the exact generation
-/// from the workspace idempotency record and resumes the same materializer.
 pub struct MaterializingWorkspaceMultiRootPublisher<A, O, R, M> {
     publisher: WorkspaceMultiRootPublisher<A, O, R>,
     materializer: M,
@@ -465,34 +445,11 @@ where
         operation_id: OperationId,
         conflict: &'static str,
     ) -> Result<PublicationReservation, WorkspaceMultiRootPublisherError<R::Error>> {
-        let authority_head = target
-            .authority()
-            .head(
-                target.authority_id(),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map_err(|failure| WorkspaceError::engine(failure.error))?
-            .value;
-        match target
-            .authority()
-            .reserve_publication(
-                target.authority_id(),
-                authority_head,
-                operation_id,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map_err(|failure| WorkspaceError::engine(failure.error))?
-            .value
-        {
-            ReservationOutcome::Reserved(reservation)
-            | ReservationOutcome::AlreadyReserved(reservation) => Ok(reservation),
-            ReservationOutcome::Conflict { .. } => Err(
-                WorkspaceMultiRootPublisherError::Candidate(conflict.to_owned()),
-            ),
+        match target.reserve_publication(operation_id, WorkBudget::UNBOUNDED, &CancellationToken::new()).await {
+            Ok(receipt) => Ok(receipt.value),
+            Err(failure) if matches!(failure.error, WorkspaceError::StaleGeneration) =>
+                Err(WorkspaceMultiRootPublisherError::Candidate(conflict.to_owned())),
+            Err(failure) => Err(failure.error.into()),
         }
     }
 
@@ -509,14 +466,13 @@ where
             )
             .await?;
         target
-            .authority()
             .release_publication(
                 reservation,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|failure| WorkspaceError::engine(failure.error))?;
+            .map_err(|failure| failure.error)?;
         Ok(())
     }
 
@@ -740,32 +696,10 @@ where
             .resolve(root.target_workspace_id)
             .await
             .map_err(WorkspaceMultiRootPublisherError::Resolver)?;
-        let authority_head = target
-            .authority()
-            .head(
-                target.authority_id(),
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map_err(|failure| WorkspaceError::engine(failure.error))?
-            .value;
-        let reservation = match target
-            .authority()
-            .reserve_publication(
-                target.authority_id(),
-                authority_head,
-                operation_id,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new(),
-            )
-            .await
-            .map_err(|failure| WorkspaceError::engine(failure.error))?
-            .value
-        {
-            ReservationOutcome::Reserved(reservation)
-            | ReservationOutcome::AlreadyReserved(reservation) => reservation,
-            ReservationOutcome::Conflict { .. } => return Ok(MultiRootPrepare::Stale),
+        let reservation = match target.reserve_publication(operation_id, WorkBudget::UNBOUNDED, &CancellationToken::new()).await {
+            Ok(receipt) => receipt.value,
+            Err(failure) if matches!(failure.error, WorkspaceError::StaleGeneration) => return Ok(MultiRootPrepare::Stale),
+            Err(failure) => return Err(failure.error.into()),
         };
         Ok(MultiRootPrepare::Ready(MultiRootFence {
             token: serde_json::to_vec(&WorkspacePublicationFence {
@@ -789,14 +723,13 @@ where
             .await
             .map_err(WorkspaceMultiRootPublisherError::Resolver)?;
         target
-            .authority()
             .release_publication(
                 decoded.reservation,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|failure| WorkspaceError::engine(failure.error))?;
+            .map_err(|failure| failure.error)?;
         Ok(())
     }
 
@@ -865,14 +798,13 @@ where
             )
             .await;
         let release = target
-            .authority()
             .release_publication(
                 reservation,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|failure| WorkspaceError::engine(failure.error));
+            .map_err(|failure| failure.error);
         if let Err(error) = release {
             return Err(error.into());
         }
@@ -953,14 +885,13 @@ where
             )
             .await;
         let release = target
-            .authority()
             .release_publication(
                 reservation,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
             )
             .await
-            .map_err(|failure| WorkspaceError::engine(failure.error));
+            .map_err(|failure| failure.error);
         if let Err(error) = release {
             return Err(error.into());
         }
@@ -1102,14 +1033,13 @@ where
             if let Some(generation) = target.operation_generation(publisher_key(operation_id, root_id, b"publish"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
             {
                 target
-                    .authority()
                     .release_publication(
                         decoded.reservation,
                         WorkBudget::UNBOUNDED,
                         &CancellationToken::new(),
                     )
                     .await
-                    .map_err(|failure| WorkspaceError::engine(failure.error))?;
+                    .map_err(|failure| failure.error)?;
                 return Ok(MultiRootPublishRoot::AlreadyPublished(generation.id()));
             }
             return Ok(MultiRootPublishRoot::UnexpectedTarget);
@@ -1150,14 +1080,13 @@ where
             MultiRootPublishRoot::Published(_) | MultiRootPublishRoot::AlreadyPublished(_)
         ) {
             target
-                .authority()
                 .release_publication(
                     decoded.reservation,
                     WorkBudget::UNBOUNDED,
                     &CancellationToken::new(),
                 )
                 .await
-                .map_err(|failure| WorkspaceError::engine(failure.error))?;
+                .map_err(|failure| failure.error)?;
         }
         Ok(outcome)
     }
@@ -1435,8 +1364,7 @@ fn conflict_abort_materialization_operation_id(
     OperationId::from_bytes(bytes)
 }
 
-/// The portable text of a path in any encoding the volume stores (UTF-8 or
-/// Windows UTF-16); `None` only for a name with no Unicode text.
+/// The portable text of a path in any encoding the volume stores (UTF-8 or Windows UTF-16); `None` only for a name with no Unicode text.
 fn portable_namespace_path(path: &crate::kernel::NamespacePath) -> Option<String> {
     let mut value = String::new();
     for component in path.components() {
@@ -1517,15 +1445,13 @@ pub trait MultiRootPublicationAuthorizer: Send + Sync {
     /// Authorizer error.
     type Error: std::error::Error + Send + Sync + 'static;
 
-    /// Verifies that the plan publishes the exact child's bound roots only to
-    /// its exact direct parent.
+    /// Verifies that the plan publishes the exact child's bound roots only to its exact direct parent.
     fn authorize(
         &self,
         plan: &MultiRootMergePlan,
     ) -> impl Future<Output = Result<bool, Self::Error>> + ProviderTask;
 
-    /// Verifies that an interactive transition is being requested by the
-    /// exact direct parent that owns the durable merge state.
+    /// Verifies that an interactive transition is being requested by the exact direct parent that owns the durable merge state.
     fn authorize_transition(
         &self,
         plan: &MultiRootMergePlan,
@@ -1713,8 +1639,7 @@ impl<S, P, A> MultiRootPublicationCoordinator<S, P, A> {
 impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicationAuthorizer>
     MultiRootPublicationCoordinator<S, P, A>
 {
-    /// Resumes one durable publication, returning `None` when no such
-    /// operation exists. The stored immutable candidate remains authoritative.
+    /// Resumes one durable publication, returning `None` when no such operation exists.
     pub async fn resume(
         &self,
         operation_id: OperationId,
@@ -1722,8 +1647,7 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
         self.resume_with_finalization(operation_id, true).await
     }
 
-    /// Resumes publication while retaining an Applied journal until an
-    /// external, idempotent compatibility projection has been recorded.
+    /// Resumes publication while retaining an Applied journal until an external, idempotent compatibility projection has been recorded.
     pub async fn resume_retained(
         &self,
         operation_id: OperationId,
@@ -1786,8 +1710,7 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
         Box::pin(async move { self.publish_with_finalization(candidate, true).await })
     }
 
-    /// Publishes while retaining the terminal journal for a caller-owned,
-    /// idempotent compatibility projection before acknowledgement.
+    /// Publishes while retaining the terminal journal for a caller-owned, idempotent compatibility projection before acknowledgement.
     pub fn publish_retained(
         &self,
         candidate: MultiRootMergeCandidate,
@@ -1857,8 +1780,7 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
         })
     }
 
-    /// Continues a conflict while retaining the terminal journal until the
-    /// caller acknowledges its compatibility projection.
+    /// Continues a conflict while retaining the terminal journal until the caller acknowledges its compatibility projection.
     pub fn continue_conflicted_retained(
         &self,
         operation_id: OperationId,
@@ -1872,9 +1794,7 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
         })
     }
 
-    /// Declares the current projected contents of conflict paths as the
-    /// caller-selected resolutions. Text paths still containing generated
-    /// markers are rejected.
+    /// Declares the current projected contents of conflict paths as the caller-selected resolutions.
     pub async fn declare_conflicted_paths(
         &self,
         operation_id: OperationId,
@@ -2003,8 +1923,7 @@ impl<S: MultiRootPublicationStore, P: MultiRootPublisher, A: MultiRootPublicatio
         Ok(Publication::Applied(applied))
     }
 
-    /// Acknowledges a retained Applied journal after external compatibility
-    /// state has been durably and idempotently projected.
+    /// Acknowledges a retained Applied journal after external compatibility state has been durably and idempotently projected.
     pub async fn acknowledge_applied(
         &self,
         journal: &MultiRootPublication,

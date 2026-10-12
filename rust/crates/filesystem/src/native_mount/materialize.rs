@@ -2574,7 +2574,7 @@ fn create_symlink_measured(
         receipt.reserve(&mut units, target.len() / 2)?;
         receipt.run(|work| work.charge(WorkCounters {
             bytes_copied: target.len() as u64, ..WorkCounters::UNCHARGED
-        })).map_err(|failure| failure.error)?;
+        }))?;
         units.extend(decoded);
         let result = receipt.run(|work| host_root.symlink_file_wide_measured(&units, &destination.units, work));
         let retained = units.capacity() * std::mem::size_of::<u16>();

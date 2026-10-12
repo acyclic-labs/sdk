@@ -65,8 +65,7 @@ pub enum SourceState {
     PendingCapture,
     /// Native continuity was lost; automatic advancement is stopped.
     NeedsRescan(WatchInvalidationReason),
-    /// Source changes overlap independent workspace publication; reattachment
-    /// is required to establish a new acknowledged base.
+    /// Source changes overlap independent workspace publication; reattachment is required to establish a new acknowledged base.
     Conflict,
     /// The returned generation is independent of this source.
     Sealed,
@@ -78,8 +77,7 @@ pub enum ReconcileOutcome<A, O> {
     Clean(Generation<A, O>),
     /// Continuity is lost and an explicit full rescan is required.
     NeedsRescan(WatchInvalidationReason),
-    /// Concurrent workspace changes overlap source capture; the source remains
-    /// fail-closed until it is reattached.
+    /// Concurrent workspace changes overlap source capture; the source remains fail-closed until it is reattached.
     Conflict,
 }
 
@@ -158,12 +156,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
         self.inner.lock().await.state
     }
 
-    /// Re-establishes a clean source baseline after the core materializer has
-    /// installed a published workspace generation into the attached root.
-    ///
-    /// A fresh checkout is opened at authenticated workspace HEAD and a full
-    /// bounded rescan proves the resulting host tree. Any concurrent host
-    /// change is captured as a later generation instead of being discarded.
+    /// Re-establishes a clean source baseline after the core materializer has installed a published workspace generation into the attached root.
     pub async fn acknowledge_materialization(
         &self,
         key: IdempotencyKey,
@@ -194,26 +187,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
     }
 
     /// Captures one bounded contiguous watcher interval and publishes it.
-    /// A clean interval still advances authority ordering to atomically prove
-    /// that its acknowledged workspace generation was current.
-    ///
-    /// # Errors
-    ///
-    /// Rejects pinned sources and propagates exact native/canonical failures.
     pub async fn reconcile(&self) -> Result<ReconcileOutcome<A, O>, SourceError> {
         self.reconcile_with_key(IdempotencyKey::new()).await
     }
 
     /// Captures and publishes one watcher interval under a stable retry key.
-    ///
-    /// An exact retry returns the original durable outcome, including after a
-    /// process restart. Reusing the key for another lifecycle operation is an
-    /// idempotency conflict.
-    ///
-    /// # Errors
-    ///
-    /// Rejects pinned sources, conflicting retry identities, and exact
-    /// native/canonical failures.
     pub async fn reconcile_with_key(
         &self,
         key: IdempotencyKey,
@@ -272,23 +250,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
         .await
     }
 
-    /// Rebuilds one complete authenticated baseline while preserving events
-    /// that arrive concurrently with the scan.
-    ///
-    /// # Errors
-    ///
-    /// Returns native, capture, authority, or storage failures without
-    /// acknowledging an incomplete interval.
+    /// Rebuilds one complete authenticated baseline while preserving events that arrive concurrently with the scan.
     pub async fn rescan(&self) -> Result<ReconcileOutcome<A, O>, SourceError> {
         self.rescan_with_key(IdempotencyKey::new()).await
     }
 
     /// Rebuilds a complete baseline under a stable retry key.
-    ///
-    /// # Errors
-    ///
-    /// Returns conflicting retry identities and exact native/canonical
-    /// failures.
     pub async fn rescan_with_key(
         &self,
         key: IdempotencyKey,
@@ -312,22 +279,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Source<A, O> {
         .await
     }
 
-    /// Produces an immutable generation whose bytes no longer depend on the
-    /// attached directory.
-    ///
-    /// # Errors
-    ///
-    /// Fails unless a complete authenticated rescan and publication succeeds.
+    /// Produces an immutable generation whose bytes no longer depend on the attached directory.
     pub async fn seal(&self) -> Result<Generation<A, O>, SourceError> {
         self.seal_with_key(IdempotencyKey::new()).await
     }
 
     /// Seals the source under a stable retry key.
-    ///
-    /// # Errors
-    ///
-    /// Returns conflicting retry identities and fails unless the original or
-    /// recovered operation reached a clean sealed generation.
     pub async fn seal_with_key(
         &self,
         key: IdempotencyKey,
@@ -630,11 +587,6 @@ fn reconcile_outcome_from_fact<A, O>(
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     /// Creates or opens one workspace and attaches an exact native directory.
-    ///
-    /// # Errors
-    ///
-    /// Rejects invalid bounds, unsafe roots, unsupported host semantics, or a
-    /// baseline that cannot be atomically authenticated and published.
     pub async fn attach_directory(
         &self,
         name: impl AsRef<str>,
@@ -1651,7 +1603,7 @@ mod tests {
             Box::pin(Fs::memory().attach_directory("repo", root.path(), SourceOptions::default()))
                 .await?;
         assert_eq!(
-            workspace.read("/before.txt", 16).await?,
+            workspace.read("/before.txt", 16, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
             Bytes::from_static(b"before")
         );
         let source = workspace.source().ok_or("source handle missing")?;
@@ -1664,18 +1616,18 @@ mod tests {
             ReconcileOutcome::Clean(_)
         ));
         assert_eq!(
-            workspace.read("/before.txt", 16).await?,
+            workspace.read("/before.txt", 16, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
             Bytes::from_static(b"after")
         );
         assert_eq!(
-            workspace.read("/added.txt", 16).await?,
+            workspace.read("/added.txt", 16, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
             Bytes::from_static(b"added")
         );
         let sealed = Box::pin(workspace.seal()).await?;
         assert_eq!(source.state().await, SourceState::Sealed);
         std::fs::remove_dir_all(root.path())?;
         assert_eq!(
-            sealed.read("/before.txt", 16).await?,
+            sealed.read("/before.txt", 16, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
             Bytes::from_static(b"after")
         );
         Ok(())
@@ -1698,10 +1650,10 @@ mod tests {
         let workspace =
             Box::pin(Fs::memory().attach_directory("filtered", root.path(), options)).await?;
         assert_eq!(
-            workspace.read("/visible.txt", 16).await?,
+            workspace.read("/visible.txt", 16, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
             Bytes::from_static(b"visible")
         );
-        assert!(workspace.read("/.git/config", 16).await.is_err());
+        assert!(workspace.read("/.git/config", 16, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
 
         std::fs::write(root.path().join(".git").join("config"), b"changed")?;
         let source = workspace.source().ok_or("source handle missing")?;
@@ -1709,7 +1661,7 @@ mod tests {
             Box::pin(source.rescan()).await?,
             ReconcileOutcome::Clean(_)
         ));
-        assert!(workspace.read("/.git/config", 16).await.is_err());
+        assert!(workspace.read("/.git/config", 16, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_err());
         Ok(())
     }
 
@@ -1744,7 +1696,7 @@ mod tests {
             ))
             .await?;
             assert_eq!(
-                Box::pin(workspace.read("/durable.txt", 8)).await?,
+                Box::pin(workspace.read("/durable.txt", 8, WorkBudget::UNBOUNDED, &CancellationToken::new())).await?,
                 Bytes::from_static(b"two")
             );
             let wrong_root = tempfile::tempdir()?;
@@ -1778,7 +1730,7 @@ mod tests {
         let retried = clean_generation(Box::pin(source.rescan_with_key(key)).await?)?;
         assert_eq!(retried.id(), first.id());
         assert_eq!(
-            retried.read("/value.txt", 8).await?,
+            retried.read("/value.txt", 8, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
             Bytes::from_static(b"two")
         );
         assert!(matches!(
@@ -1884,13 +1836,7 @@ mod tests {
             let path = crate::kernel::NamespacePath::from_portable(&portable, limits)?;
             session
                 .checkout
-                .write_file(
-                    path,
-                    0,
-                    Bytes::from_static(b"captured"),
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                )
+                .apply_authored_transaction(vec![crate::AuthoredMutation::Write { path: path, offset: 0, bytes: (Bytes::from_static(b"captured")).into() }], WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .await?;
             assert!(session.checkout.has_pending_mutations());
         }
@@ -1962,13 +1908,7 @@ mod tests {
             let path = crate::kernel::NamespacePath::from_portable(&portable, limits)?;
             session
                 .checkout
-                .write_file(
-                    path,
-                    0,
-                    Bytes::from_static(b"captured"),
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new(),
-                )
+                .apply_authored_transaction(vec![crate::AuthoredMutation::Write { path: path, offset: 0, bytes: (Bytes::from_static(b"captured")).into() }], WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .await?;
             assert!(session.checkout.has_pending_mutations());
             acknowledged
@@ -2002,11 +1942,11 @@ mod tests {
             )?
         };
         assert_eq!(
-            reconciled.read("/source.txt", 16).await?,
+            reconciled.read("/source.txt", 16, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
             Bytes::from_static(b"captured")
         );
         assert_eq!(
-            reconciled.read("/unrelated.txt", 16).await?,
+            reconciled.read("/unrelated.txt", 16, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
             Bytes::from_static(b"unrelated")
         );
         assert_eq!(
@@ -2487,7 +2427,7 @@ mod tests {
             let source = workspace.source().ok_or("source missing")?;
             let recovered = clean_generation(Box::pin(source.rescan_with_key(key)).await?)?;
             assert_eq!(
-                recovered.read("/value.txt", 8).await?,
+                recovered.read("/value.txt", 8, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
                 Bytes::from_static(b"two")
             );
             std::fs::write(root.path().join("value.txt"), b"three")?;
@@ -2495,7 +2435,7 @@ mod tests {
             let current_head = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             assert_eq!(current_head.id(), current.id());
             assert_eq!(
-                current.read("/value.txt", 8).await?,
+                current.read("/value.txt", 8, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
                 Bytes::from_static(b"three")
             );
             assert_eq!(
@@ -2566,13 +2506,13 @@ mod tests {
             let source = workspace.source().ok_or("source missing")?;
             let current = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             assert_eq!(
-                current.read("/value.txt", 8).await?,
+                current.read("/value.txt", 8, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
                 Bytes::from_static(b"three")
             );
             let outcome = Box::pin(source.rescan_with_key(key)).await?;
             if terminal_append {
                 assert_eq!(
-                    clean_generation(outcome)?.read("/value.txt", 8).await?,
+                    clean_generation(outcome)?.read("/value.txt", 8, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
                     Bytes::from_static(b"two")
                 );
                 assert_eq!(source.state().await, SourceState::Clean);
@@ -2699,13 +2639,13 @@ mod tests {
             let source = workspace.source().ok_or("source missing")?;
             let current = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             assert_eq!(
-                current.read("/value.txt", 8).await?,
+                current.read("/value.txt", 8, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
                 Bytes::from_static(b"three")
             );
             let outcome = Box::pin(source.rescan_with_key(key)).await?;
             if terminal_fault {
                 assert_eq!(
-                    clean_generation(outcome)?.read("/value.txt", 8).await?,
+                    clean_generation(outcome)?.read("/value.txt", 8, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
                     Bytes::from_static(b"two")
                 );
                 assert_eq!(source.state().await, SourceState::Clean);
@@ -2746,7 +2686,7 @@ mod tests {
             let source = workspace.source().ok_or("source missing")?;
             let current = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
             assert_eq!(
-                current.read("/value.txt", 8).await?,
+                current.read("/value.txt", 8, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
                 Bytes::from_static(b"three")
             );
             assert!(matches!(
@@ -2789,7 +2729,7 @@ mod tests {
             Box::pin(fs.attach_directory("recover", root.path(), SourceOptions::default())).await?;
         let source = workspace.source().ok_or("source missing")?;
         assert_eq!(
-            workspace.read("/value.txt", 8).await?,
+            workspace.read("/value.txt", 8, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
             Bytes::from_static(b"five")
         );
         assert!(matches!(
@@ -2801,7 +2741,7 @@ mod tests {
             Err(SourceError::Conflict)
         ));
         assert_eq!(
-            workspace.read("/value.txt", 8).await?,
+            workspace.read("/value.txt", 8, WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
             Bytes::from_static(b"five")
         );
         assert_eq!(source.state().await, SourceState::Clean);

@@ -4020,7 +4020,7 @@ mod tests {
 
     pub(super) async fn memory_volume(
         id: VolumeId, config: VolumeConfig, cancellation: &CancellationToken,
-    ) -> Result<crate::Volume<impl crate::AsyncAuthorityStore, impl crate::AsyncObjectStore>, Box<dyn std::error::Error>> {
+    ) -> Result<crate::Volume<impl crate::AsyncAuthorityStore + use<>, impl crate::AsyncObjectStore + use<>>, Box<dyn std::error::Error>> {
         Ok(Fs::memory().create_volume_with_id(id, config, WorkBudget::UNBOUNDED, cancellation).await?.value)
     }
 

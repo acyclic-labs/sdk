@@ -77,8 +77,7 @@ pub enum AccountingTransition {
     },
 }
 
-/// Whether a durable fact can represent one customer operation after regional
-/// top-level product attribution.
+/// Whether a durable fact can represent one customer operation after regional top-level product attribution.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AccountingOperationClass {
     /// One successful durable FS mutation candidate.
@@ -158,10 +157,7 @@ enum AuthorityKind {
     },
 }
 
-/// Reads and proves at most `maximum_records` records after `cursor`. The
-/// authority head is pinned before replay; a later append belongs to the next
-/// page. Every record must be dense, hash-chained, canonically decoded and
-/// stamped by the replicated Stream authority.
+/// Reads and proves at most `maximum_records` records after `cursor`.
 #[allow(clippy::too_many_lines)] // The pinned read, anchor checks, and page verification form one fail-closed operation.
 pub async fn accounting_page<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     authority: &A,

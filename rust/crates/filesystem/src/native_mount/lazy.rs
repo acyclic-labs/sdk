@@ -8791,7 +8791,7 @@ mod tests {
         };
         let completed = view.sync_async_with_permit(
             permit, crate::WorkBudget::UNBOUNDED, &cancellation,
-        ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        ).await?;
         assert!(completed.work.authority_records_appended > 0);
         assert_eq!(view.lazy.workspace().operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.map(|generation| generation.id()), Some(original_generation.id()));
         assert_eq!(held.read_range(0, 9)?.as_ref(), b"epoch-two");
@@ -8866,7 +8866,7 @@ mod tests {
             };
             let recovered = view.sync_async_with_permit(
                 permit, crate::WorkBudget::UNBOUNDED, &cancellation,
-            ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            ).await?;
             assert!(recovered.work.backend_read_operations > 0);
             if let Some(operation) = original {
                 assert_eq!(lazy.workspace().operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.map(|generation| generation.id()), acknowledged_generation.as_ref().map(|generation| generation.id()));
@@ -9161,7 +9161,7 @@ mod tests {
         let mut conflicting = lazy
             .workspace().begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         conflicting
-            .write("/file", Bytes::from_static(b"external"))
+            .write("/file", Bytes::from_static(b"external"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await?;
         conflicting.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         assert!(matches!(
