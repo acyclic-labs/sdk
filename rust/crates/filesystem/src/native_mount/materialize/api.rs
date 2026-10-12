@@ -43,7 +43,7 @@ where
     let result = future.as_mut().await;
     drop(future);
     drop(custody);
-    let work = meter.lock().work;
+    let work = meter.lock().receipt();
     match result {
         Ok(mut receipt) => {
             receipt.work = work;
@@ -227,18 +227,17 @@ where
     let selection_bytes = vec_bytes(&selected_paths);
     let destination = validate_options(options, &mut receipt)?;
     let host_root = receipt.owned_arc(destination, 0)?;
-    let mut known_files =
-        Vec::<(FileId, Arc<(GenerationHostPath, crate::NativeAllocation)>)>::new();
+    let mut known_files = Vec::<(FileId, Arc<(Vec<HostPathUnit>, crate::NativeAllocation)>)>::new();
     #[cfg(any(target_os = "macos", windows))]
     let mut known_payloads = Vec::<(
         (u64, ObjectId, ObjectId),
-        Arc<(GenerationHostPath, crate::NativeAllocation)>,
+        Arc<(Vec<HostPathUnit>, crate::NativeAllocation)>,
     )>::new();
     let mut pending = Vec::new();
     let mut deferred_directory_metadata = Vec::new();
     let limits = reader.volume_config().limits;
     for path in selected_paths {
-        let host_path = GenerationHostPath::new(None, path.components(), &mut receipt)?;
+        let host_path = materialize_host_path(None, path.components(), &mut receipt)?;
         if path.is_root() {
             let namespace = clone_namespace_measured(path, None, limits, &mut receipt)?;
             let bytes = namespace.retained_bytes() as usize;
@@ -266,7 +265,26 @@ where
         }
         .ok_or(MaterializeError::MissingPath)?;
         generation_action(&mut before_effect, NativeMaterializationActionPhase::Before).await?;
-        receipt.run(|work| host_path.0.create_parents(&host_root.0, work))?;
+        receipt.run(|work| {
+            #[cfg(unix)]
+            if let Some(parent) = super::work::host_path(&host_path.0)
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+            {
+                host_root.0.create_dir_all_held(parent, work)?;
+            }
+            #[cfg(windows)]
+            if let Some(separator) = host_path
+                .0
+                .iter()
+                .rposition(|unit| *unit == u16::from(b'\\'))
+            {
+                host_root
+                    .0
+                    .create_dir_all_held_wide(&host_path.0[..separator], work)?;
+            }
+            Ok(())
+        })?;
         generation_action(
             &mut before_effect,
             NativeMaterializationActionPhase::Completed,
@@ -365,7 +383,7 @@ where
                     limits,
                     &mut receipt,
                 )?;
-                let child_host = GenerationHostPath::new(
+                let child_host = materialize_host_path(
                     Some(&host_directory.0),
                     std::slice::from_ref(&entry.name),
                     &mut receipt,
@@ -707,7 +725,9 @@ pub async fn restore_checkout_host_path<A: AsyncAuthorityStore, O: AsyncObjectSt
             drop(stage_root);
             let cleanup = stage_owner
                 .remove_identity(&stage_name.0, stage_identity, work)
-                .and_then(|()| crate::native_host::sync_directory_held(&stage_owner.directory, work));
+                .and_then(|()| {
+                    crate::native_host::sync_directory_held(&stage_owner.directory, work)
+                });
             match (result, cleanup) {
                 (Ok(value), Ok(())) => Ok(value),
                 (Ok(_), Err(error)) => Err(restore_demand_error(error)),

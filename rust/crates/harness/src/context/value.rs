@@ -121,7 +121,7 @@ impl BorrowedContext<'_> {
             if let Some(content) = self.messages.user {
                 content.validate_limits(limits, work)?;
             }
-            crate::contract::validate_trusted_json_byte_bound(self, limits.render_bytes, work)
+            crate::contract::json_byte_length(self, limits.render_bytes, work).map(|_| ())
         })
     }
 }

@@ -46,11 +46,11 @@ fn same_view(
     right: &crate::NativeMaterializationWork,
 ) -> bool {
     left.shares_allocation_context(right)
-        && left.capture_origin().map(Weak::as_ptr) == right.capture_origin().map(Weak::as_ptr)
-        && left.invocation_view_state().map(Arc::as_ptr)
-            == right.invocation_view_state().map(Arc::as_ptr)
-        && left.source_execution_view().map(Arc::as_ptr)
-            == right.source_execution_view().map(Arc::as_ptr)
+        && left.capture_origin.as_ref().map(Weak::as_ptr) == right.capture_origin.as_ref().map(Weak::as_ptr)
+        && left.invocation.as_ref().map(Arc::as_ptr)
+            == right.invocation.as_ref().map(Arc::as_ptr)
+        && left.execution.as_ref().map(Arc::as_ptr)
+            == right.execution.as_ref().map(Arc::as_ptr)
 }
 
 pub(super) fn original_work(

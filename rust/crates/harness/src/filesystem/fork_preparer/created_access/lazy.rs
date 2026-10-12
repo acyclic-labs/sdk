@@ -64,7 +64,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             )
         })?;
         let hold;
-        let absolute = crate::contract::preparation_format(format_args!("/{path}"), Some(io))?;
+        let absolute = crate::executor::with_history_io(Some(io), |work| crate::contract::preparation_format(format_args!("/{path}"), work))?;
         hold = io.guard_owned(absolute.capacity() as u64)?;
         let bytes = io
             .finish_future(source.backing.read(snapshot, &absolute, maximum, io)?)
@@ -218,7 +218,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             .as_ref()
             .ok_or_else(|| io.invalid("Root directory lacks its retained lazy backing"))?;
         let absolute_hold;
-        let absolute = crate::contract::preparation_format(format_args!("/{path}"), Some(io))?;
+        let absolute = crate::executor::with_history_io(Some(io), |work| crate::contract::preparation_format(format_args!("/{path}"), work))?;
         absolute_hold = io.guard_owned(absolute.capacity() as u64)?;
         let bound = (maximum as usize)
             .checked_add(1)

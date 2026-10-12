@@ -77,12 +77,7 @@ fn replaceable_projections_preserve_canonical_results_and_real_model_wire() -> R
     for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
         let projector = ReadProjection(mode);
         let projected = projector.project(&input, &result, None)?.0;
-        super::super::validate_value(
-            &mode.schema::<ReadResult>()?,
-            &projected,
-            "read projection",
-            None,
-        )?;
+        crate::contract::validate_json_schema_value(&mode.schema::<ReadResult>()?, &projected, "read projection", &mut None)?;
         if mode == ProjectionMode::Full {
             assert_eq!(projected, json!({"kind":"json","value":result.value}));
         } else {
@@ -107,12 +102,7 @@ fn replaceable_projections_preserve_canonical_results_and_real_model_wire() -> R
     for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
         let projector = SearchProjection(mode);
         let projected = projector.project(&input, &result, None)?.0;
-        super::super::validate_value(
-            &mode.schema::<SearchResult>()?,
-            &projected,
-            "search projection",
-            None,
-        )?;
+        crate::contract::validate_json_schema_value(&mode.schema::<SearchResult>()?, &projected, "search projection", &mut None)?;
         if mode == ProjectionMode::Full {
             assert_eq!(projected, json!({"kind":"json","value":result.value}));
         } else {
@@ -151,15 +141,10 @@ fn factory_contract_binds_mode_and_limits_and_rejects_wrong_envelopes() -> Resul
             &tool.definition.output_schema,
             &tool.definition.projection_schema,
         ] {
-            crate::contract::compile_json_schema(schema, "typed text tool", None)?;
+            crate::contract::compile_json_schema(schema, "typed text tool", &mut None)?;
         }
         assert!(
-            super::super::validate_value(
-                &tool.definition.projection_schema,
-                &json!({"file":file()?}),
-                "bare result",
-                None
-            )
+            crate::contract::validate_json_schema_value(&tool.definition.projection_schema, &json!({"file":file()?}), "bare result", &mut None)
             .is_err()
         );
     }

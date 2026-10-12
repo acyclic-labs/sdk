@@ -385,12 +385,7 @@ impl DurableToolRunner {
                         "durable tool history exceeds admitted limits".into(),
                     ));
                 }
-                crate::contract::validate_json_schema_value(
-                    &definition.output_schema,
-                    &result.0.value,
-                    "tool output",
-                    io,
-                )?;
+                crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(&definition.output_schema, &result.0.value, "tool output", work))?;
                 tool_validate_projection(definition, &projection.0, projection_limits, io)?;
                 return tool_success(result, io);
             }
@@ -487,12 +482,7 @@ impl DurableToolRunner {
                     Err(error) => return Err(error),
                 }
             };
-            if let Err(error) = crate::contract::validate_json_schema_value(
-                &definition.output_schema,
-                &result.0.value,
-                "tool output",
-                io,
-            ) {
+            if let Err(error) = crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(&definition.output_schema, &result.0.value, "tool output", work)) {
                 if tool_propagate(&error, io) {
                     return Err(error);
                 }

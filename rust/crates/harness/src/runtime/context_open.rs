@@ -81,7 +81,7 @@ impl AgentHarness {
             .ok_or_else(|| Error::Unsupported("durable task spawner is not bound".into()))?;
         let value =
             serde_json::to_value(input).map_err(|error| Error::Invalid(error.to_string()))?;
-        validate_value(&definition.input_schema, &value, "task input", None)?;
+        crate::contract::validate_json_schema_value(&definition.input_schema, &value, "task input", &mut None)?;
         let mut expected = TaskAdmissionRecord::from_parts(
             operation_id,
             &definition.identity.name,
@@ -334,6 +334,10 @@ impl AgentHarness {
             native_root_output: std::sync::OnceLock::new(),
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_metadata_source: None,
+            #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+            working_view: std::sync::OnceLock::new(),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_custody: None,
         };
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let (Some(work), Some(custody)) = (native_work, custody.as_ref()) {
@@ -356,18 +360,12 @@ impl AgentHarness {
         operation: OperationId,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
-        (&admitted.limits).validate(&mut Some(
-            &mut crate::store::native_work_io(work).map_err(|cause| crate::Error::NativeWork {
-                cause,
-                custody: None,
-            })?,
-        ))?;
-        (&admitted.run_limits).validate(&mut Some(
-            &mut crate::store::native_work_io(work).map_err(|cause| crate::Error::NativeWork {
-                cause,
-                custody: None,
-            })?,
-        ))?;
+        (&admitted.limits).validate(&mut Some(&mut crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        )))?;
+        (&admitted.run_limits).validate(&mut Some(&mut crate::store::HistoryWork::new(
+            crate::filesystem::PreparationIo::from_native_work(work)?,
+        )))?;
         let created = admitted.created_access.as_ref();
         if let Some(access) = created {
             work.charge(acyclic_fs::WorkCounters {

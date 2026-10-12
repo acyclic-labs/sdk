@@ -31,7 +31,7 @@ impl ResumableToolSession {
         self.host
             .step(operation_id, idempotency_key, input, |transition| {
                 if let MachineStatus::Completed { value } = &transition.status {
-                    validate_value(output_schema, value, "tool output", None)?;
+                    crate::contract::validate_json_schema_value(output_schema, value, "tool output", &mut None)?;
                 }
                 Ok(())
             })

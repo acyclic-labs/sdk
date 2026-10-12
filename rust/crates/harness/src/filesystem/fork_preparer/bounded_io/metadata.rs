@@ -21,7 +21,7 @@ pub(in crate::filesystem) fn failure(
 }
 
 pub(in crate::filesystem) fn clone_text(text: &str, io: Option<&PreparationIo>) -> Result<String> {
-    crate::contract::preparation_format(format_args!("{text}"), io)
+    crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("{text}"), work))
 }
 
 pub(in crate::filesystem) fn hex_key(bytes: &[u8], io: Option<&PreparationIo>) -> Result<String> {
@@ -253,7 +253,7 @@ impl PreparationIo {
         let encoded = self.encode(value, self.remaining()?.bytes_encoded, true)?;
         _hold = self.guard_bytes(&encoded)?;
         let hash = digest(&encoded, Some(self))?;
-        crate::contract::preparation_format(format_args!("{prefix}{}", hash.to_hex()), Some(self))
+        crate::executor::with_history_io(Some(self), |work| crate::contract::preparation_format(format_args!("{prefix}{}", hash.to_hex()), work))
     }
     pub(crate) fn contains_capability<T: Serialize>(
         &self,

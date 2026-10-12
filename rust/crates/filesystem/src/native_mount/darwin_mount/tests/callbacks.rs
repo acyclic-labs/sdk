@@ -522,7 +522,7 @@ fn owned_original_scope_rejects_other_meter_and_retains_real_sdk_callbacks_until
         Err(NativeMountError::ControlPending)
     ));
     assert_eq!(
-        other.native_read_meter().lock().work,
+        (&other.state).lock().work,
         crate::WorkCounters::UNCHARGED
     );
     let accepted_io_scope = active.try_clone_for_io()?;
@@ -534,8 +534,8 @@ fn owned_original_scope_rejects_other_meter_and_retains_real_sdk_callbacks_until
             .unwrap_or_else(PoisonError::into_inner)
             .upgrade()
             .is_some_and(|meter| Arc::ptr_eq(
-                meter.native_read_meter(),
-                original.native_read_meter()
+                (&meter.state),
+                (&original.state)
             ))
     );
     let root = CString::new("/")?;
@@ -552,7 +552,7 @@ fn owned_original_scope_rejects_other_meter_and_retains_real_sdk_callbacks_until
         },
         0
     );
-    assert!(original.native_read_meter().lock().work.items_examined > 0);
+    assert!((&original.state).lock().work.items_examined > 0);
     assert_eq!(
         context
             .handler_failure

@@ -416,13 +416,7 @@ impl Owner {
     pub(super) fn resident<T: Logged>(&self, id: T::Id) -> Option<Option<T>> {
         let residents = self.residents.read().ok()?;
         let value = residents.get(&T::key(id))?;
-        if matches!(
-            value,
-            Some(RecordValue::FlatContext(_)) | Some(RecordValue::FlatChildren(_))
-        ) {
-            return None;
-        }
-        Some(value.as_ref().and_then(T::from_value).cloned())
+        Some(value.as_ref().and_then(T::from_value))
     }
 
     pub(super) fn log(&self) -> MutexGuard<'_, Option<CoreLog>> {
@@ -448,26 +442,21 @@ impl Namespace {
                     }
                     result
                 };
-                match self
-                    ._allocation
-                    .as_ref()
-                    .map(|allocation| allocation.work())
-                {
-                    Some(work) => {
-                        let paths = self.record(CORE_LOG_FAMILY, &[0; 16])?;
-                        materialization_lock(paths, work, |_| {
-                            let control = work.claim(
+                let mut paths = self.record(CORE_LOG_FAMILY, &[0; 16])?;
+                with_lock(&mut paths, |_| {
+                    let control = self
+                        ._allocation
+                        .as_ref()
+                        .map(|allocation| {
+                            allocation.work().claim(
                                 std::mem::size_of::<RwLock<Residents>>() as u64,
                                 1,
                                 crate::WorkCounters::UNCHARGED,
-                            )?;
-                            execute(Arc::default(), Some(control))
+                            )
                         })
-                    }
-                    None => with_lock(&self.record(CORE_LOG_FAMILY, &[0; 16])?, || {
-                        execute(Arc::default(), None)
-                    }),
-                }
+                        .transpose()?;
+                    execute(Arc::default(), control)
+                })
             }
             Admission::Owned(owner) => {
                 let mut slot = owner.log();

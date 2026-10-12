@@ -23,28 +23,8 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
         physical.path().join("unselected/cold.txt"),
         b"unread sibling",
     )?;
-    let fs = Fs::memory();
-    let demand = Arc::new(
-        NativeDemandSource::open(
-            std::borrow::Cow::Owned(std::path::Path::new(physical.path()).to_path_buf()),
-            FilesystemProfile::Portable,
-            VolumeLimits::default(),
-            None,
-            None,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?,
-    );
-    let lazy = LazyWorkspace::attach(
-        &fs,
-        "measured-customer-root",
-        demand,
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await?;
+    let lazy =
+        native_lazy_source(physical.path(), "measured-customer-root", &fixture_token).await?;
     let cancellation = crate::CancellationToken::new();
     let budget = crate::WorkBudget {
         source_bytes_read: 0,
@@ -64,17 +44,21 @@ async fn measured_customer_root_admission_keeps_unselected_source_cold()
     assert_eq!(work.receipt().source_bytes_read, 0);
     assert_eq!(work.receipt().materializations, 0);
     assert!(work.receipt().backend_read_operations > 0);
+    let mut accounting = KernelAccounting::native(&fixture_work, &fixture_token);
     assert!(matches!(
-        lazy.lookup("/selected").await?,
+        &lazy.lookup("/selected", &mut accounting).await?.0,
         LazyLookup::Authored { .. }
     ));
     assert!(matches!(
-        lazy.lookup("/selected/cold.txt").await?,
-        LazyLookup::Source(_)
+        &lazy.lookup("/selected/cold.txt", &mut accounting).await?.0,
+        LazyLookup::Source { .. }
     ));
     assert!(matches!(
-        lazy.lookup("/unselected/cold.txt").await?,
-        LazyLookup::Source(_)
+        &lazy
+            .lookup("/unselected/cold.txt", &mut accounting)
+            .await?
+            .0,
+        LazyLookup::Source { .. }
     ));
     let pinned = head(lazy.workspace(), &fixture_work).await?;
     let denied_budget = crate::WorkBudget {
@@ -212,7 +196,11 @@ async fn witnessed_attachment_keeps_the_original_root_and_rejects_unfunded_captu
         rejected,
         MountLifecycleError::Source(MountSourceError::Work(
             crate::WorkError::BudgetExceeded { .. }
-        )) | MountLifecycleError::Work(crate::WorkError::BudgetExceeded { .. })
+        )) | MountLifecycleError::Source(MountSourceError::NativeWork(
+            crate::NativeTreeMaterializationError::Work(crate::WorkError::BudgetExceeded { .. })
+        )) | MountLifecycleError::Materialization(crate::NativeTreeMaterializationError::Work(
+            crate::WorkError::BudgetExceeded { .. }
+        ))
     ));
     let admitted_work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &token)
         .map_err(|(cause, _)| cause)?;
@@ -389,28 +377,8 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
     std::fs::create_dir(source.path().join("hot/sub"))?;
     std::fs::write(source.path().join("hot/sub/child.txt"), b"old child")?;
     let native_view = tempfile::tempdir()?;
-    let fs = Fs::memory();
-    let demand = Arc::new(
-        NativeDemandSource::open(
-            std::borrow::Cow::Owned(std::path::Path::new(source.path()).to_path_buf()),
-            FilesystemProfile::Portable,
-            VolumeLimits::default(),
-            None,
-            None,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?,
-    );
-    let lazy = LazyWorkspace::attach(
-        &fs,
-        "prepared-native-working-set",
-        demand,
-        MemoryLazyWorkspaceStore::default(),
-    )
-    .await?;
+    let lazy =
+        native_lazy_source(source.path(), "prepared-native-working-set", &fixture_token).await?;
     let before_invalid = head(lazy.workspace(), &fixture_work).await?;
     assert!(matches!(
         lazy.prepare_native_working_set(
@@ -626,10 +594,22 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
             .await
             .is_err()
     );
-    lazy.write("/later.txt", bytes::Bytes::from_static(b"later"))
-        .await?;
-    lazy.write("/hot/conflict.txt", bytes::Bytes::from_static(b"parent"))
-        .await?;
+    lazy.write(
+        "/later.txt",
+        acyclic_stream::OwnedBytes::from_static(b"later"),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        &mut KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &fixture_token),
+    )
+    .await?;
+    lazy.write(
+        "/hot/conflict.txt",
+        acyclic_stream::OwnedBytes::from_static(b"parent"),
+        IdempotencyKey::new(),
+        PublicationPermit::Unrestricted,
+        &mut KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &fixture_token),
+    )
+    .await?;
     std::fs::write(working.join("hot/conflict.txt"), b"child")?;
     working_set
         .capture_host_subtree(&MountPath::root(), &default_work)
@@ -712,7 +692,7 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
 type MemoryWorkspace =
     Workspace<crate::facade::MemoryAuthorityBackend, crate::facade::MemoryObjectBackend>;
 
-async fn head(
+pub(super) async fn head(
     workspace: &MemoryWorkspace,
     work: &NativeMaterializationWork,
 ) -> Result<GenerationId, WorkspaceError> {
@@ -748,4 +728,41 @@ async fn assert_read(
         expected
     );
     Ok(())
+}
+
+type MemoryLazyWorkspace = LazyWorkspace<
+    crate::facade::MemoryAuthorityBackend,
+    crate::facade::MemoryObjectBackend,
+    NativeDemandSource,
+    MemoryLazyWorkspaceStore,
+>;
+
+pub(super) async fn native_lazy_source(
+    root: &Path,
+    name: &str,
+    cancellation: &crate::CancellationToken,
+) -> Result<MemoryLazyWorkspace, Box<dyn std::error::Error>> {
+    let demand = NativeDemandSource::open(
+        std::borrow::Cow::Owned(root.to_path_buf()),
+        FilesystemProfile::Portable,
+        VolumeLimits::default(),
+        None,
+        None,
+        crate::WorkBudget::UNBOUNDED,
+        cancellation,
+    )
+    .await
+    .map_err(|failure| failure.error)?
+    .value;
+    Ok(LazyWorkspace::attach(
+        &Fs::memory(),
+        name,
+        Arc::new(demand),
+        MemoryLazyWorkspaceStore::default(),
+        crate::VolumeConfig::portable(crate::Lifecycle::Ephemeral),
+        crate::OperationId::new(),
+        &mut KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, cancellation),
+    )
+    .await?
+    .0)
 }
