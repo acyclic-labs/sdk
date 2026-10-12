@@ -357,7 +357,7 @@ pub fn validate_append_request(input: &[u8]) -> String {
         .and_then(|_| wire::AppendRequest::decode(input).map_err(|_| StreamError::InvalidArgument))
         .and_then(wire_codec::append_from_wire)
         .and_then(|request| {
-            memory::provider_result(memory::validate_records(&request.records, &memory::MemoryObserver::default()))?;
+            memory::provider_result(memory::validate_records(&request.records, None))?;
             memory::validate_append_size(&request)
         });
     result.map_or_else(|error| error_code_str(&error).to_owned(), |_| String::new())
@@ -394,8 +394,8 @@ fn normalize_commit_bytes(input: &[u8]) -> Result<Vec<u8>, &'static str> {
     let deadline_unix_millis = request.deadline_unix_millis;
     let mut request =
         wire_codec::commit_from_wire(request).map_err(|error| error_code_str(&error))?;
-    memory::provider_result(memory::normalize_commit(&mut request, &memory::MemoryObserver::default())).map_err(|error| error_code_str(&error))?;
-    memory::provider_result(memory::validate_commit_shape(&request, &memory::MemoryObserver::default())).map_err(|error| error_code_str(&error))?;
+    memory::provider_result(memory::normalize_commit(&mut request, None)).map_err(|error| error_code_str(&error))?;
+    memory::provider_result(memory::validate_commit_shape(&request, None)).map_err(|error| error_code_str(&error))?;
     let mut normalized = wire_codec::commit_to_wire(&request);
     normalized.deadline_unix_millis = deadline_unix_millis;
     Ok(normalized.encode_to_vec())
