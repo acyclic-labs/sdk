@@ -219,7 +219,7 @@ impl PiForkCoordinator {
         let original = crate::pi_root_provider::guarded_pi_decode::<PiTaskInput>(&bytes.0, maximum, maximum,
                 acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES, work)?;
         let project = original.0.binding.project_volumes.values().find(|volume|
-            volume.storage_name().is_ok_and(|name| name == source.workspace().name().as_str()))
+            volume.storage_name(&mut None).is_ok_and(|name| name == source.workspace().name().as_str()))
             .ok_or_else(|| Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
                 reason: "Pi selected project has no actual original admitted source binding" })?;
         #[derive(Serialize)]
@@ -463,9 +463,9 @@ impl PiForkCoordinator {
         let mut source_read_custody = source_read.map(|pair| pair.1);
         let snapshot = source_snapshot.0;
         request_custody.absorb(&mut source_snapshot.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let input_read = self.owner.policy().{
+        let input_read = {
             let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
-            let value = journal.directory_read_capability(crate::pi_root_inputs::ROOT_INPUT_DIRECTORY, &mut Some(&mut io))?;
+            let value = self.owner.policy().journal.directory_read_capability(crate::pi_root_inputs::ROOT_INPUT_DIRECTORY, &mut Some(&mut io))?;
             (value, io.into_custody())
         };
         if !context.scope().grants().contains(&input_read.0) { return Err(Error::NativeBoundary {
@@ -571,9 +571,9 @@ impl PiForkCoordinator {
             return actual.1.context().read_file_with_native_work(reference, work).await; }
 
     fn require_input_read(&self, context: &acyclic_harness::runtime::TaskContext) -> Result<()> {
-        let native = self.owner.policy().{
+        let native = {
             let mut io = acyclic_harness::store::history::native_work_io(&self.work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
-            let value = journal.directory_read_capability(crate::pi_root_inputs::ROOT_INPUT_DIRECTORY, &mut Some(&mut io))?;
+            let value = self.owner.policy().journal.directory_read_capability(crate::pi_root_inputs::ROOT_INPUT_DIRECTORY, &mut Some(&mut io))?;
             (value, io.into_custody())
         };
         let capability = native.0.as_str();
@@ -1160,7 +1160,7 @@ impl RootProjectSourceProvider for PiProjectSourcePolicy<'_> {
             let original = crate::pi_root_provider::guarded_pi_decode::<PiTaskInput>(&bytes.0, maximum, maximum,
                 acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, crate::pi_task::PI_TASK_INPUT_DIAGNOSTIC_LABEL_BYTES, work)?;
             if !original.0.binding.project_volumes.values().any(|volume| volume == &snapshot.project)
-                || snapshot.project.storage_name()? != self.source.workspace().name().as_str() {
+                || snapshot.project.storage_name(&mut None)? != self.source.workspace().name().as_str() {
                 return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Unauthorized,
                     reason: "Pi selected source changed its originally admitted project" });
             }

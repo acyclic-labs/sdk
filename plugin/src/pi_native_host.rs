@@ -1299,7 +1299,7 @@ impl PiNativeCommandHost {
                 let authority = (verifier.0, scope, conversation.1);
                 let namespace = NativeVolumeNamespace::MaterializedDirectory;
                 let scratch_workspace = accept(self.filesystem.open_measured(&workspace_ref(
-                    prepared.binding.scratch.volume.provider().clone(), &prepared.binding.scratch.volume.storage_name()?)?,
+                    prepared.binding.scratch.volume.provider().clone(), &prepared.binding.scratch.volume.storage_name(&mut None)?)?,
                     remaining(work)?, cancellation).await, work)?;
                 let scratch_generation = GenerationId::new(Digest::from_bytes(
                     generation.as_resource().key().try_into().map_err(|_| unauthorized("Pi scratch generation is not canonical"))?));

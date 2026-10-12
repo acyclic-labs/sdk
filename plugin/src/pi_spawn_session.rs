@@ -369,11 +369,11 @@ impl PiSession {
         }
         let volume_provider = selected_project.provider().clone();
         let project = VolumeRef::new(volume_provider.clone(), format!("project-{task}"), VolumeClass::Project,
-            VolumeOwner::Project(root_key.clone()))?;
-        let scratch = VolumeRef::new(volume_provider.clone(), "scratch", VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(operations.agent))?;
-        let results = VolumeRef::new(volume_provider, "native-results", VolumeClass::AgentPrivate,
-            VolumeOwner::Agent(operations.agent))?;
+            VolumeOwner::Project(root_key.clone()), &mut None)?;
+        let scratch = VolumeRef::new(volume_provider.clone(), "scratch".into(), VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(operations.agent), &mut None)?;
+        let results = VolumeRef::new(volume_provider, "native-results".into(), VolumeClass::AgentPrivate,
+            VolumeOwner::Agent(operations.agent), &mut None)?;
         let paths = pi_native::planned_native_paths(&self.resources, &self.state.root_session_id, task, Some(&root_key), work)?;
         let paths = &paths.0;
         let cut = pi_native::PiNativeSourceCut::deserialize(arguments.get("cut").ok_or_else(|| acyclic_harness::Error::Invalid("Pi spawn has no actual original SDK native source cut".to_owned()))?).map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;

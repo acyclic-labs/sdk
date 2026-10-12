@@ -206,7 +206,7 @@ impl<'a> PiControlHost<'a> {
         if context.output_volume() != Some(scratch) {
             return Err(denied("selected native output is not its original sealed private scratch"));
         }
-        if !context.scope().grants().contains(&scratch.capability(acyclic_harness::conversation::VolumeOperation::Write)?) {
+        if !context.scope().grants().contains(&scratch.capability(acyclic_harness::conversation::VolumeOperation::Write, &mut None)?) {
             return Err(denied("selected native context lacks its original private scratch WRITE grant"));
         }
         owner.native_view_owner().require_volume_grant_with_native_work(scratch,

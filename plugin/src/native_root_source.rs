@@ -770,8 +770,8 @@ mod tests {
         let fixture = crate::pi_fork::tests::Fixture::new(None).await;
         let (path, original, expected) = selection(&fixture);
         let project = fixture.root_request.binding.project_volumes.values().next().unwrap();
-        let foreign = VolumeRef::new(project.provider().clone(), "not-original-source",
-            VolumeClass::Project, VolumeOwner::Project("not-original-root".into())).unwrap();
+        let foreign = VolumeRef::new(project.provider().clone(), "not-original-source".into(),
+            VolumeClass::Project, VolumeOwner::Project("not-original-root".into()), &mut None).unwrap();
         let registry = SharedRootRegistry::default();
         let work = NativeMaterializationWork::new(budget(), &CancellationToken::new()).unwrap();
         let before = work.receipt().backend_read_operations;

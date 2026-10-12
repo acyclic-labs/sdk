@@ -26,7 +26,7 @@ impl Fixture {
         let provider = ProviderRef::new("pi-mail".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
         let agent = AgentId::from_bytes([71;16]);
-        let volume = VolumeRef::new(provider, "journal", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
+        let volume = VolumeRef::new(provider, "journal".into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None)?;
         host.create_volume(&volume).await?;
         let issuer = AuthorityIssuer::new("pi-mail", [72;32], Authority { kind: AggregateKind::Task, id: "mail-original".into() });
         let grants = Capabilities::new([

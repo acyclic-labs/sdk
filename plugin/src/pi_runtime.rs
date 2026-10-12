@@ -36,13 +36,13 @@ impl PiRuntimeAuthority {
         journal: &VolumeRef,
     ) -> acyclic_harness::Result<(AgentId, TaskId)> {
         let authority = self;
-        authority.verifier.verify(&authority.signed)?;
-        authority.issuer.verifier().verify(&authority.signed)?;
-        authority.scope.limits().validate()?;
-        authority.session_limits.validate()?;
+        authority.verifier.verify(&authority.signed, &mut None)?;
+        authority.issuer.verifier(&mut None)?.verify(&authority.signed, &mut None)?;
+        authority.scope.limits().validate(&mut None)?;
+        authority.session_limits.validate(&mut None)?;
         let (agent, root_task) = authority.validate_identity_and_bounds(journal)?;
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-            let grant = journal.capability(operation)?;
+            let grant = journal.capability(operation, &mut None)?;
             if !authority.signed.capabilities().contains(&grant) {
                 return Err(invalid("Pi runtime owner lacks its journal grant"));
             }
@@ -53,7 +53,7 @@ impl PiRuntimeAuthority {
         if authority
             .scope
             .grants()
-            .contains(&journal.directory_read_capability("")?)
+            .contains(&journal.directory_read_capability("", &mut None)?)
         {
             return Err(invalid("Pi task grants expose owner journal storage"));
         }
@@ -97,7 +97,7 @@ impl PiRuntimeAuthority {
         drop(original.1);
         verification?;
         (self.scope.limits()).validate(&mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
-        RuntimeScope::validate_session_limits_with_native_work(&self.session_limits, work)?;
+        self.session_limits.validate(&mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         let identities = self.validate_identity_and_bounds(journal)?;
         for operation in [VolumeOperation::Read, VolumeOperation::Write] {
             let grant = {

@@ -150,8 +150,8 @@ async fn real_original_owner_grant_and_cancel_checks_are_used_by_builtins() {
         PiBuiltinIo::EditWrite { content: "requires original WRITE".into(), expected_sha256: "00".repeat(32) }] {
         assert!(require_builtin_mapping_access(&readonly, &io).is_err());
     }
-    let unrelated = VolumeRef::new(project.provider().clone(), "outside-project", VolumeClass::Project,
-        VolumeOwner::Project("outside".into())).unwrap();
+    let unrelated = VolumeRef::new(project.provider().clone(), "outside-project".into(), VolumeClass::Project,
+        VolumeOwner::Project("outside".into()), &mut None).unwrap();
     for operation in [acyclic_harness::conversation::VolumeOperation::Read,
         acyclic_harness::conversation::VolumeOperation::Write] {
         assert!(owner.require_volume_grant_with_native_work(&unrelated, operation, &work).is_err());

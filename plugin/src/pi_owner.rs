@@ -163,8 +163,8 @@ impl PiOwnerConfig {
             return Err(invalid("invalid Pi owner configuration"));
         }
         let journal_grants = [
-            self.policy.journal.capability(VolumeOperation::Read)?,
-            self.policy.journal.capability(VolumeOperation::Write)?,
+            self.policy.journal.capability(VolumeOperation::Read, &mut None)?,
+            self.policy.journal.capability(VolumeOperation::Write, &mut None)?,
         ];
         let issuer = AuthorityIssuer::new(
             ISSUER,
@@ -182,7 +182,7 @@ impl PiOwnerConfig {
                 .chain(journal_grants),
         );
         let authority = PiRuntimeAuthority {
-            verifier: issuer.verifier(),
+            verifier: issuer.verifier(&mut None)?,
             signed: issuer.issue(&self.policy.root_task.to_string(), &storage_grants, Some(self.policy.agent), None, &mut None).expect("scope proof"),
             scope: RuntimeScope::new(self.policy.grants.clone(), self.policy.limits)?
                 .with_run_limits(self.policy.run_limits, &mut None)?,
@@ -203,7 +203,7 @@ impl PiOwnerConfig {
         if self.version != 1 || self.key == [0; 32] || self.policy.agent.into_bytes() == [0; 16] {
             return Err(native_invalid("invalid Pi owner configuration"));
         }
-        RuntimeScope::validate_session_limits_with_native_work(&self.policy.session_limits, work)?;
+        self.policy.session_limits.validate(&mut Some(&mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         let journal_grants = [
             {
                 let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;

@@ -108,8 +108,8 @@ impl Fixture {
         let provider = ProviderRef::new("pi-native-provider-test".into(), "filesystem".into(), "1".into(), &mut None)?;
         let agent = AgentId::from_bytes([21; 16]);
         let task = TaskId::from_bytes([22; 16]);
-        let scratch = VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
-        let results_volume = VolumeRef::new(provider.clone(), "results", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
+        let scratch = VolumeRef::new(provider.clone(), "scratch".into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None)?;
+        let results_volume = VolumeRef::new(provider.clone(), "results".into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(agent), &mut None)?;
         let command = OperationId::from_bytes([23; 16]);
         let approval = InteractionId::from_bytes([24; 16]);
         let grants = Capabilities::new([
@@ -117,8 +117,8 @@ impl Fixture {
             "task:spawn:pi-native-provider-qualification@1".into(), "effect:plan".into(), "effect:run".into(),
             format!("effect:provider:{PI_NATIVE_PROVIDER}"), "interaction:open".into(), "interaction:resolve".into(),
             format!("interaction:respond:{approval}"), "interaction:route".into(), "conversation:bind".into(),
-            scratch.capability(VolumeOperation::Read)?, scratch.capability(VolumeOperation::Write)?,
-            results_volume.capability(VolumeOperation::Read)?, results_volume.capability(VolumeOperation::Write)?,
+            scratch.capability(VolumeOperation::Read, &mut None)?, scratch.capability(VolumeOperation::Write, &mut None)?,
+            results_volume.capability(VolumeOperation::Read, &mut None)?, results_volume.capability(VolumeOperation::Write, &mut None)?,
         ]);
         let issuer = AuthorityIssuer::new("pi-native-provider-test", [25; 32], Authority { kind: AggregateKind::Conversation, id: "pi-native-provider-test".into() });
         let scope = issuer.issue("owner", &grants, Some(agent), None, &mut None).expect("scope proof");
@@ -142,8 +142,8 @@ impl Fixture {
         let cancellation = CancellationToken::new();
         let budget = super::super::native_root_source::budget();
         let work = NativeMaterializationWork::new(budget, &cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        let initial = files.resolve(&workspace_ref(scratch.provider().clone(), &scratch.storage_name()?)?).await?;
-        let initial_id = filesystem.open_workspace_with_native_work(&scratch.storage_name()?, &work, &cancellation).await
+        let initial = files.resolve(&workspace_ref(scratch.provider().clone(), &scratch.storage_name(&mut None)?)?).await?;
+        let initial_id = filesystem.open_workspace_with_native_work(&scratch.storage_name(&mut None)?, &work, &cancellation).await
             .map_err(|(error, _)| invalid(&error.to_string()))?.id().into_bytes();
         let native = directory.path().join("native");
         let operation_directory = directory.path().join("preparation");
@@ -166,8 +166,8 @@ impl Fixture {
         files.put_content_with_native_work(&scratch, &grant, "child.jsonl", bytes.as_bytes(),
             "application/x-ndjson", "Pi child session", 65_536,
             &IdempotencyKey::new("pi-native-child-session")?, &work).await?;
-        let selected = files.resolve(&workspace_ref(scratch.provider().clone(), &scratch.storage_name()?)?).await?;
-        let workspace = filesystem.open_workspace_with_native_work(&scratch.storage_name()?, &work, &cancellation).await
+        let selected = files.resolve(&workspace_ref(scratch.provider().clone(), &scratch.storage_name(&mut None)?)?).await?;
+        let workspace = filesystem.open_workspace_with_native_work(&scratch.storage_name(&mut None)?, &work, &cancellation).await
             .map_err(|(error, _)| invalid(&error.to_string()))?;
         let generation = acyclic_fs::GenerationId::new(acyclic_fs::Digest::from_bytes(selected.generation.as_resource().key().try_into()
             .map_err(|_| invalid("actual selected filesystem generation is not a digest"))?));
@@ -186,8 +186,8 @@ impl Fixture {
             &[BorrowedNativeVolumeBinding { host: files.as_ref(), volume: &scratch, generation: &selected.generation, path: "scratch", writable: true,
                 verifier: &scratch_verifier.0, scope: &scope, publication: reservation.0, namespace: &namespace }], &work)?.await?
             .into_arc_with_native_work(&work)?;
-        let result_creation = files.resolve(&workspace_ref(results_volume.provider().clone(), &results_volume.storage_name()?)?).await?;
-        let result_workspace = filesystem.open_workspace_with_native_work(&results_volume.storage_name()?, &work, &cancellation).await
+        let result_creation = files.resolve(&workspace_ref(results_volume.provider().clone(), &results_volume.storage_name(&mut None)?)?).await?;
+        let result_workspace = filesystem.open_workspace_with_native_work(&results_volume.storage_name(&mut None)?, &work, &cancellation).await
             .map_err(|(error, _)| invalid(&error.to_string()))?.id().into_bytes();
         let binding = PiTaskBinding { native_session_id: "child".into(), task_id: task, agent_id: agent, project_volumes: BTreeMap::new(),
             scratch: super::super::PiScratchBinding { volume: scratch, allocation: PiScratchAllocation::Created(super::super::PiScratchCreation {

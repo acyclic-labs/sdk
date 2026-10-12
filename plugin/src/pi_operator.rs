@@ -150,7 +150,7 @@ pub(crate) fn build_control_request(owner: &PiOwnerConfig, cwd: PathBuf,
 
 pub(crate) fn verify_request(owner: &PiOwnerConfig, session: &str, request: &PiOperatorRequest,
     work: &NativeMaterializationWork) -> Result<()> {
-    owner.authority()?.verifier.verify(&request.operator)?;
+    owner.authority()?.verifier.verify(&request.operator, &mut None)?;
     let hash_custody = body_hash(&request.body, work)?;
     let hash = &hash_custody.0;
     if request.session_id != session || request.body.session() != session

@@ -34,11 +34,12 @@ fn preparation() -> WorkflowCommand {
         kind: EFFECT_TASK_COMMAND_KIND.to_owned(),
         payload: FileRef::new(
             binding().scratch.volume,
-            "preparation.json",
-            "fixture",
-            acyclic_harness::conversation::FileDescriptor::from_bytes(b"{}", "application/json")
+            "preparation.json".into(),
+            "fixture".into(),
+            acyclic_harness::conversation::FileDescriptor::from_bytes(b"{}", "application/json", &mut None)
                 .unwrap(),
-            "preparation.json",
+            "preparation.json".into(),
+            &mut None,
         )
         .unwrap(),
     }
@@ -60,9 +61,10 @@ fn binding() -> PiTaskBinding {
         scratch: PiScratchBinding {
             volume: VolumeRef::new(
                 provider,
-                "scratch",
+                "scratch".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(agent_id),
+                &mut None,
             )
             .unwrap(),
             allocation: PiScratchAllocation::Preparing,
@@ -127,9 +129,10 @@ async fn pi_service_recovery_rejects_legacy_workspace_access() {
         root_key,
         VolumeRef::new(
             binding.scratch.volume.provider().clone(),
-            "project",
+            "project".into(),
             VolumeClass::Project,
             VolumeOwner::Project("project".to_owned()),
+            &mut None,
         )
         .unwrap(),
     );
@@ -174,9 +177,10 @@ async fn open(
         .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
     let journal = VolumeRef::new(
         binding.scratch.volume.provider().clone(),
-        "journal",
+        "journal".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(binding.agent_id),
+        &mut None,
     )
     .unwrap();
     let grants = Capabilities::new(
@@ -189,12 +193,12 @@ async fn open(
             binding
                 .scratch
                 .volume
-                .capability(VolumeOperation::Read)
+                .capability(VolumeOperation::Read, &mut None)
                 .unwrap(),
             binding
                 .scratch
                 .volume
-                .capability(VolumeOperation::Write)
+                .capability(VolumeOperation::Write, &mut None)
                 .unwrap(),
         ]
         .into_iter()
@@ -202,7 +206,7 @@ async fn open(
             binding
                 .project_volumes
                 .values()
-                .map(|volume| volume.capability(VolumeOperation::Read).unwrap()),
+                .map(|volume| volume.capability(VolumeOperation::Read, &mut None).unwrap()),
         ),
     );
     let config = if create {
@@ -296,9 +300,10 @@ async fn pi_root_physical_selection_reopens_only_from_original_admission() {
         key.clone(),
         VolumeRef::new(
             binding.scratch.volume.provider().clone(),
-            "selected-project",
+            "selected-project".into(),
             VolumeClass::Project,
             VolumeOwner::Project("selected-project".to_owned()),
+            &mut None,
         )
         .unwrap(),
     );
@@ -409,9 +414,10 @@ fn pi_root_intent_rejects_unselected_or_unbounded_paths_and_invalid_identity() {
         key.clone(),
         VolumeRef::new(
             binding.scratch.volume.provider().clone(),
-            "project",
+            "project".into(),
             VolumeClass::Project,
             VolumeOwner::Project("project".to_owned()),
+            &mut None,
         )
         .unwrap(),
     );
@@ -564,9 +570,10 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
     foreign.agent_id = AgentId::from_bytes([71; 16]);
     foreign.scratch.volume = VolumeRef::new(
         foreign.scratch.volume.provider().clone(),
-        "scratch",
+        "scratch".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(foreign.agent_id),
+        &mut None,
     )
     .unwrap();
     assert!(
@@ -594,9 +601,10 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
     );
     let journal = VolumeRef::new(
         binding.scratch.volume.provider().clone(),
-        "journal",
+        "journal".into(),
         VolumeClass::AgentPrivate,
         VolumeOwner::Agent(binding.agent_id),
+        &mut None,
     )
     .unwrap();
     let mut journal_selection = binding.clone();
@@ -632,7 +640,7 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
         assert!(
             !admission
                 .grants
-                .contains(&journal.capability(operation).unwrap())
+                .contains(&journal.capability(operation, &mut None).unwrap())
         );
     }
     assert_eq!(
@@ -654,7 +662,7 @@ async fn pi_root_registration_replays_original_admission_and_rejects_foreign_own
     .unwrap();
     assert!(
         storage
-            .open_workspace_with_native_work(&binding.scratch.volume.storage_name().unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new())
+            .open_workspace_with_native_work(&binding.scratch.volume.storage_name(&mut None).unwrap(), &crate::pi_fork::tests::work(), &acyclic_fs::CancellationToken::new())
             .await
             .is_err()
     );
@@ -836,8 +844,8 @@ async fn pi_pending_preparation_unknown_admission_fails_before_future_native_chi
     child.task_id = TaskId::from_bytes([121; 16]);
     child.native_session_id = "not-yet-native".to_owned();
     child.agent_id = AgentId::from_bytes([123; 16]);
-    child.scratch.volume = VolumeRef::new(root.scratch.volume.provider().clone(), "scratch",
-        VolumeClass::AgentPrivate, VolumeOwner::Agent(child.agent_id)).unwrap();
+    child.scratch.volume = VolumeRef::new(root.scratch.volume.provider().clone(), "scratch".into(),
+        VolumeClass::AgentPrivate, VolumeOwner::Agent(child.agent_id), &mut None).unwrap();
     state.pending.push_back(crate::PendingSpawn {
         task_binding: PluginTaskBinding::Pi(Box::new(child.clone())),
         agent_id: Some("future-child".to_owned()),
