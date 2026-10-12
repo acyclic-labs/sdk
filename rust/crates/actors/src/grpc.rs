@@ -32,7 +32,8 @@ pub async fn connect(
     token: &str,
     ca: Option<&[u8]>,
 ) -> Result<Client, ConnectError> {
-    let (channel, authorization) = acyclic_workers::grpc::connect_channel(endpoint, token, ca).await?;
+    let authorization = BearerAuth::new(token).map_err(|()| ConnectError::InvalidCredential)?;
+    let channel = acyclic_workers::grpc::connect_channel(endpoint, ca).await?;
     Ok(
         wire::actors_service_client::ActorsServiceClient::with_interceptor(
             TracedChannel::new(channel, transport_span),

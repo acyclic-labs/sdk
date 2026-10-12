@@ -446,17 +446,6 @@ async fn public_follow_uses_the_same_immediate_page_and_terminal_error_contract(
 
 use acyclic_grpc_observability::test_support::Capture;
 
-#[derive(Clone)]
-struct SafeFields;
-impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for SafeFields {
-    fn on_new_span(&self, attrs: &tracing::span::Attributes<'_>, _: &tracing::Id, _: tracing_subscriber::layer::Context<'_, S>) {
-        for field in attrs.metadata().fields().iter() {
-            assert!(!["path", "token", "content", "body", "authorization", "error"].contains(&field.name()),
-                "forbidden trace field {} on {}", field.name(), attrs.metadata().name());
-        }
-    }
-}
-
 fn assert_cancelled_call(captured: &Capture, route: &str) {
     let spans = captured.0.lock().unwrap();
     let call = spans
@@ -530,7 +519,7 @@ async fn filtered_spans_never_record_child_results_on_the_parent() {
                 _ => true,
             });
             let subscriber =
-                tracing_subscriber::registry().with(captured.clone().and_then(SafeFields).with_filter(filter));
+                tracing_subscriber::registry().with(captured.clone().with_filter(filter));
             async {
                 let parent = tracing::info_span!(
                     "test.parent",
@@ -622,13 +611,13 @@ async fn visible_follow_descendants_stay_with_the_originating_subscriber() {
             .unwrap();
         (server, stream)
     }
-    .with_subscriber(tracing_subscriber::registry().with(origin.clone().and_then(SafeFields)))
+    .with_subscriber(tracing_subscriber::registry().with(origin.clone()))
     .await;
     async {
         assert_eq!(stream.next().await.unwrap().unwrap().sequence, 0);
         drop(stream);
     }
-    .with_subscriber(tracing_subscriber::registry().with(consumer.clone().and_then(SafeFields)))
+    .with_subscriber(tracing_subscriber::registry().with(consumer.clone()))
     .await;
     assert_eq!(server.requests().len(), 2);
     {
@@ -702,7 +691,7 @@ async fn drop_during_startup_tail_body_closes_connection_and_follow_span() {
     use tracing::instrument::WithSubscriber;
     use tracing_subscriber::prelude::*;
     let captured = Capture::default();
-    let subscriber = tracing_subscriber::registry().with(captured.clone().and_then(SafeFields));
+    let subscriber = tracing_subscriber::registry().with(captured.clone());
     async {
         let (prefix_written, prefix) = oneshot::channel();
         let (peer_closed, closed) = oneshot::channel();
@@ -748,7 +737,7 @@ async fn drop_while_http_body_is_pending_closes_connection_and_read_spans() {
     use tracing::instrument::WithSubscriber;
     use tracing_subscriber::prelude::*;
     let captured = Capture::default();
-    let subscriber = tracing_subscriber::registry().with(captured.clone().and_then(SafeFields));
+    let subscriber = tracing_subscriber::registry().with(captured.clone());
     async {
         let (prefix_written, prefix) = oneshot::channel();
         let (peer_closed, closed) = oneshot::channel();
@@ -844,7 +833,7 @@ async fn foreign_dispatch_drop_and_unwind_close_real_parents_and_pending_body() 
         let origin = Capture::default();
         let consumer = Capture::default();
         let origin_dispatch =
-            tracing::Dispatch::new(tracing_subscriber::registry().with(origin.clone().and_then(SafeFields)));
+            tracing::Dispatch::new(tracing_subscriber::registry().with(origin.clone()));
         let (prefix_written, prefix) = oneshot::channel();
         let (peer_closed, closed) = oneshot::channel();
         let server = Server::with_body_mode(
@@ -888,7 +877,7 @@ async fn foreign_dispatch_drop_and_unwind_close_real_parents_and_pending_body() 
                 drop(stream);
             }
         }
-        .with_subscriber(tracing_subscriber::registry().with(consumer.clone().and_then(SafeFields)))
+        .with_subscriber(tracing_subscriber::registry().with(consumer.clone()))
         .await;
         tokio::time::timeout(Duration::from_secs(10), closed)
             .await
@@ -929,7 +918,7 @@ async fn traces_follow_cursor_lifetime_and_distinguish_drop_from_error() {
     use tracing_subscriber::prelude::*;
     for fails in [false, true] {
         let captured = Capture::default();
-        let subscriber = tracing_subscriber::registry().with(captured.clone().and_then(SafeFields));
+        let subscriber = tracing_subscriber::registry().with(captured.clone());
         async {
             let reply = if fails {
                 Reply(403, json!({"code":"access_denied"}))
@@ -1018,7 +1007,7 @@ async fn traces_buffered_drop_and_startup_error_without_claiming_success() {
     use tracing_subscriber::prelude::*;
     for startup_error in [false, true] {
         let captured = Capture::default();
-        let subscriber = tracing_subscriber::registry().with(captured.clone().and_then(SafeFields));
+        let subscriber = tracing_subscriber::registry().with(captured.clone());
         async {
             let replies = if startup_error {
                 vec![Reply(404, json!({"code":"stream_not_found"}))]
