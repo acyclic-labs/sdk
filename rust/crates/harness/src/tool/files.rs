@@ -827,12 +827,12 @@ mod tests {
                 "private",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([61; 16])),
-            )?,
+             &mut None)?,
             "source.txt",
             "generation-1",
-            FileDescriptor::from_bytes(b"exact", "text/plain")?,
+            FileDescriptor::from_bytes(b"exact", "text/plain", &mut None)?,
             "source.txt",
-        )
+         &mut None)
     }
 
     #[test]

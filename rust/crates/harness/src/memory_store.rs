@@ -583,7 +583,7 @@ mod tests {
             "test-volume",
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::new()),
-        )?;
+         &mut None)?;
         MemoryStore::new(volume, 4_096, 4_096, maximum_bytes, maximum_files)
     }
 
@@ -622,7 +622,7 @@ mod tests {
             first.version(),
             first.descriptor().clone(),
             "renamed.txt",
-        )?;
+         &mut None)?;
         assert!(
             store
                 .retain_reference(&changed_display, b"one", false, None)
