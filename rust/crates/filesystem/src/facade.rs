@@ -3529,12 +3529,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let live = created.value.name.retained_bytes();
         let allowance = remaining_owned(prior, budget, live)
             .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from))?;
-        let (creation, nested) = self.read_creation(created.value.volume.id, WorkCounters::UNCHARGED, allowance, cancellation).await
+        let observed = self.read_creation_record(created.value.volume.id, allowance, cancellation).await
             .map_err(|failure| {
                 merge_simultaneous_failure(prior, *failure.work, live, failure.error)
                     .map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from)
             })?;
-        let work = merge_simultaneous_work(prior, nested, live, budget)
+        let creation = observed.value.0;
+        let work = merge_simultaneous_work(prior, observed.work, live, budget)
             .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from))?;
         self.initial_workspace_generation(
             created.value, creation.initial_generation_root, work, budget, cancellation,
@@ -3555,9 +3556,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         let allowance = remaining_owned(work, budget, live)
             .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from))?;
         let (creation, operation, nested) = match self.read_creation_record(
-            id.volume_id(), WorkCounters::UNCHARGED, allowance, cancellation,
+            id.volume_id(), allowance, cancellation,
         ).await {
-            Ok(observed) => observed, Err(failure) => {
+            Ok(observed) => (observed.value.0, observed.value.1, observed.work), Err(failure) => {
                 let failure = merge_simultaneous_failure(work, *failure.work, live, failure.error);
                 if matches!(&failure.error, FsError::Authority(AuthorityStoreError::Missing)) {
                     return Ok(FsReceipt { value: None, work: *failure.work });
@@ -3632,14 +3633,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             self.inner.workspace_namespace, &name, original, cancellation,
         )?;
         validate_volume_capabilities_direct(config, self.inner.capabilities)?;
-        let observed = self.read_creation_record_with_native_work(id.volume_id(), original, cancellation).await;
+        let observed = self.read_creation_record(id.volume_id(), original, cancellation).await;
         let (creation, operation) = match observed {
             Ok(creation) => creation, Err(FsError::Authority(AuthorityStoreError::Missing)) => {
                 let mut accounting = KernelAccounting::native(original, cancellation);
                 let (_, initial_root) = self.create_volume_with_id_operation_with_accounting(
                     id.volume_id(), config, Some(original_operation_id), &mut accounting, cancellation, publication,
                 ).await?;
-                let observed = self.read_creation_record_with_native_work(
+                let observed = self.read_creation_record(
                     id.volume_id(), original, cancellation,
                 ).await.map_err(|error| match error {
                     FsError::VolumeMismatch => WorkspaceError::from(FsError::CreationRejected), error => WorkspaceError::from(error),
@@ -3676,7 +3677,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let id = crate::WorkspaceId::derive_with_native_work(
                 self.inner.workspace_namespace, &name, original, cancellation,
             )?;
-            let (creation, operation) = match self.read_creation_record_with_native_work(
+            let (creation, operation) = match self.read_creation_record(
                 id.volume_id(), original, cancellation,
             ).await {
                 Ok(creation) => creation, Err(FsError::Authority(AuthorityStoreError::Missing)) => return Ok(None),
@@ -3709,7 +3710,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             let id = crate::WorkspaceId::derive_with_native_work(
                 self.inner.workspace_namespace, &name, original, cancellation,
             )?;
-            let (creation, _) = self.read_creation_record_with_native_work(id.volume_id(), original, cancellation).await?;
+            let (creation, _) = self.read_creation_record(id.volume_id(), original, cancellation).await?;
             validate_volume_capabilities_direct(creation.config, self.inner.capabilities)?;
             Ok(crate::Workspace {
                 name, id, volume: Volume { fs: self.clone(), id: id.volume_id(), config: creation.config },
@@ -4121,14 +4122,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
     ) -> Result<(VolumeCreated, OperationId), WorkspaceError> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {
-            return self.read_creation_record_with_native_work(volume_id, original, cancellation).await.map_err(WorkspaceError::from);
+            return self.read_creation_record(volume_id, original, cancellation).await.map_err(WorkspaceError::from);
         }
         let read = self.read_creation_record(
-            volume_id, WorkCounters::UNCHARGED, accounting.remaining()?, cancellation,
+            volume_id, accounting.remaining()?, cancellation,
         ).await;
-        let work = match &read { Ok((_, _, work)) => *work, Err(failure) => *failure.work };
+        let work = match &read { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
         merge_fork_backend_work(accounting, work)?;
-        read.map(|(creation, operation, _)| (creation, operation)).map_err(|failure| WorkspaceError::from(failure.error))
+        read.map(|receipt| receipt.value).map_err(|failure| WorkspaceError::from(failure.error))
     }
 
     async fn publish_fork_with_accounting<G>(
@@ -5651,9 +5652,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             cancellation
                 .check()
                 .map_err(|error| OperationFailure::before_work(error.into()))?;
-            let (creation, work) = self
-                .read_creation(volume_id, WorkCounters::default(), budget, cancellation)
-                .await?;
+            let observed = self.read_creation_record(volume_id, budget, cancellation).await?;
+            let creation = observed.value.0;
+            let work = observed.work;
             validate_volume_capabilities(creation.config, self.inner.capabilities)
                 .map_err(|failure| OperationFailure::new(failure.error, work))?;
             Ok(FsReceipt {
@@ -5913,56 +5914,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Ok(Volume { fs: self.clone(), id: volume_id, config })
     }
 
-    async fn read_creation(
-        &self,
-        volume_id: VolumeId,
-        work: WorkCounters,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> Result<(VolumeCreated, WorkCounters), OperationFailure<FsError>> {
-        self.read_creation_record(volume_id, work, budget, cancellation).await.map(|(creation, _, work)| (creation, work))
-    }
-
-    async fn read_creation_record(
-        &self, volume_id: VolumeId, work: WorkCounters, budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> Result<(VolumeCreated, OperationId, WorkCounters), OperationFailure<FsError>> {
-        let records = self
-            .inner
-            .authority
-            .replay(
-                volume_authority_id(volume_id),
-                Sequence::GENESIS,
-                ReplayLimit {
-                    records: 1,
-                    payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES,
-                },
-                remaining(work, budget)?,
-                cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-        let mut combined = add(work, records.work)?;
-        let mut allocations = AllocationLedger::default();
-        let result = {
-            let mut accounting = KernelAccounting::borrowed_standalone(
-                &mut allocations, &mut combined, budget, cancellation,
-            );
+    async fn read_creation_record<W: FsWork>(
+        &self, volume_id: VolumeId, budget: W, cancellation: &CancellationToken,
+    ) -> W::Output<(VolumeCreated, OperationId), FsError> {
+        let mut accounting = budget.accounting(cancellation);
+        let result = async {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(original) = accounting.native_work() {
+                accounting.check()?;
+                let records = self.inner.authority.replay_with_native_work(
+                    volume_authority_id(volume_id), Sequence::GENESIS,
+                    ReplayLimit { records: 1, payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES }, original, cancellation,
+                ).await?;
+                return decode_first_creation_record(volume_id, &records.0, &mut accounting);
+            }
+            let allowance = accounting.standalone_parts().expect("standalone creation read").2;
+            let records = self.inner.authority.replay(
+                volume_authority_id(volume_id), Sequence::GENESIS,
+                ReplayLimit { records: 1, payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES }, allowance, cancellation,
+            ).await;
+            let completed = match &records { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
+            *accounting.standalone_parts().expect("standalone creation read").1 = completed;
+            let records = records.map_err(|failure| FsError::from(failure.error))?;
             decode_first_creation_record(volume_id, &records.value, &mut accounting)
-        };
-        result.map(|(creation, operation)| (creation, operation, combined)).map_err(|error| OperationFailure::new(error, combined))
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn read_creation_record_with_native_work(
-        &self, volume_id: VolumeId, original: &NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<(VolumeCreated, OperationId), FsError> {
-        let mut accounting = KernelAccounting::native(original, cancellation);
-        accounting.check()?;
-        let records = self.inner.authority.replay_with_native_work(
-            volume_authority_id(volume_id), Sequence::GENESIS,
-            ReplayLimit { records: 1, payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES }, original, cancellation,
-        ).await?;
-        decode_first_creation_record(volume_id, &records.0, &mut accounting)
+        }.await;
+        budget.finish(result, &accounting)
     }
 
     async fn build_empty_generation_with_accounting(
