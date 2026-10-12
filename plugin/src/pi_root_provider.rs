@@ -884,25 +884,66 @@ fn pi_input_coordinates_with_native_work(
 pub(crate) fn guarded_pi_bytes<T: Serialize>(
     value: &T, maximum_bytes: u64, work: &NativeMaterializationWork,
 ) -> Result<(Vec<u8>, NativeAllocation)> {
-    let native_error = |cause| Error::NativeWork { cause, custody: None };
-    let remaining = work.remaining().map_err(native_error)?;
-    let mut custody = work.retain_owned(0).map_err(native_error)?;
-    let mut diagnostic = work.retain_owned(sdk_json_diagnostic_bytes()).map_err(native_error)?;
-    let bounds = JsonBounds { maximum_bytes, maximum_items: remaining.items_examined, maximum_depth: 64 };
-    let result = json_bytes_bounded_native_trusted(value, bounds, ErrorCode::Invalid,
-        &mut |charge| native_buffer_codec_charge(work, &mut custody, charge));
-    match result {
-        Ok(bytes) => Ok((bytes, custody)),
-        Err(Error::NativeEncode { code, source, custody: None }) => {
-            if custody.bytes() != 0 { diagnostic.absorb(&mut custody).map_err(native_error)?; }
-            Err(Error::NativeEncode { code, source, custody: Some(diagnostic) })
-        },
-        Err(error @ Error::NativeWork { custody: None, .. }) if custody.bytes() == 0 => {
-            drop(custody);
-            Err(error)
+    encode_pi(Some(maximum_bytes), None, work, |bounds, charge| {
+        json_bytes_bounded_native_trusted(value, bounds, ErrorCode::Invalid, &mut |event| charge(event))
+    })
+}
+
+fn encode_pi<T>(
+    maximum_bytes: Option<u64>, maximum_owned_bytes: Option<u64>, work: &NativeMaterializationWork,
+    encode: impl FnOnce(JsonBounds, &mut dyn FnMut(JsonCodecCharge) -> Result<()>) -> Result<T>,
+) -> Result<(T, NativeAllocation)> {
+    let native = |cause| Error::NativeWork { cause, custody: None };
+    let remaining = work.remaining().map_err(native)?;
+    let mut custody = work.retain_owned(0).map_err(native)?;
+    let mut diagnostic = work.retain_owned(sdk_json_diagnostic_bytes()).map_err(native)?;
+    let mut parser_quota: Option<NativeAllocation> = None;
+    let bounds = JsonBounds {
+        maximum_bytes: maximum_bytes.map_or(remaining.bytes_encoded, |maximum| maximum.min(remaining.bytes_encoded)),
+        maximum_items: remaining.items_examined, maximum_depth: 64,
+    };
+    let result = encode(bounds, &mut |charge| {
+        if let JsonCodecCharge::Release { bytes } = charge {
+            return custody.release(bytes).map_err(native);
         }
-        Err(Error::NativeWork { cause, custody: None }) =>
-            Err(Error::NativeWork { cause, custody: Some(custody) }),
+        work.cancellation().check().map_err(|_| native(NativeTreeMaterializationError::Cancelled))?;
+        match charge {
+            JsonCodecCharge::Admission { maximum_owned_bytes, .. } => {
+                let parser_owned = maximum_owned_bytes.checked_sub(sdk_json_diagnostic_bytes())
+                    .ok_or(Error::NativeBoundary { code: ErrorCode::Invalid,
+                        reason: "SDK raw parser quota omits its diagnostic inventory" })?;
+                let mut quota = work.retain_owned(0).map_err(native)?;
+                quota.resize_retained(parser_owned).map_err(native)?;
+                parser_quota = Some(quota);
+                Ok(())
+            }
+            JsonCodecCharge::Retain { bytes } => {
+                let observed = custody.bytes().checked_add(bytes)
+                    .ok_or_else(|| native(NativeTreeMaterializationError::Work(WorkError::Overflow)))?;
+                if let Some(maximum) = maximum_owned_bytes {
+                    if observed > maximum {
+                        return Err(native(NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
+                            counter: "pi_value_owned_bytes", observed, maximum,
+                        })));
+                    }
+                }
+                if let Some(mut quota) = parser_quota.take() {
+                    custody.absorb(&mut quota).map_err(native)?;
+                    custody.substitute(observed).map_err(native)
+                } else { custody.resize_retained(observed).map_err(native) }
+            }
+            charge => native_buffer_codec_charge(work, &mut custody, charge),
+        }
+    });
+    match result {
+        Ok(value) => Ok((value, custody)),
+        Err(Error::NativeEncode { code, source, custody: None }) => {
+            if let Some(mut quota) = parser_quota { diagnostic.absorb(&mut quota).map_err(native)?; }
+            if custody.bytes() != 0 { diagnostic.absorb(&mut custody).map_err(native)?; }
+            Err(Error::NativeEncode { code, source, custody: Some(diagnostic) })
+        }
+        Err(error @ Error::NativeWork { custody: None, .. }) if custody.bytes() == 0 => Err(error),
+        Err(Error::NativeWork { cause, custody: None }) => Err(Error::NativeWork { cause, custody: Some(custody) }),
         Err(error) => Err(error),
     }
 }
@@ -970,55 +1011,9 @@ pub(crate) async fn read_pi_input_with_native_work<T: DeserializeOwned>(
 pub(crate) fn canonical_pi_value<T: Serialize + ?Sized>(
     value: &T, maximum_bytes: u64, work: &NativeMaterializationWork,
 ) -> Result<(Vec<u8>, NativeAllocation)> {
-    let native_error = |cause| Error::NativeWork { cause, custody: None };
-    let remaining = work.remaining().map_err(native_error)?;
-    let mut custody = work.retain_owned(0).map_err(native_error)?;
-    let mut diagnostic = work.retain_owned(sdk_json_diagnostic_bytes()).map_err(native_error)?;
-    let mut parser_quota: Option<NativeAllocation> = None;
-    let bounds = JsonBounds { maximum_bytes, maximum_items: remaining.items_examined, maximum_depth: 64 };
-    let result = canonical_json_bytes_bounded_native_trusted(value, bounds, ErrorCode::Invalid, &mut |charge| {
-        if !matches!(charge, JsonCodecCharge::Release { .. }) {
-            work.cancellation().check().map_err(|_| native_error(NativeTreeMaterializationError::Cancelled))?;
-        }
-        match charge {
-            JsonCodecCharge::Admission { maximum_owned_bytes, .. } => {
-                let mut quota = work.retain_owned(0).map_err(native_error)?;
-                let parser_owned = maximum_owned_bytes.checked_sub(sdk_json_diagnostic_bytes())
-                    .ok_or(Error::NativeBoundary { code: ErrorCode::Invalid,
-                        reason: "SDK raw parser quota omits its diagnostic inventory" })?;
-                quota.resize_retained(parser_owned).map_err(native_error)?;
-                parser_quota = Some(quota);
-                Ok(())
-            }
-            JsonCodecCharge::Retain { bytes } if parser_quota.is_some() => {
-                let observed = custody.bytes().checked_add(bytes)
-                    .ok_or_else(|| native_error(NativeTreeMaterializationError::Work(WorkError::Overflow)))?;
-                let mut quota = parser_quota.take().unwrap();
-                custody.absorb(&mut quota).map_err(native_error)?;
-                custody.substitute(observed).map_err(native_error)
-            }
-            charge => native_buffer_codec_charge(work, &mut custody, charge),
-        }
-    });
-    match result {
-        Ok(bytes) => {
-            drop(parser_quota);
-            drop(diagnostic);
-            Ok((bytes, custody))
-        },
-        Err(Error::NativeEncode { code, source, custody: None }) => {
-            if let Some(mut quota) = parser_quota { diagnostic.absorb(&mut quota).map_err(native_error)?; }
-            if custody.bytes() != 0 { diagnostic.absorb(&mut custody).map_err(native_error)?; }
-            Err(Error::NativeEncode { code, source, custody: Some(diagnostic) })
-        },
-        Err(error @ Error::NativeWork { custody: None, .. }) if custody.bytes() == 0 => {
-            drop(custody);
-            Err(error)
-        }
-        Err(Error::NativeWork { cause, custody: None }) =>
-            Err(Error::NativeWork { cause, custody: Some(custody) }),
-        Err(error) => Err(error),
-    }
+    encode_pi(Some(maximum_bytes), None, work, |bounds, charge| {
+        canonical_json_bytes_bounded_native_trusted(value, bounds, ErrorCode::Invalid, &mut |event| charge(event))
+    })
 }
 
 /// The exact existing BLAKE3 identity over those canonical bytes.
@@ -1108,92 +1103,9 @@ pub(crate) fn guarded_pi_decode_with_code<T: DeserializeOwned>(
 pub(crate) fn guarded_pi_value<T: Serialize>(
     value: &T, maximum_owned_bytes: u64, work: &NativeMaterializationWork,
 ) -> Result<(serde_json::Value, NativeAllocation)> {
-    let native_error = |cause| Error::NativeWork { cause, custody: None };
-    let remaining = work.remaining().map_err(native_error)?;
-    let mut custody = work.retain_owned(0).map_err(native_error)?;
-    // Closed first-party serializers use the SDK's actual static encode/raw
-    // diagnostic inventory. Opaque custom Serialize diagnostics are outside
-    // this trusted helper's contract and require their own audited admission.
-    let mut diagnostic = work.retain_owned(sdk_json_diagnostic_bytes()).map_err(native_error)?;
-    // RawValue's existing codec branch admits opaque parser/schema scratch.
-    // This reservation is not a reported physical allocation; actual Value
-    // payload growth is owned separately through Retain callbacks below.
-    let mut parser_quota: Option<NativeAllocation> = None;
-    let bounds = JsonBounds {
-        maximum_bytes: remaining.bytes_encoded,
-        maximum_items: remaining.items_examined,
-        maximum_depth: 64,
-    };
-    let result = json_value_bounded_native_trusted(value, bounds, ErrorCode::Invalid, &mut |charge| {
-        // Release follows actual buffer destruction and is unconditional even
-        // when cancellation or a work limit interrupted the producer.
-        if let JsonCodecCharge::Release { bytes } = charge {
-            return custody.release(bytes).map_err(native_error);
-        }
-        work.cancellation().check()
-            .map_err(|_| native_error(NativeTreeMaterializationError::Cancelled))?;
-        match charge {
-
-            JsonCodecCharge::Retain { bytes } => {
-                let observed = custody.bytes().checked_add(bytes)
-                    .ok_or_else(|| native_error(NativeTreeMaterializationError::Work(WorkError::Overflow)))?;
-                if observed > maximum_owned_bytes {
-                    return Err(native_error(NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
-                        counter: "pi_value_owned_bytes", observed, maximum: maximum_owned_bytes,
-                    })));
-                }
-                if let Some(mut quota) = parser_quota.take() {
-                    // This is the already parsed RawValue's observed ownership,
-                    // not an observed allocator attempt. Transfer its admitted
-                    // opaque quota atomically on the same original ledger,
-                    // without an overlapping second claim or a live-byte gap.
-                    custody.absorb(&mut quota).map_err(native_error)?;
-                    custody.substitute(observed).map_err(native_error)?;
-                    Ok(())
-                } else {
-                    // Retain is logical custody, not an allocator observation.
-                    // The SDK reports genuine owned String/Vec attempts through
-                    // its separate AllocationOperation callback.
-                    custody.resize_retained(observed).map_err(native_error)
-                }
-            }
-            JsonCodecCharge::Admission { maximum_owned_bytes, .. } => {
-                // The next Retain is the original parser's observed Value.
-                // No actual allocator/node work is inferred from its quota.
-                let mut quota = work.retain_owned(0).map_err(native_error)?;
-                let parser_owned = maximum_owned_bytes.checked_sub(sdk_json_diagnostic_bytes())
-                    .ok_or(Error::NativeBoundary { code: ErrorCode::Invalid,
-                        reason: "SDK raw parser quota omits its diagnostic inventory" })?;
-                quota.resize_retained(parser_owned).map_err(native_error)?;
-                parser_quota = Some(quota);
-                Ok(())
-            }
-
-        charge => native_buffer_codec_charge(work, &mut custody, charge),}
-    });
-    match result {
-        Ok(value) => {
-            drop(parser_quota);
-            drop(diagnostic);
-            Ok((value, custody))
-        },
-        Err(Error::NativeEncode { code, source, custody: None }) => {
-            if let Some(mut quota) = parser_quota {
-                diagnostic.absorb(&mut quota).map_err(native_error)?;
-            }
-            if custody.bytes() != 0 {
-                diagnostic.absorb(&mut custody).map_err(native_error)?;
-            }
-            Err(Error::NativeEncode { code, source, custody: Some(diagnostic) })
-        },
-        Err(error @ Error::NativeWork { custody: None, .. }) if custody.bytes() == 0 => {
-            drop(custody);
-            Err(error)
-        }
-        Err(Error::NativeWork { cause, custody: None }) =>
-            Err(Error::NativeWork { cause, custody: Some(custody) }),
-        Err(error) => Err(error),
-    }
+    encode_pi(None, Some(maximum_owned_bytes), work, |bounds, charge| {
+        json_value_bounded_native_trusted(value, bounds, ErrorCode::Invalid, &mut |event| charge(event))
+    })
 }
 
 impl<P: StreamProvider + 'static> PiRootProvider<P> {

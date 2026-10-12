@@ -139,13 +139,14 @@ impl TryFrom<PreparedPiFork> for PreparedNative {
 }
 
 struct BoundEffect {
+    staged: Option<WorkflowCommand>,
+    plan: (TaskEffectPlan, NativeAllocation),
     runner: Arc<PiNativeRunner<LocalStream>>,
     effects: Arc<Effects>,
     owner: Arc<TaskJournalOwner<LocalStream>>,
     journal: Arc<Journal>,
     context: Arc<NativeTaskContext>,
     command: OperationId,
-    staged: Option<(WorkflowCommand, TaskEffectPlan, acyclic_fs::NativeAllocation)>,
 }
 
 impl BoundEffect {
@@ -1280,7 +1281,7 @@ impl PiNativeCommandHost {
             work).await.map_err(receipt_error)?);
         let effects = self.effects(context, input, &runner, work)?;
         let bound = Arc::new(BoundEffect { runner, effects, owner, journal, context: shared, command,
-            staged: None });
+            staged: None, plan });
         self.registered_entry(input.binding.task_id)?.handles.lock().await.effect = Some(bound.clone());
         Ok(bound)
     }
@@ -1299,7 +1300,8 @@ impl PiNativeCommandHost {
             handles.effect.clone()
         };
         let Some(bound) = retained else { return Ok(None); };
-        let Some((_, plan, _)) = bound.staged.as_ref() else { return Ok(None); };
+        if bound.staged.is_none() { return Ok(None); }
+        let plan = &bound.plan.0;
         if bound.command != command || plan.provider != effect.provider || plan.guarantee != effect.guarantee
             || plan.effect_kind != effect.effect_kind || plan.request != effect.request
             || plan.result_schema != effect.result_schema
@@ -1470,17 +1472,17 @@ impl PiNativeCommandHost {
         let result_volume = &prepared.binding.results.as_ref().ok_or_else(|| unauthorized("Pi result selection vanished"))?.volume;
         let result_context = Arc::clone(&shared).with_output_volume_with_native_work(result_volume, work)?;
         let request = intent.request_with_work(&prepared.binding, view.manifest(), work)?;
-        let (stock, plan, staged_custody) = pi_native::stage_command(result_context.context(),
+        let staged = pi_native::stage_command(result_context.context(),
             command.operation_id, &request.0, work).await?;
         let journal = self.journal(&owner, context, input, command.operation_id, work).await?;
         let approval = pi_native::approve_command(&self.protected, &owner, context, &prepared.binding,
             &intent.invocation, view.manifest(), command.operation_id, &journal, work).await?;
         let authority = self.authority(context, input, journal.clone(), work)?;
         let runner = Arc::new(PiNativeRunner::bind_with_work(owner.clone(), &prepared.binding, command.operation_id,
-            &plan, &intent.invocation, view, approval, authority, work).await?);
+            &staged.1, &intent.invocation, view, approval, authority, work).await?);
         let effects = self.effects(context, input, &runner, work)?;
         let bound = Arc::new(BoundEffect { runner, effects, owner, journal, context: shared,
-            command: command.operation_id, staged: Some((stock, plan, staged_custody)) });
+            command: command.operation_id, staged: Some(staged.0), plan: (staged.1, staged.2) });
         handles.effect = Some(bound.clone());
         Ok(bound)
     }
@@ -1573,8 +1575,8 @@ impl TaskCommandHost for PiNativeCommandHost {
             let recorded_effect = self.original_effect(context, input, command.operation_id, work).await?;
             if let Some(effect) = recorded_effect.0.as_ref() {
                 if let Some(bound) = self.retained_planned(input.binding.task_id, command.operation_id, effect).await? {
-                    let (stock, plan, _) = bound.staged.as_ref().ok_or_else(|| unauthorized("Pi retained launch lost its original plan"))?;
-                    let progress = self.execute_stock(shared, fence, stock.clone(), plan, &bound, work).await?;
+                    let stock = bound.staged.as_ref().ok_or_else(|| unauthorized("Pi retained launch lost its original plan"))?;
+                    let progress = self.execute_stock(shared, fence, stock.clone(), &bound.plan.0, &bound, work).await?;
                     return self.settle_progress(input.binding.task_id, progress).await;
                 }
                 let planned = effect.status == EffectStatus::Planned;
@@ -1582,25 +1584,25 @@ impl TaskCommandHost for PiNativeCommandHost {
                     command.operation_id, effect, work).await?;
                 if planned && recovery.runner.receipt_with_native_work(work).await.map_err(receipt_error)?.is_none() {
                     let bound = self.prepare_effect(Arc::clone(&shared), &input, owner, &command, intent, true, work).await?;
-                    let (stock, plan, _) = bound.staged.as_ref()
+                    let stock = bound.staged.as_ref()
                         .ok_or_else(|| unauthorized("Pi restored launch has no original staged plan"))?;
-                    if plan.provider != effect.provider || plan.guarantee != effect.guarantee
-                        || plan.effect_kind != effect.effect_kind || plan.request != effect.request
-                        || plan.result_schema != effect.result_schema
+                    if bound.plan.0.provider != effect.provider || bound.plan.0.guarantee != effect.guarantee
+                        || bound.plan.0.effect_kind != effect.effect_kind || bound.plan.0.request != effect.request
+                        || bound.plan.0.result_schema != effect.result_schema
                     {
                         return Err(unauthorized("Pi recovered Planned command changed its original effect plan"));
                     }
-                    let progress = self.execute_stock(shared, fence, stock.clone(), plan, &bound, work).await?;
+                    let progress = self.execute_stock(shared, fence, stock.clone(), &bound.plan.0, &bound, work).await?;
                     return self.settle_progress(input.binding.task_id, progress).await;
                 }
                 let progress = self.effect_progress(&recovery,
-                    recovery.runner.reconcile(&recovery.effects).await?).await?;
+                    recovery.runner.reconcile(&recovery.effects, &recovery.plan.0).await?).await?;
                 return self.settle_progress(input.binding.task_id, progress).await;
             }
             let bound = self.prepare_effect(Arc::clone(&shared), &input, owner, &command, intent, false, work).await?;
-            let (stock, plan, _) = bound.staged.as_ref()
+            let stock = bound.staged.as_ref()
                 .ok_or_else(|| unauthorized("Pi launch has no original staged plan"))?;
-            let progress = self.execute_stock(shared, fence, stock.clone(), plan, &bound, work).await?;
+            let progress = self.execute_stock(shared, fence, stock.clone(), &bound.plan.0, &bound, work).await?;
             self.settle_progress(input.binding.task_id, progress).await
         })
     }
@@ -1633,7 +1635,7 @@ impl TaskCommandHost for PiNativeCommandHost {
                 return Ok(TaskCommandProgress::Ready(Value::Null));
             };
             let bound = self.bind_recovery(shared, &input, owner, command.operation_id, effect, work).await?;
-            let progress = self.effect_progress(&bound, bound.runner.reconcile(&bound.effects).await?).await?;
+            let progress = self.effect_progress(&bound, bound.runner.reconcile(&bound.effects, &bound.plan.0).await?).await?;
             self.settle_progress(input.binding.task_id, progress).await
         })
     }

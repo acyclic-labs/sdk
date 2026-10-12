@@ -11,7 +11,6 @@ use acyclic_harness::{
     filesystem::FilesystemTaskRuntime,
     runtime::DurableTaskHost,
 };
-use std::sync::Arc;
 
 struct PiTaskSelection<'a> {
     binding: &'a PiTaskBinding,
@@ -171,10 +170,9 @@ where
 {
     let mut custody = Some(work.retain_owned(0).map_err(native_error)?);
     let mut tasks = session_tasks(state, work)?;
-    let _schema_custody = schema_custody(work)?;
-    let pi_definition = Arc::new(PiTaskMachine::new()).definition()?;
+    let pi_definition = PiTaskMachine::new_with_native_work(work)?.definition_with_native_work(work)?;
     let preparation_definition = if tasks.value.iter().any(|task| task.preparation.is_some()) {
-        Some(Arc::new(acyclic_harness::filesystem::ForkPreparationMachine::new()).definition()?)
+        Some(acyclic_harness::filesystem::ForkPreparationMachine::new_with_native_work(work)?.definition_with_native_work(work)?)
     } else { None };
     for task in &mut tasks.value {
         if let Some(preparation) = task.preparation {
@@ -186,7 +184,7 @@ where
             let child = decode_recovery_value::<PiTaskInput>(
                 std::mem::take(&mut request.value.child.input), acyclic_harness::JsonValueSchema::None, work)?;
             if admission.value.task != *preparation_definition.as_ref()
-                .expect("retained preparation definition").identity() || admission.value.parent != task.parent
+                .expect("retained preparation definition").0.identity() || admission.value.parent != task.parent
                 || request.value.child.parent != task.parent
                 || request.value.child.operation_id.into_bytes() != task.binding.task_id.into_bytes()
                 || child.value.binding != *task.binding
@@ -209,7 +207,7 @@ where
             None => PiTaskOrigin::RootState(state),
             Some(parent) => PiTaskOrigin::Child(parent),
         };
-        let input = authenticate_pi_task_inner(runtime, task.binding, origin, work, pi_definition.identity()).await?;
+        let input = authenticate_pi_task_inner(runtime, task.binding, origin, work, pi_definition.0.identity()).await?;
         authenticate_original_alias(runtime, task.binding.task_id, input.value.1,
             &input.value.0, task.alias, work).await?;
     }
@@ -320,9 +318,8 @@ where
     A: acyclic_fs::AsyncAuthorityStore + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
 {
-    let _schema_custody = schema_custody(work)?;
-    let definition = Arc::new(PiTaskMachine::new()).definition()?;
-    let admitted = authenticate_pi_task_inner(runtime, binding, origin, work, definition.identity()).await?;
+    let definition = PiTaskMachine::new_with_native_work(work)?.definition_with_native_work(work)?;
+    let admitted = authenticate_pi_task_inner(runtime, binding, origin, work, definition.0.identity()).await?;
     Ok((admitted.value.0, admitted.custody.expect("native authenticated input custody")))
 }
 
@@ -336,11 +333,7 @@ where
     A: acyclic_fs::AsyncAuthorityStore + 'static,
     O: acyclic_fs::AsyncObjectStore + 'static,
 {
-    let _metadata_custody = Some({
-        work.cancellation().check().map_err(|_| native_error(NativeTreeMaterializationError::Cancelled))?;
-        work.retain_owned(binding_metadata_quota(binding)?).map_err(native_error)
-    }?);
-    binding.validate(None, binding.project_volumes.keys().map(String::as_str), true)?;
+    binding.validate_with_native_work(None, binding.project_volumes.keys().map(String::as_str), true, work)?;
     let mut admission = observe_admission(runtime, binding.task_id, work).await?;
     let mut admitted = decode_recovery_value::<PiTaskInput>(
         std::mem::take(&mut admission.value.input), acyclic_harness::JsonValueSchema::None, work)?;
@@ -369,20 +362,20 @@ where
         .chain(std::iter::once(&binding.scratch.volume))
         .chain(binding.results.as_ref().map(|result| &result.volume))
     {
-        let read = volume.capability(acyclic_harness::conversation::VolumeOperation::Read)?;
-        if !admission.value.grants.contains(&read) {
+        let read = volume.capability_with_native_work(acyclic_harness::conversation::VolumeOperation::Read, work)?;
+        if !admission.value.grants.contains(&read.0) {
             return Err(invalid("Pi selection lacks its original read grant"));
         }
     }
-    let scratch_write = binding.scratch.volume.capability(acyclic_harness::conversation::VolumeOperation::Write)?;
-    if !admission.value.grants.contains(&scratch_write) {
+    let scratch_write = binding.scratch.volume.capability_with_native_work(acyclic_harness::conversation::VolumeOperation::Write, work)?;
+    if !admission.value.grants.contains(&scratch_write.0) {
         return Err(invalid("Pi scratch lacks its original write grant"));
     }
-    if let Some(result) = &binding.results
-        && !admission.value.grants.contains(
-            &result.volume.capability(acyclic_harness::conversation::VolumeOperation::Write)?)
-    {
-        return Err(invalid("Pi result storage lacks its original created write grant"));
+    if let Some(result) = &binding.results {
+        let write = result.volume.capability_with_native_work(acyclic_harness::conversation::VolumeOperation::Write, work)?;
+        if !admission.value.grants.contains(&write.0) {
+            return Err(invalid("Pi result storage lacks its original created write grant"));
+        }
     }
     // The moved input still owns SDK-produced strings. Transfer its actual
     // original producer guard, not merely a reconstructed DTO-size summary.
@@ -535,12 +528,6 @@ pub(crate) fn vector_slots<T>(count: usize, work: &NativeMaterializationWork) ->
     work.claim(bytes).map_err(native_error)
 }
 
-fn schema_custody(work: &NativeMaterializationWork) -> Result<Option<NativeAllocation>> {
-    // The two closed first-party machine/definition schemas plus their retained
-    // implementation identity sources. This opaque logical quota precedes
-    // construction; no allocator-node/RSS or hidden allocation count is claimed.
-    work.retain_owned(256 * 1024).map(Some).map_err(native_error)
-}
 
 fn checked_quota(left: u64, right: u64) -> Result<u64> {
     left.checked_add(right)

@@ -136,7 +136,7 @@ impl PiSession {
             }
         }
         if let Some(route) = self.state.routes.get(&commit.alias) {
-            self.spawn_validate_route(route, &commit, operations)?;
+            self.spawn_validate_route(route, &commit, operations, &work)?;
             let plan = plan.as_ref().ok_or_else(|| acyclic_harness::Error::Invalid("Pi created route lost its original immutable fork plan".to_owned()))?;
             self.spawn_validate_admitted(plan, owner.policy().maximum_payload_bytes, &work).await?;
             let (launch, launch_custody): (pi_native::PiNativeLaunchIntent, NativeAllocation) = self.spawn_input(owner,
@@ -423,7 +423,8 @@ impl PiSession {
             VolumeOwner::Agent(operations.agent))?;
         let results = VolumeRef::new(volume_provider, "native-results", VolumeClass::AgentPrivate,
             VolumeOwner::Agent(operations.agent))?;
-        let paths = pi_native::planned_native_paths(&self.resources, &self.state.root_session_id, task, Some(&root_key))?;
+        let paths = pi_native::planned_native_paths(&self.resources, &self.state.root_session_id, task, Some(&root_key), work)?;
+        let paths = &paths.0;
         let cut = pi_native::PiNativeSourceCut::deserialize(arguments.get("cut").ok_or_else(|| acyclic_harness::Error::Invalid("Pi spawn has no actual original SDK native source cut".to_owned()))?).map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
         let context = match arguments.get("context") {
             None | Some(Value::Null) => "scratch",
@@ -556,7 +557,7 @@ impl PiSession {
     fn spawn_validate_pending(&self, pending: &PendingSpawn, commit: &pi_fork::RetainedSpawnCommit,
         operations: pi_fork::PiForkOperations, work: &NativeMaterializationWork) -> acyclic_harness::Result<()> {
         let (key, project) = commit.child.project_volumes.iter().next().ok_or_else(|| acyclic_harness::Error::Invalid("Pi original pending lost its selected project".to_owned()))?;
-        let (paths, paths_custody) = pi_native::planned_native_paths_with_native_work(
+        let (paths, paths_custody) = pi_native::planned_native_paths(
             &self.resources, &self.state.root_session_id, commit.child.task_id, Some(key), work)?;
         let paths = paths;
         let (workspace, workspace_custody) = project.storage_name_with_native_work(work)?;
@@ -626,11 +627,12 @@ impl PiSession {
     }
 
     fn spawn_validate_route(&self, route: &Route, commit: &pi_fork::RetainedSpawnCommit,
-        operations: pi_fork::PiForkOperations) -> acyclic_harness::Result<()> {
+        operations: pi_fork::PiForkOperations, work: &NativeMaterializationWork) -> acyclic_harness::Result<()> {
         let PluginTaskBinding::Pi(binding) = &route.task_binding else { return Err(acyclic_harness::Error::Invalid("Pi original route is host-managed".to_owned())); };
         let key = commit.child.project_volumes.keys().next().ok_or_else(|| acyclic_harness::Error::Invalid("Pi original route lost its selected project".to_owned()))?;
         let paths = pi_native::planned_native_paths(&self.resources, &self.state.root_session_id,
-            commit.child.task_id, Some(key))?;
+            commit.child.task_id, Some(key), work)?;
+        let paths = &paths.0;
         if binding.task_id != commit.child.task_id || binding.agent_id != commit.child.agent_id
             || binding.native_session_id != commit.child.native_session_id || binding.project_volumes != commit.child.project_volumes
             || binding.scratch.volume != commit.child.scratch.volume

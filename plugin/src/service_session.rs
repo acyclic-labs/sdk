@@ -749,8 +749,9 @@ impl PiSession {
             Some(_) => return Err(RootError::Invalid("Pi root selector must be its retained identity".to_owned())),
         };
         let paths = pi_native::planned_native_paths(
-            &self.resources, &self.state.root_session_id, task, Some(key),
+            &self.resources, &self.state.root_session_id, task, Some(key), work,
         )?;
+        let paths = &paths.0;
         #[derive(Serialize)]
         struct Child<'a> {
             id: &'a str, task: TaskId, cwd: &'a Path,

@@ -61,10 +61,6 @@ struct PiObservedSourceReply<'a> {
     root_key: &'a str,
 }
 
-struct NativeOwned<T> {
-    value: T,
-    custody: acyclic_fs::NativeAllocation,
-}
 
 #[derive(Serialize)]
 struct BorrowedRootRequest<'a> {
@@ -164,7 +160,7 @@ impl<'a> PiForkHost<'a> {
 
     async fn context(&self, shared: Arc<NativeTaskContext>, fence: &LeaseFence,
         work: &NativeMaterializationWork)
-        -> Result<NativeOwned<(Arc<NativeTaskContext>, Arc<TaskJournalOwner<LocalStream>>, PiTaskInput)>> {
+        -> Result<((Arc<NativeTaskContext>, Arc<TaskJournalOwner<LocalStream>>, PiTaskInput), acyclic_fs::NativeAllocation)> {
         self.runtime.verify_owner_with_native_work(&self.protected, work)?;
         let context = shared.context();
         let task = context.durable_task_id().ok_or_else(|| unauthorized("Pi fork control has no original task"))?;
@@ -189,15 +185,15 @@ impl<'a> PiForkHost<'a> {
             let request = self.root_request(&input.0, work)?;
             crate::pi_root_provider::bind_root_output_context_with_native_work(shared, &owner,
                 self.protected.clone(), self.resources, self.filesystem.clone(), self.stream.clone(),
-                &request.value, work).await?
+                &request.0, work).await?
         } else {
             shared.with_output_volume_with_native_work(&input.0.binding.scratch.volume, work)?
         };
         admission.1.absorb(&mut input.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        Ok(NativeOwned { value: (shared, owner, input.0), custody: admission.1 })
+        Ok(((shared, owner, input.0), admission.1))
     }
 
-    fn root_request(&self, input: &PiTaskInput, work: &NativeMaterializationWork) -> Result<NativeOwned<PiRootRequest>> {
+    fn root_request(&self, input: &PiTaskInput, work: &NativeMaterializationWork) -> Result<(PiRootRequest, acyclic_fs::NativeAllocation)> {
         let PiTaskExecution::Host { root, .. } = &input.execution else {
             return Err(unauthorized("Pi original root input substituted a child"));
         };
@@ -206,12 +202,12 @@ impl<'a> PiForkHost<'a> {
     }
 
     fn decode<T: serde::de::DeserializeOwned, S: Serialize>(&self, value: &S,
-        label_bytes: u64, work: &NativeMaterializationWork) -> Result<NativeOwned<T>> {
+        label_bytes: u64, work: &NativeMaterializationWork) -> Result<(T, acyclic_fs::NativeAllocation)> {
         let maximum = self.protected.policy().maximum_payload_bytes;
         let bytes = crate::pi_root_provider::canonical_pi_value(value, maximum, work)?;
         let (value, custody) = crate::pi_root_provider::guarded_pi_decode(&bytes.0, maximum, maximum,
             acyclic_harness::JsonValueSchema::None, label_bytes, work)?;
-        Ok(NativeOwned { value, custody })
+        Ok((value, custody))
     }
 
     async fn source(&self, shared: &Arc<NativeTaskContext>, owner: &Arc<TaskJournalOwner<LocalStream>>,
@@ -291,7 +287,7 @@ impl<'a> PiForkHost<'a> {
         let root_key = plan.commit.child.project_volumes.keys().next().ok_or_else(|| invalid("Pi project missing"))?;
         let mut root = [0; 16];
         hex::decode_to_slice(root_key, &mut root).map_err(|_| invalid("Pi pending root identity is not canonical"))?;
-        let paths = crate::pi_native::planned_native_paths_with_native_work(self.resources,
+        let paths = crate::pi_native::planned_native_paths(self.resources,
             &self.retained.root_session_id, plan.commit.child.task_id, Some(root_key), work)?;
         if paths.0.cwd != plan.commit.launch.invocation.cwd || paths.0.session_file != plan.commit.launch.invocation.session_file {
             return Err(unauthorized("Pi SDK retained native paths differ from its original planned namespace"));
@@ -315,17 +311,16 @@ impl<'a> PiForkHost<'a> {
             workspace_name: &workspace.0,
             fork_key: PiForkOperations::new_with_native_work(plan.original, work)?.fork.into_bytes(),
             roots: BTreeMap::new(), mount_path: &paths.0.view_root, lifecycle: PendingSpawnLifecycle::Preparing };
-        let NativeOwned { value, custody } = self.decode(&pending, PENDING_DIAGNOSTIC_LABEL_BYTES, work)?;
+        let (value, custody) = self.decode(&pending, PENDING_DIAGNOSTIC_LABEL_BYTES, work)?;
         Ok((value, custody))
     }
 
-    fn push_pending(&self, record: (PendingSpawn, acyclic_fs::NativeAllocation), work: &NativeMaterializationWork) -> Result<()> {
-        let mut record = NativeOwned { value: record.0, custody: record.1 };
+    fn push_pending(&self, mut record: (PendingSpawn, acyclic_fs::NativeAllocation), work: &NativeMaterializationWork) -> Result<()> {
         let mut pending = self.pending.lock().map_err(|_| invalid("Pi pending control lock poisoned"))?;
         if let Some((records, custody)) = pending.as_mut() {
             if records.len() < records.capacity() {
-                custody.absorb(&mut record.custody).map_err(native_error)?;
-                records.push(record.value);
+                custody.absorb(&mut record.1).map_err(native_error)?;
+                records.push(record.0);
                 return Ok(());
             }
         }
@@ -343,7 +338,7 @@ impl<'a> PiForkHost<'a> {
             .ok_or_else(|| invalid("Pi pending observed capacity overflows"))? as u64;
         replacement.1.resize_retained(actual).map_err(native_error)?;
         if let Some((records, custody)) = pending.as_mut() {
-            custody.absorb(&mut record.custody).map_err(native_error)?;
+            custody.absorb(&mut record.1).map_err(native_error)?;
             custody.absorb(&mut replacement.1).map_err(native_error)?;
             let old_bytes = records.capacity().checked_mul(std::mem::size_of::<PendingSpawn>())
                 .ok_or_else(|| invalid("Pi pending previous capacity overflows"))? as u64;
@@ -355,25 +350,25 @@ impl<'a> PiForkHost<'a> {
             }
             replacement.1 = previous.1;
         } else {
-            replacement.1.absorb(&mut record.custody).map_err(native_error)?;
+            replacement.1.absorb(&mut record.1).map_err(native_error)?;
         }
         if let Err(cause) = work.spent(WorkCounters { bytes_copied: copied, ..WorkCounters::UNCHARGED }) {
             *pending = Some(replacement);
             return Err(native_error(cause));
         }
-        replacement.0.push(record.value);
+        replacement.0.push(record.0);
         *pending = Some(replacement);
         Ok(())
     }
 
     async fn fork(&self, shared: Arc<NativeTaskContext>, fence: LeaseFence, command: WorkflowCommand,
         payload: Value, reconcile: bool, work: &NativeMaterializationWork) -> Result<TaskCommandProgress> {
-        let mut supplied: NativeOwned<PiForkCommand> = self.decode(&payload, FORK_COMMAND_DIAGNOSTIC_LABEL_BYTES, work)?;
-        supplied.value.commit.launch.invocation.environment.retain(|key, _| !reserved_key(key));
-        let input = supplied.value;
+        let mut supplied: (PiForkCommand, acyclic_fs::NativeAllocation) = self.decode(&payload, FORK_COMMAND_DIAGNOSTIC_LABEL_BYTES, work)?;
+        supplied.0.commit.launch.invocation.environment.retain(|key, _| !reserved_key(key));
+        let input = supplied.0;
         let cancel = work.cancellation().clone();
         let actual = self.context(shared, &fence, work).await?;
-        let (shared, owner, caller) = &actual.value;
+        let (shared, owner, caller) = &actual.0;
         let context = shared.context();
         let original = original_operation_with_native_work(self.protected.policy().root_task, owner.task_id(), &input.commit.sdk_operation, &work)?;
         let operations = PiForkOperations::new_with_native_work(original, &work)?;
@@ -397,16 +392,15 @@ impl<'a> PiForkHost<'a> {
         let (source, frozen, _source_custody) = self.source(shared, owner, caller, &input, existing.as_ref(), work).await?;
         let conversation = self.protected.conversation_authority_with_native_work(owner.task_id(),
             caller.binding.agent_id, context.scope().grants(), work)?;
-        let mut authority = NativeOwned { value: conversation.0, custody: conversation.1 };
-        let verifier = authority.value.1.verifier_with_native_work(work)?;
-        let mut verifier = NativeOwned { value: verifier.0, custody: verifier.1 };
-        let parent = StreamAggregate::open_with_native_work(&self.stream, authority.value.0,
-            verifier.value, SchemaRegistry::new(), work).await?;
+        let mut authority = (conversation.0, conversation.1);
+        let mut verifier = authority.0.1.verifier_with_native_work(work)?;
+        let parent = StreamAggregate::open_with_native_work(&self.stream, authority.0.0,
+            verifier.0, SchemaRegistry::new(), work).await?;
         let mut parent_custody = parent.1;
-        drop(authority.value.1);
-        drop(authority.value.2);
-        parent_custody.absorb(&mut authority.custody).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        parent_custody.absorb(&mut verifier.custody).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        drop(authority.0.1);
+        drop(authority.0.2);
+        parent_custody.absorb(&mut authority.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        parent_custody.absorb(&mut verifier.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let parent = parent.0.with_limits(context.scope().limits())?;
         let plan = coordinator.begin(shared, owner, &fence, parent, source.clone(), frozen, input.commit, ForkPreparationLimits { resources: 128, work: 1_000_000,
             bytes: self.protected.policy().maximum_payload_bytes }, remaining(&work)?, cancel.clone()).await?;
@@ -416,7 +410,7 @@ impl<'a> PiForkHost<'a> {
             let root_key = plan.commit.child.project_volumes.keys().next().ok_or_else(|| invalid("Pi child project missing"))?;
             let mut root = [0; 16];
             hex::decode_to_slice(root_key, &mut root).map_err(|_| invalid("Pi pending root identity is not canonical"))?;
-            let paths = crate::pi_native::planned_native_paths_with_native_work(self.resources, &self.retained.root_session_id,
+            let paths = crate::pi_native::planned_native_paths(self.resources, &self.retained.root_session_id,
                 plan.commit.child.task_id, Some(root_key), work)?;
             let workspace = plan.commit.child.project_volumes.values().next().ok_or_else(|| invalid("Pi child project missing"))?
                 .storage_name_with_native_work(work)?;
@@ -456,11 +450,11 @@ impl<'a> PiForkHost<'a> {
 
     async fn observe_source(&self, shared: Arc<NativeTaskContext>, fence: LeaseFence, command: WorkflowCommand,
         payload: Value, work: &NativeMaterializationWork) -> Result<TaskCommandProgress> {
-        let supplied: NativeOwned<PiObserveSourceCommand> = self.decode(&payload, OBSERVE_COMMAND_DIAGNOSTIC_LABEL_BYTES, work)?;
-        let input = supplied.value;
+        let supplied: (PiObserveSourceCommand, acyclic_fs::NativeAllocation) = self.decode(&payload, OBSERVE_COMMAND_DIAGNOSTIC_LABEL_BYTES, work)?;
+        let input = supplied.0;
         let cancel = work.cancellation().clone();
         let actual_context = self.context(shared, &fence, work).await?;
-        let (shared, owner, caller) = &actual_context.value;
+        let (shared, owner, caller) = &actual_context.0;
         let context = shared.context();
         let original = original_operation_with_native_work(self.protected.policy().root_task, input.caller, &input.sdk_operation, &work)?;
         if owner.task_id() != self.protected.policy().root_task || input.sdk_operation.is_empty()
