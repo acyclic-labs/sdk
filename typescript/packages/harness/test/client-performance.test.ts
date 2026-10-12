@@ -12,7 +12,7 @@ const domain: ClientDomain<Value, null, Evidence> = {
 };
 await ClientViews.initialize();
 
-test("warm snapshots allocate no new snapshot objects or wire bytes; demand residency plateaus", () => {
+test("cold reconciliation measures discarded speculation; warm snapshots and demand residency plateau", () => {
   let snapshots = 0;
   class Measured extends ClientViews<Value, null, Evidence> {
     override view(...args: Parameters<ClientViews<Value, null, Evidence>["view"]>) {
@@ -29,6 +29,43 @@ test("warm snapshots allocate no new snapshot objects or wire bytes; demand resi
     return performance.now() - start;
   };
   try {
+    const equivalent = new Measured(domain, "6", 0n, limits);
+    const coldStart = performance.now();
+    client.observe("0", { fact: { key: "0", basis: "0", value, bytes: 256 }, operation: null, work: 1 });
+    const predicted = Object.freeze({ ref: "discarded-prediction" });
+    const branch = client.begin({ key: "0", basis: "0", operation: "original", predicted, assumption: null, dependencies: [], expires: 5n });
+    const beforeColdSnapshots = snapshots;
+    const speculative = client.select("0", [branch]);
+    const coldSnapshotAllocations = snapshots - beforeColdSnapshots;
+    const coldMs = performance.now() - coldStart;
+    const speculativeBytes = client.residency()[3];
+    const storedBytes = new TextEncoder().encode(JSON.stringify(client.checkpoint(branch), (_, item) => typeof item === "bigint" ? String(item) : item)).byteLength;
+    let speculativeNotifications = 0;
+    speculative.subscribe(() => speculativeNotifications++);
+    const baselineStart = performance.now();
+    equivalent.observe("0", { fact: { key: "0", basis: "0", value, bytes: 256 }, operation: null, work: 1 });
+    const authoritative = equivalent.select("0");
+    const nonSpeculativeColdMs = performance.now() - baselineStart;
+    let authoritativeNotifications = 0;
+    authoritative.subscribe(() => authoritativeNotifications++);
+    const confirmation = { fact: { key: "0", basis: "1", value, bytes: 256 }, operation: ["original", "Completed"] as const, work: 1 };
+    const reconcileStart = performance.now();
+    const speculativeWork = client.observe("0", confirmation).work;
+    const reconcileMs = performance.now() - reconcileStart;
+    const authoritativeWork = equivalent.observe("0", confirmation).work;
+    expect(speculative.getSnapshot().value).toBe(authoritative.getSnapshot().value);
+    expect(speculative.getSnapshot().branch).toBeNull();
+    expect(client.checkpoint(branch).prediction).toBe("Replaced");
+    expect(speculativeNotifications).toBe(authoritativeNotifications);
+    expect(speculativeWork).toBeGreaterThan(authoritativeWork);
+    expect(coldMs + reconcileMs).toBeLessThan(Math.max(20, nonSpeculativeColdMs * 20));
+    expect(storedBytes).toBeGreaterThan(0);
+    expect(speculativeBytes).toBeGreaterThan(equivalent.residency()[3]);
+    speculative.dispose(); client.discard(branch);
+    const discardedResidentBytes = speculativeBytes - client.residency()[3];
+    expect(discardedResidentBytes).toBeGreaterThan(0);
+    expect(client.residency()).toEqual(equivalent.residency());
+    authoritative.dispose(); equivalent.dispose(); client.release("0");
     for (const count of [1, 8, 16]) {
       for (let i = loaded; i < count; i++) {
         client.observe(String(i), { fact: { key: String(i), basis: "0", value, bytes: 256 }, operation: null, work: 1 });
@@ -59,6 +96,6 @@ test("warm snapshots allocate no new snapshot objects or wire bytes; demand resi
     stop(); selected.dispose(); baseline.dispose();
     for (let i = 0; i < 16; i++) client.release(String(i));
     expect(client.residency()).toEqual([0, 0, 0, 0]);
-    console.log(JSON.stringify({ clientViewsBaseline: { records: [1, 8, 16], accountedResidentBytes: resident, warmReads: 100_000, baselineMs, warmMs, snapshotAllocations: snapshots - beforeSnapshots, transferredBytes: 0, duplicateNotifications: notifications } }));
+    console.log(JSON.stringify({ clientViewsBaseline: { records: [1, 8, 16], accountedResidentBytes: resident, coldMs, coldSnapshotAllocations, reconcileMs, nonSpeculativeColdMs, speculativeWork, authoritativeWork, speculativeBytes, storedBytes, discardedResidentBytes, discardedPredictions: 1, speculativeNotifications, authoritativeNotifications, warmReads: 100_000, baselineMs, warmMs, snapshotAllocations: snapshots - beforeSnapshots, transferredBytes: 0, duplicateNotifications: notifications } }));
   } finally { client.dispose(); }
 });
