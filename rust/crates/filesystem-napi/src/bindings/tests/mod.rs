@@ -1,6 +1,5 @@
 use super::*;
-
-use super::*;
+use acyclic_fs::WorkBudget;
 
 #[test]
 fn native_work_json_preserves_full_u64_values() {
