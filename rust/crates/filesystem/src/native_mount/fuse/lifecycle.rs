@@ -1,12 +1,10 @@
 use super::*;
 
-/// Crash recovery paired with the root owner's original fence.
+/// Crash recovery paired with the original destination fence.
 #[derive(Default)]
 pub(in crate::native_mount) struct FuseRecoveryControl {
     pub(super) helper: Option<acyclic_native_runtime::ProcessTree>,
     pub(super) helper_work: Option<crate::NativeMaterializationWork>,
-    // A retained helper without a deadline failed during spawn cleanup.
-    pub(super) deadline: Option<std::time::Instant>,
     pub(super) detached: bool,
 }
 
@@ -14,108 +12,86 @@ impl FuseRecoveryControl {
     pub(in crate::native_mount) fn namespace_detach_confirmed(&self) -> bool {
         self.detached
     }
-
     pub(in crate::native_mount) fn controls_pending(&self) -> bool {
         self.helper.is_some()
     }
-
     pub(in crate::native_mount) fn retire_controls(
         &mut self,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
-        if let Some(helper) = &mut self.helper {
+        if let Some(helper) = self.helper.as_mut() {
             helper
                 .terminate(Some(work.runtime_meter().as_ref()))
                 .map_err(|error| work.runtime_error(error))?;
         }
         self.helper.take();
         self.helper_work.take();
-        self.deadline = None;
         Ok(())
     }
-
-    /// Recovers the namespace using the supplied administrative work.
     pub(in crate::native_mount) fn recover(
         &mut self,
         destination: &Path,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
         work.admit(crate::WorkCounters::UNCHARGED)?;
-        let mounted = fuse_recovery_is_mounted(destination, work)?;
-        self.detached = !mounted;
-        if self.helper.is_some() && (!mounted || self.deadline.is_none()) {
-            self.retire_controls(work)?;
-        }
-        if !mounted {
+        self.detached = !fuse_recovery_is_mounted(destination, work)?;
+        self.retire_controls(work)?;
+        if self.detached {
             return Ok(());
         }
-        if self.helper.is_none() {
-            let direct = crate::native_host::unix_name(
-                destination.as_os_str(),
-                &mut &*work,
-                |path, work| {
-                    crate::native_host::NativeHostWork::attempt_io(
-                        work,
-                        crate::WorkCounters {
-                            backend_write_operations: 1,
-                            ..crate::WorkCounters::UNCHARGED
-                        },
-                        || {
-                            // SAFETY: the terminated pathname lives through the syscall.
-                            if unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) } == 0 {
-                                Ok(())
-                            } else {
-                                Err(std::io::Error::last_os_error())
-                            }
-                        },
-                    )
-                },
-            );
-            if let Err(error) = direct {
-                if !matches!(&error, crate::NativeTreeMaterializationError::Io(_)) {
-                    return Err(error.into());
-                }
+        let direct =
+            crate::native_host::unix_name(destination.as_os_str(), &mut &*work, |path, work| {
+                crate::native_host::NativeHostWork::attempt_io(
+                    work,
+                    crate::WorkCounters {
+                        backend_write_operations: 1,
+                        ..crate::WorkCounters::UNCHARGED
+                    },
+                    || {
+                        // SAFETY: the terminated pathname lives through the syscall.
+                        if unsafe { libc::umount2(path.as_ptr(), libc::MNT_DETACH) } == 0 {
+                            Ok(())
+                        } else {
+                            Err(std::io::Error::last_os_error())
+                        }
+                    },
+                )
+            });
+        if let Err(error) = direct {
+            if !matches!(&error, crate::NativeTreeMaterializationError::Io(_)) {
+                return Err(error.into());
             }
-            if !fuse_recovery_is_mounted(destination, work)? {
-                self.detached = true;
-                return Ok(());
-            }
-            let program = fuse_recovery_helper(work)?;
-            self.helper_work = Some(work.clone());
-            let spawned = crate::native_host::unix_name(
-                destination.as_os_str(),
-                &mut &*work,
-                |path, work| {
-                    acyclic_native_runtime::ProcessTree::spawn_closed_measured(
-                        program,
-                        &[c"-u", c"-q", c"-z", c"--", path],
-                        work.runtime_meter().as_ref(),
-                        &mut self.helper,
-                    )
-                    .map_err(|error| work.runtime_error(error))
-                },
-            );
-            if self.helper.is_none() {
-                self.helper_work.take();
-            }
-            spawned?;
-            self.deadline = Some(std::time::Instant::now() + Duration::from_secs(30));
         }
-        loop {
-            if self
-                .helper
-                .as_mut()
-                .expect("accepted helper remains owned")
-                .try_wait(Some(work.runtime_meter().as_ref()))
-                .map_err(|error| work.runtime_error(error))?
-                .is_some()
-            {
-                break;
-            }
-            if self
-                .deadline
-                .is_some_and(|deadline| std::time::Instant::now() >= deadline)
-            {
+        if !fuse_recovery_is_mounted(destination, work)? {
+            self.detached = true;
+            return Ok(());
+        }
+        let program = fuse_recovery_helper(work)?;
+        self.helper_work = Some(work.clone());
+        let spawned =
+            crate::native_host::unix_name(destination.as_os_str(), &mut &*work, |path, work| {
+                acyclic_native_runtime::ProcessTree::spawn_closed_measured(
+                    program,
+                    &[c"-u", c"-q", c"-z", c"--", path],
+                    work.runtime_meter().as_ref(),
+                    &mut self.helper,
+                )
+                .map_err(|error| work.runtime_error(error))
+            });
+        if self.helper.is_none() {
+            self.helper_work.take();
+        }
+        spawned?;
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while self
+            .helper
+            .as_mut()
+            .expect("accepted helper")
+            .try_wait(Some(work.runtime_meter().as_ref()))
+            .map_err(|error| work.runtime_error(error))?
+            .is_none()
+        {
+            if std::time::Instant::now() >= deadline {
                 self.retire_controls(work)?;
                 return Err(NativeMountError::Lifecycle(
                     "fusermount crash recovery exceeded 30 seconds",
@@ -134,20 +110,21 @@ impl FuseRecoveryControl {
             )?;
         }
         self.retire_controls(work)?;
-        if fuse_recovery_is_mounted(destination, work)? {
-            return Err(NativeMountError::Lifecycle(
+        self.detached = !fuse_recovery_is_mounted(destination, work)?;
+        if self.detached {
+            Ok(())
+        } else {
+            Err(NativeMountError::Lifecycle(
                 "FUSE destination remained mounted after crash recovery",
-            ));
+            ))
         }
-        self.detached = true;
-        Ok(())
     }
 }
 
 pub(super) fn fuse_recovery_stat<W: crate::native_host::NativeHostWork>(
     path: &std::ffi::CStr,
     work: &mut W,
-) -> Result<libc::stat, W::Error> {
+) -> Result<rustix::fs::Stat, W::Error> {
     loop {
         let result = crate::native_host::NativeHostWork::attempt_io(
             work,
@@ -155,15 +132,7 @@ pub(super) fn fuse_recovery_stat<W: crate::native_host::NativeHostWork>(
                 backend_read_operations: 1,
                 ..crate::WorkCounters::UNCHARGED
             },
-            || {
-                let mut metadata = std::mem::MaybeUninit::<libc::stat>::uninit();
-                // SAFETY: pathname is terminated; success initializes all fields.
-                if unsafe { libc::stat(path.as_ptr(), metadata.as_mut_ptr()) } == 0 {
-                    Ok(unsafe { metadata.assume_init() })
-                } else {
-                    Err(std::io::Error::last_os_error())
-                }
-            },
+            || rustix::fs::stat(path).map_err(std::io::Error::from),
         );
         if result
             .as_ref()
@@ -201,7 +170,7 @@ pub(super) fn fuse_recovery_is_mounted(
     }
 }
 
-pub(super) fn fuse_recovery_helper(
+fn fuse_recovery_helper(
     work: &crate::NativeMaterializationWork,
 ) -> Result<&'static std::ffi::CStr, NativeMountError> {
     for candidate in [
@@ -215,7 +184,7 @@ pub(super) fn fuse_recovery_helper(
             Ok(metadata) if metadata.st_mode & libc::S_IFMT == libc::S_IFREG => {
                 return Ok(candidate);
             }
-            Ok(_) | Err(crate::NativeTreeMaterializationError::Io(_)) => {}
+            Ok(_) | Err(crate::NativeTreeMaterializationError::Io(_)) => (),
             Err(error) => return Err(error.into()),
         }
     }

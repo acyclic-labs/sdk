@@ -107,6 +107,12 @@ impl Drop for NativeMountWorkScope {
 }
 
 impl ProjectionCore {
+    pub(super) fn stop(&self) {
+        self.stopping.store(true, Ordering::Release);
+        let _state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        self.invalidation.notify_all();
+    }
+
     pub(super) fn new(
         source: Arc<dyn MountFilesystem>,
         root: MountLookup,

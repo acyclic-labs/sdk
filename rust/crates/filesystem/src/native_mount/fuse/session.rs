@@ -1,8 +1,131 @@
 use super::*;
 
 pub(in crate::native_mount) struct FuseSession {
-    pub(super) control: Arc<FuseDriverControl>,
+    pub(super) core: Arc<ProjectionCore>,
+    pub(super) state: Arc<Mutex<FuseSessionState>>,
     pub(super) invalidator: Option<std::thread::JoinHandle<()>>,
+}
+
+pub(super) struct FuseSessionState {
+    pub(super) path: FuseOwned<Vec<u8>>,
+    pub(super) before: crate::NativeRootIdentity,
+    pub(super) detached: bool,
+    pub(super) unmounter: Option<fuser::SessionUnmounter>,
+    pub(super) worker: Option<std::thread::JoinHandle<std::io::Result<()>>>,
+    pub(super) device: Option<OwnedFd>,
+    pub(super) active_root: Option<cap_std::fs::Dir>,
+    pub(super) identity: Option<crate::NativeRootIdentity>,
+    pub(super) retirement: Option<crate::native_mount::NativeMountRetirement>,
+    pub(super) cleanup: crate::NativeWorkReservation,
+    pub(super) failure: Option<NativeMountError>,
+    pub(super) _allocation: crate::NativeAllocation,
+}
+
+impl FuseSessionState {
+    pub(super) fn is_retired(&self) -> bool {
+        self.worker.is_none()
+            && self.detached
+            && self.unmounter.is_none()
+            && self.device.is_none()
+            && self.active_root.is_none()
+            && self
+                .retirement
+                .as_ref()
+                .is_none_or(crate::native_mount::NativeMountRetirement::is_retired)
+    }
+
+    fn stop(
+        &mut self,
+        core: &Arc<ProjectionCore>,
+        work: Option<&crate::NativeMaterializationWork>,
+    ) -> Result<(), NativeMountError> {
+        if self.is_retired() {
+            return Ok(());
+        }
+        let credit = self.cleanup.loan(None);
+        let _active =
+            NativeMountWorkScope::new(core, work.unwrap_or_else(|| credit.credit.work()))?;
+        let started = |actual| -> Result<(), NativeMountError> {
+            match work {
+                Some(work) => work.charge(actual)?,
+                None => credit.started_io(actual)?,
+            }
+            Ok(())
+        };
+        if self.active_root.is_some() {
+            started(crate::WorkCounters {
+                backend_write_operations: 1,
+                ..crate::WorkCounters::UNCHARGED
+            })?;
+            drop(self.active_root.take());
+        }
+        if let Some(unmounter) = self.unmounter.as_mut() {
+            started(crate::WorkCounters {
+                backend_write_operations: 1,
+                ..crate::WorkCounters::UNCHARGED
+            })?;
+            core.stop();
+            unmounter.unmount()?;
+            if let Some(device) = self.device.as_ref() {
+                let mut poll = libc::pollfd {
+                    fd: device.as_raw_fd(),
+                    events: 0,
+                    revents: 0,
+                };
+                // SAFETY: poll owns one initialized descriptor record.
+                if unsafe { libc::poll(&mut poll, 1, 0) } < 0 {
+                    return Err(std::io::Error::last_os_error().into());
+                }
+                if poll.revents & libc::POLLERR == 0 {
+                    return Err(NativeMountError::FuseShutdownFailed);
+                }
+            }
+            self.unmounter.take();
+            self.device.take();
+        } else if !self.detached
+            && self
+                .retirement
+                .as_ref()
+                .is_some_and(|packet| !packet.is_retired())
+        {
+            let path =
+                std::ffi::CStr::from_bytes_with_nul(&self.path).expect("terminated destination");
+            let metadata = match work {
+                Some(work) => fuse_recovery_stat(path, &mut &*work)?,
+                None => {
+                    started(crate::WorkCounters {
+                        backend_read_operations: 1,
+                        ..crate::WorkCounters::UNCHARGED
+                    })?;
+                    rustix::fs::stat(path).map_err(std::io::Error::from)?
+                }
+            };
+            if (metadata.st_dev as u64, metadata.st_ino as u64)
+                != (self.before.device, self.before.object)
+            {
+                return Err(NativeMountError::FuseShutdownFailed);
+            }
+        }
+        self.detached = true;
+        if self.worker.is_some() {
+            started(crate::WorkCounters {
+                backend_read_operations: 1,
+                ..crate::WorkCounters::UNCHARGED
+            })?;
+            self.worker
+                .take()
+                .expect("accepted SDK worker")
+                .join()
+                .map_err(|panic| NativeMountError::DriverPanicked {
+                    operation: "FUSE SDK request worker",
+                    panic: Mutex::new(panic),
+                })??;
+        }
+        if let Some(retirement) = self.retirement.as_mut() {
+            retirement.retire(None)?;
+        }
+        Ok(())
+    }
 }
 
 impl FuseSession {
@@ -46,449 +169,255 @@ impl FuseSession {
         )?;
         let _startup = NativeMountWorkScope::new(&core, work)?;
         core.source
-            .observe_view_with_meter(Arc::<ProjectionCore>::downgrade(&core), work)?;
-        let mut config = Config::default();
-        config.n_threads = Some(8);
-        let mount = FuseMount::prepare(&request.destination, work)?;
-        let birth_cleanup = work.reserve_work(crate::WorkCounters {
-            backend_write_operations: 3,
-            backend_read_operations: 2,
+            .observe_view_with_meter(Arc::downgrade(&core), work)?;
+        let allocation = work.claim(
+            (std::mem::size_of::<Mutex<FuseSessionState>>()
+                + std::mem::size_of::<(Arc<ProjectionCore>, Arc<Mutex<FuseSessionState>>)>()
+                + std::mem::size_of::<(fuser::Session<FuseProjection>, Arc<ProjectionCore>)>())
+                as u64,
+            3,
+            crate::WorkCounters::UNCHARGED,
+        )?;
+        let cleanup = work.reserve_work(crate::WorkCounters {
+            backend_write_operations: 2,
+            backend_read_operations: 3,
             ..crate::WorkCounters::UNCHARGED
         })?;
-        let normal = work.allocation_work();
-        let retirement_helper = match fuse_recovery_helper(&normal) {
-            Ok(program) => Some(FuseRetirementHelper::prepare(program, &normal)?),
-            Err(NativeMountError::CapabilityUnavailable(_)) => None,
-            Err(error) => return Err(error),
-        };
-        let control_allocation = normal.claim(
-            std::mem::size_of::<FuseDriverControl>() as u64,
-            1,
-            crate::WorkCounters::UNCHARGED,
+        let bytes = request.destination.as_os_str().as_bytes();
+        let mut path = fuse_vec(
+            bytes
+                .len()
+                .checked_add(1)
+                .ok_or(crate::WorkError::Overflow)?,
+            work,
         )?;
-        let control = Arc::new(FuseDriverControl {
-            state: Mutex::new(FuseDriverControlState {
-                sdk_session: None,
-                physical: Some(FusePhysicalSession {
-                    session: None,
-                    sdk_worker: None,
-                    active_root: None,
-                    native_root_identity: None,
-                    retirement_helper,
-                    birth_cleanup,
-                }),
-                retirement: None,
-                loan_custody: (false, false),
-                startup_finished: false,
-                stop_requested: false,
-                retired: false,
-                failure: None,
-            }),
-            changed: Condvar::new(),
-            core: Arc::clone(&core),
-            _allocation: control_allocation,
-        });
-        let allocation = normal.claim(
-            std::mem::size_of::<(Arc<FuseDriverControl>, crate::NativeAllocation)>() as u64,
-            1,
-            crate::WorkCounters::UNCHARGED,
-        )?;
-        let job = (Arc::clone(&control), allocation);
+        fuse_copy_admit(bytes.len() as u64, work)?;
+        path.extend_from_slice(bytes);
+        path.push(0);
+        fuse_copy_record(bytes.len() as u64, work)?;
+        let state = Arc::new(Mutex::new(FuseSessionState {
+            path,
+            before: crate::NativeRootIdentity {
+                device: metadata.st_dev as u64,
+                object: metadata.st_ino as u64,
+            },
+            detached: false,
+            unmounter: None,
+            worker: None,
+            device: None,
+            active_root: None,
+            identity: None,
+            retirement: None,
+            cleanup,
+            failure: None,
+            _allocation: allocation,
+        }));
+        let job = (Arc::clone(&core), Arc::clone(&state));
+        let mut started = state.lock().unwrap_or_else(PoisonError::into_inner);
         work.charge(crate::WorkCounters {
             backend_write_operations: 1,
             ..crate::WorkCounters::UNCHARGED
         })?;
-        let invalidator = std::thread::Builder::new().spawn(move || run_fuse_retirement(job))?;
+        let invalidator = std::thread::Builder::new().spawn(move || run_fuse_session(job))?;
         *out = Some(Self {
-            control: Arc::clone(&control),
+            core: Arc::clone(&core),
+            state: Arc::clone(&state),
             invalidator: Some(invalidator),
         });
-        control
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .retirement = retirement.take();
-        let mut loan = FuseDriverLoan::take(&control)?;
-        let allocation = normal.claim(
-            std::mem::size_of::<(Arc<FuseDriverControl>, crate::NativeAllocation)>() as u64,
-            1,
-            crate::WorkCounters::UNCHARGED,
-        )?;
-        let job = (Arc::clone(&control), allocation);
-        work.charge(crate::WorkCounters {
-            backend_write_operations: 1,
-            ..crate::WorkCounters::UNCHARGED
-        })?;
-        loan.physical
-            .as_mut()
-            .expect("constructor owns original driver")
-            .sdk_worker = Some(std::thread::Builder::new().spawn(move || run_fuse_sdk(job))?);
-        if let Some(packet) = loan.retirement.as_mut() {
-            prepare(packet)?;
-        }
-        work.charge(crate::WorkCounters {
-            backend_write_operations: 1,
-            ..crate::WorkCounters::UNCHARGED
-        })?;
-        let physical = loan
-            .physical
-            .as_mut()
-            .expect("constructor owns original driver");
-        physical.session = Some(mount);
-        let filesystem = FuseProjection {
-            core: Arc::clone(&control.core),
-            skips_opendir: false,
-            skips_open: false,
-        };
-        let mount = physical
-            .session
-            .as_mut()
-            .ok_or(NativeMountError::ControlPending)?;
-        if let Err(error) = mount.start(request.writable, metadata.st_mode) {
-            return Err(core
-                .take_handler_failure()
-                .map(|failure| failure.0)
-                .unwrap_or_else(|| error.into()));
-        }
-        let fd = mount
-            .device
-            .as_ref()
-            .ok_or(NativeMountError::ControlPending)?
-            .try_clone()?;
-        let session =
-            fuser::Session::from_fd(filesystem, fd, config.acl, config).map_err(|error| {
-                core.take_handler_failure()
-                    .map(|failure| failure.0)
-                    .unwrap_or_else(|| error.into())
-            })?;
-        let _ = core.notifier.set(session.notifier());
-        control.submit_sdk(Some(session));
-        if let Some(helper) = mount.helper.as_mut() {
-            let status = helper.wait()?;
-            mount.helper.take();
-            if !status.success() {
-                return Err(NativeMountError::FuseShutdownFailed);
+        started.retirement = retirement.take();
+        let result = (|| {
+            if let Some(packet) = started.retirement.as_mut() {
+                prepare(packet)?;
             }
+            let mut config = Config::default();
+            config.mount_options = vec![
+                fuser::MountOption::FSName("acyclic-fs".to_owned()),
+                fuser::MountOption::DefaultPermissions,
+                fuser::MountOption::Exec,
+                fuser::MountOption::NoAtime,
+            ];
+            if !request.writable {
+                config.mount_options.push(fuser::MountOption::RO);
+            }
+            config.n_threads = Some(8);
+            config.clone_fd = false;
+            work.charge(crate::WorkCounters {
+                backend_write_operations: 2,
+                ..crate::WorkCounters::UNCHARGED
+            })?;
+            let filesystem = FuseProjection {
+                core: Arc::clone(&core),
+                skips_opendir: false,
+                skips_open: false,
+            };
+            let mut session = fuser::Session::new(filesystem, &request.destination, &config)
+                .map_err(|error| {
+                    core.take_handler_failure()
+                        .map(|failure| failure.0)
+                        .unwrap_or_else(|| error.into())
+                })?;
+            let _ = core.notifier.set(session.notifier());
+            started.unmounter = Some(session.unmount_callable());
+            started.device = Some(std::os::fd::AsFd::as_fd(&session).try_clone_to_owned()?);
+            // Session::spawn consumes its join handle on unmount refusal; retain it ourselves.
+            started.worker = Some(std::thread::Builder::new().spawn(move || session.run())?);
+            let (directory, identity) =
+                crate::native_host::open_root_directory(&request.destination, &mut &*work)?;
+            started.active_root = Some(directory);
+            started.identity = Some(identity);
+            let close = work.reserve_cleanup_write()?;
+            let directory = started.active_root.take().expect("admitted root close");
+            close
+                .attempt(|| drop(directory))
+                .1
+                .map_err(NativeMountError::from)
+        })();
+        if result.is_err() {
+            core.stop();
         }
-        let (directory, identity) =
-            crate::native_host::open_root_directory(&request.destination, &mut &*work)?;
-        physical.active_root = Some(directory);
-        physical.native_root_identity = Some(identity);
-        close_fuse_root(&mut physical.active_root, work)?;
-        loan.committed = true;
-        Ok(())
+        drop(started);
+        result
     }
 
     pub(in crate::native_mount) fn begin_original_work(
         &self,
         work: &crate::NativeMaterializationWork,
     ) -> Result<NativeMountWorkScope, NativeMountError> {
-        let loan = FuseDriverLoan::take(&self.control)?;
-        if loan
-            .physical
-            .as_ref()
-            .expect("actual physical driver loan")
-            .session
-            .is_none()
-        {
+        if self.core.stopping.load(Ordering::Acquire) {
             return Err(NativeMountError::Lifecycle("session is stopped"));
         }
         work.admit(crate::WorkCounters::UNCHARGED)?;
-        NativeMountWorkScope::new(&self.control.core, work)
+        NativeMountWorkScope::new(&self.core, work)
     }
-
     pub(in crate::native_mount) fn native_root_identity(
         &self,
     ) -> Option<crate::NativeRootIdentity> {
-        self.control
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .physical
-            .as_ref()
-            .filter(|physical| physical.session.is_some())
-            .and_then(|physical| physical.native_root_identity)
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.device.as_ref().and(state.identity)
     }
-
     pub(in crate::native_mount) fn invalidate(&self, path: &[u8]) -> Result<(), NativeMountError> {
-        let _loan = FuseDriverLoan::take(&self.control)?;
-        let core = &self.control.core;
-        let result = core.request(|work| {
-            let _active = if core.active_meter().is_none() {
-                Some(NativeMountWorkScope::new(core, work)?)
-            } else {
-                None
-            };
-            let path = path.strip_prefix(b"/").unwrap_or(path);
-            let mut components = path.split(|byte| *byte == b'/').peekable();
-            let mut parent = FuseOwned::empty(MountPath::root());
-            let mut name = None;
-            while let Some(component) = components.next() {
-                fuse_item(work)?;
-                if component.is_empty()
-                    || component.contains(&0)
-                    || component == b"."
-                    || component == b".."
-                {
-                    return Err(NativeMountError::Lifecycle(
-                        "FUSE invalidation requires a canonical non-root path",
-                    ));
-                }
-                if components.peek().is_some() {
-                    parent = fuse_child_path(&parent, component, work)?;
-                } else {
-                    name = Some(component);
-                }
-            }
-            let name = name.ok_or(NativeMountError::Lifecycle(
-                "FUSE invalidation requires a canonical non-root path",
-            ))?;
-            let source = core.source.as_ref();
-            let child = ChildName::new(source, fuse_child_path(&parent, name, work)?, work)?;
-            let parent = match source.folded_path_with_meter(&parent, work)? {
-                Some((path, bytes)) => FuseOwned::adopt(path, bytes, work)?,
-                None => parent,
-            };
-            let mut state = core.state()?;
-            fuse_item(work)?;
-            let file_inode = state.inode_by_path.get(child.key()).copied();
-            fuse_item(work)?;
-            let parent_inode = state.inode_by_path.get(&*parent).copied();
-            let count = usize::from(file_inode.is_some()) + 2 * usize::from(parent_inode.is_some());
-            let mut items = fuse_vec(count, work)?;
-            if let Some(inode) = file_inode {
-                items.push(KernelCacheItem::Inode(inode));
-            }
-            if let Some(parent) = parent_inode {
-                items.push(KernelCacheItem::Entry {
-                    parent,
-                    name: fuse_copy_bytes(name, work)?,
-                });
-                items.push(KernelCacheItem::Inode(parent));
-            }
-            let copied = items
-                .len()
-                .checked_mul(std::mem::size_of::<KernelCacheItem>())
-                .ok_or(crate::WorkError::Overflow)? as u64;
-            fuse_copy_admit(copied, work)?;
-            fuse_reserve(&mut state.invalidation.deferred, items.len(), work)?;
-            state.invalidation.deferred.append(&mut items);
-            fuse_copy_record(copied, work)?;
-            drop(items);
-            let target = state.invalidation.notified;
-            core.invalidation.notify_all();
-            loop {
-                work.admit(crate::WorkCounters::UNCHARGED)?;
-                if core.handler_failed.load(Ordering::Acquire)
-                    || state.invalidation.failure.is_some()
-                {
-                    return Err(NativeMountError::Lifecycle(
-                        "FUSE invalidation previously failed",
-                    ));
-                }
-                if core.stopping.load(Ordering::Acquire) {
-                    return Err(NativeMountError::Lifecycle("FUSE session is stopped"));
-                }
-                if !state.invalidation.is_pending(target) {
-                    return Ok(());
-                }
-                state = core
-                    .invalidation
-                    .wait_timeout(state, Duration::from_millis(10))
-                    .map_err(|_| libc::EIO)?
-                    .0;
-            }
-        });
-        result.map_err(|failure| {
-            if fatal_handler_error(&failure.0) {
-                if let Some(cause) = clone_fatal_handler_error(&failure.0) {
-                    core.retain_handler_failure((cause, failure.1));
-                } else {
-                    core.retain_handler_failure(failure);
-                    return NativeMountError::Lifecycle("FUSE invalidation handler failed");
-                }
-            }
-            failure.0
-        })
+        self.core.invalidate(path)
     }
-
     pub(in crate::native_mount) fn revalidate(
         &self,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), NativeMountError> {
-        let _loan = FuseDriverLoan::take(&self.control)?;
-        let core = &self.control.core;
-        work.admit(crate::WorkCounters::UNCHARGED)?;
-        let _active = NativeMountWorkScope::new(core, work)?;
-        core.source.fence_changes_with_meter(work)?;
-        let mut state = core
-            .state
-            .lock()
-            .map_err(|_| NativeMountError::Lifecycle("FUSE projection state is poisoned"))?;
-        let target = state.invalidation.notified;
-        loop {
-            work.charge(crate::WorkCounters {
-                items_examined: 1,
-                ..crate::WorkCounters::UNCHARGED
-            })?;
-            if core.stopping.load(Ordering::Acquire) {
-                return Err(NativeMountError::Lifecycle("session is stopped"));
-            }
-            if state.invalidation.failure.is_some() {
-                return Err(NativeMountError::Lifecycle(
-                    "FUSE invalidation previously failed",
-                ));
-            }
-            let condition = if state.invalidation.is_pending(target) {
-                &core.invalidation
-            } else if target.is_some_and(|target| state.page_stores.precede(target)) {
-                &core.page_stored
-            } else {
-                return Ok(());
-            };
-            state = condition
-                .wait_timeout(state, Duration::from_millis(10))
-                .map_err(|_| NativeMountError::Lifecycle("FUSE projection state is poisoned"))?
-                .0;
-        }
+        self.core.revalidate(work)
     }
-
     pub(in crate::native_mount) fn take_callback_failure(
         &self,
     ) -> Option<(NativeMountError, crate::WorkCounters)> {
-        self.control.core.take_handler_failure()
+        self.core.take_handler_failure()
     }
     pub(in crate::native_mount) fn handler_failed(&self) -> bool {
-        self.control.core.handler_failed.load(Ordering::Acquire)
+        self.core.handler_failed.load(Ordering::Acquire)
     }
     pub(in crate::native_mount) fn completed_callback_work(&self) -> crate::WorkCounters {
-        self.control.core.completed_callback_work()
+        self.core.completed_callback_work()
     }
     pub(in crate::native_mount) fn namespace_detach_confirmed(&self) -> bool {
-        self.control
-            .state
+        self.state
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .physical
-            .as_ref()
-            .is_some_and(|physical| physical.session.is_none())
+            .detached
     }
     pub(in crate::native_mount) fn controls_pending(&self) -> bool {
         !self
-            .control
             .state
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .retired
+            .is_retired()
     }
     pub(in crate::native_mount) fn retirement_ownership(&self) -> (bool, bool) {
-        let state = self
-            .control
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        state
-            .retirement
-            .as_ref()
-            .map_or(state.loan_custody, |packet| {
-                (
-                    packet.destination_guard.is_some(),
-                    packet.retained_source.is_some() || packet.startup_source_watch.is_some(),
-                )
-            })
+        let state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        state.retirement.as_ref().map_or((false, false), |packet| {
+            (
+                packet.destination_guard.is_some(),
+                packet.retained_source.is_some() || packet.startup_source_watch.is_some(),
+            )
+        })
     }
-
     pub(in crate::native_mount) fn stop(
         &mut self,
         work: &crate::native_mount::NativeSessionStopWork<'_>,
     ) -> Result<(), NativeMountError> {
-        let wait = match work {
+        let meter = match work {
             crate::native_mount::NativeSessionStopWork::Meter(work) => {
-                let mut loan = FuseDriverLoan::take(&self.control)?;
-                loan.physical
-                    .as_mut()
-                    .expect("actual physical driver loan")
-                    .stop(&self.control, Some(work))?;
+                work.admit(crate::WorkCounters::UNCHARGED)?;
+                Some(*work)
+            }
+            crate::native_mount::NativeSessionStopWork::AcceptedWait(wait) => {
+                wait.check().map_err(|_| crate::DemandError::Cancelled)?;
                 None
             }
-            crate::native_mount::NativeSessionStopWork::AcceptedWait(wait) => Some(*wait),
         };
-        if let Some(wait) = wait {
-            wait.check().map_err(|_| crate::DemandError::Cancelled)?;
-        }
-        self.control.core.stopping.store(true, Ordering::Release);
-        self.control.core.invalidation.notify_all();
-        let mut state = self
-            .control
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        state.stop_requested = true;
-        self.control.changed.notify_all();
-        while !state.retired {
+        let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
+        if meter.is_none() {
             if let Some(error) = state.failure.take() {
                 return Err(error);
             }
-            drop(state);
-            if let Some(wait) = wait {
-                wait.check().map_err(|_| crate::DemandError::Cancelled)?;
-            }
-            state = self
-                .control
-                .state
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner);
-            if !state.retired && state.failure.is_none() {
-                state = self
-                    .control
-                    .changed
-                    .wait_timeout(state, Duration::from_millis(10))
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .0;
-            }
         }
-        let failure = state.failure.take();
+        state.stop(&self.core, meter)?;
+        self.core.stop();
+        state.failure.take();
         drop(state);
         if self.invalidator.is_some() {
-            {
-                let mut driver = FuseDriverLoan::take(&self.control)?;
-                let physical = driver
-                    .physical
-                    .as_mut()
-                    .expect("actual physical driver loan");
-                physical
-                    .birth_cleanup
-                    .loan(None)
-                    .started_io(crate::WorkCounters {
-                        backend_read_operations: 1,
-                        ..crate::WorkCounters::UNCHARGED
-                    })?;
-            }
-            let worker = self
-                .invalidator
+            self.state
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .cleanup
+                .loan(None)
+                .started_io(crate::WorkCounters {
+                    backend_read_operations: 1,
+                    ..crate::WorkCounters::UNCHARGED
+                })?;
+            self.invalidator
                 .take()
-                .expect("original invalidator join remains owned");
-            worker
+                .expect("original invalidator")
                 .join()
                 .map_err(|panic| NativeMountError::DriverPanicked {
-                    operation: "FUSE retirement producer",
+                    operation: "FUSE invalidator",
                     panic: Mutex::new(panic),
                 })?;
         }
-        failure.map_or(Ok(()), Err)
+        Ok(())
+    }
+}
+
+pub(super) fn run_fuse_session(owned: (Arc<ProjectionCore>, Arc<Mutex<FuseSessionState>>)) {
+    let (core, state) = &owned;
+    drop(state.lock().unwrap_or_else(PoisonError::into_inner));
+    if let Some(notifier) = core.notifier.get() {
+        run_invalidator(core, notifier);
+    } else {
+        let mut state = core.state.lock().unwrap_or_else(PoisonError::into_inner);
+        while !core.stopping.load(Ordering::Acquire) {
+            state = core
+                .invalidation
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner);
+        }
+    }
+    let mut state = state.lock().unwrap_or_else(PoisonError::into_inner);
+    if !state.is_retired() {
+        if let Err(error) = state.stop(core, None) {
+            state.failure.get_or_insert(error);
+        }
+    }
+    drop(state);
+    // A refused cleanup keeps the original source, fence and join handles owned.
+    while !owned
+        .1
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .is_retired()
+    {
+        std::thread::park_timeout(Duration::from_millis(100));
     }
 }
 
 impl Drop for FuseSession {
     fn drop(&mut self) {
-        self.control.core.stopping.store(true, Ordering::Release);
-        self.control.core.invalidation.notify_all();
-        let mut state = self
-            .control
-            .state
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
-        state.stop_requested = true;
-        self.control.changed.notify_all();
+        self.core.stop();
     }
 }

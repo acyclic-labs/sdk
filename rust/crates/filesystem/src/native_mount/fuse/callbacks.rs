@@ -22,6 +22,10 @@ impl FuseProjection {
 
 #[allow(clippy::too_many_arguments, reason = "fuser fixes callback signatures")]
 impl Filesystem for FuseProjection {
+    fn destroy(&mut self) {
+        self.core.stop();
+    }
+
     fn init(&mut self, _: &Request, config: &mut KernelConfig) -> std::io::Result<()> {
         let result = self.core.request(|work| {
             let source = self.core.source.as_ref();
@@ -320,7 +324,7 @@ impl Filesystem for FuseProjection {
                     return Err(libc::ENOSYS.into());
                 }
                 let _names = self.core.names()?;
-                self.open_node(inode.0, flags.0, true, work)
+                self.open_node(inode.0, flags.0, work)
             },
             |(handle, flags)| reply.opened(FuseFileHandle(handle), flags)
         );

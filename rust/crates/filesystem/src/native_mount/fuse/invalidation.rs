@@ -1,5 +1,114 @@
 use super::*;
 
+impl ProjectionCore {
+    pub(super) fn invalidate(self: &Arc<Self>, path: &[u8]) -> Result<(), NativeMountError> {
+        let result = self.request(|work| {
+            let _active = NativeMountWorkScope::new(self, work)?;
+            let mut components = path
+                .strip_prefix(b"/")
+                .unwrap_or(path)
+                .split(|byte| *byte == b'/');
+            let name = components.next_back().expect("split has a leaf");
+            for component in components.clone().chain(std::iter::once(name)) {
+                fuse_item(work)?;
+                if component.is_empty()
+                    || component.contains(&0)
+                    || component == b"."
+                    || component == b".."
+                {
+                    return Err(NativeMountError::Lifecycle(
+                        "FUSE invalidation requires a canonical non-root path",
+                    ));
+                }
+            }
+            let parent = fuse_path(components.clone().count(), components, work)?;
+            let child = ChildName::new(
+                self.source.as_ref(),
+                fuse_child_path(&parent, name, work)?,
+                work,
+            )?;
+            let parent = match self.source.folded_path_with_meter(&parent, work)? {
+                Some((path, bytes)) => FuseOwned::adopt(path, bytes, work)?,
+                None => parent,
+            };
+            let mut state = self.state()?;
+            fuse_item(work)?;
+            let file_inode = state.inode_by_path.get(child.key()).copied();
+            fuse_item(work)?;
+            let parent_inode = state.inode_by_path.get(&*parent).copied();
+            let count = usize::from(file_inode.is_some()) + 2 * usize::from(parent_inode.is_some());
+            let mut items = fuse_vec(count, work)?;
+            if let Some(inode) = file_inode {
+                items.push(KernelCacheItem::Inode(inode));
+            }
+            if let Some(parent) = parent_inode {
+                items.push(KernelCacheItem::Entry {
+                    parent,
+                    name: fuse_copy_bytes(name, work)?,
+                });
+                items.push(KernelCacheItem::Inode(parent));
+            }
+            let copied = items
+                .len()
+                .checked_mul(std::mem::size_of::<KernelCacheItem>())
+                .ok_or(crate::WorkError::Overflow)? as u64;
+            fuse_copy_admit(copied, work)?;
+            fuse_reserve(&mut state.invalidation.deferred, items.len(), work)?;
+            state.invalidation.deferred.append(&mut items);
+            fuse_copy_record(copied, work)?;
+            let target = state.invalidation.notified;
+            self.invalidation.notify_all();
+            self.wait_for_invalidation(state, target, work)
+        });
+        result.map_err(|failure| failure.0)
+    }
+
+    pub(super) fn revalidate(
+        self: &Arc<Self>,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
+        work.admit(crate::WorkCounters::UNCHARGED)?;
+        let _active = NativeMountWorkScope::new(self, work)?;
+        self.source.fence_changes_with_meter(work)?;
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| NativeMountError::Lifecycle("FUSE projection state is poisoned"))?;
+        let target = state.invalidation.notified;
+        self.wait_for_invalidation(state, target, work)
+    }
+
+    fn wait_for_invalidation(
+        &self,
+        mut state: MutexGuard<'_, ProjectionState>,
+        target: Option<ViewStamp>,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
+        loop {
+            fuse_item(work)?;
+            if self.stopping.load(Ordering::Acquire) {
+                return Err(NativeMountError::Lifecycle("session is stopped"));
+            }
+            if self.handler_failed.load(Ordering::Acquire) || state.invalidation.failure.is_some() {
+                return Err(NativeMountError::Lifecycle(
+                    "FUSE invalidation previously failed",
+                ));
+            }
+            let condition = if state.invalidation.is_pending(target) {
+                &self.invalidation
+            } else if target.is_some_and(|target| state.page_stores.precede(target)) {
+                &self.page_stored
+            } else {
+                return Ok(());
+            };
+            state = condition
+                .wait_timeout(state, Duration::from_millis(10))
+                .map_err(|_| NativeMountError::Lifecycle("FUSE projection state is poisoned"))?
+                .0;
+        }
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub(super) enum KernelCacheItem {
     Inode(u64),

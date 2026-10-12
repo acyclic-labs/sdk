@@ -374,7 +374,6 @@ impl FuseProjection {
         &self,
         inode: u64,
         flags: i32,
-        storing: bool,
         work: &crate::NativeMaterializationWork,
     ) -> Result<(u64, FopenFlags), NativeMountError> {
         if flags & libc::O_TRUNC != 0 {
@@ -454,7 +453,7 @@ impl FuseProjection {
                 flags,
                 open_file,
                 dirty: flags & libc::O_TRUNC != 0,
-                stores_pages: storing,
+                stores_pages: !self.skips_open,
             },
             work,
         )?;
@@ -641,7 +640,7 @@ impl FuseProjection {
             (None, AccessMode::ReadOnly) => {
                 let (transient, _) = {
                     let _names = self.core.names()?;
-                    self.open_node(inode, libc::O_RDONLY, false, work)?
+                    self.open_node(inode, libc::O_RDONLY, work)?
                 };
                 let result = operation(transient);
                 let _ = self.core.state()?.discard_file_handle(inode, transient);
@@ -677,7 +676,7 @@ impl FuseProjection {
             storage
         };
         let flags = if writes { libc::O_RDWR } else { libc::O_RDONLY };
-        let (opened, _) = self.open_node(inode, flags, false, work)?;
+        let (opened, _) = self.open_node(inode, flags, work)?;
         let mut state = match self.core.state() {
             Ok(state) => state,
             Err(error) => {

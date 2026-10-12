@@ -2,12 +2,6 @@ use super::*;
 
 #[test]
 fn reserve_failures_keep_errno_and_retained_typed_cause() {
-    struct Cause(MountSourceError);
-    impl crate::native_mount::MountSourceFailureCause for Cause {
-        fn semantic_error(&self) -> &MountSourceError {
-            &self.0
-        }
-    }
     let reserve = || {
         Vec::<u8>::new()
             .try_reserve(usize::MAX)
@@ -26,19 +20,6 @@ fn reserve_failures_keep_errno_and_retained_typed_cause() {
     ] {
         assert_eq!(native_callback_errno(&failure), libc::ENOMEM);
         assert!(super::super::fatal_handler_error(&failure));
-        let cloned = super::super::clone_fatal_handler_error(&failure)
-            .expect("a direct reserve failure must remain available to the caller and observer");
-        assert_eq!(native_callback_errno(&cloned), libc::ENOMEM);
-        assert!(matches!(
-            cloned,
-            NativeMountError::Materialization(
-                crate::NativeTreeMaterializationError::AllocationFailed(_)
-            ) | NativeMountError::Source(MountSourceError::NativeWork(
-                crate::NativeTreeMaterializationError::AllocationFailed(_)
-            )) | NativeMountError::Source(MountSourceError::Filesystem(
-                crate::FsError::HandleAllocationFailed
-            ))
-        ));
     }
     assert_eq!(
         native_callback_errno(&NativeMountError::Allocation(reserve())),
@@ -56,22 +37,6 @@ fn reserve_failures_keep_errno_and_retained_typed_cause() {
         ))),
         libc::ENOMEM
     );
-    let owner: Arc<dyn crate::native_mount::MountSourceFailureCause> =
-        Arc::new(Cause(MountSourceError::NativeWork(
-            crate::NativeTreeMaterializationError::AllocationFailed(reserve()),
-        )));
-    let failure = NativeMountError::Source(MountSourceError::Retained(Arc::clone(&owner)));
-    assert!(super::super::fatal_handler_error(&failure));
-    let Some(NativeMountError::Source(MountSourceError::Retained(cloned))) =
-        super::super::clone_fatal_handler_error(&failure)
-    else {
-        panic!("retained reserve failure must remain cloneable");
-    };
-    assert!(Arc::ptr_eq(&owner, &cloned));
-    assert!(matches!(
-        cloned.semantic_error(),
-        MountSourceError::NativeWork(crate::NativeTreeMaterializationError::AllocationFailed(_),)
-    ));
 }
 
 pub(super) fn posix_config() -> crate::model::VolumeConfig {
@@ -762,62 +727,50 @@ pub(super) fn last_facade_drop_signals_the_original_keeper_and_retires_its_actua
     let directory = tempfile::tempdir()?;
     let root = cap_std::fs::Dir::open_ambient_dir(directory.path(), cap_std::ambient_authority())?;
     let control_allocation = original.claim(
-        std::mem::size_of::<crate::native_mount::fuse::FuseDriverControl>() as u64,
-        u64::from(
-            (std::mem::size_of::<crate::native_mount::fuse::FuseDriverControl>() as u64) != 0,
-        ),
+        std::mem::size_of::<Mutex<FuseSessionState>>() as u64,
+        1,
         crate::WorkCounters::UNCHARGED,
     )?;
-    let control = Arc::new(crate::native_mount::fuse::FuseDriverControl {
-        state: crate::native_mount::fuse::Mutex::new(
-            crate::native_mount::fuse::FuseDriverControlState {
-                sdk_session: Some(None),
-                physical: Some(crate::native_mount::fuse::FusePhysicalSession {
-                    session: None,
-                    sdk_worker: None,
-                    active_root: Some(root),
-                    native_root_identity: None,
-                    retirement_helper: None,
-                    birth_cleanup,
-                }),
-                retirement: Some(crate::native_mount::NativeMountRetirement {
-                    retained_source: None,
-                    destination_guard: None,
-                    startup_source_watch: None,
-                }),
-                loan_custody: (false, false),
-                startup_finished: true,
-                stop_requested: false,
-                retired: false,
-                failure: None,
-            },
-        ),
-        changed: crate::native_mount::fuse::Condvar::new(),
-        core: Arc::clone(&core),
+    let state = Arc::new(Mutex::new(FuseSessionState {
+        path: super::super::FuseOwned::empty(Vec::new()),
+        before: crate::NativeRootIdentity {
+            device: 0,
+            object: 0,
+        },
+        detached: false,
+        unmounter: None,
+        worker: None,
+        device: None,
+        active_root: Some(root),
+        identity: None,
+        cleanup: birth_cleanup,
+        retirement: Some(crate::native_mount::NativeMountRetirement {
+            retained_source: None,
+            destination_guard: None,
+            startup_source_watch: None,
+        }),
+        failure: None,
         _allocation: control_allocation,
-    });
+    }));
     let job_allocation = original.claim(
         std::mem::size_of::<(
-            Arc<crate::native_mount::fuse::FuseDriverControl>,
+            Arc<ProjectionCore>,
+            Arc<Mutex<FuseSessionState>>,
             crate::NativeAllocation,
         )>() as u64,
-        u64::from(
-            (std::mem::size_of::<(
-                Arc<crate::native_mount::fuse::FuseDriverControl>,
-                crate::NativeAllocation,
-            )>() as u64)
-                != 0,
-        ),
+        1,
         crate::WorkCounters::UNCHARGED,
     )?;
-    let job = (Arc::clone(&control), job_allocation);
+    let job = (Arc::clone(&core), Arc::clone(&state));
     let (done, terminal) = std::sync::mpsc::sync_channel(1);
     let worker = std::thread::spawn(move || {
-        crate::native_mount::fuse::run_fuse_retirement(job);
+        let _storage = job_allocation;
+        run_fuse_session(job);
         done.send(()).unwrap();
     });
     let facade = crate::native_mount::fuse::FuseSession {
-        control: Arc::clone(&control),
+        core: Arc::clone(&core),
+        state: Arc::clone(&state),
         invalidator: None,
     };
     let before = original.receipt();
@@ -825,18 +778,13 @@ pub(super) fn last_facade_drop_signals_the_original_keeper_and_retires_its_actua
     drop(facade);
     terminal.recv_timeout(std::time::Duration::from_secs(10))?;
     worker.join().map_err(|_| "the actual keeper panicked")?;
-    let state = control
-        .state
+    let state = state
         .lock()
         .unwrap_or_else(crate::native_mount::fuse::PoisonError::into_inner);
-    assert!(state.retired && state.failure.is_none());
-    let physical = state
-        .physical
-        .as_ref()
-        .ok_or("the actual physical holder disappeared")?;
-    assert!(physical.active_root.is_none());
+    assert!(state.is_retired() && state.failure.is_none());
+    assert!(state.active_root.is_none());
     assert_eq!(
-        physical.birth_cleanup.remaining_work(),
+        state.cleanup.remaining_work(),
         crate::WorkCounters::UNCHARGED
     );
     assert!(
@@ -851,53 +799,5 @@ pub(super) fn last_facade_drop_signals_the_original_keeper_and_retires_its_actua
         "last facade drop and the real keeper terminal phase allocate no new controls"
     );
     assert!(original.cancellation().is_cancelled());
-    Ok(())
-}
-
-#[test]
-pub(super) fn preborn_helpers_retain_custody_through_cancellation_and_spawn_refusal()
--> Result<(), Box<dyn std::error::Error>> {
-    for program in [
-        c"/bin/true",
-        c"/this-native-helper-program-authentically-does-not-exist",
-    ] {
-        let cancellation = crate::CancellationToken::new();
-        let original = crate::NativeMaterializationWork::new(
-            crate::WorkBudget {
-                backend_read_operations: 16_004,
-                backend_write_operations: 13,
-                ..FINITE_HANDLER_POLICY
-            },
-            &cancellation,
-        )
-        .map_err(|(cause, _)| cause)?;
-        let mut helper =
-            crate::native_mount::fuse::FuseRetirementHelper::prepare(program, &original)?;
-        let before = original.receipt();
-        cancellation.cancel();
-        let result = helper.retire(c"/unused", None);
-        if program == c"/bin/true" {
-            result?;
-            let after = original.receipt();
-            helper.retire(c"/unused", None)?;
-            assert_eq!(
-                original.receipt(),
-                after,
-                "terminal replay cannot spawn another process"
-            );
-        } else {
-            assert!(
-                matches!(result, Err(crate::NativeMountError::Materialization(
-                crate::NativeTreeMaterializationError::Io(error)
-            )) if error.raw_os_error() == Some(libc::ENOENT))
-            );
-        }
-        assert!(helper.helper.is_none() && helper.frame.is_none());
-        assert!(original.cancellation().is_cancelled());
-        assert_eq!(
-            original.receipt().allocation_operations,
-            before.allocation_operations
-        );
-    }
     Ok(())
 }

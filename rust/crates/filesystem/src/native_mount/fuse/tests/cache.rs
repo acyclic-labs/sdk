@@ -49,7 +49,6 @@ pub(super) fn administrative_recovery_retains_the_tree_and_retries_on_its_own_bu
     )
     .map_err(|error| creator.runtime_error(error))?;
     control.helper_work = Some(creator.clone());
-    control.deadline = Some(std::time::Instant::now() + Duration::from_secs(30));
     let creator_receipt = creator.receipt();
     let denied = crate::NativeMaterializationWork::new(
         crate::WorkBudget {
@@ -122,7 +121,6 @@ pub(super) fn administrative_recovery_retains_the_tree_and_retries_on_its_own_bu
     control.recover(temporary.path(), &original_admin)?;
     assert!(!control.controls_pending());
     assert!(control.helper_work.is_none());
-    assert!(control.deadline.is_none());
     assert!(
         control.namespace_detach_confirmed(),
         "the real directory probe establishes namespace absence"

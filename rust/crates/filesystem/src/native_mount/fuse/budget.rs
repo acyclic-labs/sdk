@@ -236,10 +236,9 @@ pub(super) fn fuse_copy_bytes(
     work: &NativeMaterializationWork,
 ) -> Result<FuseOwned<Vec<u8>>, NativeMountError> {
     fuse_copy_admit(bytes.len() as u64, work)?;
-    let mut copied = fuse_vec(bytes.len(), work)?;
-    fuse_copy_admit(bytes.len() as u64, work)?;
-    copied.extend_from_slice(bytes);
-    fuse_copy_record(bytes.len() as u64, work)?;
+    let (bytes, allocation) = work.copy_bytes(bytes)?;
+    let mut copied = FuseOwned::empty(bytes);
+    copied.allocation = Some(allocation);
     Ok(copied)
 }
 
@@ -248,9 +247,6 @@ pub(super) fn fuse_source_chunk(
     work: &NativeMaterializationWork,
 ) -> Result<crate::kernel::OwnedSourceChunk, NativeMountError> {
     let mut copied = fuse_copy_bytes(bytes, work)?;
-    if copied.allocation.is_none() {
-        copied.allocation = Some(work.claim(0, 0, WorkCounters::UNCHARGED)?);
-    }
     let logical_owned_bytes = copied
         .allocation
         .as_ref()
@@ -268,7 +264,7 @@ pub(super) fn fuse_source_chunk(
     ))
 }
 
-fn path<'a>(
+pub(super) fn fuse_path<'a>(
     capacity: usize,
     components: impl Iterator<Item = &'a [u8]>,
     work: &NativeMaterializationWork,
@@ -295,7 +291,7 @@ pub(super) fn fuse_clone_path(
     value: &MountPath,
     work: &NativeMaterializationWork,
 ) -> Result<FuseOwned<MountPath>, NativeMountError> {
-    path(
+    fuse_path(
         value.components().len(),
         value.components().iter().map(Vec::as_slice),
         work,
@@ -306,7 +302,7 @@ pub(super) fn fuse_child_path(
     name: &[u8],
     work: &NativeMaterializationWork,
 ) -> Result<FuseOwned<MountPath>, NativeMountError> {
-    path(
+    fuse_path(
         parent
             .components()
             .len()
@@ -327,7 +323,7 @@ pub(super) fn fuse_parent(
     let Some((_, parent)) = value.components().split_last() else {
         return Ok(None);
     };
-    path(parent.len(), parent.iter().map(Vec::as_slice), work).map(Some)
+    fuse_path(parent.len(), parent.iter().map(Vec::as_slice), work).map(Some)
 }
 pub(super) fn fuse_has_prefix(
     value: &MountPath,
@@ -355,7 +351,7 @@ pub(super) fn fuse_replace_prefix(
         return Ok(None);
     }
     let suffix = &value.components()[source.components().len()..];
-    path(
+    fuse_path(
         destination
             .components()
             .len()

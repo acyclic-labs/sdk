@@ -3,11 +3,12 @@ use super::super::{
     MountSourceError, ViewObserver,
 };
 use super::{
-    InodeEntry, KernelCacheItem, MAXIMUM_NEGATIVE_ENTRIES_PER_DIRECTORY, MountFilesystem,
-    MountLookup, MountNode, MountNodeKind, MountOpenFile, MountPath, MountSeekTarget,
-    NativeMountError, PageStores, ROOT_INODE, ViewStamp, cached_projected_lookup, confirm_name,
-    forget_unbound_names, intern_projected, name_is_bound, native_callback_errno,
-    replace_root_lookup, retire_reused_identity, stale_kernel_items,
+    FuseSessionState, InodeEntry, KernelCacheItem, MAXIMUM_NEGATIVE_ENTRIES_PER_DIRECTORY,
+    MountFilesystem, MountLookup, MountNode, MountNodeKind, MountOpenFile, MountPath,
+    MountSeekTarget, NativeMountError, PageStores, ProjectionCore, ROOT_INODE, ViewStamp,
+    cached_projected_lookup, confirm_name, forget_unbound_names, intern_projected, name_is_bound,
+    native_callback_errno, replace_root_lookup, retire_reused_identity, run_fuse_session,
+    stale_kernel_items,
 };
 use crate::FileId;
 use crate::kernel::{FileMetadata, MetadataField};
