@@ -593,7 +593,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             assert!(readable.contains(&seed.attachment_manifests[0].read_capability()?));
             assert!(!readable.contains(&child_private.capability(VolumeOperation::Write)?));
             assert!(
-                seed.shared_capabilities_for(attached)?
+                seed.shared_capabilities(attached)?
                     .contains(&shared.capability(VolumeOperation::Read)?)
             );
             let reader_scope =
@@ -731,7 +731,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             assert!(capabilities.contains(&inherited.read_capability()?));
             assert!(capabilities.contains(&root_attachment.read_capability()?));
             assert!(
-                seed.shared_capabilities_for(inherited_reader)?
+                seed.shared_capabilities(inherited_reader)?
                     .contains(&shared.capability(VolumeOperation::Read)?)
             );
             let reader_scope =
