@@ -273,7 +273,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     let mut aggregate = StreamAggregate::open(
         &storage.stream,
         storage.conversation.clone(),
-        storage.verifier().expect("verifier copy"),
+        storage.verifier(),
         SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(storage.content_verifier.clone());
@@ -309,7 +309,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     assert_eq!(retired.resident_after_sequence(), 4);
     assert!(retired.messages().is_empty());
 
-    let history = HistoryReader::new(&storage.stream, &storage.conversation, &(storage.verifier().expect("verifier copy")), &mut None)?;
+    let history = HistoryReader::new(&storage.stream, &storage.conversation, &(storage.verifier()), &mut None)?;
     let cursor = history.pin(0, None).await?;
     let original_scope = RuntimeScope::new(storage.scope.capabilities().clone(), limits)?;
     let prepared = prepare_summary_fork_context(
@@ -369,7 +369,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     let preparer = FilesystemForkPreparer::new(
         storage.host.clone(),
         aggregate.reducer().clone(),
-        storage.verifier().expect("verifier copy"),
+        storage.verifier(),
         scope.clone(),
         project.clone(),
         stream_provider.clone(),
@@ -557,7 +557,7 @@ async fn summary_fork_captures_private_payloads_and_binds_publication() -> Resul
     assert!(matches!(
         storage
             .host
-            .claim_fork_seed(&seed, aggregate.reducer(), &storage.verifier().expect("verifier copy"), &scope)
+            .claim_fork_seed(&seed, aggregate.reducer(), &storage.verifier(), &scope)
             .await,
         Err(Error::Unsupported(_))
     ));
@@ -891,7 +891,7 @@ async fn append_later_summary_parent_messages(
     let mut writer = StreamAggregate::open(
         &storage.stream,
         storage.conversation.clone(),
-        storage.verifier().expect("verifier copy"),
+        storage.verifier(),
         SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
     .await?
     .with_content_verifier(storage.content_verifier.clone());
@@ -1038,7 +1038,7 @@ async fn assert_cold_summary_reads(
             observed.reads.store(0, Ordering::SeqCst);
             observed.fail_read.store(0, Ordering::SeqCst);
         }
-        let cold_parent = HistoryReader::new(&client, &seed.parent, &(storage.verifier().expect("verifier copy")), &mut None)?;
+        let cold_parent = HistoryReader::new(&client, &seed.parent, &(storage.verifier()), &mut None)?;
         let cold_child = HistoryReader::new(&client, &seed.child, &(issuer.verifier(&mut None).expect("verifier copy")), &mut None)?;
         stage = Some(
             cold_child
@@ -1198,7 +1198,7 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
         .ok_or_else(|| Error::Invalid("missing full-fork parent".into()))?;
     assert!(conversation.resident_after_sequence() > 0);
     assert_eq!(conversation.logical_revision(), 12);
-    let history = HistoryReader::new(&storage.stream, &storage.conversation, &(storage.verifier().expect("verifier copy")), &mut None)?;
+    let history = HistoryReader::new(&storage.stream, &storage.conversation, &(storage.verifier()), &mut None)?;
     assert!(history.fork_history(parent.reducer(), 12,
         HistoryReadLimits { maximum_events: 11, maximum_bytes: 2_097_152 }, &mut None).await.is_err());
     let archived = history.fork_history(parent.reducer(), 12,
@@ -1211,7 +1211,7 @@ async fn full_fork_after_retirement_requires_exact_archive_witness() -> Result<(
             .chain(["fork:publish".to_owned(), project.capability(VolumeOperation::Read, &mut None)?])), Some(agent), None, &mut None).expect("scope proof");
     let stream_provider = ProviderRef::new("local".into(), "stream".into(), "2".into(), &mut None)?;
     let preparer = FilesystemForkPreparer::new(storage.host.clone(), parent.reducer().clone(),
-        storage.verifier().expect("verifier copy"), scope.clone(), project.clone(), stream_provider.clone(),
+        storage.verifier(), scope.clone(), project.clone(), stream_provider.clone(),
         storage.content_verifier.clone(),
         Some(archived), None, #[cfg(not(target_arch = "wasm32"))] None,
     )?;

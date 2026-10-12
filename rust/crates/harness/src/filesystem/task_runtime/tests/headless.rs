@@ -15,7 +15,7 @@ async fn admit(runtime: &Runtime, fixture: &Fixture, id: u8, grants: Capabilitie
     let definition = fixture.tasks.get_version::<Value, Value>("test.deadline", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
     let scoped = runtime.harness().scoped(grants, Limits::default())?;
     match scoped.admit(OperationId::from_bytes([id; 16]), &definition, json!({}), None).await? {
-        Admission::Accepted(task) => Ok(task.task_id()),
+        Admission::Accepted(crate::runtime::RuntimeTask::Durable { task_id, .. }) => Ok(task_id),
         _ => Err(Error::Storage("headless fixture admission failed".into())),
     }
 }
@@ -221,26 +221,30 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
         } }, #[cfg(feature = "filesystem")] None, &mut None).await?;
     let original_history = history.reducer().conversation().map(|state| state.messages().to_vec());
     let original_revision = history.reducer().revision();
-    let workspace = fs.open_workspace(project.storage_name(&mut None)?).await.map_err(|e| Error::Storage(e.to_string()))?;
+    let cancellation = acyclic_fs::CancellationToken::new();
+    let workspace = fs.open_workspace(project.storage_name(&mut None)?, acyclic_fs::WorkBudget::UNBOUNDED, &cancellation)
+        .await.map_err(|e| Error::Storage(e.to_string()))?.value;
     ContentGrant::verify(&fixture.issuer.verifier(), &fixture.signed, &project, VolumeOperation::Write, u64::MAX, &mut None)?;
     let restricted = fixture.issuer.issue("read-only", &Capabilities::new([project.capability(VolumeOperation::Read, &mut None)?]), Some(agent), None, &mut None).expect("scope proof");
     assert!(ContentGrant::verify(&fixture.issuer.verifier(), &restricted, &project, VolumeOperation::Write, u64::MAX, &mut None).is_err());
     put(&fixture, &project, "src/a.txt", b"old", "restore-old").await?;
-    let selected = workspace.head().await.map_err(|e| Error::Storage(e.to_string()))?;
+    let selected = workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation).await.map_err(|e| Error::Storage(e.to_string()))?.value;
     put(&fixture, &project, "src/a.txt", b"new", "restore-new").await?;
-    let observed = workspace.head().await.map_err(|e| Error::Storage(e.to_string()))?;
+    let observed = workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation).await.map_err(|e| Error::Storage(e.to_string()))?.value;
     put(&fixture, &project, "concurrent.txt", b"user edit", "restore-concurrent").await?;
     let paths = vec!["src/a.txt".into()];
-    assert!(matches!(workspace.restore_paths_from(&selected, &paths, observed.id(), acyclic_fs::IdempotencyKey::from_bytes([135; 16]))
-        .await.map_err(|e| Error::Storage(e.to_string()))?, TransactionCommit::Conflict { .. }));
-    let current = workspace.head().await.map_err(|e| Error::Storage(e.to_string()))?;
-    assert!(matches!(workspace.restore_paths_from(&selected, &paths, current.id(), acyclic_fs::IdempotencyKey::from_bytes([136; 16]))
-        .await.map_err(|e| Error::Storage(e.to_string()))?, TransactionCommit::Committed(_)));
-    let saved = workspace.head().await.map_err(|e| Error::Storage(e.to_string()))?;
+    assert!(matches!(workspace.restore_paths_from(&selected, &paths, observed.id(), acyclic_fs::IdempotencyKey::from_bytes([135; 16]), acyclic_fs::PublicationPermit::Unrestricted,
+        acyclic_fs::WorkBudget::UNBOUNDED, &cancellation, |_| async { Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) })
+        .await.map_err(|e| Error::Storage(e.to_string()))?.value, TransactionCommit::Conflict { .. }));
+    let current = workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation).await.map_err(|e| Error::Storage(e.to_string()))?.value;
+    assert!(matches!(workspace.restore_paths_from(&selected, &paths, current.id(), acyclic_fs::IdempotencyKey::from_bytes([136; 16]), acyclic_fs::PublicationPermit::Unrestricted,
+        acyclic_fs::WorkBudget::UNBOUNDED, &cancellation, |_| async { Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) })
+        .await.map_err(|e| Error::Storage(e.to_string()))?.value, TransactionCommit::Committed(_)));
+    let saved = workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation).await.map_err(|e| Error::Storage(e.to_string()))?.value;
     put(&fixture, &project, "src/a.txt", b"later", "restore-later").await?;
     assert!(matches!(workspace.restore_generation(&saved, saved.id(), acyclic_fs::IdempotencyKey::from_bytes([137; 16]), acyclic_fs::PublicationPermit::Unrestricted)
         .await.map_err(|e| Error::Storage(e.to_string()))?, WorkspaceRestore::Stale(_)));
-    let current = workspace.head().await.map_err(|e| Error::Storage(e.to_string()))?;
+    let current = workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &cancellation).await.map_err(|e| Error::Storage(e.to_string()))?.value;
     let restore_key = acyclic_fs::IdempotencyKey::from_bytes([138; 16]);
     assert!(matches!(workspace.restore_generation(&saved, current.id(), restore_key, acyclic_fs::PublicationPermit::Unrestricted).await.map_err(|e| Error::Storage(e.to_string()))?,
         WorkspaceRestore::Restored(_)));

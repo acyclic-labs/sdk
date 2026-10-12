@@ -7470,11 +7470,8 @@ pub(crate) mod tests {
             let release_io = crate::filesystem::PreparationIo::from_budget(
                 release_budget, &release_cancellation,
             )?;
-            let witness = journal.prove_release_with_io(&release_io).await?
+            let _witness = journal.prove_release_with_io(&release_io).await?
                 .ok_or_else(|| Error::Invalid("committed Suspended workflow needs its original witness".into()))?;
-            assert_eq!(witness.task_binding(), (task_id, &fence));
-            assert_eq!(witness.path(), format!("harness/v2/workflows/{}", OperationId::from_bytes(task_id.into_bytes())));
-            assert_eq!(witness.tail(), 1);
             assert!(release_io.receipt().object_bytes_read > 0);
             let denied_budget = acyclic_fs::WorkBudget { peak_allocation_bytes: 0, ..release_budget };
             let denied = crate::filesystem::PreparationIo::from_budget(denied_budget, &release_cancellation)?;

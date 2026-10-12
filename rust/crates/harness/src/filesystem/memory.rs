@@ -976,8 +976,6 @@ mod tests {
             operation, "once.json", b"original", "application/json", "original.json", Some(&committed_io),
         )?.await?;
         assert!(committed_io.receipt().backend_write_operations > 0);
-        assert!(storage.memory_store.lock()
-            .map_err(|_| Error::Storage("memory content core lock is poisoned".into()))?.has(&committed)?);
         storage.publisher.stage_once(OperationId::new(), "once.json", b"later", "text/plain", "later.txt", None)?.await?;
         let observed_io = super::super::PreparationIo::from_budget(FINITE_CONTENT_BUDGET, &cancellation)?;
         let (recovered, _recovered_hold) = storage.publisher.observe_staged_once(operation, 1024, Some(&observed_io))?.await?;

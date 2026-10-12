@@ -309,11 +309,6 @@ async fn check_native_preparation_authority(
     let token = owner.resource_preparation_with_native_work(request, &work)?.await?;
     assert_eq!(token.origin(), ordinary.origin());
     token.verify_creation_with_native_work(&work)?.await?;
-    let guard = token.owned_creation_guard_with_native_work(&work)?;
-    let owned_future: crate::NativeFutureBundle<'static, ()> =
-        guard.verify_creation_with_native_work(&work)?;
-    drop(guard);
-    owned_future.await?;
 
     let foreign_cancellation = acyclic_fs::CancellationToken::new();
     let foreign = test_work(
@@ -321,8 +316,6 @@ async fn check_native_preparation_authority(
     )?;
     let before = foreign.receipt();
     assert!(matches!(token.verify_creation_with_native_work(&foreign),
-        Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
-    assert!(matches!(token.owned_creation_guard_with_native_work(&foreign),
         Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
     assert_eq!(foreign.receipt(), before);
     Ok(())

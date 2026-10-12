@@ -59,7 +59,7 @@ impl MailFixture {
     }
 
     async fn send(&self, recipient: usize, operation: OperationId, io: &PreparationIo) -> Result<crate::conversation::FileRef> {
-        let payload = self.payload.clone_with_io(io)?;
+        let payload = crate::executor::with_history_io(Some(io), |work| self.payload.copy(work))?;
         self.runtime.task_host().send_mail(self.tasks[0].0, &self.tasks[0].1,
             self.tasks[recipient].0, operation, payload, Some(io)).await
     }

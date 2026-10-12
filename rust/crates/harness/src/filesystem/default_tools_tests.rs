@@ -80,11 +80,11 @@ async fn restored_applied_plan_observes_original_receipt_without_second_write() 
     let effect = OperationId::from_bytes([21; 16]);
     let first = controller.apply_project_merge(&inspected, effect).await?;
     let JoinOutcome::Applied(first) = first else { return Err(Error::Invalid("expected real Filesystem publication".into())); };
-    let result = fixture.host.generation_ref(first.generation())?;
+    let result = fixture.host.generation_ref(&first.generation)?;
     let restored = controller.prepare_project_import_at(&fixture.source, &fixture.source_generation, &target).await?;
     let retried = controller.apply_project_merge(&restored, effect).await?;
     let JoinOutcome::AlreadyApplied(retried) = retried else { return Err(Error::Invalid("retry did not observe original publication".into())); };
-    assert_eq!(fixture.host.generation_ref(retried.generation())?, result);
+    assert_eq!(fixture.host.generation_ref(&retried.generation)?, result);
     let project = workspace_ref(fixture.project.provider().clone(), &fixture.project.storage_name(&mut None)?)?;
     assert_eq!(fixture.host.resolve(&project).await?.generation, result);
     Ok(())
@@ -257,11 +257,11 @@ async fn dropped_invocation_guard_rejects_the_next_real_filesystem_request_befor
     let budget = acyclic_fs::performance::work_budget(4096, 1 << 20);
     let live = fixture.host.read_content_measured(&file, &read, 64, budget, &cancellation).await
         .map_err(|failure| failure.error)?;
-    assert_eq!(live.value, b"original");
+    assert_eq!(live.value.as_ref(), b"original");
     drop(guard);
     let failure = fixture.host.read_content_measured(&file, &read, 64, budget, &cancellation).await
         .expect_err("actual invoking token must reject a new backend request");
-    assert_eq!(failure.work, acyclic_fs::WorkCounters::default());
+    assert_eq!(*failure.work, acyclic_fs::WorkCounters::default());
     assert!(cancellation.is_cancelled());
     Ok(())
 }
@@ -318,8 +318,8 @@ async fn inherited_grant_preflight_reuses_real_materializer_without_child_effect
         1, 8, 1, 16, reader.as_ref(), None).await.is_err());
     assert!(controller.inherited_reference_grants(fixture.parent.reducer(), child_agent, &[],
         2, 8, 8192, 16, reader.as_ref(), None).await.is_err());
-    fixture.host.create_volume(&child).await?;
-    let actual = controller.materialize_inherited_conversation(fixture.parent.reducer(), &child, child_agent,
+    let child_head = fixture.host.create_volume(&child).await?;
+    let actual = controller.materialize_inherited_conversation(fixture.parent.reducer(), &child, &child_head.generation, child_agent,
         &[], 1, 8, 8192, 16, reader.as_ref(), &IdempotencyKey::new("real-inherited-prefix")?).await?;
     assert_eq!(actual.reference_grants, projected);
     Ok(())
