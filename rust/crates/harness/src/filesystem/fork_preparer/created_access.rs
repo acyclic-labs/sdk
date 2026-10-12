@@ -387,11 +387,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemRootBootstrapAllocat
     #[cfg(not(target_arch = "wasm32"))]
     async fn reauthenticate_with_io(&self, io: &PreparationIo) -> Result<()> {
         self.authenticate_record(io).await?;
-        self.authenticate_birth_with_io(io).await
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    async fn authenticate_birth_with_io(&self, io: &PreparationIo) -> Result<()> {
         let name_hold;
         let name = bounded_io::volume_storage_name(&self.request.volume, Some(io))?;
         name_hold = io.guard_owned(name.capacity() as u64)?;
@@ -1355,7 +1350,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             let evidence_bytes = proof.evidence.logical_owned_bytes()?;
             let bytes = allocation.volume.logical_owned_bytes()?.checked_mul(3)
                 .and_then(|bytes| bytes.checked_add(generation_bytes))
-                .and_then(|bytes| bytes.checked_add(self.issuer.audience().id.len() as u64))
                 .and_then(|bytes| bytes.checked_add(resource_bytes))
                 .and_then(|bytes| bytes.checked_add(evidence_bytes))
                 .and_then(|bytes| bytes.checked_add(std::mem::size_of::<CreatedFilesystemAccess<A, O>>() as u64))
@@ -1391,10 +1385,9 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             }
         }
         let access = Arc::new(CreatedFilesystemAccess {
-            host: self.host.clone(), owner: self.issuer.audience().clone(),
+            host: self.host.clone(),
             request: request.clone(), proof: proof.clone(), origin: allocation.origin.clone(),
             generation: allocation.generation.clone(), prepared_generation: allocation.prepared_generation,
-            agent: allocation.agent,
             creation_operation: allocation.creation_operation, reader, writer,
         });
         let count = allocation.reference_files.len();
@@ -1492,13 +1485,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
 
 struct CreatedFilesystemAccess<A, O> {
     host: Arc<FilesystemHost<A, O>>,
-    owner: Authority,
     request: ResourcePreparationRequest,
     proof: ResourceCreationProofRef,
     origin: ResourceCreationOrigin,
     generation: GenerationRef,
     prepared_generation: GenerationRef,
-    agent: crate::AgentId,
     creation_operation: acyclic_fs::OperationId,
     reader: FilesystemContentVerifier<A, O>,
     writer: FilesystemContentPublisher<A, O>,
@@ -1508,17 +1499,17 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
     crate::resource_preparation::ScratchCreationIdentity for CreatedFilesystemAccess<A,O>
 {
     fn original_task(&self) -> crate::TaskId { crate::TaskId::from_bytes(self.origin.intended_child.into_bytes()) }
-    fn agent(&self) -> crate::AgentId { self.agent }
+    fn agent(&self) -> crate::AgentId { self.reader.scope.agent().expect("created reader binds its original agent") }
     fn volume(&self) -> &VolumeRef { self.writer.volume() }
     fn creation_operation(&self) -> acyclic_fs::OperationId { self.creation_operation }
     fn initial_generation(&self) -> &GenerationRef { &self.generation }
     fn origin(&self) -> &ResourceCreationOrigin { &self.origin }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CreatedFilesystemAccess<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CreatedFilesystemAccess<A, O> {
     fn validate_authenticated(&self, current: &AuthenticatedAllocation) -> Result<()> {
         if current.origin != self.origin || current.generation != self.generation
-            || current.prepared_generation != self.prepared_generation || current.volume != self.volume
+            || current.prepared_generation != self.prepared_generation || &current.volume != self.writer.volume()
         {
             return Err(Error::Unauthorized("original created allocation evidence changed".into()));
         }
@@ -1531,7 +1522,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CreatedFilesystemAccess<A, O> 
         if volume != self.writer.volume() {
             return Err(Error::Unauthorized("created content handle names another volume".into()));
         }
-        let current = authenticate(&self.host, &self.owner, &self.request, &self.proof, io).await?;
+        let current = authenticate(&self.host, self.reader.verifier.audience(), &self.request, &self.proof, io).await?;
         self.validate_authenticated(&current)
     }
 }
@@ -1543,13 +1534,13 @@ struct CreatedFilesystemReference<A, O> {
     reader: FilesystemContentVerifier<A, O>,
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CreatedFilesystemReference<A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> CreatedFilesystemReference<A, O> {
     async fn authenticate_file(&self, file: &FileRef, io: Option<&PreparationIo>) -> Result<()> {
         if file != &self.file {
             return Err(Error::Unauthorized("created reference handle names another immutable file".into()));
         }
         let allocation = &self.allocation;
-        let current = authenticate(&allocation.host, &allocation.owner,
+        let current = authenticate(&allocation.host, allocation.reader.verifier.audience(),
             &allocation.request, &allocation.proof, io).await?;
         allocation.validate_authenticated(&current)?;
         if !current.reference_files.contains(file) {
