@@ -134,7 +134,7 @@ impl TaskContext {
                 "task context metadata custody differs from its original source"));
         }
         let extra = (std::mem::size_of::<NativeTaskContext>() - std::mem::size_of::<TaskContext>()) as u64;
-        let mut slot = match work.claim(extra) {
+        let mut slot = match work.claim(extra, u64::from((extra) != 0), acyclic_fs::WorkCounters::default()) {
             Ok(slot) => slot,
             Err(cause) => {
                 let NativeTaskContext { context, custody, .. } = payload;
@@ -332,7 +332,7 @@ impl NativeTaskContext {
                 "content READ facade lacks original shared metadata custody"));
         }
         owner.require_mail_scope_with_native_work(self.context.scope(), work)?;
-        let custody = work.claim(std::mem::size_of::<NativeContextVerifier<P>>() as u64)
+        let custody = work.claim(std::mem::size_of::<NativeContextVerifier<P>>() as u64, u64::from((std::mem::size_of::<NativeContextVerifier<P>>() as u64) != 0), acyclic_fs::WorkCounters::default())
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Ok(Arc::new(NativeContextVerifier {
             context: Arc::clone(self), owner, custody,
@@ -500,7 +500,7 @@ impl ToolContext {
         let io = crate::executor::PreparationIo::from_native_work(work)?;
         crate::executor::with_history_io(Some(&io), |work|
             crate::tool::ToolInvocation::validate_identity(call_id, None, work))?;
-        let mut slot = work.retain_owned(std::mem::size_of::<Self>() as u64)
+        let mut slot = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::default())
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let mut output = work.display(call_id)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
@@ -755,7 +755,7 @@ mod tests {
         assert!(matches!(context.require_original_native_work(&original),
             Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized, .. })));
         assert_eq!(original.receipt(), before);
-        let custody = original.claim(65_536)
+        let custody = original.claim(65_536, 1, acyclic_fs::WorkCounters::default())
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let before = original.receipt();
         let rejected = context.into_native_shared(custody, &original);
@@ -777,7 +777,7 @@ mod tests {
         ).await?;
         assert!(custody.bytes() > 0);
         let clone = context.clone();
-        let opaque = original.claim(custody.bytes())
+        let opaque = { let claim_bytes = custody.bytes(); original.claim(claim_bytes, u64::from(claim_bytes != 0), acyclic_fs::WorkCounters::default()) }
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let before = original.receipt();
         let cloned = clone.into_native_shared(opaque, &original);
@@ -904,14 +904,14 @@ mod tests {
         let bytes = reader.read_with_native_work(&staged.0, 65_536, &original)?.await?;
         assert!(original.receipt().backend_read_operations > reads);
         assert_eq!(bytes.as_ref(), b"same issued context");
-        assert!(bytes.matches_meter(&original.runtime_meter_owner()));
+        assert!(bytes.matches_meter(&original.runtime_meter()));
         let held = original.live_allocation_bytes() - before;
         assert!(held > 0);
         let physical = original.receipt();
         let shared_bytes = bytes.clone();
         drop(bytes);
         assert_eq!(shared_bytes.as_ref(), b"same issued context");
-        assert!(shared_bytes.matches_meter(&original.runtime_meter_owner()));
+        assert!(shared_bytes.matches_meter(&original.runtime_meter()));
         assert_eq!(original.live_allocation_bytes(), before + held);
         drop(shared_bytes);
         assert_eq!(original.live_allocation_bytes(), before);
@@ -950,7 +950,7 @@ mod tests {
         assert_eq!(original.receipt().backend_read_operations, reads);
 
         let available = BUDGET.peak_allocation_bytes - original.live_allocation_bytes();
-        let quota = original.claim(available)
+        let quota = original.claim(available, u64::from((available) != 0), acyclic_fs::WorkCounters::default())
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let mut buffer = Vec::<u8>::new();
         buffer.try_reserve_exact(usize::try_from(available).expect("fixture byte bound"))
@@ -1033,7 +1033,7 @@ mod tests {
         assert_eq!(original.receipt().allocation_operations, before);
 
         let available = BUDGET.peak_allocation_bytes - original.live_allocation_bytes();
-        let quota = original.claim(available)
+        let quota = original.claim(available, u64::from((available) != 0), acyclic_fs::WorkCounters::default())
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let mut buffer = Vec::<u8>::new();
         buffer.try_reserve_exact(usize::try_from(available).expect("fixture byte bound"))

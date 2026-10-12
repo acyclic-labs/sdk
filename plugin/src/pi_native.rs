@@ -63,7 +63,7 @@ pub(crate) fn planned_native_paths(
     };
     let mut session_file = work.join_path(&session.0, Path::new("session.jsonl")).map_err(native_error)?;
     let mut operation = work.join_path(&task.0, Path::new("preparation")).map_err(native_error)?;
-    let custody = work.retain_owned(std::mem::size_of::<PiNativePaths>() as u64).map_err(native_error)?;
+    let custody = work.claim(std::mem::size_of::<PiNativePaths>() as u64, 0, acyclic_fs::WorkCounters::default()).map_err(native_error)?;
     let mut planned = (PiNativePaths { cwd: cwd.0, session_file: session_file.0,
         session_directory: session.0, view_root: view.0, operation_root: operation.0 }, custody);
     for incoming in [&mut cwd.1, &mut session_file.1, &mut session.1,
@@ -361,7 +361,7 @@ impl PiNativeHostRuntime {
         work.remaining().map_err(native_error)?;
         let reject = |reason| Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason };
         let inspect = |items: usize| work.charge(WorkCounters {
-            items_examined: items as u64, ..WorkCounters::UNCHARGED
+            items_examined: items as u64, ..WorkCounters::default()
         }).map_err(native_error);
         let mut environment_bytes = 0_u64;
         for (index, (key, value)) in self.environment.iter().enumerate() {
@@ -416,7 +416,7 @@ impl PiNativeHostRuntime {
                 let copied = work.copy_path(path).map_err(native_error)?;
                 (Some(copied.0), copied.1)
             }
-            None => (None, work.retain_owned(0).map_err(native_error)?),
+            None => (None, work.claim(0, 0, acyclic_fs::WorkCounters::default()).map_err(native_error)?),
         };
         let mut prefix = pi_native_vec::<String>(self.executable_prefix.len(), work)?;
         for argument in &self.executable_prefix {
@@ -424,9 +424,9 @@ impl PiNativeHostRuntime {
             prefix.0.push(copied.0);
             prefix.1.absorb(&mut copied.1).map_err(native_error)?;
         }
-        let mut environment = (BTreeMap::new(), work.retain_owned(0).map_err(native_error)?);
+        let mut environment = (BTreeMap::new(), work.claim(0, 0, acyclic_fs::WorkCounters::default()).map_err(native_error)?);
         for (key, value) in &self.environment {
-            let mut slot = work.retain_owned(std::mem::size_of::<(String, String)>() as u64).map_err(native_error)?;
+            let mut slot = work.claim(std::mem::size_of::<(String, String)>() as u64, 0, acyclic_fs::WorkCounters::default()).map_err(native_error)?;
             let mut key = pi_native_string(key, work)?;
             let mut value = pi_native_string(value, work)?;
             environment.0.insert(key.0, value.0);
@@ -434,7 +434,7 @@ impl PiNativeHostRuntime {
             environment.1.absorb(&mut key.1).map_err(native_error)?;
             environment.1.absorb(&mut value.1).map_err(native_error)?;
         }
-        let custody = work.retain_owned(std::mem::size_of::<Self>() as u64).map_err(native_error)?;
+        let custody = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::default()).map_err(native_error)?;
         let mut copied = (Self { version: version.0, executable: executable.0, executable_prefix: prefix.0,
             extension: extension.0, provider_extension: provider_extension.0, environment: environment.0 }, custody);
         for incoming in [&mut version.1, &mut executable.1, &mut extension.1,
@@ -739,7 +739,7 @@ pub(crate) async fn stage_command(
     if context.durable_task_id().is_none() { return Err(invalid("Pi native launch requires its original durable TaskContext")); }
     let maximum = context.scope().limits().file_bytes.min(super::MAXIMUM_ADAPTER_STATE_BYTES);
     // Declared first so every staged payload drops before its combined allocation.
-    let mut custody = work.retain_owned(0).map_err(native_error)?;
+    let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::default()).map_err(native_error)?;
     let mut request = stage_context_artifact(
         context, command, "request", request, "application/json", maximum, work).await?;
     custody.absorb(&mut request.1).map_err(native_error)?;
@@ -1021,7 +1021,7 @@ impl PiNativeRootSeed {
             let options = if writable { acyclic_fs::MountOptions::read_write() } else { acyclic_fs::MountOptions::read_only() }
                 .publication(acyclic_fs::MountPublication::Manual);
             let source_guard = callback_guard.for_volume(owner, volume, writable, original_volume_work)?.0;
-            let mut allocation = original_volume_work.claim(std::mem::size_of::<LazyMount<A, O, D, S>>() as u64)
+            let mut allocation = original_volume_work.claim(std::mem::size_of::<LazyMount<A, O, D, S>>() as u64, u64::from((std::mem::size_of::<LazyMount<A, O, D, S>>() as u64) != 0), acyclic_fs::WorkCounters::default())
                 .map_err(native_error)?;
             let mut slot = Arc::<LazyMount<A, O, D, S>>::new_uninit();
             let mut mount = match workspace.mount_with_work(path.0.as_path(), options,
@@ -1072,7 +1072,7 @@ impl PiNativeRootSeed {
             verifier: &authority.0, scope: &authority.1, publication };
         let existing = NativeExistingLazyVolume::capture_with_native_work(
             mount, owner, &declaration, &callback_guard, meter, original_volume_work)?.await?;
-        let mut metadata = meter.retain_owned(0).map_err(native_error)?;
+        let mut metadata = meter.claim(0, 0, acyclic_fs::WorkCounters::default()).map_err(native_error)?;
         metadata.absorb(&mut volume_copy.1).map_err(native_error)?;
         metadata.absorb(&mut generation_copy.1).map_err(native_error)?;
         metadata.absorb(&mut path.1).map_err(native_error)?;
@@ -1290,7 +1290,7 @@ pub(crate) async fn native_root_seed<'a, P, A, O>(
 where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + Sync + 'static,
       O: acyclic_fs::AsyncObjectStore + Send + Sync + 'static,
 {
-    meter.admit(WorkCounters::UNCHARGED).map_err(native_error)?;
+    meter.admit(WorkCounters::default()).map_err(native_error)?;
     if shared.context().durable_task_id() != Some(owner.task_id()) || owner.task_id() != binding.task_id || bindings.len() != 1
         || bindings[0].volume != &binding.scratch.volume || bindings[0].path != "scratch" || !bindings[0].writable
         || !matches!(bindings[0].namespace, NativeVolumeNamespace::MaterializedDirectory)
@@ -1333,7 +1333,7 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
     let mut service_root = meter.copy_path(service).map_err(native_error)?;
     let mut scratch = acyclic_harness::filesystem::copy_native_volume_with_work(&binding.scratch.volume, meter)?;
     let mut view_root = meter.copy_path(&options.root).map_err(native_error)?;
-    let mut custody = meter.retain_owned(std::mem::size_of::<PiNativeRootSeed>() as u64).map_err(native_error)?;
+    let mut custody = meter.claim(std::mem::size_of::<PiNativeRootSeed>() as u64, 0, acyclic_fs::WorkCounters::default()).map_err(native_error)?;
     custody.absorb(&mut service_root.1).map_err(native_error)?;
     custody.absorb(&mut scratch.1).map_err(native_error)?;
     custody.absorb(&mut view_root.1).map_err(native_error)?;
@@ -1356,7 +1356,7 @@ fn pi_native_string(value: &str, work: &NativeMaterializationWork) -> Result<(St
 pub(crate) fn pi_native_vec<T>(capacity: usize, work: &NativeMaterializationWork) -> Result<(Vec<T>, acyclic_fs::NativeAllocation)> {
     let bytes = capacity.checked_mul(std::mem::size_of::<T>())
         .ok_or_else(|| native_error(acyclic_fs::WorkError::Overflow.into()))?;
-    let mut custody = if bytes == 0 { work.retain_owned(0) } else { work.claim(bytes as u64) }.map_err(native_error)?;
+    let mut custody = if bytes == 0 { work.claim(0, 0, acyclic_fs::WorkCounters::default()) } else { work.claim(bytes as u64, u64::from((bytes as u64) != 0), acyclic_fs::WorkCounters::default()) }.map_err(native_error)?;
     let mut value = Vec::new();
     if let Err(cause) = value.try_reserve_exact(capacity) {
         return Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::AllocationFailed(cause),

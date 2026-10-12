@@ -22,7 +22,7 @@ use crate::{
 use acyclic_stream::BoxProviderFuture as BoxFuture;
 use futures::StreamExt as _;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::sync::Arc;
 
 mod native_stock;
@@ -332,7 +332,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         &'a self, _operation_id: OperationId, _idempotency_key: &'a str,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
-        work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        work.remaining()?;
         Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
             reason: "native original staged-payload observation is unavailable" })
     }
@@ -1519,14 +1519,15 @@ impl StockExecution<'_> {
                     phase = crate::obs::Empty,
                     items = crate::obs::Empty,
                 );
-                tracing::Instrument::instrument(
-                    async move {
-                        crate::obs::outcome(
-                            self.dispatch_model_step(journal, input, step, prior_messages, purpose).await,
-                        )
-                    },
-                    span,
-                )
+                let operation = span.clone();
+                span.scope(async move {
+                    let result = self.dispatch_model_step(journal, input, step, prior_messages, purpose).await;
+                    operation.record("outcome", if result.is_ok() { "ok" } else { "err" });
+                    if let Err(error) = &result {
+                        operation.record("error.kind", error.kind());
+                    }
+                    result
+                })
             }).map(futures::future::Either::Right);
         }
         let span = obs_span!(
@@ -2966,7 +2967,7 @@ impl Executor for StockExecutor {
         native_execution_supported(self, context, journal, work)?;
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
-            io.absorb_native_custody(work.retain_owned(std::mem::size_of::<TurnOutput>() as u64)?)?;
+            io.absorb_native_custody(work.claim(std::mem::size_of::<TurnOutput>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?)?;
             let output = {
                 let session = native_session(self, context, input.operation_id, &io, self.reconciliation_only, None);
                 session.execute_progress(input, journal).await?.into_output()?
@@ -3263,7 +3264,7 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
             let before = io.owned_bytes()?;
             let mut observer = crate::store::history::native_work_io(
                 io.original_native_work().expect("native branch retains original work"),
-            ).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            )?;
             let selection = history.operation_event(
                 envelope.operation_id, maximum_history_bytes, &mut Some(&mut observer),
             ).await?;
@@ -3366,7 +3367,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
             let before = io.owned_bytes()?;
             let mut observer = crate::store::history::native_work_io(
                 io.original_native_work().expect("native branch retains original work"),
-            ).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            )?;
             let mut work: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
             let records = history.conversation_range(
                 cursor, after_sequence, through_sequence, range_limits, &mut work,
@@ -3951,6 +3952,7 @@ impl ModelEventAdmission {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
     fn uncompacted_executor(
         model: Model,
         provider: Arc<dyn ModelProvider>,

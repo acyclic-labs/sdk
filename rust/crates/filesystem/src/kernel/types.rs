@@ -228,7 +228,7 @@ impl LogicalName {
         accounting.record_completed(delta)
     }
 
-    pub(crate) fn read_cursor_borrowed<'a>(
+    pub(super) fn read_cursor_borrowed<'a>(
         decoder: &mut Decoder<'a>,
         profile: FilesystemProfile,
         maximum_bytes: u32,
@@ -270,7 +270,7 @@ impl LogicalName {
         owned.finish(result)
     }
 
-    pub(crate) fn decode_cursor(
+    pub(super) fn decode_cursor(
         decoder: &mut Decoder<'_>,
         profile: FilesystemProfile,
         maximum_bytes: u32,
@@ -408,7 +408,7 @@ impl LogicalName {
                 lowercase_unicode(
                     value,
                     &mut AllocationLedger::default(),
-                    &mut WorkCounters::UNCHARGED,
+                    &mut WorkCounters::default(),
                     WorkBudget::UNBOUNDED,
                     None,
                 ).expect("unbounded canonical lowercase allocation succeeds")

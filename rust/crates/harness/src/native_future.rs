@@ -30,9 +30,9 @@ impl<'a, T> NativeFutureBundle<'a, T> {
         work.remaining()?;
         let bytes = std::mem::size_of::<F>() as u64;
         let custody = if bytes == 0 {
-            work.retain_owned(0)?
+            work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?
         } else {
-            work.claim(bytes)?
+            work.claim(bytes, u64::from((bytes) != 0), acyclic_fs::WorkCounters::UNCHARGED)?
         };
         let future: BoxProviderFuture<'a, Result<T>> = Box::pin(build());
         Ok(Self { future, _custody: custody })

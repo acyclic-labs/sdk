@@ -77,7 +77,7 @@ pub(crate) async fn read_file_range_with_accounting<S: AsyncObjectStore>(
             accounting.admit(copied)?;
             let mut output = allocate_read_buffer(region.len(), accounting)?;
             output.value.extend_from_slice(region);
-            completed_read_work(accounting, copied)?;
+            accounting.record_completed(copied)?;
             output
         }
         FilePayload::Regular { logical_bytes, extents } => {
@@ -94,7 +94,7 @@ pub(crate) async fn read_file_range_with_accounting<S: AsyncObjectStore>(
             accounting.admit(zeroed)?;
             let mut output = allocate_read_buffer(length, accounting)?;
             output.value.resize(length, 0);
-            completed_read_work(accounting, zeroed)?;
+            accounting.record_completed(zeroed)?;
             for span in &plan.value.spans {
                 let ExtentKind::Content { object, object_offset } = span.kind else { continue };
                 let nested = super::blob::read_blob_range_for_copy_with_accounting(
@@ -108,7 +108,7 @@ pub(crate) async fn read_file_range_with_accounting<S: AsyncObjectStore>(
                 let copied = WorkCounters { bytes_copied: span.length, ..WorkCounters::UNCHARGED };
                 accounting.admit(copied)?;
                 destination.copy_from_slice(&nested.bytes);
-                completed_read_work(accounting, copied)?;
+                accounting.record_completed(copied)?;
                 let retained = nested.logical_owned_bytes;
                 drop(nested);
                 release_standalone_read_bytes(retained, accounting)?;
@@ -134,12 +134,6 @@ fn file_error(error: FsError) -> FileRangeReadError {
         FsError::Cancelled(_) => FileRangeReadError::Cancelled,
         error => FileRangeReadError::Context(Box::new(error)),
     }
-}
-
-pub(crate) fn completed_read_work(
-    accounting: &mut KernelAccounting<'_>, delta: WorkCounters,
-) -> Result<(), FsError> {
-    accounting.record_completed(delta)
 }
 
 pub(crate) fn allocation_error(error: AllocationError) -> FsError {
@@ -222,7 +216,7 @@ pub(crate) fn owned_read_bytes(owner: ReadOwned<Vec<u8>>) -> Result<acyclic_stre
     if let KernelOwnedAllocation::NativeOriginal(custody) = &owner.custody {
         let original = custody.work().clone();
         return acyclic_stream::OwnedBytes::from_vec_with_guard(
-            owner.value, owner.custody, original.runtime_meter_owner(),
+            owner.value, owner.custody, original.runtime_meter(),
         ).map_err(|failure| match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error).into(),
             acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized

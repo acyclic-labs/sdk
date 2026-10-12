@@ -1,9 +1,10 @@
 #![doc = include_str!("../README.md")]
 
-use std::collections::HashSet;
-
 /// Rust-owned semantic projections for generated SDK metadata.
-pub use contract::domain;
+pub use contract::{
+    domain, ContractError, MAX_BINDINGS, MAX_SUBSCRIPTIONS,
+    validate_add_subscription, validate_create, validate_delete, validate_update,
+};
 
 /// Authenticated operations over the platform's Rust-owned transport.
 pub mod client;
@@ -32,27 +33,8 @@ pub mod wire;
 /// Canonical version-one descriptor set.
 pub const FILE_DESCRIPTOR_SET: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/acyclic-actors-v1.bin"));
-/// Maximum subscriptions on one Actor contract.
-pub const MAX_SUBSCRIPTIONS: usize = 64;
-/// Maximum named bindings on one Actor contract.
-pub const MAX_BINDINGS: usize = 64;
-
-/// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
-pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
-
-/// Bearer credentials must be nonblank, bounded and header-safe.
-pub(crate) fn valid_token(token: &str) -> bool {
-    !token.trim().is_empty()
-        && token.len() <= MAX_BEARER_TOKEN_BYTES
-        && !token
-            .chars()
-            .any(|character| matches!(character, '\r' | '\n' | '\0'))
-}
-
-/// Idempotency keys are present and bounded consistently across operations.
-pub(crate) fn valid_idempotency_key(value: &str) -> bool {
-    !value.is_empty() && value.len() <= 256
-}
+pub use acyclic_workers::MAX_BEARER_TOKEN_BYTES;
+use acyclic_workers::valid_token;
 
 /// Rust-owned route names used by the TypeScript transport generator.
 pub const HTTP_ROUTES: &[(&str, &str)] = &[
@@ -67,158 +49,12 @@ pub const HTTP_ROUTES: &[(&str, &str)] = &[
     ("deleteActor", "v1/actors/delete"),
 ];
 
-/// Invalid customer-authored Actors request.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum ContractError {
-    /// A required field is absent or malformed.
-    #[error("required field is absent or malformed")]
-    InvalidArgument,
-    /// A collection exceeds its contract bound.
-    #[error("Actors v1 collection limit exceeded")]
-    LimitExceeded,
-    /// A subscription or binding name occurs more than once.
-    #[error("duplicate subscription or binding name")]
-    DuplicateName,
-}
-
-impl ContractError {
-    /// Returns the stable error code shared by every SDK bridge.
-    #[must_use]
-    pub const fn code_name(self) -> &'static str {
-        match self {
-            Self::InvalidArgument => "invalid_argument",
-            Self::LimitExceeded => "limit_exceeded",
-            Self::DuplicateName => "duplicate_name",
-        }
-    }
-}
-
-impl From<std::convert::Infallible> for ContractError {
-    fn from(value: std::convert::Infallible) -> Self {
-        match value {}
-    }
-}
-
-fn subscription(value: &wire::SubscriptionSpec) -> bool {
-    !value.subscription_id.is_empty()
-        && !value.stream_path.is_empty()
-        && matches!(
-            value.start.as_ref().and_then(|start| start.start.as_ref()),
-            Some(wire::subscription_start::Start::Cursor(_))
-                | Some(wire::subscription_start::Start::CurrentHead(true))
-        )
-}
-
-/// Validates a customer-authored Actor creation request before admission.
-pub fn validate_create(request: &wire::CreateActorRequest) -> Result<(), ContractError> {
-    if !domain::valid_code_sha256(&request.code_sha256)
-        || request.home_region.is_empty()
-        || !valid_idempotency_key(&request.idempotency_key)
-        || !request.limits.as_ref().is_some_and(|limits| {
-            limits.handler_timeout_millis > 0
-                && limits.memory_bytes > 0
-                && limits.checkpoint_bytes > 0
-        })
-    {
-        return Err(ContractError::InvalidArgument);
-    }
-    if request.subscriptions.len() > MAX_SUBSCRIPTIONS || request.bindings.len() > MAX_BINDINGS {
-        return Err(ContractError::LimitExceeded);
-    }
-    let mut names = HashSet::new();
-    let mut anchors = 0;
-    for item in &request.subscriptions {
-        if !subscription(item) {
-            return Err(ContractError::InvalidArgument);
-        }
-        if !names.insert(&item.subscription_id) {
-            return Err(ContractError::DuplicateName);
-        }
-        anchors += usize::from(item.placement_anchor);
-    }
-    if anchors > 1 {
-        return Err(ContractError::InvalidArgument);
-    }
-    names.clear();
-    for item in &request.bindings {
-        if item.name.is_empty() || item.capability.is_empty() || item.resource.is_empty() {
-            return Err(ContractError::InvalidArgument);
-        }
-        if !names.insert(&item.name) {
-            return Err(ContractError::DuplicateName);
-        }
-    }
-    Ok(())
-}
-
-/// Validates a full compare-and-replace Actor configuration mutation.
-pub fn validate_update(request: &wire::UpdateActorRequest) -> Result<(), ContractError> {
-    if request.actor_id.is_empty()
-        || !domain::valid_code_sha256(&request.code_sha256)
-        || !valid_idempotency_key(&request.idempotency_key)
-        || !request.limits.as_ref().is_some_and(|limits| {
-            limits.handler_timeout_millis > 0
-                && limits.memory_bytes > 0
-                && limits.checkpoint_bytes > 0
-        })
-    {
-        return Err(ContractError::InvalidArgument);
-    }
-    if request.bindings.len() > MAX_BINDINGS {
-        return Err(ContractError::LimitExceeded);
-    }
-    let mut names = HashSet::new();
-    for item in &request.bindings {
-        if item.name.is_empty() || item.capability.is_empty() || item.resource.is_empty() {
-            return Err(ContractError::InvalidArgument);
-        }
-        if !names.insert(&item.name) {
-            return Err(ContractError::DuplicateName);
-        }
-    }
-    Ok(())
-}
-
-/// Validates a terminal Actor deletion. Identity and idempotency rules match
-pub fn validate_delete(request: &wire::DeleteActorRequest) -> Result<(), ContractError> {
-    if request.actor_id.is_empty() || !valid_idempotency_key(&request.idempotency_key) {
-        return Err(ContractError::InvalidArgument);
-    }
-    Ok(())
-}
-
-/// Validates a newly authored subscription; its cursor may not later be rewound.
-pub fn validate_add_subscription(
-    request: &wire::AddSubscriptionRequest,
-) -> Result<(), ContractError> {
-    if request.actor_id.is_empty()
-        || !valid_idempotency_key(&request.idempotency_key)
-        || !request.subscription.as_ref().is_some_and(subscription)
-    {
-        return Err(ContractError::InvalidArgument);
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn subscription_start_is_exactly_one_choice() {
-        let valid = wire::SubscriptionSpec {
-            subscription_id: "events".into(),
-            stream_path: "agents/a/events".into(),
-            start: Some(wire::SubscriptionStart {
-                start: Some(wire::subscription_start::Start::Cursor(0)),
-            }),
-            placement_anchor: true,
-        };
-        assert!(subscription(&valid));
-        let mut invalid = valid;
-        invalid.start = None;
-        assert!(!subscription(&invalid));
-
         let mut create = wire::CreateActorRequest {
             code_sha256: vec![1; 32],
             home_region: "eu".into(),
@@ -239,6 +75,9 @@ mod tests {
             idempotency_key: "create-a".into(),
         };
         assert_eq!(validate_create(&create), Ok(()));
+        let start = create.subscriptions[0].start.take();
+        assert_eq!(validate_create(&create), Err(ContractError::InvalidArgument));
+        create.subscriptions[0].start = start;
         let duplicate = create.subscriptions.clone();
         create.subscriptions.extend(duplicate);
         assert_eq!(validate_create(&create), Err(ContractError::DuplicateName));
@@ -315,7 +154,7 @@ mod tests {
     /// Serves one RPC whose OK headers precede a 50 ms body ending in an UNAVAILABLE trailer.
     #[cfg(not(target_arch = "wasm32"))]
     async fn slow_status_server() -> std::io::Result<std::net::SocketAddr> {
-        use std::{future::Future as _, pin::Pin, task::Poll};
+        use std::task::Poll;
 
         #[derive(Clone)]
         struct SlowStatus;
@@ -336,27 +175,8 @@ mod tests {
                 &mut self,
                 _: tonic::codegen::http::Request<tonic::body::Body>,
             ) -> Self::Future {
-                let sleep = tokio::time::sleep(std::time::Duration::from_millis(50));
-                let body = tonic::body::Body::new(Trailers(Some(Box::pin(sleep))));
+                let body = acyclic_grpc_observability::test_support::delayed_unavailable_body();
                 std::future::ready(Ok(tonic::codegen::http::Response::new(body)))
-            }
-        }
-        struct Trailers(Option<Pin<Box<tokio::time::Sleep>>>);
-        impl http_body::Body for Trailers {
-            type Data = tonic::codegen::Bytes;
-            type Error = std::convert::Infallible;
-            fn poll_frame(
-                mut self: Pin<&mut Self>,
-                cx: &mut std::task::Context<'_>,
-            ) -> Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
-                let Some(sleep) = self.0.as_mut() else {
-                    return Poll::Ready(None);
-                };
-                std::task::ready!(sleep.as_mut().poll(cx));
-                self.0 = None;
-                let mut trailers = tonic::codegen::http::HeaderMap::new();
-                trailers.insert("grpc-status", 14.into());
-                Poll::Ready(Some(Ok(http_body::Frame::trailers(trailers))))
             }
         }
         let incoming = tonic::transport::server::TcpIncoming::bind(([127, 0, 0, 1], 0).into())?;

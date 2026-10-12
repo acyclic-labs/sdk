@@ -2064,7 +2064,7 @@ impl TaskAdmissionRecord {
                     let diagnostic = crate::contract::json_typed_diagnostic_owned_bytes(
                         value_shape, LABELS.len() as u64, Some(crate::wire::ErrorCode::Invalid),
                     )?;
-                    diagnostic_custody = Some(native.retain_owned(diagnostic)
+                    diagnostic_custody = Some(native.claim(diagnostic, 0, acyclic_fs::WorkCounters::default())
                         .map_err(|cause| Error::NativeWork { cause, custody: None })?);
                     Ok(())
                 } else {
@@ -2782,7 +2782,7 @@ impl RuntimeScope {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         (&limits).validate(&mut Some(&mut crate::store::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?))?;
-        let custody = work.retain_owned(std::mem::size_of::<Self>() as u64)
+        let custody = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::default())
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let scope = Self {
             grants: grants.0,
@@ -5782,7 +5782,7 @@ impl AgentHarness {
                     }
                 };
                 let extra_self = (std::mem::size_of::<TaskContext>() - std::mem::size_of::<RuntimeScope>()) as u64;
-                let mut custody = work.retain_owned(extra_self)
+                let mut custody = work.claim(extra_self, 0, acyclic_fs::WorkCounters::default())
                     .map_err(|cause| Error::NativeWork { cause, custody: None })?;
                 let mut admitted = host.resume_scope_with_native_work(
                     task, operation, work,
@@ -5803,7 +5803,7 @@ impl AgentHarness {
                 let bound = admitted.0.concurrency_bound(self.concurrency);
                 let group = self.live.child(bound, Some(work))?;
                 let descendants = group.child(bound, Some(work))?;
-                let model_custody = work.claim(std::mem::size_of::<(AtomicUsize, Option<NativeCustody>)>() as u64)
+                let model_custody = work.claim(std::mem::size_of::<(AtomicUsize, Option<NativeCustody>)>() as u64, u64::from((std::mem::size_of::<(AtomicUsize, Option<NativeCustody>)>() as u64) != 0), acyclic_fs::WorkCounters::default())
                     .map_err(|cause| Error::NativeWork { cause, custody: None })?;
                 let model_steps = Arc::new((AtomicUsize::new(0), Some(model_custody)));
                 (admitted.0, descendants, model_steps, mailbox, Some(custody), issued_purpose)
@@ -6768,11 +6768,20 @@ impl TaskContext {
     }
 
     /// Observes the original once-publication, never a refreshed source/head.
-    pub async fn observe_staged_file_once(&self, operation_id: OperationId) -> Result<Option<FileRef>> {
-        let writer = self.bound_content_writer(self.content_binding(None), &self.scope, None)?;
-        let (file, _hold) = writer.observe_staged_once(operation_id, self.scope.limits.file_bytes, None)?.await?;
+    pub async fn observe_staged_file_once(&self, operation_id: OperationId, io: Option<&crate::executor::PreparationIo>) -> Result<Option<FileRef>> {
+        let writer = self.bound_content_writer(self.content_binding(None), &self.scope, io)?;
+        if io.is_some() { self.scope.verify_created_write(writer.volume(), io).await?; }
+        let (file, hold) = writer.observe_staged_once(operation_id, self.scope.limits.file_bytes, io)?.await?;
+        if io.is_some() { self.scope.verify_created_write(writer.volume(), io).await?; }
+        if let Some(hold) = hold { hold.into_retained(); }
         if let Some(file) = &file {
-            self.scope.limits.validate_file(file, &mut None)?;
+            #[cfg(feature = "filesystem")]
+            let mut observer = io.map(crate::filesystem::PreparationIo::history_io);
+            #[cfg(feature = "filesystem")]
+            let mut work = observer.as_mut().map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
+            #[cfg(not(feature = "filesystem"))]
+            let mut work = None;
+            self.scope.limits.validate_file(file, &mut work)?;
             if file.volume() != writer.volume() {
                 return Err(Error::Storage("original publisher receipt belongs to another volume".into()));
             }
@@ -9792,7 +9801,7 @@ mod tests {
                     crate::NativeFutureBundle::new(work, || async move {
                         assert_eq!(scope as *const RuntimeScope as usize, self.scope_address);
                         self.changed.store(true, Ordering::SeqCst);
-                        Ok((ToolPolicyDecision::Allow, work.retain_owned(0)?))
+                        Ok((ToolPolicyDecision::Allow, work.claim(0, 0, acyclic_fs::WorkCounters::default())?))
                     })
                 }
             }

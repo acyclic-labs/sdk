@@ -704,7 +704,7 @@ async fn issued_mixed_working_view_retains_actual_lazy_project_and_materialized_
     let before = work.receipt().source_bytes_read;
     let project = issued.read_builtin_file(operation, Path::new("src/cold.txt"), 64, &work)?.await?;
     assert_eq!(project.as_slice(), b"genuine cold project");
-    assert!(project.matches_meter(&fixture.lazy_work.as_ref().expect("original seeded volume work").runtime_meter_owner()));
+    assert!(project.matches_meter(&fixture.lazy_work.as_ref().expect("original seeded volume work").runtime_meter()));
     assert!(work.receipt().source_bytes_read - before >= project.len() as u64);
     drop(project);
     issued.verify_with_native_work(&work)?.await?;
@@ -1023,7 +1023,7 @@ where
         use crate::store::history::HistoryIo as _;
         let original = original_work.expect("protected Root births require original work");
         let mut metadata = crate::store::history::native_work_io(original)?;
-        metadata.retain_owned(std::mem::size_of::<(Authority, AuthorityIssuer, Scope)>() as u64)?;
+        metadata.claim(std::mem::size_of::<(Authority, AuthorityIssuer, Scope)>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         let mut authority = (metadata.clone_authority(issuer.audience())?, metadata.into_custody());
         let mut copied_issuer = issuer.clone_with_native_work(original)?;
         authority.1.absorb(&mut copied_issuer.1)?;
@@ -1244,7 +1244,7 @@ where
                 std::mem::size_of::<crate::runtime::NativeVolumeCallbackGuard<P>>(),
             ).ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
                 reason: "native source guard slot count overflow" })?;
-            let custody = work.claim_allocation(guard_bytes as u64, u64::from(guard_bytes != 0), Default::default())?;
+            let custody = work.claim(guard_bytes as u64, u64::from(guard_bytes != 0), Default::default())?;
             let mut guards = (Vec::with_capacity(borrowed.len()), custody);
             for _ in &borrowed {
                 guards.0.push(context.volume_callback_guard_with_native_work(
@@ -1269,7 +1269,7 @@ where
                 let (path, _path_custody) = volume_work.path(&options.root, Some(std::path::Path::new("src")))?;
                 volume_work.create_owned_directory(&options.root, preparation_root.expected_identity,
                     std::path::Path::new("src"), true)?;
-                let mut allocation = volume_work.claim_allocation(std::mem::size_of::<acyclic_fs::LazyMount<
+                let mut allocation = volume_work.claim(std::mem::size_of::<acyclic_fs::LazyMount<
                     A, O, acyclic_fs::NativeDemandSource, acyclic_fs::MemoryLazyWorkspaceStore>>() as u64, 1, Default::default())?;
                 let mut mount = lazy.mount_with_work(&path, acyclic_fs::MountOptions::read_only()
                     .publication(acyclic_fs::MountPublication::Manual), Some(callback),

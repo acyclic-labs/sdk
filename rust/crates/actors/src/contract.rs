@@ -1,8 +1,149 @@
-//! Rust-owned Actors v1 contract.
-//!
-//! Contract derivation derives the prost wire implementation and the complete protobuf
-//! schema from these declarations. The tonic service facade below remains a
-//! generated transport adapter and consumes these same message types.
+//! Rust-owned Actors contract and admission.
+use std::collections::HashSet;
+use crate::wire;
+
+/// Maximum subscriptions on one Actor contract.
+pub const MAX_SUBSCRIPTIONS: usize = 64;
+/// Maximum named bindings on one Actor contract.
+pub const MAX_BINDINGS: usize = 64;
+
+/// Idempotency keys are present and bounded consistently across operations.
+fn valid_idempotency_key(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 256
+}
+
+/// Invalid customer-authored Actors request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum ContractError {
+    /// A required field is absent or malformed.
+    #[error("required field is absent or malformed")]
+    InvalidArgument,
+    /// A collection exceeds its contract bound.
+    #[error("Actors v1 collection limit exceeded")]
+    LimitExceeded,
+    /// A subscription or binding name occurs more than once.
+    #[error("duplicate subscription or binding name")]
+    DuplicateName,
+}
+
+impl ContractError {
+    /// Returns the stable error code shared by every SDK bridge.
+    #[must_use]
+    pub const fn code_name(self) -> &'static str {
+        match self {
+            Self::InvalidArgument => "invalid_argument",
+            Self::LimitExceeded => "limit_exceeded",
+            Self::DuplicateName => "duplicate_name",
+        }
+    }
+}
+
+impl From<std::convert::Infallible> for ContractError {
+    fn from(value: std::convert::Infallible) -> Self {
+        match value {}
+    }
+}
+
+fn subscription(value: &wire::SubscriptionSpec) -> bool {
+    !value.subscription_id.is_empty()
+        && !value.stream_path.is_empty()
+        && matches!(
+            value.start.as_ref().and_then(|start| start.start.as_ref()),
+            Some(wire::subscription_start::Start::Cursor(_))
+                | Some(wire::subscription_start::Start::CurrentHead(true))
+        )
+}
+
+/// Validates a customer-authored Actor creation request before admission.
+pub fn validate_create(request: &wire::CreateActorRequest) -> Result<(), ContractError> {
+    if !domain::valid_code_sha256(&request.code_sha256)
+        || request.home_region.is_empty()
+        || !valid_idempotency_key(&request.idempotency_key)
+        || !request.limits.as_ref().is_some_and(|limits| {
+            limits.handler_timeout_millis > 0
+                && limits.memory_bytes > 0
+                && limits.checkpoint_bytes > 0
+        })
+    {
+        return Err(ContractError::InvalidArgument);
+    }
+    if request.subscriptions.len() > MAX_SUBSCRIPTIONS || request.bindings.len() > MAX_BINDINGS {
+        return Err(ContractError::LimitExceeded);
+    }
+    let mut names = HashSet::new();
+    let mut anchors = 0;
+    for item in &request.subscriptions {
+        if !subscription(item) {
+            return Err(ContractError::InvalidArgument);
+        }
+        if !names.insert(&item.subscription_id) {
+            return Err(ContractError::DuplicateName);
+        }
+        anchors += usize::from(item.placement_anchor);
+    }
+    if anchors > 1 {
+        return Err(ContractError::InvalidArgument);
+    }
+    names.clear();
+    for item in &request.bindings {
+        if item.name.is_empty() || item.capability.is_empty() || item.resource.is_empty() {
+            return Err(ContractError::InvalidArgument);
+        }
+        if !names.insert(&item.name) {
+            return Err(ContractError::DuplicateName);
+        }
+    }
+    Ok(())
+}
+
+/// Validates a full compare-and-replace Actor configuration mutation.
+pub fn validate_update(request: &wire::UpdateActorRequest) -> Result<(), ContractError> {
+    if request.actor_id.is_empty()
+        || !domain::valid_code_sha256(&request.code_sha256)
+        || !valid_idempotency_key(&request.idempotency_key)
+        || !request.limits.as_ref().is_some_and(|limits| {
+            limits.handler_timeout_millis > 0
+                && limits.memory_bytes > 0
+                && limits.checkpoint_bytes > 0
+        })
+    {
+        return Err(ContractError::InvalidArgument);
+    }
+    if request.bindings.len() > MAX_BINDINGS {
+        return Err(ContractError::LimitExceeded);
+    }
+    let mut names = HashSet::new();
+    for item in &request.bindings {
+        if item.name.is_empty() || item.capability.is_empty() || item.resource.is_empty() {
+            return Err(ContractError::InvalidArgument);
+        }
+        if !names.insert(&item.name) {
+            return Err(ContractError::DuplicateName);
+        }
+    }
+    Ok(())
+}
+
+/// Validates a terminal Actor deletion. Identity and idempotency rules match
+pub fn validate_delete(request: &wire::DeleteActorRequest) -> Result<(), ContractError> {
+    if request.actor_id.is_empty() || !valid_idempotency_key(&request.idempotency_key) {
+        return Err(ContractError::InvalidArgument);
+    }
+    Ok(())
+}
+
+/// Validates a newly authored subscription; its cursor may not later be rewound.
+pub fn validate_add_subscription(
+    request: &wire::AddSubscriptionRequest,
+) -> Result<(), ContractError> {
+    if request.actor_id.is_empty()
+        || !valid_idempotency_key(&request.idempotency_key)
+        || !request.subscription.as_ref().is_some_and(subscription)
+    {
+        return Err(ContractError::InvalidArgument);
+    }
+    Ok(())
+}
 
 mod generated {
     #![allow(

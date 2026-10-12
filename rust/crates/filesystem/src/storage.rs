@@ -3,7 +3,7 @@
 use crate::foundation::{
     AuthorityId, Digest, DurableCommit, Epoch, Head, OperationId, ProposedCommit, Sequence,
 };
-use crate::performance::{MeasuredResult, OperationFailure, WorkCounters};
+use crate::performance::{MeasuredResult, OperationFailure};
 use acyclic_stream::OwnedBytes;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -403,16 +403,16 @@ impl HashedObject {
         cancellation: &crate::CancellationToken,
     ) -> Result<Self, ObjectStoreError> {
         cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
-        let hash = WorkCounters {
+        let hash = crate::WorkCounters {
             bytes_hashed: u64::try_from(bytes.len()).map_err(|_| crate::WorkError::Overflow)?
                 .checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
                 .ok_or(crate::WorkError::Overflow)?,
-            ..WorkCounters::default()
+            ..crate::WorkCounters::default()
         };
         work.admit(hash)?;
         let object_id = ObjectId { kind, digest: object_digest(kind, &bytes) };
         work.record_admitted(hash)?;
-        work.admit(WorkCounters::default())?;
+        work.admit(crate::WorkCounters::default())?;
         cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
         Ok(Self { object_id, bytes })
     }
@@ -431,21 +431,21 @@ impl HashedObject {
         if !work.shares_ledger(allocation.work()) || allocation.bytes() < capacity {
             return Err(crate::materializer::NativeTreeMaterializationError::InvalidLayout.into());
         }
-        let hash = WorkCounters {
+        let hash = crate::WorkCounters {
             bytes_hashed: u64::try_from(bytes.len()).map_err(|_| crate::WorkError::Overflow)?
                 .checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
                 .ok_or(crate::WorkError::Overflow)?,
-            ..WorkCounters::default()
+            ..crate::WorkCounters::default()
         };
         work.admit(hash)?;
         let object_id = ObjectId { kind, digest: object_digest(kind, bytes) };
         work.record_admitted(hash)?;
-        work.admit(WorkCounters::default())?;
+        work.admit(crate::WorkCounters::default())?;
         cancellation.check().map_err(|_| ObjectStoreError::Cancelled)?;
         let payload_allocation = allocation.split_off(capacity)?;
         let payload_original = payload_allocation.work().clone();
         let bytes = acyclic_stream::OwnedBytes::from_vec_with_guard(
-            std::mem::take(bytes), payload_allocation, payload_original.runtime_meter_owner(),
+            std::mem::take(bytes), payload_allocation, payload_original.runtime_meter(),
         ).map_err(|failure| match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => payload_original.runtime_error(error).into(),
             acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized

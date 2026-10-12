@@ -11,7 +11,7 @@ use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
-use crate::storage::{ObjectId, ObjectReadRequest, ObjectStoreError};
+use crate::storage::{ObjectId, ObjectReadRequest};
 use std::mem::size_of;
 use std::ops::Bound;
 
@@ -645,7 +645,7 @@ pub(super) fn finish_custody_leaf(
 fn query_error(error: Error) -> crate::FsError {
     match error {
         #[cfg(not(target_arch = "wasm32"))]
-        Error::Storage(ObjectStoreError::Native(error)) => crate::FsError::NativeKernel(error),
+        Error::Storage(crate::storage::ObjectStoreError::Native(error)) => crate::FsError::NativeKernel(error),
         error => crate::FsError::Directory(error),
     }
 }
@@ -659,7 +659,7 @@ pub(super) fn project_failure(error: crate::FsError) -> Error {
         crate::FsError::Object(error) => Error::Storage(error),
         crate::FsError::PendingMutationAllocationFailed => Error::AllocationFailed,
         #[cfg(not(target_arch = "wasm32"))]
-        crate::FsError::NativeKernel(error) => Error::Storage(ObjectStoreError::Native(error)),
+        crate::FsError::NativeKernel(error) => Error::Storage(crate::storage::ObjectStoreError::Native(error)),
         _ => unreachable!("pagination leaves return only typed directory, object, decode, cancellation and work errors"),
     }
 }
