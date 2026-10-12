@@ -293,7 +293,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A,
         validate_capture(&planned_capture, child_private, io)?;
         if let Some(io) = io {
             for file in references.values() {
-                io.receive_content(resolver.verify_measured(file, limits.file_bytes, io.remaining()?, io.cancellation()).await)?;
+                resolver.verify(file, limits.file_bytes, Some(io))?.await?;
             }
         }
         let keys = summary_keys(key, io)?;

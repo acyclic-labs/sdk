@@ -3432,7 +3432,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
             let records = history.conversation_range_with_work(
                 cursor, after_sequence, through_sequence, range_limits, &mut work,
             ).await?;
-            let (view, _) = crate::conversation::ConversationState::selected_view(records, &mut work)?;
+            let (view, _) = crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages: records, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut work)?;
             observer.return_staged_output()?;
             io.absorb_native_custody(observer.into_custody())?;
             _records_hold = Some(io.guard_owned(io.owned_bytes()? - before)?);
@@ -3460,16 +3460,15 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
             if let Some(io) = io {
                 let before = io.owned_bytes()?;
                 let mut observer = io.history_io();
-                let (view, _) = crate::conversation::ConversationState::selected_view(
-                    records, &mut Some(&mut observer))?;
+                let (view, _) = crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages: records, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut Some(&mut observer))?;
                 _view_workspace = Some(io.guard_owned(io.owned_bytes()? - before)?);
                 view
             } else {
                 _view_workspace = None;
-                crate::conversation::ConversationState::selected_view(records, &mut None).map(|(state, _)| state)?
+                crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages: records, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).map(|(state, _)| state)?
             }
             #[cfg(not(feature = "filesystem"))]
-            crate::conversation::ConversationState::selected_view(records, &mut None).map(|(state, _)| state)?
+            crate::conversation::ConversationState::from_wire(crate::conversation::ConversationStateWire { agent: None, messages: records, archived_prefix: None }, acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).map(|(state, _)| state)?
         }
     };
     #[cfg(feature = "filesystem")]

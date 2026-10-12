@@ -190,9 +190,9 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
     .with_limits(Limits::default())?
     .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
         host.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        grant_scope.clone(),
-        1_024,
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &grant_scope,
+        1_024, None,
     )?))
     .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
         Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
@@ -368,7 +368,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             aggregate.reducer(),
             &issuer.verifier(&mut None).expect("verifier copy"),
             &grant_scope,
-            project.clone(),
+            &project, None,
         )?;
         let forked = controller
             .fork_project(
@@ -431,7 +431,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             aggregate.reducer(),
             &issuer.verifier(&mut None).expect("verifier copy"),
             &grant_scope,
-            project.clone(),
+            &project, None,
         )?;
         let attached_agents = if level == 1 || level == DEEP_RETRY {
             vec![AgentId::from_bytes([201; 16]), root_agent]
@@ -440,9 +440,9 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         };
         let parent_resolver = FilesystemContentVerifier::new(
             host.clone(),
-            issuer.verifier(&mut None).expect("verifier copy"),
-            grant_scope.clone(),
-            64 * 1_024,
+            &issuer.verifier(&mut None).expect("verifier copy"),
+            &grant_scope,
+            64 * 1_024, None,
         )?;
         if level == 1 {
             let dirty_private = volume(
@@ -607,9 +607,9 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                 child_issuer.root_for_agent(attached, "deep-attached-reader", readable);
             let reader = FilesystemContentVerifier::new(
                 host.clone(),
-                child_issuer.verifier(&mut None).expect("verifier copy"),
-                reader_scope,
-                1_024,
+                &child_issuer.verifier(&mut None).expect("verifier copy"),
+                &reader_scope,
+                1_024, None,
             )?;
             reader
                 .verify_manifest(&seed.attachment_manifests[0], 1, &Limits::default())
@@ -732,9 +732,9 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             );
             let child_reference_resolver = FilesystemContentVerifier::new(
                 host.clone(),
-                child_issuer.verifier(&mut None).expect("verifier copy"),
-                child_reference_scope,
-                1_024,
+                &child_issuer.verifier(&mut None).expect("verifier copy"),
+                &child_reference_scope,
+                1_024, None,
             )?;
             child_reference_resolver
                 .verify_manifest(&root_manifest, 1, &Limits::default())
@@ -763,9 +763,9 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             );
             let inherited_resolver = FilesystemContentVerifier::new(
                 host.clone(),
-                child_issuer.verifier(&mut None).expect("verifier copy"),
-                reader_scope,
-                1_024,
+                &child_issuer.verifier(&mut None).expect("verifier copy"),
+                &reader_scope,
+                1_024, None,
             )?;
             inherited_resolver.verify(&previous_file).await?;
             inherited_resolver.verify(&root_attachment).await?;
@@ -1058,9 +1058,9 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         .await?
         .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
             host.clone(),
-            child_issuer.verifier(&mut None).expect("verifier copy"),
-            child_scope.clone(),
-            1_024,
+            &child_issuer.verifier(&mut None).expect("verifier copy"),
+            &child_scope,
+            1_024, None,
         )?))
         .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
             Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
@@ -1189,7 +1189,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
                             sequence: 3,
                             kind: MessageKind::Interaction,
                             content: previous_file.clone(),
-                            attachments: Vec::new().into(),
+                            attachments: acyclic_harness::conversation::ReferencedAttachments::Inline { items: Vec::new() },
                             reply_to: None,
                             tool_call_id: None,
                             extensions: BTreeMap::new(),
@@ -1229,18 +1229,18 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             );
             let source_reader = FilesystemContentVerifier::new(
                 host.clone(),
-                child_issuer.verifier(&mut None).expect("verifier copy"),
-                source_scope,
-                1_024,
+                &child_issuer.verifier(&mut None).expect("verifier copy"),
+                &source_scope,
+                1_024, None,
             )?;
             let projected =
                 select_model_context(&loaded, (&loaded).logical_revision(), selection.clone(), &source_reader, 2, 4, 64 * 1_024, 4, None)
                     .await?;
             let denied_reader = FilesystemContentVerifier::new(
                 host.clone(),
-                child_issuer.verifier(&mut None).expect("verifier copy"),
-                child_issuer.root_for_agent(child_agent, "denied-source", Capabilities::default()),
-                1_024,
+                &child_issuer.verifier(&mut None).expect("verifier copy"),
+                &child_issuer.root_for_agent(child_agent, "denied-source", Capabilities::default()),
+                1_024, None,
             )?;
             assert!(
                 select_model_context(&loaded, (&loaded).logical_revision(), selection, &denied_reader, 2, 4, 64 * 1_024, 4, None)
@@ -1287,9 +1287,9 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             .with_limits(Limits::default())?
             .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
                 host.clone(),
-                issuer.verifier(&mut None).expect("verifier copy"),
-                grant_scope.clone(),
-                1_024,
+                &issuer.verifier(&mut None).expect("verifier copy"),
+                &grant_scope,
+                1_024, None,
             )?))
             .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
                 Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
@@ -1304,9 +1304,9 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             .await?
             .with_content_verifier(Arc::new(FilesystemContentVerifier::new(
                 host.clone(),
-                child_issuer.verifier(&mut None).expect("verifier copy"),
-                child_scope.clone(),
-                1_024,
+                &child_issuer.verifier(&mut None).expect("verifier copy"),
+                &child_scope,
+                1_024, None,
             )?))
             .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
                 Arc::new(FilesystemForkVerifier::new(host.clone(), 64 * 1_024)?),
@@ -1521,9 +1521,9 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
         .ok_or_else(|| acyclic_harness::Error::Invalid("conversation not bound".into()))?;
     let resolver = FilesystemContentVerifier::new(
         host.clone(),
-        issuer.verifier(&mut None).expect("verifier copy"),
-        grant_scope.clone(),
-        1_024,
+        &issuer.verifier(&mut None).expect("verifier copy"),
+        &grant_scope,
+        1_024, None,
     )?;
     let selected = select_model_context(
         state,
@@ -1556,7 +1556,7 @@ async fn run_thousand_twenty_four_recursive_forks() -> Result<()> {
             &final_parent_reducer,
             &issuer.verifier(&mut None).expect("verifier copy"),
             &grant_scope,
-            final_parent_project.clone(),
+            &final_parent_project, None,
         )
         .is_err(),
         "child scope must not authorize its parent's project"
@@ -1702,7 +1702,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         &parent_reducer,
         &parent_issuer.verifier(&mut None).expect("verifier copy"),
         &parent_scope,
-        root.clone(),
+        &root, None,
     )?;
     let workspaces = FilesystemProjectWorkspaces::new(
         &host,
@@ -1722,7 +1722,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
             &parent_reducer,
             &parent_issuer.verifier(&mut None).expect("verifier copy"),
             &other_agent_scope,
-            root.clone(),
+            &root, None,
         )
         .is_err()
     );
@@ -1739,7 +1739,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
         &parent_reducer,
         &parent_issuer.verifier(&mut None).expect("verifier copy"),
         &ungranted,
-        root.clone(),
+        &root, None,
     )?;
     let foreign_project = volume(
         &provider,
@@ -1784,7 +1784,7 @@ async fn thirty_two_sibling_forks_reject_stale_and_conflicting_merges() -> Resul
                     &parent_reducer,
                     &parent_issuer.verifier(&mut None).expect("verifier copy"),
                     &child_scope,
-                    root.clone(),
+                    &root, None,
                 )
                 .is_err()
             );

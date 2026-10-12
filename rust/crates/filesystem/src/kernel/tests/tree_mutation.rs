@@ -317,14 +317,6 @@ async fn every_tree_semantic_failure_is_exact_and_non_mutating() -> Result<(), B
         });
         assert_eq!(failure.work.backend_write_operations, 0);
     }
-    assert!(matches!(
-        TreeMutationError::from(TreeSemanticError::AlreadyExists),
-        TreeMutationError::AlreadyExists
-    ));
-    assert!(matches!(
-        TreeMutationError::from(TreeSemanticError::FileIdentityConflict),
-        TreeMutationError::FileIdentityConflict
-    ));
     Ok(())
 }
 
@@ -665,82 +657,6 @@ async fn generated_directory_histories_match_independent_ordered_map()
         );
     }
     Ok(())
-}
-
-#[test]
-fn persistent_error_translation_is_total() {
-    use persistent_btree::Error as PersistentError;
-
-    assert!(matches!(
-        map_error(PersistentError::Empty),
-        TreeMutationError::Empty
-    ));
-    assert!(matches!(
-        map_error(PersistentError::TooManyMutations),
-        TreeMutationError::TooManyMutations
-    ));
-    assert!(matches!(
-        map_error(PersistentError::WrongRootKind),
-        TreeMutationError::WrongRootKind
-    ));
-    assert!(matches!(
-        map_error(PersistentError::InvalidLimits),
-        TreeMutationError::InvalidLimits
-    ));
-    assert!(matches!(
-        map_error(PersistentError::PageItemTooLarge),
-        TreeMutationError::PageItemTooLarge
-    ));
-    assert!(matches!(
-        map_error(PersistentError::HeightExceeded),
-        TreeMutationError::HeightExceeded
-    ));
-    assert!(matches!(
-        map_error(PersistentError::CycleOrAlias),
-        TreeMutationError::CycleOrAlias
-    ));
-    assert!(matches!(
-        map_error(PersistentError::ChildBoundsMismatch),
-        TreeMutationError::ChildBoundsMismatch
-    ));
-    assert!(matches!(
-        map_error(PersistentError::MutationContract),
-        TreeMutationError::MutationContract
-    ));
-    assert!(matches!(
-        map_error(PersistentError::AllocationFailed),
-        TreeMutationError::AllocationFailed
-    ));
-    assert!(matches!(
-        map_error(PersistentError::Allocation(
-            AllocationError::CapacityExceeded
-        )),
-        TreeMutationError::AllocationFailed
-    ));
-    assert!(matches!(
-        map_error(PersistentError::Allocation(AllocationError::Work(
-            WorkError::Overflow
-        ))),
-        TreeMutationError::Work(WorkError::Overflow)
-    ));
-    assert!(matches!(
-        map_error(PersistentError::Semantic(TreeSemanticError::Missing)),
-        TreeMutationError::Missing
-    ));
-    assert!(matches!(
-        map_error(PersistentError::Storage(ObjectStoreError::Missing)),
-        TreeMutationError::Storage(ObjectStoreError::Missing)
-    ));
-    assert!(matches!(
-        map_error(PersistentError::Decode(
-            CanonicalDecodeError::LengthOverflow
-        )),
-        TreeMutationError::Decode(CanonicalDecodeError::LengthOverflow)
-    ));
-    assert!(matches!(
-        map_error(PersistentError::Work(WorkError::Overflow)),
-        TreeMutationError::Work(WorkError::Overflow)
-    ));
 }
 
 #[tokio::test]

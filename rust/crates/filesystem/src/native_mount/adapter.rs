@@ -67,7 +67,7 @@ struct CancelCaptureOnDrop(Arc<CaptureCommitGate>);
 
 struct CaptureSourceSlot {
     request: Weak<CaptureCommitGate>,
-    cancel_visit: Option<crate::materializer::NativeItemReservation>,
+    cancel_visit: Option<crate::materializer::NativeWorkReservation>,
 }
 
 #[derive(Default)]
@@ -356,8 +356,8 @@ impl CaptureInputScratch for CaptureScratchAllocation<'_> {
 pub(super) struct NativeCaptureScratchAllocation<'a> {
     work: &'a crate::NativeMaterializationWork,
     allocation: crate::NativeAllocation,
-    copy: Option<crate::materializer::NativeCopyReservation>,
-    items: Option<crate::materializer::NativeItemReservation>,
+    copy: Option<crate::materializer::NativeWorkReservation>,
+    items: Option<crate::materializer::NativeWorkReservation>,
 }
 
 impl<'a> NativeCaptureScratchAllocation<'a> {
@@ -401,10 +401,10 @@ impl CaptureInputScratch for NativeCaptureScratchAllocation<'_> {
         let examined = std::mem::take(&mut delta.items_examined);
         self.work.admit(delta).map_err(MountSourceError::NativeWork)?;
         let copy = if copied == 0 { None } else {
-            Some(self.work.reserve_copy(copied).map_err(MountSourceError::NativeWork)?)
+            Some(self.work.reserve_work(crate::WorkCounters { bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?)
         };
         let items = if examined == 0 { None } else {
-            Some(self.work.reserve_items(examined).map_err(MountSourceError::NativeWork)?)
+            Some(self.work.reserve_work(crate::WorkCounters { items_examined: examined, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?)
         };
         self.copy = copy;
         self.items = items;
@@ -412,10 +412,10 @@ impl CaptureInputScratch for NativeCaptureScratchAllocation<'_> {
     }
     fn record(&mut self, mut delta: crate::WorkCounters) -> Result<(), MountSourceError> {
         let copied = if let Some(copy) = self.copy.take() {
-            copy.record(std::mem::take(&mut delta.bytes_copied))
+            { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: std::mem::take(&mut delta.bytes_copied), ..crate::WorkCounters::UNCHARGED }) }
         } else { Ok(()) };
         let examined = if let Some(mut items) = self.items.take() {
-            items.consume(std::mem::take(&mut delta.items_examined))
+            items.record_completed(crate::WorkCounters { items_examined: std::mem::take(&mut delta.items_examined), ..crate::WorkCounters::UNCHARGED })
         } else { Ok(()) };
         let remaining = self.work.record_admitted(delta);
         copied.and(examined).and(remaining).map_err(MountSourceError::NativeWork)
@@ -943,8 +943,8 @@ impl CaptureCallerWait {
         let prepared = cancellation.prepare_cancelled_with_native_work(work)
             .map_err(super::lazy::mount_wait_error)?;
         let retirement = CaptureRegistrationRetirement {
-            items: work.reserve_items(2).map_err(MountSourceError::NativeWork)?,
-            copied: work.reserve_copy(std::mem::size_of::<CaptureSourceSlot>() as u64)
+            items: work.reserve_work(crate::WorkCounters { items_examined: 2, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?,
+            copied: work.reserve_work(crate::WorkCounters { bytes_copied: std::mem::size_of::<CaptureSourceSlot>() as u64, ..crate::WorkCounters::UNCHARGED })
                 .map_err(MountSourceError::NativeWork)?,
         };
         let allocation = work.claim_allocation(std::mem::size_of::<StdMutex<Self>>() as u64, 1, crate::WorkCounters::UNCHARGED)
@@ -969,8 +969,8 @@ impl Drop for CaptureCallerWait {
 }
 
 struct CaptureRegistrationRetirement {
-    items: crate::materializer::NativeItemReservation,
-    copied: crate::materializer::NativeCopyReservation,
+    items: crate::materializer::NativeWorkReservation,
+    copied: crate::materializer::NativeWorkReservation,
 }
 
 struct CaptureRegistration<A, O> {
@@ -1009,8 +1009,8 @@ impl<A, O> Drop for CaptureRegistration<A, O> {
         };
         drop(removed);
         if let Some(vector) = vector { retire_capture_vector(vector, allocation, native_allocation); }
-        let items_error = retirement.items.consume(1 + u64::from(copied != 0)).err();
-        let copied_error = retirement.copied.record(copied as u64).err();
+        let items_error = retirement.items.record_completed(crate::WorkCounters { items_examined: 1 + u64::from(copied != 0), ..crate::WorkCounters::UNCHARGED }).err();
+        let copied_error = { let mut copy = retirement.copied; copy.record_completed(crate::WorkCounters { bytes_copied: copied as u64, ..crate::WorkCounters::UNCHARGED }) }.err();
         // Refund unused visits before the producer lease announces quiescence.
         drop(retirement.items);
         if let Some(error) = items_error.or(copied_error) {
@@ -1058,7 +1058,7 @@ pub struct CheckoutMountSource<A, O> {
     native_io_binding: NativeSourceIoBinding,
     native_callback_guard: Option<Arc<dyn super::NativeMountCallbackGuard>>,
     cleanup_credit: StdMutex<Option<crate::materializer::NativeWorkReservation>>,
-    cleanup_final_credit: StdMutex<Option<crate::materializer::NativeItemReservation>>,
+    cleanup_final_credit: StdMutex<Option<crate::materializer::NativeWorkReservation>>,
     // Actual constructor-owned buffers drop before their allocation custody.
     _namespace_allocation: Option<crate::NativeAllocation>,
     _source_allocation: Option<crate::NativeAllocation>,
@@ -3246,7 +3246,7 @@ impl<A, O> SharedCheckout<A, O> {
             pending: &'a StdMutex<Vec<Arc<PendingCreate>>>,
             cleanup_reserved: u64,
             scan: bool,
-            native_cleanup: Option<crate::materializer::NativeItemReservation>,
+            native_cleanup: Option<crate::materializer::NativeWorkReservation>,
             native_allocation: Option<crate::NativeAllocation>,
         }
         impl PreparedBytes<'_, '_> {
@@ -3255,10 +3255,10 @@ impl<A, O> SharedCheckout<A, O> {
                 let reserved = std::mem::take(&mut self.cleanup_reserved);
                 if let Some(mut cleanup) = self.native_cleanup.take() {
                     if deferred {
-                        cleanup.consume_deferred(examined);
+                        cleanup.record_deferred(crate::WorkCounters { items_examined: examined, ..crate::WorkCounters::UNCHARGED });
                         return Ok(());
                     }
-                    return cleanup.consume(examined).map_err(MountSourceError::NativeWork);
+                    return cleanup.record_completed(crate::WorkCounters { items_examined: examined, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork);
                 }
                 if reserved == 0 && examined == 0 { return Ok(()); }
                 self.carrier.with_work(|work| {
@@ -3310,7 +3310,7 @@ impl<A, O> SharedCheckout<A, O> {
             if let Some(original) = preparation.carrier.original_native_work() {
                 (|| {
                     let cleanup = held.len() as u64;
-                    preparation.native_cleanup = Some(original.reserve_items(cleanup).map_err(MountSourceError::NativeWork)?);
+                    preparation.native_cleanup = Some(original.reserve_work(crate::WorkCounters { items_examined: cleanup, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?);
                     preparation.cleanup_reserved = cleanup;
                     for create in held.iter() {
                         original.charge(crate::WorkCounters {
@@ -3327,7 +3327,7 @@ impl<A, O> SharedCheckout<A, O> {
                             preparation.native_allocation = Some(scratch.retain());
                         }
                         let admission = GroupedAdmission::new_with_native_work( &original)?;
-                        let copied = original.reserve_copy(std::mem::size_of::<GroupedRequest>() as u64)
+                        let copied = original.reserve_work(crate::WorkCounters { bytes_copied: std::mem::size_of::<GroupedRequest>() as u64, ..crate::WorkCounters::UNCHARGED })
                             .map_err(MountSourceError::NativeWork)?;
                         if let Some(change) = create.begin_applying_with_native_work(
                             &original, preparation.native_allocation.as_mut().expect("prepared request vector"), cancellation,
@@ -3335,7 +3335,7 @@ impl<A, O> SharedCheckout<A, O> {
                             requests.push(GroupedRequest {
                                 change, admission, reply: Arc::clone(create),
                             });
-                            copied.record(std::mem::size_of::<GroupedRequest>() as u64)
+                            { let mut copy = copied; copy.record_completed(crate::WorkCounters { bytes_copied: std::mem::size_of::<GroupedRequest>() as u64, ..crate::WorkCounters::UNCHARGED }) }
                                 .map_err(MountSourceError::NativeWork)?;
                         }
                     }
@@ -4940,7 +4940,7 @@ where
         let zeros = start.saturating_sub(bytes.len()) as u64;
         let copied = zeros.checked_add(written.len() as u64)
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
-        let copy = original.reserve_copy(copied).map_err(MountSourceError::NativeWork)?;
+        let copy = original.reserve_work(crate::WorkCounters { bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
         let notification = self.attached.checkout.ledger
             .prepare_node_change_with_native_work(self.pending.file_id, &original)?;
         if let Some(prepared) = prepared { drop(std::mem::replace(bytes, prepared)); }
@@ -4950,7 +4950,7 @@ where
         held[start..start + overwritten].copy_from_slice(&written[..overwritten]);
         held.extend_from_slice(&written[overwritten..]);
         metadata.stamp_content_change(time);
-        let recorded = copy.record(copied).map_err(MountSourceError::NativeWork);
+        let recorded = { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }) }.map_err(MountSourceError::NativeWork);
         drop(state);
         let _origin = self.pending.origin.enter();
         self.attached.checkout.revision.fetch_add(1, Ordering::AcqRel);
@@ -5006,10 +5006,10 @@ where
             let state = self.pending.state();
             if let PendingState::Pending { metadata, bytes } = &*state {
                 let original = work.clone();
-                let copy = original.reserve_copy(std::mem::size_of::<FileMetadata>() as u64)
+                let copy = original.reserve_work(crate::WorkCounters { bytes_copied: std::mem::size_of::<FileMetadata>() as u64, ..crate::WorkCounters::UNCHARGED })
                     .map_err(MountSourceError::NativeWork)?;
                 let lookup = self.pending.held_lookup(**metadata, bytes.len() as u64);
-                copy.record(std::mem::size_of::<FileMetadata>() as u64).map_err(MountSourceError::NativeWork)?;
+                { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: std::mem::size_of::<FileMetadata>() as u64, ..crate::WorkCounters::UNCHARGED }) }.map_err(MountSourceError::NativeWork)?;
                 return Ok(lookup);
             }
         }
@@ -5057,7 +5057,7 @@ where
                 let prepared = if shared_truncate { None }
                     else { bytes.prepare_native_capacity(length, maximum, &original)? };
                 let copied = length.saturating_sub(bytes.len()) as u64;
-                let copy = original.reserve_copy(copied).map_err(MountSourceError::NativeWork)?;
+                let copy = original.reserve_work(crate::WorkCounters { bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
                 let notification = self.attached.checkout.ledger
                     .prepare_node_change_with_native_work(self.pending.file_id, &original)?;
                 if let Some(prepared) = prepared { drop(std::mem::replace(bytes, prepared)); }
@@ -5068,7 +5068,7 @@ where
                     bytes.mutable().resize(length, 0);
                 }
                 metadata.stamp_content_change(time);
-                let recorded = copy.record(copied).map_err(MountSourceError::NativeWork);
+                let recorded = { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }) }.map_err(MountSourceError::NativeWork);
                 drop(state);
                 let _origin = self.pending.origin.enter();
                 self.attached.checkout.revision.fetch_add(1, Ordering::AcqRel);
@@ -6091,7 +6091,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             };
             let carrier = &mut *destination.carrier;
             self.checkout.finish_native_phase_with_carrier(
-                candidate, epoch, stamp, &ViewChange::Linked(destination_path, node), carrier,
+                candidate, epoch, stamp, &ViewChange::Entry(destination_path, node), carrier,
                 &cancellation, Some(&self.cancellation),
             ).await
         };
@@ -6172,7 +6172,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             consumed.carrier.accept_with_prior_live(receipt, prior_live, mount_engine_error)
         };
         let installed = self.checkout.finish_native_phase_with_carrier(
-            candidate, epoch, stamp, &ViewChange::Unbound(namespace, node),
+            candidate, epoch, stamp, &ViewChange::Entry(namespace, node),
             phase_carrier, &cancellation, Some(&self.cancellation),
         ).await;
         drop(input);
@@ -7075,7 +7075,7 @@ impl<A, O> CheckoutMountSource<A, O> {
         let mut cleanup_credit = work.reserve_work(crate::WorkCounters {
             items_examined: 2, ..crate::WorkCounters::UNCHARGED
         }).map_err(MountSourceError::NativeWork)?;
-        let final_credit = cleanup_credit.partition_items(1).map_err(MountSourceError::NativeWork)?;
+        let final_credit = cleanup_credit.partition_work(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
         Ok(Self {
             checkout,
             root: path,
@@ -7150,7 +7150,7 @@ impl<A, O> CheckoutMountSource<A, O> {
     fn cancel_capture_engine(
         &self,
         wait: Option<&CancellationToken>,
-        mut phase: impl FnMut(bool) -> Result<Option<crate::materializer::NativeItemReservation>, MountSourceError>,
+        mut phase: impl FnMut(bool) -> Result<Option<crate::materializer::NativeWorkReservation>, MountSourceError>,
         mut cancel: impl FnMut(&CancellationToken) -> Result<crate::cancellation::PreparedCancellation, MountSourceError>,
     ) -> Result<(), MountSourceError> {
         if self.capture_retired() { return Ok(()); }
@@ -7161,7 +7161,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 let mut credit = phase(false)?;
                 let prepared = cancel(&self.cancellation);
                 if let Some(credit) = &mut credit {
-                    credit.consume(1).map_err(MountSourceError::NativeWork)?;
+                    credit.record_completed(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
                 }
                 let prepared = prepared?;
                 gate.cancelled = true;
@@ -7182,7 +7182,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                     };
                     let prepared = request.as_ref().map(|request| cancel(&request.cancellation)).transpose();
                     if let Some(mut visit) = visit {
-                        visit.consume(1).map_err(MountSourceError::NativeWork)?;
+                        visit.record_completed(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
                     }
                     let prepared = prepared?;
                     if let Some(request) = request {
@@ -7214,7 +7214,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 let terminal = gate.producers == 0 && !gate.retiring;
                 if !terminal {
                     if let Some(credit) = &mut credit {
-                        credit.consume(1).map_err(MountSourceError::NativeWork)?;
+                        credit.record_completed(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
                     }
                     return Err(MountSourceError::Stale);
                 }
@@ -7226,7 +7226,7 @@ impl<A, O> CheckoutMountSource<A, O> {
                 drop(gate);
                 retire_capture_vector(vector, allocation, native);
                 if let Some(credit) = &mut credit {
-                    credit.consume(1).map_err(MountSourceError::NativeWork)?;
+                    credit.record_completed(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
                 }
                 let unused = self.cleanup_credit.lock().unwrap_or_else(PoisonError::into_inner).take();
                 drop(unused);
@@ -7236,7 +7236,7 @@ impl<A, O> CheckoutMountSource<A, O> {
             }
             let producers_pending = gate.producers != 0 || gate.retiring;
             if let Some(credit) = &mut credit {
-                credit.consume(1).map_err(MountSourceError::NativeWork)?;
+                credit.record_completed(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
             }
             if !producers_pending { drop(gate); continue; }
             gate = self.capture_quiesced.wait_timeout(
@@ -7264,11 +7264,8 @@ impl<A, O> CheckoutMountSource<A, O> {
             let credit = credit.as_mut().ok_or(MountSourceError::NativeWork(
                 crate::NativeTreeMaterializationError::InvalidLayout,
             ))?;
-            let loan = match wait {
-                Some(wait) => credit.cleanup_loan(wait),
-                None => credit.accepted_cleanup_loan(),
-            };
-            loan.reserve_items(1).map(Some).map_err(MountSourceError::NativeWork)
+            let loan = credit.loan(wait);
+            loan.admit_completed(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED }).map(Some).map_err(MountSourceError::NativeWork)
         }, |token| match wait {
             Some(wait) => token.prepare_cancel_with_cleanup_wait(wait),
             None => token.prepare_cancel_accepted_cleanup(),
@@ -7762,12 +7759,12 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
         wait: Arc<StdMutex<CaptureCallerWait>>,
     ) -> Result<CaptureRegistration<A, O>, MountSourceError> {
         let original = native.clone();
-        let cancel_visit = original.reserve_items(1).map_err(MountSourceError::NativeWork)?;
-        let mut visit = original.reserve_items(1).map_err(MountSourceError::NativeWork)?;
+        let cancel_visit = original.reserve_work(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
+        let mut visit = original.reserve_work(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
         let mut poll_credit = self.reserve_capture_poll()?;
         let (old, copied_result) = {
             let mut gate = self.capture_gate.lock().unwrap_or_else(PoisonError::into_inner);
-            visit.consume(1).map_err(MountSourceError::NativeWork)?;
+            visit.record_completed(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
             if gate.cancelled { return Err(MountSourceError::Stale); }
             self.cancellation.check().map_err(|_| MountSourceError::Cancelled)?;
             let producers = gate.producers.checked_add(1)
@@ -7777,7 +7774,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
                     .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
                 let copied = gate.active.len().checked_mul(std::mem::size_of::<CaptureSourceSlot>())
                     .ok_or(MountSourceError::Work(crate::WorkError::Overflow))? as u64;
-                let copied_credit = original.reserve_copy(copied).map_err(MountSourceError::NativeWork)?;
+                let copied_credit = original.reserve_work(crate::WorkCounters { bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }).map_err(MountSourceError::NativeWork)?;
                 let mut scratch = NativeCaptureScratchAllocation::new(&original)?;
                 let mut replacement = scratch.vec::<CaptureSourceSlot>(length)?;
                 let allocation = scratch.retain();
@@ -7786,7 +7783,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
                 let legacy = gate.allocation.take();
                 let previous = gate.native_allocation.replace(allocation);
                 (Some((vector, legacy, previous)),
-                    copied_credit.record(copied).map_err(MountSourceError::NativeWork))
+                    { let mut copy = copied_credit; copy.record_completed(crate::WorkCounters { bytes_copied: copied, ..crate::WorkCounters::UNCHARGED }) }.map_err(MountSourceError::NativeWork))
             } else { (None, Ok(())) };
             self.accept_capture_poll(&mut poll_credit)?;
             gate.producers = producers;
@@ -8464,7 +8461,7 @@ where
     }
 
     fn observe_view(&self, observer: Weak<dyn ViewObserver>) {
-        self.checkout.ledger.observe(observer).expect("unbounded view observer registration");
+        self.checkout.ledger.observe(observer, &mut NativeDemandCarrier::Borrowed(&mut super::view_ledger::unbounded_view_work())).expect("unbounded view observer registration");
     }
 
     fn observe_view_with_meter(
@@ -8483,8 +8480,7 @@ where
             }).map_err(mount_demand_error)?;
         }
         // Metadata callbacks run outside the original-work mutex.
-        let custody = observer.upgrade().and_then(|observer| observer.allocation_custody());
-        self.checkout.ledger.observe_measured_with_meter(observer, custody, meter)?;
+        self.checkout.ledger.observe(observer, &mut NativeDemandCarrier::Shared(meter))?;
         meter.lock().check().map_err(mount_demand_error)?;
         self.cancellation.check().map_err(|_| MountSourceError::Stale)
     }
@@ -10730,7 +10726,7 @@ mod tests {
         assert_eq!(original.remaining()?.items_examined, 0);
         let before = root.receipt();
         root_stop.cancel();
-        assert!(original.reserve_items(1).is_err(), "cleanup does not issue fresh work");
+        assert!(original.reserve_work(crate::WorkCounters { items_examined: 1, ..crate::WorkCounters::UNCHARGED }).is_err(), "cleanup does not issue fresh work");
         let wait = CancellationToken::new();
         assert!(source.shutdown_with_cleanup_wait(&wait)?);
         assert!(source.capture_retired());
@@ -11462,9 +11458,9 @@ mod tests {
         drop(retained);
         let empty = PendingBytes::Mutable { bytes: Vec::new(), allocation: None };
         let mut body = empty.prepare_native_capacity(4, 64, &original)?.ok_or("body did not grow")?;
-        let copy = original.reserve_copy(4)?;
+        let copy = original.reserve_work(crate::WorkCounters { bytes_copied: 4, ..crate::WorkCounters::UNCHARGED })?;
         body.mutable().extend_from_slice(b"last");
-        copy.record(4)?;
+        { let mut copy = copy; copy.record_completed(crate::WorkCounters { bytes_copied: 4, ..crate::WorkCounters::UNCHARGED }) }?;
         let capacity = body.capacity() as u64;
         let retained = body.share(Some(&original))?;
         let live = original.native_read_meter().lock().allocations.live_bytes();
