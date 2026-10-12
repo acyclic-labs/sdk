@@ -448,13 +448,21 @@ impl PiControlHost<'_> {
         else if destination == self.protected.policy().root_task { self.root_binding()? }
         else { &foreign_binding.as_ref().ok_or_else(|| denied("explicit destination binding unavailable"))?.0 };
     let volume = destination_binding.project_volumes.get(key).ok_or_else(|| denied("destination lacks this actual project"))?;
-    let write_capability = volume.capability_with_native_work(acyclic_harness::conversation::VolumeOperation::Write, work)?;
+    let write_capability = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = volume.capability(acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     if !context.scope().grants().contains(&write_capability.0) {
         return Err(denied("current caller has no actual WRITE grant for the explicit destination"));
     }
     let authorization = self.protected.conversation_authority_with_native_work(
         input.caller, binding.agent_id, context.scope().grants(), work)?;
-    let verifier = authorization.0.1.verifier_with_native_work(work)?;
+    let verifier = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = authorization.0.1.verifier(&mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     let scope = &authorization.0.2;
     let destination_grant = acyclic_harness::conversation::ContentGrant::verify_with_native_work(
         &verifier.0, scope, volume, acyclic_harness::conversation::VolumeOperation::Write, work)?;
@@ -740,7 +748,11 @@ pub(crate) async fn read_imported_selected_files(
     let created = retained.roots.get(key).ok_or_else(|| denied("prepared evidence lost its protected creator allocation"))?
         .created().map_err(Error::Unauthorized)?;
     let receipt = &descriptor.import_receipt;
-    let storage_name = volume.storage_name_with_native_work(work)?;
+    let storage_name = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = volume.storage_name(&mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     if binding.task_id != protected.policy().root_task || descriptor.command.caller != binding.task_id
         || descriptor.session != binding.native_session_id || receipt.caller != binding.task_id
         || receipt.source != descriptor.command.source || receipt.root != key || &receipt.destination != volume
@@ -753,11 +765,19 @@ pub(crate) async fn read_imported_selected_files(
         || storage_name.0 != root.workspace.workspace().name().as_str() {
         return Err(denied("operator evidence does not bind the actual original selected import receipt"));
     }
-    let capability = volume.capability_with_native_work(VolumeOperation::Read, work)?;
+    let capability = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = volume.capability(VolumeOperation::Read, &mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     let grants = acyclic_harness::Capabilities::new_with_native_work([capability.0.as_str()], work)?;
     let authorization = protected.conversation_authority_with_native_work(
         binding.task_id, binding.agent_id, &grants.0, work)?;
-    let verifier = authorization.0.1.verifier_with_native_work(work)?;
+    let verifier = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = authorization.0.1.verifier(&mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     let scope = &authorization.0.2;
     let _read_grant = ContentGrant::verify_with_native_work(&verifier.0, scope, volume, VolumeOperation::Read, work)?;
     let cancellation = work.cancellation();

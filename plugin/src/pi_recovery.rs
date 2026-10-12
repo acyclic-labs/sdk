@@ -363,17 +363,29 @@ where
         .chain(std::iter::once(&binding.scratch.volume))
         .chain(binding.results.as_ref().map(|result| &result.volume))
     {
-        let read = volume.capability_with_native_work(acyclic_harness::conversation::VolumeOperation::Read, work)?;
+        let read = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = volume.capability(acyclic_harness::conversation::VolumeOperation::Read, &mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         if !admission.0.grants.contains(&read.0) {
             return Err(invalid("Pi selection lacks its original read grant"));
         }
     }
-    let scratch_write = binding.scratch.volume.capability_with_native_work(acyclic_harness::conversation::VolumeOperation::Write, work)?;
+    let scratch_write = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = binding.scratch.volume.capability(acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     if !admission.0.grants.contains(&scratch_write.0) {
         return Err(invalid("Pi scratch lacks its original write grant"));
     }
     if let Some(result) = &binding.results {
-        let write = result.volume.capability_with_native_work(acyclic_harness::conversation::VolumeOperation::Write, work)?;
+        let write = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = result.volume.capability(acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         if !admission.0.grants.contains(&write.0) {
             return Err(invalid("Pi result storage lacks its original created write grant"));
         }

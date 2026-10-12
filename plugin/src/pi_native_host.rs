@@ -1097,7 +1097,11 @@ impl PiNativeCommandHost {
         let storage = self.protected.authority_with_native_work(work)?;
         let conversation = self.protected.conversation_authority_with_native_work(owner.task_id(),
             input.binding.agent_id, context.scope().grants(), work)?;
-        let interaction_verifier = conversation.0.1.verifier_with_native_work(work)?;
+        let interaction_verifier = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = conversation.0.1.verifier(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         let result = input.binding.results.as_ref().ok_or_else(|| unauthorized("Pi approval has no original result volume"))?;
         let journal_owner = self.runtime.runtime.task_host()
             .journal_owner_with_native_work(owner.task_id(), &context.owned_task_fence()?, work).await?;
@@ -1114,7 +1118,11 @@ impl PiNativeCommandHost {
         let bindings = self.result_bindings(context, input)?;
         let conversation = self.protected.conversation_authority_with_native_work(input.binding.task_id,
             input.binding.agent_id, context.scope().grants(), work)?;
-        let verifier = conversation.0.1.verifier_with_native_work(work)?;
+        let verifier = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = conversation.0.1.verifier(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         Ok(NativeProcessAuthority { verifier: verifier.0, history_limits: history_limits(context)?,
             // Both stock artifacts and their results use the original unmounted RESULT binding.
             content: bindings.reader.clone(), result_content: bindings.reader,
@@ -1141,7 +1149,11 @@ impl PiNativeCommandHost {
     ) -> Result<(Option<acyclic_harness::core::EffectState>, NativeAllocation)> {
         let conversation = self.protected.conversation_authority_with_native_work(input.binding.task_id,
             input.binding.agent_id, context.scope().grants(), work)?;
-        let verifier = conversation.0.1.verifier_with_native_work(work)?;
+        let verifier = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = conversation.0.1.verifier(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         let history = HistoryReader::new_with_native_work(&self.stream, &conversation.0.0, &verifier.0, work)?;
         let cursor = history.0.pin_with_native_work(0, work).await?;
         let effect = acyclic_harness::effect_host::task_effect_id(
@@ -1277,7 +1289,11 @@ impl PiNativeCommandHost {
                     .ok_or_else(|| unauthorized("Pi session has no original publication custody"))?.0)?;
                 let mut conversation = self.protected.conversation_authority_with_native_work(owner.task_id(),
                     input.binding.agent_id, context.scope().grants(), work)?;
-                let mut verifier = conversation.0.1.verifier_with_native_work(work)?;
+                let mut verifier = {
+                    let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+                    let value = conversation.0.1.verifier(&mut Some(&mut io))?;
+                    (value, io.into_custody())
+                };
                 conversation.1.absorb(&mut verifier.1).map_err(native_error)?;
                 let (_, _, scope) = conversation.0;
                 let authority = (verifier.0, scope, conversation.1);
@@ -1318,7 +1334,11 @@ impl PiNativeCommandHost {
                     .ok_or_else(|| unauthorized("Pi actual fork has no selected project"))?;
                 let project_generation = GenerationRef::new_with_native_work(project.provider(),
                     prepared.native_lazy.authored_generation.digest().into_bytes(), None, work)?;
-                let write_capability = project.capability_with_native_work(VolumeOperation::Write, work)?;
+                let write_capability = {
+                    let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+                    let value = project.capability(VolumeOperation::Write, &mut Some(&mut io))?;
+                    (value, io.into_custody())
+                };
                 let writable = context.scope().grants().contains(&write_capability.0);
                 let project_permit = handles.project_gate.reserve(&owner, prepared.workspace.workspace(),
                     project, prepared.native_lazy.authored_generation, command.operation_id,

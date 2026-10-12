@@ -490,7 +490,11 @@ async fn original_native_first_dispatch_pending(
     let conversation = protected.conversation_authority_with_native_work(
         task, plan.commit.child.agent_id, &admission.grants, work,
     )?;
-    let verifier = conversation.0.1.verifier_with_native_work(work)?;
+    let verifier = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = conversation.0.1.verifier(&mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     let history = acyclic_harness::store::HistoryReader::new_with_native_work(
         stream, &conversation.0.0, &verifier.0, work)?;
     let pin = history.0.pin_with_native_work(0, work).await?;

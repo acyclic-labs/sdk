@@ -201,14 +201,26 @@ impl PiOwnerConfig {
         }
         RuntimeScope::validate_session_limits_with_native_work(&self.policy.session_limits, work)?;
         let journal_grants = [
-            self.policy.journal.capability_with_native_work(VolumeOperation::Read, work)?,
-            self.policy.journal.capability_with_native_work(VolumeOperation::Write, work)?,
+            {
+                let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+                let value = self.policy.journal.capability(VolumeOperation::Read, &mut Some(&mut io))?;
+                (value, io.into_custody())
+            },
+            {
+                let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+                let value = self.policy.journal.capability(VolumeOperation::Write, &mut Some(&mut io))?;
+                (value, io.into_custody())
+            },
         ];
         let storage = Capabilities::new_with_native_work(
             self.policy.grants.iter().chain(journal_grants.iter().map(|grant| grant.0.as_str())), work,
         )?;
         let issuer = self.issuer_with_native_work(AggregateKind::Task, self.policy.root_task, work)?;
-        let verifier = issuer.0.verifier_with_native_work(work)?;
+        let verifier = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = issuer.0.verifier(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         let signed = issuer.0.root_for_agent_with_native_work(
             self.policy.agent, &verifier.0.audience().id, &storage.0, work,
         )?;
@@ -270,7 +282,11 @@ impl PiOwnerConfig {
         let issuer = self.issuer_with_native_work(
             AggregateKind::Conversation, self.policy.root_task, work,
         )?;
-        let verifier = issuer.0.verifier_with_native_work(work)?;
+        let verifier = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = issuer.0.verifier(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         drop(issuer.0);
         drop(issuer.1);
         Ok(verifier)

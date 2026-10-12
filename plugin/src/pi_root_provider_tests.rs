@@ -365,7 +365,11 @@ async fn pi_root_reconcile_adopts_original_workspace_created_before_its_lazy_bin
     let volume = &fixture.request.binding.project_volumes[key];
     let operation = fixture.provider.creation_operation_with_native_work(
         dispatch.effect_id, dispatch.attempt_id, key, &fixture.startup).unwrap();
-    let name = volume.storage_name_with_native_work(&fixture.startup).unwrap();
+    let name = {
+        let mut io = acyclic_harness::store::history::native_work_io(&fixture.startup).unwrap();
+        let value = volume.storage_name(&mut Some(&mut io)).unwrap();
+        (value, io.into_custody())
+    };
     let first = fixture.resources.fs.create_workspace_with_operation_with_native_work(
         &name.0, VolumeConfig::native(Lifecycle::Durable), operation,
         &fixture.startup, fixture.startup.cancellation()).await.unwrap();
@@ -681,7 +685,11 @@ async fn pi_root_output_context_preserves_actual_task_and_stages_only_original_s
     let authority = fixture.owner.conversation_authority_with_native_work(
         fixture.request.binding.task_id, fixture.request.binding.agent_id, &fixture.owner.policy().grants,
         &fixture.startup).unwrap();
-    let verifier = authority.0.1.verifier_with_native_work(&fixture.startup).unwrap();
+    let verifier = {
+        let mut io = acyclic_harness::store::history::native_work_io(&fixture.startup).unwrap();
+        let value = authority.0.1.verifier(&mut Some(&mut io)).unwrap();
+        (value, io.into_custody())
+    };
     assert!(fixture.filesystem.root_output_source(current_owner,
         &fixture.request.binding.scratch.volume, operation, &generation, &verifier.0,
         &authority.0.2, &fixture.startup).await.is_ok());

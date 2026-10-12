@@ -67,7 +67,11 @@ fn conversation_journal<'a>(filesystem: &Arc<PiNativeFilesystem>, stream: &std::
     validate_descriptor(protected, &descriptor, work)?;
     let authority = protected.conversation_authority_with_native_work(protected.policy().root_task,
         protected.policy().agent, &protected.policy().grants, work)?;
-    let verifier = authority.0.1.verifier_with_native_work(work)?;
+    let verifier = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = authority.0.1.verifier(&mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     Journal::new_with_native_work(stream.clone(), Arc::clone(filesystem), descriptor.private_volume, &verifier.0, &authority.0.2,
         protected.policy().maximum_payload_bytes, work)
 }
@@ -89,7 +93,11 @@ pub(crate) async fn open_prepared_approval(runtime: &PiNativeRuntime, filesystem
     let storage = protected.authority_with_native_work(work)?;
     let authority = protected.conversation_authority_with_native_work(binding.task_id, binding.agent_id,
         context.context().scope().grants(), work)?;
-    let verifier = authority.0.1.verifier_with_native_work(work)?;
+    let verifier = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = authority.0.1.verifier(&mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     let current = runtime.runtime.task_host().journal_owner_with_native_work(binding.task_id, fence, work).await?;
     let journal = Journal::for_task_with_native_work(current, descriptor.operation, context.context().id(), Arc::clone(filesystem),
         &protected.policy().journal, &storage.0.verifier, &storage.0.signed, protected.policy().maximum_payload_bytes, work)?

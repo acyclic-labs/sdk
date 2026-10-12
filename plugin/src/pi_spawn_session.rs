@@ -505,7 +505,11 @@ impl PiSession {
         let (paths, paths_custody) = pi_native::planned_native_paths(
             &self.resources, &self.state.root_session_id, commit.child.task_id, Some(key), work)?;
         let paths = paths;
-        let (workspace, workspace_custody) = project.storage_name_with_native_work(work)?;
+        let (workspace, workspace_custody) = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = project.storage_name(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         let workspace = workspace;
         if !matches!(&pending.task_binding, PluginTaskBinding::Pi(binding) if binding.as_ref() == &commit.child)
             || pending.agent_id.as_deref() != Some(commit.alias.as_str())

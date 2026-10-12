@@ -212,7 +212,11 @@ pub(crate) async fn build_writeback_generations<'a>(
     authenticate_root(root, context, owner, verifier, scope, native_work).await?;
     let _read_grant = acyclic_harness::conversation::ContentGrant::verify_with_native_work(
         verifier, scope, &root.volume, acyclic_harness::conversation::VolumeOperation::Read, native_work)?;
-    let storage_name = root.volume.storage_name_with_native_work(native_work)?;
+    let storage_name = {
+        let mut io = acyclic_harness::store::history::native_work_io(native_work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = root.volume.storage_name(&mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     if original.workspace_id != root.workspace || imported.workspace_id() != root.workspace
         || actual_root.workspace.workspace().id() != root.workspace
         || input_owner.policy().root_task != root.task
@@ -296,8 +300,11 @@ impl<P: StreamProvider + 'static> PiSelectedPublicationGuard<P> {
         volume: &VolumeRef, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<std::sync::Arc<Self>> {
         let volume = volume.clone_with_native_work(work)?;
-        let capability = volume.0.capability_with_native_work(
-            acyclic_harness::conversation::VolumeOperation::Write, work)?;
+        let capability = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = volume.0.capability(acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         let slot = work.claim(std::mem::size_of::<Self>() as u64, u64::from((std::mem::size_of::<Self>() as u64) != 0), acyclic_fs::WorkCounters::UNCHARGED).map_err(native_error)?;
         work.charge(acyclic_fs::WorkCounters { allocation_operations: 1,
             ..acyclic_fs::WorkCounters::default() }).map_err(native_error)?;
@@ -496,8 +503,11 @@ async fn authenticate_root(
 ) -> Result<()> {
     let native_owner = owner.native_view_owner();
     native_owner.verify_with_native_work(native_work).await?;
-    let capability = root.volume.capability_with_native_work(
-        acyclic_harness::conversation::VolumeOperation::Write, native_work)?;
+    let capability = {
+        let mut io = acyclic_harness::store::history::native_work_io(native_work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = root.volume.capability(acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     if context.durable_task_id() != Some(root.task) || owner.task_id() != root.task
         || !root.path.is_absolute() || !root.operation_directory.is_absolute()
         || !context.scope().grants().contains(&capability.0)
@@ -591,7 +601,11 @@ where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectSt
         snapshot: acyclic_fs::LazySnapshotRef,
         native_work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
-        let storage_name = volume.storage_name_with_native_work(native_work)?;
+        let storage_name = {
+            let mut io = acyclic_harness::store::history::native_work_io(native_work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = volume.storage_name(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         if workspace.workspace().name().as_str() != storage_name.0
             || snapshot.workspace_id != workspace.workspace().id()
         {
@@ -742,9 +756,16 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
         || destination.durable_task_id() != Some(destination_owner.task_id()) {
         return Err(selected_unauthorized("native import changed its ORIGINAL caller or destination context"));
     }
-    let capability = destination_volume.capability_with_native_work(
-        acyclic_harness::conversation::VolumeOperation::Write, native_work)?;
-    let storage_name = destination_volume.storage_name_with_native_work(native_work)?;
+    let capability = {
+        let mut io = acyclic_harness::store::history::native_work_io(native_work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = destination_volume.capability(acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
+    let storage_name = {
+        let mut io = acyclic_harness::store::history::native_work_io(native_work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = destination_volume.storage_name(&mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     if paths.is_empty() || maximum_paths == 0 || paths.len() > maximum_paths as usize
         || maximum_bytes == 0
         || destination_workspace.workspace().name().as_str() != storage_name.0
