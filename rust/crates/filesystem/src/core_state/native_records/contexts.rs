@@ -117,7 +117,7 @@ fn live_ids(
             }
         }
     }
-    canonical_ids(&mut ids, work)?;
+    canonical_records(&mut ids, work, Ord::cmp)?;
     let mut index = 0;
     while index < ids.len() {
         let id = ids[index];
@@ -161,7 +161,7 @@ fn add_child(bucket: &mut Bucket, child: WorkspaceContextId, work: &Work) -> Res
     let needed = bucket.children.len() + 1;
     reserve(&mut bucket.children, needed, work, &mut bucket.allocation)?;
     bucket.children.push(child);
-    canonical_ids(&mut bucket.children, work)
+    canonical_records(&mut bucket.children, work, Ord::cmp)
 }
 
 fn bucket_position(
@@ -242,7 +242,6 @@ fn context_link(
 ) -> Result<(WorkspaceContextId, Option<WorkspaceContextId>), Error> {
     match value {
         RecordValue::Context(context) => Ok((context.context_id, context.parent_context_id)),
-        RecordValue::FlatContext(context) => Ok((context.context_id, context.parent_context_id)),
         _ => Err(Error::Integrity),
     }
 }
@@ -330,17 +329,6 @@ pub(in crate::core_state) fn compare_native_context(
             let value = transfer(owned, work, &mut held)?;
             match value {
                 RecordValue::FlatChildren(value) => children = value,
-                RecordValue::Children(value) => {
-                    reserve(&mut children, value.0.len(), work, &mut held)?;
-                    for child in value.0 {
-                        work.charge(crate::WorkCounters {
-                            items_examined: 1,
-                            bytes_copied: std::mem::size_of::<WorkspaceContextId>() as u64,
-                            ..Default::default()
-                        })?;
-                        children.push(child);
-                    }
-                }
                 _ => return Err(Error::Integrity),
             }
         }
@@ -385,11 +373,19 @@ pub(in crate::core_state) fn compare_native_context(
     }
     drop(current);
     let mut change = Change::new(work)?;
+    for root in replacement.0.roots.values() {
+        check(work, cxl)?;
+        root.source_path.to_str().ok_or(Error::Integrity)?;
+        if let Some(mount) = &root.mount_path {
+            mount.to_str().ok_or(Error::Integrity)?;
+        }
+    }
     let (record, allocation) = replacement;
-    let public = (RecordValue::Context(record), allocation);
-    let flat = clone_native_record_value((&public.0), work, cxl)?;
-    drop(public);
-    change.put_owned(RecordKey::Context(id), flat, work)?;
+    change.put_owned(
+        RecordKey::Context(id),
+        (RecordValue::Context(record), allocation),
+        work,
+    )?;
     put_buckets(&mut change, buckets, work)?;
     drop(bucket_allocation);
     cxl.check()
@@ -422,12 +418,7 @@ mod tests {
         let live = work.live_allocation_bytes();
         let error = reserve(&mut values, 3, &work, &mut held)
             .expect_err("delta-only funding would wrongly accept");
-        assert!(matches!(
-            error,
-            Error::LazyWork(crate::LazyWorkspaceError::Demand(crate::DemandError::Work(
-                _
-            )))
-        ));
+        assert!(matches!(error, NativeError::Work(_)));
         assert_eq!(values, [11, 13]);
         assert_eq!(values.capacity(), 2);
         assert_eq!(work.receipt(), before);

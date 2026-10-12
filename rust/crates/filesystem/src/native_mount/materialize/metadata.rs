@@ -75,25 +75,6 @@ where
     generation_action(before_effect, NativeMaterializationActionPhase::Completed).await
 }
 
-pub(super) async fn generation_blocking<T: Send + 'static>(
-    receipt: &mut GenerationReceipt,
-    operation: impl FnOnce(&mut NativeSourceWork<'_>) -> Result<T, DemandError> + Send + 'static,
-) -> Result<T, MaterializeError> {
-    let observer = receipt.custody.work().runtime_meter();
-    let original = receipt.custody.work().clone();
-    let task = acyclic_native_runtime::run_blocking_io(
-        move || {
-            operation(&mut NativeSourceWork::from_native_materialization_work(
-                &original,
-            ))
-        },
-        Some((observer, false)),
-    )
-    .map_err(materialize_runtime_error)?;
-    let result = task.await.map_err(materialize_runtime_error)?;
-    result.map_err(materialize_demand_error)
-}
-
 pub(super) async fn apply_host_attributes_offloaded(
     host_root: &Arc<(HostRoot, crate::NativeAllocation)>,
     host_path: &Arc<(Vec<HostPathUnit>, crate::NativeAllocation)>,
@@ -113,7 +94,7 @@ pub(super) async fn apply_host_attributes_offloaded(
     {
         let root = host_root.clone();
         let path = host_path.clone();
-        generation_blocking(receipt, move |work| {
+        host_io(None, receipt.custody.work().clone(), move |work| {
             let attributes = attributes;
             #[cfg(target_os = "linux")]
             let target = root
@@ -147,6 +128,8 @@ pub(super) async fn apply_host_attributes_offloaded(
             result
         })
         .await
+        .map_err(materialize_runtime_error)?
+        .map_err(materialize_demand_error)
     }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
@@ -165,7 +148,7 @@ pub(super) async fn apply_host_metadata_offloaded(
     reject_unbaselined_unix_metadata(metadata)?;
     let root = host_root.clone();
     let path = host_path.clone();
-    generation_blocking(receipt, move |work| {
+    host_io(None, receipt.custody.work().clone(), move |work| {
         if metadata == FileMetadata::default() {
             #[cfg(unix)]
             root.0.stat(super::work::host_path(&path.0), work)?;
@@ -197,6 +180,8 @@ pub(super) async fn apply_host_metadata_offloaded(
         }
     })
     .await
+    .map_err(materialize_runtime_error)?
+    .map_err(materialize_demand_error)
 }
 
 #[cfg(unix)]
