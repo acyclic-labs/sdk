@@ -235,7 +235,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                     let (lookup, allocation) = checkout.lookup_no_follow_with_accounting(&path.value, accounting, cancellation).await?;
                     fork_selection_reconcile_checkout(&checkout, &mut checkout_bytes, accounting)?;
                     let record = lookup.record.ok_or(WorkspaceError::NotFound)?;
-                        drop(allocation);
+                    drop(allocation);
                     path.retire(accounting)?;
                     fork_file_table_copy::<TreeMutation>(1, accounting, cancellation)?;
                     let (name, allocation) = name.clone_with_accounting(accounting, cancellation)?;
