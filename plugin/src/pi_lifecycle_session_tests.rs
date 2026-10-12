@@ -54,7 +54,7 @@ async fn created_native_catalog_requires_original_alias_operation_uuid_and_creat
 }
 
 #[tokio::test]
-async fn cold_source_observation_retains_original_cut_without_claiming_child_work() {
+async fn cold_child_observation_preserves_original_cut_and_dispatch_is_only_initial_and_unreserved() {
     let fixture = Fixture::new(None).await;
     let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
     let prepared = fixture.advance_with(&fixture.coordinator(), &fixture.context, &fixture.journal,
@@ -73,18 +73,8 @@ async fn cold_source_observation_retains_original_cut_without_claiming_child_wor
     assert!(matches!(fixture.runtime.runtime.task_host().recover_work(task).await.unwrap(),
         WorkPull::Idle));
     assert!(fixture.runtime.runtime.task_host().outcome(task).await.unwrap().is_none());
-    assert!(fixture.coordinator().observe_prepared(&plan, Arc::new(prepared.workspace.clone()),
+    assert!(fixture.coordinator().observe_prepared(&plan, prepared.workspace.clone(),
         pi_root_provider::allocation_budget(), CancellationToken::new()).await.is_err());
-}
-
-#[tokio::test]
-async fn cold_created_child_dispatch_is_only_initial_and_unreserved() {
-    let fixture = Fixture::new(None).await;
-    let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
-    let prepared = fixture.advance_with(&fixture.coordinator(), &fixture.context, &fixture.journal,
-        &fixture.fence, &plan, fixture.source.clone(),
-        pi_root_provider::allocation_budget(), CancellationToken::new())
-        .await.unwrap().unwrap();
     let cancellation = CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
         pi_root_provider::allocation_budget(), &cancellation).unwrap();
