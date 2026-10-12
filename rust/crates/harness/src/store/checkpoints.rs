@@ -314,9 +314,7 @@ async fn stage_owned_immutable_record_with_work<P: StreamProvider>(
                 key, key_owned, work);
             request.push_condition(CommitCondition::Absent { path: path.clone() })?;
             request.append(path.clone(), bytes.clone())?;
-            let committed = request.commit_once(client, None).await;
-            drop(request);
-            committed?.map_err(|error| crate::distributed::sdk_error(error, work))?
+            request.commit(client, None, None, None, None).await?
         } else {
             let mut conditions = if work.is_none() { Vec::with_capacity(1) } else { Vec::new() };
             reserve_chunk_slot(&mut conditions, 1, work)?;
