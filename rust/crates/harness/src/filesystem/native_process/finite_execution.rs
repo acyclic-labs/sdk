@@ -17,7 +17,7 @@ pub(super) async fn execute<P: StreamProvider>(
             owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(original)?)).await?;
             grants(owner, &request.view, original)?;
             {
-                view.operation_cancellation().check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
+                view.operation_cancellation().check().map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled)?;
                 authority.results.supports_stage(Some(&crate::filesystem::PreparationIo::from_native_work(original)?))?;
                 if !authority.result_content.supports_read(authority.results.volume(), Some(&crate::filesystem::PreparationIo::from_native_work(original)?))? {
                     return Err(boundary(crate::wire::ErrorCode::Unsupported, "native result reader has no original finite SDK engine"));
@@ -198,7 +198,7 @@ async fn capture<P: StreamProvider>(
         let check = || -> std::io::Result<()> {
             let result = runtime.block_on(tokio::time::timeout(
                 Duration::from_millis(u64::from(invocation.control_timeout_ms)), async {
-                    cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
+                    cancellation.check().map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled)?;
                     check_owner.verify(false, &mut Some(&mut crate::store::history::native_work_io(&original)?)).await
                 }));
             result.unwrap_or_else(|source| Err(Error::NativeTimeout { source, custody: None }))

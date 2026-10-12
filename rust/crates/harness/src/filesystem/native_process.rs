@@ -345,13 +345,13 @@ where
         work: &acyclic_fs::NativeMaterializationWork,
         cleanup_cancellation: &acyclic_fs::CancellationToken,
     ) -> Result<()> {
-        cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
+        cleanup_cancellation.check().map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled)?;
         work.charge(acyclic_fs::WorkCounters {
             items_examined: 1, ..acyclic_fs::WorkCounters::default()
         })?;
         let (completed, _) = self.supervisor.snapshot(attempt)?;
         self.authenticate_cleanup_owner(work).await?;
-        cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
+        cleanup_cancellation.check().map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled)?;
         if completed {
             self.supervisor.settle_process(self._custody.work(), work)?;
             return Ok(());
@@ -405,7 +405,7 @@ where
             let notified = self.supervisor.completion.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
+            cleanup_cancellation.check().map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled)?;
             work.charge(acyclic_fs::WorkCounters {
                 items_examined: 1, ..acyclic_fs::WorkCounters::default()
             })?;
@@ -517,7 +517,7 @@ where
         finite_binding::require_family(self._custody.work(), work)?;
         let view = &self.invocation()?.view;
         view.operation_cancellation().check()
-            .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
+            .map_err(|_| acyclic_fs::NativeTreeMaterializationError::Cancelled)?;
         let bytes = receipt_observation::add(
             receipt_observation::add(request.provider.capacity() as u64, request.effect_kind.capacity() as u64)?,
             request.request.logical_owned_bytes()?)?;
