@@ -281,18 +281,25 @@ mod tests {
             )
             .is_err()
         );
-        for pointer in [
-            "/file/version",
-            "/file/display_name",
-            "/file/volume/provider/version",
-            "/file/descriptor/media_type",
+        for (pointer, value) in [
+            ("/file/version", json!(1)),
+            ("/file/display_name", json!(1)),
+            ("/file/volume/provider/version", json!(1)),
+            ("/file/descriptor/media_type", json!(1)),
+            ("/file/descriptor/sha256", json!(vec![0; 31])),
+            ("/file/descriptor/sha256", json!(vec![0; 33])),
+            ("/file/descriptor/sha256", json!(vec![256; 32])),
+            (
+                "/file/descriptor/byte_length",
+                json!(crate::conversation::MAX_EXACT_JS_INTEGER + 1),
+            ),
         ] {
             let mut changed = canonical.clone();
             *changed
                 .pointer_mut(pointer)
-                .ok_or_else(|| Error::Invalid("fixture field missing".into()))? = json!(1);
+                .ok_or_else(|| Error::Invalid("fixture field missing".into()))? = value;
             assert!(
-                crate::tool::validate_value(&output_schema, &changed, "wrong nested type", None)
+                crate::tool::validate_value(&output_schema, &changed, "invalid nested field", None)
                     .is_err()
             );
         }
@@ -316,25 +323,6 @@ mod tests {
             crate::tool::validate_value(&output_schema, &changed, "unknown nested field", None)
                 .is_err()
         );
-        for digest in [vec![0; 31], vec![0; 33], vec![256; 32]] {
-            let mut changed = canonical.clone();
-            *changed
-                .pointer_mut("/file/descriptor/sha256")
-                .ok_or_else(|| Error::Invalid("fixture digest missing".into()))? = json!(digest);
-            assert!(
-                crate::tool::validate_value(&output_schema, &changed, "invalid digest", None)
-                    .is_err()
-            );
-        }
-        let mut changed = canonical;
-        *changed
-            .pointer_mut("/file/descriptor/byte_length")
-            .ok_or_else(|| Error::Invalid("fixture length missing".into()))? =
-            json!(crate::conversation::MAX_EXACT_JS_INTEGER + 1);
-        assert!(
-            crate::tool::validate_value(&output_schema, &changed, "imprecise descriptor", None)
-                .is_err()
-        );
         Ok(())
     }
 
@@ -343,24 +331,18 @@ mod tests {
         let file = file()?;
         let edit = files::edit_file()?;
         let patch = files::patch_file(8192, 8)?;
-        assert!(
-            crate::tool::validate_value(
+        for (schema, value) in [
+            (
                 &edit.definition.input_schema,
-                &json!({"file":file,"old_text":"","new_text":"x"}),
-                "empty edit",
-                None
-            )
-            .is_err()
-        );
-        assert!(
-            crate::tool::validate_value(
+                json!({"file":file,"old_text":"","new_text":"x"}),
+            ),
+            (
                 &patch.definition.input_schema,
-                &json!({"file":file,"diff":""}),
-                "empty patch",
-                None
-            )
-            .is_err()
-        );
+                json!({"file":file,"diff":""}),
+            ),
+        ] {
+            assert!(crate::tool::validate_value(schema, &value, "empty edit", None).is_err());
+        }
         let mut invalid = json!({"file":file});
         *invalid
             .pointer_mut("/file/path")
