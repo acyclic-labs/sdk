@@ -24,7 +24,6 @@ mod copying;
 mod effects;
 mod extension_types;
 mod inventory;
-mod native_custody;
 mod native_key;
 mod ownership;
 mod records;
@@ -43,7 +42,6 @@ pub(crate) use copying::{
     copy_value, copy_vector, reserve_copy_vector,
 };
 pub(crate) use inventory::inspect_metadata;
-use native_custody::NativeComponentCustody;
 use native_key::NativeComponentKey;
 pub(in crate::core) use ownership::*;
 pub(crate) use ownership::{event_owned_bytes, owned_buffer, owned_bytes, owned_sum, owned_vector};

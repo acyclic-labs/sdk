@@ -3,11 +3,13 @@ use super::*;
 mod admission;
 mod application;
 mod copy;
+mod native;
+pub(in crate::core) use native::Component;
 mod effects;
 mod fork;
 mod transition;
 /// Restorable deterministic reducer state for one authority.
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 pub struct Reducer {
     pub(in crate::core) authority: Authority,
     pub(in crate::core) authority_verifier: AuthorityVerifier,
@@ -17,7 +19,10 @@ pub struct Reducer {
     pub(in crate::core) events: VecDeque<Event>,
     pub(in crate::core) resident_event_limit: usize,
     pub(in crate::core) resident_terminal_effect_limit: usize,
-    pub(in crate::core) native_custody: NativeComponentCustody,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(in crate::core) native_components: Vec<Component>,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    pub(in crate::core) native_component_buffer: Option<acyclic_fs::NativeAllocation>,
 }
 
 impl Reducer {
@@ -37,7 +42,10 @@ impl Reducer {
             events: VecDeque::new(),
             resident_event_limit: usize::MAX,
             resident_terminal_effect_limit: usize::MAX,
-            native_custody: NativeComponentCustody::default(),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_components: Vec::new(),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_component_buffer: None,
         }
     }
 
@@ -47,13 +55,13 @@ impl Reducer {
         revision: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        let (entry, _retired) = self.native_custody.produce(
+        let (entry, _retired) = self.produce(
             &NativeComponentKey::ExtensionState(Cow::Borrowed(&record.name)),
             work,
-            |quota| {
+            |state, quota| {
                 copying::retain_entry::<(String, (EventReference, ExtensionRecord))>(quota)?;
                 let key = copying::copy_text(&record.name, quota)?;
-                let authority = copying::copy_authority(&self.authority, quota)?;
+                let authority = copying::copy_authority(&state.authority, quota)?;
                 let record = copying::copy_extension_record(record, quota)?;
                 Ok((
                     key,
@@ -75,12 +83,12 @@ impl Reducer {
     }
 
     pub(in crate::core) fn grow_buffer<T>(
-        custody: &mut NativeComponentCustody,
+        &mut self,
         key: NativeComponentKey<'_>,
         length: usize,
         capacity: usize,
         work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<Option<(Vec<T>, Option<native_custody::Component>)>> {
+    ) -> Result<Option<(Vec<T>, Option<reducer::Component>)>> {
         if !work.as_deref().is_some_and(copying::is_native) || length < capacity {
             return Ok(None);
         }
@@ -92,7 +100,7 @@ impl Reducer {
         work.as_deref()
             .expect("native buffer observer")
             .admit_copy(copied)?;
-        let (replacement, retired) = custody.produce(&key, work, |quota| {
+        let (replacement, retired) = self.produce(&key, work, |_, quota| {
             copying::reserve_copy_vector::<T>(capacity, quota)
         })?;
         if let Err(error) = work
@@ -101,28 +109,12 @@ impl Reducer {
             .copy_bytes(copied)
         {
             drop(replacement);
-            drop(custody.rollback(&key, retired));
+            drop(self.rollback_component(&key, retired));
             return Err(error);
         }
         Ok(Some((replacement, retired)))
     }
 
-    pub(in crate::core) fn reserve_deque_buffer<T>(
-        custody: &mut NativeComponentCustody,
-        key: NativeComponentKey<'_>,
-        payload: &mut VecDeque<T>,
-        work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<()> {
-        if let Some((replacement, retired)) =
-            Self::grow_buffer(custody, key, payload.len(), payload.capacity(), work)?
-        {
-            let mut replacement = VecDeque::from(replacement);
-            replacement.append(payload);
-            drop(std::mem::replace(payload, replacement));
-            drop(retired);
-        }
-        Ok(())
-    }
     pub(in crate::core) fn append_conversation_message_with_work(
         &mut self,
         message: &ConversationMessage,
@@ -131,16 +123,18 @@ impl Reducer {
         self.projection
             .conversation
             .validate_append(message, work)?;
-        let (message, retired) = self.native_custody.produce(
+        let (message, retired) = self.produce(
             &NativeComponentKey::ConversationMessage(message.sequence),
             work,
-            |quota| copying::copy_message(message, quota),
+            |_, quota| copying::copy_message(message, quota),
         )?;
         let sequence = message.sequence;
         if let Err(error) = self.projection.conversation.append(message, work) {
             drop(
-                self.native_custody
-                    .rollback(&NativeComponentKey::ConversationMessage(sequence), retired),
+                self.rollback_component(
+                    &NativeComponentKey::ConversationMessage(sequence),
+                    retired,
+                ),
             );
             return Err(error);
         }
@@ -161,7 +155,12 @@ impl Reducer {
                 0,
             ));
         }
-        crate::contract::json_byte_length(&receipt.target_project, acyclic_stream::MAX_RECORD_BYTES as u64, work).map(|_| ())?;
+        crate::contract::json_byte_length(
+            &receipt.target_project,
+            acyclic_stream::MAX_RECORD_BYTES as u64,
+            work,
+        )
+        .map(|_| ())?;
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let name = receipt.target_project.storage_name(quota.work())?;
         quota.adopt(name.capacity() as u64)?;
@@ -440,8 +439,7 @@ impl Reducer {
             if let Some(event) = self.events.pop_front() {
                 let revision = event.revision;
                 drop(event);
-                self.native_custody
-                    .remove(&NativeComponentKey::Event(revision));
+                self.remove_component(&NativeComponentKey::Event(revision));
             }
         }
     }
@@ -497,5 +495,18 @@ impl Reducer {
             ));
         }
         Ok(())
+    }
+}
+
+impl PartialEq for Reducer {
+    fn eq(&self, other: &Self) -> bool {
+        self.authority == other.authority
+            && self.authority_verifier == other.authority_verifier
+            && self.schemas == other.schemas
+            && self.revision == other.revision
+            && self.projection == other.projection
+            && self.events == other.events
+            && self.resident_event_limit == other.resident_event_limit
+            && self.resident_terminal_effect_limit == other.resident_terminal_effect_limit
     }
 }

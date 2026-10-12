@@ -4,8 +4,7 @@ use super::*;
 impl Reducer {
     /// Copies the live projection using the caller's optional ledger.
     pub(crate) fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Reducer> {
-        self.native_custody
-            .require_work(work, "native reducer cloning requires explicit native work")?;
+        self.require_native_work(work, "native reducer cloning requires explicit native work")?;
         inspect_metadata(&(&self.authority, &self.projection, &self.events), work)?;
         let mut bytes = 0;
         if work.is_some() {
@@ -41,7 +40,10 @@ impl Reducer {
             events: self.events.clone(),
             resident_event_limit: self.resident_event_limit,
             resident_terminal_effect_limit: self.resident_terminal_effect_limit,
-            native_custody: NativeComponentCustody::default(),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_components: Vec::new(),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_component_buffer: None,
         };
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if quota.work().as_deref().is_some_and(copying::is_native) {
@@ -54,17 +56,12 @@ impl Reducer {
             );
             let mut data = io.take_native_custody(retained - base.1.bytes())?;
             quota.transfer();
-            let mut custody = NativeComponentCustody::default();
-            drop(custody.install(Some(base), quota.work())?);
-            if let Err(error) =
-                NativeComponentCustody::from_reducer(&output, &mut data, &mut custody, quota.work())
-            {
+            drop(output.install_component(Some(base), quota.work())?);
+            if let Err(error) = output.adopt_projection(&mut data, quota.work()) {
                 drop(output);
-                drop(custody);
                 drop(data);
                 return Err(error);
             }
-            output.native_custody = custody;
         }
         quota.transfer();
         Ok(output)

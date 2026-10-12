@@ -1,6 +1,28 @@
 //! Atomic admission, replay, and checkpoint equivalence.
 use super::*;
 
+#[derive(Debug)]
+enum Step {
+    Lifecycle(usize),
+    Custom(u8),
+    Bind(u8),
+    Resubmit(usize),
+    ConflictingIntent(usize),
+    StaleRevision,
+}
+
+fn step() -> impl proptest::strategy::Strategy<Value = Step> {
+    use proptest::prelude::*;
+    prop_oneof![
+        (0..6_usize).prop_map(Step::Lifecycle),
+        any::<u8>().prop_map(Step::Custom),
+        any::<u8>().prop_map(Step::Bind),
+        any::<usize>().prop_map(Step::Resubmit),
+        any::<usize>().prop_map(Step::ConflictingIntent),
+        Just(Step::StaleRevision)
+    ]
+}
+
 proptest::proptest! {
     #![proptest_config(proptest::prelude::ProptestConfig::with_cases(64))]
     #[test]

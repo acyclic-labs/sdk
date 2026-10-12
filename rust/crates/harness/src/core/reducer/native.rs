@@ -1,4 +1,4 @@
-//! Lifetime of native reducer component allocations.
+//! Native allocations retained by the reducer context.
 use super::*;
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(in crate::core) type Component = (
@@ -8,38 +8,21 @@ pub(in crate::core) type Component = (
 );
 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
 pub(in crate::core) type Component = ();
-#[derive(Default)]
-pub(in crate::core) struct NativeComponentCustody {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(in crate::core) components: Vec<Component>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(in crate::core) buffer: Option<acyclic_fs::NativeAllocation>,
-}
-impl std::fmt::Debug for NativeComponentCustody {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NativeComponentCustody")
-            .finish_non_exhaustive()
-    }
-}
-impl PartialEq for NativeComponentCustody {
-    fn eq(&self, _: &Self) -> bool {
-        true
-    }
-}
-impl NativeComponentCustody {
+
+impl Reducer {
     pub(in crate::core) fn produce<T>(
         &mut self,
         key: &NativeComponentKey<'_>,
         work: &mut Option<&mut dyn HistoryIo>,
-        copy: impl FnOnce(&mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<T>,
+        copy: impl FnOnce(&Self, &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<T>,
     ) -> Result<(T, Option<Component>)> {
-        let prepared = Self::prepare(key, 0, work)?;
-        let retired = self.install(prepared, work)?;
+        let component = Self::claim_component(key, work)?;
+        let retired = self.install_component(component, work)?;
         let native = work.as_deref().is_some_and(is_native);
-        let mut ordinary = None;
+        let mut unmeasured = None;
         let mut quota =
-            crate::wire_codec::CodecQuota::new(if native { work } else { &mut ordinary }, 0)?;
-        let result = copy(&mut quota).and_then(|value| {
+            crate::wire_codec::CodecQuota::new(if native { work } else { &mut unmeasured }, 0)?;
+        let copied = copy(self, &mut quota).and_then(|value| {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if native {
                 let bytes = quota.retained();
@@ -47,20 +30,21 @@ impl NativeComponentCustody {
                 self.absorb_produced(
                     key,
                     bytes,
-                    quota.work().as_deref_mut().expect("native copy observer"),
+                    quota.work().as_deref_mut().expect("native copy"),
                 )?;
             }
             Ok(value)
         });
-        match result {
+        match copied {
             Ok(value) => Ok((value, retired)),
             Err(error) => {
-                drop(self.rollback(key, retired));
+                drop(self.rollback_component(key, retired));
                 Err(error)
             }
         }
     }
-    pub(in crate::core) fn install(
+
+    pub(in crate::core) fn install_component(
         &mut self,
         component: Option<Component>,
         work: &mut Option<&mut dyn HistoryIo>,
@@ -68,23 +52,18 @@ impl NativeComponentCustody {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(component) = component {
             if let Some(index) = self
-                .components
+                .native_components
                 .iter()
                 .position(|(key, _, _)| key == &component.0)
             {
                 return Ok(Some(std::mem::replace(
-                    &mut self.components[index],
+                    &mut self.native_components[index],
                     component,
                 )));
             }
-            if self.components.len() == self.components.capacity() {
-                let count = self
-                    .components
-                    .capacity()
-                    .checked_mul(2)
-                    .unwrap_or(usize::MAX)
-                    .max(2);
-                if let Err(error) = self.reserve(count, work) {
+            if self.native_components.len() == self.native_components.capacity() {
+                let count = self.native_components.capacity().saturating_mul(2).max(2);
+                if let Err(error) = self.reserve_native_components(count, work) {
                     let (key, payload, metadata) = component;
                     drop((key, metadata));
                     return Err(match error {
@@ -99,45 +78,44 @@ impl NativeComponentCustody {
                     });
                 }
             }
-            self.components.push(component);
+            self.native_components.push(component);
         }
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let _ = (component, work);
         Ok(None)
     }
+
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(in crate::core) fn reserve(
+    pub(in crate::core) fn reserve_native_components(
         &mut self,
         count: usize,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
-        if count <= self.components.capacity() {
+        if count <= self.native_components.capacity() {
             return Ok(());
         }
-        let copied = owned_buffer::<Component>(self.components.len())?;
-        work.as_deref()
-            .expect("native table observer")
-            .admit_copy(copied)?;
+        let copied = owned_buffer::<Component>(self.native_components.len())?;
+        work.as_deref().expect("native table").admit_copy(copied)?;
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut replacement = reserve_copy_vector(count, &mut quota)?;
         let bytes = quota.retained();
         let allocation = quota
             .work()
             .as_deref_mut()
-            .expect("native table observer")
+            .expect("native table")
             .take_native_custody(bytes)?;
         quota.transfer();
         quota
             .work()
             .as_deref_mut()
-            .expect("native table observer")
+            .expect("native table")
             .copy_bytes(copied)?;
-        replacement.append(&mut self.components);
-        let old = self.buffer.replace(allocation);
-        drop(std::mem::replace(&mut self.components, replacement));
-        drop(old);
+        replacement.append(&mut self.native_components);
+        self.native_components = replacement;
+        self.native_component_buffer = Some(allocation);
         Ok(())
     }
+
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(in crate::core) fn absorb_produced(
         &mut self,
@@ -147,14 +125,14 @@ impl NativeComponentCustody {
     ) -> Result<()> {
         let mut incoming = io.take_native_custody(bytes)?;
         let index = self
-            .components
+            .native_components
             .iter()
             .position(|(current, _, _)| current == key)
             .ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Storage,
                 reason: "native copy destination is absent",
             })?;
-        self.components[index]
+        self.native_components[index]
             .1
             .absorb(&mut incoming)
             .map_err(|cause| Error::NativeWork {
@@ -162,50 +140,50 @@ impl NativeComponentCustody {
                 custody: Some(incoming),
             })
     }
-    pub(in crate::core) fn prepare(
+
+    pub(in crate::core) fn claim_component(
         key: &NativeComponentKey<'_>,
-        bytes: u64,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<Option<Component>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if work.as_deref().is_some_and(is_native) {
-            let mut quota = crate::wire_codec::CodecQuota::new(work, bytes)?;
+            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
             let key = key.copy(&mut quota)?;
-            let keys = quota.retained() - bytes;
-            let io = quota
-                .work()
-                .as_deref_mut()
-                .expect("native component observer");
-            let metadata = io.take_native_custody(keys)?;
-            let payload = io.take_native_custody(bytes)?;
+            let bytes = quota.retained();
+            let io = quota.work().as_deref_mut().expect("native component");
+            let metadata = io.take_native_custody(bytes)?;
+            let payload = io.take_native_custody(0)?;
             quota.transfer();
             return Ok(Some((key, payload, metadata)));
         }
-        let _ = (key, bytes, work);
+        let _ = (key, work);
         Ok(None)
     }
-    pub(in crate::core) fn rollback(
+
+    pub(in crate::core) fn rollback_component(
         &mut self,
         key: &NativeComponentKey<'_>,
         retired: Option<Component>,
     ) -> Option<Component> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(index) = self
-            .components
+            .native_components
             .iter()
             .position(|(current, _, _)| current == key)
         {
             return Some(match retired {
-                Some(retired) => std::mem::replace(&mut self.components[index], retired),
-                None => self.components.swap_remove(index),
+                Some(retired) => std::mem::replace(&mut self.native_components[index], retired),
+                None => self.native_components.swap_remove(index),
             });
         }
         let _ = (key, retired);
         None
     }
-    pub(in crate::core) fn remove(&mut self, key: &NativeComponentKey<'_>) {
-        drop(self.rollback(key, None));
+
+    pub(in crate::core) fn remove_component(&mut self, key: &NativeComponentKey<'_>) {
+        drop(self.rollback_component(key, None));
     }
+
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(in crate::core) fn transfer_effect(
         &mut self,
@@ -218,7 +196,7 @@ impl NativeComponentCustody {
             NativeComponentKey::EffectStatus(id),
             NativeComponentKey::EffectAttempts(id),
         ] {
-            if let Some((key, allocation, metadata)) = self.rollback(&key, None) {
+            if let Some((key, allocation, metadata)) = self.rollback_component(&key, None) {
                 drop((key, metadata));
                 bytes = owned_sum([bytes, allocation.bytes()])?;
                 io.absorb_native_custody(allocation)?;
@@ -226,13 +204,14 @@ impl NativeComponentCustody {
         }
         Ok(bytes)
     }
-    pub(in crate::core) fn require_work(
+
+    pub(in crate::core) fn require_native_work(
         &self,
         work: &Option<&mut dyn HistoryIo>,
         reason: &'static str,
     ) -> Result<()> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if !self.components.is_empty() && !work.as_deref().is_some_and(is_native) {
+        if !self.native_components.is_empty() && !work.as_deref().is_some_and(is_native) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Invalid,
                 reason,

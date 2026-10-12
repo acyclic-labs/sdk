@@ -139,12 +139,20 @@ fn child_result_capture_rejects_alias_partial_and_foreign_generation() -> Result
         crate::wire::ErrorCode::Invalid
     );
     mutation = seed;
-    mutation.child_result_generation = Some(GenerationRef::new(&(ProviderRef::new(
-            provider.namespace().into(),
-            provider.family().into(),
-            "foreign-result-provider".into(),
-            &mut None,
-        )?), &([73; 32]), None, None)?.0);
+    mutation.child_result_generation = Some(
+        GenerationRef::new(
+            &(ProviderRef::new(
+                provider.namespace().into(),
+                provider.family().into(),
+                "foreign-result-provider".into(),
+                &mut None,
+            )?),
+            &([73; 32]),
+            None,
+            None,
+        )?
+        .0,
+    );
     assert_eq!(
         mutation.validate(&mut None).unwrap_err().code(),
         crate::wire::ErrorCode::Invalid
@@ -177,10 +185,11 @@ fn physical_fork_clone_partial_denial_releases_only_new_fields_and_cancels_befor
     };
     let native = NativeMaterializationWork::new(limited, &CancellationToken::new())
         .expect("fork-copy ledger");
-    let mut io = crate::store::history::native_work_io(&native).expect("fork-copy observer");
-    let held = io.clone_text("held")?;
+    let io =
+        crate::filesystem::PreparationIo::from_native_work(&native).expect("fork-copy observer");
+    let held = io.history_io().clone_text("held")?;
     assert!(matches!(
-        request.copy(&mut Some(&mut io)),
+        request.copy(&mut Some(&mut io.history_io())),
         Err(Error::NativeWork {
             cause: NativeTreeMaterializationError::Work(WorkError::BudgetExceeded {
                 counter: "bytes_copied",
@@ -189,8 +198,14 @@ fn physical_fork_clone_partial_denial_releases_only_new_fields_and_cancels_befor
             ..
         })
     ));
-    let guard = io.into_custody();
-    assert_eq!(guard.bytes(), held.capacity() as u64);
+    let guard = io.into_native_custody(held.capacity() as u64)?;
+    assert!(
+        native
+            .admit_retained(
+                limited.peak_allocation_bytes - NativeMaterializationWork::accounting_state_bytes(),
+            )
+            .is_err()
+    );
     drop(held);
     drop(guard);
     native
@@ -203,15 +218,12 @@ fn physical_fork_clone_partial_denial_releases_only_new_fields_and_cancels_befor
         })?;
     let token = CancellationToken::new();
     let cancelled = NativeMaterializationWork::new(budget, &token).expect("original fork ledger");
-    let mut io = crate::store::history::native_work_io(&cancelled).expect("cancelled observer");
+    let io =
+        crate::filesystem::PreparationIo::from_native_work(&cancelled).expect("cancelled observer");
     let before = cancelled.receipt();
     token.cancel();
-    assert!(request.copy(&mut Some(&mut io)).is_err());
-    assert_eq!(
-        cancelled.receipt().allocation_operations,
-        before.allocation_operations
-    );
-    assert_eq!(cancelled.receipt().bytes_copied, before.bytes_copied);
+    assert!(request.copy(&mut Some(&mut io.history_io())).is_err());
+    assert_eq!(cancelled.receipt(), before);
     drop(io);
     Ok(())
 }

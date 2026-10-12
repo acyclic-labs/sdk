@@ -35,7 +35,7 @@ impl Reducer {
         event: &Event,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.native_custody.require_work(
+        self.require_native_work(
             work,
             "native terminal indexing requires explicit native work",
         )?;
@@ -56,12 +56,17 @@ impl Reducer {
             ));
         }
         if self.projection.indexed_terminal_effects.back() != Some(&observation.effect_id) {
-            Self::reserve_deque_buffer(
-                &mut self.native_custody,
+            if let Some((buffer, retired)) = self.grow_buffer(
                 NativeComponentKey::TerminalEffectBuffer,
-                &mut self.projection.indexed_terminal_effects,
+                self.projection.indexed_terminal_effects.len(),
+                self.projection.indexed_terminal_effects.capacity(),
                 work,
-            )?;
+            )? {
+                let mut buffer = VecDeque::from(buffer);
+                buffer.append(&mut self.projection.indexed_terminal_effects);
+                self.projection.indexed_terminal_effects = buffer;
+                drop(retired);
+            }
             self.projection
                 .indexed_terminal_effects
                 .push_back(observation.effect_id);
@@ -86,12 +91,9 @@ impl Reducer {
         while self.projection.indexed_terminal_effects.len() > budget {
             if let Some(effect) = self.projection.indexed_terminal_effects.pop_front() {
                 self.projection.effects.remove(&effect);
-                self.native_custody
-                    .remove(&NativeComponentKey::EffectAction(effect));
-                self.native_custody
-                    .remove(&NativeComponentKey::EffectStatus(effect));
-                self.native_custody
-                    .remove(&NativeComponentKey::EffectAttempts(effect));
+                self.remove_component(&NativeComponentKey::EffectAction(effect));
+                self.remove_component(&NativeComponentKey::EffectStatus(effect));
+                self.remove_component(&NativeComponentKey::EffectAttempts(effect));
                 self.projection.effects_archived = true;
             }
         }
@@ -180,7 +182,7 @@ impl Reducer {
             .as_deref_mut()
             .filter(|io| io.original_native_work().is_some())
         {
-            let retained = projection.native_custody.transfer_effect(effect_id, io)?;
+            let retained = projection.transfer_effect(effect_id, io)?;
             quota.adopt(retained)?;
         }
         drop(projection);

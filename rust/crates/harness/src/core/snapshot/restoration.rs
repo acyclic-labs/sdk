@@ -21,18 +21,18 @@ impl Reducer {
             let allocation = io.take_native_custody(bytes)?;
             snapshot.install_native_custody(allocation, work)?;
         }
-        let mut custody = NativeComponentCustody::default();
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if native {
+        let base = if native {
             snapshot.adopt_unclaimed_native_conversation_custody(work)?;
             let io = work.as_deref_mut().expect("native verifier observer");
-            let base = (
+            Some((
                 NativeComponentKey::Base,
                 io.take_native_custody(authority_verifier.logical_owned_bytes()?)?,
                 io.take_native_custody(0)?,
-            );
-            drop(custody.install(Some(base), work)?);
-        }
+            ))
+        } else {
+            None
+        };
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let mut allocation = snapshot.native_allocation.take();
         let projection = snapshot.projection;
@@ -45,13 +45,18 @@ impl Reducer {
             events: snapshot.events.into(),
             resident_event_limit: usize::MAX,
             resident_terminal_effect_limit: usize::MAX,
-            native_custody: NativeComponentCustody::default(),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_components: Vec::new(),
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native_component_buffer: None,
         };
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(allocation) = allocation.as_mut() {
-            NativeComponentCustody::from_reducer(&reducer, allocation, &mut custody, work)?;
+        {
+            drop(reducer.install_component(base, work)?);
+            if let Some(allocation) = allocation.as_mut() {
+                reducer.adopt_projection(allocation, work)?;
+            }
         }
-        reducer.native_custody = custody;
         Ok(reducer)
     }
     pub(crate) fn compact_conversation_projection(
@@ -69,11 +74,10 @@ impl Reducer {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if work.as_deref().is_some_and(copying::is_native) {
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-            let mut copied =
-                copying::reserve_copy_vector::<(u64, Option<native_custody::Component>)>(
-                    self.projection.conversation.messages().len(),
-                    &mut quota,
-                )?;
+            let mut copied = copying::reserve_copy_vector::<(u64, Option<reducer::Component>)>(
+                self.projection.conversation.messages().len(),
+                &mut quota,
+            )?;
             for message in self.projection.conversation.messages() {
                 copied.push((message.sequence, None));
             }
@@ -105,10 +109,9 @@ impl Reducer {
             self.projection.conversation = replacement;
             for (sequence, claim) in copied {
                 if let Some(claim) = claim {
-                    drop(self.native_custody.install(Some(claim), quota.work())?);
+                    drop(self.install_component(Some(claim), quota.work())?);
                 } else {
-                    self.native_custody
-                        .remove(&NativeComponentKey::ConversationMessage(sequence));
+                    self.remove_component(&NativeComponentKey::ConversationMessage(sequence));
                 }
             }
             return Ok(());

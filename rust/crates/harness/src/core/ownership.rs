@@ -147,19 +147,18 @@ pub(crate) fn event_owned_bytes(event: &Event) -> Result<u64> {
     ])
 }
 
-impl NativeComponentCustody {
+impl Reducer {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) fn from_reducer(
-        reducer: &Reducer,
+    pub(in crate::core) fn adopt_projection(
+        &mut self,
         data: &mut acyclic_fs::NativeAllocation,
-        holder: &mut Self,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<()> {
-        let mut count = holder.components.len();
-        reducer.projection.visit(
-            &reducer.authority,
-            reducer.events.iter(),
-            reducer.events.capacity(),
+        let mut count = self.native_components.len();
+        self.projection.visit(
+            &self.authority,
+            self.events.iter(),
+            self.events.capacity(),
             |_, _| {
                 count = count
                     .checked_add(1)
@@ -167,11 +166,12 @@ impl NativeComponentCustody {
                 Ok(())
             },
         )?;
-        holder.reserve(count, work)?;
-        reducer.projection.visit(
-            &reducer.authority,
-            reducer.events.iter(),
-            reducer.events.capacity(),
+        self.reserve_native_components(count, work)?;
+        let components = &mut self.native_components;
+        self.projection.visit(
+            &self.authority,
+            self.events.iter(),
+            self.events.capacity(),
             |key, bytes| {
                 let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
                 let key = key.copy(&mut quota)?;
@@ -192,7 +192,7 @@ impl NativeComponentCustody {
                         });
                     }
                 };
-                holder.components.push((key, claim, metadata));
+                components.push((key, claim, metadata));
                 Ok(())
             },
         )?;

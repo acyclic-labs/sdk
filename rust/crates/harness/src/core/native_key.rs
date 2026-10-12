@@ -1,6 +1,6 @@
 //! Identities of live reducer allocations.
 use super::*;
-#[derive(PartialEq)]
+#[derive(Debug, PartialEq)]
 pub(super) enum NativeComponentKey<'a> {
     Base,
     Authority,

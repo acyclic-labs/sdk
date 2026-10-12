@@ -312,14 +312,6 @@ pub(crate) fn copy_boxed<T>(
     retain_entry::<T>(quota)?;
     Ok(Box::new(copy(source, quota)?))
 }
-pub(in crate::core) fn copy_receipt(
-    source: &ProjectMergeReceipt,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<ProjectMergeReceipt> {
-    let (receipt, bytes) = source.clone_with_work_and_custody(quota.work())?;
-    quota.adopt(bytes)?;
-    Ok(receipt)
-}
 pub(in crate::core) fn copy_message(
     source: &ConversationMessage,
     quota: &mut crate::wire_codec::CodecQuota<'_, '_>,

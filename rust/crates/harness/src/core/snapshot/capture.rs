@@ -83,7 +83,7 @@ impl Reducer {
         maximum_events: usize,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<(Snapshot, u64)> {
-        self.native_custody.require_work(
+        self.require_native_work(
             work,
             "native snapshot capture requires explicit native work",
         )?;
