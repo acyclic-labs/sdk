@@ -1405,7 +1405,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         'owner: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = native_work {
-                owner.runtime.task_host().verify_dispatch_owner_with_native_work(merge.caller, owner.journal_owner.task_binding().1, work).await?;
+                owner.runtime.task_host().verify_dispatch_owner_with_native_work(merge.caller, owner.journal_owner.task_binding().1, work)?.await?;
                 break 'owner;
             }
             cancellation.check().map_err(|error| Error::Storage(error.to_string()))?;
@@ -1448,7 +1448,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         'owner: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(work) = native_work {
-                owner.runtime.task_host().verify_dispatch_owner_with_native_work(merge.caller, owner.journal_owner.task_binding().1, work).await?;
+                owner.runtime.task_host().verify_dispatch_owner_with_native_work(merge.caller, owner.journal_owner.task_binding().1, work)?.await?;
                 break 'owner;
             }
             owner.runtime.task_host().verify_dispatch_owner(merge.caller, owner.journal_owner.task_binding().1.clone()).await?;
