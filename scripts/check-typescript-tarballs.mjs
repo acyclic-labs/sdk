@@ -39,7 +39,7 @@ for (const entry of packageEntries) {
   }
 }
 
-const representativeExports = {
+export const representativeExports = {
   "@acyclic-labs/actors": "ActorsClient",
   "@acyclic-labs/fs": "openBrowserFs",
   "@acyclic-labs/harness": "Harness",
@@ -49,6 +49,7 @@ const representativeExports = {
   "@acyclic-labs/pi": "piProvider",
   "@acyclic-labs/sdk": "harness",
   "@acyclic-labs/stream": "MemoryStreamProvider",
+  "@acyclic-labs/swarm": "SwarmClient",
   "@acyclic-labs/workers": "HttpWorkersClient",
 };
 const expectedExports = assembledDirectory
@@ -95,7 +96,7 @@ const hasExportedFiles = (manifest, packageDirectory) => {
     target.startsWith("./") && existsSync(join(packageDirectory, target.slice(2))));
 };
 
-const probeSource = (runtime, names) => `
+export const probeSource = (runtime, names) => `
 const expected = ${JSON.stringify(names)};
 for (const [name, exportName] of Object.entries(expected)) {
   const module = await import(name);
@@ -145,6 +146,25 @@ const checks = {
     const appended = await provider.append("tarball/smoke", [new Uint8Array([7])]);
     return appended.ok && appended.tail === 1n && await provider.tail("tarball/smoke") === 1n;
   },
+  "@acyclic-labs/swarm": async (m) => {
+    if (typeof m.SwarmHttpError !== "function") return false;
+    const client = new m.SwarmClient({
+      endpoint: "https://swarms.example.test", token: "tarball-smoke",
+      fetch: async (input, init) => {
+        if (String(input) !== "https://swarms.example.test/health" || init.method !== "GET"
+          || new Headers(init.headers).get("authorization") !== "Bearer tarball-smoke") {
+          throw new Error("Swarm tarball request differs from the public contract");
+        }
+        return new Response(JSON.stringify({ ok: true, version: "tarball-smoke" }), {
+          headers: { "content-type": "application/json" },
+        });
+      },
+    });
+    const health = await client.health();
+    return health.ok === true && health.version === "tarball-smoke"
+      && typeof client.watch === "function" && typeof client.upload === "function"
+      && new m.SwarmHttpError(503, { error: "unavailable" }, null).status === 503;
+  },
 };
 for (const [name, check] of Object.entries(checks)) {
   if (!(name in expected)) continue;
@@ -153,6 +173,7 @@ for (const [name, check] of Object.entries(checks)) {
 }
 console.log(${JSON.stringify(runtime)} + " import and representative API checks passed for " + Object.keys(expected).length + " packages");
 for (const [name, exported] of Object.entries({ workers: "createWorkersGrpcClient", objects: "createObjectsV1GrpcClients", stream: "GrpcStreamProvider" })) {
+  if (!("@acyclic-labs/" + name in expected)) continue;
   const module = await import("@acyclic-labs/" + name + "/grpc");
   if (typeof module[exported] !== "function") throw new Error(name + " gRPC export is absent");
 }
