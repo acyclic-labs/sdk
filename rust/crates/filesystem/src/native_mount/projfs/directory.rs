@@ -159,23 +159,7 @@ pub(super) fn owned_component(
     projection: Projection<'_>,
     component: &[u8],
 ) -> Result<(Vec<u8>, crate::demand::SourcePayloadOwnership), MountSourceError> {
-    let copied = crate::WorkCounters {
-        bytes_copied: component.len() as u64,
-        ..crate::WorkCounters::UNCHARGED
-    };
-    projection.work.admit(copied)?;
-    let mut allocation = projection.work.claim(
-        component.len() as u64,
-        u64::from(!component.is_empty()),
-        crate::WorkCounters::UNCHARGED,
-    )?;
-    let mut value = Vec::new();
-    value
-        .try_reserve_exact(component.len())
-        .map_err(MountSourceError::Allocation)?;
-    allocation.reconcile_capacity(value.capacity() as u64)?;
-    value.extend_from_slice(component);
-    projection.work.record_admitted(copied)?;
+    let (value, allocation) = projection.work.copy_bytes(component)?;
     Ok((
         value,
         crate::demand::SourcePayloadOwnership::from_native_allocation(allocation),

@@ -288,43 +288,17 @@ where
     /// Publishes and detaches, retaining the owner on any failure.
     pub async fn unmount(&self) -> Result<(), MountLifecycleError> {
         self.sync().await?;
-        self.detach()
+        self.retire(&crate::CancellationToken::new()).map(drop)
     }
 
     /// Publishes and detaches for foreign-runtime worker threads.
     pub fn unmount_blocking(&self) -> Result<(), MountLifecycleError> {
         self.sync_blocking()?;
-        self.detach()
-    }
-
-    /// Detaches callbacks, driver, source and fence through the supplied work.
-    pub fn abandon(&self, work: &NativeMaterializationWork) -> Result<(), MountLifecycleError> {
-        let mut owner = self
-            .session
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let result = (|| {
-            let Some(session) = owner.as_mut() else {
-                return Ok(());
-            };
-            work.admit(crate::WorkCounters::default())?;
-            session.stop_with_meter(work)?;
-            if !session.cleanup_state().cleanup_complete() {
-                return Err(NativeMountError::ControlPending.into());
-            }
-            owner.take();
-            Ok(())
-        })();
-        if result.is_err() {
-            if let Some(session) = owner.as_mut() {
-                session.record_measured_cleanup_failure();
-            }
-        }
-        result
+        self.retire(&crate::CancellationToken::new()).map(drop)
     }
 
     /// Retires physical work on birth-time credit and preserves uncaptured data.
-    pub fn retire_with_work(
+    pub fn retire(
         &self,
         wait: &crate::CancellationToken,
     ) -> Result<NativeMountDrainProof, MountLifecycleError> {
@@ -362,14 +336,4 @@ where
         result
     }
 
-    fn detach(&self) -> Result<(), MountLifecycleError> {
-        #[cfg(target_os = "macos")]
-        acyclic_native_runtime::initialize_native_io_services().map_err(NativeMountError::from)?;
-        let work = NativeMaterializationWork::new(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .map_err(|(cause, _)| MountLifecycleError::Materialization(cause))?;
-        self.abandon(&work)
-    }
 }

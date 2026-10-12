@@ -776,7 +776,7 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
     let cancelled_wait = crate::CancellationToken::new();
     cancelled_wait.cancel();
     assert!(matches!(
-        working_set.retire_with_work(&cancelled_wait),
+        working_set.retire(&cancelled_wait),
         Err(MountLifecycleError::Source(MountSourceError::Cancelled))
     ));
     assert!(!working_set.source.capture_retired());
@@ -787,13 +787,13 @@ async fn prepared_subtree_captures_native_edit_and_rejects_stale_head()
     // Revocation is not a new allowance: cleanup spends the source's
     // already accepted birth credit, independently of the wait token.
     working_set.source.cancellation().cancel();
-    let drained = working_set.retire_with_work(&crate::CancellationToken::new())?;
+    let drained = working_set.retire(&crate::CancellationToken::new())?;
     assert!(working_set.source.capture_retired());
     assert!(working_set.native_source_io_lease().is_err());
-    let repeated = working_set.retire_with_work(&cancelled_wait)?;
+    let repeated = working_set.retire(&cancelled_wait)?;
     drop(repeated);
     drop(drained);
-    let ready_drained = ready.retire_with_work(&crate::CancellationToken::new())?;
+    let ready_drained = ready.retire(&crate::CancellationToken::new())?;
     assert!(ready.source.capture_retired());
     drop(ready_drained);
     Ok(())

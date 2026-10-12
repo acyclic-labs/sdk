@@ -328,25 +328,14 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
         b"source"
     );
 
-    let no_detach = WorkBudget {
-        backend_write_operations: 0,
-        ..WorkBudget::UNBOUNDED
-    };
-    match new_work(no_detach) {
-        Ok(work) => {
-            assert!(mount.abandon(&work).is_err());
-            work.receipt().verify(no_detach)?;
-        }
-        Err(_) => {}
-    }
     assert!(mount.native_root_identity().is_some());
-    assert!(mount.retire_with_work(&cancelled).is_err());
+    assert!(mount.retire(&cancelled).is_err());
     assert!(mount.native_root_identity().is_some());
     mount_work.cancellation().cancel();
-    let drained = mount.retire_with_work(&CancellationToken::new())?;
+    let drained = mount.retire(&CancellationToken::new())?;
     assert!(mount.source.physically_retired()?);
     assert!(mount.native_source_io_lease().is_err());
-    let repeated = mount.retire_with_work(&cancelled)?;
+    let repeated = mount.retire(&cancelled)?;
     drop(repeated);
     drop(drained);
     Ok(())
