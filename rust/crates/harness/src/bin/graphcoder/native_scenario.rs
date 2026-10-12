@@ -1,5 +1,6 @@
 //! Credential-free, explicitly trusted local qualification input producer.
 #![allow(missing_docs, reason = "private installed-binary scenario boundary")]
+use acyclic_harness::runtime::TaskSpawner as _;
 
 use super::native::{AuthorityBinding, Config, ForkSourceConfig};
 use acyclic_harness::runtime::TaskStateProvider;
@@ -23,7 +24,7 @@ use acyclic_harness::{
     model::ModelContent,
     resource_preparation::ResourcePreparationRequest,
     resources::ProviderRef,
-    runtime::{DurableTaskHost as _, RuntimeScope, RuntimeTask, TaskAdmissionRecord, TaskDefinition,
+    runtime::{RuntimeScope, RuntimeTask, TaskAdmissionRecord, TaskDefinition,
         TaskRegistry, TaskRunLimits},
     scheduler::{LeaseFence, SessionLimits},
     store::{HistoryReadLimits, StreamAggregate},

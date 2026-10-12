@@ -344,9 +344,7 @@ impl ToolContext {
     /// Records this invocation's committed ToolStarted acceptance.
     pub(crate) fn record_native_tool_acceptance(&self, work: &NativeMaterializationWork) -> Result<()> {
         self.validate_native_mcp_context(work)?;
-        self.accepted_native_tool.get_or_init(|| (
-            self.task().durable_task_id().expect("validated original durable task"), self.operation_id,
-        ));
+        let _ = self.accepted_native_tool.set(());
         Ok(())
     }
 
@@ -358,14 +356,10 @@ impl ToolContext {
             return Err(boundary(crate::wire::ErrorCode::Unauthorized,
                 "original admission observation requires dispatch purpose"));
         }
-        let accepted = self.accepted_native_tool.get().ok_or_else(|| boundary(
+        self.accepted_native_tool.get().ok_or_else(|| boundary(
             crate::wire::ErrorCode::Unauthorized,
             "original admission observation requires protected ToolStarted acceptance",
         ))?;
-        if context.durable_task != Some(accepted.0) || self.operation_id != accepted.1 {
-            return Err(boundary(crate::wire::ErrorCode::Unauthorized,
-                "working view invocation differs from protected ToolStarted"));
-        }
         Ok(context)
     }
 

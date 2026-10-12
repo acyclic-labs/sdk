@@ -26,7 +26,9 @@ struct VolumeCallback<P: StreamProvider> {
     custody: NativeAllocation,
 }
 
-pub(crate) trait NativeVolumePublicationGuard: Send + Sync {
+/// Revalidates the original native volume before publication.
+pub trait NativeVolumePublicationGuard: Send + Sync {
+    /// Checks the original owner and volume on its native work.
     fn check<'a>(
         &'a self, work: &'a NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, ()>>;
@@ -67,7 +69,7 @@ impl NativeTaskContext {
 
 impl<P: StreamProvider + 'static> NativeVolumeCallbackGuard<P> {
     /// Selects one exact canonical preparation volume before any physical IO.
-    pub(crate) fn for_volume(
+    pub fn for_volume(
         &self, owner: &TaskJournalOwner<P>, volume: &VolumeRef, writable: bool,
         work: &NativeMaterializationWork,
     ) -> Result<(Arc<dyn NativeMountCallbackGuard>, Arc<dyn NativeVolumePublicationGuard>)> {

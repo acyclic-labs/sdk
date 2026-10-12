@@ -1,4 +1,5 @@
 //! Browser bindings over the ordinary task runtime and its real providers.
+use crate::runtime::TaskSpawner as _;
 
 use super::{
     WasmLimitsInput, WasmReducer, WasmTaskRunLimitsInput, from_js, js_error, key_bytes,
@@ -17,7 +18,7 @@ use crate::{
     },
     model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
     resources::ProviderRef,
-    runtime::{DurableTaskHost, RuntimeScope, TaskDefinition, TaskRegistry},
+    runtime::{RuntimeScope, TaskDefinition, TaskRegistry},
     scheduler::SessionLimits,
     tool::{
         Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry,

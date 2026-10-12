@@ -491,7 +491,7 @@ impl PiControlHost<'_> {
             .ok_or_else(|| denied("mounted destination lost its original issued context"))?;
         let guard = live.context.volume_callback_guard_with_native_work(
             &live.owner, &live.original_work).await?;
-        Some(guard.for_volume(&live.owner, volume, true, &publication_work)?)
+        Some(guard.for_volume(&live.owner, volume, true, &publication_work)?.0)
     } else { None };
     let publication = if let Some(view) = self.native.live_view(destination) {
         view.project_publication(volume).ok_or_else(|| denied("destination lacks its ORIGINAL project publication permit"))?

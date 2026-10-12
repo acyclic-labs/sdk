@@ -1051,7 +1051,7 @@ mod tests {
                     .scope()
                     .extension_schema_registry()
                     .ok_or_else(|| Error::Storage("builder lost original registry".into()))?;
-                Ok(original == expected && context.scope().grants().contains("model:generate"))
+                Ok(original == &expected && context.scope().grants().contains("model:generate"))
             }
         })?;
         let captured = HarnessBuilder::new()

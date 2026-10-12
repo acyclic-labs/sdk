@@ -1,4 +1,5 @@
 //! Pi's pinned native command over the existing task/effect and namespace owners.
+use acyclic_harness::runtime::TaskSpawner as _;
 
 use super::{PiScratchAllocation, PiTaskBinding};
 use acyclic_fs::{CancellationToken, LazyMount, NativeMaterializationWork, PublicationPermit, WorkBudget, WorkCounters};
@@ -20,7 +21,6 @@ use acyclic_harness::{
 };
 use acyclic_harness::JsonValueSchema;
 #[cfg(test)]
-use acyclic_harness::runtime::DurableTaskHost;
 #[cfg(test)]
 use acyclic_harness::IdempotencyKey;
 use acyclic_harness::{core::Capabilities, interaction::{Interaction, InteractionResponse}, executor::ExecutionJournal};
@@ -1020,7 +1020,7 @@ impl PiNativeRootSeed {
                 .map_err(native_error)?;
             let options = if writable { acyclic_fs::MountOptions::read_write() } else { acyclic_fs::MountOptions::read_only() }
                 .publication(acyclic_fs::MountPublication::Manual);
-            let source_guard = callback_guard.for_volume(owner, volume, writable, original_volume_work)?;
+            let source_guard = callback_guard.for_volume(owner, volume, writable, original_volume_work)?.0;
             let mut allocation = original_volume_work.claim(std::mem::size_of::<LazyMount<A, O, D, S>>() as u64)
                 .map_err(native_error)?;
             let mut slot = Arc::<LazyMount<A, O, D, S>>::new_uninit();

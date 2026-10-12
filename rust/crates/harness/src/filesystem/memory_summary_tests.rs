@@ -1,4 +1,5 @@
 //! Real admitted compaction captured into a child-owned fork environment.
+use crate::runtime::TaskSpawner as _;
 use super::*;
 use crate::runtime::TaskStateProvider;
 use crate::filesystem::{PreparationIo, workspace_ref};
@@ -16,7 +17,7 @@ use std::sync::Mutex;
 use acyclic_stream::StreamProvider as _;
 use crate::distributed::{DistributedCoordinator, SchedulerPayloadStore as _};
 use crate::durable_host::CoordinatorTaskHost;
-use crate::runtime::{DurableTaskHost as _, TaskAdmissionRecord, TaskDefinition, TaskRegistry};
+use crate::runtime::{TaskAdmissionRecord, TaskDefinition, TaskRegistry};
 use crate::workflow::{MachineIdentity, MachineRegistry, MachineStatus, MachineTransition, ResumableMachine};
 
 #[derive(Default)]

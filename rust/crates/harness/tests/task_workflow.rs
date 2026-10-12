@@ -4,6 +4,7 @@
     clippy::too_many_lines,
     reason = "durable recovery scenarios retain setup, fault injection and reopen assertions together"
 )]
+use acyclic_harness::runtime::TaskSpawner as _;
 
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, Fs, LocalOptions};
 use acyclic_harness::runtime::TaskStateProvider;
@@ -33,7 +34,7 @@ use acyclic_harness::model::{
 use acyclic_harness::registry::ComponentIdentity;
 use acyclic_harness::resources::ProviderRef;
 use acyclic_harness::runtime::{
-    DurableTaskHost, RuntimeScope, TaskContext, TaskDefinition, TaskRegistry, TaskRunLimits,
+    RuntimeScope, TaskContext, TaskDefinition, TaskRegistry, TaskRunLimits,
     ToolContext, ToolPolicy, ToolPolicyDecision,
 };
 use acyclic_harness::scheduler::{LeaseFence, ResourceSnapshot, SchedulerEvent, SessionLimits};

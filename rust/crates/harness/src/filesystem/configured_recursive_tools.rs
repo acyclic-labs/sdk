@@ -1,4 +1,5 @@
 //! Explicit authenticated provider bindings for the shared portable default tools.
+use crate::runtime::TaskSpawner as _;
 use crate::{
     Capabilities, Error, OperationId, Result, TaskId,
     conversation::{ContentGrant, ConversationMessage, Limits, VolumeOperation, VolumeOwner, VolumeRef},
@@ -13,7 +14,7 @@ use crate::{
     fork::{CompositeForkVerifier, ForkRequest, StreamHistoryForkVerifier},
     resource_preparation::TaskResourcePreparation,
     resources::ProviderRef,
-    runtime::{DurableTaskHost, TaskAdmissionRecord, TaskContext, ToolContext},
+    runtime::{TaskAdmissionRecord, TaskContext, ToolContext},
     store::{HistoryCursor, HistoryReadLimits, HistoryReader, StreamAggregate},
     source_authorization::{ProjectSourceReadHandle, ProjectSourceSnapshot, RootProjectSourceProvider},
     tool::ToolInvocation,

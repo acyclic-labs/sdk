@@ -10,6 +10,7 @@ wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
 
 #[path = "../examples/explicit-image-conversion.rs"]
 mod explicit_conversion;
+use acyclic_harness::runtime::TaskSpawner as _;
 
 use acyclic_fs::Fs;
 use acyclic_harness::runtime::TaskStateProvider;
@@ -41,7 +42,7 @@ use acyclic_harness::{
     },
     resources::ProviderRef,
     runtime::{
-        AgentHarness, ContentBindings, DurableTaskHost, RuntimeScope, TaskDefinition, TaskRegistry,
+        AgentHarness, ContentBindings, RuntimeScope, TaskDefinition, TaskRegistry,
         ToolContext,
     },
     scheduler::{LeaseFence, ResourceSnapshot, SessionLimits},
