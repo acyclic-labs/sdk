@@ -6210,9 +6210,8 @@ pub(crate) mod tests {
                                         published = true;
                                         assert_eq!(
                                             host.send_mail(task, &fence, task, message, payload.clone(), None)
-                                            .await?
-                                            .operation_id,
-                                            message
+                                            .await?,
+                                            payload
                                         );
                                         assert!(
                                             host.send_mail(task, &fence, task, message, fixture
@@ -6459,8 +6458,8 @@ pub(crate) mod tests {
         let request = payloads.stage(operation, "request", b"{}", None)?.await?;
         let schema = FileRef::new(
             request.volume().clone(),
-            request.path(),
-            request.version(),
+            request.path().into(),
+            request.version().into(),
             FileDescriptor::from_bytes(b"{}", "application/schema+json", &mut None)?,
             "schema.json".into(),
          &mut None)?;
@@ -7903,8 +7902,8 @@ pub(crate) mod tests {
             use crate::workflow::WorkflowJournal;
             assert!(
                 matches!(
-                    pending.commit(&stream, Some(operation_id), None, None, None).await?,
-                    (acyclic_stream::CommitOutcome::Conflict(_), 0)
+                    stream.commit(pending.0).await?,
+                    acyclic_stream::CommitOutcome::Conflict(_)
                 ),
                 "cancellation after preflight must atomically prevent publication"
             );

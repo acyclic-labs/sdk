@@ -312,10 +312,10 @@ mod tests {
          &mut None)?;
         FileRef::new(
             volume,
-            name,
+            name.into(),
             "v1".into(),
             FileDescriptor::from_bytes(b"body", "text/plain", &mut None)?,
-            name,
+            name.into(),
          &mut None)
     }
 
@@ -328,10 +328,10 @@ mod tests {
          &mut None)?;
         FileRef::new(
             volume,
-            name,
+            name.into(),
             "v1".into(),
             FileDescriptor::from_bytes(br"[]", "application/vnd.acyclic.harness.attachments+json", &mut None)?,
-            name,
+            name.into(),
          &mut None)
     }
 

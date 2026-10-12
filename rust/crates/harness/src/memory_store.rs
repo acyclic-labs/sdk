@@ -618,8 +618,8 @@ mod tests {
         let first = store.stage("notes/current.txt", b"one", "text/plain", "one.txt", true)?;
         let changed_display = FileRef::new(
             store.volume.clone(),
-            first.path(),
-            first.version(),
+            first.path().into(),
+            first.version().into(),
             first.descriptor().clone(),
             "renamed.txt".into(),
          &mut None)?;

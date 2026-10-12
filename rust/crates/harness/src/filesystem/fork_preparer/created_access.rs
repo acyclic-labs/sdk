@@ -1418,18 +1418,11 @@ mod tests {
         let mut metadata = crate::store::history::native_work_io(work)
             .map_err(Error::from)?;
         metadata.retain_owned(std::mem::size_of::<(Authority, AuthorityIssuer, crate::core::Scope)>() as u64)?;
-        let mut custody;
         let audience = metadata.clone_authority(&configured_audience)?;
-        custody = metadata.into_custody();
-        let (issuer, mut issuer_custody) = configured_issuer.clone_with_native_work(work)?;
-        custody.absorb(&mut issuer_custody).map_err(|cause| Error::NativeWork {
-            cause, custody: Some(issuer_custody),
-        })?;
-        let (scope, mut scope_custody) = issuer.root_for_agent_with_native_work(agent,
-            "genuine-original-root-bootstrap", &Capabilities::new(["conversation:bind"]), work)?;
-        custody.absorb(&mut scope_custody).map_err(|cause| Error::NativeWork {
-            cause, custody: Some(scope_custody),
-        })?;
+        let issuer = configured_issuer.copy(&mut Some(&mut metadata))?;
+        let scope = issuer.issue("genuine-original-root-bootstrap", &Capabilities::new(["conversation:bind"]),
+            Some(agent), None, &mut Some(&mut metadata))?;
+        let custody = metadata.into_custody();
         Ok(((audience, issuer, scope), custody))
     }
 
@@ -1493,8 +1486,9 @@ mod tests {
         assert!(scope.created_content(Some(&project.request.volume)).unwrap().writer.is_none());
         assert!(scope.created_content(Some(&scratch.request.volume)).unwrap().writer.is_some());
         let reader = &scope.created_content(Some(&project.request.volume)).unwrap().reader;
-        let (file, bytes, metadata) = reader.read_private_path_with_native_work(
-            &project.request.volume, "", "root.txt", Some(&project.request.generation), 1024, &work,
+        let content_io = crate::filesystem::PreparationIo::from_native_work(&work)?;
+        let (file, bytes, metadata) = reader.read_private_path(
+            &project.request.volume, "", "root.txt", Some(&project.request.generation), 1024, Some(&content_io),
         )?.await?;
         assert_eq!(bytes.as_ref(), b"original project import");
         assert_eq!(file.volume(), &project.request.volume);
@@ -1502,12 +1496,12 @@ mod tests {
         drop(metadata);
         let private = scope.created_content(Some(&scratch.request.volume)).unwrap();
         let staged_custody;
-        let (staged, custody) = private.writer.as_ref().unwrap().stage_once_with_native_work(
+        let (staged, custody) = private.writer.as_ref().unwrap().stage_once(
             OperationId::from_bytes([185; 16]), "root-output.txt", b"actual original root output",
-            "text/plain", "root-output.txt", &work,
+            "text/plain", "root-output.txt", Some(&content_io),
         )?.await?;
         staged_custody = custody;
-        let output = private.reader.read_with_native_work(&staged, 1024, &work)?.await?;
+        let output = private.reader.read(&staged, 1024, Some(&content_io))?.await?;
         assert_eq!(output.as_ref(), b"actual original root output");
         assert_eq!(staged.volume(), &scratch.request.volume);
         assert_ne!(staged.volume(), &project.request.volume);

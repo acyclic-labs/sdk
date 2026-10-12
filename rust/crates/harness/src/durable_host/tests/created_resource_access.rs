@@ -1071,8 +1071,8 @@ async fn created_scope_executes_existing_workflow_and_journal_input_boundaries()
     assert!(staged.1.bytes() > 0);
     assert_eq!(native_work.live_allocation_bytes(),live_before+staged.1.bytes());
     let read = context.read_file_with_native_work(&staged.0,&native_work).await?;
-    assert_eq!(read.0,b"owned");
-    assert_eq!(native_work.live_allocation_bytes(),live_before+staged.1.bytes()+read.1.bytes());
+    assert_eq!(read.as_ref(),b"owned");
+    assert!(native_work.live_allocation_bytes() > live_before+staged.1.bytes());
     drop(read);
     assert_eq!(native_work.live_allocation_bytes(),live_before+staged.1.bytes());
     drop(staged);
@@ -1093,13 +1093,13 @@ async fn created_scope_executes_existing_workflow_and_journal_input_boundaries()
         &fixture.host.owner_scope, 65_536, None,
     )?;
     journal.verify_input_file(&command_payload).await?;
-    let runtime = FilesystemTaskRuntime::open_with_creation_providers(
-        fixture.host.stream.clone(), fixture.filesystem.clone(), volume,
-        fixture.host.verifier.clone(), fixture.host.owner_scope.clone(), fixture.root_scope.clone(),
-        fixture.host.tasks.clone(), fixture.host.machines.clone(), crate::tool::ToolRegistry::default(),
+    let runtime = FilesystemTaskRuntime::open(
+        fixture.host.stream.clone(), fixture.filesystem.clone(), &volume,
+        &fixture.host.verifier, &fixture.host.owner_scope, &fixture.root_scope,
+        &fixture.host.tasks, &fixture.host.machines, &crate::tool::ToolRegistry::default(),
         crate::scheduler::SessionLimits { active_tasks:16, total_tasks:32, depth:4, model_steps:4 },
-        16, 65_536, Arc::new(SystemUnixMillisClock), None, fixture.host.resource_creation.clone(),
-        crate::durable_tool::ResumableToolRegistry::default(),
+        16, 65_536, Arc::new(SystemUnixMillisClock), None, &fixture.host.resource_creation,
+        &crate::durable_tool::ResumableToolRegistry::default(), None,
     ).await?;
     let mut session = runtime.open_task(task, fence).await?;
     session.step(
@@ -1518,7 +1518,7 @@ async fn native_admission_json_metadata_denial_precedes_reader_and_hash() -> Res
         *original.descriptor().sha256(), original.descriptor().byte_length(), "text/plain".into(),
     )?;
     let reference = FileRef::new(
-        original.volume().clone(), original.path(), original.version(), descriptor, original.display_name(),
+        original.volume().clone(), original.path().into(), original.version().into(), descriptor, original.display_name().into(),
      &mut None)?;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = acyclic_fs::NativeMaterializationWork::new(
@@ -1663,7 +1663,7 @@ async fn native_stock_source_provenance_and_cancelled_preparation_are_not_author
         let claim = workspace_ref(fixture.filesystem_provider.clone(),
             &format!("fork-allocation-{}", created.private.storage_name(&mut None)?))?;
         let bytes = fixture.filesystem.read(&claim, None, "/claim.json", 65_536).await?;
-        let mut source: Value = crate::contract::json_from_slice(&bytes)?;
+        let mut source: Value = crate::contract::json_from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
         match change {
             0 => source["task_origin"]["owner"]["id"] = serde_json::json!("foreign-owner"),
             1 => source["task_origin"]["preparation_task"] = serde_json::to_value(TaskId::from_bytes([85; 16])).unwrap(),

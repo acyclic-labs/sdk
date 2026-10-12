@@ -1211,11 +1211,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                                 return Err(interaction_host::interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid, "inherited file is not pinned to the selected private generation"));
                             }
                             let selected = crate::executor::with_history_io(Some(&io), |work| FileRef::new(
-                                file.volume().copy(work)?, fork_preparer_io::clone_text(file.path(), Some(&io))?,
+                                file.volume().copy(work)?, fork_preparer_io::clone_text(file.path().into(), Some(&io))?,
                                 fork_preparer_io::clone_text(&version, Some(&io))?,
                                 FileDescriptor::new(*file.descriptor().sha256(), file.descriptor().byte_length(),
                                     fork_preparer_io::clone_text(file.descriptor().media_type(), Some(&io))?)?,
-                                fork_preparer_io::clone_text(file.display_name(), Some(&io))?, work))?;
+                                fork_preparer_io::clone_text(file.display_name().into(), Some(&io))?, work))?;
                             let original = self.host.read_pinned_io(file, self.maximum_inherited_bytes, Some(&io)).await?;
                             let final_bytes = self.host.read_pinned_io(&selected, self.maximum_inherited_bytes, Some(&io)).await?;
                             if original != final_bytes {
@@ -4377,7 +4377,7 @@ mod tests {
         assert_eq!(
             host.read(&reference, Some(&updated), "/hello.txt", 16)
                 .await?,
-            Bytes::from_static(b"hello").into()
+            acyclic_stream::OwnedBytes::from_static(b"hello")
         );
         assert!(matches!(
             host.apply(
@@ -4486,14 +4486,14 @@ mod tests {
                 .is_err()
             );
         }
-        assert_ne!(first.version(), second.version());
+        assert_ne!(first.version().into(), second.version());
         assert_eq!(
             host.read_content(&first, &read, 16).await?,
-            Bytes::from_static(b"one").into()
+            acyclic_stream::OwnedBytes::from_static(b"one")
         );
         assert_eq!(
             host.read_content(&second, &read, 16).await?,
-            Bytes::from_static(b"two").into()
+            acyclic_stream::OwnedBytes::from_static(b"two")
         );
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -4513,8 +4513,8 @@ mod tests {
             let bytes = host.read_pinned_io(&second, 16, Some(&io)).await?;
             assert_eq!(bytes.as_ref(), b"two");
             drop(bytes);
-            let tampered = FileRef::new(first.volume().clone(), first.path(), first.version(),
-                second.descriptor().clone(), first.display_name(), &mut None)?;
+            let tampered = FileRef::new(first.volume().clone(), first.path().into(), first.version().into(),
+                second.descriptor().clone(), first.display_name().into(), &mut None)?;
             assert!(host.read_pinned_io(&tampered, 16, Some(&io)).await.is_err());
             let denied_scope = issuer.issue("no-files", &Capabilities::default(), Some(owner), None, &mut None).expect("scope proof");
             let denied = FilesystemForkVerifier::new_with_native_work(
@@ -4548,8 +4548,8 @@ mod tests {
                 "messages",
                 Some(&listed_generation),
                 None,
-                10, None,
-            )?
+                10,
+            )
             .await?;
         assert_eq!(portable_page.generation, listed_generation);
         assert_eq!(
@@ -4597,8 +4597,8 @@ mod tests {
                 "messages",
                 Some(&listed_generation),
                 None,
-                10, None,
-            )?
+                10,
+            )
             .await?;
         assert_eq!(old_generation, listed_generation);
         assert_eq!(old_page.entries, page.entries);
@@ -4625,7 +4625,7 @@ mod tests {
         let delegated =
             ContentGrant::verify_directory_read(&verifier, &delegated_scope, &volume, "messages", &mut None)?;
         let (discovered, bytes) = host
-            .read_private_path(&volume, &delegated, "messages/first.txt", None, 16, None)?
+            .read_private_path(&volume, &delegated, "messages/first.txt", None, 16, None)
             .await?;
         assert_eq!(bytes.as_ref(), b"two");
         assert_ne!(discovered.version(), second.version());
@@ -4671,10 +4671,10 @@ mod tests {
         assert!(host.read_content(&empty, &read, 16).await?.is_empty());
         let wrong_digest = FileRef::new(
             volume.clone(),
-            first.path(),
-            first.version(),
+            first.path().into(),
+            first.version().into(),
             FileDescriptor::new([0; 32], 3, "text/plain".into())?,
-            first.display_name(),
+            first.display_name().into(),
          &mut None)?;
         assert!(host.read_content(&wrong_digest, &read, 16).await.is_err());
         assert!(
@@ -4811,7 +4811,7 @@ mod tests {
         assert!(aggregate.execute(command(3, missing)?, #[cfg(feature = "filesystem")] None, &mut None).await.is_err());
         assert_eq!(aggregate.reducer().revision(), 1);
         let mut missing_attachment = message.clone();
-        missing_attachment.attachments = vec![Attachment {
+        missing_attachment.attachments = crate::conversation::ReferencedAttachments::Inline { items: vec![Attachment {
             file: FileRef::new(
                 file.volume().clone(),
                 "attachments/missing.bin".into(),
@@ -4820,8 +4820,7 @@ mod tests {
                 "missing.bin".into(),
              &mut None)?,
             label: None,
-        }]
-        .into();
+        }] };
         assert!(
             aggregate
                 .execute(command(5, missing_attachment)?, #[cfg(feature = "filesystem")] None, &mut None)
