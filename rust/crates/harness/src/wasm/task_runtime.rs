@@ -1136,10 +1136,10 @@ impl WasmTaskRuntime {
         let commands = self.runtime.commands();
         match &self.model {
             Some((model, provider, compaction)) => commands.with_model(
-                model.clone(),
+                model,
                 provider.clone(),
-                ContextPipeline::new([]),
-                compaction.clone(), None,
+                &ContextPipeline::new([]),
+                compaction, None,
             ),
             None => Ok(commands),
         }

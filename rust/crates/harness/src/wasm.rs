@@ -1302,7 +1302,7 @@ pub fn validate_workflow_admission(
     #[wasm_bindgen(unchecked_param_type = "WasmWorkflowAdmissionWire")] value: JsValue,
 ) -> Result<Ts<WasmWorkflowAdmissionWire>, JsValue> {
     let value: crate::workflow::WorkflowAdmission = from_js(value)?;
-    value.validate(&mut None).map_err(js_error)?;
+    value.validate(None).map_err(js_error)?;
     WasmWorkflowAdmissionWire {
         operation_id: value.operation_id.to_string(),
         request_digest: value.request_digest.to_vec(),
@@ -1332,7 +1332,7 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         }
         "approval_binding" => {
             let value: ApprovalBinding = from_js(value)?;
-            value.validate(&mut None).map_err(js_error)?;
+            value.validate().map_err(js_error)?;
             to_js_admitted(&value)
         }
         "project_merge_receipt" => {
@@ -1381,7 +1381,7 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         }
         "task_outcome" => {
             let value: TaskOutcomeRecord = from_js(value)?;
-            value.validate(&mut None).map_err(js_error)?;
+            value.validate().map_err(js_error)?;
             to_js_admitted(&value)
         }
         "execution_placement" => {
@@ -1402,7 +1402,7 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         }
         "workflow_admission" => {
             let value: crate::workflow::WorkflowAdmission = from_js(value)?;
-            value.validate(&mut None).map_err(js_error)?;
+            value.validate(None).map_err(js_error)?;
             to_js_admitted(&value)
         }
         "durable_batch_request" => {
@@ -1417,7 +1417,7 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         }
         "private_directory_page" => {
             let value: crate::conversation::PrivateDirectoryPage = from_js(value)?;
-            value.validate(&mut None).map_err(js_error)?;
+            value.validate().map_err(js_error)?;
             to_js_admitted(&value)
         }
         "resource_revision" => {
@@ -1447,22 +1447,22 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         }
         "extension_record" => {
             let value: ExtensionRecord = from_js(value)?;
-            value.validate(&mut None).map_err(js_error)?;
+            value.validate().map_err(js_error)?;
             to_js_admitted(&value)
         }
         "extension_state_migration" => {
             let value: ExtensionStateMigration = from_js(value)?;
-            value.validate(&mut None).map_err(js_error)?;
+            value.validate().map_err(js_error)?;
             to_js_admitted(&value)
         }
         "extension_dependency" => {
             let value: ExtensionDependency = from_js(value)?;
-            value.validate(&mut None).map_err(js_error)?;
+            value.validate().map_err(js_error)?;
             to_js_admitted(&value)
         }
         "extension_configuration" => {
             let value: ExtensionConfiguration = from_js(value)?;
-            value.validate(&mut None).map_err(js_error)?;
+            value.validate().map_err(js_error)?;
             to_js_admitted(&value)
         }
         "extension_admission" => {
@@ -1484,7 +1484,7 @@ pub fn validate_contract(kind: &str, value: JsValue, context: JsValue) -> Result
         }
         "resolution_receipt" => {
             let value: ResolutionReceipt = from_js(value)?;
-            value.validate(&mut None).map_err(js_error)?;
+            value.validate().map_err(js_error)?;
             to_js_admitted(&value)
         }
         _ => Err(JsValue::from_str("unknown Harness v2 contract kind")),
