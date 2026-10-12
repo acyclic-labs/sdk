@@ -2043,7 +2043,7 @@ where P: StreamProvider {
             }
             #[cfg(target_arch = "wasm32")]
             source.require_selection(context.operation_id(), source_task, &binding.source_project, &binding.source_generation, authorization.native_snapshot.as_ref(), None)?;
-            source.grant().require_with_io(&binding.source_project, VolumeOperation::Read, io)?;
+            source.grant().require(&binding.source_project, VolumeOperation::Read, io)?;
         }
         None => {
             if !recursive_volume_granted(effective.grants(), &binding.source_project, VolumeOperation::Read, io)? {
