@@ -4163,9 +4163,9 @@ where
         &self, state: &LazyWorkspaceState, original: &crate::materializer::NativeMaterializationWork,
     ) -> Result<LazySnapshotRef, LazyWorkspaceError> {
         let cancellation = original.cancellation();
-        let head = self.workspace.head_with_native_work(
+        let head = self.workspace.head(
             original, cancellation,
-        ).await.map_err(native_workspace_error_pair)?;
+        ).await.map_err(|error| native_workspace_error_pair((error, None)))?;
         original.native_read_meter().with_original_leaf(|work| work.check())?;
         if self.source.reference() != state.source { return Err(LazyWorkspaceError::StaleSource); }
         original.native_read_meter().with_original_leaf(|work| work.charge(WorkCounters {
@@ -4799,9 +4799,9 @@ where
             let mut fork_guard = owned_guard_builder(
                 source_used.load(std::sync::atomic::Ordering::Acquire),
             );
-            let generation = self.workspace.generation_with_native_work(
+            let generation = self.workspace.generation(
                 frozen.authored_generation, original, cancellation,
-            ).await.map_err(native_workspace_error_pair)?;
+            ).await.map_err(|error| native_workspace_error_pair((error, None)))?;
             let workspace = self.workspace.fork_with_permit_guarded_with_native_work(
                 destination, ForkOptions::from_generation(generation, baseline_key),
                 permit, original, cancellation, &mut fork_guard,
@@ -4810,8 +4810,8 @@ where
                 baseline_key.operation_id(), original, cancellation,
             ).await.map_err(native_workspace_error_pair)?
                 .ok_or(LazyWorkspaceError::OriginalSnapshotUnavailable)?;
-            let current = workspace.head_with_native_work(original, cancellation)
-                .await.map_err(native_workspace_error_pair)?;
+            let current = workspace.head(original, cancellation)
+                .await.map_err(|error| native_workspace_error_pair((error, None)))?;
             if current.id() != baseline.id() { return Err(E::from(LazyWorkspaceError::Concurrent)); }
             drop(current);
             for (index, path) in paths.iter().enumerate() {
@@ -4972,9 +4972,9 @@ where
     ) -> Result<(ResolvedLazyLookup, NativeInspectState<A, O>), LazyWorkspaceError> {
         let frame = LazyTreapWork::native_with_work(original, cancellation)?;
         in_heap_lazy::<_, LazyWorkspaceError, _>(&frame, move || async move {
-                let head = self.workspace.head_with_native_work(
-                    &original, cancellation,
-                ).await.map_err(native_workspace_error_pair)?;
+                let head = self.workspace.head(
+                    original, cancellation,
+                ).await.map_err(|error| native_workspace_error_pair((error, None)))?;
                 let reader = self.workspace.readonly_pinned_reader_with_native_work(
                     head.id(), &original, cancellation,
                 ).await.map_err(native_workspace_error)?;
@@ -5064,9 +5064,9 @@ where
                     if node.kind == SourceNodeKind::Directory || node.link_count == Some(1) {
                         None
                     } else if let LazyInspectBackend::Native(context) = backend {
-                        let head = self.workspace.head_with_native_work(
+                        let head = self.workspace.head(
                             original, cancellation,
-                        ).await.map_err(native_workspace_error_pair)?;
+                        ).await.map_err(|error| native_workspace_error_pair((error, None)))?;
                         let reader = self.workspace.readonly_pinned_reader_with_native_work(
                             head.id(), original, cancellation,
                         ).await.map_err(native_workspace_error)?;
@@ -6234,8 +6234,8 @@ where
                     return Err((LazyWorkspaceError::NotRegularFile, None));
                 }
                 let reader = if matches!(lookup, LazyLookup::Shadow { .. }) {
-                    let head = self.workspace.head_with_native_work(original, cancellation)
-                        .await.map_err(|error| (native_workspace_error_pair(error), None))?;
+                    let head = self.workspace.head(original, cancellation)
+                        .await.map_err(|error| (error, None)).map_err(|error| (native_workspace_error_pair(error), None))?;
                     Some(self.workspace.readonly_pinned_reader_with_native_work(head.id(), original, cancellation)
                         .await.map_err(|error| (native_workspace_error(error), None))?)
                 } else { None };
@@ -6529,9 +6529,9 @@ where
                         .await.map_err(measured_workspace_error),
                 ),
                 |original| {
-                    self.workspace.begin_transaction_with_native_work(
+                    self.workspace.begin_transaction(
                         key, original, cancellation,
-                    ).await.map_err(native_workspace_error_pair)
+                    ).await.map_err(|error| native_workspace_error_pair((error, None)))
                 }
             }
         }).await
@@ -7125,7 +7125,7 @@ where
                 self.workspace.head(work.remaining()?, cancellation).await.map_err(measured_workspace_error),
             ),
             |original| {
-                self.workspace.head_with_native_work(original, cancellation).await.map_err(native_workspace_error_pair)
+                self.workspace.head(original, cancellation).await.map_err(|error| native_workspace_error_pair((error, None)))
             }
         }
     }
@@ -7452,7 +7452,7 @@ where
     async fn directory_head_reader(
         &self, original: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
     ) -> Result<crate::PinnedReader<A, O>, LazyWorkspaceError> {
-        let checkout = self.workspace.engine_checkout_with_native_work(
+        let checkout = self.workspace.checkout(
             crate::model::GenerationSelector::Head, crate::model::CheckoutMode::read_only_pinned(),
             original, cancellation,
         ).await.map_err(native_workspace_error)?;
@@ -8775,8 +8775,8 @@ where
             }
             #[cfg(not(target_arch = "wasm32"))]
             ExactifyCollectorWork::Native { original, .. } =>
-                workspace.head_with_native_work(original, cancellation)
-                    .await.map_err(native_workspace_error_pair),
+                workspace.head(original, cancellation)
+                    .await.map_err(|error| native_workspace_error_pair((error, None))),
         }
     }
 
@@ -8862,9 +8862,9 @@ where
                     }
                     let current = self.state(&LazyTreapWork::native_with_work(original, cancellation)?).await?;
                     self.check_exactify_live_source(Some(state.source), current.as_state().source)?;
-                    let head = self.workspace.head_with_native_work(
+                    let head = self.workspace.head(
                         original, cancellation,
-                    ).await.map_err(native_workspace_error_pair)?;
+                    ).await.map_err(|error| native_workspace_error_pair((error, None)))?;
                     let reader = self.workspace.readonly_pinned_reader_with_native_work(
                         head.id(), original, cancellation,
                     ).await.map_err(native_workspace_error)?;
@@ -8906,7 +8906,7 @@ where
     ) -> Result<crate::Transaction<A, O>, LazyWorkspaceError> {
         match &mut *accounting {
             ExactifyCollectorWork::Portable { .. } => {
-                let receipt = workspace.begin_pinned_transaction_measured(
+                let receipt = workspace.begin_pinned_transaction(
                     generation, key, accounting.remaining()?, cancellation,
                 ).await.map_err(|failure| accounting.nested_error(measured_workspace_error(failure)))?;
                 let mut transaction = accounting.accept(Ok(receipt))?;
@@ -8920,9 +8920,9 @@ where
             }
             #[cfg(not(target_arch = "wasm32"))]
             ExactifyCollectorWork::Native { original, .. } => {
-                let mut transaction = workspace.begin_pinned_transaction_with_native_work(
+                let mut transaction = workspace.begin_pinned_transaction(
                     generation, key, original, cancellation,
-                ).await.map_err(native_workspace_error_pair)?;
+                ).await.map_err(|error| native_workspace_error_pair((error, None)))?;
                 if let Some(parent) = parent {
                     transaction.create_dir_all(parent, *original, cancellation)
                         .await.map_err(native_workspace_error)?;
@@ -9522,18 +9522,18 @@ where
                             basis.authored_generation, work.remaining()?, cancellation,
                         ).await.map_err(|failure| failure.map_error(|error|
                             E::from(LazyWorkspaceError::WorkspaceCause(error)))))?,
-                        |original| self.workspace.generation_with_native_work(
+                        |original| self.workspace.generation(
                             basis.authored_generation, original, cancellation,
-                        ).await.map_err(native_workspace_error_pair)?
+                        ).await.map_err(|error| native_workspace_error_pair((error, None)))?
                     };
                     candidate = Some(lazy_dispatch!{work, accept_lazy_write_receipt(work,
-                        self.workspace.begin_pinned_transaction_measured(
+                        self.workspace.begin_pinned_transaction(
                             &generation, key, work.remaining()?, cancellation,
                         ).await.map_err(|failure| failure.map_error(|error|
                             E::from(LazyWorkspaceError::WorkspaceCause(error)))))?,
-                        |original| self.workspace.begin_pinned_transaction_with_native_work(
+                        |original| self.workspace.begin_pinned_transaction(
                             &generation, key, original, cancellation,
-                        ).await.map_err(native_workspace_error_pair)?
+                        ).await.map_err(|error| native_workspace_error_pair((error, None)))?
                     });
                     drop(generation);
                 }
@@ -10885,7 +10885,7 @@ where
                 ).await.map_err(measured_workspace_error),
             ),
             |original| {
-                self.workspace.engine_checkout_with_native_work(
+                self.workspace.checkout(
                     selector, mode, original, cancellation,
                 ).await.map_err(native_workspace_error)
             }
@@ -18488,10 +18488,10 @@ mod tests {
         let original = crate::NativeMaterializationWork::new(finite_fixture_budget(), &token).expect("original ledger");
         let bytes = root.read_at_snapshot_with_work(basis, "/input", 64, &original, &token)
             .await.expect("intrinsically funded native input");
-        let generation = root.workspace().generation_with_native_work(basis.authored_generation, &original, &token)
+        let generation = root.workspace().generation(basis.authored_generation, &original, &token)
             .await.expect("exact original generation, not a logical ID");
         let key = IdempotencyKey::new();
-        let mut transaction = root.workspace().begin_pinned_transaction_with_native_work(
+        let mut transaction = root.workspace().begin_pinned_transaction(
             &generation, key, &original, &token,
         ).await.expect("same existing canonical transaction");
         transaction.write_with_native_work("/published", bytes, &original, &token)
