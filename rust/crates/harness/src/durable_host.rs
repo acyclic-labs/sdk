@@ -6210,9 +6210,8 @@ pub(crate) mod tests {
                                         published = true;
                                         assert_eq!(
                                             host.send_mail(task, &fence, task, message, payload.clone(), None)
-                                            .await?
-                                            .operation_id,
-                                            message
+                                            .await?,
+                                            payload
                                         );
                                         assert!(
                                             host.send_mail(task, &fence, task, message, fixture
