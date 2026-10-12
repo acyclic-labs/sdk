@@ -1067,7 +1067,7 @@ where
         let mut replay = ExecutionReplay::new(operation);
         let mut latest = None;
         while let Some(page) = replay.next_page_with_io(journal.as_ref(), Some(&io)).await? {
-            self.host.verify_model_history_with_native_work(task, operation, &page, work).await?;
+            self.host.verify_model_history(task, operation, (&page).iter(), &mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
             for record in page {
                 if let ExecutionEvent::ModelStarted { step, purpose: ModelPurpose::Response, .. } = record.event {
                     if step >= input.max_steps {
