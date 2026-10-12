@@ -26,10 +26,7 @@ struct ObservedWrite<'a> {
 pub(super) fn require_finite(work: &NativeMaterializationWork) -> Result<()> {
     let remaining = work.remaining()?;
     if !remaining.has_finite_allowances() {
-        return Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Invalid,
-            reason: "native dispatch/reconciliation requires finite original work",
-        });
+        return Err(boundary(crate::wire::ErrorCode::Invalid, "native dispatch/reconciliation requires finite original work"));
     }
     Ok(())
 }
@@ -68,7 +65,7 @@ fn require_same_launch(
         || !examine(work, || retained.command == requested.command)?
         || !examine(work, || retained.approval == requested.approval)?
         || !examine(work, || retained.approval_digest == requested.approval_digest)? {
-        return Err(receipt_error("native launch identity was reused"));
+        return Err(boundary(crate::wire::ErrorCode::Storage, "native launch identity was reused"));
     }
     Ok(())
 }
@@ -85,7 +82,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
         let state = self.history.effect(&cursor, self.effect_id,
             self.authority.history_limits,
             Some(&mut io)).await.map(|state| state.map(|(state, _)| state))?
-            .ok_or(receipt_error("native command has no committed effect admission"))?;
+            .ok_or(boundary(crate::wire::ErrorCode::Storage, "native command has no committed effect admission"))?;
         if !examine(work, || state.status == EffectStatus::Dispatched)?
             || !examine(work, || state.attempts.last() == Some(&dispatch.attempt_id))?
             || !examine(work, || dispatch.effect_id == self.effect_id)?
@@ -100,14 +97,14 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             || !examine(work, || state.request == self.plan.request)?
             || !examine(work, || state.result_schema == self.plan.result_schema)?
         {
-            return Err(receipt_error("native dispatch differs from retained command"));
+            return Err(boundary(crate::wire::ErrorCode::Storage, "native dispatch differs from retained command"));
         }
         drop(state);
         drop(cursor);
         drop(io);
         let Invocation { view, request, approval_digest, .. } = self.invocation()?;
         if !examine(work, || view.manifest() == &request.view)? {
-            return Err(receipt_error("native dispatch view changed"));
+            return Err(boundary(crate::wire::ErrorCode::Storage, "native dispatch view changed"));
         }
         view.operation_cancellation().check()
             .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
@@ -147,7 +144,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
         if !append_receipt(&self.owner, &path, 0,
             &Receipt::<_, &ObservedWrite<'_>>::Launch(&launch), JournalWrite::Fresh, work).await? {
             let receipt = self.receipt(dispatch.attempt_id, work, None).await?
-                .ok_or(receipt_error("native launch receipt changed"))?;
+                .ok_or(boundary(crate::wire::ErrorCode::Storage, "native launch receipt changed"))?;
             return receipt.into_effect();
         }
         drop(launch);
@@ -188,7 +185,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             if !append_receipt(&owner, &path, 1,
                 &Receipt::<&LaunchReceipt<'_>, _>::Observed(&observed), JournalWrite::Settlement, work).await? {
                 let (launch, observation, _custody) = receipt_observation::read(&owner, &path, work).await?
-                    .ok_or(receipt_error("native observed receipt is missing"))?;
+                    .ok_or(boundary(crate::wire::ErrorCode::Storage, "native observed receipt is missing"))?;
                 let (task, fence) = owner.task_binding();
                 let expected = LaunchReceipt {
                     dispatch: Cow::Borrowed(&dispatch), plan: Cow::Borrowed(plan.as_ref()),
@@ -199,7 +196,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
                 receipt_observation::authenticate_core_launch(history.as_ref(), &launch,
                     &authority, work).await?;
                 if !observed_matches(observation.as_ref(), &observed, work)? {
-                    return Err(receipt_error("native observed outcome was not retained"));
+                    return Err(boundary(crate::wire::ErrorCode::Storage, "native observed outcome was not retained"));
                 }
             }
             supervisor.snapshot(attempt)?;

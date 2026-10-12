@@ -93,7 +93,7 @@ impl PiSession {
         let mut retained_custody = Some(commit_custody);
         let coordinator = pi_fork::PiForkCoordinator::new(self.runtime.clone(), self.filesystem.clone(),
             self.stream.clone(), &self.resources, native.original_owner(), &work)?;
-        let plan = coordinator.load_original_plan(original, work.remaining().map_err(native_error)?, &cancellation)
+        let plan = coordinator.load_original_plan(original)
             .await?;
         if let Some(plan) = &plan {
             if plan.original != original || !same_spawn_commit(&plan.commit, &commit)
@@ -250,14 +250,14 @@ impl PiSession {
         let prepared = match prepared {
             Some(prepared) => Some(prepared),
             None if acknowledgement.is_some() => {
-                let plan = coordinator.load_original_plan(original, work.remaining().map_err(native_error)?, &cancellation)
+                let plan = coordinator.load_original_plan(original)
                     .await?.ok_or_else(|| acyclic_harness::Error::Invalid("Pi prepared acknowledgement lost its original fork plan".to_owned()))?;
                 let source = if plan.commit.source_task == owner.policy().root_task {
                     Arc::clone(&self.roots.get(&root_key).ok_or_else(|| acyclic_harness::Error::Invalid("Pi original Root source handle is unavailable".to_owned()))?.workspace)
                 } else {
                     native.live_workspace(plan.commit.source_task).ok_or_else(|| acyclic_harness::Error::Invalid("Pi original selected child source handle is unavailable".to_owned()))?
                 };
-                coordinator.observe_prepared(&plan, source, work.remaining().map_err(native_error)?, cancellation.clone())
+                coordinator.observe_prepared(&plan, source, cancellation.clone())
                     .await?
             }
             None => None,

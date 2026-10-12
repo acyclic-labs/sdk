@@ -3,10 +3,6 @@ use crate::conversation::{VolumeClass, VolumeOperation, VolumeRef};
 use crate::filesystem::{NativeVolumeNamespace, TaskSourceInspection};
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, LazySnapshotRef, NativeAllocation, NativeMaterializationWork, WorkCounters};
 
-fn boundary(code: crate::wire::ErrorCode, reason: &'static str) -> Error {
-    Error::NativeBoundary { code, reason }
-}
-
 impl<P: StreamProvider> NativeProcessProvider<P> {
     fn publication_read_preflight(&self, attempt: crate::EffectAttemptId,
         project: &VolumeRef, work: &NativeMaterializationWork) -> Result<()> {

@@ -511,8 +511,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 return Err(Error::Unauthorized("configured fork retry changed its retained original plan".into()));
             }
         }
-        let pinned = StreamAggregate::open_at_revision_measured(&self.stream, caller.owner.authority().clone(),
-            verifier(&caller.owner)?, SchemaRegistry::default(), intent.request.parent_revision,
+        let pinned = StreamAggregate::open_measured(&self.stream, caller.owner.authority().clone(),
+            verifier(&caller.owner)?, SchemaRegistry::default(), Some(intent.request.parent_revision),
             self.config.history_limits, self.config.content_budget, cancellation).await.map_err(|failure| failure.error)?;
         let mut content_work = pinned.work;
         let pinned = self.bind_aggregate(&caller.owner, &caller.owner.scope, pinned.value, None)?;
@@ -670,8 +670,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             restored = self.restore_snapshot(&binding.owner, &request, original.snapshot.copy(&mut None)?, cancellation).await?;
             &restored
         } else {
-            aggregate = StreamAggregate::open_at_revision_measured(&self.stream, binding.owner.authority().clone(),
-                verifier(&binding.owner)?, SchemaRegistry::default(), request.parent_revision,
+            aggregate = StreamAggregate::open_measured(&self.stream, binding.owner.authority().clone(),
+                verifier(&binding.owner)?, SchemaRegistry::default(), Some(request.parent_revision),
                 self.config.history_limits, self.config.content_budget, cancellation).await.map_err(|failure| failure.error)?.value;
             aggregate.reducer()
         };
@@ -1306,7 +1306,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             }
         }
         let generation = original.map_or(&selected.generation, |original| &original.source_generation).clone_with_io(&io)?;
-        let notice = original.map_or(&allocation.notice, |original| &original.notice).copy(&mut Some(&mut io.history_io()))?;
+        let mut observer = io.history_io();
+        let mut history_work = Some(&mut observer as &mut dyn crate::store::history::HistoryIo);
+        let mut quota = crate::wire_codec::CodecQuota::new(&mut history_work, 0)?;
+        let notice = original.map_or(&allocation.notice, |original| &original.notice).clone_in_quota(&mut quota)?;
+        quota.transfer();
+        drop(quota);
         let source_read = if let Some(authorization) = original.and_then(|plan| plan.authorized_source.as_ref()) {
             Some(owner.restore_project_source_authorization_with_native_work(
                 context.task(), authorization, work,

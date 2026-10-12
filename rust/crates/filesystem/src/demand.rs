@@ -6888,6 +6888,7 @@ mod tests {
                 }
                 for change in changes {
                     work.charge(&WorkCounters { items_examined: 1, ..WorkCounters::default() }, &budget)?;
+                    cancellation.check().map_err(|_| DemandError::Cancelled)?;
                     incoming.push(match change {
                         SourceChange::Name(path) => SourceChange::Name(path.clone_with_ledger(&mut ledger, &mut work, budget, cancellation)?),
                         SourceChange::Entry(path) => SourceChange::Entry(path.clone_with_ledger(&mut ledger, &mut work, budget, cancellation)?),

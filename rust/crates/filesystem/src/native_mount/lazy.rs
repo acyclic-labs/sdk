@@ -975,7 +975,7 @@ where
     loop {
         scratch.carrier.with_work(|work| mount_items(work, 1))?;
         let after = authored.lookup_in_with_carrier(&candidate.checkout, &prefix, scratch.carrier).await?;
-        let base = authored.lookup_in_with_carrier(candidate.base(), &prefix, scratch.carrier).await?;
+        let base = authored.lookup_in_with_carrier(&candidate.base, &prefix, scratch.carrier).await?;
         if base.is_none() && after.is_some() && !prefix.components().is_empty() {
             let parent = mount_components_with_carrier(
                 &prefix.components()[..prefix.components().len() - 1], None, scratch.carrier,
@@ -3088,7 +3088,7 @@ where
             work.items(1)?;
             let position = self.reserve_detached_slot_with_carrier(record.file_id, &mut work.meter)?;
             if let Some(position) = position {
-                let file = self.authored.detached_file_from_record_with_carrier(
+                let file = self.authored.detached_file_from_record(
                     *record, *metadata, SourceViewGate::callback_owner(), &mut work.meter,
                 ).await?;
                 let mut identities = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
@@ -3754,16 +3754,13 @@ where
             }
             let scope = effects.as_ref().map_or(InstallScope::Paths(&removed.value), |effects|
                 InstallScope::CombinedPaths(&removed.value, &effects.changes));
-            let installed = if let Some(original) = work.meter.original_native_work() {
-                let (value, allocation) = candidate.installed_changes_with_native_work(
-                    scope, &original, cancellation,
-                ).await?;
-                let bytes = allocation.as_ref().map_or(0, crate::NativeAllocation::bytes);
-                MountSyncBuffer { value: Some(value), custody: None, bytes, native_allocation: allocation }
+            let (installed, allocation) = super::adapter::installed_changes(
+                &candidate.base, &candidate.checkout, scope, &mut work.meter, cancellation,
+            ).await?;
+            let installed = if let Some(allocation) = allocation {
+                let bytes = allocation.bytes();
+                MountSyncBuffer { value: Some(installed), custody: None, bytes, native_allocation: Some(allocation) }
             } else {
-                let (budget, prior_live) = work.sdk_scope()?;
-                let result = candidate.installed_changes_measured(scope, budget, cancellation).await;
-                let installed = work.accept_sdk(result, prior_live, |error| error)?;
                 let installed_bytes = mount_effect_bytes(&installed);
                 work.adopt(installed_bytes).map_err(mount_demand_error)?;
                 retain_sync_buffer(Some(installed), installed_bytes, work)?
@@ -4392,7 +4389,7 @@ where
         carrier: &mut super::adapter::NativeDemandCarrier<'_>,
     ) -> Result<PreparedMountedIdentity<A, O>, MountSourceError> {
         let mut scratch = DirectoryCarrierScratch::new(carrier);
-        let record = self.authored.record_by_id_with_carrier(lookup.node.file_id, owner, scratch.carrier).await?;
+        let record = self.authored.record_by_id(lookup.node.file_id, owner, scratch.carrier).await?;
         let existing = scratch.carrier.with_work(|work| {
             let entries = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
             Ok::<_, MountSourceError>(match detached_position(&entries, record.file_id, work)? {
@@ -4401,7 +4398,7 @@ where
             })
         })?;
         let file = if let Some(file) = existing { file } else {
-            self.authored.detached_file_from_record_with_carrier(record, lookup.metadata, owner, scratch.carrier).await?
+            self.authored.detached_file_from_record(record, lookup.metadata, owner, scratch.carrier).await?
         };
         let position = self.reserve_detached_slot_with_carrier(record.file_id, scratch.carrier)?;
         let (paths, new_record, logical_bytes, final_work) = scratch.carrier.with_work(|work| {
@@ -6058,7 +6055,7 @@ where
         if self.unstaged.checked_at(self.expected_source, revision) {
             return Ok(None);
         }
-        let file = self.authored.attached_file_by_id(self.expected_source)?;
+        let file = super::adapter::boundary(self.authored.cancellation(), |work| self.runtime.block_on_measured(|| self.authored.attached_file_by_id(self.expected_source, ViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(work)), work.native_read_meter().as_ref()).map_err(super::adapter::capture_io_error)?.map(|handle| handle.map(|(handle, _)| handle)))?;
         if let Some(file) = file {
             *promoted = Some(Arc::clone(&file));
             return Ok(Some(file));
@@ -6098,7 +6095,7 @@ where
                 return Ok(Some((Arc::clone(file), 0)));
             }
         }
-        self.authored.attached_file_by_id_with_carrier(self.expected_source, owner, carrier).await
+        self.authored.attached_file_by_id(self.expected_source, owner, carrier).await
     }
 
     fn with_view_with_meter<T>(
@@ -6150,7 +6147,7 @@ where
                     None => {
                         stage_mount_promotion_with_carrier(&self.lazy, &self.authored, &self.path,
                             &self.mount_path, self.expected_source, carrier).await?;
-                        self.authored.attached_file_by_id_with_carrier(
+                        self.authored.attached_file_by_id(
                             self.expected_source, owner, carrier).await?.ok_or(MountSourceError::Stale)?
                     }
                 };
@@ -6932,21 +6929,26 @@ where
         self.native_mutation(path, None, false, true, work, |_| self.authored.create_symbolic_link_with_meter(path, target, metadata, work))
     }
 
-    fn create_special_with_meter(&self, path: &MountPath, kind: MountNodeKind, device: Option<(u32, u32)>,
+    fn create_special(&self, path: &MountPath, kind: MountNodeKind, device: Option<(u32, u32)>,
         metadata: FileMetadata, work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError> {
-        self.native_mutation(path, None, false, true, work, |_| self.authored.create_special_with_meter(path, kind, device, metadata, work))
+        self.native_mutation(path, None, false, true, work, |_| self.authored.create_special(path, kind, device, metadata, work))
     }
 
-    fn hard_link_with_meter(&self, source: &MountPath, destination: &MountPath, work: &crate::NativeMaterializationWork)
+    fn hard_link(&self, source: &MountPath, destination: &MountPath, work: &crate::NativeMaterializationWork)
         -> Result<(), MountSourceError> {
-        self.native_mutation(destination, Some(source), false, true, work, |_| self.authored.hard_link_with_meter(source, destination, work))
+        self.native_mutation(destination, Some(source), false, true, work, |_| self.authored.hard_link(source, destination, work))
     }
 
-    fn clone_range_by_id_with_meter(&self, source_file_id: FileId, source_offset: u64,
-        destination_file_id: FileId, destination_offset: u64, length: u64, work: &crate::NativeMaterializationWork)
-        -> Result<(), MountSourceError> {
+    fn clone_range_by_id(
+        &self, _source_file_id: FileId, _source_offset: u64,
+        _destination_file_id: FileId, _destination_offset: u64, _length: u64,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), MountSourceError> {
         work.admit(crate::WorkCounters::UNCHARGED).map_err(MountSourceError::NativeWork)?;
-        self.clone_range_by_id(source_file_id, source_offset, destination_file_id, destination_offset, length)
+        Err(MountSourceError::NativeStaticText {
+            kind: super::NativeSourceTextKind::Unsupported,
+            text: "clone-by-identity requires path-backed promotion in a lazy mount",
+        })
     }
 
     fn read_attribute_with_meter(&self, path: &MountPath, name: &[u8], work: &crate::NativeMaterializationWork)
@@ -7035,16 +7037,6 @@ where
         let created = self.authored.create_symbolic_link(path, target, metadata)?;
         self.record_rebound(&self.path(path)?)?;
         Ok(created)
-    }
-
-    fn create_special(
-        &self,
-        path: &MountPath,
-        kind: MountNodeKind,
-        device: Option<(u32, u32)>,
-        metadata: FileMetadata,
-    ) -> Result<MountLookup, MountSourceError> {
-        self.native_call(|work| self.create_special_with_meter(path, kind, device, metadata, work))
     }
 
     fn set_attributes(
@@ -7199,26 +7191,6 @@ where
         )
     }
 
-    fn clone_range_by_id(
-        &self,
-        source_file_id: FileId,
-        source_offset: u64,
-        destination_file_id: FileId,
-        destination_offset: u64,
-        length: u64,
-    ) -> Result<(), MountSourceError> {
-        let _ = (
-            source_file_id,
-            source_offset,
-            destination_file_id,
-            destination_offset,
-            length,
-        );
-        Err(MountSourceError::Unsupported(
-            "clone-by-identity requires path-backed promotion in a lazy mount".to_owned(),
-        ))
-    }
-
     fn remove_with_meter(
         &self,
         path: &MountPath,
@@ -7239,10 +7211,8 @@ where
                 return Err(MountSourceError::Stale);
             }
             let removed_open = if self.has_open_source_handle(authored.node.file_id)? {
-                let record = self.authored.record_by_id(authored.node.file_id)?;
-                let file = self
-                    .authored
-                    .detached_file_from_record(record, authored.metadata)?;
+                let record = self.wait(|| async { let work = match self.authored.native_original_work()? { Some(work) => work, None => crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, self.authored.cancellation()).map_err(|(error, _)| MountSourceError::NativeWork(error))? }; self.authored.record_by_id(authored.node.file_id, ViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(&work)).await })?;
+                let file = self.native_call(|work| self.wait(|| self.authored.detached_file_from_record(record, authored.metadata, ViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(work))))?;
                 Some((record, authored.metadata, file))
             } else {
                 None
@@ -7271,13 +7241,13 @@ where
             })?;
             if self.has_open_source_handle(file_id)? {
                 self.promote_locked(path)?;
-                let record = self.authored.record_by_id(file_id)?;
+                let record = self.wait(|| async { let work = match self.authored.native_original_work()? { Some(work) => work, None => crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, self.authored.cancellation()).map_err(|(error, _)| MountSourceError::NativeWork(error))? }; self.authored.record_by_id(file_id, ViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(&work)).await })?;
                 let metadata = self
                     .authored
                     .lookup(path)?
                     .ok_or(MountSourceError::Stale)?
                     .metadata;
-                let file = self.authored.detached_file_from_record(record, metadata)?;
+                let file = self.native_call(|work| self.wait(|| self.authored.detached_file_from_record(record, metadata, ViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(work))))?;
                 self.authored.remove(path, Some(file_id))?;
                 self.record_removed_identity(record, metadata, file)?;
             }
@@ -7356,10 +7326,8 @@ where
             if let Some(destination_lookup) = self.authored.lookup(destination)? {
                 let destination_id = destination_lookup.node.file_id;
                 if destination_id != source_id && self.has_open_source_handle(destination_id)? {
-                    let record = self.authored.record_by_id(destination_id)?;
-                    let file = self
-                        .authored
-                        .detached_file_from_record(record, destination_lookup.metadata)?;
+                    let record = self.wait(|| async { let work = match self.authored.native_original_work()? { Some(work) => work, None => crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, self.authored.cancellation()).map_err(|(error, _)| MountSourceError::NativeWork(error))? }; self.authored.record_by_id(destination_id, ViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(&work)).await })?;
+                    let file = self.native_call(|work| self.wait(|| self.authored.detached_file_from_record(record, destination_lookup.metadata, ViewGate::callback_owner(), &mut super::adapter::NativeDemandCarrier::Native(work))))?;
                     Some((record, destination_lookup.metadata, file))
                 } else {
                     None
@@ -7378,22 +7346,7 @@ where
         self.record_rebound(&destination_text)
     }
 
-    fn hard_link(
-        &self,
-        source: &MountPath,
-        destination: &MountPath,
-    ) -> Result<(), MountSourceError> {
-        self.native_call(|work| self.hard_link_with_meter(source, destination, work))
-    }
-
-    fn flush(&self) -> Result<(), MountSourceError> {
-        let original = crate::NativeMaterializationWork::new(
-            crate::WorkBudget::UNBOUNDED, self.authored.cancellation(),
-        ).map_err(|(error, _)| MountSourceError::NativeWork(error))?;
-        self.flush_with_meter(&original)
-    }
-
-    fn flush_with_meter(
+    fn flush(
         &self, work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
         self.flush_with_carrier(&mut super::adapter::NativeDemandCarrier::Native(work))
@@ -8976,7 +8929,7 @@ mod tests {
         });
         view.create_file(&written, FileMetadata::default())?;
         view.write_range(&written, 0, Bytes::from_static(b"fsynced"))?;
-        view.flush()?;
+        view.flush(&crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, view.authored.cancellation()).map_err(|(error, _)| MountSourceError::NativeWork(error))?)?;
         assert!(
             matches!(
                 lazy.lookup("/written").await,

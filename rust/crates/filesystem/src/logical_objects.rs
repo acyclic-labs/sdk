@@ -3,7 +3,7 @@ use crate::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
-    ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectReceipt, ObjectResult,
+    ObjectId, ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectResult,
     ObjectStoreError, ObjectWrite, object_digest,
 };
 use acyclic_objects::v1::{Error, Object, ObjectsProvider, wire};
@@ -787,7 +787,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
     ) -> ObjectResult<()> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         match self.put_accounted(object_id, bytes, false, &mut accounting).await {
-            Ok(()) => Ok(ObjectReceipt { value: (), work: accounting.spent() }),
+            Ok(()) => Ok(crate::OperationReceipt { value: (), work: accounting.spent() }),
             Err(error) => Err(OperationFailure::new(crate::async_storage::object_error(error), accounting.spent())),
         }
     }
@@ -799,7 +799,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         let (object_id, bytes) = object.into_parts();
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         match self.put_accounted(object_id, bytes, true, &mut accounting).await {
-            Ok(()) => Ok(ObjectReceipt { value: (), work: accounting.spent() }),
+            Ok(()) => Ok(crate::OperationReceipt { value: (), work: accounting.spent() }),
             Err(error) => Err(OperationFailure::new(crate::async_storage::object_error(error), accounting.spent())),
         }
     }
@@ -812,7 +812,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
     ) -> ObjectResult<()> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         match self.put_many_accounted(writes, &mut accounting).await {
-            Ok(()) => Ok(ObjectReceipt { value: (), work: accounting.spent() }),
+            Ok(()) => Ok(crate::OperationReceipt { value: (), work: accounting.spent() }),
             Err(error) => Err(OperationFailure::new(crate::async_storage::object_error(error), accounting.spent())),
         }
     }
@@ -877,7 +877,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
     ) -> ObjectResult<ObjectRead> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         match self.read_accounted(object_id, maximum_bytes, &mut accounting).await {
-            Ok((value, _custody)) => Ok(ObjectReceipt { value, work: accounting.spent() }),
+            Ok((value, _custody)) => Ok(crate::OperationReceipt { value, work: accounting.spent() }),
             Err(error) => Err(OperationFailure::new(crate::async_storage::object_error(error), accounting.spent())),
         }
     }
@@ -907,7 +907,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
     ) -> ObjectResult<Vec<ObjectRead>> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         match self.read_many_accounted(requests, &mut accounting).await {
-            Ok((value, _custody)) => Ok(ObjectReceipt { value, work: accounting.spent() }),
+            Ok((value, _custody)) => Ok(crate::OperationReceipt { value, work: accounting.spent() }),
             Err(error) => Err(OperationFailure::new(crate::async_storage::object_error(error), accounting.spent())),
         }
     }
@@ -933,9 +933,9 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         &self, object_id: ObjectId, budget: WorkBudget, cancellation: &CancellationToken,
     ) -> ObjectResult<bool> {
         match self.read(object_id, budget.object_bytes_read, budget, cancellation).await {
-            Ok(receipt) => Ok(ObjectReceipt { value: true, work: receipt.work }),
+            Ok(receipt) => Ok(crate::OperationReceipt { value: true, work: receipt.work }),
             Err(failure) if matches!(failure.error, ObjectStoreError::Missing) =>
-                Ok(ObjectReceipt { value: false, work: *failure.work }),
+                Ok(crate::OperationReceipt { value: false, work: *failure.work }),
             Err(failure) => Err(failure),
         }
     }

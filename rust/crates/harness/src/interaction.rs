@@ -77,14 +77,6 @@ impl ValidatedInteractionRequest {
 }
 
 impl InteractionTicket {
-    /// Copies through the reducer's one original field-copy engine.
-    pub(crate) fn clone_with_work(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Self> {
-        crate::core::native_interaction_ticket_clone_with_custody(self, work)
-            .map(|(value, _)| value)
-    }
-
     /// A scoped observer may see the ticket and outcome refs without being authorized to answer it or read the referenced private bytes.
     #[must_use]
     pub fn viewer_grant(&self) -> String {
@@ -160,22 +152,22 @@ impl InteractionTicket {
             bytes, crate::contract::JsonValueSchema::Interaction,
             std::mem::size_of::<ChoiceOption>() as u64, work,
         )?;
-        let owned = interaction_request_owned_bytes(&decoded.value, decoded.custody.work())?;
-        let release = decoded.custody.retained().checked_sub(owned).ok_or_else(|| interaction_denial(
-            decoded.custody.work(), crate::wire::ErrorCode::Invalid,
+        let owned = interaction_request_owned_bytes(&decoded.0, decoded.1.work())?;
+        let release = decoded.1.retained().checked_sub(owned).ok_or_else(|| interaction_denial(
+            decoded.1.work(), crate::wire::ErrorCode::Invalid,
             "interaction DTO exceeds its original decoder custody"))?;
-        decoded.custody.relinquish(release)?;
-        decoded.value.validate(decoded.custody.work())?;
-        self.validate_request_binding(&decoded.value, decoded.custody.work())?;
+        decoded.1.relinquish(release)?;
+        decoded.0.validate(decoded.1.work())?;
+        self.validate_request_binding(&decoded.0, decoded.1.work())?;
         let measured_owned_bytes = owned;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let (custody, measured_owned_bytes) = if interaction_native_mode(decoded.custody.work()) {
-            let allocation = decoded.custody.work().as_deref_mut().expect("observed interaction")
+        let (custody, measured_owned_bytes) = if interaction_native_mode(decoded.1.work()) {
+            let allocation = decoded.1.work().as_deref_mut().expect("observed interaction")
                 .take_native_custody(owned).expect("actual native DTO custody is a pure original split");
             (Some(allocation), 0)
         } else { (None, measured_owned_bytes) };
-        decoded.custody.transfer();
-        let DecodedInteractionJson { value: request, custody: quota } = decoded;
+        decoded.1.transfer();
+        let (request, quota) = decoded;
         drop(quota);
         Ok(ValidatedInteractionRequest {
             request, measured_owned_bytes,
@@ -237,7 +229,7 @@ impl InteractionTicket {
             bytes, crate::contract::JsonValueSchema::InteractionResponse,
             std::mem::size_of::<String>() as u64, work,
         )?;
-        let result = request.validate_response(&response.value, response.custody.work());
+        let result = request.validate_response(&response.0, response.1.work());
         drop(response);
         result
     }
@@ -257,7 +249,7 @@ impl InteractionTicket {
             bytes, crate::contract::JsonValueSchema::InteractionResponse,
             std::mem::size_of::<String>() as u64, work,
         )?;
-        let result = self.validate_decoded_decision(request, outcome, &response.value, response.custody.work());
+        let result = self.validate_decoded_decision(request, outcome, &response.0, response.1.work());
         drop(response);
         result
     }
@@ -411,14 +403,6 @@ impl<'de> Deserialize<'de> for InteractionOutcome {
 }
 
 impl InteractionOutcome {
-    /// Copies through the reducer's one original field-copy engine.
-    pub(crate) fn clone_with_work(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Self> {
-        crate::core::native_interaction_outcome_clone_with_custody(self, work)
-            .map(|(value, _)| value)
-    }
-
     /// Unknown outcomes remain open for later reconciliation.
     #[must_use]
     pub const fn is_terminal(&self) -> bool {
@@ -442,14 +426,6 @@ pub struct InteractionResolution {
 }
 
 impl InteractionResolution {
-    /// Copies through the reducer's one original field-copy engine.
-    pub(crate) fn clone_with_work(
-        &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Self> {
-        crate::core::native_interaction_resolution_clone_with_custody(self, work)
-            .map(|(value, _)| value)
-    }
-
     /// Checks version, address, and outcome kind against the open ticket.
     pub fn validate(&self, ticket: &InteractionTicket) -> Result<()> {
         if self.id != ticket.id || self.expected_version == 0 {
@@ -836,22 +812,16 @@ pub enum InteractionResponse {
     },
 }
 
-struct DecodedInteractionJson<'loan, 'io, T> {
-    value: T,
-    // LAST: actual parsed fields, including every callback-error exit, drop first.
-    custody: crate::wire_codec::CodecQuota<'loan, 'io>,
-}
-
 fn decode_interaction_json<'loan, 'io, T: serde::de::DeserializeOwned>(
     bytes: &[u8],
     schema: crate::contract::JsonValueSchema,
     typed_slot: u64,
     work: &'loan mut Option<&'io mut dyn crate::store::history::HistoryIo>,
-) -> Result<DecodedInteractionJson<'loan, 'io, T>> {
+) -> Result<(T, crate::wire_codec::CodecQuota<'loan, 'io>)> {
     if work.is_none() {
         let value = crate::contract::json_from_slice(bytes)
             .map_err(|error| Error::Invalid(error.to_string()))?;
-        return Ok(DecodedInteractionJson { value, custody: crate::wire_codec::CodecQuota::new(work, 0)? });
+        return Ok((value, crate::wire_codec::CodecQuota::new(work, 0)?));
     }
     let mut custody = crate::wire_codec::CodecQuota::new(work, 0)?;
     let diagnostic = interaction_decode_diagnostic_bytes(bytes.len() as u64)?;
@@ -886,21 +856,10 @@ fn decode_interaction_json<'loan, 'io, T: serde::de::DeserializeOwned>(
             }
             custody.work().as_deref_mut().expect("observed interaction").codec_charge(charge)
         };
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let decoded = if native {
-            crate::contract::json_from_slice_bounded(std::marker::PhantomData::<T>,
-                bytes, bounds, bytes.len() as u64, Some(crate::wire::ErrorCode::Invalid), Some(schema), &mut charge,
-            )
-        } else {
-            crate::contract::json_from_slice_bounded(std::marker::PhantomData::<T>,
-                bytes, bounds, bytes.len() as u64, None, None, &mut charge,
-            )
-        };
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let decoded = crate::contract::json_from_slice_bounded(std::marker::PhantomData::<T>,
-            bytes, bounds, bytes.len() as u64, None, None, &mut charge,
-        );
-        decoded
+        crate::contract::json_from_slice_bounded(std::marker::PhantomData::<T>,
+            bytes, bounds, bytes.len() as u64,
+            native.then_some(crate::wire::ErrorCode::Invalid), native.then_some(schema), &mut charge,
+        )
     };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let decoded = decoded.map_err(|mut error| {
@@ -916,9 +875,8 @@ fn decode_interaction_json<'loan, 'io, T: serde::de::DeserializeOwned>(
         }
         error
     });
-    let _ = (native, schema);
     let value = decoded?;
-    Ok(DecodedInteractionJson { value, custody })
+    Ok((value, custody))
 }
 
 fn validate_schema(

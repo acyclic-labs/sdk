@@ -1085,7 +1085,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                 "task interaction binding requires an admitted journal owner"));
         }
         self.interactions = Some(FilesystemInteractionHost::new(
-            self.stream.provider.clone(), Arc::clone(&self.host), verifier.audience(), verifier,
+            Arc::clone(&self.stream), Arc::clone(&self.host), verifier.audience(), verifier,
             schemas, scope, private_volume, self.maximum_payload_bytes, io,
         )?);
         Ok(self)
@@ -1120,7 +1120,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
 
     fn path(&self, operation_id: OperationId) -> Result<acyclic_stream::Stream<P>>
     {
-        self.stream.stream(
+        acyclic_stream::Stream::new(Arc::clone(&self.stream),
             crate::distributed::execution_path(operation_id, &mut None)?.as_str())
             .map_err(|error| Error::Invalid(error.to_string()))
     }
@@ -1350,7 +1350,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             io.charge(copying)?;
             Some(hold)
         } else { None };
-        let stream = self.stream.stream(&path)
+        let stream = acyclic_stream::Stream::new(Arc::clone(&self.stream), &path)
             .map_err(|error| Self::journal_read_stream_error(io, crate::wire::ErrorCode::Invalid, error))?;
         let _read_path_hold;
         _read_path_hold = if let Some(io) = io {
@@ -1540,7 +1540,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
                         }
                         crate::filesystem::retain_decoded(parsed)
                     }
-                    None => decode_json(&bytes, None)?.into_retained(),
+                    None => decode_json::<ModelEvent>(&bytes, None)?.into_retained(),
                 });
             }
         }
