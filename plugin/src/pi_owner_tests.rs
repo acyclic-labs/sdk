@@ -615,7 +615,8 @@ fn native_owner_authority_preserves_original_grants_and_scope_names() {
     let native = owner.authority_with_native_work(&work).unwrap();
     assert_eq!(native.0.signed, ordinary.signed);
     assert_eq!(native.0.scope.grants(), &owner.policy.grants);
-    native.0.validate_with_native_work(&owner.policy.journal, &work).unwrap();
+    native.0.validate(&owner.policy.journal, &mut Some(&mut
+        acyclic_harness::store::native_work_io(&work).unwrap())).unwrap();
     drop(native);
     let conversation = owner.conversation_authority_with_native_work(
         owner.policy.root_task, owner.policy.agent, &owner.policy.grants, &work,

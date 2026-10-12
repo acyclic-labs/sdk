@@ -186,7 +186,7 @@ impl PiOwnerConfig {
             maximum_payload_bytes: self.policy.maximum_payload_bytes,
             issuer,
         };
-        authority.validate(&self.policy.journal)?;
+        authority.validate(&self.policy.journal, &mut None)?;
         Ok(authority)
     }
 
@@ -223,7 +223,8 @@ impl PiOwnerConfig {
             session_limits: self.policy.session_limits, concurrency: self.policy.concurrency,
             maximum_payload_bytes: self.policy.maximum_payload_bytes,
         }, issuer.1, [verifier.1, signed.1, scope.1]);
-        owned.0.validate_with_native_work(&self.policy.journal, work)?;
+        owned.0.validate(&self.policy.journal, &mut Some(&mut
+            acyclic_harness::store::native_work_io(work).map_err(native_work_error)?))?;
         combine_native_metadata(owned)
     }
 

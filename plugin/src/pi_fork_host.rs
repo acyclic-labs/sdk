@@ -170,7 +170,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             let actual = self.roots.get(root_key).ok_or_else(|| invalid("Pi original selected root has no actual lazy handle"))?;
             Arc::clone(&actual.workspace)
         } else {
-            self.native.live_workspace(command.commit.source_task)
+            self.native()?.live_workspace(command.commit.source_task)
                 .ok_or_else(|| invalid("Pi selected child has no actual reopened creator workspace"))?
         };
         if let Some(plan) = plan {
@@ -196,10 +196,10 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
                 command.commit.source_task, work).await?;
             let outcome = source_owner.outcome_with_native_work(work).await?;
             if outcome.0.as_ref().is_some_and(|outcome| outcome.is_terminal()) {
-                let (snapshot, custody) = self.native.selection_snapshot(command.commit.source_task, work).await?;
+                let (snapshot, custody) = self.native()?.selection_snapshot(command.commit.source_task, work).await?;
                 source_custody = Some(custody);
                 snapshot
-            } else if let Some(live) = self.native.live_source(command.commit.source_task, work).await? {
+            } else if let Some(live) = self.native()?.live_source(command.commit.source_task, work).await? {
                 if live.binding.task_id != command.commit.source_task || live.workspace.workspace().id() != source.workspace().id() {
                     return Err(unauthorized("Pi live source substituted its actual creator workspace"));
                 }
@@ -209,7 +209,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
                 owner.verify_with_native_work(false, work).await?;
                 snapshot
             } else {
-                let frozen = self.native.source_frozen(command.commit.source_task)
+                let frozen = self.native()?.source_frozen(command.commit.source_task)
                     .ok_or_else(|| invalid("Pi undispatched source lost its actual first native companion"))?;
                 source.validate_snapshot_with_native_work(frozen, work).await.map_err(crate::pi_fork_host::native_lazy_error)?;
                 frozen

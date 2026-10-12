@@ -368,10 +368,7 @@ impl PiSession {
                 if !allow_allocation {
                     return Err(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi Root source has no original successful allocation to restore" });
                 }
-                let driver = pi_workflow::PiWorkflowHost::new(
-                    &self.relative_directory, self.runtime.clone(), self.filesystem.clone(),
-                    self.stream.clone(), &self.resources, &self.state,
-                 original_native_work.clone());
+                let driver = self.command_host(original_native_work, None)?;
                 let progress = driver.drive_root().await?;
                 let unresolved = match progress.0 {
                     Some(acyclic_harness::filesystem::TaskWorkerAttempt::Unresolved { lease, error }) => {
@@ -730,10 +727,7 @@ impl PiSession {
             let command = pi_mail::stage_send(
                 owner, &self.filesystem, operation, caller, recipient, envelope, &work,
             ).await?;
-            return pi_workflow::PiWorkflowHost::new(
-                &self.relative_directory, self.runtime.clone(), self.filesystem.clone(),
-                self.stream.clone(), &self.resources, &self.state,
-             work).control_command_with_native_work(command.0).await;
+            return self.command_host(&work, None)?.control_command_with_native_work(command.0).await;
         }
         let binding = self.binding(caller)?;
         let host = self.runtime.runtime.task_host();

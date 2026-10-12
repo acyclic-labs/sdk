@@ -31,84 +31,51 @@ pub(crate) struct PiRuntimeAuthority {
 }
 
 impl PiRuntimeAuthority {
-    pub(crate) fn validate(
-        &self,
-        journal: &VolumeRef,
+    pub(crate) fn validate(&self, journal: &VolumeRef,
+        io: &mut Option<&mut dyn acyclic_harness::store::HistoryIo>,
     ) -> acyclic_harness::Result<(AgentId, TaskId)> {
-        let authority = self;
-        authority.verifier.verify(&authority.signed)?;
-        authority.issuer.verifier().verify(&authority.signed)?;
-        authority.scope.limits().validate()?;
-        authority.session_limits.validate()?;
-        let (agent, root_task) = authority.validate_identity_and_bounds(journal)?;
-        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-            let grant = journal.capability(operation)?;
-            if !authority.signed.capabilities().contains(&grant) {
-                return Err(invalid("Pi runtime owner lacks its journal grant"));
-            }
-            if authority.scope.grants().contains(&grant) {
-                return Err(invalid("Pi task grants expose owner journal storage"));
-            }
-        }
-        if authority
-            .scope
-            .grants()
-            .contains(&journal.directory_read_capability("")?)
-        {
-            return Err(invalid("Pi task grants expose owner journal storage"));
-        }
-        Ok((agent, root_task))
-    }
-
-    /// Pure owner/policy validation shared with the ordinary infrastructure path.
-    fn validate_identity_and_bounds(&self, journal: &VolumeRef)
-        -> acyclic_harness::Result<(AgentId, TaskId)> {
-        let agent = self.signed.agent()
-            .ok_or_else(|| invalid("Pi root owner has no agent"))?;
+        self.verifier.verify(&self.signed, io)?;
+        self.issuer.verifier(io)?.verify(&self.signed, io)?;
+        self.scope.limits().validate(io)?;
+        self.session_limits.validate(io)?;
+        let agent = self.signed.agent().ok_or_else(|| authority_error(io, "Pi root owner has no agent"))?;
         if self.verifier.audience().kind != AggregateKind::Task
             || journal.class() != VolumeClass::AgentPrivate
             || journal.owner() != &VolumeOwner::Agent(agent)
             || !self.scope.grants().is_subset_of(self.signed.capabilities())
-            || self.concurrency == 0
-            || self.maximum_payload_bytes == 0
+            || self.concurrency == 0 || self.maximum_payload_bytes == 0
             || self.maximum_payload_bytes > self.scope.limits().file_bytes {
-            return Err(invalid("Pi runtime authority or limits are inconsistent"));
+            return Err(authority_error(io, "Pi runtime authority or limits are inconsistent"));
         }
         let root_task = TaskId::parse(&self.verifier.audience().id)
-            .map_err(|_| invalid("Pi runtime audience is not its root task identity"))?;
+            .map_err(|_| authority_error(io, "Pi runtime audience is not its root task identity"))?;
         if root_task.into_bytes() == [0; 16] {
-            return Err(invalid("Pi runtime root task identity is empty"));
+            return Err(authority_error(io, "Pi runtime root task identity is empty"));
+        }
+        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
+            let grant = journal.capability(operation, io)?;
+            if !self.signed.capabilities().contains(&grant) {
+                return Err(authority_error(io, "Pi runtime owner lacks its journal grant"));
+            }
+            if self.scope.grants().contains(&grant) {
+                return Err(authority_error(io, "Pi task grants expose owner journal storage"));
+            }
+        }
+        let directory = journal.directory_read_capability("", io)?;
+        if self.scope.grants().contains(&directory) {
+            return Err(authority_error(io, "Pi task grants expose owner journal storage"));
         }
         Ok((agent, root_task))
     }
+}
 
-    /// Verifies the original configured issuer and exact journal grant names through SDK native producers on the supplied original work.
-    pub(crate) fn validate_with_native_work(
-        &self, journal: &VolumeRef, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness::Result<(AgentId, TaskId)> {
-        self.verifier.verify_with_native_work(&self.signed, work)?;
-        let original = self.issuer.verifier_with_native_work(work)?;
-        let verification = original.0.verify_with_native_work(&self.signed, work);
-        drop(original.0);
-        drop(original.1);
-        verification?;
-        (self.scope.limits()).validate(&mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
-        RuntimeScope::validate_session_limits_with_native_work(&self.session_limits, work)?;
-        let identities = self.validate_identity_and_bounds(journal)?;
-        for operation in [VolumeOperation::Read, VolumeOperation::Write] {
-            let grant = journal.capability_with_native_work(operation, work)?;
-            if !self.signed.capabilities().contains(&grant.0) {
-                return Err(native_invalid("Pi runtime owner lacks its journal grant"));
-            }
-            if self.scope.grants().contains(&grant.0) {
-                return Err(native_invalid("Pi task grants expose owner journal storage"));
-            }
-        }
-        let directory = journal.directory_read_capability_with_native_work("", work)?;
-        if self.scope.grants().contains(&directory.0) {
-            return Err(native_invalid("Pi task grants expose owner journal storage"));
-        }
-        Ok(identities)
+fn authority_error(io: &mut Option<&mut dyn acyclic_harness::store::HistoryIo>,
+    reason: &'static str,
+) -> acyclic_harness::Error {
+    if io.is_some() {
+        acyclic_harness::Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason }
+    } else {
+        invalid(reason)
     }
 }
 
@@ -160,7 +127,9 @@ where
         work.admit(WorkCounters::UNCHARGED)
             .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
         // Source authority data precedes its original decoder/constructor AL.
-        let (agent, root_task) = authority.0.validate_with_native_work(journal, work)?;
+        let (agent, root_task) = authority.0.validate(journal, &mut Some(&mut
+            acyclic_harness::store::native_work_io(work)
+                .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))?;
         let mut tools = ToolRegistry::new(work)?;
         let builtin = super::pi_builtin::builtin_tool_definition_with_native_work(work)?;
         let executor = super::pi_builtin::builtin_tool_executor_with_native_work(work)?;
@@ -289,10 +258,4 @@ where
 
 fn invalid(message: &str) -> acyclic_harness::Error {
     acyclic_harness::Error::Invalid(message.to_owned())
-}
-
-fn native_invalid(reason: &'static str) -> acyclic_harness::Error {
-    acyclic_harness::Error::NativeBoundary {
-        code: acyclic_harness::wire::ErrorCode::Invalid, reason,
-    }
 }

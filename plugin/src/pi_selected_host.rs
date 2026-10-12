@@ -145,7 +145,7 @@ impl<'a> PiControlHost<'a> {
     let project = &input.binding.project_volumes[&key.0];
     let workspace = if task == self.protected.policy().root_task {
         Arc::clone(&self.roots.get(&key.0).ok_or_else(|| denied("selected Root lost its actual lazy allocation"))?.workspace)
-    } else { self.native.live_workspace(task).ok_or_else(|| denied("selected child lost its actual creator workspace"))? };
+    } else { self.native()?.live_workspace(task).ok_or_else(|| denied("selected child lost its actual creator workspace"))? };
     let frozen_custody = if let Some(pinned) = pinned { (pinned, None) } else if task == self.protected.policy().root_task {
         let actual = self.roots.get(&key.0).ok_or_else(|| denied("selected Root allocation unavailable"))?;
         if owner.task_id() == task {
@@ -157,7 +157,7 @@ impl<'a> PiControlHost<'a> {
         } else { (self.root_source.filter(|source| source.root_key == key.0).map(|source| source.snapshot)
             .ok_or_else(|| denied("foreign Root source needs its original observe-source ACK"))?, None) }
     } else {
-        let (snapshot, custody) = self.native.selection_snapshot(task, work).await?;
+        let (snapshot, custody) = self.native()?.selection_snapshot(task, work).await?;
         (snapshot, Some(custody))
     };
     let frozen = frozen_custody.0;
@@ -185,14 +185,14 @@ impl<'a> PiControlHost<'a> {
         SELECTED_DIAGNOSTIC_LABEL_BYTES, work)?;
     let inspection = self.runtime.runtime.inspect_project_source_with_native_work(context, Arc::clone(owner), handle,
         operation, task, &selection.0, work).await?;
-    if let Some(view) = self.native.live_view(task) {
+    if let Some(view) = self.native()?.live_view(task) {
         let mut observed = view.inspect_project_snapshot_with_native_work(&inspection, frozen, work)?.await?;
         if observed.1 != frozen {
             return Err(denied("immutable mixed-view inspection changed its authorized frozen source"));
         }
         selection.1.absorb(&mut observed.2).map_err(native_error)?;
     } else if task != self.protected.policy().root_task {
-        let mut qualified = self.native.validate_published_selection_snapshot(
+        let mut qualified = self.native()?.validate_published_selection_snapshot(
             task, &inspection, project, frozen, work).await?;
         selection.1.absorb(&mut qualified).map_err(native_error)?;
     }
@@ -279,8 +279,8 @@ impl<'a> PiControlHost<'a> {
                     entries: &page.entries, cursor: continuation.as_ref().map(|(cursor, _)| cursor.as_str()) }, work)
             }
             "acyclic.pi.diff" => {
-                let baseline = self.native.frozen_source(input.source).ok_or_else(|| denied("diff requires the child's actual ORIGINAL frozen source"))?;
-                let source_task = self.native.selected_source_task(input.source)
+                let baseline = self.native()?.frozen_source(input.source).ok_or_else(|| denied("diff requires the child's actual ORIGINAL frozen source"))?;
+                let source_task = self.native()?.selected_source_task(input.source)
                     .ok_or_else(|| denied("diff lost the original authorized selected source task"))?;
                 let before_custody = self.selected(&context, native_context, &owner,
                     source_task, Some(&key), Some(baseline), operation, cancellation, work).await?;
@@ -447,7 +447,7 @@ impl PiControlHost<'_> {
     }
     let destination = input.destination.unwrap_or(input.caller);
     let foreign_binding = if destination != input.caller && destination != self.protected.policy().root_task {
-        Some(self.native.binding(destination, work)?
+        Some(self.native()?.binding(destination, work)?
             .ok_or_else(|| denied("explicit destination has no actual creator binding"))?)
     } else { None };
     let destination_binding = if destination == input.caller { binding }
@@ -468,7 +468,7 @@ impl PiControlHost<'_> {
         return Err(denied("delegated Root mutation requires its original mediated Root workflow command"));
     }
     let destination_live = if destination != self.protected.policy().root_task {
-        Some(self.native.live_source(destination, work).await?.ok_or_else(|| denied("explicit destination has no ORIGINAL live owner"))?)
+        Some(self.native()?.live_source(destination, work).await?.ok_or_else(|| denied("explicit destination has no ORIGINAL live owner"))?)
     } else { None };
     let destination_native = if destination == input.caller { caller_native } else {
         &destination_live.as_ref().ok_or_else(|| denied("explicit destination lost its original native context"))?.context
@@ -477,16 +477,16 @@ impl PiControlHost<'_> {
         &destination_live.as_ref().ok_or_else(|| denied("explicit destination lost its original native owner"))?.owner
     };
     let child_workspace = if destination == self.protected.policy().root_task { None } else {
-        Some(self.native.live_workspace(destination).ok_or_else(|| denied("destination child lost actual creator workspace"))?)
+        Some(self.native()?.live_workspace(destination).ok_or_else(|| denied("destination child lost actual creator workspace"))?)
     };
     let workspace = if let Some(workspace) = &child_workspace { workspace.as_ref() } else {
         &self.roots.get(key).ok_or_else(|| denied("destination Root lost actual lazy allocation"))?.workspace
     };
     let mount = if destination == self.protected.policy().root_task { None } else {
-        Some(self.native.project_mount(destination, volume).ok_or_else(|| denied("destination child has no actual live project mount"))?)
+        Some(self.native()?.project_mount(destination, volume).ok_or_else(|| denied("destination child has no actual live project mount"))?)
     };
     let publication_work = if mount.is_some() {
-        self.native.project_work(destination, volume)
+        self.native()?.project_work(destination, volume)
             .ok_or_else(|| denied("destination lost its original project-volume work"))?
     } else { work.clone() };
     if !publication_work.shares_ledger(work) {
@@ -499,7 +499,7 @@ impl PiControlHost<'_> {
             &live.owner, &live.original_work).await?;
         Some(guard.for_volume(&live.owner, volume, true, &publication_work)?.0)
     } else { None };
-    let publication = if let Some(view) = self.native.live_view(destination) {
+    let publication = if let Some(view) = self.native()?.live_view(destination) {
         view.project_publication(volume).ok_or_else(|| denied("destination lacks its ORIGINAL project publication permit"))?
     } else if destination == self.protected.policy().root_task {
         acyclic_fs::PublicationPermit::Unrestricted
@@ -613,7 +613,7 @@ impl PiControlHost<'_> {
     work: &acyclic_fs::NativeMaterializationWork) -> Result<TaskCommandProgress> { let root_task = self.protected.policy().root_task;
     if input.caller != root_task || owner.task_id() != root_task
         || self.root_binding()?.project_volumes.get(key) != Some(volume)
-        || self.native.selected_source_task(input.source) != Some(root_task) {
+        || self.native()?.selected_source_task(input.source) != Some(root_task) {
         return Err(denied("writeback is not the child's authentic ORIGINAL Root source"));
     }
     let actual = self.roots.get(key).ok_or_else(|| denied("writeback original Root lazy handle unavailable"))?;
@@ -626,7 +626,7 @@ impl PiControlHost<'_> {
         || creation.repository_workspace_id != actual.workspace.workspace().id().into_bytes() {
         return Err(denied("writeback changed the original protected allocation or native source identity"));
     }
-    let original = self.native.frozen_source(input.source)
+    let original = self.native()?.frozen_source(input.source)
         .ok_or_else(|| denied("writeback lost the original creator's frozen Root facts"))?;
     if original.workspace_id != actual.workspace.workspace().id() {
         return Err(denied("writeback baseline is not the actual ORIGINAL Root snapshot"));
@@ -694,7 +694,7 @@ impl PiControlHost<'_> {
         acyclic_harness::conversation::MAX_PRIVATE_DIRECTORY_PAGE, &options, &[".git"], cancellation, work).await?;
     let root_binding = self.root_binding()?;
     let root_display = work.display(&format_args!("{}", root.path.display())).map_err(native_error)?;
-    let source_display = self.native.with_selected_project_path(input.source, source_volume,
+    let source_display = self.native()?.with_selected_project_path(input.source, source_volume,
         |path| work.display(&format_args!("{}", path.display())).map_err(native_error)).transpose()?;
     let descriptor = crate::pi_operator::PiPreparedApproval {
         version: 1, session: &root_binding.native_session_id,

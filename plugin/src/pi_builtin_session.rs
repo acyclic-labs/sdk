@@ -18,8 +18,7 @@ impl PiSession {
         request.validate()?;
         let (value, custody) = if caller == owner.policy().root_task {
             request.require_root_source_read(owner.policy().root_task)?;
-            let host = crate::pi_selected_host::PiControlHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-                &self.resources, native.original_owner(), &self.state, &self.roots, native.clone(), &work)?;
+            let host = self.command_host(&work, Some(native.clone()))?;
             let (payload, _payload_custody) = pi_root_provider::guarded_pi_value(&request,
                 MAXIMUM_BUILTIN_BYTES * 2, &work)?;
             let operation = request.operation(owner.policy().root_task, &work)?;
@@ -34,8 +33,7 @@ impl PiSession {
                 operation_id: operation,
                 kind, payload: reference,
             };
-            pi_workflow::PiWorkflowHost::new(&self.relative_directory, self.runtime.clone(), self.filesystem.clone(),
-                self.stream.clone(), &self.resources, &self.state, work.clone()).with_controls(&host).control_command_with_native_work(command).await?
+            host.control_command_with_native_work(command).await?
         } else { self.native_child_builtin_command(owner, &native, &request, &work).await? };
         let binding = self.binding(caller)?;
         #[derive(Serialize)]

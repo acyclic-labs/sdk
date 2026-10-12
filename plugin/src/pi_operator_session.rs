@@ -27,11 +27,7 @@ impl PiSession {
         let command = pi_operator_host::stage_operator_command(&self.runtime, &owner, &self.filesystem, &request.0, &work)
             .await?;
         let native = self.native_host_with_native_work(&work)?;
-        let protected = native.original_owner();
-        let selected = pi_selected_host::PiControlHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            &self.resources, Arc::clone(&protected), &self.state, &self.roots, native, &work)?;
-        pi_workflow::PiWorkflowHost::new(&self.relative_directory, self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            &self.resources, &self.state, work).with_controls(&selected).control_command_with_native_work(command.0).await
+        self.command_host(&work, Some(native))?.control_command_with_native_work(command.0).await
             .map(|(value, allocation)| (value, Some(allocation)))
     }
 

@@ -207,8 +207,7 @@ impl PiSession {
                         drop(admission_custody);
                         return Err(acyclic_harness::Error::Invalid("Pi original preparation admission was substituted".to_owned()));
                     }
-                    let reservation = crate::pi_selected_host::PiControlHost::new(self.runtime.clone(), self.filesystem.clone(),
-                        self.stream.clone(), &self.resources, native.original_owner(), &self.state, &self.roots, native.clone(), &work)?
+                    let reservation = self.command_host(&work, Some(native.clone()))?
                         .reservation_with_native_work(plan, &work)?;
                     let reservation = spawn_pending_batch(reservation, &work)?;
                     self.spawn_save_pending(Some(reservation), &commit, operations, &work)?;
@@ -452,11 +451,8 @@ impl PiSession {
         &self, native: Arc<pi_native_host::PiNativeCommandHost>,
         command: WorkflowCommand, wake_pending: bool, task: Option<TaskId>, work: &NativeMaterializationWork,
     ) -> acyclic_harness::Result<(Option<(Value, NativeAllocation)>, Option<(Vec<PendingSpawn>, NativeAllocation)>, Option<pi_fork::PreparedPiFork>)> {
-        let selected = pi_selected_host::PiControlHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            &self.resources, native.original_owner(), &self.state, &self.roots, native, work)?;
-        let workflow = pi_workflow::PiWorkflowHost::new(&self.relative_directory, self.runtime.clone(), self.filesystem.clone(),
-            self.stream.clone(), &self.resources, &self.state, work.clone()).with_controls(&selected);
-        let reply = workflow.control_step_with_native_work(command, wake_pending).await?;
+        let selected = self.command_host(work, Some(native))?;
+        let reply = selected.control_step_with_native_work(command, wake_pending).await?;
         let pending = selected.pending_to_save()?;
         let prepared = match task { Some(task) => selected.take_prepared(task)?, None => None };
         Ok((reply, pending, prepared))
@@ -467,8 +463,7 @@ impl PiSession {
         context: &Arc<NativeTaskContext>, command: WorkflowCommand, reconcile: bool, task: TaskId,
         work: &NativeMaterializationWork, input: &pi_fork_host::PiForkCommand,
     ) -> acyclic_harness::Result<(Option<(Value, NativeAllocation)>, Option<(Vec<PendingSpawn>, NativeAllocation)>, Option<pi_fork::PreparedPiFork>)> {
-        let fork = crate::pi_selected_host::PiControlHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            &self.resources, native.original_owner(), &self.state, &self.roots, native, &work)?;
+        let fork = self.command_host(work, Some(native))?;
         let fence = context.context().owned_task_fence()?;
         let (payload, mut input_custody) = pi_root_provider::guarded_pi_value(
             input, owner.policy().maximum_payload_bytes, work)?;
