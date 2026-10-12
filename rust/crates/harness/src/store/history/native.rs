@@ -271,7 +271,7 @@ impl HistoryIo for NativeHistoryIo<'_> {
     }
     fn decode_json_value(&mut self, bytes: &[u8]) -> Result<(serde_json::Value, u64)> {
         let io = crate::filesystem::PreparationIo::from_native_work(self.work)?;
-        let decoded = io.decode_preparation::<serde_json::Value>(bytes)?;
+        let decoded = io.decode_preparation::<serde_json::Value>(bytes, crate::wire::ErrorCode::Storage)?;
         let retained = io.owned_bytes()?;
         let value = decoded.into_retained();
         let incoming = io.into_native_custody(retained)?;
@@ -481,14 +481,14 @@ impl HistoryIo for AcceptedCompletionIo {
     }
     fn allocation_failure(&self, cause: std::collections::TryReserveError) -> Error { error(cause) }
     fn receive_record(&mut self, bytes: u64) -> Result<()> {
-        self.reservation.record_received_prefix(WorkCounters {
+        self.reservation.record_completed(WorkCounters {
             authority_records_read: 1, authority_bytes_read: bytes,
             items_examined: 1, ..WorkCounters::default()
         }).map_err(Self::native_error)?;
         self.retain(bytes)
     }
     fn receive_native_record(&mut self, bytes: u64) -> Result<()> {
-        self.reservation.record_received_prefix(WorkCounters {
+        self.reservation.record_completed(WorkCounters {
             authority_records_read: 1, authority_bytes_read: bytes,
             ..WorkCounters::default()
         }).map_err(Self::native_error)

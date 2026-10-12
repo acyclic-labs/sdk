@@ -85,13 +85,7 @@ impl acyclic_harness::model::ModelProvider for CapturingModel {
         )]))
     }
 
-    fn reconcile<'a>(
-        &'a self,
-        _: acyclic_harness::model::ModelAttempt,
-    ) -> futures::future::BoxFuture<'a, Result<Option<Vec<acyclic_harness::model::ModelEvent>>>>
-    {
-        Box::pin(async { Ok(None) })
-    }
+
 }
 
 struct Fixture {
@@ -295,7 +289,7 @@ async fn metadata_is_lazy_scopes_are_ordered_and_reload_is_immutable() -> Result
         Arc::new(live.stage(ContextPlacement::Prepend)?)
             as Arc<dyn acyclic_harness::context::ContextStage>,
     ]))?;
-    assert_ne!(old.contracts(), new.contracts());
+    assert_ne!(old.contracts(None)?, new.contracts(None)?);
     let input = ContextInput {
         input: ModelContent::Text("inspect".into()),
         selected_context: None,

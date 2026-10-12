@@ -37,4 +37,3 @@ export {
 } from "../generated/wasm/acyclic_harness_wasm.js";
 export type BrowserTaskOutcome = Outcome<WasmModelJsonValue> | null;
 export { ensureHarnessWasm as initializeBrowserRuntime } from "./wasm-runtime.js";
-export { inspectTaskSource, type BrowserSourceInspection } from "./headless.js";

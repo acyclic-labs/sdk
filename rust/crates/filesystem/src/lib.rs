@@ -179,7 +179,7 @@ pub use distributed::StreamAuthorityStore;
 pub use distributed_fs::DistributedFs;
 pub use facade::{
     AuthoredLiveMutationResult, AuthoredMutation, AuthoredTransactionResult, Checkout,
-    CheckoutCommitOutcome, ContentChange, ContentStager, ContentTimes, DetachedFile,
+    CheckoutCommitOutcome, ContentChange, ContentTimes, DetachedFile,
     DirectoryBindingChange, DirectoryPageRequest, DirectoryRecordEntry, DirectoryRecordPage,
     EmbeddedCapabilities, FileCloneRequest, FileDescription, FileRecordChange, Fs, FsError,
     FsReceipt, FsResult, GenerationDiff, GroupedChange, GroupedOutcome, JoinCommitWitness,
@@ -313,7 +313,7 @@ pub use native_mount::{
     MountPublication, MountRangeAllocation, MountSeekTarget, MountSourceError, MountSparseRange,
     MountSparseSpan, MountViewLease, NativeBlockCloneAccelerationEvidence, NativeMountCapabilities,
     NativeMountCleanupState, NativeMountError, NativeMountKind, NativeMountRecoveryCleanupState,
-    NativeMountRecoveryOwner, NativeMountRequest, NativeMountSession, NativeMountWork,
+    NativeMountRecoveryOwner, NativeMountRequest, NativeMountSession,
     NativeMountSessionIsolation, NativeSparseAccelerationEvidence, NativeStorageAccelerationError,
     NativeStorageAccelerationEvidence, NativeStorageCapabilities, NativeStorageCapabilityError,
     NativeWorkingSet, NativeMountDrainProof, NativeSourceIoLease, SharedCheckout, SharedCheckoutState,

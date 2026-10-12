@@ -882,8 +882,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         before_publication: F,
     ) -> crate::MeasuredResult<crate::OperationReceipt<TransactionCommit<A, O>>, WorkspaceError>
     where
-        F: FnMut(crate::WorkBudget) -> Fut + StorageFuture,
-        Fut: Future<Output = crate::FsResult<()>> + StorageFuture,
+        F: FnMut(crate::WorkBudget) -> Fut + ProviderTask,
+        Fut: Future<Output = crate::FsResult<()>> + ProviderTask,
     {
         self.restore_path_records(
             source, paths, if_current, idempotency_key, permit, budget, cancellation,
@@ -5462,7 +5462,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
                 ).await?;
                 return Ok((JoinOutcome::StaleTarget(Generation {
                     workspace: self.target.clone(), id, publication_closure: None,
-                }), original.claim_allocation(0, 0).map_err(FsError::from)?));
+                }), original.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED).map_err(FsError::from)?));
             }
             let (outcome, allocation) = self.target.volume.fs.apply_workspace_join_guarded_with_native_work(
                 crate::facade::WorkspaceJoinRequest {

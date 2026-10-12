@@ -43,7 +43,7 @@ fn copy_path(root: &Path, leaf: Option<&Path>, work: &NativeMaterializationWork)
     let capacity = copied.checked_add(usize::from(leaf.is_some())).ok_or_else(overflow)?;
     let copy = crate::WorkCounters { bytes_copied: u64::try_from(copied).map_err(|_| overflow())?, ..crate::WorkCounters::UNCHARGED };
     work.admit(copy)?;
-    let allocation = work.claim_allocation(u64::try_from(capacity).map_err(|_| overflow())?, u64::from(capacity != 0))?;
+    let allocation = work.claim_allocation(u64::try_from(capacity).map_err(|_| overflow())?, u64::from(capacity != 0), crate::WorkCounters::UNCHARGED)?;
     let mut owned = NativeCorePath { path: PathBuf::new(), allocation };
     owned.path.try_reserve_exact(capacity).map_err(NativeTreeMaterializationError::AllocationFailed)?;
     // Keep custody of the real allocator capacity before any late refusal.
@@ -108,7 +108,7 @@ impl<F> NativeCoreLogSource<F> {
             namespace: Namespace {
                 root: root.path,
                 durability: if matches!(admission, Admission::Owned(_)) && self.frame.deferral.as_ref().is_some_and(|deferral| deferral.load(Ordering::Acquire)) { Durability::Deferred } else { Durability::Flushed },
-                admission,
+                admission, _allocation: None,
             },
             _allocation: root.allocation,
         };
@@ -130,7 +130,7 @@ impl LocalCoreStateStore {
     where F: FnOnce(&Namespace, &mut CoreLog, &NativeMaterializationWork, &crate::CancellationToken) -> Result<T, LocalCoreStateStoreError> + Send + 'static {
         check(original, cancellation)?;
         let root = copy_path(&self.root, None, original)?;
-        let allocation = original.claim_allocation(u64::try_from(std::mem::size_of::<NativeCoreLogFrame<F>>()).map_err(|_| overflow())?, 1)?;
+        let allocation = original.claim_allocation(u64::try_from(std::mem::size_of::<NativeCoreLogFrame<F>>()).map_err(|_| overflow())?, 1, crate::WorkCounters::UNCHARGED)?;
         let source = NativeCoreLogSource {
             frame: Box::new(NativeCoreLogFrame {
                 operation: Some(operation), root: Some(root), ownership: self.ownership.clone(),
@@ -141,7 +141,7 @@ impl LocalCoreStateStore {
         };
         // This getter only clones the SAME original/resource/cancellation owner.
         // The runtime funds its actual queue/completion/closure, not a new budget.
-        let task = acyclic_native_runtime::run_blocking_io_measured(move || source.run(), original.runtime_meter_owner())
+        let task = acyclic_native_runtime::run_blocking_io(move || source.run(), Some((original.runtime_meter_owner(), false)))
             .map_err(NativeTreeMaterializationError::from_runtime_error)?;
         task.await.map_err(NativeTreeMaterializationError::from_runtime_error)?
     }

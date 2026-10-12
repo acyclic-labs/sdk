@@ -13,7 +13,7 @@ import {
 import {
   ProtocolIdentitySchema,
 } from "../generated/proto/protocol/v1/protocol_pb.js";
-import { AgentHarness, HarnessBuilder, type AgentHarnessHost } from "./runtime.js";
+import { HarnessBuilder } from "./runtime.js";
 import type { Attachment, ConversationMessage, ConversationMessageId, ConversationPage, ConversationState, FileDescriptor, FileRef, Limits, ReferencedAttachments, VolumeRef } from "./conversation.js";
 import type { ToolJsonSchema } from "./model.js";
 import type { InteractionId } from "./interaction.js";
@@ -191,9 +191,6 @@ export class Harness {
 
   /** Starts a typed runtime with already initialized Rust contract admission. */
   static builder(contracts: NativeContracts): HarnessBuilder { return new HarnessBuilder(contracts); }
-
-  /** Connects to a durable runtime host through its explicit typed capability. */
-  static connect(host: AgentHarnessHost): Promise<AgentHarness> { return host.connect(); }
 
   /** Initializes the shared Rust core and creates an empty aggregate. */
   static async create(options: HarnessOptions): Promise<Harness> {

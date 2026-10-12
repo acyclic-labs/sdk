@@ -344,7 +344,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
         "baseline_file": producer.references["native_import_baseline"]
     });
     persist(&publication_path, &json!({ "operation_id": publication_operation,
-        "caller": logical_root.task, "caller_lease": logical_root.lease })).await?;
+        "caller_lease": logical_root.lease })).await?;
     let manifest = root.join("native-scenario.json");
     persist(&manifest, &json!({
         "format_version": 1,

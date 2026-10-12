@@ -123,7 +123,7 @@ impl NativeViewManifest {
             if let Some(io) = io {
                 io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
             }
-            mapping.volume.validate()?;
+            mapping.volume.validate(&mut None)?;
             mapping.generation.validate()?;
             if mapping.generation.as_resource().provider() != mapping.volume.provider()
                 || !mapping.path.is_absolute()
@@ -248,7 +248,7 @@ impl NativeProcessRequest {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         let io = super::PreparationIo::from_native_work(work)?;
-        io.decode_preparation_with_code::<Self>(
+        io.decode_preparation::<Self>(
             bytes, crate::wire::ErrorCode::Storage,
         )?.into_native_parts()
     }
@@ -353,7 +353,7 @@ impl NativeProcessResult {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         let io = super::PreparationIo::from_native_work(work)?;
-        let mut decoded = io.decode_preparation_with_code::<Self>(
+        let mut decoded = io.decode_preparation::<Self>(
             bytes, crate::wire::ErrorCode::Storage,
         )?;
         let owned = (std::mem::size_of::<Self>() as u64)

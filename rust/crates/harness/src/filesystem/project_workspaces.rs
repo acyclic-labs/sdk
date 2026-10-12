@@ -49,7 +49,7 @@ impl<A, O> FilesystemProjectWorkspaces<A, O> {
         project: VolumeRef,
     ) -> Result<Self> {
         let controller =
-            ParentProjectController::new(host.as_ref(), parent, verifier, scope, project)?;
+            ParentProjectController::new(host.as_ref(), parent, verifier, scope, &project, None)?;
         Ok(Self {
             host: Arc::clone(host),
             parent: controller.parent,
@@ -190,7 +190,7 @@ where
                     "project join child is not the inspected fork".into(),
                 ));
             }
-            notice.validate()?;
+            notice.validate(&mut None)?;
             if notice.kind != crate::conversation::MessageKind::Merge {
                 return Err(Error::Invalid("project join notice is not a merge".into()));
             }

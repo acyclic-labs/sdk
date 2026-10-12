@@ -1,6 +1,6 @@
 //! Live-only bounded execution for arbitrary Rust futures.
 
-use crate::{Admission, OperationId, Outcome};
+use crate::{Admission, NativeWork, OperationId, Outcome};
 use acyclic_stream::BoxProviderStream as BoxStream;
 use futures::{StreamExt, stream};
 use std::{
@@ -75,11 +75,6 @@ struct GroupAdmission {
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-type GroupWork<'a> = Option<&'a acyclic_fs::NativeMaterializationWork>;
-#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-type GroupWork<'a> = Option<&'a ()>;
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 struct GroupChildCustody {
     _previous: Option<Box<GroupChildCustody>>,
     allocation: acyclic_fs::NativeAllocation,
@@ -104,7 +99,7 @@ pub struct TaskGroup {
 
 impl TaskGroup {
     /// Creates a task group with bounded concurrency.
-    pub fn new(max_concurrency: usize, work: GroupWork<'_>) -> crate::Result<Self> {
+    pub fn new(max_concurrency: usize, work: NativeWork<'_>) -> crate::Result<Self> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let custody = if let Some(work) = work {
             let bytes = (std::mem::size_of::<GroupState>() + std::mem::size_of::<Semaphore>()) as u64;
@@ -133,12 +128,9 @@ impl TaskGroup {
 
     /// Creates an independently bounded child retained in this cancellation tree.
     pub fn child(
-        &self, max_concurrency: usize, work: GroupWork<'_>,
+        &self, max_concurrency: usize, work: NativeWork<'_>,
     ) -> crate::Result<Self> {
-        self.attach_child(Self::new(max_concurrency, work)?, work)
-    }
-
-    fn attach_child(&self, mut child: Self, work: GroupWork<'_>) -> crate::Result<Self> {
+        let mut child = Self::new(max_concurrency, work)?;
         Arc::get_mut(&mut child.state).expect("new unattached task group")._parent =
             Some(Arc::clone(&self.state));
         let admission = self
@@ -215,13 +207,13 @@ impl TaskGroup {
             Admission::Accepted(handle) => handle,
             Admission::Rejected { reason } => TaskHandle {
                 id: OperationId::new(),
-                join: Some(spawn_live(async move { Outcome::Failed { message: reason } })),
+                join: spawn_live(async move { Outcome::Failed { message: reason } }),
             },
             Admission::Indeterminate { operation_id } => TaskHandle {
                 id: operation_id,
-                join: Some(spawn_live(async move {
+                join: spawn_live(async move {
                     Outcome::Indeterminate { operation_id }
-                })),
+                }),
             },
         }
     }
@@ -283,7 +275,7 @@ impl TaskGroup {
         let _ = start.send(());
         Admission::Accepted(TaskHandle {
             id,
-            join: Some(join),
+            join,
         })
     }
 
@@ -354,7 +346,7 @@ impl TaskGroup {
 /// Addressable handle for an admitted live task.
 pub struct TaskHandle<T> {
     id: OperationId,
-    join: Option<LiveJoin<T>>,
+    join: LiveJoin<T>,
 }
 
 impl<T> TaskHandle<T> {
@@ -366,13 +358,11 @@ impl<T> TaskHandle<T> {
 
     /// Requests cancellation.
     pub fn cancel(&self) {
-        if let Some(join) = &self.join {
-            join.abort();
-        }
+        self.join.abort();
     }
 
     /// Waits for a terminal outcome, cancelling this task if the wait is dropped.
-    pub fn result(mut self) -> impl Future<Output = Outcome<T>> {
+    pub fn result(self) -> impl Future<Output = Outcome<T>> {
         struct CancelOnDrop(Option<AbortHandle>);
         impl Drop for CancelOnDrop {
             fn drop(&mut self) {
@@ -381,28 +371,19 @@ impl<T> TaskHandle<T> {
                 }
             }
         }
-        let guard = CancelOnDrop(self.join.as_ref().map(|join| join.abort_handle()));
+        let guard = CancelOnDrop(Some(self.join.abort_handle()));
         async move {
             let mut guard = guard;
-            let outcome = match self.join.take() {
-                Some(join) => {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    {
-                        match join.await {
-                            Ok(outcome) => outcome,
-                            Err(error) if error.is_cancelled() => Outcome::Cancelled,
-                            Err(error) => Outcome::Failed { message: error.to_string() },
-                        }
-                    }
-                    #[cfg(target_arch = "wasm32")]
-                    {
-                        match join.outcome.await {
-                            Ok(outcome) => outcome,
-                            Err(error) => Outcome::Failed { message: error.to_string() },
-                        }
-                    }
-                }
-                None => Outcome::Failed { message: "task handle has no join".into() },
+            #[cfg(not(target_arch = "wasm32"))]
+            let outcome = match self.join.await {
+                Ok(outcome) => outcome,
+                Err(error) if error.is_cancelled() => Outcome::Cancelled,
+                Err(error) => Outcome::Failed { message: error.to_string() },
+            };
+            #[cfg(target_arch = "wasm32")]
+            let outcome = match self.join.outcome.await {
+                Ok(outcome) => outcome,
+                Err(error) => Outcome::Failed { message: error.to_string() },
             };
             guard.0 = None;
             outcome

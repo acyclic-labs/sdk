@@ -206,7 +206,6 @@ impl<'de> serde::Deserialize<'de> for OwnedBytes {
 /// Exclusive fixed-buffer preparation for the unified guarded byte carrier.
 #[must_use]
 pub struct PreparedOwnedBytes<G: Send + Sync + 'static> {
-    maximum_len: usize,
     guard: Arc<GuardBundle<G>>,
 }
 
@@ -227,7 +226,6 @@ impl<G: Send + Sync + 'static> PreparedOwnedBytes<G> {
         match metadata {
             Ok(metadata) => Ok(Self {
                 guard: Arc::new(GuardBundle { data, _metadata: metadata, _original_guard: original_guard }),
-                maximum_len,
             }),
             Err(error) => Err(PreparedOwnedBytesFailure { data, original_guard: Some(original_guard), error }),
         }
@@ -235,7 +233,7 @@ impl<G: Send + Sync + 'static> PreparedOwnedBytes<G> {
 
     /// Returns the initialized fixed writable bound established before the action.
     #[must_use]
-    pub const fn maximum_len(&self) -> usize { self.maximum_len }
+    pub fn maximum_len(&self) -> usize { self.guard.data.len() }
 
     /// Borrows only the fixed initialized slice. No vector or mutable owner escapes.
     pub fn writable(&mut self) -> &mut [u8] {
@@ -244,10 +242,10 @@ impl<G: Send + Sync + 'static> PreparedOwnedBytes<G> {
 
     /// Freezes the checked prefix into the unified carrier using existing controls.
     pub fn freeze(self, actual_len: usize) -> Result<OwnedBytes, Self> {
-        if actual_len > self.maximum_len { return Err(self); }
+        if actual_len > self.maximum_len() { return Err(self); }
         Ok(OwnedBytes {
             bytes: Bytes::new(), start: 0, end: actual_len,
-            retained_capacity: Some(self.maximum_len), guard: Some(self.guard),
+            retained_capacity: Some(self.maximum_len()), guard: Some(self.guard),
         })
     }
 }
@@ -260,7 +258,7 @@ impl<G: Send + Sync + 'static> AsMut<[u8]> for PreparedOwnedBytes<G> {
 #[cfg(not(target_arch = "wasm32"))]
 impl<G: Send + Sync + 'static> std::fmt::Debug for PreparedOwnedBytes<G> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("PreparedOwnedBytes").field("maximum_len", &self.maximum_len).finish_non_exhaustive()
+        formatter.debug_struct("PreparedOwnedBytes").field("maximum_len", &self.maximum_len()).finish_non_exhaustive()
     }
 }
 
