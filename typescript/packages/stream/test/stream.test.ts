@@ -4,9 +4,9 @@ import fc from "fast-check";
 import { zstdCompressSync } from "node:zlib";
 import { AcknowledgeDeliveryRequestSchema, AppendMutationSchema, AppendRequestSchema, AppendResponseSchema, ChildrenPageRequestSchema, ChildrenPageResponseSchema, ChildrenRequestSchema, CommitConditionSchema, CommitMutationSchema, CommitRequestSchema, CommitResponseSchema, CommittedEnvelopeSchema, FollowRequestSchema, ForkRequestSchema, InspectIdempotencyRequestSchema, Codec, ReadCommitRequestSchema, ReadRequestSchema, ReadResponseSchema, RecordBatchSchema, RecordSchema, StreamLimit, TailConditionSchema, TailRequestSchema } from "../generated/proto/stream/v1/stream_pb.js";
 import { is_stream_error_code, WasmStream, decodeHttpResponse, encodeHttpRequest, normalizeCommitRequest, projectMemoryResponse, validateAppendRequest, validateRequest } from "../generated/wasm/acyclic_stream_wasm.js";
-import { ensureStreamWasm, readResponseRecords, wireAppendRequest, wireRequest } from "../src/contract.js";
+import { ensureStreamWasm, readResponseRecords, validateSequenceValue, wireAppendRequest, wireRequest } from "../src/contract.js";
 import { DefaultStreamProvider } from "../src/default.js";
-import { HttpStreamProvider, MemoryStreamProvider, StreamClient, StreamError, TOKEN_OPERATIONS, compareStreamPaths, idempotencyKey, jsonCodec, sequence, type Record as StreamRecord } from "../src/index.js";
+import { HttpStreamProvider, MemoryStreamProvider, StreamClient, StreamError, TOKEN_OPERATIONS, compareStreamPaths, idempotencyKey, jsonCodec, type Record as StreamRecord } from "../src/index.js";
 import type { StreamProvider } from "../src/types.js";
 
 const key = (value: string) => idempotencyKey(new TextEncoder().encode(value));
@@ -156,10 +156,10 @@ describe("website Stream contract", () => {
 
   test("uses Rust's canonical unsigned sequence width", () => {
     const maximum = 0xffff_ffff_ffff_ffffn;
-    expect(sequence(0n)).toBe(0n);
-    expect(sequence(maximum)).toBe(maximum);
-    expect(() => sequence(-1n)).toThrow(RangeError);
-    expect(() => sequence(maximum + 1n)).toThrow(RangeError);
+    expect(validateSequenceValue(0n)).toBe(0n);
+    expect(validateSequenceValue(maximum)).toBe(maximum);
+    expect(() => validateSequenceValue(-1n)).toThrow(RangeError);
+    expect(() => validateSequenceValue(maximum + 1n)).toThrow(RangeError);
   });
 
   test("rejects oversized commands and invalid cursors before they can change state", async () => {

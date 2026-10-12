@@ -327,10 +327,10 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
     }
     fn inbox<'a>(&'a self, after: u64, maximum: usize) -> BoxFuture<'a, Result<Vec<crate::scheduler::InboxItem>>> {
         Box::pin(async move {
-            self.owner.as_ref().verify(true).await?;
+            self.owner.as_ref().verify(true, &mut None).await?;
             let (task, _) = self.owner.as_ref().task_binding();
             let items = self.host.inbox(task, after, maximum).await?;
-            self.owner.as_ref().verify(true).await?;
+            self.owner.as_ref().verify(true, &mut None).await?;
             Ok(items)
         })
     }
@@ -922,7 +922,7 @@ where
             self.stream.clone(),
             self.filesystem.clone(),
             self.volume.clone(),
-            self.verifier.clone(),
+            self.verifier.clone(), crate::core::SchemaRegistry::new(),
             self.signed.clone(),
             self.maximum_payload_bytes.min(limits.file_bytes),
         )?
@@ -931,7 +931,7 @@ where
         let mut latest = None;
         while let Some(page) = replay.next_page(&journal).await? {
             self.host
-                .verify_model_history(task, operation, &page)
+                .verify_model_history(task, operation, page.iter(), &mut None)
                 .await?;
             for record in page {
                 if let ExecutionEvent::ModelStarted {
@@ -1265,8 +1265,8 @@ where
             })
     }
 
-    pub(super) fn tool_registry(&self) -> ToolRegistry {
-        self.tools.clone()
+    pub(super) fn tool_registry(&self) -> &ToolRegistry {
+        &self.tools
     }
 
     pub(super) async fn execution_journal(
@@ -1321,7 +1321,7 @@ where
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "readonly fork request differs from its original admission" });
         }
-        let claim = self.filesystem.observe_original_fork_allocation_claim_with_native_work(
+        let claim = self.filesystem.fork_allocation(
             &witness, query, &original.0, &self.volume, work,
         )?.await?;
         let Some(claim) = claim else { return Ok(None); };
@@ -1817,9 +1817,9 @@ where
             let (record, custody) = journal.observe_transition_with_native_work(slot.revision, work).await?;
             io.absorb_native_custody(custody)?;
             record
-        } else { journal.observe_transition(slot.revision).await? };
+        } else { journal.observe_transition(slot.revision, None).await? };
         #[cfg(target_arch = "wasm32")]
-        let record = journal.observe_transition(slot.revision).await?;
+        let record = journal.observe_transition(slot.revision, None).await?;
         if record.next.revision != slot.revision
             || record.next.machine != admission.machine
             || !matches!(record.transition.status, MachineStatus::Suspended)
@@ -1857,7 +1857,7 @@ where
                 Some(io), crate::wire::ErrorCode::Unsupported, "native wait payload requires original observer",
             ))?;
             let body = context.context().read_file_with_native_work(&command.payload, work).await?;
-            io.decode_preparation::<Value>(&body.0)?.into_retained()
+            io.decode_preparation::<Value>(&body)?.into_retained()
         } else {
             crate::contract::json_from_slice(&context.context().read_file(&command.payload).await?)
                 .map_err(|error| Error::Invalid(format!("invalid wait command JSON: {error}")))?
@@ -2246,7 +2246,7 @@ where
                     });
                 }
                 let body = shared.context().read_file_with_native_work(&command.payload, work).await?;
-                let payload = io.decode_preparation::<Value>(&body.0)?.into_retained();
+                let payload = io.decode_preparation::<Value>(&body)?.into_retained();
                 drop(body);
                 commands.execute_with_native_work(
                     Arc::clone(shared), observed::clone_fence(fence, Some(io))?,

@@ -15,9 +15,7 @@ type Runtime = pi_runtime::PiTaskRuntime<LocalStream, LocalAuthorityBackend, Loc
 type Filesystem = FilesystemHost<LocalAuthorityBackend, LocalObjectBackend>;
 type RootProvider = pi_root_provider::PiRootProvider<LocalStream>;
 
-/// Borrowed embedding of canonical command adapters. The provider instances and
-/// live handles are transient; command identities and results belong exclusively
-/// to the existing task, workflow and effect journals.
+/// Borrowed embedding of canonical command adapters.
 pub(crate) struct PiWorkflowHost<'a> {
     directory: &'a Path,
     runtime: Arc<Runtime>,
@@ -73,7 +71,6 @@ impl<'a> PiWorkflowHost<'a> {
         })
     }
 
-
     fn scoped_control_host(&self, kind: &str) -> Option<&dyn TaskCommandHost> {
         match kind {
             "acyclic.pi.fork" | "acyclic.pi.observe-source" => self.fork_controls,
@@ -94,7 +91,7 @@ impl<'a> PiWorkflowHost<'a> {
                 reason: "Pi driver requires its original admitted root",
             });
         };
-        let admitted = pi_recovery::authenticate_pi_task_with_native_work(
+        let admitted = pi_recovery::authenticate_pi_task(
             &self.runtime.runtime, binding,
             pi_recovery::PiTaskOrigin::RootState(self.retained), work,
         ).await?;
@@ -167,7 +164,7 @@ impl<'a> PiWorkflowHost<'a> {
         self.runtime.verify_owner_with_native_work(&owner, work)?;
         let payload_custody;
         let staged_payload;
-        (staged_payload, payload_custody) = pi_root_provider::stage_pi_input_with_native_work(
+        (staged_payload, payload_custody) = pi_root_provider::stage_pi_input(
             &owner, &self.filesystem, operation, "command", payload, work,
         ).await?;
         let kind_custody;
@@ -219,7 +216,7 @@ impl<'a> PiWorkflowHost<'a> {
         let operation = command.operation_id;
         let input_custody;
         let input;
-        (input, input_custody) = pi_root_provider::stage_pi_input_with_native_work(
+        (input, input_custody) = pi_root_provider::stage_pi_input(
             &owner, &self.filesystem, operation, "control",
             &pi_task::PiControlInput { command }, self.work()?,
         ).await?;

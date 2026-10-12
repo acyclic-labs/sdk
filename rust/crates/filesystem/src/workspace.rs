@@ -3544,11 +3544,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             budget, cancellation).await
     }
 
-    async fn hard_link_with_accounting(
+    fn prepare_hard_link(
         &mut self, source: &str, destination: &str,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &crate::CancellationToken,
-    ) -> Result<(), WorkspaceError> {
+    ) -> Result<crate::kernel::Owned<Vec<AuthoredMutation>>, WorkspaceError> {
         let mut source = self.mutation_path_with_accounting(source, accounting, cancellation)?;
         let mut destination = self.mutation_path_with_accounting(destination, accounting, cancellation)?;
         source.allocation.absorb(&mut destination.allocation)?;
@@ -3559,17 +3559,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         );
         let mut operations = crate::kernel::Owned::allocate(1, accounting)?;
         Self::push_workspace_mutation(&mut operations, operation, accounting)?;
-        self.apply_workspace_authored_with_accounting(operations, accounting, cancellation).await
+        Ok(operations)
     }
 
-    pub(crate) async fn hard_link_measured(
-        &mut self, source: &str, destination: &str,
-        budget: crate::WorkBudget, cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::WorkCounters, WorkspaceError> {
+    pub(crate) fn hard_link_measured<'a>(
+        &'a mut self, source: &str, destination: &str,
+        budget: crate::WorkBudget, cancellation: &'a crate::CancellationToken,
+    ) -> impl std::future::Future<Output = crate::MeasuredResult<crate::WorkCounters, WorkspaceError>> + crate::async_storage::StorageFuture + 'a {
         let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(budget, cancellation);
-        let result = self.hard_link_with_accounting(source, destination, &mut accounting, cancellation).await;
-        result.map(|()| accounting.spent())
-            .map_err(|error| crate::OperationFailure::new(error, accounting.spent()))
+        let operations = self.prepare_hard_link(source, destination, &mut accounting, cancellation);
+        async move {
+            let result = async {
+                self.apply_workspace_authored_with_accounting(operations?, &mut accounting, cancellation).await
+            }.await;
+            result.map(|()| accounting.spent())
+                .map_err(|error| crate::OperationFailure::new(error, accounting.spent()))
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -3877,8 +3882,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         &mut self, source: &str, destination: &str, original: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<(), WorkspaceError> {
-        self.hard_link_with_accounting(source, destination,
-            &mut crate::kernel::allocation::KernelAccounting::native(original, cancellation), cancellation).await
+        let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
+        let operations = self.prepare_hard_link(source, destination, &mut accounting, cancellation)?;
+        self.apply_workspace_authored_with_accounting(operations, &mut accounting, cancellation).await
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -5471,13 +5477,13 @@ async fn namespace_records_to_file_root_with_accounting<A: AsyncAuthorityStore, 
     if ids.is_empty() || maximum_entries == 0 { return Ok(matches); }
     let limits = volume.config.limits;
     let generation = GenerationId::new(generation_root.digest);
-    let cache_key = crate::path_index::cache_key_for_root_with_accounting(
+    let cache_key = crate::path_index::cache_key(
         generation, root.root_file_id, root.file_table, ids, accounting, cancellation,
     )?;
-    let (bytes, allocation) = volume.fs.path_index().load_with_accounting(cache_key, accounting, cancellation)?;
+    let (bytes, allocation) = volume.fs.path_index().load(cache_key, accounting, cancellation)?;
     let bytes = ReverseOwned { value: bytes, allocation };
     if let Some(payload) = bytes.value.as_ref() {
-        let (cached, allocation) = crate::path_index::GenerationPathQuery::decode_with_accounting(
+        let (cached, allocation) = crate::path_index::decode(
             payload, generation, ids, limits, accounting, cancellation,
         )?;
         let mut cached = ReverseOwned { value: cached, allocation };
@@ -5624,12 +5630,12 @@ async fn namespace_records_to_file_root_with_accounting<A: AsyncAuthorityStore, 
     let pending_bytes = workspace_vec_bytes(&pending.value);
     reverse_drop(pending, pending_bytes, accounting)?;
     reverse_sort(&mut matches.value.records, accounting)?;
-    let (bytes, allocation) = crate::path_index::encode_records_with_accounting(
+    let (bytes, allocation) = crate::path_index::encode_records(
         generation, ids, &matches.value.records.entries, accounting, cancellation,
     )?;
     let bytes = ReverseOwned { value: bytes, allocation };
     if let Some(payload) = &bytes.value {
-        volume.fs.path_index().store_with_accounting(cache_key, payload, accounting, cancellation)?;
+        volume.fs.path_index().store(cache_key, payload, accounting, cancellation)?;
     }
     let bytes_count = bytes.value.as_ref().map_or(0, workspace_vec_bytes);
     reverse_drop(bytes, bytes_count, accounting)?;
@@ -6369,8 +6375,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> JoinPlan<A, O> {
         self.source
             .volume
             .fs
-            .workspace_join_changes(self.base.id, &self.source_head, self.maximum_changes)
-            .await
+            .workspace_join_changes(self.base.id, &self.source_head, self.maximum_changes, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| crate::FsReceipt { value: receipt.value.0, work: receipt.work }).map_err(|failure| failure.error)
     }
 
     /// Applies this immutable plan through one target-head CAS.
@@ -7432,8 +7438,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
             .workspace
             .volume
             .fs
-            .workspace_join_changes_bounded(self.id, to, maximum_changes, budget, cancellation)
-            .await?;
+            .workspace_join_changes(self.id, to, maximum_changes, budget, cancellation)
+            .await.map(|receipt| crate::FsReceipt { value: receipt.value.0, work: receipt.work })?;
         Ok(ChangeSet {
             from: self.clone(),
             to: to.clone(),
@@ -7452,8 +7458,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         cancellation: &crate::CancellationToken,
     ) -> Result<(ChangeSet<A, O>, crate::NativeAllocation), (WorkspaceError, Option<crate::NativeAllocation>)> {
         let (changes, allocation) = self.workspace.volume.fs
-            .workspace_join_changes_with_native_work(self.id, to, maximum_changes, original, cancellation)
-            .await.map_err(crate::facade::native_workspace_failure)?;
+            .workspace_join_changes(self.id, to, maximum_changes, original, cancellation)
+            .await.and_then(|(diff, allocation)| match allocation {
+                crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => Ok((diff, allocation)),
+                crate::kernel::allocation::KernelOwnedAllocation::Standalone => Err(WorkspaceError::Filesystem(
+                    FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout),
+                )),
+            }).map_err(crate::facade::native_workspace_failure)?;
         Ok((ChangeSet {
             from: self.clone(),
             to: to.clone(),
@@ -7798,17 +7809,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
         self.workspace
             .volume
             .fs
-            .generation_parents(&self.workspace.volume, self.id)
-            .await
+            .generation_parents(&self.workspace.volume, self.id, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     pub async fn parents_with_native_work(
         &self, original: &crate::NativeMaterializationWork, cancellation: &crate::CancellationToken,
     ) -> Result<(Vec<GenerationId>, crate::NativeAllocation), (WorkspaceError, Option<crate::NativeAllocation>)> {
-        self.workspace.volume.fs.generation_parents_with_native_work(
+        self.workspace.volume.fs.generation_parents(
             &self.workspace.volume, self.id, original, cancellation,
-        ).await.map_err(crate::facade::native_workspace_failure)
+        ).await.map(|(parents, allocation)| match allocation {
+            crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => (parents, allocation),
+            crate::kernel::allocation::KernelOwnedAllocation::Standalone => unreachable!("native root retains parent allocation"),
+        }).map_err(crate::facade::native_workspace_failure)
     }
 
     /// Reads at most `maximum_bytes` from one complete file in this exact
@@ -8063,18 +8077,20 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Generation<A, O> {
     }
 
     /// Lists this exact generation with authenticated bounded work.
-    pub async fn list_directory_measured(
-        &self,
-        path: &str,
-        after: Option<&LogicalName>,
+    pub fn list_directory_measured<'a>(
+        &'a self,
+        path: &'a str,
+        after: Option<&'a LogicalName>,
         maximum_entries: u32,
         budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<WorkspaceDirectoryPage>, WorkspaceError> {
+        cancellation: &'a crate::CancellationToken,
+    ) -> impl std::future::Future<Output = crate::MeasuredResult<
+        crate::OperationReceipt<WorkspaceDirectoryPage>, WorkspaceError,
+    >> + StorageFuture + 'a {
         list_generation_directory_measured(
             &self.workspace, GenerationSelector::Exact(self.id), path, after,
             maximum_entries, budget, cancellation,
-        ).await
+        )
     }
 
     /// Returns the same exact-generation tree page with original native custody.

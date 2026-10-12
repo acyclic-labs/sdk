@@ -66,6 +66,8 @@ impl<A, O> FilesystemProjectWorkspaces<A, O> {
             project: self.project.clone(),
             verifier: self.verifier.clone(),
             scope: self.scope.clone(),
+            #[cfg(not(target_arch = "wasm32"))]
+            native_custody: None,
         }
     }
 

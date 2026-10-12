@@ -703,7 +703,7 @@ impl ContentPublisher for MemoryContentPublisher {
                 .map_err(acyclic_fs::OperationFailure::before_work)?;
             let result = async {
                 let persisted = self.files.stage_once_with_io(
-                    operation_id, path, bytes, media_type, display_name, &io).await?;
+                    operation_id, path, bytes, media_type, display_name, Some(&io), None, None).await?;
                 self.retain_with_io(&persisted, bytes, &io)?;
                 Ok(persisted)
             }.await;
@@ -726,9 +726,9 @@ impl ContentPublisher for MemoryContentPublisher {
     ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
             let io = super::PreparationIo::from_native_work(work)?;
-            let result = async {
+            let result: Result<FileRef> = async {
                 let persisted = self.files.stage_once_with_io(
-                    operation_id, path, bytes, media_type, display_name, &io).await?;
+                    operation_id, path, bytes, media_type, display_name, Some(&io), None, None).await?;
                 self.retain_with_io(&persisted, bytes, &io)?;
                 Ok(persisted)
             }.await;
@@ -745,7 +745,7 @@ impl ContentPublisher for MemoryContentPublisher {
     ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
         crate::NativeFutureBundle::new(work, || async move {
             let io = super::PreparationIo::from_native_work(work)?;
-            let persisted = self.files.stage_at_with_io(operation_id, source, bytes, Some(&io)).await?;
+            let persisted = self.files.stage_at_with_io(operation_id, source, bytes, Some(&io), None, None).await?;
             self.retain_with_io(&persisted, bytes, &io)?;
             let custody = io.into_native_custody(super::UploadRecord::logical_owned_bytes(&persisted)?)?;
             Ok((persisted, custody))
@@ -944,7 +944,7 @@ impl MemoryHarnessStorage {
                 stream.clone(),
                 Arc::clone(&host),
                 volume.clone(),
-                issuer.verifier(),
+                issuer.verifier(), crate::core::SchemaRegistry::new(),
                 scope.clone(),
                 maximum_file_bytes,
             )?

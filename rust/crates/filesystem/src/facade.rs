@@ -3512,47 +3512,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         })
     }
 
-    pub(crate) async fn generation_parents(
-        &self,
-        volume: &Volume<A, O>,
-        generation: GenerationId,
-    ) -> Result<Vec<GenerationId>, WorkspaceError> {
-        let object = ObjectId {
-            kind: ObjectKind::GenerationRoot,
-            digest: generation.digest(),
-        };
-        let (root, _) = read_generation_root(
-            &self.inner.objects,
-            object,
-            volume.config,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map_err(WorkspaceError::engine)?;
-        if root.volume_id != volume.id {
-            return Err(WorkspaceError::ForeignGeneration);
-        }
-        Ok(root.parents)
+    pub(crate) async fn generation_parents<W: FsWork>(
+        &self, volume: &Volume<A, O>, generation: GenerationId, budget: W, cancellation: &CancellationToken,
+    ) -> W::Output<(Vec<GenerationId>, KernelOwnedAllocation), WorkspaceError> {
+        let mut accounting = budget.accounting(cancellation);
+        let standalone = readonly_standalone_live(&accounting).is_some();
+        let result = async {
+            let decoded = read_generation_root_with_accounting(
+                &self.inner.objects, ObjectId { kind: ObjectKind::GenerationRoot, digest: generation.digest() },
+                volume.config, &mut accounting, cancellation,
+            ).await.map_err(|error| if standalone { WorkspaceError::engine(error) } else { error.into() })?;
+            if decoded.0.volume_id != volume.id { return Err(WorkspaceError::ForeignGeneration); }
+            Ok((decoded.0.parents, decoded.1))
+        }.await;
+        budget.finish(result, &accounting)
     }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn generation_parents_with_native_work(
-        &self, volume: &Volume<A, O>, generation: GenerationId, original: &NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<(Vec<GenerationId>, NativeAllocation), WorkspaceError> {
-        let mut accounting = KernelAccounting::native(original, cancellation);
-        let decoded = read_generation_root_with_accounting(
-            &self.inner.objects, ObjectId { kind: ObjectKind::GenerationRoot, digest: generation.digest() },
-            volume.config, &mut accounting, cancellation,
-        ).await?;
-        if decoded.0.volume_id != volume.id { return Err(WorkspaceError::ForeignGeneration); }
-        let guard = match decoded.1 {
-            KernelOwnedAllocation::NativeOriginal(guard) => guard, KernelOwnedAllocation::Standalone =>
-                unreachable!("original-native root retains its parent allocation"),
-        };
-        Ok((decoded.0.parents, guard))
-    }
-
 
     /// Creates or recovers a named workspace under explicit work and cancellation.
     pub async fn create_workspace(
@@ -4254,13 +4228,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 } else { crate::GenerationFork::Independent },
             }));
         }
-        let head = source.workspace.head(accounting.remaining()?, cancellation).await;
+        let head = source.workspace.volume.checkout(
+            GenerationSelector::Head, CheckoutMode::read_only_pinned(), accounting.remaining()?, cancellation,
+        ).await.map(|receipt| FsReceipt { value: receipt.value.generation_id(), work: receipt.work })
+            .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, WorkspaceError::from));
         let work = match &head { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
         merge_fork_backend_work(accounting, work)?;
         let head = head.map_err(|failure| failure.error)?;
         Ok(Some(crate::GenerationForkSource {
             authority: volume_authority_id(source.workspace.volume.id), generation: source.id,
-            lineage: if head.value.id == source.id { crate::GenerationFork::PublishedPrefix }
+            lineage: if head.value == source.id { crate::GenerationFork::PublishedPrefix }
                 else { crate::GenerationFork::Independent },
         }))
     }
@@ -4715,59 +4692,18 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         Ok(GenerationId::new(digest))
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn workspace_join_changes(
-        &self,
-        base: GenerationId,
-        source: &crate::Generation<A, O>,
-        maximum_changes: u32,
-    ) -> Result<FsReceipt<GenerationDiff>, WorkspaceError> {
-        self.workspace_join_changes_bounded(
-            base,
-            source,
-            maximum_changes,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
-        .await
-        .map_err(|failure| failure.error)
-    }
-
-    pub(crate) async fn workspace_join_changes_bounded(
-        &self,
-        base: GenerationId,
-        source: &crate::Generation<A, O>,
-        maximum_changes: u32,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> MeasuredResult<FsReceipt<GenerationDiff>, WorkspaceError> {
-        let mut accounting = KernelAccounting::standalone(budget, cancellation);
+    pub(crate) async fn workspace_join_changes<W: FsWork>(
+        &self, base: GenerationId, source: &crate::Generation<A, O>, maximum_changes: u32,
+        budget: W, cancellation: &CancellationToken,
+    ) -> W::Output<(GenerationDiff, KernelOwnedAllocation), WorkspaceError> {
+        let mut accounting = budget.accounting(cancellation);
+        let standalone = readonly_standalone_live(&accounting).is_some();
         let result = self.workspace_join_changes_with_accounting(
             base, source, maximum_changes, &mut accounting, cancellation,
-        ).await;
-        let work = accounting.spent();
-        result.map(|(value, allocation)| { drop(allocation); FsReceipt { value, work } }).map_err(|error| {
-            let error = match error {
-                WorkspaceError::Filesystem(error) => WorkspaceError::engine(error), error => error,
-            };
-            OperationFailure::new(error, work)
-        })
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn workspace_join_changes_with_native_work(
-        &self, base: GenerationId, source: &crate::Generation<A, O>, maximum_changes: u32,
-        original: &NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<(GenerationDiff, NativeAllocation), WorkspaceError> {
-        let mut accounting = KernelAccounting::native(original, cancellation);
-        let (diff, allocation) = self.workspace_join_changes_with_accounting(
-            base, source, maximum_changes, &mut accounting, cancellation,
-        ).await?;
-        match allocation {
-            KernelOwnedAllocation::NativeOriginal(allocation) => Ok((diff, allocation)), KernelOwnedAllocation::Standalone => Err(
-                WorkspaceError::Filesystem(FsError::NativeKernel(NativeTreeMaterializationError::InvalidLayout)),
-            ),
-        }
+        ).await.map_err(|error| match error {
+            WorkspaceError::Filesystem(error) if standalone => WorkspaceError::engine(error), error => error,
+        });
+        budget.finish(result, &accounting)
     }
 
     async fn workspace_join_changes_with_accounting(
@@ -9070,69 +9006,85 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
     }
 
-    async fn capture_mutation_dependencies_with_accounting(
-        &self,
-        operations: &[Mutation],
-        accounting: &mut KernelAccounting<'_>,
+    fn capture_mutation_dependencies_with_accounting<'a, 'accounting>(
+        &'a self,
+        operations: &'a [Mutation],
+        accounting: &'a mut KernelAccounting<'accounting>,
         cancellation: &CancellationToken,
-    ) -> Result<Owned<Vec<Dependency>>, FsError> {
-        use Owned;
-        let mut dependencies = Owned::<Vec<Dependency>>::allocate(0, accounting)?;
-        let mut exact_regions = Owned::<Vec<(Option<FileRecord>, DependencyRegion)>>::allocate(0, accounting)?;
-        for operation in operations {
-            accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-            let (first_record, second_record) = if let Some([first_path, second_path]) = operation.paths() {
-                let first = observe_path_async_with_accounting(
-                    &self.volume.fs.inner.objects, &self.base_root, first_path, self.volume.config, accounting, cancellation, None, false,
-                ).await?;
-                let first = first.into_parts();
-                let first_record = first.0.lookup.record;
-                let bytes = Self::mutation_dependency_bytes(&first.0.dependencies, accounting)?;
-                Self::append_mutation_dependencies(
-                    &mut dependencies, Owned::new(first.0.dependencies, first.1, bytes), accounting,
-                )?;
-                let second_record = if second_path == first_path {
-                    first_record
-                } else {
-                    let second = observe_path_async_with_accounting(
-                        &self.volume.fs.inner.objects, &self.base_root, second_path,
-                        self.volume.config, accounting, cancellation, None, false,
+    ) -> impl Future<Output = Result<Owned<Vec<Dependency>>, FsError>> + StorageFuture + 'a {
+        let cancellation = cancellation.clone();
+        async move {
+            let mut dependencies = Owned::<Vec<Dependency>>::allocate(0, accounting)?;
+            let mut exact_regions = Owned::<Vec<(Option<FileRecord>, DependencyRegion)>>::allocate(
+                0, accounting,
+            )?;
+            for operation in operations {
+                accounting.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+                let (first_record, second_record) = if let Some([first_path, second_path]) = operation.paths() {
+                    let first = observe_path_async_with_accounting(
+                        &self.volume.fs.inner.objects, &self.base_root, first_path,
+                        self.volume.config, accounting, &cancellation, None, false,
                     ).await?;
-                    let second = second.into_parts();
-                    let second_record = second.0.lookup.record;
-                    let bytes = Self::mutation_dependency_bytes(&second.0.dependencies, accounting)?;
+                    let first = first.into_parts();
+                    let first_record = first.0.lookup.record;
+                    let bytes = Self::mutation_dependency_bytes(&first.0.dependencies, accounting)?;
                     Self::append_mutation_dependencies(
-                        &mut dependencies, Owned::new(second.0.dependencies, second.1, bytes), accounting,
+                        &mut dependencies, Owned::new(first.0.dependencies, first.1, bytes),
+                        accounting,
                     )?;
-                    second_record
+                    let second_record = if second_path == first_path {
+                        first_record
+                    } else {
+                        let second = observe_path_async_with_accounting(
+                            &self.volume.fs.inner.objects, &self.base_root, second_path,
+                            self.volume.config, accounting, &cancellation, None, false,
+                        ).await?;
+                        let second = second.into_parts();
+                        let second_record = second.0.lookup.record;
+                        let bytes = Self::mutation_dependency_bytes(&second.0.dependencies, accounting)?;
+                        Self::append_mutation_dependencies(
+                            &mut dependencies, Owned::new(second.0.dependencies, second.1, bytes),
+                            accounting,
+                        )?;
+                        second_record
+                    };
+                    (first_record, second_record)
+                } else {
+                    self.identity_base_records_with_accounting(operation, accounting, &cancellation).await?
                 };
-                (first_record, second_record)
-            } else { self.identity_base_records_with_accounting(operation, accounting, cancellation).await? };
-            for region in exact_mutation_regions(operation, first_record, second_record).into_iter().flatten()
-            {
-                exact_regions.ensure_for_push(usize::MAX, accounting)?;
-                accounting.charge(WorkCounters {
-                    bytes_copied: size_of::<(Option<FileRecord>, DependencyRegion)>() as u64,..WorkCounters::UNCHARGED
-                })?;
-                exact_regions.value.push(region);
+                for region in exact_mutation_regions(operation, first_record, second_record)
+                    .into_iter().flatten()
+                {
+                    exact_regions.ensure_for_push(usize::MAX, accounting)?;
+                    accounting.charge(WorkCounters {
+                        bytes_copied: size_of::<(Option<FileRecord>, DependencyRegion)>() as u64,
+                        ..WorkCounters::UNCHARGED
+                    })?;
+                    exact_regions.value.push(region);
+                }
             }
+            Self::subsume_mutation_record_dependencies(&mut exact_regions.value, accounting)?;
+            let (probe, probe_allocation) = AuthenticatedGenerationProbe::new_with_accounting(
+                &self.volume.fs.inner.objects, probe_limits(self.volume.config), accounting,
+            )?;
+            let probe = (probe, probe_allocation);
+            let region_bytes = exact_regions.bytes;
+            let captured = probe.0.capture_records_many_with_accounting(
+                exact_regions.value, self.volume.config.limits.maximum_checkout_dependencies,
+                accounting, &cancellation, None,
+            ).await;
+            retire_allocation(
+                exact_regions.allocation, region_bytes, accounting,
+            )?;
+            probe.0.retire_with_accounting(accounting)?;
+            drop(probe.1);
+            let captured = captured?;
+            let bytes = Self::mutation_dependency_bytes(&captured.0, accounting)?;
+            Self::append_mutation_dependencies(
+                &mut dependencies, Owned::new(captured.0, captured.1, bytes), accounting,
+            )?;
+            Ok(dependencies)
         }
-        Self::subsume_mutation_record_dependencies(&mut exact_regions.value, accounting)?;
-        let (probe, probe_allocation) = AuthenticatedGenerationProbe::new_with_accounting(
-            &self.volume.fs.inner.objects, probe_limits(self.volume.config), accounting,
-        )?;
-        let probe = (probe, probe_allocation);
-        let region_bytes = exact_regions.bytes;
-        let captured = probe.0.capture_records_many_with_accounting(
-            exact_regions.value, self.volume.config.limits.maximum_checkout_dependencies, accounting, cancellation, None,
-        ).await;
-        retire_allocation(exact_regions.allocation, region_bytes, accounting)?;
-        probe.0.retire_with_accounting(accounting)?;
-        drop(probe.1);
-        let captured = captured?;
-        let bytes = Self::mutation_dependency_bytes(&captured.0, accounting)?;
-        Self::append_mutation_dependencies(&mut dependencies, Owned::new(captured.0, captured.1, bytes), accounting)?;
-        Ok(dependencies)
     }
 
     fn mutation_region_name_bytes(region: &DependencyRegion) -> u64 {

@@ -286,10 +286,10 @@ impl<'w> MountSyncWork<'w> {
     }
 
     async fn lock_checkout<'a, A: AsyncAuthorityStore, O: AsyncObjectStore>(
-        &mut self, source: &'a CheckoutMountSource<A, O>, cancellation: &crate::CancellationToken,
+        &mut self, source: &'a CheckoutMountSource<A, O>, cancellation: crate::CancellationToken,
     ) -> Result<super::adapter::SharedCheckoutGuard<'a, A, O>, MountSourceError> {
         source.shared_checkout().lock_with_carrier(
-            &mut self.meter, cancellation, Some(source.cancellation()),
+            &mut self.meter, &cancellation, Some(source.cancellation()),
         ).await
     }
 
@@ -340,26 +340,28 @@ impl<'w> MountSyncWork<'w> {
         Ok(())
     }
 
-    async fn sync_authored_recovery_guarded<A, O, F, Fut, E>(
-        &mut self, source: &CheckoutMountSource<A, O>, permit: crate::PublicationPermit,
-        cancellation: &crate::CancellationToken, before_publication: &mut F,
-    ) -> Result<(), E>
+    fn sync_authored_recovery_guarded<'a, A, O, F, Fut, E>(
+        &'a mut self, source: &'a CheckoutMountSource<A, O>, permit: crate::PublicationPermit,
+        cancellation: crate::CancellationToken, before_publication: &'a mut F,
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<(), E>> + Send + 'a>>
     where A: AsyncAuthorityStore, O: AsyncObjectStore,
         F: for<'m> FnMut(&'m crate::NativeMaterializationWork) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<(), E>> + Send + 'static,
         E: From<MountSourceError> + Send + 'static,
     {
-        if self.observation == MountPublicationObservation::Qualified
-            && let Some(context) = source.retained_publication_context_with_carrier(
-                &mut self.meter, cancellation,
-            ).await?
-        {
-            self.sync_authored_context_guarded(
-                source, permit, true, cancellation, before_publication, context,
-            ).await
-        } else {
-            self.sync_authored_guarded(source, permit, true, cancellation, before_publication).await
-        }
+        Box::pin(async move {
+            if self.observation == MountPublicationObservation::Qualified
+                && let Some(context) = source.retained_publication_context_with_carrier(
+                    &mut self.meter, &cancellation,
+                ).await?
+            {
+                self.sync_authored_context_guarded(
+                    source, permit, true, &cancellation, before_publication, context,
+                ).await
+            } else {
+                self.sync_authored_guarded(source, permit, true, &cancellation, before_publication).await
+            }
+        })
     }
 }
 
@@ -3613,12 +3615,12 @@ where
                         committed = Some(false);
                     }
                     let retained = {
-                        let mut checkout = work.lock_checkout(&self.authored, cancellation).await?;
+                        let mut checkout = work.lock_checkout(&self.authored, cancellation.clone()).await?;
                         checkout.has_retained_operation().then(|| checkout.retained_operation_id())
                     };
                     if retained == Some(custody.operation) {
                         work.sync_authored_recovery_guarded(
-                            &self.authored, permit, cancellation, before_publication,
+                            &self.authored, permit, cancellation.clone(), before_publication,
                         ).await?;
                     } else if committed != Some(true) {
                         return Err(E::from(MountSourceError::Stale));
@@ -3650,10 +3652,10 @@ where
             // A reopened source has no transient pins. Its existing journal and
             // original authority decision, not an in-memory readiness flag, recover
             // the durable identity. Uninstalled local preparations confer no rights.
-            let retained = work.lock_checkout(&self.authored, cancellation).await?.has_retained_operation();
+            let retained = work.lock_checkout(&self.authored, cancellation.clone()).await?.has_retained_operation();
             if retained {
                 work.sync_authored_recovery_guarded(
-                    &self.authored, permit, cancellation, before_publication,
+                    &self.authored, permit, cancellation.clone(), before_publication,
                 ).await?;
             }
             if let Some(committed) = committed {
@@ -3772,38 +3774,40 @@ where
         ).await
     }
 
-    async fn finish_acknowledged_mount_custody_with_sync_work(
-        &self, operation: crate::OperationId, generation: crate::GenerationId,
-        work: &mut MountSyncWork<'_>, original: &super::NativeMountMeterWork,
+    fn finish_acknowledged_mount_custody_with_sync_work<'a, 'work>(
+        &'a self, operation: crate::OperationId, generation: crate::GenerationId,
+        work: &'a mut MountSyncWork<'work>, original: &super::NativeMountMeterWork,
         cancellation: &crate::CancellationToken,
-    ) -> Result<Option<crate::LazySnapshotRef>, MountSourceError>
+    ) -> std::pin::Pin<Box<dyn Future<Output = Result<Option<crate::LazySnapshotRef>, MountSourceError>> + Send + 'a>>
     where A: AsyncAuthorityStore, O: AsyncObjectStore {
         let original = original.clone();
         let cancellation = cancellation.clone();
-        work.items(1)?;
-        let custody = self.removals.lock().map_err(|_| MountSourceError::Stale)?.publication;
-        let Some(custody) = custody else {
-            return self.lazy.selected_import_snapshot_for_generation_with_work(
-                operation, generation, &original, &cancellation,
-            ).await.map(Some).map_err(native_lazy_error);
-        };
-        if custody.operation != operation { return Ok(None); }
-        let Some(proof) = custody.selected else { return Ok(None); };
-        if !custody.published {
-            if !self.authored.shared_checkout().resolve_acknowledged_original_with_native_work(
-                operation, generation, &original, &cancellation, Some(self.authored.cancellation()),
-                self.authored.publication_guard(),
-            ).await? {
-                return Ok(None);
+        Box::pin(async move {
+            work.items(1)?;
+            let custody = self.removals.lock().map_err(|_| MountSourceError::Stale)?.publication;
+            let Some(custody) = custody else {
+                return self.lazy.selected_import_snapshot_for_generation_with_work(
+                    operation, generation, &original, &cancellation,
+                ).await.map(Some).map_err(native_lazy_error);
+            };
+            if custody.operation != operation { return Ok(None); }
+            let Some(proof) = custody.selected else { return Ok(None); };
+            if !custody.published {
+                if !self.authored.shared_checkout().resolve_acknowledged_original_with_native_work(
+                    operation, generation, &original, &cancellation, Some(self.authored.cancellation()),
+                    self.authored.publication_guard(),
+                ).await? {
+                    return Ok(None);
+                }
+                self.mark_mount_published(operation)?;
             }
-            self.mark_mount_published(operation)?;
-        }
-        let snapshot = self.lazy.selected_committed_snapshot_with_work(
-            operation, generation, proof.checkpoint, proof.source,
-            proof.source_config, proof.input, &original, &cancellation,
-        ).await.map_err(native_lazy_error)?;
-        self.finish_mount_custody(operation, work)?;
-        Ok(Some(snapshot))
+            let snapshot = self.lazy.selected_committed_snapshot_with_work(
+                operation, generation, proof.checkpoint, proof.source,
+                proof.source_config, proof.input, &original, &cancellation,
+            ).await.map_err(native_lazy_error)?;
+            self.finish_mount_custody(operation, work)?;
+            Ok(Some(snapshot))
+        })
     }
 
     /// Reads the actual mounted lazy identity, never an unpublished candidate.
@@ -3930,7 +3934,7 @@ where
                     return Err(MountSourceError::Stale);
                 }
             }
-            let checkout = work.lock_checkout(&self.authored, cancellation).await?;
+            let checkout = work.lock_checkout(&self.authored, cancellation.clone()).await?;
             checkout.ensure_publication_resolved()?;
             if checkout.has_pending_mutations() || self.authored.captures_pending() {
                 return Err(MountSourceError::Stale);
@@ -3964,7 +3968,7 @@ where
                 ).await;
                 work.meter.accept_with_prior_live(receipt, prior_live, lazy_error)?
             };
-            let checkout = work.lock_checkout(&self.authored, cancellation).await?;
+            let checkout = work.lock_checkout(&self.authored, cancellation.clone()).await?;
             checkout.ensure_publication_resolved()?;
             if checkout.has_pending_mutations() || self.authored.captures_pending()
                 || checkout.generation_id() != generation
@@ -4381,12 +4385,12 @@ where
         self.recover_pending_mount_change_measured(
             permit, work, cancellation, before_publication,
         ).await?;
-        let inputs = self.snapshot_sync_inputs(work, cancellation).await?;
+        let inputs = self.snapshot_sync_inputs(work, cancellation.clone()).await?;
         if selected.is_none() && inputs.paths.value.is_empty() && inputs.dirty.value.is_empty() {
             if work.observation == MountPublicationObservation::Qualified {
                 let original = work.meter.original_native_work().ok_or(MountSourceError::Indeterminate)?;
                 let context = crate::lazy_workspace::NativeSnapshotContext::Lazy(
-                    self.lazy.current_publication_cut_with_native_work(&original, cancellation)
+                    self.lazy.publication_cut(None, &original, cancellation)
                         .await.map_err(native_lazy_error)?,
                 );
                 work.sync_authored_context_guarded(
@@ -4528,7 +4532,7 @@ where
         if work.observation == MountPublicationObservation::Qualified {
             let original = work.meter.original_native_work().ok_or(MountSourceError::Indeterminate)?;
             let context = crate::lazy_workspace::NativeSnapshotContext::Lazy(
-                self.lazy.mount_publication_cut_with_native_work(operation_id, &original, cancellation)
+                self.lazy.publication_cut(Some(operation_id), &original, cancellation)
                     .await.map_err(native_lazy_error)?,
             );
             work.sync_authored_context_guarded(
@@ -4590,10 +4594,10 @@ where
     }
 
     async fn snapshot_sync_inputs(
-        &self, work: &mut MountSyncWork<'_>, cancellation: &crate::CancellationToken,
+        &self, work: &mut MountSyncWork<'_>, cancellation: crate::CancellationToken,
     ) -> Result<MountSyncInputs, MountSourceError>
     where A: AsyncAuthorityStore, O: AsyncObjectStore {
-        drop(work.lock_checkout(&self.authored, cancellation).await?);
+        drop(work.lock_checkout(&self.authored, cancellation.clone()).await?);
         let (paths, removed_ids) = {
             let state = self.removals.lock().map_err(|_| MountSourceError::Stale)?;
             let mut paths = work.owned_vec::<String>(state.paths.len())?;
@@ -4631,7 +4635,7 @@ where
         let mut dirty = work.owned_vec::<DirtyDetachedRecord>(0)?;
         for (id, file, published) in &detached.value {
             work.items(1)?;
-            let (record, metadata, epoch) = file.snapshot_with_carrier(&mut work.meter, cancellation).await?;
+            let (record, metadata, epoch) = file.snapshot_with_carrier(&mut work.meter, &cancellation).await?;
             if epoch > *published {
                 if dirty.value.capacity() == 0 { dirty = work.owned_vec(detached.value.len())?; }
                 let copied = crate::WorkCounters {
@@ -4652,7 +4656,7 @@ where
         &self, work: &mut MountSyncWork<'_>, cancellation: &crate::CancellationToken,
     ) -> Result<PreparedMountSync<A, O>, MountSourceError>
     where A: AsyncAuthorityStore, O: AsyncObjectStore {
-        let inputs = self.snapshot_sync_inputs(work, cancellation).await?;
+        let inputs = self.snapshot_sync_inputs(work, cancellation.clone()).await?;
         self.prepare_sync_candidate_from_inputs(inputs, work, cancellation).await
     }
 

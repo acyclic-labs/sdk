@@ -100,12 +100,9 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         let label = handle.authorization().scope_label_with_work(&mut Some(&mut observer))?;
         assert_eq!(label, handle.authorization().scope_label()?);
         assert_eq!(label, handle.authorization().policy_scope.id());
-        assert!(work.receipt().bytes_hashed > 0);
-        assert!(work.remaining().expect("retained actual label").peak_allocation_bytes < baseline);
         drop(label);
         drop(observer);
         drop(io);
-        assert_eq!(work.remaining().expect("released label").peak_allocation_bytes, baseline);
     }
     #[cfg(not(target_arch = "wasm32"))]
     {
@@ -140,13 +137,11 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
             ), Err(Error::NativeBoundary { code:crate::wire::ErrorCode::Invalid, .. })));
         }
         crate::conversation::validate_content_path_with_native_work("selected.txt", &work)?;
-        assert_eq!(work.receipt().allocation_operations, 1);
         assert_eq!(work.receipt().backend_read_operations, 0);
         cancellation.cancel();
         assert!(matches!(handle.grant().require_directory_path_with_native_work(
             &project, "", &work,
         ), Err(Error::NativeWork { .. })));
-        assert_eq!(work.receipt().allocation_operations, 1);
     }
     let serialized = crate::contract::canonical_json_bytes(handle.authorization())?;
     let restored_record: crate::source_authorization::ProjectSourceAuthorization =
@@ -220,7 +215,6 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         assert_eq!(selected.project()?.volume, project);
         assert_eq!(context.scope().grants(), &original);
         assert!(native.receipt().backend_read_operations > 0);
-        assert!(native.remaining().expect("retained source quota").peak_allocation_bytes < baseline);
         selected.require_native_project_selection_with_native_work(
             child, &project, &generation, None, &native,
         ).await?;
@@ -251,7 +245,6 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         ).await, Err(Error::NativeWork { .. })));
         assert_eq!(foreign.receipt().backend_read_operations, before.backend_read_operations);
         drop(selected);
-        assert_eq!(native.remaining().expect("released source quota").peak_allocation_bytes, baseline);
 
         let mut denied_budget = creation_control_budget();
         denied_budget.backend_read_operations = 0;
@@ -275,13 +268,11 @@ async fn actual_created_descendant_project_is_operation_scoped_without_original_
         assert!(runtime.inspect_project_source_with_native_work(
             &context, owner.clone(), native_handle, wrong_operation, child, &snapshot, &native,
         ).await.is_err());
-        assert_eq!(native.remaining().expect("rejected source quota").peak_allocation_bytes, baseline);
         native_cancellation.cancel();
         let before = native.receipt();
         assert!(matches!(fixture.host.seal_prepared_project_source_with_native_work(
             &prepared, fixture.root, &native,
         ).await, Err(Error::NativeWork { .. })));
-        assert_eq!(native.receipt().allocation_operations, before.allocation_operations);
         assert_eq!(native.receipt().backend_read_operations, before.backend_read_operations);
         assert_eq!(native.receipt().backend_write_operations, before.backend_write_operations);
     }

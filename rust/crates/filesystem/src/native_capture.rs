@@ -3511,7 +3511,7 @@ mod host_observation_tests {
         let paths = [path(b"first")?, path(b"second")?];
         let cancellation = CancellationToken::new();
         let mut probe = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        root.stat_measured(Path::new("first"), &mut probe)?;
+        root.stat_with_work(Path::new("first"), &mut probe)?;
         let mut budget = WorkBudget::UNBOUNDED;
         budget.backend_read_operations = probe.work.backend_read_operations;
         let mut meter = DemandWork::new(budget, &cancellation);
@@ -6409,13 +6409,13 @@ fn ensure_current_host_node<W: CaptureNativeWork>(
 #[cfg(test)]
 fn test_host_stat(root: &HostRoot, path: &Path) -> Result<HostStat, CaptureError> {
     let mut meter = DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
-    root.stat_measured(path, &mut meter).map_err(capture_demand_error)
+    root.stat_with_work(path, &mut meter).map_err(capture_demand_error)
 }
 
 #[cfg(test)]
 fn test_held_stat(root: &HostRoot, file: &cap_std::fs::File) -> Result<HostStat, CaptureError> {
     let mut meter = DemandWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new());
-    root.stat_file_measured(&file.try_clone()?.into_std(), &mut meter).map_err(capture_demand_error)
+    root.stat_file_with_work(&file.try_clone()?.into_std(), &mut meter).map_err(capture_demand_error)
 }
 
 #[cfg(test)]

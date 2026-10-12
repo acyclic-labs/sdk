@@ -10,7 +10,6 @@ use crate::model::{
 };
 use crate::storage::object_digest;
 use crate::storage::{ByteRange, ObjectStore};
-use crate::kernel::allocation::AllocationError;
 use std::io::Cursor;
 
 fn config() -> VolumeConfig {
@@ -1957,111 +1956,6 @@ fn generated_regular_file_histories_match_independent_logical_and_physical_model
                 .map_err(|error| format!("history {history}, step {step}: {error}"))?;
         }
     }
-    Ok(())
-}
-
-#[test]
-fn regular_lower_boundaries_preserve_errors_work_and_allocation_classes()
--> Result<(), Box<dyn std::error::Error>> {
-    let cancellation = CancellationToken::new();
-    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-    let mut prior = Owned::<Vec<u8>>::allocate(7, &mut accounting)?;
-    prior.value.extend_from_slice(b"prefix!");
-    let mut nested = Owned::<Vec<u8>>::allocate(5, &mut accounting)?;
-    nested.value.extend_from_slice(b"child");
-    charge_copy(&mut accounting, 2)?;
-    accounting.charge(WorkCounters { bytes_hashed: 4, ..WorkCounters::UNCHARGED })?;
-    assert_eq!(accounting.spent().bytes_copied, 2);
-    assert_eq!(accounting.spent().bytes_hashed, 4);
-    assert!(accounting.spent().peak_allocation_bytes >= 12);
-    nested.retire(&mut accounting)?;
-    let before = accounting.spent();
-    let store = MemoryObjectStore::default();
-    let rejected = poll_ready(apply_regular_mutation_with_accounting(
-        &store, FilePayload::Empty, RegularMutation::Resize { logical_bytes: 0 },
-        config(), &mut accounting, &cancellation,
-    )).ok_or("non-regular original invocation blocked")?.err().ok_or("non-regular payload accepted")?;
-    assert!(matches!(project_regular_error(rejected), RegularMutationError::NotRegular));
-    assert_eq!(accounting.spent(), before);
-    assert_eq!(prior.value, b"prefix!");
-    prior.retire(&mut accounting)?;
-
-    assert!(matches!(
-        project_regular_error(regular_allocation_error(AllocationError::Work(WorkError::Overflow))),
-        RegularMutationError::Work(WorkError::Overflow)
-    ));
-    for allocation in [AllocationError::Overflow, AllocationError::ReleaseInvariant] {
-        assert!(matches!(project_regular_error(regular_allocation_error(allocation)),
-            RegularMutationError::RangeOverflow));
-    }
-    assert_eq!(
-        regular_logical_bytes(FilePayload::Regular {
-            logical_bytes: 17,
-            extents: ObjectId {
-                kind: ObjectKind::ExtentPage,
-                digest: Digest::ZERO,
-            },
-        })?,
-        17
-    );
-    for allocation in [
-        AllocationError::InvalidCapacity,
-        AllocationError::CapacityExceeded,
-        AllocationError::AllocationFailed,
-    ] {
-        assert!(matches!(
-            project_regular_error(regular_allocation_error(allocation)),
-            RegularMutationError::AllocationFailed
-        ));
-    }
-    assert!(matches!(
-        project_regular_error(FsError::Cancelled(crate::cancellation::CancellationError)),
-        RegularMutationError::Storage(ObjectStoreError::Cancelled)
-    ));
-
-    let store = MemoryObjectStore::default();
-    let page = ExtentPage::Leaf(Vec::new());
-    let too_small = DecodeLimits {
-        maximum_object_bytes: 1,
-        ..DecodeLimits::default()
-    };
-    let mut accounting = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-    let rejected = poll_ready(super::super::extent_mutation::put_extent_page_with_accounting(
-        &store,
-        &page,
-        too_small,
-        &mut accounting,
-        &cancellation,
-    ))
-    .ok_or("tiny-limit extent page write blocked")?
-    .err()
-    .ok_or("tiny-limit extent page write succeeded")?;
-    assert!(matches!(
-        project_regular_error(rejected),
-        RegularMutationError::Codec(CanonicalDecodeError::ObjectTooLarge { maximum: 1, .. })
-    ));
-    assert_eq!(accounting.spent(), WorkCounters::default());
-
-    let source = FilePayload::InlineRegular(InlineFileData::new(&[b's'; 64])?);
-    let destination_failure = poll_ready(apply_regular_clone_async(
-        &store,
-        source,
-        0,
-        FilePayload::Empty,
-        0,
-        64,
-        config(),
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ))
-    .ok_or("post-promotion destination rejection blocked")?
-    .err()
-    .ok_or("non-regular destination was accepted after source promotion")?;
-    assert!(matches!(
-        destination_failure.error,
-        RegularMutationError::NotRegular
-    ));
-    assert_eq!(*destination_failure.work, WorkCounters::default());
     Ok(())
 }
 

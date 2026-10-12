@@ -1,7 +1,4 @@
 //! Strict successful result of the first-party root allocation effect.
-//!
-//! These are retained references, not creation authority. Activating a root
-//! still requires its original successful effect and actual provider evidence.
 
 use super::{PiScratchCreation, PiTaskBinding, RootCreation};
 use serde::{Deserialize, Serialize};

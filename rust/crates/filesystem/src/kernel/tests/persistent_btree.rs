@@ -213,5 +213,3 @@ fn search_unchanged_and_bounds_cover_every_frontier() -> Result<(), Box<dyn std:
     assert!(children_within(&[], None, Some(&name(1)?)));
     Ok(())
 }
-
-

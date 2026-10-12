@@ -1,7 +1,4 @@
 import init, { WasmReducer, WasmTaskRegistry, WasmTaskRuntime } from "../generated/wasm/acyclic_harness_wasm.js";
-
-// Test composition only: every actor opens the real ordinary runtime. Transport
-// messages carry wake/control hints; no test callback implements scheduling.
 export async function taskFixture(id, taskName = "test.browser") {
   await init();
   const owner = new WasmReducer({ kind: "task", id }, "browser-task", new Uint8Array(32).fill(23), []);
@@ -17,8 +14,6 @@ export async function taskFixture(id, taskName = "test.browser") {
   let transitions = 0;
   registry.registerMachine({ name: "test.browser", version: "1", digest: new Array(32).fill(41),
     state_schema: { type: "object" }, input_schema: { type: "object" },
-    // A schema literal that resembles a descriptor is generic data. Lease
-    // projection must convert only the admitted state FileRef's length.
     output_schema: { type: "integer", default: { sha256: "literal", byte_length: 7, media_type: "literal" } }, requirements: [] },
     input => input, (state, input) => {
       transitions++;
@@ -42,9 +37,6 @@ export async function taskFixture(id, taskName = "test.browser") {
     open: () => WasmTaskRuntime.open(options, owner, registry, scope),
     free: () => { registry.free(); owner.free(); } };
 }
-
-// Synthetic provider units are canonical request bytes, counted once as fixed
-// cost; individual message costs are already included in those exact bytes.
 export const modelCapacity = () => ({ context_tokens: 131072, output_tokens: 8192 });
 export const modelTokenCount = (bytes, request_digest) => ({
   request_digest, fixed_tokens: bytes.byteLength,
