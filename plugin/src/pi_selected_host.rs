@@ -4,6 +4,7 @@ use crate::{AdapterState, PiTaskBinding, PluginTaskBinding, ServiceResources,
     pi_owner::PiOwnerConfig, pi_root_provider::PiRootHandle,
     pi_task::{PiTaskExecution, PiTaskInput},
     pi_fork::{original_operation, derived}, pi_inspection::*};
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_fs::{CancellationToken, LazySnapshotRef, WorkCounters};
 use acyclic_harness::{Error, Result, TaskId, OperationId, durable_host::TaskJournalOwner,
     filesystem::{TaskCommandProgress, TaskSourceInspection},

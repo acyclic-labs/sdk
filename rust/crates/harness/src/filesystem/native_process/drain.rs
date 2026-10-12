@@ -9,10 +9,6 @@ pub struct NativeProcessDrainProof {
     receipt: NativeProcessReceipt,
 }
 
-fn boundary(code: crate::wire::ErrorCode, reason: &'static str) -> Error {
-    Error::NativeBoundary { code, reason }
-}
-
 fn same_manifest(
     actual: &NativeViewManifest, expected: &NativeViewManifest,
     work: &NativeMaterializationWork,
@@ -34,9 +30,9 @@ impl NativeProcessDrainProof {
         original: &NativeMaterializationWork,
     ) -> Result<()>
     where
-        P: StreamProvider + 'static,
-        A: AsyncAuthorityStore + Send + Sync + 'static,
-        O: AsyncObjectStore + Send + Sync + 'static,
+        P: StreamProvider,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
     {
         let held = self.view.as_ref().downcast_ref::<NativeVolumeView<A, O>>()
             .ok_or(boundary(crate::wire::ErrorCode::Conflict, "process drain proof belongs to another physical view type"))?;
@@ -63,7 +59,7 @@ impl NativeProcessDrainProof {
     }
 }
 
-impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
+impl<P: StreamProvider> NativeProcessProvider<P> {
     /// Drains the same owned process engine, or authenticates a physically quiet retained result.
     pub fn drain_with_native_work<'a, A, O>(
         &'a self, attempt: crate::EffectAttemptId,
@@ -72,8 +68,8 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         cleanup_cancellation: &'a acyclic_fs::CancellationToken,
     ) -> Result<crate::NativeFutureBundle<'a, NativeProcessDrainProof>>
     where
-        A: AsyncAuthorityStore + Send + Sync + 'static,
-        O: AsyncObjectStore + Send + Sync + 'static,
+        A: AsyncAuthorityStore + 'static,
+        O: AsyncObjectStore + 'static,
     {
         finite_dispatch::require_finite(work)?;
         let original = view.work();
@@ -153,8 +149,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             self.authenticate_cleanup_owner(work).await?;
             drop((request, request_custody));
             let held_view: Arc<dyn Any + Send + Sync> = view.clone();
-            receipt._custody.as_mut().expect("authenticated receipt retains its allocation")
-                .absorb(&mut custody)?;
+            receipt._custody.absorb(&mut custody)?;
             let proof = NativeProcessDrainProof { view: held_view, receipt };
             proof.require_view_binding::<P, A, O>(
                 view.as_ref(), &self.owner, original,

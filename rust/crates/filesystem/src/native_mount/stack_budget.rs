@@ -304,7 +304,7 @@ fn measure_common(view: &dyn MountFilesystem, measurements: &mut Measurements) -
         view.open_file(&path(&deep("write.txt")))?
             .write_range(0, Bytes::from_static(b"written"))
     })?;
-    measurements.measure("flush", || view.flush())?;
+    measurements.measure("flush", || view.flush(&crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &crate::CancellationToken::new()).map_err(|(error, _)| MountSourceError::NativeWork(error))?))?;
     Ok(())
 }
 

@@ -1,5 +1,6 @@
 //! Receipt fault injection around the ordinary stream backend, not a process owner.
 use super::*;
+use acyclic_harness::runtime::TaskStateProvider;
 use tokio::sync::Mutex;
 #[derive(Default)]
 struct ReceiptFaultStream<P = MemoryStream> {
@@ -378,7 +379,7 @@ async fn verify_pending_task(
     if task.task_host().outcome(seed.task).await?.is_some() {
         return Err("host-death task acquired a terminal outcome".into());
     }
-    task.task_host().cancel(seed.task).await?;
+    task.task_host().cancel(seed.task, None).await?;
     if !matches!(
         task.task_host()
             .verify_dispatch_owner(seed.task, seed.fence.clone())

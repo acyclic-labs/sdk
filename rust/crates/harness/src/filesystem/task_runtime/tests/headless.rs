@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::conversation::{ContentGrant, FileRef};
 
 async fn runtime(fixture: &Fixture) -> Result<Runtime> {
@@ -75,7 +76,7 @@ async fn selected_source_never_adopts_its_grants_and_pins_project_and_scratch() 
     assert!(matches!(owner.list(&foreign, "src", "src", &old_generation, None, 1).await,
         Err(Error::Unauthorized(_))));
     let wrong_generation = crate::resources::GenerationRef::new(
-        ProviderRef::new("wrong", "filesystem", "2")?,
+        ProviderRef::new("wrong".into(), "filesystem".into(), "2".into(), &mut None)?,
         old_generation.as_resource().key().to_vec(), None,
     )?;
     assert!(owner.list(&project, "src", "src", &wrong_generation, None, 1).await.is_err());
@@ -203,7 +204,7 @@ async fn public_headless_model_step_replays_the_owned_journal_and_rejects_retarg
         fixture.signed.capabilities().iter().chain(["conversation:bind", "conversation:append", "fork:publish"]),
     ), Some(agent), None, &mut None).expect("scope proof");
     let reader = Arc::new(FilesystemContentVerifier::new(fixture.filesystem.clone(), &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?);
-    let stream_provider = ProviderRef::new("restore", "stream", "2")?;
+    let stream_provider = ProviderRef::new("restore".into(), "stream".into(), "2".into(), &mut None)?;
     let forks = Arc::new(CompositeForkVerifier::new(&[
         Arc::new(FilesystemForkVerifier::new(fixture.filesystem.clone(), 65_536)?),
         Arc::new(StreamHistoryForkVerifier::new(&stream_provider, &mut None)?),

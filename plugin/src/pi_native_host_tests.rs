@@ -1,5 +1,6 @@
 
 use crate::{pi_fork::tests::Fixture, pi_native_host::PiNativeCommandHost, pi_owner::PiOwnerConfig};
+use acyclic_harness::runtime::TaskStateProvider;
 use crate::pi_native::{PiNativeHostRuntime, PI_NATIVE_VERSION};
 use acyclic_fs::CancellationToken;
 use std::{collections::BTreeMap, path::PathBuf, sync::Arc};

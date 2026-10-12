@@ -1,5 +1,6 @@
 
 use super::*;
+use acyclic_harness::runtime::TaskStateProvider;
 use crate::{
     ADAPTER_STATE_VERSION, AdapterState, ConcurrentServiceControl, ControlCommand, ControlRequest,
     PiScratchAllocation, PluginTaskBinding, RootAllocation, RootBinding, ServiceResources, SessionController, Survives,

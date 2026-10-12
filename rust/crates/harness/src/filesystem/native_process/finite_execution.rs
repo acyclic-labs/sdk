@@ -4,7 +4,7 @@ use crate::filesystem::native_execution::NativeViewPublicationError;
 use std::process::{Command, Stdio};
 
 #[inline(never)]
-pub(super) async fn execute<P: StreamProvider + 'static>(
+pub(super) async fn execute<P: StreamProvider>(
     owner: &Arc<TaskJournalOwner<P>>, view: &dyn NativeProcessView<P>,
     authority: &NativeProcessAuthority, request: &Arc<NativeProcessRequest>,
     dispatch: &EffectDispatch, schema: &serde_json::Value,
@@ -20,8 +20,7 @@ pub(super) async fn execute<P: StreamProvider + 'static>(
                 view.operation_cancellation().check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
                 authority.results.supports_stage(Some(&crate::filesystem::PreparationIo::from_native_work(original)?))?;
                 if !authority.result_content.supports_read(authority.results.volume(), Some(&crate::filesystem::PreparationIo::from_native_work(original)?))? {
-                    return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
-                        reason: "native result reader has no original finite SDK engine" });
+                    return Err(boundary(crate::wire::ErrorCode::Unsupported, "native result reader has no original finite SDK engine"));
                 }
                 publication_slot = Some(crate::filesystem::native_execution::reserve_box::<NativeViewPublicationError>(original)?);
                 original.admit(WorkCounters { bytes_encoded: u64::from(request.maximum_result_bytes),
@@ -34,8 +33,7 @@ pub(super) async fn execute<P: StreamProvider + 'static>(
 
     }
             if view.manifest() != &request.view {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-                    reason: "native dispatch view changed after observation" });
+                return Err(boundary(crate::wire::ErrorCode::Conflict, "native dispatch view changed after observation"));
             }
             owner.verify_with_native_work(false, original).await?;
             let scopes = view.retain_native_namespace_scopes(original)?.await?;
@@ -46,7 +44,7 @@ pub(super) async fn execute<P: StreamProvider + 'static>(
             let bytes = {
                 let io = crate::filesystem::PreparationIo::from_native_work(original)?;
                 let bytes = io.encode(&captured, u64::from(request.maximum_result_bytes), true)?;
-                let decoded = io.decode_preparation::<serde_json::Value>(
+                let decoded = io.decode(std::marker::PhantomData::<serde_json::Value>,
                     &bytes, crate::wire::ErrorCode::Invalid)?;
                 crate::contract::validate_json_schema_value(schema, &decoded.0, "native process result", Some(&io))?;
                 drop(decoded);
@@ -60,7 +58,7 @@ pub(super) async fn execute<P: StreamProvider + 'static>(
                 let (result, guard) = authority.results.stage_once(
                     OperationId::from_bytes(dispatch.attempt_id.into_bytes()), "native-process/result.json",
                     &bytes, "application/json", "Native process result", Some(&io))?.await?;
-                let guard = guard.ok_or(receipt_error("native result publisher omitted admitted custody"))?;
+                let guard = guard.ok_or(boundary(crate::wire::ErrorCode::Storage, "native result publisher omitted admitted custody"))?;
                 let retained = guard.bytes();
                 guard.into_retained();
                 let mut guard = io.take_native_custody(retained)?;
@@ -69,8 +67,7 @@ pub(super) async fn execute<P: StreamProvider + 'static>(
                     ..WorkCounters::default() })?;
                 result.descriptor().verify(&bytes, &mut Some(&mut io.history_io()))?;
                 if result.descriptor().media_type() != "application/json" {
-                    return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                        reason: "native effect result must be JSON content" });
+                    return Err(boundary(crate::wire::ErrorCode::Invalid, "native effect result must be JSON content"));
                 }
                 authority.result_content.verify(
                     &result, u64::from(request.maximum_result_bytes), Some(&io),
@@ -80,8 +77,7 @@ pub(super) async fn execute<P: StreamProvider + 'static>(
     };
             drop(bytes);
             if result.volume() != authority.results.volume() {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "native result publisher returned another owner volume" });
+                return Err(boundary(crate::wire::ErrorCode::Unauthorized, "native result publisher returned another owner volume"));
             }
             let mut published = Vec::new();
             if publish {
@@ -97,8 +93,7 @@ pub(super) async fn execute<P: StreamProvider + 'static>(
                     Ok(receipt) => {
                         let checked = async {
                             if view.manifest() != &request.view {
-                                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-                                    reason: "native publication view changed after publication" });
+                                return Err(boundary(crate::wire::ErrorCode::Conflict, "native publication view changed after publication"));
                             }
                             owner.verify_with_native_work(false, original).await
                         }.await;
@@ -157,7 +152,7 @@ fn grants<P: StreamProvider>(owner: &TaskJournalOwner<P>, manifest: &NativeViewM
     Ok(())
 }
 
-async fn capture<P: StreamProvider + 'static>(
+async fn capture<P: StreamProvider>(
     owner: &Arc<TaskJournalOwner<P>>, request: &Arc<NativeProcessRequest>,
     supervisor: &Arc<NativeSupervisorControl>, cancellation: &acyclic_fs::CancellationToken,
     original: &NativeMaterializationWork,
@@ -196,10 +191,10 @@ async fn capture<P: StreamProvider + 'static>(
     let capture = move || {
         let (buffers, scopes, custody) = inputs;
         let mut custody = custody;
-        let failure = Mutex::new(None);
-        let root_failure = |error: Error| {
-            *failure.lock().expect("capture failure custody") = Some(error);
-            std::io::Error::from(std::io::ErrorKind::Other)
+        let failure = std::cell::RefCell::new(None);
+        let root_failure = |error: Error, kind: std::io::ErrorKind| {
+            *failure.borrow_mut() = Some(error);
+            std::io::Error::from(kind)
         };
         let check = || -> std::io::Result<()> {
             let result = runtime.block_on(tokio::time::timeout(
@@ -207,29 +202,22 @@ async fn capture<P: StreamProvider + 'static>(
                     cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
                     check_owner.verify_with_native_work(false, &original).await
                 }));
-            match result {
-                Ok(Ok(())) => Ok(()),
-                Ok(Err(error)) => { *failure.lock().expect("capture failure custody") = Some(error); Err(std::io::ErrorKind::Interrupted.into()) },
-                Err(error) => {
-                    *failure.lock().expect("capture failure custody") =
-                        Some(Error::NativeTimeout { source: error, custody: None });
-                    Err(std::io::ErrorKind::Interrupted.into())
-                }
-            }
+            result.unwrap_or_else(|source| Err(Error::NativeTimeout { source, custody: None }))
+                .map_err(|error| root_failure(error, std::io::ErrorKind::Interrupted))
         };
         let output = (|| -> std::io::Result<_> {
             check()?;
             let exchange = invocation.mcp_stdio.as_ref().map(|request|
                 request.exchange(Some(&original)))
-                .transpose().map_err(|error| root_failure(error))?;
+                .transpose().map_err(|error| root_failure(error, std::io::ErrorKind::Other))?;
             let _command_custody = {
                 let mut bytes = invocation.executable.as_os_str().len().checked_add(invocation.cwd.as_os_str().len()).ok_or(std::io::ErrorKind::OutOfMemory)?;
                 for argument in &invocation.argv { bytes = bytes.checked_add(argument.len()).ok_or(std::io::ErrorKind::OutOfMemory)?; }
                 for (key, value) in &invocation.environment { bytes = bytes.checked_add(key.len()).and_then(|bytes| bytes.checked_add(value.len())).ok_or(std::io::ErrorKind::OutOfMemory)?; }
                 original.charge(WorkCounters { bytes_copied: bytes as u64,
                     items_examined: (invocation.argv.len() + invocation.environment.len()) as u64, ..WorkCounters::default() })
-                    .map_err(|error| root_failure(Error::from(error)))?;
-                original.claim(bytes as u64).map_err(|error| root_failure(Error::from(error)))?
+                    .map_err(|error| root_failure(Error::from(error), std::io::ErrorKind::Other))?;
+                original.claim(bytes as u64).map_err(|error| root_failure(Error::from(error), std::io::ErrorKind::Other))?
 
 };
             let mut command = Command::new(&invocation.executable);
@@ -238,7 +226,7 @@ async fn capture<P: StreamProvider + 'static>(
                 .stdout(Stdio::piped()).stderr(Stdio::piped());
             check()?;
             capture_supervisor.record_quiescence(false)?;
-            let process_custody = original.retain_owned(0).map_err(|error| root_failure(Error::from(error)))?;
+            let process_custody = original.retain_owned(0).map_err(|error| root_failure(Error::from(error), std::io::ErrorKind::Other))?;
             let mut process = None;
             let spawned = {acyclic_native_runtime::spawn_process_tree_with_meter_custody(
                     &mut command, original.runtime_meter(), &mut process,
@@ -249,7 +237,8 @@ async fn capture<P: StreamProvider + 'static>(
                     let retained = NativeRetainedProcess { process,
                         _scopes: scopes,
                         _custody: process_custody };
-                    *capture_supervisor.process.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(retained);
+                    capture_supervisor.active.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .as_mut().expect("original capture attempt").process = Some(retained);
                 }
                 return Err(error);
             }
@@ -272,7 +261,7 @@ async fn capture<P: StreamProvider + 'static>(
                 let observe = |chunk: &[u8]| {
                     response_custody.take();
                     let bytes = {exchange.push(chunk, Some(&original)).map(|(bytes, guard)| { response_custody = guard; bytes })
-}.map_err(|error| root_failure(error))?;
+}.map_err(|error| root_failure(error, std::io::ErrorKind::Other))?;
                     Ok(acyclic_native_runtime::ProcessInput { bytes, complete: exchange.is_complete() })
                 };
                 let output = process.wait_with_output(timeout, maximum,
@@ -280,11 +269,9 @@ async fn capture<P: StreamProvider + 'static>(
                     poll, observe, Some(original.runtime_meter()), Some(buffers));
                 drop(exchange); drop(first); drop(response_custody); drop(exchange_custody);
                 output
-            } else if let Some(input) = &invocation.standard_input {
-                process.wait_with_output(timeout, maximum, Some(acyclic_native_runtime::CaptureInput::Literal(input)),
-                    poll, |_| Ok(acyclic_native_runtime::ProcessInput::default()), Some(original.runtime_meter()), Some(buffers))
             } else {
-                process.wait_with_output(timeout, maximum, None,
+                let input = invocation.standard_input.as_deref().map(acyclic_native_runtime::CaptureInput::Literal);
+                process.wait_with_output(timeout, maximum, input,
                     poll, |_| Ok(acyclic_native_runtime::ProcessInput::default()), Some(original.runtime_meter()), Some(buffers))
             };
             if !process.is_reaped()
@@ -293,7 +280,8 @@ async fn capture<P: StreamProvider + 'static>(
                 let retained = NativeRetainedProcess { process,
                     _scopes: scopes,
                     _custody: process_custody };
-                *capture_supervisor.process.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(retained);
+                capture_supervisor.active.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .as_mut().expect("original capture attempt").process = Some(retained);
             }
             Ok(output)
         })();
@@ -303,9 +291,9 @@ async fn capture<P: StreamProvider + 'static>(
             Err(_) => 0,
         };
         if let Err(error) = custody.substitute(retained as u64) {
-            *failure.lock().expect("capture failure custody") = Some(Error::from(error));
+            *failure.borrow_mut() = Some(Error::from(error));
         }
-        (output, failure.into_inner().expect("capture failure custody"), custody)
+        (output, failure.into_inner(), custody)
     };
     let mut task = (capture, invocation_work.retain_owned(0)?);
     let bytes = std::mem::size_of_val(&task) as u64;
@@ -382,7 +370,7 @@ mod supervisor_tests {
 
     #[test]
     fn missing_owned_tree_cannot_report_quiescence() {
-        let supervisor = NativeSupervisorControl { active: Mutex::new(None), completion: tokio::sync::Notify::new(), process: Mutex::new(None) };
+        let supervisor = NativeSupervisorControl { active: Mutex::new(None), completion: tokio::sync::Notify::new() };
         let attempt = crate::EffectAttemptId::from_bytes([41; 16]);
         supervisor.begin(attempt).unwrap();
         supervisor.record_quiescence(false).unwrap();

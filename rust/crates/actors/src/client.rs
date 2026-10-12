@@ -151,9 +151,6 @@ impl From<std::convert::Infallible> for Error {
     }
 }
 
-/// Alias used by connection helpers.
-pub type ConnectError = Error;
-
 type GeneratedClient<T> = wire::actors_service_client::ActorsServiceClient<T>;
 
 #[allow(
@@ -177,48 +174,80 @@ fn validate_none<T>(_: &T) -> Result<(), crate::ContractError> {
     Ok(())
 }
 
-#[cfg(target_arch = "wasm32")]
-type BrowserClient = GeneratedClient<
-    tonic::codegen::InterceptedService<tonic_web_wasm_client::Client, acyclic_workers::BearerAuth>,
->;
-
 #[cfg(any(target_arch = "wasm32", test))]
 fn browser_transport_base_url(endpoint: &str) -> String {
     endpoint.trim_end_matches('/').to_owned()
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-enum Backend {
-    Grpc(crate::grpc::Client),
-}
-
-#[cfg(target_arch = "wasm32")]
-enum Backend {
-    GrpcWeb(BrowserClient),
-}
-
 /// Connected Actors client whose operation methods are shared by all targets.
 pub struct Client {
-    inner: Backend,
+    #[cfg(not(target_arch = "wasm32"))]
+    inner: crate::grpc::Client,
+    #[cfg(target_arch = "wasm32")]
+    inner: GeneratedClient<
+        tonic::codegen::InterceptedService<tonic_web_wasm_client::Client, acyclic_workers::BearerAuth>,
+    >,
 }
 
 impl Client {
     /// Returns `grpc` for native transport and `grpc-web` for browser transport.
     #[must_use]
     pub const fn transport(&self) -> &'static str {
-        match &self.inner {
-            #[cfg(not(target_arch = "wasm32"))]
-            Backend::Grpc(_) => "grpc",
-            #[cfg(target_arch = "wasm32")]
-            Backend::GrpcWeb(_) => "grpc-web",
+        if cfg!(target_arch = "wasm32") { "grpc-web" } else { "grpc" }
+    }
+}
+
+
+#[cfg(test)]
+mod browser_transport_tests {
+    #[test]
+    fn browser_base_url_has_one_join_boundary() {
+        for (input, expected) in [
+            ("https://actors.example", "https://actors.example"),
+            ("https://actors.example/", "https://actors.example"),
+            ("https://actors.example/api/", "https://actors.example/api"),
+            ("http://localhost:4317/", "http://localhost:4317"),
+        ] {
+            assert_eq!(super::browser_transport_base_url(input), expected);
         }
     }
 }
 
-#[cfg(target_arch = "wasm32")]
-impl Client {
-    /// Constructs a browser client synchronously over the maintained gRPC-Web transport.
-    pub fn from_browser(endpoint: &str, token: &str) -> Result<Self, Error> {
+/// Connect trusting exclusively the supplied PEM CA on native targets, or platform roots if absent.
+pub async fn connect(
+    endpoint: &str,
+    token: &str,
+    ca: Option<&[u8]>,
+) -> Result<Client, Error> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let inner = crate::grpc::connect(endpoint, token, ca)
+            .await
+            .map_err(|error| match error {
+                crate::grpc::ConnectError::InsecureEndpoint => {
+                    Error::Configuration("Actors endpoints must use https".into())
+                }
+                crate::grpc::ConnectError::InvalidCredential => {
+                    Error::Configuration("invalid Actors bearer credential".into())
+                }
+                crate::grpc::ConnectError::InvalidCaCertificate => {
+                    Error::Configuration("invalid Actors private CA certificate".into())
+                }
+                crate::grpc::ConnectError::PlatformVerifier(error) => {
+                    Error::Transport(error.to_string())
+                }
+                crate::grpc::ConnectError::Transport(error) => Error::Transport(format!("{error:?}")),
+            })?;
+        Ok(Client { inner })
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    {
+        if ca.is_some() {
+            return Err(Error::Configuration(
+                "caller-provided CA certificates are unsupported in browser builds".into(),
+            ));
+        }
         let endpoint = url::Url::parse(endpoint).map_err(|_| {
             Error::Configuration(
                 "Actors endpoint must be a valid HTTPS URL; HTTP is limited to loopback tests"
@@ -268,74 +297,7 @@ impl Client {
         )
         .max_decoding_message_size(MAX_MESSAGE_BYTES)
         .max_encoding_message_size(MAX_MESSAGE_BYTES);
-        Ok(Self {
-            inner: Backend::GrpcWeb(inner),
-        })
-    }
-}
-
-#[cfg(test)]
-mod browser_transport_tests {
-    #[test]
-    fn browser_base_url_has_one_join_boundary() {
-        for (input, expected) in [
-            ("https://actors.example", "https://actors.example"),
-            ("https://actors.example/", "https://actors.example"),
-            ("https://actors.example/api/", "https://actors.example/api"),
-            ("http://localhost:4317/", "http://localhost:4317"),
-        ] {
-            assert_eq!(super::browser_transport_base_url(input), expected);
-        }
-    }
-}
-
-/// Connect using the target's canonical authenticated gRPC transport.
-pub async fn connect(endpoint: &str, token: &str) -> Result<Client, ConnectError> {
-    connect_with_ca_certificate(endpoint, token, None).await
-}
-
-/// Connect trusting exclusively the supplied PEM CA on native targets, or platform roots if absent.
-#[allow(
-    clippy::needless_return,
-    reason = "target-specific branches return distinct native and browser backends"
-)]
-pub async fn connect_with_ca_certificate(
-    endpoint: &str,
-    token: &str,
-    ca: Option<&[u8]>,
-) -> Result<Client, ConnectError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    {
-        let inner = crate::grpc::connect_with_ca_certificate(endpoint, token, ca)
-            .await
-            .map_err(|error| match error {
-                crate::grpc::ConnectError::InsecureEndpoint => {
-                    Error::Configuration("Actors endpoints must use https".into())
-                }
-                crate::grpc::ConnectError::InvalidCredential => {
-                    Error::Configuration("invalid Actors bearer credential".into())
-                }
-                crate::grpc::ConnectError::InvalidCaCertificate => {
-                    Error::Configuration("invalid Actors private CA certificate".into())
-                }
-                crate::grpc::ConnectError::PlatformVerifier(error) => {
-                    Error::Transport(error.to_string())
-                }
-                crate::grpc::ConnectError::Transport(error) => Error::Transport(format!("{error:?}")),
-            })?;
-        return Ok(Client {
-            inner: Backend::Grpc(inner),
-        });
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    {
-        if ca.is_some() {
-            return Err(Error::Configuration(
-                "caller-provided CA certificates are unsupported in browser builds".into(),
-            ));
-        }
-        return Client::from_browser(endpoint, token);
+        Ok(Client { inner })
     }
 }
 
@@ -384,22 +346,9 @@ macro_rules! operation {
             /// Executes the strongly typed semantic operation for native and WASM transports.
             pub async fn $name(&self, request: &$request) -> Result<$response, Error> {
                 let wire_request: $wire_request = request.clone().into();
-                #[cfg(not(target_arch = "wasm32"))]
-                {
-                    let mut client = match &self.inner {
-                        Backend::Grpc(client) => client.clone(),
-                    };
-                    let response = $wire_name(&mut client, &wire_request).await?;
-                    Ok(response.try_into()?)
-                }
-                #[cfg(target_arch = "wasm32")]
-                {
-                    let mut client = match &self.inner {
-                        Backend::GrpcWeb(client) => client.clone(),
-                    };
-                    let response = $wire_name(&mut client, &wire_request).await?;
-                    Ok(response.try_into()?)
-                }
+                let mut client = self.inner.clone();
+                let response = $wire_name(&mut client, &wire_request).await?;
+                Ok(response.try_into()?)
             }
         }
     };

@@ -1,4 +1,5 @@
 use super::*;
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_fs::CancellationToken;
 use acyclic_harness::conversation::{VolumeClass, VolumeOwner, VolumeRef};
 
@@ -155,7 +156,7 @@ async fn real_original_owner_grant_and_cancel_checks_are_used_by_builtins() {
         acyclic_harness::conversation::VolumeOperation::Write] {
         assert!(owner.require_volume_grant_with_native_work(&unrelated, operation, &work).is_err());
     }
-    fixture.runtime.runtime.task_host().cancel(owner.task_id()).await.unwrap();
+    fixture.runtime.runtime.task_host().cancel(owner.task_id(), None).await.unwrap();
     assert!(authorize_owner(context.context(), &owner, owner.task_id(), &work).await.is_err());
     cancellation.cancel();
     assert!(authorize_owner(context.context(), &owner, owner.task_id(), &work).await.is_err());

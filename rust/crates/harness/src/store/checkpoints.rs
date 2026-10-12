@@ -744,7 +744,7 @@ impl ProjectionLocation {
                 let capacity = bytes.capacity() as u64;
                 drop(bytes);
                 let released = match work.as_deref_mut() {
-                    Some(observer) => observer.release_bytes(capacity),
+                    Some(observer) => observer.release_owned(capacity),
                     None => Ok(()),
                 };
                 match result {
@@ -863,7 +863,7 @@ async fn load_chunks<P: StreamProvider>(
         Err(error) => {
             let capacity = bytes.capacity() as u64;
             drop(bytes);
-            if let Some(observer) = work.as_deref_mut() { let _ = observer.release_bytes(capacity); }
+            if let Some(observer) = work.as_deref_mut() { let _ = observer.release_owned(capacity); }
             Err(error)
         }
     }

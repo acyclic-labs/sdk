@@ -7,6 +7,7 @@ use acyclic_harness::{
     filesystem::{FilesystemTaskRuntime, TaskSourceInspection},
     runtime::TaskContext,
 };
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_stream::StreamProvider;
 use acyclic_fs::DemandSource as _;
 use serde::{Deserialize, Serialize};

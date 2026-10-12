@@ -5,6 +5,7 @@ use crate::{LocalAuthorityBackend, LocalObjectBackend,
     pi_caller, pi_fork::{self, PiForkCoordinator, PiForkOperations, PreparedPiFork}, pi_native::{self, PiNativeLaunchIntent,
         PiNativeRootSeed, PiPreparedScratch}, pi_owner::PiOwnerConfig, pi_runtime::PiTaskRuntime,
     pi_task::{NATIVE_LAUNCH_TASK_COMMAND_KIND, PiTaskExecution, PiTaskInput}};
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_fs::{CancellationToken, Digest, GenerationId, LazySnapshotRef, MeasuredResult, NativeMaterializationWork,
     OperationReceipt, PublicationPermit, WorkBudget, WorkCounters};
 use acyclic_fs::native_mount::NativeMountSession;
@@ -15,9 +16,9 @@ use acyclic_harness::{Error, JsonValueSchema, OperationId, Outcome, Result, Task
     effect_host::{ConversationEffectHost, TaskEffectPlan}, effects::EffectRegistry,
     fork::ForkReport,
     filesystem::{BorrowedNativeVolumeBinding, FilesystemExecutionJournal, FilesystemHost,
-        NativeProcessAuthority, NativeProcessProvider, NativeProcessDrainProof, NativeProcessReceipt, NativePublicationReservation, workspace_ref,
+        NativeProcessAuthority, NativeProcessProvider, NativeProcessDrainProof, NativeProcessReceipt, NativePublicationCleanup, workspace_ref,
         NativeVolumeView, NativeVolumeNamespace, NativeTaskViewDrainReceipt, NativeReceiptError,
-        NativePreparationJournalObservation, NativePreparationJournalError,
+        NativeRecordedPreparation,
         RecursiveSourceSnapshot, TaskCommandHost, TaskCommandProgress, TaskSourceInspection, TaskWorkerAttempt},
     resources::GenerationRef, runtime::{ContentBindings, DurableTaskHost, NativeTaskContext, TaskAdmissionRecord, TaskContext},
     scheduler::{LeaseFence, ResourceSnapshot}, store::{HistoryReadLimits, HistoryReader},
@@ -52,7 +53,7 @@ pub(crate) struct PiNativeColdLocator {
 type Scratch = PiPreparedScratch<LocalAuthorityBackend, LocalObjectBackend>;
 type Journal = FilesystemExecutionJournal<LocalStream, LocalAuthorityBackend, LocalObjectBackend>;
 type Effects = ConversationEffectHost<LocalStream>;
-type Reservation = NativePublicationReservation<LocalAuthorityBackend, LocalObjectBackend>;
+type Reservation = (acyclic_fs::PublicationPermit, NativePublicationCleanup<LocalAuthorityBackend, LocalObjectBackend>);
 
 #[derive(Default)]
 struct NativeGate {
@@ -75,7 +76,7 @@ impl NativeGate {
         if let Some(reservation) = self.reservation.as_ref() {
             owner.native_view_owner().verify_with_native_work(meter).await?;
             owner.native_view_owner().require_volume_grant_with_native_work(volume, VolumeOperation::Write, meter)?;
-            return Ok(reservation.permit());
+            return Ok(reservation.0);
         }
         let recover_original = existing_only || self.requires_original_recovery;
         self.requires_original_recovery = true;
@@ -88,7 +89,7 @@ impl NativeGate {
                 original, meter, cancellation, cleanup_cancellation).await?)
         };
         let reservation = acquired.ok_or(Error::Indeterminate(command))?;
-        let permit = reservation.permit();
+        let permit = reservation.0;
         self.reservation = Some(reservation);
         remaining(meter)?;
         Ok(permit)
@@ -104,7 +105,7 @@ impl NativeGate {
                 Ok(())
             };
         };
-        reservation.into_cleanup().release(&owner.native_view_owner(), meter, cancellation).await?;
+        reservation.1.release(&owner.native_view_owner(), meter, cancellation).await?;
         self.requires_original_recovery = false;
         remaining(meter)?;
         Ok(())
@@ -162,7 +163,7 @@ impl LiveHandles {
             let stopped = session.stop_with_meter(&volume_work)
                 .map_err(|cause| Error::from(
                     acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?;
-            if !stopped || !session.cleanup_state().cleanup_complete {
+            if !stopped || !session.cleanup_state().cleanup_complete() {
                 return Err(Error::Indeterminate(command));
             }
             self.project_startup_owner = None;
@@ -373,27 +374,25 @@ impl PiNativeCommandHost {
         self.register_prepared(prepared).await
     }
 
-    /// Read-only original SDK evidence.
+    /// Reads only the SDK-authenticated original preparation journal.
     pub(crate) async fn observe_preparation_journal(&self, task: TaskId,
         owner: &TaskJournalOwner<LocalStream>, work: &NativeMaterializationWork,
-    ) -> std::result::Result<NativePreparationJournalObservation, NativePreparationJournalError> {
-        let admission = self.child_admission(task, work).await.map_err(NativePreparationJournalError::Owner)?;
+    ) -> Result<Option<NativeRecordedPreparation>> {
+        let _admission = self.child_admission(task, work).await?;
         if owner.task_id() != task {
-            return Err(NativePreparationJournalError::Record("Pi native journal observer selected another original task"));
+            return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict,
+                reason: "Pi native journal observer selected another original task" });
         }
-        let proof = owner.child_scratch_creation_proof().map_err(NativePreparationJournalError::Owner)?;
-        let receipt = acyclic_harness::filesystem::NativeVolumeView::<LocalAuthorityBackend, LocalObjectBackend>
-            ::observe_preparation_journal(owner, &proof, admission.0.operation_id, work).await?;
-        // SDK query work is already charged; journal.work is historical.
-        Ok(receipt.value)
+        let witness = self.runtime.runtime.task_host()
+            .task_admission_readonly_witness_with_native_work(task, work).await?;
+        acyclic_harness::filesystem::observe_preparation(&witness, work)?.await
     }
 
     async fn original_allocation(&self, owner: &TaskJournalOwner<LocalStream>,
         command: OperationId, work: &NativeMaterializationWork,
     ) -> Result<(acyclic_harness::filesystem::NativePreparationRoot, acyclic_fs::NativeAllocation)> {
-        let observation = self.observe_preparation_journal(owner.task_id(), owner, work).await
-            .map_err(preparation_journal_error)?;
-        let NativePreparationJournalObservation::Recorded(recorded) = observation else {
+        let observation = self.observe_preparation_journal(owner.task_id(), owner, work).await?;
+        let Some(recorded) = observation else {
             return Err(Error::Indeterminate(command));
         };
         let (allocation, custody) =
@@ -580,7 +579,7 @@ impl PiNativeCommandHost {
         if !view.manifest().volumes.iter().any(|mapping| &mapping.volume == volume
             && matches!(&mapping.namespace, NativeVolumeNamespace::LazyMount { .. })) { return None; }
         let entry = self.find_entry(task)?;
-        let permit = entry.handles.try_lock().ok()?.project_gate.reservation.as_ref()?.permit();
+        let permit = entry.handles.try_lock().ok()?.project_gate.reservation.as_ref()?.0;
         Some(permit)
     }
 
@@ -750,7 +749,7 @@ impl PiNativeCommandHost {
         work: &NativeMaterializationWork,
     ) -> Result<Option<(EffectStatus, NativeAllocation)>> {
         let _admission = self.child_admission(task, work).await?;
-        self.runtime.runtime.task_host().cancel_with_native_work(task, work).await?;
+        self.runtime.runtime.task_host().cancel(task, Some(work)).await?;
         let Some(entry) = self.find_entry(task) else { return Ok(None); };
         let effect = entry.handles.lock().await.effect.clone();
         let Some(effect) = effect else { return Ok(None); };
@@ -849,7 +848,7 @@ impl PiNativeCommandHost {
     ) -> Result<()> {
         async {
             self.child_admission(task, meter).await?;
-            self.runtime.runtime.task_host().cancel_with_native_work(task, meter).await?;
+            self.runtime.runtime.task_host().cancel(task, Some(meter)).await?;
             let entry = self.find_entry(task).ok_or_else(|| unauthorized("Pi rollback has no original live preparation"))?;
             entry.operation_cancellation.cancel();
             let _run = entry.run.lock().await;
@@ -1049,9 +1048,9 @@ impl PiNativeCommandHost {
         let fence = LeaseFence::from(&lease.reservation);
         let owner = self.runtime.runtime.task_host()
             .journal_owner_with_native_work(task, &fence, meter).await?;
-        match self.observe_preparation_journal(task, &owner, meter).await.map_err(preparation_journal_error)? {
-            NativePreparationJournalObservation::Recorded(_) => Ok(false),
-            NativePreparationJournalObservation::MissingJournalPhysicalStateUnknown { .. } =>
+        match self.observe_preparation_journal(task, &owner, meter).await? {
+            Some(_) => Ok(false),
+            None =>
                 Err(Error::Indeterminate(launch.operation_id)),
         }
     }
@@ -1605,19 +1604,6 @@ fn receipt_error(error: NativeReceiptError) -> Error {
         },
         NativeReceiptError::Codec { code, source, custody } => Error::NativeCodec { code, source, custody },
         NativeReceiptError::Supervisor(source) => Error::NativeSupervisor { source, custody: None },
-    }
-}
-
-fn preparation_journal_error(error: NativePreparationJournalError) -> Error {
-    match error {
-        NativePreparationJournalError::Owner(error) => error,
-        NativePreparationJournalError::Native(error) => native_error(error),
-        NativePreparationJournalError::Backend(source) => Error::NativeStream {
-            code: acyclic_harness::wire::ErrorCode::Storage, source, custody: None,
-        },
-        NativePreparationJournalError::Record(reason) => Error::NativeBoundary {
-            code: acyclic_harness::wire::ErrorCode::Conflict, reason,
-        },
     }
 }
 

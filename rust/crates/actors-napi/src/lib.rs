@@ -365,7 +365,7 @@ impl NativeActorsClient {
         cancellation: Option<&NativeActorsCancellation>,
     ) -> Result<Self> {
         cancellable(
-            client::connect(&endpoint, &token),
+            client::connect(&endpoint, &token, None),
             cancellation.map(|value| value.state.clone()),
         )
         .await
@@ -380,7 +380,7 @@ impl NativeActorsClient {
         cancellation: Option<&NativeActorsCancellation>,
     ) -> Result<NativeActorsConnectResult> {
         Ok(connect_envelope(
-            client::connect(&endpoint, &token),
+            client::connect(&endpoint, &token, None),
             cancellation.map(|value| value.state.clone()),
         )
         .await)
@@ -394,7 +394,7 @@ impl NativeActorsClient {
         cancellation: Option<&NativeActorsCancellation>,
     ) -> Result<Self> {
         cancellable(
-            client::connect_with_ca_certificate(&endpoint, &token, Some(ca.as_ref())),
+            client::connect(&endpoint, &token, Some(ca.as_ref())),
             cancellation.map(|value| value.state.clone()),
         )
         .await
@@ -410,7 +410,7 @@ impl NativeActorsClient {
         cancellation: Option<&NativeActorsCancellation>,
     ) -> Result<NativeActorsConnectResult> {
         Ok(connect_envelope(
-            client::connect_with_ca_certificate(&endpoint, &token, Some(ca.as_ref())),
+            client::connect(&endpoint, &token, Some(ca.as_ref())),
             cancellation.map(|value| value.state.clone()),
         )
         .await)

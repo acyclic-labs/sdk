@@ -162,7 +162,7 @@ where
             .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
         // Source authority data precedes its original decoder/constructor AL.
         let (agent, root_task) = authority.0.validate_with_native_work(journal, work)?;
-        let mut tools = ToolRegistry::new_with_native_work(work)?;
+        let mut tools = ToolRegistry::new(work)?;
         let builtin = super::pi_builtin::builtin_tool_definition_with_native_work(work)?;
         let executor = super::pi_builtin::builtin_tool_executor_with_native_work(work)?;
         let projection = Arc::new(acyclic_harness::tool::JsonToolProjection);

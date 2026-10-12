@@ -395,16 +395,16 @@ proptest::proptest! {
 
 #[test]
 fn names_are_canonical_bounded_and_path_independent() -> Result<(), Box<dyn Error>> {
-    let composed = WorkspaceName::new("caf\u{e9}")?;
-    let decomposed = WorkspaceName::new("cafe\u{301}")?;
+    let composed = WorkspaceName::new("caf\u{e9}", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let decomposed = WorkspaceName::new("cafe\u{301}", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(composed, decomposed);
     assert_eq!(composed.as_str(), "caf\u{e9}");
-    assert_eq!(WorkspaceName::new(""), Err(WorkspaceNameError::Empty));
-    assert_eq!(WorkspaceName::new(".."), Err(WorkspaceNameError::Reserved));
-    assert_eq!(
-        WorkspaceName::new("parent/child"),
-        Err(WorkspaceNameError::InvalidCharacter)
-    );
+    assert!(matches!(WorkspaceName::new("", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error), Err(WorkspaceError::Name(WorkspaceNameError::Empty))));
+    assert!(matches!(WorkspaceName::new("..", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error), Err(WorkspaceError::Name(WorkspaceNameError::Reserved))));
+    assert!(matches!(
+        WorkspaceName::new("parent/child", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error),
+        Err(WorkspaceError::Name(WorkspaceNameError::InvalidCharacter))
+    ));
     Ok(())
 }
 
@@ -419,16 +419,15 @@ fn workspace_names_preserve_nfc_and_cancellation()
         "a\u{315}\u{300}", "a\u{301}\u{300}",
     ] {
         let expected: String = spelling.nfc().collect();
-        let normalized = WorkspaceName::new_measured(
+        let normalized = WorkspaceName::new(
             spelling, WorkBudget::UNBOUNDED, &cancellation,
         )?;
         assert_eq!(normalized.value.as_str(), expected);
-        assert_eq!(WorkspaceName::new(spelling)?, normalized.value);
         assert!(normalized.work.peak_allocation_bytes >= normalized.value.retained_bytes());
     }
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let failure = WorkspaceName::new_measured("name", WorkBudget::UNBOUNDED, &cancelled)
+    let failure = WorkspaceName::new("name", WorkBudget::UNBOUNDED, &cancelled)
         .err().ok_or("cancelled canonical name unexpectedly admitted")?;
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
     assert_eq!(*failure.work, crate::WorkCounters::UNCHARGED);
@@ -437,13 +436,13 @@ fn workspace_names_preserve_nfc_and_cancellation()
 
 #[test]
 fn identity_is_deterministic_and_namespace_scoped() -> Result<(), Box<dyn Error>> {
-    let name = WorkspaceName::new("repo")?;
+    let name = WorkspaceName::new("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let first = WorkspaceId::derive([1; 16], &name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(first, WorkspaceId::derive([1; 16], &name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error)?);
     assert_ne!(first, WorkspaceId::derive([2; 16], &name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error)?);
     assert_ne!(
         first,
-        WorkspaceId::derive([1; 16], &WorkspaceName::new("other")?, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error)?
+        WorkspaceId::derive([1; 16], &WorkspaceName::new("other", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error)?, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).map(|receipt| receipt.value).map_err(|failure| failure.error)?
     );
     Ok(())
 }
@@ -3062,7 +3061,7 @@ async fn a_collection_forgets_a_deleted_workspaces_records() -> Result<(), Box<d
     ))
     .await?;
     let store = crate::LocalCoreStateStore::open_owned(directory.path().join("core-state"))?;
-    let distributed = crate::DistributedFs::new(fs.clone(), store.clone());
+    let graph = crate::WorkspaceGraph::new(store.clone());
     let main = fs.create_workspace("repo", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     main.write_text("/base.txt", "base").await?;
     let mut children = Vec::new();
@@ -3074,8 +3073,7 @@ async fn a_collection_forgets_a_deleted_workspaces_records() -> Result<(), Box<d
                 ForkOptions::from_generation(base.clone(), IdempotencyKey::new()),
             crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-        distributed
-            .lineage()
+        graph
             .register_existing_child(&main, &child, base.id())
             .await?;
         children.push(child);
@@ -3090,8 +3088,7 @@ async fn a_collection_forgets_a_deleted_workspaces_records() -> Result<(), Box<d
             ForkOptions::from_generation(grandchild_base.clone(), IdempotencyKey::new()),
         crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| std::future::ready(Ok(crate::OperationReceipt { value: (), work: crate::WorkCounters::UNCHARGED })))
         .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    distributed
-        .lineage()
+    graph
         .register_existing_child(&kept, &grandchild, grandchild_base.id())
         .await?;
     kept.delete(IdempotencyKey::new()).await?;
@@ -3099,8 +3096,8 @@ async fn a_collection_forgets_a_deleted_workspaces_records() -> Result<(), Box<d
     let records = store.workspace_records().await?;
     assert!(records.contains_key(&deleted.id()) && records.contains_key(&kept.id()));
 
-    distributed
-        .collect_garbage(&CancellationToken::new())
+    fs
+        .collect_local_garbage(Some(&store), &CancellationToken::new())
         .await?;
     let records = store.workspace_records().await?;
     assert!(!records.contains_key(&deleted.id()));
@@ -3464,7 +3461,7 @@ async fn sibling_directory_times_reconcile_but_authored_metadata_conflicts()
 
     // Authored metadata changed both ways is a conflict, reported as such.
     let base = main.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let third = fork("sibling-times-third", &base).await?;
+    let third = fork("sibling-times-third", &base).await?.value;
     for (workspace, mode) in [(&main, 0o700), (&third, 0o770)] {
         let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         transaction.set_metadata("/pkg", touch(40, mode), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
@@ -3962,7 +3959,7 @@ async fn native_guarded_fork_denial_keeps_prepared_work_without_destination_auth
         observed_seals.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         std::future::ready(Err(WorkspaceError::from(crate::FsError::MutationNotAllowed)))
     };
-    let failure = workspace.fork_with_permit_guarded_with_native_work(
+    let failure = workspace.fork_with_native_work(
         "native-guarded-fork-denied", ForkOptions::from_generation(frozen, IdempotencyKey::new())
             .inherit_paths(vec!["/selected".to_owned()]),
         crate::PublicationPermit::Unrestricted, &original, &cancellation, &mut deny,
@@ -4042,7 +4039,7 @@ async fn native_guarded_fork_rejects_an_unrelated_source_reservation_without_reb
         expected: reservation.expected,
     };
     let mut allow = |_: &crate::NativeMaterializationWork| std::future::ready(Ok::<(), WorkspaceError>(()));
-    let failed = workspace.fork_with_permit_guarded_with_native_work(
+    let failed = workspace.fork_with_native_work(
         "native-fork-reserved-destination", ForkOptions::from_generation(frozen, IdempotencyKey::new()),
         permit, &original, &cancellation, &mut allow,
     ).await.err().ok_or("a source reservation was incorrectly rebound to a new destination")?;

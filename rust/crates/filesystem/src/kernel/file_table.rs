@@ -758,47 +758,8 @@ pub fn file_table_page_id(
     })
 }
 
-/// Exact path-independent record lookup and measured authenticated work.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FileRecordLookup {
-    /// Matching record, or authenticated absence.
-    pub record: Option<FileRecord>,
-    /// Exact page/backend work.
-    pub work: WorkCounters,
-}
-
-/// Original-order file records from one shared authenticated frontier batch.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FileRecordBatchLookup {
-    /// One explicit present/absent result per requested stable file identity.
-    pub records: Vec<Option<FileRecord>>,
-    /// Exact shared traversal and backend work.
-    pub work: WorkCounters,
-}
-
 /// Looks up file records while reading every distinct file-table frontier once.
-pub fn lookup_file_records<S: crate::ImmediateObjectStore>(
-    store: &S,
-    root: ObjectId,
-    file_ids: &[FileId],
-    maximum_queries: u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<FileRecordBatchLookup, FileRecordReadFailure> {
-    persistent_batch::lookup::<S, FileTableFormat>(
-        store,
-        root,
-        file_ids,
-        maximum_queries,
-        limits,
-        budget,
-    )
-    .map(to_record_batch)
-    .map_err(map_batch_failure)
-}
-
-/// Asynchronously executes the same batch as [`lookup_file_records`].
-pub async fn lookup_file_records_async<S: AsyncObjectStore>(
+pub async fn lookup_file_records<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     file_ids: &[FileId],
@@ -806,7 +767,7 @@ pub async fn lookup_file_records_async<S: AsyncObjectStore>(
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &CancellationToken,
-) -> Result<FileRecordBatchLookup, FileRecordReadFailure> {
+) -> Result<OperationReceipt<Vec<Option<FileRecord>>>, FileRecordReadFailure> {
     lookup_file_records_async_with_custody(
         store, root, file_ids, maximum_queries, limits, budget, cancellation, None,
     )
@@ -822,7 +783,7 @@ pub(crate) async fn lookup_file_records_async_with_custody<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
     data_custody: Option<&ProofDataCustody>,
-) -> Result<FileRecordBatchLookup, FileRecordReadFailure> {
+) -> Result<OperationReceipt<Vec<Option<FileRecord>>>, FileRecordReadFailure> {
     let frame_observer = |event| data_custody.map_or(Ok(0), |owner| owner.record_heap_future_event(event));
     in_heap_measured(move |budget| async move {
         persistent_batch::lookup_async::<S, FileTableFormat>(
@@ -835,15 +796,10 @@ pub(crate) async fn lookup_file_records_async_with_custody<S: AsyncObjectStore>(
             cancellation,
         )
         .await
-        .map(|receipt| OperationReceipt {
-            work: receipt.work,
-            value: to_record_batch(receipt),
-        })
         .map_err(map_batch_failure)
     }, budget, cancellation, FileRecordReadError::Cancelled,
         data_custody.map(|_| &frame_observer as &(dyn Fn(_) -> Result<u64, WorkError> + Sync)))
     .await
-    .map(|receipt| FileRecordBatchLookup { work: receipt.work, ..receipt.value })
 }
 
 pub(crate) async fn lookup_file_records_async_with_accounting<S: AsyncObjectStore>(
@@ -859,13 +815,6 @@ pub(crate) async fn lookup_file_records_async_with_accounting<S: AsyncObjectStor
     persistent_batch::lookup_async_with_accounting::<S, FileTableFormat>(
         store, root, file_ids, maximum_queries, limits, accounting, cancellation, data_custody,
     ).await.map(|(receipt, allocation)| (receipt.value, allocation))
-}
-
-fn to_record_batch(receipt: OperationReceipt<Vec<Option<FileRecord>>>) -> FileRecordBatchLookup {
-    FileRecordBatchLookup {
-        records: receipt.value,
-        work: receipt.work,
-    }
 }
 
 fn map_batch_failure(failure: persistent_batch::Failure) -> FileRecordReadFailure {
@@ -923,32 +872,14 @@ pub(crate) async fn lookup_file_record_async_with_accounting<S: AsyncObjectStore
 }
 
 /// Looks up one stable file identity through the authenticated file table.
-pub fn lookup_file_record<S: crate::ImmediateObjectStore>(
-    store: &S,
-    root: ObjectId,
-    file_id: FileId,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<FileRecordLookup, FileRecordReadFailure> {
-    crate::async_storage::poll_immediate(lookup_file_record_async(
-        store,
-        root,
-        file_id,
-        limits,
-        budget,
-        &CancellationToken::new(),
-    ))
-}
-
-/// Asynchronously looks up one file record, sharing every page another reader of `store` already decoded.
-pub async fn lookup_file_record_async<S: AsyncObjectStore>(
+pub async fn lookup_file_record<S: AsyncObjectStore>(
     store: &S,
     root: ObjectId,
     file_id: FileId,
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &CancellationToken,
-) -> Result<FileRecordLookup, FileRecordReadFailure> {
+) -> Result<OperationReceipt<Option<FileRecord>>, FileRecordReadFailure> {
     lookup_file_record_async_with_custody(
         store, root, file_id, limits, budget, cancellation, None,
     )
@@ -963,7 +894,7 @@ pub(crate) async fn lookup_file_record_async_with_custody<S: AsyncObjectStore>(
     budget: WorkBudget,
     cancellation: &CancellationToken,
     data_custody: Option<&ProofDataCustody>,
-) -> Result<FileRecordLookup, FileRecordReadFailure> {
+) -> Result<OperationReceipt<Option<FileRecord>>, FileRecordReadFailure> {
     let frame_observer = |event| data_custody.map_or(Ok(0), |owner| owner.record_heap_future_event(event));
     in_heap_measured(move |budget| async move {
         persistent_point::lookup_async::<S, FileTableFormat>(
@@ -976,15 +907,10 @@ pub(crate) async fn lookup_file_record_async_with_custody<S: AsyncObjectStore>(
             data_custody,
         )
         .await
-        .map(|receipt| OperationReceipt {
-            work: receipt.work,
-            value: FileRecordLookup { record: receipt.value, work: receipt.work },
-        })
         .map_err(map_batch_failure)
     }, budget, cancellation, FileRecordReadError::Cancelled,
         data_custody.map(|_| &frame_observer as &(dyn Fn(_) -> Result<u64, WorkError> + Sync)))
     .await
-    .map(|receipt| FileRecordLookup { work: receipt.work, ..receipt.value })
 }
 
 /// Sparse file-record lookup failure retaining exact spent work.

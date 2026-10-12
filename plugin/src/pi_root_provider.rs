@@ -10,7 +10,7 @@ use super::{
         ROOT_ALLOCATION_PROVIDER, ROOT_INPUT_DIRECTORY},
 };
 use acyclic_fs::{
-    CancellationToken, DemandSource, DistributedFs, LazyWorkspaceStore, Lifecycle, LocalAuthorityBackend,
+    CancellationToken, DemandSource, LazyWorkspaceStore, Lifecycle, LocalAuthorityBackend,
     LocalObjectBackend, NativeAllocation, NativeMaterializationWork,
     NativeTreeMaterializationError, SourceReference, VolumeConfig, WorkBudget, WorkCounters, WorkError,
 };
@@ -1094,7 +1094,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         self.bind_conversation_with_native_work(effect, attempt, work).await?;
         #[cfg(test)]
         self.test_fault_native("after-conversation-bind")?;
-        let distributed = DistributedFs::new(self.resources.fs.clone(), self.resources.store.clone());
+
         if let PiRootIntent::Project { paths, .. } = &self.preparation.request.root {
             let inputs = match self.original_artifact_with_native_work(effect, attempt, "attachments", work).await? {
                 Some(reference) => self.read_with_native_work::<BTreeMap<String, AttachmentInput>>(&reference.0, work).await?,
@@ -1145,9 +1145,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
                     None => {
                         let operation = self.creation_operation_with_native_work(effect, attempt, key, work)?;
                         let name = volume.storage_name_with_native_work(work)?;
-                        distributed.attach_lazy_with_operation_with_native_work(&name.0,
-                            Arc::clone(&physical.source), VolumeConfig::native(Lifecycle::Durable),
-                            operation, work, work.cancellation()).await
+                        acyclic_fs::LazyWorkspace::attach_with_operation_with_native_work(&self.resources.fs, &name.0, Arc::clone(&physical.source), self.resources.store.clone(), VolumeConfig::native(Lifecycle::Durable), operation, work, work.cancellation()).await
                             .map_err(|(source, custody)| Error::NativeSource { source, custody })?.0
                     }
                 };
