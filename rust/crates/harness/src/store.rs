@@ -274,9 +274,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 "extension migration request is invalid".into(),
             ));
         }
-        if let Some(revision) = self.operation_revision(request.operation_id).await? {
+        if let Some(event) = self.operation_event(request.operation_id).await? {
             return self
-                .replay_extension_migration(request, scope, publisher, revision)
+                .replay_extension_migration(request, scope, publisher, event.revision)
                 .await;
         }
         self.reducer.preflight_extension_migration(
@@ -455,25 +455,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         Ok(report)
     }
 
-    /// Publishes a fork report under the admitted owner's atomic fence.
-    #[cfg(feature = "filesystem")]
-    pub async fn publish_fork_report_measured(
-        &mut self,
-        report: ForkReport,
-        scope: Scope,
-        owner: &crate::durable_host::TaskJournalOwner<P>,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<ApplyResult>, Error> {
-        let mut work = history::HistoryWork::new(budget, cancellation);
-        let result = async {
-            work.preflight()?;
-            self.publish_fork_report(
-                report, scope, Some(owner), &mut Some(&mut work)).await
-        }.await;
-        work.finish(result)
-    }
-
     /// Publishes a captured fork through the parent append.
     pub async fn publish_fork_report(
         &mut self, report: ForkReport, scope: Scope,
@@ -552,26 +533,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         self.bind_published_child(parent, &seed, child_scope, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         Ok(seed)
-    }
-
-    /// Binds only the exact child of an authenticated canonical parent fork.
-    #[cfg(feature = "filesystem")]
-    pub async fn bind_published_child_measured(
-        &mut self,
-        parent: &Self,
-        seed: &ForkSeed,
-        scope: Scope,
-        owner: &crate::durable_host::TaskJournalOwner<P>,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
-        let mut work = history::HistoryWork::new(budget, cancellation);
-        let result = async {
-            work.preflight()?;
-            self.bind_published_child(
-                parent, seed, scope, Some(owner), &mut Some(&mut work)).await
-        }.await;
-        work.finish(result)
     }
 
     /// Binds a child to its exact published parent seed.
@@ -686,31 +647,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
     /// Moves the reducer out without copying or replaying it.
     pub fn into_reducer(self) -> Reducer {
         self.reducer
-    }
-
-    /// Restores a bounded committed cut with a finite work receipt.
-    #[cfg(feature = "filesystem")]
-    #[allow(clippy::too_many_arguments, reason = "original exact-cut open arguments plus the cumulative work receipt")]
-    pub async fn open_measured(
-        client: &std::sync::Arc<P>,
-        authority: Authority,
-        authority_verifier: AuthorityVerifier,
-        schemas: SchemaRegistry,
-        original_revision: Option<u64>,
-        limits: HistoryReadLimits,
-        budget: acyclic_fs::WorkBudget,
-        cancellation: &acyclic_fs::CancellationToken,
-    ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<Self>, Error> {
-        let mut work = history::HistoryWork::new(budget, cancellation);
-        let result = async {
-            work.preflight()?;
-            Self::open(
-                client,
-                authority,
-                authority_verifier,
-                schemas, None, limits, DEFAULT_TERMINAL_EFFECTS, original_revision, &mut Some(&mut work)).await
-        }.await;
-        work.finish(result)
     }
 
     /// Restores an authenticated aggregate at a bounded committed cut.
@@ -985,13 +921,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }
     }
 
-
-    /// Configures the event/retry cache; canonical Stream history and live projections remain authoritative.
-    pub fn with_resident_event_limit(mut self, maximum: usize) -> Result<Self> {
-        self.set_resident_event_limit(maximum)?;
-        Ok(self)
-    }
-
     /// Reconfigures the bounded event/retry cache without moving a borrowed aggregate.
     pub fn set_resident_event_limit(&mut self, maximum: usize) -> Result<()> {
         self.reducer.set_resident_event_limit(maximum)
@@ -1033,12 +962,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         self
     }
 
-    /// Configures content and projection bounds for future admissions.
-    pub fn with_limits(mut self, limits: Limits) -> Result<Self> {
-        self.set_limits(limits)?;
-        Ok(self)
-    }
-
     /// Updates admission bounds without discarding the verified projection.
     pub fn set_limits(&mut self, limits: Limits) -> Result<()> {
         limits.validate(&mut None)?;
@@ -1063,14 +986,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
             self.reducer.event_verifier(),
             operation, 2 * acyclic_stream::MAX_RECORD_BYTES as u64, true, &mut None,
         ).await.map(|(event, _)| event)
-    }
-
-    /// Exact historical operation revision, independent of the resident retry index.
-    pub async fn operation_revision(&self, operation: OperationId) -> Result<Option<u64>> {
-        Ok(self
-            .operation_event(operation)
-            .await?
-            .map(|event| event.revision))
     }
 
     /// Exact committed model selection, including operations archived from resident state.
@@ -1126,7 +1041,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         owned.transfer();
         Ok(Some((ApplyResult::Replayed { event }, original_owned)))
     }
-
 
     /// Opens an archival reader without replaying or cloning the resident event history.
     pub fn history_reader(&self) -> Result<HistoryReader<P>> {
@@ -1406,7 +1320,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }.await)
     }
 
-
     async fn plan_command(&self, command: &Command, fresh_migration: bool) -> Result<ApplyResult> {
         if !fresh_migration {
             if let Some(effect_id) = self.reducer.archived_effect_for_command(command)
@@ -1437,7 +1350,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         self.validate_admission_content(&command.action).await?;
         self.reducer.plan_indexed_with_retained_quota(command, true, &mut None).map(|(result, _)| result)
     }
-
 
     #[cfg(feature = "filesystem")]
     async fn validate_task_admission_content_with_work(
@@ -1756,8 +1668,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }
         Ok(())
     }
-
-
 
     /// Reconciles a possibly committed append without issuing another append.
     #[cfg_attr(
@@ -2171,9 +2081,9 @@ mod tests {
         let client = provider.clone();
         let mut writer = with_content(
             StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
-                .await?
-                .with_resident_event_limit(1)?,
+                .await?,
         );
+        writer.set_resident_event_limit(1)?;
         let original = command(1)?;
         let first = writer.execute(original.clone(), #[cfg(feature = "filesystem")] None, &mut None).await?;
         let ApplyResult::Applied { event } = first else {
@@ -2374,9 +2284,9 @@ mod tests {
         let client = provider.clone();
         let mut writer = with_content(
             StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
-                .await?
-                .with_resident_event_limit(1)?,
+                .await?,
         );
+        writer.set_resident_event_limit(1)?;
         let agent = crate::AgentId::from_bytes([8; 16]);
         let file = content()?;
         let scope = issuer().issue("message-writer", &Capabilities::new([
@@ -2838,9 +2748,9 @@ mod tests {
         let client = Arc::new(MemoryStream::default());
         let mut writer = with_content(
             StreamAggregate::open(&client, authority(), issuer().verifier(&mut None).expect("verifier copy"), schemas(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
-                .await?
-                .with_resident_event_limit(2)?,
+                .await?,
         );
+        writer.set_resident_event_limit(2)?;
         let original = command(1)?;
         let first = writer.execute(original.clone(), #[cfg(feature = "filesystem")] None, &mut None).await?;
         for identity in 2..=5 {
@@ -2882,9 +2792,9 @@ mod tests {
                 authority(),
                 issuer().verifier(&mut None).expect("verifier copy"),
                 schemas(), Some(snapshot), crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None)
-            .await?
-            .with_resident_event_limit(2)?,
+            .await?,
         );
+        restored.set_resident_event_limit(2)?;
         assert_eq!(restored.reducer().archived_through_revision(), 3);
         let ApplyResult::Replayed { event } = restored.execute(original, #[cfg(feature = "filesystem")] None, &mut None).await? else {
             return Err(Error::Invalid("cold retry was not replayed".into()));
@@ -4035,7 +3945,6 @@ mod tests {
         }
         Ok(())
     }
-
 
     #[tokio::test]
     async fn default_cold_projection_enforces_bounds_and_recovers_failed_observations() -> Result<()>

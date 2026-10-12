@@ -1067,7 +1067,7 @@ fn original_proposal(
     original: &crate::NativeMaterializationWork,
     cancellation: &CancellationToken,
 ) -> Result<ProposedCommit, Box<dyn std::error::Error>> {
-    let mut allocation = original.claim(2)?;
+    let mut allocation = original.claim(2, 1, crate::WorkCounters::UNCHARGED)?;
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(2)?;
     original.charge(WorkCounters { bytes_copied: 2, ..WorkCounters::UNCHARGED })?;
@@ -1081,10 +1081,15 @@ fn original_proposal(
     original.admit(hash)?;
     let _digest = crate::storage::object_digest(ObjectKind::BlobChunk, &bytes);
     original.record_admitted(hash)?;
-    let control = original.claim(crate::kernel::allocation::bytes_owner_control_bytes::<crate::kernel::NativePublicationPayload>()?)?;
-    let payload = bytes::Bytes::from_owner(crate::kernel::NativePublicationPayload {
-        bytes, _original_evidence: None, _allocation: allocation, _control: control,
-    });
+    let control_bytes = crate::kernel::allocation::bytes_owner_control_bytes::<acyclic_stream::OwnedBytes>()?;
+    let control = original.claim(control_bytes, u64::from(control_bytes != 0), WorkCounters::UNCHARGED)?;
+    let payload = acyclic_stream::OwnedBytes::from_vec_with_guard(
+        bytes, (allocation, control), original.runtime_meter(),
+    ).map_err(|failure| match failure.into_error() {
+        acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error),
+        acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => crate::NativeTreeMaterializationError::InvalidLayout,
+    })?;
+    let payload = bytes::Bytes::from_owner(payload);
     Ok(ProposedCommit {
         operation_id: OperationId::from_bytes([operation; 16]),
         fingerprint: Digest::from_bytes([fingerprint; 32]),

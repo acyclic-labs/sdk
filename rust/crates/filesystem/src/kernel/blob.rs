@@ -3,7 +3,7 @@
 use super::allocation::{AllocationError, LogicalVecCapacity, VisitedObjectSet};
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
 use super::file_read::{ReadOwned, reserve_decoded_items,
-    allocate_read_buffer, completed_read_work, owned_read_bytes, read_object_with_accounting, release_read_allocation};
+    allocate_read_buffer, owned_read_bytes, read_object_with_accounting, release_read_allocation};
 use crate::FsError;
 use super::codec::{
     CanonicalDecodeError, DecodeLimits, Decoder, Encoder,
@@ -14,14 +14,11 @@ use super::codec::{DecodedPageKind, DecodedPageShape};
 use crate::async_storage::{AsyncObjectStore, DecodedCacheKey};
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
-use crate::heap_future::in_heap;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::speculation::{ResidencyHint, ResidencyReason};
 use crate::storage::{
-    ByteRange, HashedObject, ObjectId, ObjectKind, ObjectReadRequest,
-    ObjectReadRetention, ObjectStoreError, object_digest,
+    ByteRange, HashedObject, ObjectId, ObjectKind, ObjectReadRequest, ObjectStoreError, object_digest,
 };
-use bytes::Bytes;
 use std::future::Future;
 use std::io::Read;
 use std::mem::size_of;
@@ -406,6 +403,7 @@ impl OwnedSourceChunk {
 
 /// Nonblocking bounded byte source for browser, network, and native streams.
 pub trait AsyncBlobSource {
+    /// Reads bounded bytes into the destination.
     fn read<'a>(
         &'a mut self,
         destination: &'a mut [u8],
@@ -413,6 +411,7 @@ pub trait AsyncBlobSource {
         cancellation: &'a CancellationToken,
     ) -> impl Future<Output = std::io::Result<usize>>;
 
+    /// Returns an owned chunk when the source supports it.
     fn read_owned(
         &mut self,
         _maximum: usize,
@@ -423,6 +422,7 @@ pub trait AsyncBlobSource {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    /// Reads bytes under the original native invocation.
     fn read_with_native_work<'a>(
         &'a mut self, _destination: &'a mut [u8],
         _original: &'a crate::NativeMaterializationWork,
@@ -432,6 +432,7 @@ pub trait AsyncBlobSource {
     }
 
     #[cfg(not(target_arch = "wasm32"))]
+    /// Returns an owned chunk under the original native invocation.
     fn read_owned_with_native_work(
         &mut self, _maximum: usize, _original: &crate::NativeMaterializationWork,
         _cancellation: &CancellationToken,
@@ -439,6 +440,7 @@ pub trait AsyncBlobSource {
         async { Ok(None) }
     }
 
+    /// Takes work accumulated by the source.
     fn take_work(&mut self) -> Option<WorkCounters> {
         None
     }
@@ -752,7 +754,7 @@ async fn read_blob_chunk<R: AsyncBlobSource>(
             { let mut copy = copied; copy.record_completed(crate::WorkCounters { bytes_copied: usize_to_u64(capacity), ..crate::WorkCounters::UNCHARGED }) }?;
             let owned = buffer.take().expect("original source storage");
             prepared = Some(acyclic_stream::PreparedOwnedBytes::new(
-                owned.value, owned.custody, original.runtime_meter_owner(),
+                owned.value, owned.custody, original.runtime_meter(),
             ).map_err(|failure| match failure.into_error() {
                 acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error).into(),
                 acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
@@ -765,7 +767,7 @@ async fn read_blob_chunk<R: AsyncBlobSource>(
             let zeroed = WorkCounters { bytes_copied: usize_to_u64(maximum), ..WorkCounters::UNCHARGED };
             accounting.admit(zeroed)?;
             owned.value.resize(maximum, 0);
-            completed_read_work(accounting, zeroed)?;
+            accounting.record_completed(zeroed)?;
         }
         let mut filled = 0_usize;
         while filled < maximum {
@@ -829,7 +831,7 @@ async fn read_standalone_blob_source<R: AsyncBlobSource>(
     if let Some(measured) = measured { completed_blob_backend(measured, accounting)?; }
     let read = result.map_err(BlobBuildError::Source)?;
     if measured.is_none() {
-        completed_read_work(accounting, WorkCounters {
+        accounting.record_completed(WorkCounters {
             source_bytes_read: usize_to_u64(read), ..WorkCounters::UNCHARGED
         })?;
     }
@@ -858,12 +860,12 @@ fn drop_source_chunk(chunk: OwnedSourceChunk, accounting: &mut KernelAccounting<
 
 fn hashed_blob_object(
     kind: ObjectKind, bytes: acyclic_stream::OwnedBytes, accounting: &mut KernelAccounting<'_>,
-    cancellation: &CancellationToken,
+    _cancellation: &CancellationToken,
 ) -> Result<HashedObject, FsError> {
     accounting.check()?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = accounting.native_work() {
-        return HashedObject::new_with_native_work(kind, bytes, original, cancellation).map_err(Into::into);
+        return HashedObject::new_with_native_work(kind, bytes, original, _cancellation).map_err(Into::into);
     }
     let hash = WorkCounters {
         bytes_hashed: usize_to_u64(bytes.len()).checked_add(crate::storage::OBJECT_DIGEST_ENVELOPE_BYTES)
@@ -872,7 +874,7 @@ fn hashed_blob_object(
     };
     accounting.admit(hash)?;
     let object = HashedObject::new(kind, bytes);
-    completed_read_work(accounting, hash)?;
+    accounting.record_completed(hash)?;
     Ok(object)
 }
 
@@ -1182,7 +1184,7 @@ pub(crate) struct PreparedBlobDemandFailure {
 #[cfg(not(target_arch = "wasm32"))]
 impl PreparedBlobDemandFailure {
     pub(crate) fn new(original: &crate::NativeMaterializationWork) -> Result<Self, FsError> {
-        let allocation = original.claim(usize_to_u64(size_of::<Option<crate::DemandError>>()))?;
+        let allocation = { let claim_bytes = usize_to_u64(size_of::<Option<crate::DemandError>>()); original.claim(claim_bytes, u64::from(claim_bytes != 0), crate::WorkCounters::UNCHARGED) }?;
         let prepared = Self { storage: BlobDemandFailure {
             error: Box::new(None), _allocation: allocation,
         } };
@@ -1475,7 +1477,7 @@ impl BlobRangeMachine {
             items_returned: 1, ..WorkCounters::UNCHARGED };
         accounting.admit(copied)?;
         self.output.extend_from_slice(region);
-        completed_read_work(accounting, copied)
+        accounting.record_completed(copied)
     }
 
     async fn read_chunk_batch<S: AsyncObjectStore>(

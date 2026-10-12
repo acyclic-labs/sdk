@@ -666,7 +666,7 @@ impl NativeExistingLazyVolume {
     where P: StreamProvider,
         A: AsyncAuthorityStore + 'static,
         O: AsyncObjectStore + 'static,
-        D: acyclic_fs::DemandSource + 'static, S: acyclic_fs::LazyWorkspaceStore,
+        D: acyclic_fs::demand::DemandSource + 'static, S: acyclic_fs::LazyWorkspaceStore,
     {
         crate::NativeFutureBundle::new(work, || async move {
             if !owner.native_shared_work_matches(metadata_work) || !work.shares_ledger(metadata_work) {
@@ -714,7 +714,7 @@ impl<P, A, O, D, S> HeldLazyVolume<P, A, O, D, S>
 where P: StreamProvider,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
-    D: acyclic_fs::DemandSource + 'static, S: acyclic_fs::LazyWorkspaceStore,
+    D: acyclic_fs::demand::DemandSource + 'static, S: acyclic_fs::LazyWorkspaceStore,
 {
     fn require_work(&self, work: &NativeMaterializationWork) -> Result<()> {
         if !self.custody.matches_work(work) {
@@ -732,7 +732,7 @@ impl<P, A, O, D, S> NativeHeldLazyVolume for HeldLazyVolume<P, A, O, D, S>
 where P: StreamProvider,
     A: AsyncAuthorityStore + 'static,
     O: AsyncObjectStore + 'static,
-    D: acyclic_fs::DemandSource + 'static, S: acyclic_fs::LazyWorkspaceStore,
+    D: acyclic_fs::demand::DemandSource + 'static, S: acyclic_fs::LazyWorkspaceStore,
 {
     fn matches_owner(&self, owner: &dyn std::any::Any) -> bool {
         owner.downcast_ref::<TaskJournalOwner<P>>()
@@ -951,7 +951,7 @@ pub struct NativePreparationReceipt {
     /// Actual original staging-allocation status, including replacement.
     pub preparation: acyclic_fs::MaterializationPreparationObservation,
     /// Independently observed captured endpoints. Uncaptured edits remain unknown.
-    pub observations: Vec<acyclic_fs::MaterializationObservation>,
+    pub observations: Vec<acyclic_fs::materializer::MaterializationObservation>,
     #[serde(skip)]
     _custody: acyclic_fs::NativeAllocation,
 }

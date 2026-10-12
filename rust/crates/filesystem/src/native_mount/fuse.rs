@@ -394,7 +394,7 @@ fn fuse_source_chunk(bytes: &[u8], work: &crate::NativeMaterializationWork)
     let length = bytes.len() as u64;
     fuse_copy_admit(length, work)?;
     let original = work.clone();
-    let mut allocation = original.claim(length).map_err(NativeMountError::from)?;
+    let mut allocation = original.claim(length, u64::from((length) != 0), crate::WorkCounters::UNCHARGED).map_err(NativeMountError::from)?;
     let mut buffer = Vec::new();
     buffer.try_reserve_exact(bytes.len()).map_err(NativeMountError::Allocation)?;
     allocation.reconcile_capacity(buffer.capacity() as u64).map_err(NativeMountError::from)?;
@@ -402,7 +402,7 @@ fn fuse_source_chunk(bytes: &[u8], work: &crate::NativeMaterializationWork)
     fuse_copy_record(length, work)?;
     let logical_owned_bytes = allocation.bytes();
     let owned = acyclic_stream::OwnedBytes::from_vec_with_guard(
-        buffer, allocation, original.runtime_meter_owner(),
+        buffer, allocation, original.runtime_meter(),
     ).map_err(|failure| match failure.into_error() {
         acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
             NativeMountError::from(original.runtime_error(error))
@@ -2055,7 +2055,7 @@ impl ProjectionCore {
         let mut core = Self::new(source, state, budget, &cancellation)?;
         core.allocation_custody = Some(custody.clone());
         let entry = InodeEntry::new(FuseOwned::empty(MountPath::root()), root, stamp, 1, native).map_err(NativeMountError::from)?;
-        core.native_allocation = Some(materialization.claim(std::mem::size_of::<Self>() as u64)?);
+        core.native_allocation = Some(materialization.claim(std::mem::size_of::<Self>() as u64, u64::from((std::mem::size_of::<Self>() as u64) != 0), crate::WorkCounters::UNCHARGED)?);
         core.state.get_mut().unwrap_or_else(PoisonError::into_inner).by_inode =
             HashMap::from([(ROOT_INODE, entry)]);
         let bytes = std::mem::size_of::<(FuseOwned<MountPath>, u64)>() as u64;
@@ -2227,8 +2227,6 @@ fn clone_fatal_source_error(error: &MountSourceError) -> Option<MountSourceError
             MountSourceError::NativeWork(crate::NativeTreeMaterializationError::Cancelled),
         MountSourceError::OriginalSnapshotUnavailable => MountSourceError::OriginalSnapshotUnavailable,
         MountSourceError::Indeterminate => MountSourceError::Indeterminate,
-        MountSourceError::NativeRecordMaterializationInProgress =>
-            MountSourceError::NativeRecordMaterializationInProgress,
         MountSourceError::Allocation(error) => MountSourceError::Allocation(error.clone()),
         MountSourceError::ServicesNotInitialized => MountSourceError::ServicesNotInitialized,
         MountSourceError::ServiceUnavailable(error) => MountSourceError::ServiceUnavailable(Arc::clone(error)),
@@ -2306,7 +2304,7 @@ fn fatal_handler_error(error: &NativeMountError) -> bool {
             matches!(error.semantic_error(), MountSourceError::Work(_) | MountSourceError::Cancelled
                 | MountSourceError::Allocation(_) | MountSourceError::ServicesNotInitialized
                 | MountSourceError::ServiceUnavailable(_) | MountSourceError::OriginalSnapshotUnavailable
-                | MountSourceError::Indeterminate | MountSourceError::NativeRecordMaterializationInProgress
+                | MountSourceError::Indeterminate
                 | MountSourceError::Filesystem(crate::FsError::Work(_) | crate::FsError::Cancelled(_))
                 | MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Work(_)
                     | crate::kernel::NamespacePathError::Cancelled
@@ -2325,7 +2323,7 @@ fn source_callback_errno(error: &MountSourceError) -> i32 {
         MountSourceError::NativeWorkspaceCause(error) => super::native_workspace_errno(&error.source),
         MountSourceError::NativeText { kind, .. } =>
             super::native_source_text_errno(*kind),
-        MountSourceError::Io(error) | MountSourceError::NativeRecordIo(error, _) =>
+        MountSourceError::Io(error, _) =>
             error.raw_os_error().unwrap_or(libc::EIO),
         MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Cancelled) => libc::ECANCELED,
         MountSourceError::NamespacePath(crate::kernel::NamespacePathError::Work(_)) => libc::EIO,
@@ -2768,7 +2766,7 @@ impl FuseRetirementHelper {
     ) -> Result<Self, NativeMountError> {
         let normal = work.allocation_work();
         let frame = acyclic_native_runtime::ProcessTree::prepare_closed_process(
-            5, normal.runtime_meter_owner(),
+            5, normal.runtime_meter(),
         ).map_err(|error| normal.runtime_error(error))?;
         // Reserve the bounded observation and termination loops, including reap.
         let observed = 3_001_u64 + 3_000 + 5_001 + 5_000 + 1;
@@ -3117,7 +3115,7 @@ impl FuseSession {
         }).map_err(NativeMountError::from)?;
         let normal = materialization.allocation_work();
         let retirement_helper = FuseRetirementHelper::prepare(&normal)?;
-        let control_allocation = normal.claim(std::mem::size_of::<FuseDriverControl>() as u64)
+        let control_allocation = normal.claim(std::mem::size_of::<FuseDriverControl>() as u64, u64::from((std::mem::size_of::<FuseDriverControl>() as u64) != 0), crate::WorkCounters::UNCHARGED)
             .map_err(NativeMountError::from)?;
         let control = Arc::new(FuseDriverControl {
             state: Mutex::new(FuseDriverControlState {
@@ -3135,7 +3133,9 @@ impl FuseSession {
         });
         let allocation = normal.claim(std::mem::size_of::<(
             Arc<FuseDriverControl>, crate::NativeAllocation,
-        )>() as u64).map_err(NativeMountError::from)?;
+        )>() as u64, u64::from((std::mem::size_of::<(
+            Arc<FuseDriverControl>, crate::NativeAllocation,
+        )>() as u64) != 0), crate::WorkCounters::UNCHARGED).map_err(NativeMountError::from)?;
         let job = (Arc::clone(&control), allocation);
         materialization.charge(crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
@@ -3151,7 +3151,9 @@ impl FuseSession {
         let mut loan = FuseDriverLoan::take(&control)?;
         let allocation = normal.claim(std::mem::size_of::<(
             Arc<FuseDriverControl>, crate::NativeAllocation,
-        )>() as u64).map_err(NativeMountError::from)?;
+        )>() as u64, u64::from((std::mem::size_of::<(
+            Arc<FuseDriverControl>, crate::NativeAllocation,
+        )>() as u64) != 0), crate::WorkCounters::UNCHARGED).map_err(NativeMountError::from)?;
         let job = (Arc::clone(&control), allocation);
         materialization.charge(crate::WorkCounters {
             backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED
@@ -3395,7 +3397,7 @@ impl FuseRecoveryControl {
 
     pub(super) fn retire_controls(&mut self, work: &crate::NativeMaterializationWork) -> Result<(), NativeMountError> {
         if let Some(helper) = &mut self.helper {
-            helper.terminate(Some(work.runtime_meter())).map_err(|error| work.runtime_error(error))?;
+            helper.terminate(Some(work.runtime_meter().as_ref())).map_err(|error| work.runtime_error(error))?;
         }
         self.helper.take();
         self.helper_work.take();
@@ -3437,7 +3439,7 @@ impl FuseRecoveryControl {
             let spawned = crate::native_host::unix_name_with_work(
                 destination.as_os_str(), &mut &*work, |path, work| {
                     acyclic_native_runtime::ProcessTree::spawn_closed_measured(
-                        program, &[c"-u", c"-q", c"-z", c"--", path], work.runtime_meter(), &mut self.helper,
+                        program, &[c"-u", c"-q", c"-z", c"--", path], work.runtime_meter().as_ref(), &mut self.helper,
                     ).map_err(|error| work.runtime_error(error))
                 },
             );
@@ -3451,7 +3453,7 @@ impl FuseRecoveryControl {
         loop {
             let status = {
                 let helper = self.helper.as_mut().expect("accepted helper remains owned");
-                helper.try_wait(Some(work.runtime_meter())).map_err(|error| work.runtime_error(error))?
+                helper.try_wait(Some(work.runtime_meter().as_ref())).map_err(|error| work.runtime_error(error))?
             };
             if status.is_some() { break; }
             if self.deadline.is_some_and(|deadline| std::time::Instant::now() >= deadline) {
@@ -3992,7 +3994,7 @@ impl FuseProjection {
         let _names = self.core.names()?;
         let path = fuse_clone_path(self.core.state()?.path(inode)?, work)?;
         let stamp = source.view_stamp_with_meter(work)?;
-        let target = source.read_link_with_meter(&path, work).map_err(FuseRequestError::from)?;
+        let target = source.read_link(&path, work).map_err(FuseRequestError::from)?;
         let target = fuse_owned_source_chunk(target, work)?;
         // The kernel keeps the target it receives.
         self.core.state()?.admit_attributes(source, inode, stamp, work)?;
@@ -4616,9 +4618,9 @@ impl FuseProjection {
     fn read_named_attribute(&self, inode: u64, name: &OsStr, work: &crate::NativeMaterializationWork) -> Result<FuseOwned<crate::kernel::OwnedSourceChunk>, FuseRequestError> {
         let _names = self.core.names()?;
         let value = match self.attributes_to_read(inode, work)? {
-            Some(AttributeTarget::Handle(open_file)) => open_file.file(work)?.read_attribute_with_meter(name.as_bytes(), work),
+            Some(AttributeTarget::Handle(open_file)) => open_file.file(work)?.read_attribute(name.as_bytes(), work),
             Some(AttributeTarget::Path(path)) => {
-                self.core.source.as_ref().read_attribute_with_meter(&path, name.as_bytes(), work)
+                self.core.source.as_ref().read_attribute(&path, name.as_bytes(), work)
             }
             None => Ok(None),
         }
@@ -5699,7 +5701,7 @@ mod tests {
         ).map_err(|(cause, _)| cause)?;
         let mut control = super::FuseRecoveryControl::default();
         acyclic_native_runtime::ProcessTree::spawn_closed_measured(
-            c"/bin/sleep", &[c"60"], creator.runtime_meter(), &mut control.helper,
+            c"/bin/sleep", &[c"60"], creator.runtime_meter().as_ref(), &mut control.helper,
         ).map_err(|error| creator.runtime_error(error))?;
         control.helper_work = Some(creator.clone());
         control.deadline = Some(std::time::Instant::now() + Duration::from_secs(30));
@@ -5750,7 +5752,7 @@ mod tests {
         ).map_err(|(cause, _)| cause)?;
         let mut control = super::FuseRecoveryControl::default();
         acyclic_native_runtime::ProcessTree::spawn_closed_measured(
-            c"/bin/sleep", &[c"60"], creator.runtime_meter(), &mut control.helper,
+            c"/bin/sleep", &[c"60"], creator.runtime_meter().as_ref(), &mut control.helper,
         ).map_err(|error| creator.runtime_error(error))?;
         control.helper_work = Some(creator.clone());
         let denied = crate::NativeMaterializationWork::new(crate::WorkBudget {
@@ -6534,7 +6536,7 @@ mod tests {
         });
         let source = MemorySource::new_at_meter(
             shared, config, crate::kernel::NamespacePath::new(Vec::new(), config.limits)?,
-            original.claim(0)?, &original, Some(&original),
+            original.claim(0, 0, crate::WorkCounters::UNCHARGED)?, &original, Some(&original),
         )?.with_native_callback_guard(guard.clone());
         let source = source.into_arc_meter(&original)?;
         let core = Arc::new(super::ProjectionCore::new(
@@ -6805,7 +6807,7 @@ mod tests {
         })?;
         let directory = tempfile::tempdir()?;
         let root = cap_std::fs::Dir::open_ambient_dir(directory.path(), cap_std::ambient_authority())?;
-        let control_allocation = original.claim(std::mem::size_of::<super::FuseDriverControl>() as u64)?;
+        let control_allocation = original.claim(std::mem::size_of::<super::FuseDriverControl>() as u64, u64::from((std::mem::size_of::<super::FuseDriverControl>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
         let control = Arc::new(super::FuseDriverControl {
             state: super::Mutex::new(super::FuseDriverControlState {
                 sdk_session: Some(None),
@@ -6824,7 +6826,9 @@ mod tests {
         });
         let job_allocation = original.claim(std::mem::size_of::<(
             Arc<super::FuseDriverControl>, crate::NativeAllocation,
-        )>() as u64)?;
+        )>() as u64, u64::from((std::mem::size_of::<(
+            Arc<super::FuseDriverControl>, crate::NativeAllocation,
+        )>() as u64) != 0), crate::WorkCounters::UNCHARGED)?;
         let job = (Arc::clone(&control), job_allocation);
         let (done, terminal) = std::sync::mpsc::sync_channel(1);
         let worker = std::thread::spawn(move || { super::run_fuse_retirement(job); done.send(()).unwrap(); });
@@ -7247,7 +7251,7 @@ mod tests {
             capture_host_paths_with_meter(root: &Path, paths: &[MountPath], identity: crate::NativeRootIdentity, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
             capture_host_subtree_with_meter(root: &Path, path: &MountPath, identity: crate::NativeRootIdentity, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
             read_pinned_with_meter(path: &MountPath, pin: super::super::MountContentPin, offset: u64, length: u64, piece: u32, sink: &mut super::super::NativeMountContentSink<'_>, work: &crate::NativeMaterializationWork) -> Result<(), MountSourceError>;
-            read_link_with_meter(path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
+            read_link(path: &MountPath, work: &crate::NativeMaterializationWork) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
             read_range_with_meter(path: &MountPath, offset: u64, length: u32, work: &crate::NativeMaterializationWork) -> Result<crate::kernel::OwnedSourceChunk, MountSourceError>;
             read_directory_with_meter(path: &MountPath, cursor: Option<&[u8]>, maximum: u32, work: &crate::NativeMaterializationWork) -> Result<MountDirectoryPage, MountSourceError>;
             binding_epoch() -> Option<u64>;
@@ -7255,7 +7259,6 @@ mod tests {
             acquire_binding_lease(expected_epoch: Option<u64>) -> Result<Box<dyn Send>, MountSourceError>;
             open_file(path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError>;
             detach_file(path: &MountPath) -> Result<Arc<dyn MountOpenFile>, MountSourceError>;
-            read_link(path: &MountPath) -> Result<acyclic_stream::OwnedBytes, MountSourceError>;
             read_range(path: &MountPath, offset: u64, length: u32) -> Result<acyclic_stream::OwnedBytes, MountSourceError>;
             seek(path: &MountPath, offset: u64, target: MountSeekTarget) -> Result<Option<u64>, MountSourceError>;
             read_directory(path: &MountPath, cursor: Option<&[u8]>, maximum_entries: u32) -> Result<MountDirectoryPage, MountSourceError>;
@@ -7315,23 +7318,14 @@ mod tests {
             self.inner.lookup(path)
         }
 
-        fn read_attribute(
-            &self,
-            path: &MountPath,
-            name: &[u8],
-        ) -> Result<Option<acyclic_stream::OwnedBytes>, MountSourceError> {
-            self.record_read(path);
-            self.inner.read_attribute(path, name)
-        }
-
         fn create_directory(&self, path: &MountPath, metadata: FileMetadata, work: &crate::NativeMaterializationWork) -> Result<MountLookup, MountSourceError> {
             self.pass(path, &self.gated_directory);
             self.inner.create_directory(path, metadata, work)
         }
 
-        fn read_attribute_with_meter(&self, path: &MountPath, name: &[u8], work: &crate::NativeMaterializationWork) -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError> {
+        fn read_attribute(&self, path: &MountPath, name: &[u8], work: &crate::NativeMaterializationWork) -> Result<Option<crate::kernel::OwnedSourceChunk>, MountSourceError> {
             self.record_read(path);
-            self.inner.read_attribute_with_meter(path, name, work)
+            self.inner.read_attribute(path, name, work)
         }
 
     }

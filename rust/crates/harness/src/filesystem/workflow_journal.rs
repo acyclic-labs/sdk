@@ -102,7 +102,7 @@ pub struct FilesystemWorkflowJournal<P, A, O> {
     verifier: AuthorityVerifier,
     scope: Scope,
     maximum_payload_bytes: u64,
-    owner: Option<Arc<TaskJournalOwner<P>>>,
+    pub(super) owner: Option<Arc<TaskJournalOwner<P>>>,
     #[cfg(not(target_arch = "wasm32"))]
     _native_metadata: Option<acyclic_fs::NativeAllocation>,
 }
@@ -165,10 +165,6 @@ where
         let owner = Arc::new(owner);
         Arc::get_mut(&mut journal).expect("new journal is uniquely owned").owner = Some(owner);
         Ok(journal)
-    }
-
-    pub(crate) fn task_journal_owner(&self) -> Option<Arc<TaskJournalOwner<P>>> {
-        self.owner.clone()
     }
 
     /// Binds a workflow identity and its private-volume grants using original IO.
@@ -378,11 +374,7 @@ where
             observation_boundary(io, crate::wire::ErrorCode::Unsupported,
                 "task outbox observation requires its original owner"))?;
         self.verify_observation_owner(owner, io).await?;
-        let Some(admission) = self.read_admission(io).await? else { return Ok(None); };
-        if &admission != owner.workflow_admission() {
-            return Err(observation_boundary(io, crate::wire::ErrorCode::Unauthorized,
-                "observed outbox differs from original task admission"));
-        }
+        if self.read_admission(io).await?.is_none() { return Ok(None); }
         let _path;
         let (stream, held) = Self::observation_stream(&self.stream, &self.path, io)?;
         _path = held;
@@ -411,9 +403,7 @@ where
     ) -> Result<Option<WorkflowReleaseWitness<'_>>> {
         let Some(record) = self.observe_latest_record(Some(io)).await? else { return Ok(None); };
         if !matches!(record.transition.status, MachineStatus::Suspended) { return Ok(None); }
-        let owner = self.owner.as_ref().ok_or_else(|| {
-            Error::Unsupported("workflow release requires its original task owner".into())
-        })?;
+        let owner = self.owner.as_ref().expect("observed outbox has its original owner");
         Ok(Some(WorkflowReleaseWitness { binding: owner.task_binding(), path: &self.path, tail: record.next.revision }))
     }
 
@@ -539,9 +529,8 @@ where
                 let checkpoint = previous.as_ref().map_or(&admission.initial, |prior| &prior.next);
                 let terminal = previous.as_ref().is_some_and(|prior| !matches!(prior.transition.status, MachineStatus::Suspended));
                 validate_workflow_next(checkpoint, terminal, &identities.reserved, &identities.keys, &record, io)
-                    .map_err(|error| match error {
-                        Error::NativeWork { .. } => error,
-                        _ => Error::Storage("workflow history diverges from admission or reuses an identity".into()),
+                    .map_err(|error| if error.is_native_failure() { error } else {
+                        Error::Storage("workflow history diverges from admission or reuses an identity".into())
                     })?;
                 identities.advance(&record)?;
                 if let Some(prior) = previous.take() {

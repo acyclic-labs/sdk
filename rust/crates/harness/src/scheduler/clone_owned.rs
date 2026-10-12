@@ -10,76 +10,74 @@ fn add(left: u64, right: u64) -> Result<u64> {
 fn slots<T>(count: usize) -> Result<u64> {
     count.checked_mul(size_of::<T>()).map(|bytes| bytes as u64).ok_or_else(overflow)
 }
-fn entrypoint_bytes(value: &EntrypointRef) -> Result<u64> {
-    add(add(value.name.capacity() as u64, value.version.capacity() as u64)?,
-        crate::contract::json_value_logical_owned_bytes(&value.result_schema)?)
+impl EntrypointRef {
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        add(add(self.name.capacity() as u64, self.version.capacity() as u64)?,
+            crate::contract::json_value_logical_owned_bytes(&self.result_schema)?)
+    }
 }
 fn resources_bytes(values: &BTreeMap<String, u64>) -> Result<u64> {
     values.keys().try_fold(slots::<(String, u64)>(values.len())?,
         |bytes, key| add(bytes, key.capacity() as u64))
 }
-fn fence_bytes(value: &LeaseFence) -> Result<u64> {
-    add(value.reservation_id.capacity() as u64, value.placement.capacity() as u64)
-}
-fn reservation_bytes(value: &Reservation) -> Result<u64> {
-    add(add(value.id.capacity() as u64, value.placement.capacity() as u64)?, resources_bytes(&value.admitted.0)?)
-}
-fn spec_bytes(value: &OperationSpec) -> Result<u64> {
-    let parent = value.parent.as_ref().map_or(0, |parent| parent.slot.capacity() as u64);
-    let reducer = match &value.orchestration {
-        Orchestration::Reduce { reducer } => entrypoint_bytes(reducer)?, _ => 0,
-    };
-    let bytes = [value.owner.authority().id.capacity() as u64, value.owner_scope.logical_owned_bytes()?,
-        entrypoint_bytes(&value.entrypoint)?, slots::<OperationId>(value.dependencies.len())?,
-        resources_bytes(&value.resources.0)?, slots::<(String, String)>(value.placement.len())?,
-        reducer, value.state.logical_owned_bytes()?].into_iter().try_fold(parent, add)?;
-    value.placement.iter().try_fold(bytes, |bytes, (key, value)|
-        add(add(bytes, key.capacity() as u64)?, value.capacity() as u64))
-}
-fn outcome_bytes(value: &Outcome<FileRef>) -> Result<u64> {
-    match value {
-        Outcome::Succeeded(file) => file.logical_owned_bytes(),
-        Outcome::Failed { message } => Ok(message.capacity() as u64),
-        Outcome::Cancelled | Outcome::Indeterminate { .. } => Ok(0),
+impl LeaseFence {
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        add(self.reservation_id.capacity() as u64, self.placement.capacity() as u64)
     }
 }
-fn workflow_bytes(value: &WorkflowSuspension) -> Result<u64> {
-    value.input.as_ref().map(FileRef::logical_owned_bytes).transpose().map(|bytes| bytes.unwrap_or(0))
-}
-fn state_bytes(value: &OperationState) -> Result<u64> {
-    [spec_bytes(&value.spec)?, value.reservation.as_ref().map(reservation_bytes).transpose()?.unwrap_or(0),
-        value.checkpoint.as_ref().map(CheckpointRef::logical_owned_bytes).transpose()?.unwrap_or(0),
-        value.workflow.as_ref().map(workflow_bytes).transpose()?.unwrap_or(0),
-        value.outcome.as_ref().map(outcome_bytes).transpose()?.unwrap_or(0)].into_iter().try_fold(0, add)
-}
-fn event_bytes(value: &SchedulerEvent) -> Result<u64> {
-    match value {
-        SchedulerEvent::SessionConfigured { .. } | SchedulerEvent::WaitingForCapacity { .. }
-            | SchedulerEvent::CancellationRequested { .. } => Ok(0),
-        SchedulerEvent::Declared { spec } => add(slots::<OperationSpec>(1)?, spec_bytes(spec)?),
-        SchedulerEvent::Admitted { reservation, .. } | SchedulerEvent::PartiallyAdmitted { reservation, .. } => reservation_bytes(reservation),
-        SchedulerEvent::Rejected { reason, .. } => Ok(reason.capacity() as u64),
-        SchedulerEvent::ModelDispatchClaimed { fence, .. } | SchedulerEvent::Started { fence, .. }
-            | SchedulerEvent::WaitingForChildren { fence, .. } | SchedulerEvent::WorkflowSuspended { fence, .. }
-            | SchedulerEvent::ReconciliationResumed { fence, .. } | SchedulerEvent::LeaseReleased { fence, .. } => fence_bytes(fence),
-        SchedulerEvent::Checkpointed { checkpoint, fence, .. } => add(checkpoint.logical_owned_bytes()?, fence_bytes(fence)?),
-        SchedulerEvent::WorkflowResumed { input, .. } => input.logical_owned_bytes(),
-        SchedulerEvent::Completed { outcome, fence, .. } => add(outcome_bytes(outcome)?,
-            fence.as_ref().map(fence_bytes).transpose()?.unwrap_or(0)),
-        SchedulerEvent::Orchestrated { outcome, cancel, reducer, .. } => [outcome_bytes(outcome)?,
-            slots::<OperationId>(cancel.capacity())?, reducer.as_ref().map(entrypoint_bytes).transpose()?.unwrap_or(0)]
-                .into_iter().try_fold(0, add),
+impl Reservation {
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        add(add(self.id.capacity() as u64, self.placement.capacity() as u64)?, resources_bytes(&self.admitted.0)?)
     }
 }
-fn decision_bytes(value: &OrchestrationDecision) -> Result<u64> {
-    let (bytes, values) = match value {
-        OrchestrationDecision::Wait => return Ok(0),
-        OrchestrationDecision::Complete { outcome, cancel } => return add(outcome_bytes(outcome)?, slots::<OperationId>(cancel.capacity())?),
-        OrchestrationDecision::Assemble { values, cancel, .. } => (add(slots::<(String, FileRef)>(values.capacity())?, slots::<OperationId>(cancel.capacity())?)?, values),
-        OrchestrationDecision::Reduce { reducer, values } => (add(entrypoint_bytes(reducer)?, slots::<(String, FileRef)>(values.capacity())?)?, values),
-    };
-    values.iter().try_fold(bytes, |bytes, (slot, file)|
-        add(add(bytes, slot.capacity() as u64)?, file.logical_owned_bytes()?))
+impl OperationSpec {
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        let parent = self.parent.as_ref().map_or(0, |parent| parent.slot.capacity() as u64);
+        let reducer = match &self.orchestration {
+            Orchestration::Reduce { reducer } => reducer.logical_owned_bytes()?, _ => 0,
+        };
+        let bytes = [self.owner.authority().id.capacity() as u64, self.owner_scope.logical_owned_bytes()?,
+            self.entrypoint.logical_owned_bytes()?, slots::<OperationId>(self.dependencies.len())?,
+            resources_bytes(&self.resources.0)?, slots::<(String, String)>(self.placement.len())?,
+            reducer, self.state.logical_owned_bytes()?].into_iter().try_fold(parent, add)?;
+        self.placement.iter().try_fold(bytes, |bytes, (key, payload)|
+            add(add(bytes, key.capacity() as u64)?, payload.capacity() as u64))
+    }
+}
+impl Outcome<FileRef> {
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        match self {
+            Outcome::Succeeded(file) => file.logical_owned_bytes(),
+            Outcome::Failed { message } => Ok(message.capacity() as u64),
+            Outcome::Cancelled | Outcome::Indeterminate { .. } => Ok(0),
+        }
+    }
+}
+impl WorkflowSuspension {
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        self.input.as_ref().map(FileRef::logical_owned_bytes).transpose().map(|bytes| bytes.unwrap_or(0))
+    }
+}
+impl SchedulerEvent {
+    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
+        match self {
+            SchedulerEvent::SessionConfigured { .. } | SchedulerEvent::WaitingForCapacity { .. }
+                | SchedulerEvent::CancellationRequested { .. } => Ok(0),
+            SchedulerEvent::Declared { spec } => add(slots::<OperationSpec>(1)?, spec.logical_owned_bytes()?),
+            SchedulerEvent::Admitted { reservation, .. } | SchedulerEvent::PartiallyAdmitted { reservation, .. } => reservation.logical_owned_bytes(),
+            SchedulerEvent::Rejected { reason, .. } => Ok(reason.capacity() as u64),
+            SchedulerEvent::ModelDispatchClaimed { fence, .. } | SchedulerEvent::Started { fence, .. }
+                | SchedulerEvent::WaitingForChildren { fence, .. } | SchedulerEvent::WorkflowSuspended { fence, .. }
+                | SchedulerEvent::ReconciliationResumed { fence, .. } | SchedulerEvent::LeaseReleased { fence, .. } => fence.logical_owned_bytes(),
+            SchedulerEvent::Checkpointed { checkpoint, fence, .. } => add(checkpoint.logical_owned_bytes()?, fence.logical_owned_bytes()?),
+            SchedulerEvent::WorkflowResumed { input, .. } => input.logical_owned_bytes(),
+            SchedulerEvent::Completed { outcome, fence, .. } => add(outcome.logical_owned_bytes()?,
+                fence.as_ref().map(LeaseFence::logical_owned_bytes).transpose()?.unwrap_or(0)),
+            SchedulerEvent::Orchestrated { outcome, cancel, reducer, .. } => [outcome.logical_owned_bytes()?,
+                slots::<OperationId>(cancel.capacity())?, reducer.as_ref().map(EntrypointRef::logical_owned_bytes).transpose()?.unwrap_or(0)]
+                    .into_iter().try_fold(0, add),
+        }
+    }
 }
 
 fn overflow() -> Error {
@@ -138,14 +136,9 @@ fn copy_reservation(source: &Reservation, quota: &mut CodecQuota<'_, '_>) -> Res
 
 fn copy_checkpoint(source: &CheckpointRef, quota: &mut CodecQuota<'_, '_>) -> Result<CheckpointRef> {
     observe(quota.work())?;
-    let reference = source.as_resource();
-    let provider = crate::core::copy_provider(reference.provider(), quota)?;
-    let key = crate::core::copy_copy_vector(reference.key(), quota)?;
-    let version = reference.version().map(|version| copy_text(version, quota)).transpose()?;
-    let reference = crate::resources::ResourceRef::new(
-        reference.kind(), provider, key, version, quota.work(),
-    )?;
-    CheckpointRef::from_resource_with_work(reference, quota.work())
+    let checkpoint = source.clone_with_work(quota.work())?;
+    quota.adopt(checkpoint.logical_owned_bytes()?)?;
+    Ok(checkpoint)
 }
 
 fn copy_spec(source: &OperationSpec, quota: &mut CodecQuota<'_, '_>) -> Result<OperationSpec> {
@@ -258,7 +251,7 @@ fn copy_event(source: &SchedulerEvent, quota: &mut CodecQuota<'_, '_>) -> Result
 }
 
 macro_rules! closed_clone {
-    ($kind:ty, $visit:ident, $copy:path) => {
+    ($kind:ty, $copy:path) => {
         impl $kind {
             pub(crate) fn clone_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
                 if work.is_none() { return Ok(self.clone()); }
@@ -267,21 +260,18 @@ macro_rules! closed_clone {
                 quota.transfer();
                 Ok(output)
             }
-            pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-                $visit(self)
-            }
         }
     };
 }
 
-closed_clone!(SchedulerEvent, event_bytes, copy_event);
-closed_clone!(OperationSpec, spec_bytes, copy_spec);
-closed_clone!(EntrypointRef, entrypoint_bytes, copy_entrypoint);
-closed_clone!(Reservation, reservation_bytes, copy_reservation);
-closed_clone!(WorkflowSuspension, workflow_bytes, copy_workflow);
-closed_clone!(Outcome<FileRef>, outcome_bytes, copy_outcome);
-closed_clone!(LeaseFence, fence_bytes, copy_fence);
-closed_clone!(OperationState, state_bytes, copy_state);
+closed_clone!(SchedulerEvent, copy_event);
+closed_clone!(OperationSpec, copy_spec);
+closed_clone!(EntrypointRef, copy_entrypoint);
+closed_clone!(Reservation, copy_reservation);
+closed_clone!(WorkflowSuspension, copy_workflow);
+closed_clone!(Outcome<FileRef>, copy_outcome);
+closed_clone!(LeaseFence, copy_fence);
+closed_clone!(OperationState, copy_state);
 
 macro_rules! resource_clone {
     ($kind:ty) => {
@@ -304,7 +294,14 @@ resource_clone!(ResourceSnapshot);
 
 impl OrchestrationDecision {
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        decision_bytes(self)
+        let (bytes, values) = match self {
+            OrchestrationDecision::Wait => return Ok(0),
+            OrchestrationDecision::Complete { outcome, cancel } => return add(outcome.logical_owned_bytes()?, slots::<OperationId>(cancel.capacity())?),
+            OrchestrationDecision::Assemble { values, cancel, .. } => (add(slots::<(String, FileRef)>(values.capacity())?, slots::<OperationId>(cancel.capacity())?)?, values),
+            OrchestrationDecision::Reduce { reducer, values } => (add(reducer.logical_owned_bytes()?, slots::<(String, FileRef)>(values.capacity())?)?, values),
+        };
+        values.iter().try_fold(bytes, |bytes, (slot, file)|
+            add(add(bytes, slot.capacity() as u64)?, file.logical_owned_bytes()?))
     }
 }
 

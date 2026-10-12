@@ -129,7 +129,7 @@ where
                 reason: "worker owner requires original native work",
             })?;
             let owner = self.host.journal_owner_with_native_work(task, fence, work).await?;
-            return owner.verify_with_native_work(settlement, work).await;
+            return owner.verify(settlement, &mut Some(&mut crate::store::history::native_work_io(work)?)).await;
         }
         if settlement { self.host.verify_execution_owner(task, fence.clone()).await }
         else { self.host.verify_dispatch_owner(task, fence.clone()).await }
