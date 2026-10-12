@@ -287,11 +287,11 @@ fn mount_smoke(args: &[String]) -> Result<(), Failure> {
     println!(
         "probe: kind={:?} available={} writable={} reason={:?}",
         capabilities.kind,
-        capabilities.available,
-        capabilities.writable,
+        capabilities.available(),
+        capabilities.available(),
         capabilities.unavailable_reason
     );
-    if !capabilities.available || !capabilities.writable {
+    if !capabilities.available() {
         return Err("native mount unavailable or read-only — fork engine gate FAILS".into());
     }
 

@@ -202,30 +202,23 @@ pub enum NativeMountKind {
     WindowsProjFs,
 }
 
-/// Native-driver isolation required for simultaneous mount sessions.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum NativeMountSessionIsolation {
-    /// The driver safely owns multiple live sessions in one process.
-    SharedProcess,
-    /// Every live session requires a distinct operating-system process.
-    ProcessIsolated,
-}
-
 /// Non-destructive compile-time and host capability facts.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeMountCapabilities {
     /// Driver compiled for this target, if any.
     pub kind: Option<NativeMountKind>,
-    /// Whether a live host probe admitted the required device/framework.
-    pub available: bool,
-    /// Whether exact authored effects are observable on this mechanism.
-    pub writable: bool,
-    /// Whether I/O issued by the provider process itself is observable.
-    pub provider_process_io_observable: bool,
-    /// Required process isolation for simultaneous sessions.
-    pub session_isolation: NativeMountSessionIsolation,
     /// Stable bounded reason when unavailable.
-    pub unavailable_reason: Option<String>,
+    pub unavailable_reason: Option<&'static str>,
+}
+
+impl NativeMountCapabilities {
+    /// Whether the host has the required device or framework.
+    pub fn available(&self) -> bool { self.unavailable_reason.is_none() }
+
+    /// Whether the driver observes I/O issued by its provider process.
+    pub fn provider_process_io_observable(&self) -> bool {
+        self.available() && matches!(self.kind, Some(NativeMountKind::LinuxFuse | NativeMountKind::MacOsNfs))
+    }
 }
 
 /// One exact mount request; cross-volume routing remains in the SDK mount table.
@@ -1611,7 +1604,7 @@ pub enum NativeMountError {
     UnsupportedTarget,
     /// Required host driver/device is unavailable.
     #[error("native mount capability is unavailable: {0}")]
-    CapabilityUnavailable(std::borrow::Cow<'static, str>),
+    CapabilityUnavailable(&'static str),
     /// Destination must already exist and be empty.
     #[error("mount destination must be an existing empty directory")]
     InvalidDestination,
@@ -2839,15 +2832,7 @@ pub fn probe_native_mount() -> NativeMountCapabilities {
     let (kind, available, reason) = (None, false, "unsupported target");
     NativeMountCapabilities {
         kind,
-        available,
-        writable: available,
-        provider_process_io_observable: available && !cfg!(windows),
-        session_isolation: if kind.is_some() {
-            NativeMountSessionIsolation::SharedProcess
-        } else {
-            NativeMountSessionIsolation::ProcessIsolated
-        },
-        unavailable_reason: (!available).then(|| reason.to_owned()),
+        unavailable_reason: (!available).then_some(reason),
     }
 }
 
