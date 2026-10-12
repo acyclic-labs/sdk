@@ -494,7 +494,7 @@ impl Producer {
                     native_snapshot: None,
                 }, 16 * 1024 * 1024, 16 * 1024 * 1024).await?)
         } else { None };
-        let binding = recursive_fork_source(&self.runtime, self.files.clone(), &self.stream,
+        let binding = recursive_fork_source(self.files.clone(), &self.stream,
             &parent.aggregate, verifier, parent.binding.scope.clone(), &context,
             RecursiveSourceSnapshot {
                 task: parent.task, project: parent.project.clone(),

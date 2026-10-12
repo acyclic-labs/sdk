@@ -1,14 +1,13 @@
 //! Authenticated gRPC adapter for the canonical Stream provider contract.
 
 use std::{
-    collections::VecDeque,
     future::Future,
     pin::Pin,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
-    task::{Context, Poll},
+    task::Poll,
 };
 
 use async_trait::async_trait;
@@ -194,7 +193,8 @@ impl Client {
         let certificate_pem = certificate_pem.map(bounded_ca_certificate).transpose()?;
         let channels = Self::endpoints_with_tls(endpoints, certificate_pem)?.into_iter()
             .map(|endpoint| endpoint.connect_lazy()).collect::<Vec<_>>().into();
-        Self::from_channels(channels, bearer_token)
+        let authorization = Self::authorization(bearer_token.as_ref())?;
+        Ok(Self::from_channels(channels, authorization))
     }
 
     async fn connect_eager_tls(
@@ -207,7 +207,7 @@ impl Client {
         let endpoint = Self::endpoints_with_tls([endpoint], certificate_pem)?
             .pop().expect("one endpoint was configured");
         let channel = endpoint.connect().await?;
-        Ok(Self::from_authorization(vec![channel].into(), authorization))
+        Ok(Self::from_channels(vec![channel].into(), authorization))
     }
 
     fn endpoints_with_tls<I, S>(
@@ -257,14 +257,6 @@ impl Client {
         Ok(configured)
     }
 
-    fn from_channels(
-        channels: Arc<[Channel]>,
-        bearer_token: impl AsRef<str>,
-    ) -> Result<Self, ConnectError> {
-        let authorization = Self::authorization(bearer_token.as_ref())?;
-        Ok(Self::from_authorization(channels, authorization))
-    }
-
     fn authorization(bearer_token: &str) -> Result<MetadataValue<Ascii>, ConnectError> {
         if bearer_token.trim().is_empty()
             || bearer_token.len() > MAX_BEARER_TOKEN_BYTES
@@ -281,7 +273,7 @@ impl Client {
         Ok(authorization)
     }
 
-    fn from_authorization(channels: Arc<[Channel]>, authorization: MetadataValue<Ascii>) -> Self {
+    fn from_channels(channels: Arc<[Channel]>, authorization: MetadataValue<Ascii>) -> Self {
         Self {
             channels,
             authorization,
@@ -314,7 +306,7 @@ impl Client {
         attempt_timeout: std::time::Duration,
         body: T,
         mut call: F,
-    ) -> Result<RpcResponse<U>, StreamError>
+    ) -> Result<(U, usize, Completion), StreamError>
     where
         T: Clone,
         F: FnMut(
@@ -351,7 +343,7 @@ impl Client {
                 let error = match result {
                     Ok(Ok(response)) => {
                         self.preferred.store(index, Ordering::Relaxed);
-                        return Ok(RpcResponse { body: response.into_inner(), endpoint: index, completion });
+                        return Ok((response.into_inner(), index, completion));
                     }
                     Ok(Err(error)) => error,
                     Err(_) => Status::deadline_exceeded("endpoint attempt expired"),
@@ -409,7 +401,7 @@ impl Client {
                     next: from,
                     remaining: limit,
                     active: None,
-                    buffered: VecDeque::new(),
+                    buffered: Vec::new().into_iter(),
                     completion,
                     acknowledgements: None,
                 },
@@ -419,7 +411,7 @@ impl Client {
                             cursor.completion.ok();
                             return None;
                         }
-                        if let Some(record) = cursor.buffered.pop_front() {
+                        if let Some(record) = cursor.buffered.next() {
                             if record.sequence == cursor.next {
                                 cursor.next = cursor.next.saturating_add(1);
                                 if let Some(remaining) = &mut cursor.remaining {
@@ -434,7 +426,7 @@ impl Client {
                                 continue;
                             }
                             if let Some(active) = cursor.active.as_mut() {
-                                active.completion.invalid_response();
+                                active.2.invalid_response();
                             }
                             cursor.completion.invalid_response();
                             return cursor.failure(StreamError::Unavailable);
@@ -448,11 +440,11 @@ impl Client {
                         let Some(active) = cursor.active.as_mut() else {
                             return cursor.failure(StreamError::Unavailable);
                         };
-                        let active_endpoint = active.endpoint;
-                        let response = active.body.next().await;
+                        let active_endpoint = active.1;
+                        let response = active.0.next().await;
                         match &response {
-                            Some(Err(error)) => active.completion.status(error),
-                            None => active.completion.ok(),
+                            Some(Err(error)) => active.2.status(error),
+                            None => active.2.ok(),
                             _ => {}
                         }
                         match response {
@@ -462,11 +454,11 @@ impl Client {
                                 Ok(records) => {
                                     if let Some(token) = token {
                                         if token.len() != 32 {
-                                            active.completion.invalid_response();
+                                            active.2.invalid_response();
                                             cursor.completion.invalid_response();
                                             return cursor.failure(StreamError::Unavailable);
                                         }
-                                        if cursor.client.acknowledge_deliveries && !records.is_empty() {
+                                        if cursor.client.acknowledge_deliveries && records.len() != 0 {
                                             let worker = cursor.acknowledgements.get_or_insert_with(|| {
                                                 DeliveryAcknowledgements::new(cursor.client.clone())
                                             });
@@ -476,7 +468,7 @@ impl Client {
                                     cursor.buffered = records;
                                 },
                                 Err(error) => {
-                                    active.completion.invalid_response();
+                                    active.2.invalid_response();
                                     cursor.completion.invalid_response();
                                     return cursor.failure(error);
                                 }
@@ -515,9 +507,9 @@ struct RecordCursor {
     path: StreamPath,
     next: u64,
     remaining: Option<u32>,
-    active: Option<RpcResponse<obs::Scoped<tonic::Streaming<wire::ReadResponse>>>>,
+    active: Option<(obs::Scoped<tonic::Streaming<wire::ReadResponse>>, usize, Completion)>,
     /// Decoded records from the latest frame that the caller has not yet taken.
-    buffered: VecDeque<Record>,
+    buffered: std::vec::IntoIter<Record>,
     completion: Completion,
     acknowledgements: Option<DeliveryAcknowledgements>,
 }
@@ -555,7 +547,7 @@ impl RecordCursor {
     fn failure(mut self, error: StreamError) -> Option<(Result<Record, StreamError>, Self)> {
         self.completion.finish(Some(error.code()), None);
         self.active = None;
-        self.buffered.clear();
+        self.buffered = Vec::new().into_iter();
         self.acknowledgements = None;
         self.remaining = Some(0);
         Some((Err(error), self))
@@ -574,7 +566,7 @@ impl RecordCursor {
         );
     }
 
-    async fn open(&self) -> Result<RpcResponse<obs::Scoped<tonic::Streaming<wire::ReadResponse>>>, StreamError> {
+    async fn open(&self) -> Result<(obs::Scoped<tonic::Streaming<wire::ReadResponse>>, usize, Completion), StreamError> {
         let response = if let Some(limit) = self.remaining {
             self.client.unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
                 wire::ReadRequest { path: self.path.to_string(), from: self.next, limit },
@@ -586,8 +578,8 @@ impl RecordCursor {
                 |mut service, request| Box::pin(async move { service.follow(request).await }),
             ).await?
         };
-        let RpcResponse { body, endpoint, completion } = response;
-        Ok(RpcResponse { body: completion.span.scope(body), endpoint, completion })
+        let (body, endpoint, completion) = response;
+        Ok((completion.span.scope(body), endpoint, completion))
     }
 
 }
@@ -659,34 +651,22 @@ impl StreamProvider for Client {
                 },
             )
             .await?;
-        response.decode(|response| bind_observation(&idempotency_key, response.observation))
+        decode_response(response, |response| bind_observation(&idempotency_key, response.observation))
     }
 
     async fn tail(&self, path: StreamPath) -> Result<u64, StreamError> {
-        self.unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
+        let response = self.unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
             wire::TailRequest {
                 path: path.to_string(),
             },
             |mut service, request| Box::pin(async move { service.tail(request).await }),
         )
-        .await?
-        .decode(|response| Ok(response.tail))
+        .await?;
+        decode_response(response, |response| Ok(response.tail))
     }
 
     async fn bounds(&self, path: StreamPath) -> Result<StreamBounds, StreamError> {
-        let response = self
-            .unary(OPERATION_ENDPOINT_ATTEMPT_TIMEOUT,
-                wire::TailRequest {
-                    path: path.to_string(),
-                },
-                |mut service, request| Box::pin(async move { service.tail(request).await }),
-            )
-            .await?;
-        response.decode(|response| {
-            Ok(StreamBounds {
-                tail: response.tail,
-            })
-        })
+        Ok(StreamBounds { tail: self.tail(path).await? })
     }
 
     async fn append(&self, request: AppendRequest) -> Result<AppendOutcome, StreamError> {
@@ -706,7 +686,7 @@ impl StreamProvider for Client {
                 |mut service, request| Box::pin(async move { service.append(request).await }),
             )
             .await?;
-        response.decode(append_outcome_from_wire)
+        decode_response(response, append_outcome_from_wire)
     }
 
     async fn fork(&self, request: ForkRequest) -> Result<ForkReceipt, StreamError> {
@@ -725,7 +705,7 @@ impl StreamProvider for Client {
                 |mut service, request| Box::pin(async move { service.fork(request).await }),
             )
             .await?;
-        receipt.decode(|receipt| {
+        decode_response(receipt, |receipt| {
             Ok(ForkReceipt {
                 source: path(receipt.source)?,
                 destination: path(receipt.destination)?,
@@ -757,11 +737,7 @@ impl StreamProvider for Client {
                     Box::pin(async move { service.children(request).await })
                 })
                 .await?;
-            let RpcResponse {
-                body: response,
-                mut completion,
-                ..
-            } = response;
+            let (response, _, mut completion) = response;
             let mut response = completion.span.scope(response);
             let result = async {
                 let mut children = Vec::new();
@@ -813,7 +789,7 @@ impl StreamProvider for Client {
                 },
             )
             .await?;
-        response.decode(|response| {
+        decode_response(response, |response| {
             Ok(ChildrenPage {
                 hierarchy_version: commit_id(&response.hierarchy_version)?,
                 children: response
@@ -842,7 +818,7 @@ impl StreamProvider for Client {
                 |mut service, request| Box::pin(async move { service.commit(request).await }),
             )
             .await?;
-        response.decode(commit_outcome_from_wire)
+        decode_response(response, commit_outcome_from_wire)
     }
 
     async fn commit_before(
@@ -861,7 +837,7 @@ impl StreamProvider for Client {
                 |mut service, request| Box::pin(async move { service.commit(request).await }),
             )
             .await?;
-        response.decode(commit_outcome_from_wire)
+        decode_response(response, commit_outcome_from_wire)
     }
 
     async fn read_commit(&self, commit_id: CommitId) -> Result<CommittedEnvelope, StreamError> {
@@ -873,7 +849,7 @@ impl StreamProvider for Client {
                 |mut service, request| Box::pin(async move { service.read_commit(request).await }),
             )
             .await?;
-        envelope.decode(envelope_from_wire)
+        decode_response(envelope, envelope_from_wire)
     }
 }
 
@@ -1327,56 +1303,38 @@ impl Drop for Completion {
     }
 }
 
-/// Keeps successful response headers pending until the unary response is decoded.
-struct RpcResponse<T> {
-    body: T,
-    endpoint: usize,
-    completion: Completion,
-}
-impl<T> RpcResponse<T> {
-    fn decode<U>(
-        mut self,
-        decode: impl FnOnce(T) -> Result<U, StreamError>,
-    ) -> Result<U, StreamError> {
-        // Tonic unary completion already observed the successful trailers.
-        self.completion.span.record("rpc.code", Code::Ok as u64);
-        let result = decode(self.body);
-        match &result {
-            Ok(_) => self.completion.ok(),
-            Err(_) => self.completion.invalid_response(),
-        }
-        result
+fn decode_response<T, U>(
+    (body, _, mut completion): (T, usize, Completion),
+    decode: impl FnOnce(T) -> Result<U, StreamError>,
+) -> Result<U, StreamError> {
+    // Tonic unary completion already observed the successful trailers.
+    completion.span.record("rpc.code", Code::Ok as u64);
+    let result = decode(body);
+    match &result {
+        Ok(_) => completion.ok(),
+        Err(_) => completion.invalid_response(),
     }
+    result
 }
 
-/// Completes a streaming RPC on exhaustion, first error, or unfinished drop.
-struct ObservedBody<S> {
-    body: obs::Scoped<S>,
-    completion: Completion,
-}
-fn observe_body<S>(span: &tracing::Span, body: S) -> ObservedBody<S> {
-    let completion = Completion::new(span.clone());
-    let body = completion.span.scope(body);
-    ObservedBody { body, completion }
-}
-impl<S, T> Stream for ObservedBody<S>
+fn observe_body<S, T>(span: &tracing::Span, body: S) -> impl Stream<Item = Result<T, Status>> + Unpin + use<S, T>
 where
     S: Stream<Item = Result<T, Status>> + Unpin,
 {
-    type Item = Result<T, Status>;
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.get_mut();
-        if this.completion.finished {
-            return Poll::Ready(None);
-        }
-        let next = Pin::new(&mut this.body).poll_next(cx);
+    let completion = Completion::new(span.clone());
+    // Drop the producer under its origin before retiring completion.
+    let mut state = (completion.span.scope(body), completion);
+    stream::poll_fn(move |cx| {
+        let (body, completion) = &mut state;
+        if completion.finished { return Poll::Ready(None); }
+        let next = Pin::new(body).poll_next(cx);
         match &next {
-            Poll::Ready(Some(Err(error))) => this.completion.status(error),
-            Poll::Ready(None) => this.completion.ok(),
+            Poll::Ready(Some(Err(error))) => completion.status(error),
+            Poll::Ready(None) => completion.ok(),
             _ => {}
         }
         next
-    }
+    })
 }
 
 fn error_status(error: &StreamError) -> Status {
@@ -1431,12 +1389,12 @@ fn read_response(
     value: wire::ReadResponse,
     next: u64,
     remaining: Option<u32>,
-) -> Result<VecDeque<Record>, StreamError> {
-    let records: VecDeque<Record> = read_response_records(value)?
+) -> Result<std::vec::IntoIter<Record>, StreamError> {
+    let records: Vec<Record> = read_response_records(value)?
         .into_iter()
         .map(record)
         .collect::<Result<_, _>>()?;
-    let mut expected = records.front().map_or(next, |record| record.sequence);
+    let mut expected = records.first().map_or(next, |record| record.sequence);
     if expected > next {
         return Err(StreamError::Unavailable);
     }
@@ -1453,7 +1411,7 @@ fn read_response(
     if remaining.is_some_and(|remaining| new_records > u64::from(remaining)) {
         return Err(StreamError::Unavailable);
     }
-    Ok(records)
+    Ok(records.into_iter())
 }
 
 #[cfg(test)]
@@ -1476,174 +1434,86 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn served_body_errors_remain_on_owned_span_when_polled_by_another_caller()
+    async fn served_body_completion_stays_with_its_origin()
     -> Result<(), Box<dyn std::error::Error>> {
         use tracing_subscriber::layer::SubscriberExt as _;
-        for filtered in [false, true] {
-            let captured = acyclic_grpc_observability::test_support::Capture::default();
-            let subscriber = tracing_subscriber::Registry::default()
-                .with(captured.clone())
-                .with(tracing_subscriber::filter::filter_fn(move |metadata| {
-                    !filtered || !metadata.name().starts_with("acyclic.stream")
-                }));
-            let _default = tracing::subscriber::set_default(subscriber);
-            let provider = Arc::new(FiniteFollow {
-                inner: MemoryStream::default(),
-                follows: AtomicUsize::new(0),
-                tail_delay: std::time::Duration::ZERO,
-                denial: Some(1),
-            });
-            provider
-                .inner
-                .append(AppendRequest {
-                    path: StreamPath::new("events")?,
-                    records: vec![OwnedBytes::from_static(b"one")],
-                    if_tail: None,
-                    idempotency_key: None,
-                })
-                .await?;
-            let service = Service::new(provider);
-            let caller = tracing::info_span!(
-                "opening_caller",
-                outcome = "caller",
-                error.kind = "caller",
-                rpc.code = 99
-            );
-            let mut body = async {
-                let invalid = StreamService::tail(
-                    &service,
-                    Request::new(wire::TailRequest {
-                        path: String::new(),
-                    }),
-                )
-                .await;
-                assert_eq!(invalid.unwrap_err().code(), Code::InvalidArgument);
-                Ok::<_, Status>(
-                    StreamService::follow(
-                        &service,
-                        Request::new(wire::FollowRequest {
-                            path: "events".to_owned(),
-                            from: 0,
-                        }),
-                    )
-                    .await?
-                    .into_inner(),
-                )
-            }
-            .instrument(caller)
-            .await?;
-            let polling_caller = tracing::info_span!(
-                "polling_caller",
-                outcome = "caller",
-                error.kind = "caller",
-                rpc.code = 99
-            );
-            async {
-                assert!(body.next().await.unwrap().is_ok());
-                assert_eq!(
-                    body.next().await.unwrap().unwrap_err().code(),
-                    Code::PermissionDenied
-                );
-                drop(body);
-            }
-            .instrument(polling_caller)
-            .await;
-            for name in ["opening_caller", "polling_caller"] {
-                let fields = captured.fields(name);
-                assert_eq!(fields["outcome"], "caller");
-                assert_eq!(fields["error.kind"], "caller");
-                assert_eq!(fields["rpc.code"], "99");
-            }
-            if !filtered {
-                let fields = captured.fields("acyclic.stream.grpc.serve.follow");
-                assert_eq!(fields["outcome"], "err");
-                assert_eq!(fields["error.kind"], "access_denied");
-                assert_eq!(
-                    fields["rpc.code"],
-                    (Code::PermissionDenied as u64).to_string()
-                );
-                assert_eq!(
-                    captured.fields("acyclic.stream.grpc.serve.tail")["error.kind"],
-                    "invalid_path"
-                );
-            }
-        }
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn observed_body_completes_only_at_terminal_delivery() {
-        use tracing_subscriber::layer::SubscriberExt as _;
         for (filtered, scenario) in [false, true].into_iter().flat_map(|filtered| {
-            [
-                "unpolled",
-                "partial",
-                "pending",
-                "exhausted",
-                "error",
-                "peer_cancelled",
-            ]
-            .into_iter()
-            .map(move |scenario| (filtered, scenario))
+            ["unpolled", "partial", "pending", "eof", "error"]
+                .into_iter().map(move |scenario| (filtered, scenario))
         }) {
             let captured = acyclic_grpc_observability::test_support::Capture::default();
             let _default = tracing::subscriber::set_default(
                 tracing_subscriber::Registry::default()
                     .with(captured.clone())
                     .with(tracing_subscriber::filter::filter_fn(move |metadata| {
-                        !filtered || metadata.name() != "body"
+                        !filtered || !metadata.name().starts_with("acyclic.stream")
                     })),
             );
-            let span = tracing::info_span!(
-                "body",
-                outcome = Empty,
-                error.kind = Empty,
-                rpc.code = Empty
-            );
-            let source: futures::stream::BoxStream<'static, Result<u8, Status>> = match scenario {
-                "pending" => stream::pending().boxed(),
-                "error" => stream::iter([Err(Status::permission_denied("denied"))]).boxed(),
-                "peer_cancelled" => {
-                    stream::iter([Err(Status::cancelled("peer cancelled"))]).boxed()
-                }
-                _ => stream::iter([Ok(1), Ok(2)]).boxed(),
-            };
-            let mut body = observe_body(&span, source);
-            assert!(!captured.fields("body").contains_key("outcome"));
-            let caller = tracing::info_span!(
-                "polling",
-                outcome = "caller",
-                error.kind = "caller",
-                rpc.code = 99
-            );
-            async {
+            let provider = Arc::new(FiniteFollow {
+                inner: MemoryStream::default(), follows: AtomicUsize::new(0),
+                tail_delay: std::time::Duration::ZERO, denial: Some(1),
+            });
+            provider.inner.append(AppendRequest {
+                path: StreamPath::new("events")?,
+                records: vec![OwnedBytes::from_static(b"one"), OwnedBytes::from_static(b"two")],
+                if_tail: None, idempotency_key: None,
+            }).await?;
+            let service = Service::new(Arc::clone(&provider));
+            let caller = tracing::info_span!("opening_caller", outcome = "caller", error.kind = "caller", rpc.code = 99);
+            let mut body = async {
+                assert_eq!(StreamService::tail(&service, Request::new(wire::TailRequest {
+                    path: String::new(),
+                })).await.unwrap_err().code(), Code::InvalidArgument);
                 match scenario {
-                    "unpolled" => {}
-                    "partial" => {
-                        assert_eq!(body.next().await.unwrap().unwrap(), 1);
-                    }
-                    "pending" => {
-                        assert!(futures::poll!(body.next()).is_pending());
-                    }
-                    "exhausted" => {
-                        while let Some(item) = body.next().await {
-                            assert!(item.is_ok());
+                    "error" => StreamService::follow(&service, Request::new(wire::FollowRequest {
+                        path: "events".to_owned(), from: 0,
+                    })).await.map(Response::into_inner),
+                    "pending" => StreamService::follow(&Service::new(Arc::new(provider.inner.clone())), Request::new(wire::FollowRequest {
+                        path: "events".to_owned(), from: 0,
+                    })).await.map(Response::into_inner),
+                    _ => StreamService::read(&service, Request::new(wire::ReadRequest {
+                        path: "events".to_owned(), from: 0, limit: 2,
+                    })).await.map(Response::into_inner),
+                }
+            }.instrument(caller).await?;
+            let operation = if matches!(scenario, "pending" | "error") {
+                "acyclic.stream.grpc.serve.follow"
+            } else { "acyclic.stream.grpc.serve.read" };
+            assert!(!captured.fields(operation).contains_key("outcome"));
+            let other = acyclic_grpc_observability::test_support::Capture::default();
+            let _polling = tracing::subscriber::set_default(
+                tracing_subscriber::Registry::default().with(other.clone()),
+            );
+            let caller = tracing::info_span!("polling_caller", outcome = "caller", error.kind = "caller", rpc.code = 99);
+            async {
+                if scenario != "unpolled" {
+                    assert!(body.next().await.unwrap().is_ok());
+                    if scenario == "error" {
+                        assert_eq!(body.next().await.unwrap().unwrap_err().code(), Code::PermissionDenied);
+                        assert!(body.next().await.is_none());
+                    } else if matches!(scenario, "pending" | "eof") {
+                        assert!(body.next().await.unwrap().is_ok());
+                        if scenario == "pending" {
+                            assert!(futures::poll!(body.next()).is_pending());
+                        } else {
+                            assert!(body.next().await.is_none());
+                            assert!(body.next().await.is_none());
                         }
                     }
-                    "error" | "peer_cancelled" => {
-                        assert!(body.next().await.unwrap().is_err());
-                        assert!(body.next().await.is_none());
-                    }
-                    _ => unreachable!(),
                 }
                 drop(body);
+            }.instrument(caller).await;
+            for (capture, name) in [(&captured, "opening_caller"), (&other, "polling_caller")] {
+                let fields = capture.fields(name);
+                assert_eq!(fields["outcome"], "caller");
+                assert_eq!(fields["error.kind"], "caller");
+                assert_eq!(fields["rpc.code"], "99");
             }
-            .instrument(caller)
-            .await;
-            let fields = captured.fields("body");
+            assert!(other.all(operation).is_empty());
             if !filtered {
+                let fields = captured.fields(operation);
                 match scenario {
-                    "exhausted" => {
+                    "eof" => {
                         assert_eq!(fields["outcome"], "ok");
                         assert_eq!(fields["rpc.code"], "0");
                     }
@@ -1652,21 +1522,16 @@ mod tests {
                         assert_eq!(fields["error.kind"], "access_denied");
                         assert_eq!(fields["rpc.code"], "7");
                     }
-                    "peer_cancelled" => {
-                        assert_eq!(fields["outcome"], "err");
-                        assert_eq!(fields["error.kind"], "cancelled");
-                        assert_eq!(fields["rpc.code"], "1");
-                    }
                     _ => {
                         assert_eq!(fields["outcome"], "err");
                         assert_eq!(fields["error.kind"], "cancelled");
                         assert!(!fields.contains_key("rpc.code"));
                     }
                 }
+                assert_eq!(captured.fields("acyclic.stream.grpc.serve.tail")["error.kind"], "invalid_path");
             }
-            assert_eq!(captured.fields("polling")["outcome"], "caller");
-            assert_eq!(captured.fields("polling")["rpc.code"], "99");
         }
+        Ok(())
     }
 
     #[tokio::test]
@@ -1920,10 +1785,6 @@ mod tests {
         }
     }
 
-    fn in_memory_channel(provider: Arc<MemoryStream>) -> Channel {
-        provider_channel(Service::new(provider))
-    }
-
     fn provider_channel<S: StreamService + Clone>(service: S) -> Channel {
         Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(
             tower::service_fn(move |_| {
@@ -1946,8 +1807,8 @@ mod tests {
     #[tokio::test]
     async fn grpc_transport_passes_the_public_suite()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let channel = in_memory_channel(Arc::new(MemoryStream::default()));
-        let transport = Client::from_channels(Arc::from([channel.clone()]), "fixture")?;
+        let channel = provider_channel(Service::new(Arc::new(MemoryStream::default())));
+        let transport = Client::from_channels(Arc::from([channel.clone()]), Client::authorization("fixture")?);
         crate::conformance::verify(&transport).await?;
         let mut obsolete = tonic::client::Grpc::new(channel);
         obsolete.ready().await?;
@@ -2199,7 +2060,7 @@ mod tests {
             let issuer = AckFixture::new(Some(32), fail);
             let (first, first_server) = ack_loopback(Arc::clone(&other), Some("unavailable_read")).await?;
             let (second, second_server) = ack_loopback(Arc::clone(&issuer), None).await?;
-            let client = Client::from_channels(Arc::from([first, second]), "fixture")?;
+            let client = Client::from_channels(Arc::from([first, second]), Client::authorization("fixture")?);
             let mut records = if follow {
                 client.follow(StreamPath::new("events")?, 0).await?
             } else {
@@ -2232,7 +2093,7 @@ mod tests {
         ] {
             let fixture = AckFixture::new(length, true);
             let (channel, server) = ack_loopback(Arc::clone(&fixture), fault).await?;
-            let mut client = Client::from_channels(Arc::from([channel]), "fixture")?;
+            let mut client = Client::from_channels(Arc::from([channel]), Client::authorization("fixture")?);
             if disabled { client = client.without_delivery_acknowledgements(); }
             let mut records = client.read(ReadRequest {
                 path: StreamPath::new("events")?, from: 0, limit: 10,
@@ -2253,9 +2114,7 @@ mod tests {
             drop(records);
             server.abort();
         }
-        let client = Client::from_channels(
-            Arc::from([in_memory_channel(Arc::new(MemoryStream::default()))]), "fixture",
-        )?;
+        let client = Client::from_channels(Arc::from([provider_channel(Service::new(Arc::new(MemoryStream::default())))]), Client::authorization("fixture")?);
         assert_eq!(client.acknowledge_delivery(0, &[7; 32]).await, Err(StreamError::Unsupported));
         #[cfg(feature = "local")]
         {
@@ -2299,7 +2158,7 @@ mod tests {
                 }),
                 None,
             );
-            let client = Client::from_channels(Arc::from([provider_channel(source)]), "fixture")?;
+            let client = Client::from_channels(Arc::from([provider_channel(source)]), Client::authorization("fixture")?);
             let body = client
                 .read(ReadRequest {
                     path: StreamPath::new("events")?,
@@ -2421,7 +2280,7 @@ mod tests {
             Some("malformed_children"),
             None,
         );
-        let client = Client::from_channels(Arc::from([provider_channel(service)]), "fixture")?;
+        let client = Client::from_channels(Arc::from([provider_channel(service)]), Client::authorization("fixture")?);
         assert!(matches!(
             client
                 .children(ChildrenRequest {
@@ -2460,13 +2319,10 @@ mod tests {
             idempotency_key: None,
         })
         .await?;
-        let client = Client::from_channels(
-            Arc::from([
+        let client = Client::from_channels(Arc::from([
                 provider_channel(Service::new(Arc::clone(&ended))),
-                in_memory_channel(live),
-            ]),
-            "fixture",
-        )?;
+                provider_channel(Service::new(live)),
+            ]), Client::authorization("fixture")?);
         let mut cursor = client.follow(path, 0).await?;
         assert!(
             tokio::time::timeout(std::time::Duration::from_secs(1), cursor.next())
@@ -2541,7 +2397,7 @@ mod tests {
         assert_eq!(attempts[0]["outcome"], "err");
         assert_eq!(attempts[0]["rpc.code"], "14");
         assert!(!attempts[1].contains_key("outcome"));
-        response.decode(Ok)?;
+        decode_response(response, Ok)?;
         let attempts = captured.all("acyclic.stream.grpc.call");
         assert_eq!(attempts[0]["outcome"], "err");
         assert_eq!(attempts[1]["outcome"], "ok");
@@ -2568,7 +2424,7 @@ mod tests {
                 .fields("acyclic.stream.grpc.call")
                 .contains_key("outcome")
         );
-        assert!(response.decode(append_outcome_from_wire).is_err());
+        assert!(decode_response(response, append_outcome_from_wire).is_err());
         let fields = captured.fields("acyclic.stream.grpc.call");
         assert_eq!(fields["outcome"], "err");
         assert_eq!(fields["error.kind"], "invalid_response");
@@ -2596,23 +2452,8 @@ mod tests {
     async fn client_reassembles_mixed_compressed_and_plain_read_frames()
     -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let service = MixedFrames(Service::new(Arc::new(MemoryStream::default())), None, None);
-        let channel = Endpoint::from_static("http://fixture.invalid").connect_with_connector_lazy(
-            tower::service_fn(move |_| {
-                let service = service.clone();
-                async move {
-                    let (client, server) = tokio::io::duplex(64 * 1024);
-                    tokio::spawn(async move {
-                        let incoming = stream::once(async { Ok::<_, std::io::Error>(server) });
-                        let _ = tonic::transport::Server::builder()
-                            .add_service(StreamServiceServer::new(service))
-                            .serve_with_incoming(incoming)
-                            .await;
-                    });
-                    Ok::<_, std::io::Error>(hyper_util::rt::TokioIo::new(client))
-                }
-            }),
-        );
-        let transport = Client::from_channels(Arc::from([channel]), "fixture")?;
+        let channel = provider_channel(service);
+        let transport = Client::from_channels(Arc::from([channel]), Client::authorization("fixture")?);
         let path = StreamPath::new("accounts/mixed")?;
         let values = (0..20_u8)
             .map(|value| OwnedBytes::from(vec![value; 64]))
@@ -2815,10 +2656,7 @@ mod tests {
                 idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"slow-tail"))?),
             })
             .await?;
-        let transport = Client::from_channels(
-            Arc::from([stalled_channel(), provider_channel(Service::new(provider))]),
-            "fixture",
-        )?;
+        let transport = Client::from_channels(Arc::from([stalled_channel(), provider_channel(Service::new(provider))]), Client::authorization("fixture")?);
         let tail = tokio::time::timeout(
             std::time::Duration::from_secs(2),
             transport.tail(StreamPath::new("accounts/events")?),
@@ -2880,7 +2718,7 @@ mod tests {
                 .await?;
             let mut sequences = Vec::new();
             for token in ["fixture", "denied-open"] {
-                let client = Client::from_channels(Arc::from([channel.clone()]), token)?;
+                let client = Client::from_channels(Arc::from([channel.clone()]), Client::authorization(token)?);
                 let items = client
                     .follow(StreamPath::new("accounts/events")?, 0)
                     .await?
@@ -2934,13 +2772,10 @@ mod tests {
                 idempotency_key: Some(IdempotencyKey::new(Bytes::from_static(b"resume"))?),
             })
             .await?;
-        let transport = Client::from_channels(
-            Arc::from([
+        let transport = Client::from_channels(Arc::from([
                 provider_channel(Service::new(Arc::clone(&ended))),
-                in_memory_channel(durable),
-            ]),
-            "fixture",
-        )?;
+                provider_channel(Service::new(durable)),
+            ]), Client::authorization("fixture")?);
         let preferred = Arc::clone(&transport.preferred);
         let stream = crate::Stream::new(Arc::new(transport), "accounts/events")?;
 
@@ -2959,15 +2794,12 @@ mod tests {
 
         // A stale cursor cannot overwrite a newer successful endpoint choice.
         let stale = RecordCursor {
-            client: Client::from_channels(
-                Arc::from([unavailable_channel(), unavailable_channel()]),
-                "fixture",
-            )?,
+            client: Client::from_channels(Arc::from([unavailable_channel(), unavailable_channel()]), Client::authorization("fixture")?),
             path: StreamPath::new("accounts/events")?,
             next: 0,
             remaining: None,
             active: None,
-            buffered: VecDeque::new(),
+            buffered: Vec::new().into_iter(),
             completion: Completion::new(tracing::Span::none()),
             acknowledgements: None,
         };
@@ -3054,7 +2886,7 @@ mod tests {
             }),
         )
         .await?
-        .and_then(|response| response.decode(Ok));
+        .and_then(|response| decode_response(response, Ok));
         if retry {
             assert_eq!(result, Ok(()));
             assert_eq!(attempts, vec![body.clone(), body]);
@@ -3084,7 +2916,7 @@ mod tests {
                 })
             })
             .await
-            .and_then(|response| response.decode(Ok));
+            .and_then(|response| decode_response(response, Ok));
         assert_eq!(result, Err(StreamError::Unavailable));
         assert_eq!(tokio::time::Instant::now() - started, OPERATION_DEADLINE);
         assert!((2..=100).contains(&attempts));

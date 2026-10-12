@@ -180,7 +180,9 @@ impl ToolExecutor for ImageConversion {
 }
 
 impl ToolProjection for ImageConversion {
-    fn project(&self, invocation: &ToolInvocation, result: &ToolResult) -> Result<Value> {
+    fn project(&self, invocation: &ToolInvocation, result: &ToolResult,
+        work: acyclic_harness::NativeWork<'_>) -> Result<(Value, acyclic_harness::NativeCustody)> {
+        self.supports_native_projection(work)?;
         let input = Self::input(invocation)?;
         let output = ConvertedImage::deserialize(&result.value)
             .map_err(|error| Error::Invalid(error.to_string()))?;
@@ -205,6 +207,7 @@ impl ToolProjection for ImageConversion {
                 })),
             }],
         })
+        .map(|value| (value, None))
         .map_err(|error| Error::Invalid(error.to_string()))
     }
 }

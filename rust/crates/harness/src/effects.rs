@@ -358,7 +358,26 @@ impl EffectRegistry {
         let guarantee = effect.guarantee;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
-            return self.resolve_fields_with_native_work(provider_name, effect_kind, guarantee, native);
+            self.require_native_metadata(native)?;
+            native.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })
+                .map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            let provider = self.providers.get(provider_name).ok_or_else(|| Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unsupported,
+                reason: "effect provider is not registered",
+            })?;
+            if !provider.supports_guarantee_with_native_work(effect_kind, guarantee, native)? {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unsupported,
+                    reason: "effect provider does not support the pinned guarantee",
+                });
+            }
+            if guarantee == EffectGuarantee::ExactlyOnce && !provider.linearizable_reconciliation() {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Unsupported,
+                    reason: "exactly-once requires linearizable provider reconciliation",
+                });
+            }
+            return Ok(provider);
         }
         if work.is_some() {
             return Err(Error::Unsupported("effect observer has no original native ledger".into()));
@@ -375,34 +394,6 @@ impl EffectRegistry {
         {
             return Err(Error::Unsupported(
                 "exactly-once requires linearizable provider reconciliation".into()));
-        }
-        Ok(provider)
-    }
-
-    /// Checks the original provider SPI before any native future allocation or IO.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) fn resolve_fields_with_native_work(
-        &self, provider_name: &str, effect_kind: &str, guarantee: EffectGuarantee,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<&Arc<dyn EffectProvider>> {
-        self.require_native_metadata(work)?;
-        work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let provider = self.providers.get(provider_name).ok_or_else(|| Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unsupported,
-            reason: "effect provider is not registered",
-        })?;
-        if !provider.supports_guarantee_with_native_work(effect_kind, guarantee, work)? {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "effect provider does not support the pinned guarantee",
-            });
-        }
-        if guarantee == EffectGuarantee::ExactlyOnce && !provider.linearizable_reconciliation() {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "exactly-once requires linearizable provider reconciliation",
-            });
         }
         Ok(provider)
     }

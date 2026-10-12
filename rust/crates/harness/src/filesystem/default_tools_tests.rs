@@ -57,15 +57,15 @@ async fn fixture() -> Result<Fixture> {
 async fn restored_original_target_cannot_rebase_over_a_concurrent_user_write() -> Result<()> {
     let fixture = fixture().await?;
     let controller = ParentProjectController::new(fixture.host.as_ref(), fixture.parent.reducer(), &fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.project, None)?;
-    let inspected = controller.prepare_project_import(&fixture.source, &fixture.source_generation).await?;
+    let inspected = controller.prepare_project_import(&fixture.source, &fixture.source_generation, None).await?;
     let target = fixture.host.generation_ref_id(inspected.target_head())?;
     let project = workspace_ref(fixture.project.provider().clone(), &fixture.project.storage_name(&mut None)?)?;
     let user_generation = fixture.host.apply(&project, Some(&target), &[WorkspaceMutation::PutFile {
         path: "/value.txt".into(), bytes: b"concurrent user".to_vec().into(),
     }], &IdempotencyKey::new("concurrent-user-edit")?).await?;
-    let restored = controller.prepare_project_import_at(&fixture.source, &fixture.source_generation, &target).await?;
+    let restored = controller.prepare_project_import(&fixture.source, &fixture.source_generation, Some(&target)).await?;
     assert_eq!(restored.target_head(), inspected.target_head());
-    assert!(matches!(controller.apply_project_merge(&restored, OperationId::from_bytes([20; 16])).await?, JoinOutcome::StaleTarget(_)));
+    assert!(matches!(controller.apply_project_merge(&restored, OperationId::from_bytes([20; 16]), BTreeMap::new()).await?.0, JoinOutcome::StaleTarget(_)));
     assert_eq!(fixture.host.read(&project, Some(&user_generation), "/value.txt", 64).await?.as_ref(), b"concurrent user");
     assert_eq!(fixture.host.resolve(&project).await?.generation, user_generation);
     Ok(())
@@ -75,14 +75,14 @@ async fn restored_original_target_cannot_rebase_over_a_concurrent_user_write() -
 async fn restored_applied_plan_observes_original_receipt_without_second_write() -> Result<()> {
     let fixture = fixture().await?;
     let controller = ParentProjectController::new(fixture.host.as_ref(), fixture.parent.reducer(), &fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.project, None)?;
-    let inspected = controller.prepare_project_import(&fixture.source, &fixture.source_generation).await?;
+    let inspected = controller.prepare_project_import(&fixture.source, &fixture.source_generation, None).await?;
     let target = fixture.host.generation_ref_id(inspected.target_head())?;
     let effect = OperationId::from_bytes([21; 16]);
-    let first = controller.apply_project_merge(&inspected, effect).await?;
+    let first = controller.apply_project_merge(&inspected, effect, BTreeMap::new()).await?.0;
     let JoinOutcome::Applied(first) = first else { return Err(Error::Invalid("expected real Filesystem publication".into())); };
     let result = fixture.host.generation_ref(&first.generation)?;
-    let restored = controller.prepare_project_import_at(&fixture.source, &fixture.source_generation, &target).await?;
-    let retried = controller.apply_project_merge(&restored, effect).await?;
+    let restored = controller.prepare_project_import(&fixture.source, &fixture.source_generation, Some(&target)).await?;
+    let retried = controller.apply_project_merge(&restored, effect, BTreeMap::new()).await?.0;
     let JoinOutcome::AlreadyApplied(retried) = retried else { return Err(Error::Invalid("retry did not observe original publication".into())); };
     assert_eq!(fixture.host.generation_ref(&retried.generation)?, result);
     let project = workspace_ref(fixture.project.provider().clone(), &fixture.project.storage_name(&mut None)?)?;
@@ -99,7 +99,7 @@ async fn restored_plan_requires_original_signed_source_read_grant() -> Result<()
     let controller = ParentProjectController::new(fixture.host.as_ref(), fixture.parent.reducer(), &fixture.issuer.verifier(&mut None).expect("verifier copy"), &caller_only, &fixture.project, None)?;
     let project = workspace_ref(fixture.project.provider().clone(), &fixture.project.storage_name(&mut None)?)?;
     let target = fixture.host.resolve(&project).await?.generation;
-    assert!(matches!(controller.prepare_project_import_at(&fixture.source, &fixture.source_generation, &target).await, Err(Error::Unauthorized(_))));
+    assert!(matches!(controller.prepare_project_import(&fixture.source, &fixture.source_generation, Some(&target)).await, Err(Error::Unauthorized(_))));
     assert_eq!(fixture.host.resolve(&project).await?.generation, target);
     Ok(())
 }
@@ -122,7 +122,7 @@ async fn merge_plan(fixture: &Fixture, effect: OperationId) -> Result<(Recursive
     let write = ContentGrant::verify(&fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.private, VolumeOperation::Write, u64::MAX, &mut None)?;
     let file = fixture.host.put_content(&fixture.private, &write, "merge/notice.txt", b"explicit project import", "text/plain", "notice.txt", 4096, &IdempotencyKey::new("merge-notice")?).await?;
     let controller = ParentProjectController::new(fixture.host.as_ref(), fixture.parent.reducer(), &fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.project, None)?;
-    let inspected = controller.prepare_project_import(&fixture.source, &fixture.source_generation).await?;
+    let inspected = controller.prepare_project_import(&fixture.source, &fixture.source_generation, None).await?;
     let plan = RecursiveMergeToolPlan { arguments: MergeToolArguments { source: TaskId::from_bytes([9; 16]), selections: Vec::new() },
         caller: TaskId::from_bytes([8; 16]), operation_id: effect, destination: fixture.parent.reducer().authority().clone(),
         source: Authority { kind: AggregateKind::Conversation, id: "recursive-default-child".into() }, source_project: fixture.source.clone(),
@@ -150,9 +150,9 @@ async fn durable_merge_rejects_foreign_receipts_and_success_shaped_nonoutcomes()
     assert!(matches!(machine.transition(&waiting.state, &encode(&(Receipt { operation_id: command.operation_id,
         value: Outcome::Indeterminate { operation_id: effect }, next: None }), None)?), Err(Error::Indeterminate(operation)) if operation == effect));
     let controller = ParentProjectController::new(fixture.host.as_ref(), fixture.parent.reducer(), &fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.scope, &fixture.project, None)?;
-    let inspected = controller.prepare_project_import_at(&plan.source_project, &plan.source_generation, &plan.expected_target_generation).await?;
-    let outcome = controller.apply_project_merge(&inspected, effect).await?;
-    let receipt = controller.merge_receipt(&inspected, &outcome, plan.source.clone(), effect, plan.notice.clone())?;
+    let inspected = controller.prepare_project_import(&plan.source_project, &plan.source_generation, Some(&plan.expected_target_generation)).await?;
+    let outcome = controller.apply_project_merge(&inspected, effect, BTreeMap::new()).await?.0;
+    let receipt = controller.merge_receipt(&inspected, &outcome, &plan.source, effect, &plan.notice)?.0;
     let mut foreign = receipt.clone(); foreign.operation_id = OperationId::from_bytes([98; 16]);
     assert!(validate_merge_receipt(&plan, &foreign, None).is_err());
     let next = WorkflowCommand { operation_id: derived(effect, "merge-publish", None)?, kind: MERGE_PUBLISH.into(), payload };
@@ -318,9 +318,10 @@ async fn inherited_grant_preflight_reuses_real_materializer_without_child_effect
         1, 8, 1, 16, reader.as_ref(), None).await.is_err());
     assert!(controller.inherited_reference_grants(fixture.parent.reducer(), child_agent, &[],
         2, 8, 8192, 16, reader.as_ref(), None).await.is_err());
-    let child_head = fixture.host.create_volume(&child).await?;
-    let actual = controller.materialize_inherited_conversation(fixture.parent.reducer(), &child, &child_head.generation, child_agent,
-        &[], 1, 8, 8192, 16, reader.as_ref(), &IdempotencyKey::new("real-inherited-prefix")?).await?;
+    let private = fixture.host.create_volume(&child).await?;
+    let actual = controller.materialize_inherited_conversation(fixture.parent.reducer(), &child, &private.generation, child_agent,
+        &[], 1, 8, 8192, 16, reader.as_ref(), &IdempotencyKey::new("real-inherited-prefix")?,
+        &[], None, None, None, #[cfg(not(target_arch = "wasm32"))] None).await?;
     assert_eq!(actual.reference_grants, projected);
     Ok(())
 }
