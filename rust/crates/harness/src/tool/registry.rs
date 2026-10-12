@@ -68,9 +68,9 @@ impl ToolRegistry {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "tool registration has no original payload custody",
             })?;
-            if !registry.matches_work(work)
+            if !registry.work().shares_allocation_context(work)
                 || registry.bytes() < original
-                || !definition.matches_work(work)
+                || !definition.work().shares_allocation_context(work)
                 || definition.bytes() < definition_bytes
             {
                 return Err(Error::NativeBoundary {

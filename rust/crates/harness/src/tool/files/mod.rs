@@ -49,28 +49,28 @@ fn assemble(adapter: FileTool) -> Result<Tool> {
             "Read exact bounded UTF-8 from an authorized immutable file",
             super::schema::input::<ReadFileInput>()?,
             super::schema::output::<String>()?,
-            super::schema::json_projection::<String>()?,
+            super::schema::ProjectionMode::Full.schema::<String>()?,
         ),
         FileTool::Write => (
             "acyclic.write_file",
             "Write bounded UTF-8 through the original owner-bound content publisher",
             super::schema::input::<WriteFileInput>()?,
             super::schema::output::<FileResult>()?,
-            super::schema::json_projection::<FileResult>()?,
+            super::schema::ProjectionMode::Full.schema::<FileResult>()?,
         ),
         FileTool::Edit => (
             "acyclic.edit_file",
             "Replace one exact UTF-8 match at an authorized pinned source generation",
             super::schema::input::<EditFileInput>()?,
             super::schema::output::<FileResult>()?,
-            super::schema::json_projection::<FileResult>()?,
+            super::schema::ProjectionMode::Full.schema::<FileResult>()?,
         ),
         FileTool::Patch { .. } => (
             "acyclic.patch_file",
             "Apply exact V4A update-file diff hunks to one authorized immutable file; @@ headers, exact context and optional EOF; ambiguous context fails",
             super::schema::input::<PatchFileInput>()?,
             super::schema::output::<FileResult>()?,
-            super::schema::json_projection::<FileResult>()?,
+            super::schema::ProjectionMode::Full.schema::<FileResult>()?,
         ),
     };
     if let FileTool::Patch {

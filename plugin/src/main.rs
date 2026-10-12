@@ -60,7 +60,6 @@ use acyclic_fs::kernel::{FileKind, NamespacePath};
 use acyclic_fs::model::{
     CheckoutMode, FilesystemProfile, GenerationSelector, Lifecycle, VolumeConfig, VolumeLimits,
 };
-use acyclic_fs::native_host::HostRoot;
 use acyclic_fs::path::PortablePath;
 use acyclic_fs::{
     ApplyOptions, CancellationToken, CaptureOptions, CapturePolicy, CheckoutCommitOutcome,

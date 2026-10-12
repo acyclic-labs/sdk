@@ -1163,7 +1163,10 @@ impl PiSession {
         }
         let binding = self.binding(caller)?;
         let host = self.runtime.runtime.task_host();
-        let lease = match host.recover_work(caller).await? {
+        let mut lease_io = acyclic_harness::store::native_work_io(&work)?;
+        let reservation = host.recover_work(caller, &mut Some(&mut lease_io)).await?;
+        let _reservation_custody = lease_io.into_custody();
+        let lease = match reservation {
             acyclic_harness::distributed::WorkPull::Claimed(lease) => lease,
             acyclic_harness::distributed::WorkPull::Unresolved { .. } => {
                 return Err(RootError::Invalid(
@@ -1177,14 +1180,16 @@ impl PiSession {
             }
         };
         let fence = acyclic_harness::scheduler::LeaseFence::from(&lease.reservation);
-        let journal_owner = host.journal_owner(binding.task_id, fence.clone()).await?;
+        let journal_owner = host
+            .journal_owner_with_native_work(binding.task_id, &fence, &work)
+            .await?;
         let context = self
             .runtime
             .runtime
-            .task_context(caller, fence.clone())
+            .task_context_with_native_work(caller, &fence, &work)
             .await?;
         let command = pi_mail::prepare_send(
-            &context,
+            context.context(),
             &journal_owner,
             owner,
             &self.filesystem,

@@ -74,7 +74,6 @@ fn replaceable_projections_preserve_canonical_results_and_real_model_wire() -> R
     let result = ToolResult {
         value: serde_json::to_value(&read).map_err(|error| Error::Invalid(error.to_string()))?,
     };
-    let unchanged = result.clone();
     for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
         let projector = ReadProjection(mode);
         let projected = projector.project(&input, &result, None)?.0;
@@ -89,7 +88,6 @@ fn replaceable_projections_preserve_canonical_results_and_real_model_wire() -> R
         } else {
             assert_reference(&projected, &file)?;
         }
-        assert_eq!(result, unchanged);
     }
     let search = SearchResult {
         file: file.clone(),
@@ -106,7 +104,6 @@ fn replaceable_projections_preserve_canonical_results_and_real_model_wire() -> R
     let result = ToolResult {
         value: serde_json::to_value(&search).map_err(|error| Error::Invalid(error.to_string()))?,
     };
-    let unchanged = result.clone();
     for mode in [ProjectionMode::Full, ProjectionMode::Reference] {
         let projector = SearchProjection(mode);
         let projected = projector.project(&input, &result, None)?.0;
@@ -121,7 +118,6 @@ fn replaceable_projections_preserve_canonical_results_and_real_model_wire() -> R
         } else {
             assert_reference(&projected, &file)?;
         }
-        assert_eq!(result, unchanged);
     }
     Ok(())
 }

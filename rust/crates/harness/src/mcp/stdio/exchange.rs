@@ -40,7 +40,7 @@ impl McpStdioExchange {
             (None, None) => {}
             (Some(guard), Some(work)) => {
                 checkpoint(Some(work))?;
-                if !guard.matches_work(work) {
+                if !guard.work().shares_allocation_context(work) {
                     return Err(rejection(Some(work), "MCP stdio original ledger mismatch"));
                 }
             }

@@ -240,27 +240,17 @@ impl BrowserTransaction {
 pub(in crate::bindings) fn browser_workspace_commit<A, O>(
     outcome: TransactionCommit<A, O>,
 ) -> BrowserWorkspaceCommit {
-    match outcome {
-        TransactionCommit::Committed(value) => BrowserWorkspaceCommit {
-            status: BrowserWorkspaceCommitStatus::Committed,
-            generation_id: Some(value.id().digest().into_bytes().to_vec().into()),
-        },
-        TransactionCommit::AlreadyCommitted(value) => BrowserWorkspaceCommit {
-            status: BrowserWorkspaceCommitStatus::AlreadyCommitted,
-            generation_id: Some(value.id().digest().into_bytes().to_vec().into()),
-        },
-        TransactionCommit::Conflict { actual } => BrowserWorkspaceCommit {
-            status: BrowserWorkspaceCommitStatus::Conflict,
-            generation_id: Some(actual.id().digest().into_bytes().to_vec().into()),
-        },
-        TransactionCommit::Fenced => BrowserWorkspaceCommit {
-            status: BrowserWorkspaceCommitStatus::Fenced,
-            generation_id: None,
-        },
-        TransactionCommit::IdempotencyConflict => BrowserWorkspaceCommit {
-            status: BrowserWorkspaceCommitStatus::IdempotencyConflict,
-            generation_id: None,
-        },
+    use BrowserWorkspaceCommitStatus::*;
+    let (status, generation) = match outcome {
+        TransactionCommit::Committed(value) => (Committed, Some(value)),
+        TransactionCommit::AlreadyCommitted(value) => (AlreadyCommitted, Some(value)),
+        TransactionCommit::Conflict { actual } => (Conflict, Some(actual)),
+        TransactionCommit::Fenced => (Fenced, None),
+        TransactionCommit::IdempotencyConflict => (IdempotencyConflict, None),
+    };
+    BrowserWorkspaceCommit {
+        status,
+        generation_id: generation.map(|value| value.id().digest().into_bytes().to_vec().into()),
     }
 }
 
