@@ -5,7 +5,6 @@ use TaskWorkerAttempt;
 use WorkPull;
 use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_harness::store::HistoryIo;
-use acyclic_harness::store::native_work_io;
 use acyclic_harness::{Error, Result as RootResult};
 use std::future::Future;
 
@@ -188,7 +187,7 @@ impl PiSession {
             }
             if !self.native_jobs.contains_key(task) {
                 match async {
-                    let mut io = native_work_io(&work)?;
+                    let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(&work)?);
                     HistoryIo::retain_owned(
                         &mut io,
                         std::mem::size_of::<WorkPull>()
@@ -201,7 +200,7 @@ impl PiSession {
                         .task_host()
                         .recover_work(*task, &mut Some(&mut io))
                         .await?;
-                    Ok::<_, acyclic_harness::Error>((value, io.into_custody()))
+                    Ok::<_, acyclic_harness::Error>((value, io.into_custody()?))
                 }
                 .await
                 {
@@ -353,7 +352,7 @@ impl PiSession {
                 continue;
             }
             let observed = {
-                let mut io = native_work_io(query_work)?;
+                let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(query_work)?);
                 HistoryIo::retain_owned(
                     &mut io,
                     std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>())
@@ -365,7 +364,7 @@ impl PiSession {
                     .task_host()
                     .recover_work(*task, &mut Some(&mut io))
                     .await?;
-                (value, io.into_custody())
+                (value, io.into_custody()?)
             };
             match &observed.0 {
                 WorkPull::Claimed(_) | WorkPull::Unresolved { .. } => {
@@ -738,13 +737,13 @@ async fn original_native_first_dispatch_pending(
         ));
     }
     let reservation = {
-        let mut io = native_work_io(work)?;
+        let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
         HistoryIo::retain_owned(
             &mut io,
             std::mem::size_of::<WorkPull>().max(std::mem::size_of::<TaskWorkerAttempt>()) as u64,
         )?;
         let value = host.recover_work(task, &mut Some(&mut io)).await?;
-        (value, io.into_custody())
+        (value, io.into_custody()?)
     };
     if !matches!(&reservation.0, WorkPull::Idle) {
         return Ok(false);
@@ -770,9 +769,9 @@ async fn original_native_first_dispatch_pending(
         work,
     )?;
     let verifier = {
-        let mut io = acyclic_harness::store::history::native_work_io(work)?;
+        let mut io = acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?);
         let value = conversation.0.1.verifier(&mut Some(&mut io))?;
-        (value, io.into_custody())
+        (value, io.into_custody()?)
     };
     let history = acyclic_harness::store::HistoryReader::new_with_native_work(
         stream,
@@ -784,7 +783,7 @@ async fn original_native_first_dispatch_pending(
     let effect = acyclic_harness::effect_host::task_effect_id(
         task,
         pi_fork::derived(plan.original, "native-effect", &work)?,
-        &mut Some(&mut acyclic_harness::store::history::native_work_io(work)?),
+        &mut Some(&mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?)),
     )?;
     let observed = history
         .0

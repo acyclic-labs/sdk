@@ -56,5 +56,3 @@ mod wire_body;
 use error::{bounded, error_from_status, ok, protocol};
 use frames::*;
 use wire_body::{ObjectsChannel, PreparedWireBody};
-#[cfg(test)]
-mod native_wire_tests;

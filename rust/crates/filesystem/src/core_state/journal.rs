@@ -26,7 +26,7 @@ impl MaterializationJournalStore for LocalCoreStateStore {
         };
         if let Some(custody) = &journal.custody {
             if !custody.work().shares_allocation_context(&work) {
-                return Err(LocalCoreStateStoreError::NativeLedgerMismatch);
+                return Err(crate::LazyWorkspaceError::NativeLedgerMismatch.into());
             }
         } else {
             journal.custody = Some(work.claim(
@@ -152,7 +152,7 @@ impl MaterializationJournalStore for LocalCoreStateStore {
                 .as_ref()
                 .ok_or(NativeTreeMaterializationError::MissingCustody)?;
             if !custody.work().shares_ledger(work) {
-                return Err(LocalCoreStateStoreError::NativeLedgerMismatch);
+                return Err(crate::LazyWorkspaceError::NativeLedgerMismatch.into());
             }
         }
         self.transaction(move |namespace| {
@@ -230,7 +230,6 @@ impl Future for LocalMaterializationActionCompletion {
 pub(super) struct MaterializationEncodedSize<'a> {
     pub(super) work: &'a crate::materializer::NativeMaterializationWork,
     pub(super) length: usize,
-    pub(super) failure: Option<crate::materializer::NativeTreeMaterializationError>,
 }
 
 impl Write for MaterializationEncodedSize<'_> {
@@ -246,13 +245,7 @@ impl Write for MaterializationEncodedSize<'_> {
                 .ok_or(crate::WorkError::Overflow)?;
             Ok::<_, crate::materializer::NativeTreeMaterializationError>(bytes.len())
         })();
-        match result {
-            Ok(length) => Ok(length),
-            Err(error) => {
-                self.failure = Some(error);
-                Err(std::io::ErrorKind::Other.into())
-            }
-        }
+        result.map_err(std::io::Error::other)
     }
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
@@ -275,16 +268,9 @@ pub(super) fn prepare_materialization_encoding(
     // using its existing serializer, rather than a guessed schema estimate.
     let original_work = journal.work;
     journal.work = crate::WorkBudget::UNBOUNDED;
-    let mut count = MaterializationEncodedSize {
-        work,
-        length: 0,
-        failure: None,
-    };
+    let mut count = MaterializationEncodedSize { work, length: 0 };
     let encoded = serde_json::to_writer(&mut count, journal);
     journal.work = original_work;
-    if let Some(error) = count.failure {
-        return Err(error.into());
-    }
     encoded?;
     let mut allocation = work.claim(
         count.length as u64,
