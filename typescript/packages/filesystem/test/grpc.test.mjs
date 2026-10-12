@@ -161,6 +161,63 @@ test("caller cancellation stops an active export and retains the disabled deadli
   assert.equal(calls, 1);
 });
 
+for (const exit of ["break", "throw"]) {
+  test(`export consumer ${exit} cancels only its own RPC`, { timeout: 5000 }, async t => {
+    let exports = 0;
+    let reads = 0;
+    let readSignal;
+    let started;
+    let stopped;
+    let release;
+    const readStarted = new Promise(resolve => { started = resolve; });
+    const cancelled = new Promise(resolve => { stopped = resolve; });
+    const releaseRead = new Promise(resolve => { release = resolve; });
+    const { filesystem } = await fixture(t, {
+      async read(query, context) {
+        reads++;
+        assert.deepEqual(query, create(wire.ReadRequestSchema, requests.read));
+        readSignal = context.signal;
+        started();
+        await releaseRead;
+        return { contents: new Uint8Array([9]) };
+      },
+      async *export(query, context) {
+        exports++;
+        assert.deepEqual(query, create(wire.ExportRequestSchema, requests.export));
+        const aborted = once(context.signal, "abort").then(stopped);
+        yield { contents: new Uint8Array([1]) };
+        await aborted;
+      },
+    });
+    const pending = filesystem.read(requests.read, { timeoutMs: 0 });
+    try {
+      await readStarted;
+      const failure = new Error("consumer failed");
+      const consume = async () => {
+        for await (const chunk of filesystem.export(requests.export, { timeoutMs: 0 })) {
+          assert.deepEqual(chunk.contents, new Uint8Array([1]));
+          if (exit === "throw") throw failure;
+          break;
+        }
+      };
+      if (exit === "throw") await assert.rejects(consume(), error => error === failure);
+      else await consume();
+      await Promise.race([
+        cancelled,
+        once(AbortSignal.timeout(1000), "abort").then(() => assert.fail("export server work stayed active after iterator exit")),
+      ]);
+      assert.equal(readSignal.aborted, false);
+      release();
+      assert.deepEqual((await pending).contents, new Uint8Array([9]));
+      assert.equal(exports, 1);
+      assert.equal(reads, 1);
+    } finally {
+      release();
+      await pending;
+    }
+  });
+}
+
 test("a pending mutation deadline cancels server work without redispatch", { timeout: 5000 }, async t => {
   let calls = 0;
   let stopped;

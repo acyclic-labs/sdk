@@ -1,7 +1,8 @@
 import { rootCertificates } from "node:tls";
-import { createClient, type Interceptor } from "@connectrpc/connect";
+import { type MessageInitShape } from "@bufbuild/protobuf";
+import { createClient, type CallOptions, type Interceptor } from "@connectrpc/connect";
 import { createGrpcTransport, Http2SessionManager } from "@connectrpc/connect-node";
-import { FilesystemService } from "../generated/proto/filesystem/v2/filesystem_pb.js";
+import { ExportRequestSchema, FilesystemService } from "../generated/proto/filesystem/v2/filesystem_pb.js";
 
 export interface FilesystemGrpcOptions {
   readonly endpoint: string;
@@ -28,5 +29,25 @@ export function createFilesystemGrpcClient(options: FilesystemGrpcOptions) {
     acceptCompression: [], interceptors: [authenticate],
     readMaxBytes: maximum, writeMaxBytes: maximum,
   });
-  return { filesystem: createClient(FilesystemService, transport), close: () => session.abort() };
+  const filesystem = createClient(FilesystemService, transport);
+  return {
+    filesystem: {
+      ...filesystem,
+      async *export(request: MessageInitShape<typeof ExportRequestSchema>, callOptions?: CallOptions) {
+        const controller = new AbortController();
+        const signal = callOptions?.signal;
+        const abort = () => controller.abort(signal?.reason);
+        signal?.addEventListener("abort", abort, { once: true });
+        if (signal?.aborted) abort();
+        try {
+          yield* filesystem.export(request, { ...callOptions, signal: controller.signal });
+        } finally {
+          // Connect's promise-client iterator omits return(), so consumer exit needs an explicit abort.
+          controller.abort();
+          signal?.removeEventListener("abort", abort);
+        }
+      },
+    },
+    close: () => session.abort(),
+  };
 }
