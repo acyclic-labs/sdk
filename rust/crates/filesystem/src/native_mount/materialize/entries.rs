@@ -70,9 +70,7 @@ where
                 }
                 #[cfg(windows)]
                 {
-                    host_root
-                        .0
-                        .hard_link_wide_measured(&existing.0, &host_path.0, work)
+                    host_root.0.hard_link_wide(&existing.0, &host_path.0, work)
                 }
             })?;
             generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
@@ -99,7 +97,7 @@ where
                 }
                 #[cfg(windows)]
                 {
-                    host_root.0.create_dir_wide_measured(&host_path.0, work)
+                    host_root.0.create_dir_wide(&host_path.0, work)
                 }
             })?;
             generation_action(before_effect, NativeMaterializationActionPhase::Completed).await?;
@@ -184,7 +182,7 @@ where
                         }
                         #[cfg(windows)]
                         {
-                            host_root.0.clone_file_from_wide_measured(
+                            host_root.0.clone_file_from_wide(
                                 &host_root.0,
                                 &source.0,
                                 &host_path.0,
@@ -260,11 +258,7 @@ where
                         .into_std();
                     #[cfg(windows)]
                     let file = receipt
-                        .run(|work| {
-                            host_root
-                                .0
-                                .open_file_positional_wide_with_work(&host_path.0, work)
-                        })?
+                        .run(|work| host_root.0.open_file_positional_wide(&host_path.0, work))?
                         .into_std();
                     let meter = receipt.custody.work().runtime_meter();
                     let file = acyclic_native_runtime::NativeFile::from_file(

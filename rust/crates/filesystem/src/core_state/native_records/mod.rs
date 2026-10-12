@@ -94,7 +94,7 @@ fn string(value: &str, work: &Work, held: &mut NativeAllocation) -> Result<Strin
 }
 
 fn path(value: &Path, work: &Work, held: &mut NativeAllocation) -> Result<PathBuf, Error> {
-    let (value, mut allocation) = crate::native_host::clone_path_with_work(value, &mut &*work)?;
+    let (value, mut allocation) = crate::native_host::clone_path(value, &mut &*work)?;
     let result = held.absorb(&mut allocation);
     if let Err(error) = result {
         drop(value);

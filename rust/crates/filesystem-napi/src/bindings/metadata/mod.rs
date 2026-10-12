@@ -108,17 +108,14 @@ impl NativeCheckout {
             &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
         )
         .map_err(napi_error)?;
-        let mut checkout = Box::pin(self.inner.lock()).await;
-        checkout.ensure_publication_resolved().map_err(napi_error)?;
-        let receipt = checkout
-            .apply_authored_transaction(
-                vec![acyclic_fs::AuthoredMutation::SetMetadata { path, metadata }],
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
-            )
-            .await
-            .map_err(napi_error)?;
-        native_mutation(None, receipt.work)
+        let receipt = checkout_mutation!(
+            self,
+            apply_authored_transaction(vec![acyclic_fs::AuthoredMutation::SetMetadata {
+                path,
+                metadata
+            }],)
+        )?;
+        mutation_result(receipt.work)
     }
 
     /// Atomically replaces complete canonical metadata by stable file identity.
@@ -135,19 +132,8 @@ impl NativeCheckout {
             &mut |_| Ok::<_, acyclic_fs::kernel::CanonicalDecodeError>(()),
         )
         .map_err(napi_error)?;
-        let mut checkout = Box::pin(self.inner.lock()).await;
-        checkout.ensure_publication_resolved().map_err(napi_error)?;
-        let receipt = checkout
-            .set_attributes_by_id(
-                file_id,
-                metadata,
-                None,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
-            )
-            .await
-            .map_err(napi_error)?;
-        native_mutation(None, receipt.work)
+        let receipt = checkout_mutation!(self, set_attributes_by_id(file_id, metadata, None,))?;
+        mutation_result(receipt.work)
     }
 
     /// Atomically replaces metadata and optional logical size for one path.
@@ -169,19 +155,8 @@ impl NativeCheckout {
             .as_ref()
             .map(|value| bigint_u64(value, "logicalBytes"))
             .transpose()?;
-        let mut checkout = Box::pin(self.inner.lock()).await;
-        checkout.ensure_publication_resolved().map_err(napi_error)?;
-        let receipt = checkout
-            .set_attributes(
-                path,
-                metadata,
-                logical_bytes,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
-            )
-            .await
-            .map_err(napi_error)?;
-        native_mutation(None, receipt.work)
+        let receipt = checkout_mutation!(self, set_attributes(path, metadata, logical_bytes,))?;
+        mutation_result(receipt.work)
     }
 
     /// Atomically replaces metadata and optional logical size by file identity.
@@ -203,19 +178,11 @@ impl NativeCheckout {
             .as_ref()
             .map(|value| bigint_u64(value, "logicalBytes"))
             .transpose()?;
-        let mut checkout = Box::pin(self.inner.lock()).await;
-        checkout.ensure_publication_resolved().map_err(napi_error)?;
-        let receipt = checkout
-            .set_attributes_by_id(
-                file_id,
-                metadata,
-                logical_bytes,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
-            )
-            .await
-            .map_err(napi_error)?;
-        native_mutation(None, receipt.work)
+        let receipt = checkout_mutation!(
+            self,
+            set_attributes_by_id(file_id, metadata, logical_bytes,)
+        )?;
+        mutation_result(receipt.work)
     }
 
     /// Reads one exact named-attribute value.
@@ -321,7 +288,7 @@ impl NativeCheckout {
         ))
         .await
         .map_err(napi_error)?;
-        native_mutation(None, receipt.work)
+        mutation_result(receipt.work)
     }
 
     /// Removes one exact named attribute.
@@ -345,7 +312,7 @@ impl NativeCheckout {
         ))
         .await
         .map_err(napi_error)?;
-        native_mutation(None, receipt.work)
+        mutation_result(receipt.work)
     }
 }
 

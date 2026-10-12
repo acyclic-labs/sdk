@@ -2,13 +2,16 @@ use super::*;
 
 /// The SAME persist and flush jobs are accepted on one blocking submission before issuing the late-input packet.
 pub(super) struct PreparedLocalWork {
-    pub(super) persist: MemoryOutput<JournalPersistWork>,
-    pub(super) input: MemoryOutput<Command>,
+    pub(super) persist: NativeStreamOutput<JournalPersistWork>,
+    pub(super) input: NativeStreamOutput<Command>,
     pub(super) prepared: crate::memory::NativeMemoryPreparedCommit,
     pub(super) record: Arc<crate::NativeCommitRecordSlot>,
-    pub(super) runtime: tokio::runtime::Handle,
     pub(super) meter: Arc<dyn NativeReadMeter>,
-    pub(super) flush: MemoryOutput<(Arc<LocalInner>, LocalDurability, Option<NativeOperationReservation<Arc<dyn NativeReadMeter>>>)>,
+    pub(super) flush: NativeStreamOutput<(
+        Arc<LocalInner>,
+        LocalDurability,
+        Option<NativeOperationReservation<Arc<dyn NativeReadMeter>>>,
+    )>,
 }
 
 impl PreparedLocalWork {
@@ -20,10 +23,16 @@ impl PreparedLocalWork {
         };
         let result: MemoryResult<NativeStreamOutput<CommitOutcome>> = (|| {
             // Input was supplied before taking any provider lock.
-            let Command::Commit(request) = &mut self.input.value else { return Err(StreamError::InvalidArgument.into()); };
+            let Command::Commit(request) = &mut self.input.value else {
+                return Err(StreamError::InvalidArgument.into());
+            };
             let [crate::CommitMutation::Append { records, .. }] = request.mutations.as_mut_slice()
-                else { return Err(StreamError::InvalidArgument.into()); };
-            let Some(record) = records.first_mut() else { return Err(StreamError::InvalidArgument.into()); };
+            else {
+                return Err(StreamError::InvalidArgument.into());
+            };
+            let Some(record) = records.first_mut() else {
+                return Err(StreamError::InvalidArgument.into());
+            };
             *record = body;
             let mut late = Ok(());
             let visibility = inner.visibility.blocking_write();
@@ -32,26 +41,47 @@ impl PreparedLocalWork {
             let wire = crate::wire_codec::CanonicalWire::Journal(&self.input.value);
             let encoded_length = wire.encoded_len(None, None)?;
             keep_observation(&mut late, self.meter.record_examination(1, 0));
-            write_frame(&mut self.persist.value.frame.value, &wire, committed_at, encoded_length, Some(&self.meter), Some(&mut late))
-                .map_err(publication_error)?;
-            inner.journal.lock()
+            write_frame(
+                &mut self.persist.value.frame.value,
+                &wire,
+                committed_at,
+                encoded_length,
+                Some(&self.meter),
+                Some(&mut late),
+            )
+            .map_err(publication_error)?;
+            inner
+                .journal
+                .lock()
                 .map_err(|_| MemoryFailure::Provider(inner.poison()))?
-                .admit_bytes(self.persist.value.frame.value.len() as u64).map_err(publication_error)?;
-            let Command::Commit(request) = &mut self.input.value else { unreachable!("prepared Commit input") };
-            let completion = self.runtime.block_on(
-                inner.provider.finish_commit(
-                    self.prepared, request, Some(committed_at),
-                ),
+                .admit_bytes(self.persist.value.frame.value.len() as u64)
+                .map_err(publication_error)?;
+            let Command::Commit(request) = &mut self.input.value else {
+                unreachable!("prepared Commit input")
+            };
+            let completion = inner.provider.finish_commit(
+                &mut *inner.provider.state.blocking_write(),
+                self.prepared,
+                request,
+                Some(committed_at),
             );
-            let (outcome, error) = completion.map_err(MemoryFailure::Observer)?
+            let (outcome, error) = completion
+                .map_err(MemoryFailure::Observer)?
                 .map_err(MemoryFailure::Provider)?;
             let (physical, observed) = persist(self.persist);
-            if physical.is_err() { inner.poison(); }
-            else { inner.changed.send_modify(|revision| *revision = revision.saturating_add(1)); }
+            if physical.is_err() {
+                inner.poison();
+            } else {
+                inner
+                    .changed
+                    .send_modify(|revision| *revision = revision.saturating_add(1));
+            }
             keep_observation(&mut late, observed);
             drop(visibility);
             late?;
-            if let Some(error) = error { return Err(MemoryFailure::Observer(error)); }
+            if let Some(error) = error {
+                return Err(MemoryFailure::Observer(error));
+            }
             physical.map_err(publication_error)?;
             Ok(crate::memory::native(Ok(outcome), &self.meter)?.expect("completed publication"))
         })();
@@ -65,7 +95,6 @@ impl PreparedLocalWork {
 }
 
 impl LocalInner {
-
     /// The latest frame a caller that observed the current state must wait to flush.
     pub(super) fn required(&self) -> Result<u64, StreamError> {
         Ok(self
@@ -74,7 +103,6 @@ impl LocalInner {
             .map_err(|_| StreamError::Unavailable)?
             .required)
     }
-
 }
 
 impl LocalStream {
@@ -97,18 +125,14 @@ impl LocalStream {
             // SDK descriptor custody is accepted before the worker detaches.
             drop(request);
             let execute_meter = Arc::clone(&observer);
-            let visibility = if before.is_some() {
-                MutationVisibility::FromCommit
-            } else {
-                MutationVisibility::BeforeMutation
-            };
             let result = self.mutation(
-                MemoryOutput { value: Command::Commit(input.value), allocation: input.allocation }, deadline, Some(observer), visibility,
-                move |provider, input, deadline, committed_at, frame_bytes| async move {
-                    let MemoryOutput { value, allocation } = input;
+                NativeStreamOutput { value: Command::Commit(input.value), allocation: input.allocation }, deadline, Some(observer),
+                move |provider, input, deadline, committed_at, frame_bytes, visibility| async move {
+                    let NativeStreamOutput { value, allocation } = input;
                     let Command::Commit(mut request) = value else { unreachable!() };
                     let mut before = before;
                     let guarded = before.is_some();
+                    let stage_visibility = if guarded { drop(visibility); None } else { Some(visibility) };
                     let mut acquire = || {
                         let mut original = before.as_mut().expect("guarded Commit has its original callback").clone();
                         let stream = guard_stream.clone();
@@ -164,7 +188,7 @@ impl LocalStream {
                     let primary_failure = !matches!(&result, Ok(Ok(_)));
                     Ok(CommitCompletion {
                         value: (result, before),
-                        error: None, _input: Some(MemoryOutput { value: Command::Commit(request), allocation }), visibility, persist, primary_failure,
+                        error: None, _input: Some(NativeStreamOutput { value: Command::Commit(request), allocation }), visibility: visibility.or(stage_visibility), persist, primary_failure,
                     })
                 },
             ).await;
@@ -175,5 +199,4 @@ impl LocalStream {
             }
         })
     }
-
 }

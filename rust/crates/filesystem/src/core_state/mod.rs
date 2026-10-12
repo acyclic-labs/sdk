@@ -204,8 +204,7 @@ impl LocalCoreStateStore {
         let work = self.journal_work.as_ref();
         let (root, allocation) = match work {
             Some(work) => {
-                let (root, allocation) =
-                    crate::native_host::clone_path_with_work(&self.root, &mut &*work)?;
+                let (root, allocation) = crate::native_host::clone_path(&self.root, &mut &*work)?;
                 (root, Some(allocation))
             }
             None => (self.root.as_ref().clone(), None),

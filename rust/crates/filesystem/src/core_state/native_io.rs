@@ -278,7 +278,7 @@ impl Read for MaterializationReader<'_> {
             return Ok(0);
         }
         if self.remaining_file_bytes == 0 {
-            if crate::native_host::stat_file_with_work(&self.file, &mut &*self.work)
+            if crate::native_host::stat_file(&self.file, &mut &*self.work)
                 .map_err(std::io::Error::other)?
                 .len()
                 != self.original_length
@@ -332,7 +332,7 @@ pub(super) fn measured_read_file<T: DeserializeOwned>(
         }
         Err(error) => return Err(error.into()),
     };
-    let length = crate::native_host::stat_file_with_work(&file, &mut &*work)?.len();
+    let length = crate::native_host::stat_file(&file, &mut &*work)?.len();
     let _buffer = {
         let claim_bytes = 64 * 1024;
         work.claim(
@@ -537,7 +537,7 @@ pub(super) fn materialization_open(
     };
     let file = materialization_open_options(path, &options, work)?;
     if truncate {
-        crate::native_host::truncate_file_with_work(&file, 0, &mut &*work)?;
+        crate::native_host::truncate_file(&file, 0, &mut &*work)?;
     }
     Ok(file)
 }
@@ -551,7 +551,7 @@ pub(super) fn materialization_open_options(
     let leaf = path.file_name().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "journal file has no leaf")
     })?;
-    crate::native_host::open_leaf_with_work(&parent, Path::new(leaf), options, &mut &*work)
+    crate::native_host::open_leaf(&parent, Path::new(leaf), options, &mut &*work)
 }
 
 pub(super) fn materialization_exists(
@@ -608,7 +608,7 @@ pub(super) fn materialization_copy(
     work: &crate::materializer::NativeMaterializationWork,
 ) -> Result<(), LocalCoreStateStoreError> {
     let file = materialization_open(from, false, work)?;
-    let length = crate::native_host::stat_file_with_work(&file, &mut &*work)?.len();
+    let length = crate::native_host::stat_file(&file, &mut &*work)?.len();
     let mut source = MaterializationReader {
         file,
         work,
@@ -632,7 +632,7 @@ pub(super) fn materialization_copy(
                 .ok_or_else(|| std::io::Error::other("invalid journal copy length"))?,
         )?;
     }
-    crate::native_host::sync_file_held_with_work(&destination.file, &mut &*work)?;
+    crate::native_host::sync_file_held(&destination.file, &mut &*work)?;
     Ok(())
 }
 
@@ -644,7 +644,7 @@ pub(super) fn materialization_remove(
     let leaf = path.file_name().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "journal file has no leaf")
     })?;
-    match crate::native_host::remove_leaf_with_work(&parent, Path::new(leaf), &mut &*work) {
+    match crate::native_host::remove_leaf(&parent, Path::new(leaf), false, &mut &*work) {
         Ok(()) => {}
         Err(crate::materializer::NativeTreeMaterializationError::Io(error))
             if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -665,7 +665,7 @@ pub(super) fn measured_write_record<T: Serialize>(
     };
     let encoded = serde_json::to_writer(&mut writer, journal);
     encoded.map_err(measured_json_error)?;
-    crate::native_host::sync_file_held_with_work(&writer.file, &mut &*work)?;
+    crate::native_host::sync_file_held(&writer.file, &mut &*work)?;
     drop(writer);
     materialization_remove(&paths.previous, work)?;
     #[cfg(windows)]

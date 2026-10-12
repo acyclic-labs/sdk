@@ -306,7 +306,10 @@ pub enum GitFilesystemAction {
 /// Typed result returned by a compatibility filesystem executor.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
-#[allow(clippy::large_enum_variant, reason = "keeps the public result shape direct; this is not a hot path")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "keeps the public result shape direct; this is not a hot path"
+)]
 pub enum GitFilesystemResult {
     /// An eligible compatibility snapshot was captured.
     Captured {
@@ -396,7 +399,10 @@ pub struct GitStatus {
 /// Stable machine-readable command result.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
-#[allow(clippy::large_enum_variant, reason = "CLI responses favor a direct typed shape over allocation")]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "CLI responses favor a direct typed shape over allocation"
+)]
 pub enum GitCommandOutput {
     /// No state or filesystem change was required.
     NoOp,

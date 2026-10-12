@@ -90,13 +90,21 @@ pub(crate) fn mutation_from_wire(
     match value.mutation.ok_or(StreamError::InvalidArgument)? {
         wire::commit_mutation::Mutation::Append(value) => Ok(CommitMutation::Append {
             path: path(value.path)?,
-            records: value.records.into_iter().map(crate::OwnedBytes::from).collect(),
+            records: value
+                .records
+                .into_iter()
+                .map(crate::OwnedBytes::from)
+                .collect(),
         }),
         wire::commit_mutation::Mutation::Fork(value) => Ok(CommitMutation::Fork {
             source: path(value.source)?,
             destination: path(value.destination)?,
             at_tail: value.at_tail,
-            records: value.records.into_iter().map(crate::OwnedBytes::from).collect(),
+            records: value
+                .records
+                .into_iter()
+                .map(crate::OwnedBytes::from)
+                .collect(),
         }),
     }
 }
@@ -276,7 +284,11 @@ pub fn fork_receipt_to_wire(value: &ForkReceipt) -> wire::ForkReceipt {
 pub fn append_from_wire(value: wire::AppendRequest) -> Result<crate::AppendRequest, StreamError> {
     Ok(crate::AppendRequest {
         path: path(value.path)?,
-        records: value.records.into_iter().map(crate::OwnedBytes::from).collect(),
+        records: value
+            .records
+            .into_iter()
+            .map(crate::OwnedBytes::from)
+            .collect(),
         if_tail: value.if_tail,
         idempotency_key: optional_key(value.idempotency_key)?,
     })
@@ -416,7 +428,6 @@ pub(crate) fn commit_to_wire(value: &crate::CommitRequest) -> wire::CommitReques
     }
 }
 
-
 pub(crate) fn envelope_from_wire(
     value: wire::CommittedEnvelope,
 ) -> Result<CommittedEnvelope, StreamError> {
@@ -441,8 +452,6 @@ pub fn envelope_to_wire(value: CommittedEnvelope) -> wire::CommittedEnvelope {
             .collect(),
     }
 }
-
-
 
 pub(crate) fn committed_mutation(
     value: wire::CommittedMutation,

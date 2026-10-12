@@ -67,7 +67,7 @@ impl CoreLog {
             .transpose()?;
         let mut bytes = Vec::new();
         if let Some(work) = work {
-            let length = crate::native_host::stat_file_with_work(&file, &mut &*work)?.len();
+            let length = crate::native_host::stat_file(&file, &mut &*work)?.len();
             let size = usize::try_from(length).map_err(|_| {
                 crate::materializer::NativeTreeMaterializationError::Work(
                     crate::WorkError::Overflow,

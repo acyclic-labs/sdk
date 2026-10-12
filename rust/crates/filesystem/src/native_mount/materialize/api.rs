@@ -271,7 +271,7 @@ where
                 .parent()
                 .filter(|p| !p.as_os_str().is_empty())
             {
-                host_root.0.create_dir_all_held_measured(parent, work)?;
+                host_root.0.create_dir_all_held(parent, work)?;
             }
             #[cfg(windows)]
             if let Some(separator) = host_path
@@ -281,7 +281,7 @@ where
             {
                 host_root
                     .0
-                    .create_dir_all_held_wide_measured(&host_path.0[..separator], work)?;
+                    .create_dir_all_held_wide(&host_path.0[..separator], work)?;
             }
             Ok(())
         })?;

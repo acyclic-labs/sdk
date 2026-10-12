@@ -338,7 +338,7 @@ impl CaptureInputScratch for CaptureScratchAllocation<'_> {
         Self::release(self, bytes).map_err(super::lazy::mount_demand_error)
     }
     fn clone_path(&mut self, path: &Path) -> Result<std::path::PathBuf, MountSourceError> {
-        crate::native_host::clone_path_with_work(path, self).map(|(path, _)| path)
+        crate::native_host::clone_path(path, self).map(|(path, _)| path)
             .map_err(super::lazy::mount_demand_error)
     }
 }
@@ -420,7 +420,7 @@ impl CaptureInputScratch for NativeCaptureScratchAllocation<'_> {
     fn clone_path(&mut self, path: &Path) -> Result<std::path::PathBuf, MountSourceError> {
         let allocation;
         let cloned;
-        (cloned, allocation) = crate::native_host::clone_path_with_work(path, &mut self.work)
+        (cloned, allocation) = crate::native_host::clone_path(path, &mut self.work)
             .map_err(MountSourceError::NativeWork)?;
         self.absorb(allocation);
         Ok(cloned)
@@ -12643,7 +12643,7 @@ mod tests {
         let executable = std::env::current_exe()?;
         let worker =
             "native_mount::adapter::tests::unix_mounts_in_distinct_processes_remain_independent";
-        let mut child_a = acyclic_native_runtime::spawn_process_tree(
+        let mut child_a = acyclic_native_runtime::ProcessTree::spawn(
             std::process::Command::new(&executable)
                 .args(["--ignored", "--exact", worker, "--test-threads=1"])
                 .env("ACYCLIC_FS_UNIX_CHILD_MOUNT", &mount_a)
@@ -12651,7 +12651,7 @@ mod tests {
                 .env("ACYCLIC_FS_UNIX_CHILD_RELEASE", &release)
                 .env("ACYCLIC_FS_UNIX_CHILD_ID", "a"),
         )?;
-        let mut child_b = acyclic_native_runtime::spawn_process_tree(
+        let mut child_b = acyclic_native_runtime::ProcessTree::spawn(
             std::process::Command::new(&executable)
                 .args(["--ignored", "--exact", worker, "--test-threads=1"])
                 .env("ACYCLIC_FS_UNIX_CHILD_MOUNT", &mount_b)

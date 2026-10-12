@@ -1302,7 +1302,7 @@ fn par_bench(args: &[String]) -> Result<(), Failure> {
             .map(|writer| {
                 let directory = root.join("par").join(format!("w{writer:03}"));
                 fs::create_dir_all(&directory)?;
-                Ok(acyclic_native_runtime::spawn_process_tree(
+                Ok(acyclic_native_runtime::ProcessTree::spawn(
                     std::process::Command::new(std::env::current_exe()?)
                         .arg("mount-bench-writer")
                         .arg(&directory)

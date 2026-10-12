@@ -1,5 +1,7 @@
 //! Build Actors from the semantic contract.
-pub(crate) use contract::{ContractError, validate_create, validate_update, validate_add_subscription, validate_delete};
+pub(crate) use contract::{
+    ContractError, validate_add_subscription, validate_create, validate_delete, validate_update,
+};
 
 #[allow(
     unused_imports,
