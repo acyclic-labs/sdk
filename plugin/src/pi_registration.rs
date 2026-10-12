@@ -285,8 +285,17 @@ pub(crate) async fn register(
         .map_err(|(source, custody)| acyclic_harness::Error::NativeWorkspace { source, custody })?;
     drop(journal_generation);
     drop(journal_name);
-    let stream =
-        Arc::new(LocalStream::open(directory.join("stream"), LocalStreamLimits::default()).await?);
+    let stream = match LocalStream::open(directory.join("stream"), LocalStreamLimits::default()).await {
+        Ok(stream) => Arc::new(stream),
+        Err(error) => {
+            let (message, custody) = work.display(&error)?;
+            return Err(acyclic_harness::Error::NativeDiagnostic {
+                code: acyclic_harness::wire::ErrorCode::Storage,
+                message,
+                custody,
+            });
+        }
+    };
     let runtime = pi_runtime::PiTaskRuntime::open_with_native_work(
         stream,
         filesystem.clone(),
