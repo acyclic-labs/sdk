@@ -270,7 +270,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             return Ok(self);
         }
         let identity = policy.identity();
-        crate::runtime::validate_policy_identity(&identity)?;
+        crate::runtime::validate_policy_identity(&identity, None)?;
         self.policy_binding = Some(identity);
         self.policy = Some(policy);
         Ok(self)

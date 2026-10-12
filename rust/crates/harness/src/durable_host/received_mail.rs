@@ -149,7 +149,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             ));
         }
         let mailbox = self.mailbox(receiver)?;
-        let mut records = crate::store::operations::read_records_with_work(
+        let mut records = crate::store::operations::read_records(
             &self.stream,
             &mailbox,
             item.sequence - 1,
@@ -254,15 +254,10 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let mut work = observer
             .as_mut()
             .map(|observer| observer as &mut dyn crate::store::history::HistoryIo);
-        let mut records = crate::store::operations::read_records_with_work(
-            &self.stream,
-            workflow,
-            index,
-            1,
-            &mut work,
-        )
-        .await?
-        .map_err(|error| crate::distributed::sdk_error(error, &work))?;
+        let mut records =
+            crate::store::operations::read_records(&self.stream, workflow, index, 1, &mut work)
+                .await?
+                .map_err(|error| crate::distributed::sdk_error(error, &work))?;
         let record = records.next(&mut work).await?.ok_or_else(|| {
             admission_boundary(
                 &work,

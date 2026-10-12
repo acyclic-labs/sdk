@@ -46,19 +46,14 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
                 "inbox page bound is invalid",
             )
         })?;
-        let mut records = match operations::read_records_with_work(
-            &self.stream,
-            &mailbox.0,
-            after,
-            maximum,
-            &mut work,
-        )
-        .await?
-        {
-            Ok(records) => records,
-            Err(error) if *sdk_source(&error) == StreamError::NotFound => return Ok(Vec::new()),
-            Err(error) => return Err(sdk_error(error, &work)),
-        };
+        let mut records =
+            match operations::read_records(&self.stream, &mailbox.0, after, maximum, &mut work)
+                .await?
+            {
+                Ok(records) => records,
+                Err(error) if *sdk_source(&error) == StreamError::NotFound => return Ok(Vec::new()),
+                Err(error) => return Err(sdk_error(error, &work)),
+            };
         let mut expected = after;
         let mut items = Vec::new();
         let mut output_bytes = 0_u64;

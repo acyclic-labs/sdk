@@ -45,12 +45,21 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                     .map(crate::store::HistoryWork::new)
                 {
                     Ok(io) => io,
-                    Err(cause) => {
+                    Err(error) => {
                         drop(request);
-                        return Err(Error::NativeWork {
-                            cause,
-                            custody: Some(custody),
-                        });
+                        return match error {
+                            Error::NativeWork {
+                                cause,
+                                custody: None,
+                            } => Err(Error::NativeWork {
+                                cause,
+                                custody: Some(custody),
+                            }),
+                            error => {
+                                drop(custody);
+                                Err(error)
+                            }
+                        };
                     }
                 };
                 let token = self.resource_preparation(request, &mut Some(&mut io)).await;

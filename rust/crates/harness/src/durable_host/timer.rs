@@ -198,7 +198,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let mut after = 0;
         let mut found = false;
         while after < tail {
-            let mut page = crate::store::operations::read_records_with_work(
+            let mut page = crate::store::operations::read_records(
                 &self.stream,
                 &stream.0,
                 after,

@@ -159,7 +159,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             self._native_custody
                 .as_mut()
                 .expect("authenticated native owner")
-                .substitute(bytes)?;
+                .resize(bytes)?;
             native.remaining()?;
         }
         Ok(self)

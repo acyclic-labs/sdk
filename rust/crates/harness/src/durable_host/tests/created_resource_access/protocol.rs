@@ -1,4 +1,5 @@
 use super::*;
+use crate::resource_preparation::ResourceCreationProvider;
 
 #[tokio::test]
 async fn created_context_reopens_and_attenuates_without_root_authority() -> Result<()> {
