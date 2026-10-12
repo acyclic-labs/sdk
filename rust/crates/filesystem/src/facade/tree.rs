@@ -1,7 +1,6 @@
 use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
-
     pub(super) async fn list_directory_page(
         &self,
         request: DirectoryPageRequest,
@@ -51,7 +50,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
                 work = add(work, receipt.work)?;
                 ordered.push(receipt.value);
             }
-            return Ok(FsReceipt {
+            return Ok(OperationReceipt {
                 value: ordered,
                 work,
             });
@@ -80,7 +79,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 }
 
-pub(super) async fn list_directory_to_file_root_with_accounting<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(super) async fn list_directory_to_file_root_with_accounting<
+    A: AsyncAuthorityStore,
+    O: AsyncObjectStore,
+>(
     volume: &Volume<A, O>,
     root: &GenerationRoot,
     path: &NamespacePath,
@@ -88,26 +90,58 @@ pub(super) async fn list_directory_to_file_root_with_accounting<A: AsyncAuthorit
     maximum_entries: u32,
     accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
-) -> Result<(crate::kernel::DirectoryPage, crate::kernel::allocation::KernelOwnedAllocation), FsError> {
+) -> Result<
+    (
+        crate::kernel::DirectoryPage,
+        crate::kernel::allocation::KernelOwnedAllocation,
+    ),
+    FsError,
+> {
     let before = readonly_standalone_live(accounting);
     let result = async {
         let record = crate::kernel::lookup_path_async_with_accounting(
-            &volume.fs.inner.objects, root, path, volume.config, accounting, cancellation, None,
+            &volume.fs.inner.objects,
+            root,
+            path,
+            volume.config,
+            accounting,
+            cancellation,
+            None,
         )
-            .await?.record.ok_or(FsError::NotFound)?;
-        let FilePayload::Directory { entries } = record.payload else { return Err(FsError::NotDirectory); };
-        if record.kind != FileKind::Directory { return Err(FsError::NotDirectory); }
+        .await?
+        .record
+        .ok_or(FsError::NotFound)?;
+        let FilePayload::Directory { entries } = record.payload else {
+            return Err(FsError::NotDirectory);
+        };
+        if record.kind != FileKind::Directory {
+            return Err(FsError::NotDirectory);
+        }
         crate::kernel::list_tree_entries_async_with_accounting(
-            &volume.fs.inner.objects, entries, after, maximum_entries, DecodeLimits::for_volume(volume.config),
-            accounting, cancellation.clone(), None,
-        ).await
-    }.await;
+            &volume.fs.inner.objects,
+            entries,
+            after,
+            maximum_entries,
+            DecodeLimits::for_volume(volume.config),
+            accounting,
+            cancellation.clone(),
+            None,
+        )
+        .await
+    }
+    .await;
     let retained = match &result {
         Ok((page, _)) if before.is_some() => page.entries.iter().try_fold(
-            page.entries.capacity().checked_mul(size_of::<crate::kernel::TreeEntry>())
-                .map(crate::foundation::usize_to_u64).ok_or(WorkError::Overflow)?,
-            |bytes, entry| bytes.checked_add(entry.name.retained_bytes() as u64)
-                .ok_or(FsError::Work(WorkError::Overflow)),
+            page.entries
+                .capacity()
+                .checked_mul(size_of::<crate::kernel::TreeEntry>())
+                .map(crate::foundation::usize_to_u64)
+                .ok_or(WorkError::Overflow)?,
+            |bytes, entry| {
+                bytes
+                    .checked_add(entry.name.retained_bytes() as u64)
+                    .ok_or(FsError::Work(WorkError::Overflow))
+            },
         )?,
         _ => 0,
     };
@@ -116,14 +150,26 @@ pub(super) async fn list_directory_to_file_root_with_accounting<A: AsyncAuthorit
 }
 
 pub(super) async fn list_directory_page<A: AsyncAuthorityStore, O: AsyncObjectStore>(
-    volume: &Volume<A, O>, root: &GenerationRoot, path: &NamespacePath,
-    after: Option<&LogicalName>, maximum_entries: u32,
-    budget: WorkBudget, cancellation: &CancellationToken,
+    volume: &Volume<A, O>,
+    root: &GenerationRoot,
+    path: &NamespacePath,
+    after: Option<&LogicalName>,
+    maximum_entries: u32,
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
 ) -> FsResult<DirectoryPage> {
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
     let result = list_directory_to_file_root_with_accounting(
-        volume, root, path, after, maximum_entries, &mut accounting, cancellation,
-    ).await.map(|(mut page, allocation)| {
+        volume,
+        root,
+        path,
+        after,
+        maximum_entries,
+        &mut accounting,
+        cancellation,
+    )
+    .await
+    .map(|(mut page, allocation)| {
         drop(allocation);
         page.work = accounting.spent();
         page
@@ -132,37 +178,51 @@ pub(super) async fn list_directory_page<A: AsyncAuthorityStore, O: AsyncObjectSt
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
-
     pub(super) async fn stage_empty_tree_with_accounting(
         &self,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
     ) -> Result<ObjectId, FsError> {
-        let encoded = crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| crate::kernel::encode_tree_page(&TreePage::Leaf(Vec::new()), self.volume.config.limits.maximum_directory_page_entries, observe, allocation_error))?;
-        self.volume.fs.put_encoded_with_accounting(
-            ObjectKind::TreePage, encoded, accounting, cancellation,
-        ).await
+        let encoded =
+            crate::kernel::codec::encode_owned(accounting, |observe, allocation_error| {
+                crate::kernel::encode_tree_page(
+                    &TreePage::Leaf(Vec::new()),
+                    self.volume.config.limits.maximum_directory_page_entries,
+                    observe,
+                    allocation_error,
+                )
+            })?;
+        self.volume
+            .fs
+            .put_encoded_with_accounting(ObjectKind::TreePage, encoded, accounting, cancellation)
+            .await
     }
 
     /// Returns one bounded authenticated page from a directory.
-    pub async fn list_directory(
+    pub async fn list_directory<W: FsWork>(
         &mut self,
         path: &NamespacePath,
         after: Option<&LogicalName>,
         maximum_entries: u32,
-        budget: WorkBudget,
+        budget: W,
         cancellation: &CancellationToken,
-    ) -> FsResult<DirectoryPage> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(budget, cancellation);
-        let result = self.list_directory_with_accounting(
-            path, after.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded), maximum_entries, &mut accounting, cancellation,
-        ).await;
+    ) -> W::OwnedOutput<DirectoryPage> {
+        let mut accounting = budget.accounting(cancellation);
+        let result = self
+            .list_directory_with_accounting(
+                path,
+                after.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
+                maximum_entries,
+                &mut accounting,
+                cancellation,
+            )
+            .await;
         let work = accounting.spent();
-        result.map(|(mut page, allocation)| {
-            drop(allocation);
+        let result = result.map(|(mut page, allocation)| {
             page.work = work;
-            FsReceipt { value: page, work }
-        }).map_err(|error| OperationFailure::new(error, work))
+            (page, allocation)
+        });
+        budget.finish_owned(result, &accounting)
     }
 
     pub(crate) async fn list_directory_with_accounting(
@@ -172,7 +232,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         maximum_entries: u32,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &CancellationToken,
-    ) -> Result<(DirectoryPage, crate::kernel::allocation::KernelOwnedAllocation), FsError> {
+    ) -> Result<
+        (
+            DirectoryPage,
+            crate::kernel::allocation::KernelOwnedAllocation,
+        ),
+        FsError,
+    > {
         if matches!(after, std::ops::Bound::Included(_)) && self.tracks_observations() {
             return Err(FsError::UnsupportedCheckout);
         }
@@ -187,62 +253,104 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                 Ok::<_, FsError>(())
             },
             |(this, path, after, accounting, cancellation)| async move {
-                let (lookup, lookup_allocation) = this.lookup_no_follow_with_accounting(
-                    path, accounting, cancellation, false,
-                ).await?;
+                let (lookup, lookup_allocation) = this
+                    .lookup_no_follow_with_accounting(path, accounting, cancellation, false)
+                    .await?;
                 drop(lookup_allocation);
                 let record = lookup.record.ok_or(FsError::NotFound)?;
                 let FilePayload::Directory { entries } = record.payload else {
                     return Err(FsError::NotDirectory);
                 };
-                if record.kind != FileKind::Directory { return Err(FsError::NotDirectory); }
+                if record.kind != FileKind::Directory {
+                    return Err(FsError::NotDirectory);
+                }
                 let (page, allocation) = if let std::ops::Bound::Included(at) = after {
                     crate::kernel::list_tree_entries_at_or_after_async_with_accounting(
-                        &this.volume.fs.inner.objects, entries, at, maximum_entries,
-                        DecodeLimits::for_volume(this.volume.config), accounting, cancellation,
+                        &this.volume.fs.inner.objects,
+                        entries,
+                        at,
+                        maximum_entries,
+                        DecodeLimits::for_volume(this.volume.config),
+                        accounting,
+                        cancellation,
                         Some(&this.dependencies.data_custody),
-                    ).await?
+                    )
+                    .await?
                 } else {
                     crate::kernel::list_tree_entries_async_with_accounting(
-                        &this.volume.fs.inner.objects, entries,
-                        match after { std::ops::Bound::Excluded(name) => Some(name), _ => None }, maximum_entries,
-                        DecodeLimits::for_volume(this.volume.config), accounting, cancellation.clone(),
+                        &this.volume.fs.inner.objects,
+                        entries,
+                        match after {
+                            std::ops::Bound::Excluded(name) => Some(name),
+                            _ => None,
+                        },
+                        maximum_entries,
+                        DecodeLimits::for_volume(this.volume.config),
+                        accounting,
+                        cancellation.clone(),
                         Some(&this.dependencies.data_custody),
-                    ).await?
+                    )
+                    .await?
                 };
                 let page = (page, allocation);
                 if this.tracks_observations() {
                     let (cursor, allocation) = match after {
                         std::ops::Bound::Excluded(name) => {
-                            let (name, allocation) = this.dependencies.copy_observation_name_with_accounting(
-                                name, accounting, cancellation,
-                            )?;
+                            let (name, allocation) =
+                                this.dependencies.copy_observation_name_with_accounting(
+                                    name,
+                                    accounting,
+                                    cancellation,
+                                )?;
                             (Some(name), allocation)
                         }
                         std::ops::Bound::Unbounded => (None, accounting.claim_owned(0, 0)?),
-                        std::ops::Bound::Included(_) => unreachable!("included cursors cannot track observations"),
+                        std::ops::Bound::Included(_) => {
+                            unreachable!("included cursors cannot track observations")
+                        }
                     };
-                    let mut region = (DependencyRegion::DirectoryRange {
-                            directory_id: record.file_id, after: cursor, maximum_entries,
-                        }, allocation);
+                    let mut region = (
+                        DependencyRegion::DirectoryRange {
+                            directory_id: record.file_id,
+                            after: cursor,
+                            maximum_entries,
+                        },
+                        allocation,
+                    );
                     let (probe, allocation) = AuthenticatedGenerationProbe::new_with_accounting(
-                        &this.volume.fs.inner.objects, probe_limits(this.volume.config), accounting,
+                        &this.volume.fs.inner.objects,
+                        probe_limits(this.volume.config),
+                        accounting,
                     )?;
-                    let probe = (probe.with_data_custody(Some(&this.dependencies.data_custody)), allocation);
-                    let state = probe.0.probe_async_with_accounting(
-                        GenerationId::new(this.root.base().digest), &region.0, accounting, cancellation,
-                    ).await?;
+                    let probe = (
+                        probe.with_data_custody(Some(&this.dependencies.data_custody)),
+                        allocation,
+                    );
+                    let state = probe
+                        .0
+                        .probe_async_with_accounting(
+                            GenerationId::new(this.root.base().digest),
+                            &region.0,
+                            accounting,
+                            cancellation,
+                        )
+                        .await?;
                     let (probe, allocation) = probe;
                     probe.retire_with_accounting(accounting)?;
                     drop(allocation);
-                    let mut staged = crate::kernel::Owned::<Vec<Dependency>>::allocate(1, accounting)?;
+                    let mut staged =
+                        crate::kernel::Owned::<Vec<Dependency>>::allocate(1, accounting)?;
                     staged.allocation.absorb(&mut region.1)?;
                     let copied = WorkCounters {
-                        items_examined: 1, bytes_copied: size_of::<Dependency>() as u64,
+                        items_examined: 1,
+                        bytes_copied: size_of::<Dependency>() as u64,
                         ..WorkCounters::UNCHARGED
                     };
                     accounting.admit(copied)?;
-                    staged.value.push(Dependency { region: region.0, expected: state });
+                    staged.value.push(Dependency {
+                        region: region.0,
+                        expected: state,
+                    });
                     accounting.record_completed(copied)?;
                     this.extend_observations_with_accounting(staged, accounting, cancellation)?;
                 }
@@ -256,23 +364,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         }
         let retained = result.as_ref().map_or(0, |(page, _)| {
             (page.entries.capacity() * size_of::<crate::kernel::TreeEntry>()) as u64
-                + page.entries.iter().map(|entry| entry.name.retained_bytes() as u64).sum::<u64>()
+                + page
+                    .entries
+                    .iter()
+                    .map(|entry| entry.name.retained_bytes() as u64)
+                    .sum::<u64>()
         });
         readonly_cleanup_standalone(accounting, before, retained)?;
-        result.map(|(mut page, allocation)| { page.work = accounting.spent(); (page, allocation) })
-    }
-
-    /// Lists one directory page on the original native invocation.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub async fn list_directory_with_native_work(
-        &mut self, path: &NamespacePath, after: Option<&LogicalName>, maximum_entries: u32,
-        work: &crate::NativeMaterializationWork, cancellation: &CancellationToken,
-    ) -> Result<(DirectoryPage, crate::NativeAllocation), FsError> {
-        let mut accounting = crate::kernel::allocation::KernelAccounting::native(work, cancellation);
-        let (page, allocation) = self.list_directory_with_accounting(
-            path, after.map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded), maximum_entries, &mut accounting, cancellation,
-        ).await?;
-        Ok((page, native_pinned_allocation(allocation)?))
+        result.map(|(mut page, allocation)| {
+            page.work = accounting.spent();
+            (page, allocation)
+        })
     }
 }
 
@@ -283,4 +385,3 @@ pub(super) fn directory_entries(record: Option<FileRecord>) -> Option<ObjectId> 
         _ => None,
     }
 }
-

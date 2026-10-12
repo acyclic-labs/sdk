@@ -6,41 +6,41 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let volume_id = VolumeId::from_bytes([49; 16]);
-    let volume = (fs.create_volume_with_id(
-        volume_id,
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?
-    .value;
+    let volume =
+        (fs.create_volume_with_id(volume_id, config(), WorkBudget::UNBOUNDED, &cancellation))
+            .await?
+            .value;
     let mut first = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let mut retry = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let mut stale = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let root_path = NamespacePath::new(Vec::new(), config().limits)?;
-    let metadata =
-        (first.lookup_no_follow(&root_path, WorkBudget::UNBOUNDED, &cancellation)).await?
-            .value
-            .record
-            .ok_or("root record absent")?
-            .metadata;
+    let metadata = (first.lookup_no_follow(&root_path, WorkBudget::UNBOUNDED, &cancellation))
+        .await?
+        .value
+        .record
+        .ok_or("root record absent")?
+        .metadata;
     let record = FileRecord {
         file_id: FileId::from_bytes([7; 16]),
         kind: FileKind::Regular,
@@ -56,21 +56,20 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
             }],
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await?;
+        ))
+        .await?;
         assert_eq!(
-            (checkout.lookup_no_follow(
-                &path("a")?,
-                WorkBudget::UNBOUNDED,
-                &cancellation,
-            )).await?
-            .value
-            .record
-            .map(|value| value.payload),
+            (checkout.lookup_no_follow(&path("a")?, WorkBudget::UNBOUNDED, &cancellation,))
+                .await?
+                .value
+                .record
+                .map(|value| value.payload),
             Some(record.payload)
         );
     }
     assert!(
-        (stale.lookup_no_follow(&path("a")?, WorkBudget::UNBOUNDED, &cancellation,)).await?
+        (stale.lookup_no_follow(&path("a")?, WorkBudget::UNBOUNDED, &cancellation,))
+            .await?
             .value
             .record
             .is_none()
@@ -85,22 +84,68 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
 
     let operation_id = OperationId::from_bytes([9; 16]);
-    let committed = (first.commit(operation_id, None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })).await?;
+    let committed = (first.commit(
+        operation_id,
+        None,
+        None,
+        None,
+        crate::PublicationPermit::Unrestricted,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        |_| async {
+            crate::FsResult::Ok(crate::FsReceipt {
+                value: (),
+                work: crate::WorkCounters::UNCHARGED,
+            })
+        },
+    ))
+    .await?;
     assert!(matches!(
         committed.value,
         CheckoutCommitOutcome::Committed { .. }
     ));
     assert!(!first.has_pending_mutations());
-    let repeated = (retry.commit(operation_id, None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })).await?;
+    let repeated = (retry.commit(
+        operation_id,
+        None,
+        None,
+        None,
+        crate::PublicationPermit::Unrestricted,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        |_| async {
+            crate::FsResult::Ok(crate::FsReceipt {
+                value: (),
+                work: crate::WorkCounters::UNCHARGED,
+            })
+        },
+    ))
+    .await?;
     assert!(matches!(
         repeated.value,
         CheckoutCommitOutcome::AlreadyCommitted { .. }
     ));
     assert!(!retry.has_pending_mutations());
-    let conflict = (stale.commit(OperationId::from_bytes([10; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })).await?;
+    let conflict = (stale.commit(
+        OperationId::from_bytes([10; 16]),
+        None,
+        None,
+        None,
+        crate::PublicationPermit::Unrestricted,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        |_| async {
+            crate::FsResult::Ok(crate::FsReceipt {
+                value: (),
+                work: crate::WorkCounters::UNCHARGED,
+            })
+        },
+    ))
+    .await?;
     assert!(matches!(
         conflict.value,
         CheckoutCommitOutcome::Conflict { .. }
@@ -112,30 +157,91 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
         pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert!(
-        (
-            head.value
-                .lookup_no_follow(&path("a")?, WorkBudget::UNBOUNDED, &cancellation,)
-        ).await?
+        (head
+            .value
+            .lookup_no_follow(&path("a")?, WorkBudget::UNBOUNDED, &cancellation,))
+        .await?
         .value
         .record
         .is_some()
     );
-    let lookup = (async { let __authority_args = (volume_authority_id(volume_id), operation_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __authority_work = crate::AuthorityWork::new(__authority_args.2, __authority_args.3); let __authority_result = AsyncAuthorityStore::find_operation(&volume.fs.inner.authority, __authority_args.0, __authority_args.1, &mut __authority_work).await.map(|(value, _allocation)| value); __authority_work.receipt(__authority_result) }).await?;
+    let lookup = (async {
+        let __authority_args = (
+            volume_authority_id(volume_id),
+            operation_id,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        );
+        let mut __authority_work =
+            crate::AuthorityWork::new(__authority_args.2, __authority_args.3);
+        let __authority_result = AsyncAuthorityStore::find_operation(
+            &volume.fs.inner.authority,
+            __authority_args.0,
+            __authority_args.1,
+            &mut __authority_work,
+        )
+        .await
+        .map(|(value, _allocation)| value);
+        __authority_work.receipt(__authority_result)
+    })
+    .await?;
     let mut recovered = (volume.checkout(
-        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
-    )).await?.value;
+        GenerationSelector::Head,
+        writable_pinned(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await?
+    .value;
     let denied = (recovered.commit(
-        operation_id, None, None, None, crate::PublicationPermit::Unrestricted,
-        WorkBudget { items_examined: lookup.work.items_examined, ..WorkBudget::UNBOUNDED },
-        &cancellation, |_| async { crate::FsResult::Ok(FsReceipt { value: (), work: WorkCounters::UNCHARGED }) },
-    )).await;
-    assert!(matches!(denied, Err(OperationFailure {
-        error: FsError::Work(WorkError::BudgetExceeded { counter: "items_examined", .. }), ..
-    })));
+        operation_id,
+        None,
+        None,
+        None,
+        crate::PublicationPermit::Unrestricted,
+        WorkBudget {
+            items_examined: lookup.work.items_examined,
+            ..WorkBudget::UNBOUNDED
+        },
+        &cancellation,
+        |_| async {
+            crate::FsResult::Ok(FsReceipt {
+                value: (),
+                work: WorkCounters::UNCHARGED,
+            })
+        },
+    ))
+    .await;
+    assert!(matches!(
+        denied,
+        Err(OperationFailure {
+            error: FsError::Work(WorkError::BudgetExceeded {
+                counter: "items_examined",
+                ..
+            }),
+            ..
+        })
+    ));
 
-    let clean_failure = (first.commit(OperationId::from_bytes([11; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })).await
+    let clean_failure = (first.commit(
+        OperationId::from_bytes([11; 16]),
+        None,
+        None,
+        None,
+        crate::PublicationPermit::Unrestricted,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        |_| async {
+            crate::FsResult::Ok(crate::FsReceipt {
+                value: (),
+                work: crate::WorkCounters::UNCHARGED,
+            })
+        },
+    ))
+    .await
     .err()
     .ok_or("clean checkout commit unexpectedly succeeded")?;
     assert!(matches!(clean_failure.error, FsError::NoPendingMutations));
@@ -146,7 +252,8 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let inverse_record = FileRecord {
         file_id: FileId::from_bytes([15; 16]),
@@ -159,7 +266,8 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert!(inverse.has_pending_mutations());
     (inverse.mutate(
         vec![Mutation::Remove {
@@ -168,10 +276,26 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert!(!inverse.has_pending_mutations());
     assert!(inverse.dependencies.proof().is_empty());
-    let inverse_commit = (inverse.commit(OperationId::from_bytes([16; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })).await
+    let inverse_commit = (inverse.commit(
+        OperationId::from_bytes([16; 16]),
+        None,
+        None,
+        None,
+        crate::PublicationPermit::Unrestricted,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        |_| async {
+            crate::FsResult::Ok(crate::FsReceipt {
+                value: (),
+                work: crate::WorkCounters::UNCHARGED,
+            })
+        },
+    ))
+    .await
     .err()
     .ok_or("inverse clean commit unexpectedly succeeded")?;
     assert!(matches!(inverse_commit.error, FsError::NoPendingMutations));
@@ -195,30 +319,81 @@ async fn exclusive_writer_checkout_atomically_fences_every_prior_writer()
         exclusive_config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let mut displaced = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let mut owner = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
-    (displaced.create(crate::AuthoredMutation::CreateFile { path: path("displaced")?, bytes: (bytes::Bytes::from_static(b"stale")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)).await?;
-    let rejected = (displaced.commit(OperationId::from_bytes([0xe2; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })).await?;
+    (displaced.create(
+        crate::AuthoredMutation::CreateFile {
+            path: path("displaced")?,
+            bytes: (bytes::Bytes::from_static(b"stale")).into(),
+            metadata: crate::kernel::FileMetadata::default(),
+        },
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await?;
+    let rejected = (displaced.commit(
+        OperationId::from_bytes([0xe2; 16]),
+        None,
+        None,
+        None,
+        crate::PublicationPermit::Unrestricted,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        |_| async {
+            crate::FsResult::Ok(crate::FsReceipt {
+                value: (),
+                work: crate::WorkCounters::UNCHARGED,
+            })
+        },
+    ))
+    .await?;
     assert!(matches!(
         rejected.value,
         CheckoutCommitOutcome::Fenced { actual_epoch } if actual_epoch.get() == 3
     ));
-    (owner.create(crate::AuthoredMutation::CreateFile { path: path("owner")?, bytes: (bytes::Bytes::from_static(b"current")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)).await?;
-    let committed = (owner.commit(OperationId::from_bytes([0xe3; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })).await?;
+    (owner.create(
+        crate::AuthoredMutation::CreateFile {
+            path: path("owner")?,
+            bytes: (bytes::Bytes::from_static(b"current")).into(),
+            metadata: crate::kernel::FileMetadata::default(),
+        },
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await?;
+    let committed = (owner.commit(
+        OperationId::from_bytes([0xe3; 16]),
+        None,
+        None,
+        None,
+        crate::PublicationPermit::Unrestricted,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        |_| async {
+            crate::FsResult::Ok(crate::FsReceipt {
+                value: (),
+                work: crate::WorkCounters::UNCHARGED,
+            })
+        },
+    ))
+    .await?;
     assert!(matches!(
         committed.value,
         CheckoutCommitOutcome::Committed { head, .. } if head.epoch.get() == 3
@@ -236,57 +411,64 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let mut clean = (volume.checkout(
         GenerationSelector::Head,
         manual(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let mut clean_tracking = (volume.checkout(
         GenerationSelector::Head,
         tracking(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let mut dirty = (volume.checkout(
         GenerationSelector::Head,
         writable_manual(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let mut conflicted = (volume.checkout(
         GenerationSelector::Head,
         writable_manual(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let mut writer = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let mut pinned_checkout = (volume.checkout(
         GenerationSelector::Head,
         pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let root_path = NamespacePath::new(Vec::new(), config().limits)?;
-    let metadata =
-        (writer.lookup_no_follow(&root_path, WorkBudget::UNBOUNDED, &cancellation)).await?
-            .value
-            .record
-            .ok_or("root record absent")?
-            .metadata;
+    let metadata = (writer.lookup_no_follow(&root_path, WorkBudget::UNBOUNDED, &cancellation))
+        .await?
+        .value
+        .record
+        .ok_or("root record absent")?
+        .metadata;
     let record = FileRecord {
         file_id: FileId::from_bytes([12; 16]),
         kind: FileKind::Regular,
@@ -295,14 +477,11 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
         payload: FilePayload::InlineRegular(InlineFileData::new(b"new-head")?),
     };
     assert!(
-        (conflicted.lookup_no_follow(
-            &path("published")?,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await?
-        .value
-        .record
-        .is_none()
+        (conflicted.lookup_no_follow(&path("published")?, WorkBudget::UNBOUNDED, &cancellation,))
+            .await?
+            .value
+            .record
+            .is_none()
     );
     (conflicted.mutate(
         vec![Mutation::Create {
@@ -314,7 +493,8 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     (dirty.mutate(
         vec![Mutation::Create {
             path: path("private")?,
@@ -322,7 +502,8 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     (writer.mutate(
         vec![Mutation::Create {
             path: path("published")?,
@@ -333,8 +514,24 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
-    (writer.commit(OperationId::from_bytes([14; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })).await?;
+    ))
+    .await?;
+    (writer.commit(
+        OperationId::from_bytes([14; 16]),
+        None,
+        None,
+        None,
+        crate::PublicationPermit::Unrestricted,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        |_| async {
+            crate::FsResult::Ok(crate::FsReceipt {
+                value: (),
+                work: crate::WorkCounters::UNCHARGED,
+            })
+        },
+    ))
+    .await?;
     let conflict = (conflicted.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation)).await?;
     assert!(matches!(
         conflict.value,
@@ -348,20 +545,21 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
     ));
     assert!(conflicted.has_pending_mutations());
 
-    let pinned_failure =
-        (pinned_checkout.refresh_head(WorkBudget::UNBOUNDED, &cancellation)).await
-            .err()
-            .ok_or("pinned refresh unexpectedly succeeded")?;
+    let pinned_failure = (pinned_checkout.refresh_head(WorkBudget::UNBOUNDED, &cancellation))
+        .await
+        .err()
+        .ok_or("pinned refresh unexpectedly succeeded")?;
     assert!(matches!(pinned_failure.error, FsError::RefreshNotAllowed));
     assert_eq!(*pinned_failure.work, WorkCounters::default());
-    let pinned_rebase =
-        (pinned_checkout.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation)).await
-            .err()
-            .ok_or("pinned rebase unexpectedly succeeded")?;
+    let pinned_rebase = (pinned_checkout.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
+        .await
+        .err()
+        .ok_or("pinned rebase unexpectedly succeeded")?;
     assert!(matches!(pinned_rebase.error, FsError::RefreshNotAllowed));
     assert_eq!(*pinned_rebase.work, WorkCounters::default());
 
-    let dirty_failure = (dirty.refresh_head(WorkBudget::UNBOUNDED, &cancellation)).await
+    let dirty_failure = (dirty.refresh_head(WorkBudget::UNBOUNDED, &cancellation))
+        .await
         .err()
         .ok_or("dirty refresh unexpectedly succeeded")?;
     assert!(matches!(
@@ -371,33 +569,28 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
     assert_eq!(*dirty_failure.work, WorkCounters::default());
     assert!(dirty.has_pending_mutations());
     assert!(
-        (
-            dirty.lookup_no_follow(&path("private")?, WorkBudget::UNBOUNDED, &cancellation,)
-        ).await?
-        .value
-        .record
-        .is_some()
+        (dirty.lookup_no_follow(&path("private")?, WorkBudget::UNBOUNDED, &cancellation,))
+            .await?
+            .value
+            .record
+            .is_some()
     );
     let rebased = (dirty.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation)).await?;
     assert!(matches!(rebased.value, RebaseDecision::Safe { .. }));
     assert!(dirty.has_pending_mutations());
     assert!(
-        (dirty.lookup_no_follow(
-            &path("published")?,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await?
-        .value
-        .record
-        .is_some()
+        (dirty.lookup_no_follow(&path("published")?, WorkBudget::UNBOUNDED, &cancellation,))
+            .await?
+            .value
+            .record
+            .is_some()
     );
     assert!(
-        (
-            dirty.lookup_no_follow(&path("private")?, WorkBudget::UNBOUNDED, &cancellation,)
-        ).await?
-        .value
-        .record
-        .is_some()
+        (dirty.lookup_no_follow(&path("private")?, WorkBudget::UNBOUNDED, &cancellation,))
+            .await?
+            .value
+            .record
+            .is_some()
     );
 
     let advanced = (clean.refresh_head(WorkBudget::UNBOUNDED, &cancellation)).await?;
@@ -407,14 +600,11 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
         (clean_tracking.refresh_head(WorkBudget::UNBOUNDED, &cancellation)).await?;
     assert_eq!(tracking_advanced.value, writer.generation_id());
     assert!(
-        (clean.lookup_no_follow(
-            &path("published")?,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await?
-        .value
-        .record
-        .is_some()
+        (clean.lookup_no_follow(&path("published")?, WorkBudget::UNBOUNDED, &cancellation,))
+            .await?
+            .value
+            .record
+            .is_some()
     );
     let equal = (clean.refresh_head(WorkBudget::UNBOUNDED, &cancellation)).await?;
     assert_eq!(equal.value, advanced.value);
@@ -426,22 +616,18 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
     assert!(!dirty.has_pending_mutations());
     assert!(dirty.dependencies.proof().is_empty());
     assert!(
-        (
-            dirty.lookup_no_follow(&path("private")?, WorkBudget::UNBOUNDED, &cancellation,)
-        ).await?
-        .value
-        .record
-        .is_none()
+        (dirty.lookup_no_follow(&path("private")?, WorkBudget::UNBOUNDED, &cancellation,))
+            .await?
+            .value
+            .record
+            .is_none()
     );
     assert!(
-        (dirty.lookup_no_follow(
-            &path("published")?,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await?
-        .value
-        .record
-        .is_some()
+        (dirty.lookup_no_follow(&path("published")?, WorkBudget::UNBOUNDED, &cancellation,))
+            .await?
+            .value
+            .record
+            .is_some()
     );
     let after_discard = (dirty.refresh_head(WorkBudget::UNBOUNDED, &cancellation)).await?;
     assert_eq!(after_discard.value, writer.generation_id());
@@ -460,34 +646,86 @@ async fn private_candidate_rebases_more_changes_than_one_mutation_batch()
         limited,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let mut local = (volume.checkout(
         GenerationSelector::Head,
         writable_manual(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let mut remote = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     for index in 0..20 {
-        (local.create(crate::AuthoredMutation::CreateFile { path: path(&format!("local{index}"))?, bytes: (bytes::Bytes::from_static(b"local")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)).await?;
+        (local.create(
+            crate::AuthoredMutation::CreateFile {
+                path: path(&format!("local{index}"))?,
+                bytes: (bytes::Bytes::from_static(b"local")).into(),
+                metadata: crate::kernel::FileMetadata::default(),
+            },
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .await?;
     }
-    (remote.create(crate::AuthoredMutation::CreateFile { path: path("remote")?, bytes: (bytes::Bytes::from_static(b"remote")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)).await?;
-    (remote.commit(OperationId::from_bytes([242; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })).await?;
+    (remote.create(
+        crate::AuthoredMutation::CreateFile {
+            path: path("remote")?,
+            bytes: (bytes::Bytes::from_static(b"remote")).into(),
+            metadata: crate::kernel::FileMetadata::default(),
+        },
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await?;
+    (remote.commit(
+        OperationId::from_bytes([242; 16]),
+        None,
+        None,
+        None,
+        crate::PublicationPermit::Unrestricted,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+        |_| async {
+            crate::FsResult::Ok(crate::FsReceipt {
+                value: (),
+                work: crate::WorkCounters::UNCHARGED,
+            })
+        },
+    ))
+    .await?;
     assert!(matches!(
-        (local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation)).await?
+        (local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
+            .await?
             .value,
         RebaseDecision::Safe { .. }
     ));
     assert!(matches!(
-        (local.commit(OperationId::from_bytes([243; 16]), None, None, None, crate::PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancellation, |_| async { crate::FsResult::Ok(crate::FsReceipt { value: (), work: crate::WorkCounters::UNCHARGED }) })).await?
+        (local.commit(
+            OperationId::from_bytes([243; 16]),
+            None,
+            None,
+            None,
+            crate::PublicationPermit::Unrestricted,
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+            |_| async {
+                crate::FsResult::Ok(crate::FsReceipt {
+                    value: (),
+                    work: crate::WorkCounters::UNCHARGED,
+                })
+            }
+        ))
+        .await?
         .value,
         CheckoutCommitOutcome::Committed { .. }
     ));
@@ -497,14 +735,16 @@ async fn private_candidate_rebases_more_changes_than_one_mutation_batch()
                 &path(&format!("local{index}"))?,
                 WorkBudget::UNBOUNDED,
                 &cancellation,
-            )).await?
+            ))
+            .await?
             .value
             .record
             .is_some()
         );
     }
     assert!(
-        (local.lookup_no_follow(&path("remote")?, WorkBudget::UNBOUNDED, &cancellation,)).await?
+        (local.lookup_no_follow(&path("remote")?, WorkBudget::UNBOUNDED, &cancellation,))
+            .await?
             .value
             .record
             .is_some()

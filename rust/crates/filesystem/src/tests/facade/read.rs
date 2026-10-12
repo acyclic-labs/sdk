@@ -4,26 +4,89 @@ use super::*;
 async fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = (fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation)).await?
+    let volume = (fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
+        .await?
         .value;
     let mut writer = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
-    (writer.create(crate::AuthoredMutation::CreateFile { path: path("first")?, bytes: (bytes::Bytes::from_static(b"abcdefgh")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)).await?;
-    (writer.create(crate::AuthoredMutation::CreateFile { path: path("second")?, bytes: (bytes::Bytes::from_static(b"01234567")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)).await?;
-    (writer.create(crate::AuthoredMutation::CreateSymbolicLink { path: path("link")?, target: (bytes::Bytes::from_static(b"first")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    (writer.create(
+        crate::AuthoredMutation::CreateFile {
+            path: path("first")?,
+            bytes: (bytes::Bytes::from_static(b"abcdefgh")).into(),
+            metadata: crate::kernel::FileMetadata::default(),
+        },
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await?;
+    (writer.create(
+        crate::AuthoredMutation::CreateFile {
+            path: path("second")?,
+            bytes: (bytes::Bytes::from_static(b"01234567")).into(),
+            metadata: crate::kernel::FileMetadata::default(),
+        },
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await?;
+    (writer.create(
+        crate::AuthoredMutation::CreateSymbolicLink {
+            path: path("link")?,
+            target: (bytes::Bytes::from_static(b"first")).into(),
+            metadata: crate::kernel::FileMetadata::default(),
+        },
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await?;
     let first_directory = path("first-directory")?;
     let second_directory = path("second-directory")?;
-    (writer.create(crate::AuthoredMutation::CreateDirectory { path: first_directory.clone(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)).await?;
-    (writer.create(crate::AuthoredMutation::CreateDirectory { path: second_directory.clone(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    (writer.create(
+        crate::AuthoredMutation::CreateDirectory {
+            path: first_directory.clone(),
+            metadata: crate::kernel::FileMetadata::default(),
+        },
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await?;
+    (writer.create(
+        crate::AuthoredMutation::CreateDirectory {
+            path: second_directory.clone(),
+            metadata: crate::kernel::FileMetadata::default(),
+        },
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await?;
     for name in ["a", "b"] {
-        (writer.create(crate::AuthoredMutation::CreateFile { path: path_parts(&["first-directory", name])?, bytes: (bytes::Bytes::from_static(b"x")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)).await?;
+        (writer.create(
+            crate::AuthoredMutation::CreateFile {
+                path: path_parts(&["first-directory", name])?,
+                bytes: (bytes::Bytes::from_static(b"x")).into(),
+                metadata: crate::kernel::FileMetadata::default(),
+            },
+            WorkBudget::UNBOUNDED,
+            &cancellation,
+        ))
+        .await?;
     }
-    (writer.create(crate::AuthoredMutation::CreateFile { path: path_parts(&["second-directory", "c"])?, bytes: (bytes::Bytes::from_static(b"y")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    (writer.create(
+        crate::AuthoredMutation::CreateFile {
+            path: path_parts(&["second-directory", "c"])?,
+            bytes: (bytes::Bytes::from_static(b"y")).into(),
+            metadata: crate::kernel::FileMetadata::default(),
+        },
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await?;
     let reader = writer.pinned_reader()?;
     let request_paths = [path("second")?, path("first")?];
     let resolved_batch =
@@ -59,7 +122,8 @@ async fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn s
         &[path("first")?, path("second")?, path("first")?],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert_eq!(descriptions.value.len(), 3);
     assert_eq!(descriptions.value[0], descriptions.value[2]);
     assert!(descriptions.value.iter().all(Option::is_some));
@@ -73,24 +137,34 @@ async fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn s
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert_eq!(&resolved_read.value.bytes[..], b"bcde");
-    let other_volume = (fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation)).await?
+    let other_volume = (fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
+        .await?
         .value;
     let mut other_writer = (other_volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
-    (other_writer.create(crate::AuthoredMutation::CreateFile { path: path("foreign")?, bytes: (bytes::Bytes::from_static(b"WXYZ")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)).await?;
-    let other_reader = other_writer.pinned_reader()?;
-    let other_resolved = (other_reader.resolve_files(
-        &[path("foreign")?],
+    (other_writer.create(
+        crate::AuthoredMutation::CreateFile {
+            path: path("foreign")?,
+            bytes: (bytes::Bytes::from_static(b"WXYZ")).into(),
+            metadata: crate::kernel::FileMetadata::default(),
+        },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
+    let other_reader = other_writer.pinned_reader()?;
+    let other_resolved =
+        (other_reader.resolve_files(&[path("foreign")?], WorkBudget::UNBOUNDED, &cancellation))
+            .await?;
     let other_file = other_resolved.value[0]
         .as_ref()
         .ok_or("other resolved file absent")?;
@@ -110,12 +184,9 @@ async fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn s
             },
         },
     ];
-    let mixed = (reader.read_resolved_ranges(
-        &mixed_requests,
-        2,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    )).await?;
+    let mixed =
+        (reader.read_resolved_ranges(&mixed_requests, 2, WorkBudget::UNBOUNDED, &cancellation))
+            .await?;
     assert_eq!(&mixed.value[0].bytes[..], b"ab");
     assert_eq!(&mixed.value[1].bytes[..], b"XY");
     let bounded_mixed =
@@ -125,11 +196,7 @@ async fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn s
         (reader.read_symbolic_link(&path("link")?, WorkBudget::UNBOUNDED, &cancellation)).await?;
     assert_eq!(&target.value[..], b"first");
     assert!(matches!(
-        (reader.read_symbolic_link(
-            &path("first")?,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await,
+        (reader.read_symbolic_link(&path("first")?, WorkBudget::UNBOUNDED, &cancellation,)).await,
         Err(OperationFailure {
             error: FsError::NotSymbolicLink,
             ..
@@ -151,7 +218,8 @@ async fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn s
         2,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     let second_page = pages.value.first().ok_or("second directory page missing")?;
     let first_page = pages.value.get(1).ok_or("first directory page missing")?;
     assert_eq!(
@@ -180,7 +248,8 @@ async fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn s
         1,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert_eq!(resolved_page.value.entries.len(), 1);
     assert!(resolved_page.value.has_more);
     let resolved_entry = resolved_page
@@ -197,10 +266,12 @@ async fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn s
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert_eq!(&resolved_child.value.bytes[..], b"x");
     assert!(
-        (reader.list_directory_pages(&[], 0, WorkBudget::UNBOUNDED, &cancellation,)).await
+        (reader.list_directory_pages(&[], 0, WorkBudget::UNBOUNDED, &cancellation,))
+            .await
             .is_err()
     );
 
@@ -209,13 +280,15 @@ async fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn s
         requests[0].range,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     let second = (reader.read_file_range(
         &request_paths[1],
         requests[1].range,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     let independent = first.work.checked_add(second.work)?;
     assert!(batch.work.object_probes < independent.object_probes);
     assert!(batch.work.backend_read_operations < independent.backend_read_operations);
@@ -246,7 +319,8 @@ async fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn s
         2,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     else {
         return Err("the invalid concurrent range unexpectedly succeeded".into());
     };
@@ -265,7 +339,8 @@ async fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn s
         tracking(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     assert!(matches!(
         tracking.pinned_reader(),
@@ -275,27 +350,40 @@ async fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn s
 }
 
 #[tokio::test]
-async fn checkout_snapshot_reader_is_private_and_stable() -> Result<(), Box<dyn std::error::Error>> {
+async fn checkout_snapshot_reader_is_private_and_stable() -> Result<(), Box<dyn std::error::Error>>
+{
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = (fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation)).await?
+    let volume = (fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
+        .await?
         .value;
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_tracking(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let file_path = path("private")?;
-    let file_id = (checkout.create(crate::AuthoredMutation::CreateFile { path: file_path.clone(), bytes: (bytes::Bytes::from_static(b"first")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)).await?
+    let file_id = (checkout.create(
+        crate::AuthoredMutation::CreateFile {
+            path: file_path.clone(),
+            bytes: (bytes::Bytes::from_static(b"first")).into(),
+            metadata: crate::kernel::FileMetadata::default(),
+        },
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await?
     .value;
     let snapshot = checkout.snapshot_reader();
     let resolved = (snapshot.resolve_files(
         std::slice::from_ref(&file_path),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value
     .into_iter()
     .next()
@@ -303,7 +391,17 @@ async fn checkout_snapshot_reader_is_private_and_stable() -> Result<(), Box<dyn 
     .ok_or("private file missing from snapshot")?;
     assert_eq!(resolved.file_id(), file_id);
 
-    (checkout.change_content(file_path, crate::ContentChange::Write { offset: 0, bytes: (bytes::Bytes::from_static(b"later")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation)).await?;
+    (checkout.change_content(
+        file_path,
+        crate::ContentChange::Write {
+            offset: 0,
+            bytes: (bytes::Bytes::from_static(b"later")).into(),
+        },
+        crate::ContentTimes::Preserve,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await?;
     let bytes = (resolved.read_range(
         ByteRange {
             offset: 0,
@@ -311,7 +409,8 @@ async fn checkout_snapshot_reader_is_private_and_stable() -> Result<(), Box<dyn 
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value
     .bytes;
     assert_eq!(&bytes[..], b"first");
@@ -319,8 +418,8 @@ async fn checkout_snapshot_reader_is_private_and_stable() -> Result<(), Box<dyn 
 }
 
 #[tokio::test]
-async fn opaque_payload_reads_enforce_the_volume_output_bound() -> Result<(), Box<dyn std::error::Error>>
-{
+async fn opaque_payload_reads_enforce_the_volume_output_bound()
+-> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let mut limited = config();
@@ -331,22 +430,27 @@ async fn opaque_payload_reads_enforce_the_volume_output_bound() -> Result<(), Bo
         limited,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let mut source = std::io::Cursor::new(OwnedBytes::from_static(b"xx"));
-    let staged =
-        (checkout.stage_content(&mut source, 2, WorkBudget::UNBOUNDED, &cancellation)).await?
-            .value;
-    let metadata =
-        (checkout.lookup_no_follow(&root_path()?, WorkBudget::UNBOUNDED, &cancellation)).await?
-            .value.record.ok_or("root metadata missing")?.metadata;
+    let staged = (checkout.stage_content(&mut source, 2, WorkBudget::UNBOUNDED, &cancellation))
+        .await?
+        .value;
+    let metadata = (checkout.lookup_no_follow(&root_path()?, WorkBudget::UNBOUNDED, &cancellation))
+        .await?
+        .value
+        .record
+        .ok_or("root metadata missing")?
+        .metadata;
     let symbolic = path("symbolic")?;
     let reparse = path("reparse")?;
     (checkout.mutate(
@@ -380,12 +484,15 @@ async fn opaque_payload_reads_enforce_the_volume_output_bound() -> Result<(), Bo
         ],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     for failure in [
-        (checkout.read_symbolic_link(&symbolic, WorkBudget::UNBOUNDED, &cancellation)).await
+        (checkout.read_symbolic_link(&symbolic, WorkBudget::UNBOUNDED, &cancellation))
+            .await
             .err()
             .ok_or("oversized symlink read unexpectedly succeeded")?,
-        (checkout.read_reparse_point(&reparse, WorkBudget::UNBOUNDED, &cancellation)).await
+        (checkout.read_reparse_point(&reparse, WorkBudget::UNBOUNDED, &cancellation))
+            .await
             .err()
             .ok_or("oversized reparse read unexpectedly succeeded")?,
     ] {
@@ -408,21 +515,40 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let mut checkout = (volume.checkout(
         GenerationSelector::Head,
         writable_tracking(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?
+    ))
+    .await?
     .value;
     let file = path("regular")?;
     let directory = path("directory")?;
     let missing = path("missing")?;
-    let file_id = (checkout.create(crate::AuthoredMutation::CreateFile { path: file.clone(), bytes: (bytes::Bytes::from_static(b"data")).into(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)).await?
+    let file_id = (checkout.create(
+        crate::AuthoredMutation::CreateFile {
+            path: file.clone(),
+            bytes: (bytes::Bytes::from_static(b"data")).into(),
+            metadata: crate::kernel::FileMetadata::default(),
+        },
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await?
     .value;
-    let directory_id = (checkout.create(crate::AuthoredMutation::CreateDirectory { path: directory.clone(), metadata: crate::kernel::FileMetadata::default() }, WorkBudget::UNBOUNDED, &cancellation)).await?
+    let directory_id = (checkout.create(
+        crate::AuthoredMutation::CreateDirectory {
+            path: directory.clone(),
+            metadata: crate::kernel::FileMetadata::default(),
+        },
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await?
     .value;
     let empty_directory = (checkout.list_directory_records(
         &directory,
@@ -430,7 +556,8 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         8,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await?;
+    ))
+    .await?;
     assert!(empty_directory.value.entries.is_empty());
     assert!(!empty_directory.value.has_more);
     let unknown_id = FileId::from_bytes([250; 16]);
@@ -448,7 +575,8 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("oversized identity read unexpectedly succeeded")?;
     assert!(matches!(
@@ -465,7 +593,8 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         0,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("zero-span identity plan unexpectedly succeeded")?;
     assert!(matches!(
@@ -480,7 +609,8 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             ExtentSeekTarget::Data,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await?
+        ))
+        .await?
         .value,
         Some(0)
     );
@@ -491,7 +621,8 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             ExtentSeekTarget::Hole,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await?
+        ))
+        .await?
         .value,
         Some(4)
     );
@@ -508,7 +639,8 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
                 target,
                 WorkBudget::UNBOUNDED,
                 &cancellation,
-            )).await?
+            ))
+            .await?
             .value,
             expected
         );
@@ -519,7 +651,8 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
                 target,
                 WorkBudget::UNBOUNDED,
                 &cancellation,
-            )).await?
+            ))
+            .await?
             .value,
             expected
         );
@@ -530,7 +663,8 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         ExtentSeekTarget::Data,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).await
+    ))
+    .await
     .err()
     .ok_or("wrong-kind identity seek unexpectedly succeeded")?;
     assert!(matches!(
@@ -543,7 +677,8 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             &attribute,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await?
+        ))
+        .await?
         .value
         .is_none()
     );
@@ -554,21 +689,59 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             8,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await?
+        ))
+        .await?
         .value
         .entries
         .is_empty()
     );
-    let missing_remove = (checkout.change_named_attribute_by_id(file_id, &attribute, None, WorkBudget::UNBOUNDED, &cancellation)).await
+    let missing_remove = (checkout.change_named_attribute_by_id(
+        file_id,
+        &attribute,
+        None,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await
     .err()
     .ok_or("attribute-free identity removal unexpectedly succeeded")?;
     assert!(matches!(missing_remove.error, FsError::NotFound));
-    let missing_replace = (checkout.change_named_attribute_by_id(file_id, &attribute, Some((&bytes::Bytes::from_static(b"first"), NamedAttributeWriteMode::Replace)), WorkBudget::UNBOUNDED, &cancellation)).await
+    let missing_replace = (checkout.change_named_attribute_by_id(
+        file_id,
+        &attribute,
+        Some((
+            &bytes::Bytes::from_static(b"first"),
+            NamedAttributeWriteMode::Replace,
+        )),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await
     .err()
     .ok_or("missing identity attribute replacement unexpectedly succeeded")?;
     assert!(matches!(missing_replace.error, FsError::CreationRejected));
-    (checkout.change_named_attribute_by_id(file_id, &attribute, Some((&bytes::Bytes::from_static(b"first"), NamedAttributeWriteMode::Create)), WorkBudget::UNBOUNDED, &cancellation)).await?;
-    let duplicate_create = (checkout.change_named_attribute_by_id(file_id, &attribute, Some((&bytes::Bytes::from_static(b"second"), NamedAttributeWriteMode::Create)), WorkBudget::UNBOUNDED, &cancellation)).await
+    (checkout.change_named_attribute_by_id(
+        file_id,
+        &attribute,
+        Some((
+            &bytes::Bytes::from_static(b"first"),
+            NamedAttributeWriteMode::Create,
+        )),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await?;
+    let duplicate_create = (checkout.change_named_attribute_by_id(
+        file_id,
+        &attribute,
+        Some((
+            &bytes::Bytes::from_static(b"second"),
+            NamedAttributeWriteMode::Create,
+        )),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await
     .err()
     .ok_or("duplicate identity attribute creation unexpectedly succeeded")?;
     assert!(matches!(duplicate_create.error, FsError::CreationRejected));
@@ -578,13 +751,29 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             &attribute,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await?
-        .value.map(|chunk| chunk.bytes)
+        ))
+        .await?
+        .value
+        .map(|chunk| chunk.bytes)
         .as_deref(),
         Some(b"first".as_slice())
     );
-    (checkout.change_named_attribute_by_id(file_id, &attribute, None, WorkBudget::UNBOUNDED, &cancellation)).await?;
-    let repeated_remove = (checkout.change_named_attribute_by_id(file_id, &attribute, None, WorkBudget::UNBOUNDED, &cancellation)).await
+    (checkout.change_named_attribute_by_id(
+        file_id,
+        &attribute,
+        None,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await?;
+    let repeated_remove = (checkout.change_named_attribute_by_id(
+        file_id,
+        &attribute,
+        None,
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))
+    .await
     .err()
     .ok_or("repeated identity attribute removal unexpectedly succeeded")?;
     assert!(matches!(repeated_remove.error, FsError::NotFound));
@@ -595,74 +784,116 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             .map_err(|(cause, _)| cause)?;
         let mut candidate = checkout.private_candidate(&original, &cancellation)?;
         let source = OwnedBytes::from_static(b"actual original-accounted attribute source");
-        (candidate.change_named_attribute_by_id(file_id, &attribute, Some((&source, NamedAttributeWriteMode::Create)), &original, &cancellation)).await?;
-        let created = (candidate.read_metadata_by_id(
-            file_id, &original, &cancellation,
-        )).await?;
+        (candidate.change_named_attribute_by_id(
+            file_id,
+            &attribute,
+            Some((&source, NamedAttributeWriteMode::Create)),
+            &original,
+            &cancellation,
+        ))
+        .await?;
+        let created = (candidate.read_metadata_by_id(file_id, &original, &cancellation)).await?;
         let MetadataField::Value(root) = created.named_attributes else {
             return Err("native attribute metadata root absent".into());
         };
         let reader = candidate.pinned_reader_with_native_work(&original, &cancellation)?;
-        let (values, allocation) = (reader.read_named_attributes_with_native_work(
-            root, &original, &cancellation,
-        )).await?;
+        let (values, allocation) =
+            (reader.read_named_attributes_with_native_work(root, &original, &cancellation)).await?;
         assert_eq!(values.len(), 1);
         assert_eq!(&values[0].0, &attribute);
         assert_eq!(values[0].1, source);
         drop(values);
         drop(allocation);
-        let duplicate = (candidate.change_named_attribute_by_id(file_id, &attribute, Some((&source, NamedAttributeWriteMode::Create)), &original, &cancellation)).await
-            .err().ok_or("native duplicate attribute unexpectedly accepted")?;
+        let duplicate = (candidate.change_named_attribute_by_id(
+            file_id,
+            &attribute,
+            Some((&source, NamedAttributeWriteMode::Create)),
+            &original,
+            &cancellation,
+        ))
+        .await
+        .err()
+        .ok_or("native duplicate attribute unexpectedly accepted")?;
         assert!(matches!(duplicate, FsError::CreationRejected));
         let mut updated = created;
         updated.modified_ns = MetadataField::Value(913);
-        (candidate.set_attributes_by_id(
-            file_id, updated, Some(7), &original, &cancellation,
-        )).await?;
-        assert_eq!((candidate.read_metadata_by_id(
-            file_id, &original, &cancellation,
-        )).await?, updated);
-        let resized = (candidate.read_file_record_by_id(
-            file_id, &original, &cancellation,
-        )).await?;
+        (candidate.set_attributes_by_id(file_id, updated, Some(7), &original, &cancellation))
+            .await?;
+        assert_eq!(
+            (candidate.read_metadata_by_id(file_id, &original, &cancellation,)).await?,
+            updated
+        );
+        let resized = (candidate.read_file_record_by_id(file_id, &original, &cancellation)).await?;
         let resized_bytes = match resized.payload {
             FilePayload::InlineRegular(data) => data.as_bytes().len() as u64,
             FilePayload::Regular { logical_bytes, .. } => logical_bytes,
             _ => return Err("native resize changed the regular file kind".into()),
         };
         assert_eq!(resized_bytes, 7);
-        (candidate.change_named_attribute_by_id(file_id, &attribute, None, &original, &cancellation)).await?;
+        (candidate.change_named_attribute_by_id(
+            file_id,
+            &attribute,
+            None,
+            &original,
+            &cancellation,
+        ))
+        .await?;
         assert!(original.receipt().source_bytes_read >= source.len() as u64);
         assert!(original.receipt().bytes_encoded > 0);
         assert!(original.receipt().allocation_operations > 0);
 
         let denied = crate::NativeMaterializationWork::new(
-            WorkBudget { source_bytes_read: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
-        ).map_err(|(cause, _)| cause)?;
+            WorkBudget {
+                source_bytes_read: 0,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        )
+        .map_err(|(cause, _)| cause)?;
         let mut denied_candidate = checkout.private_candidate(&denied, &cancellation)?;
         let before = denied_candidate.root.file_table;
-        let failure = (denied_candidate.change_named_attribute_by_id(file_id, &attribute, Some((&source, NamedAttributeWriteMode::Upsert)), &denied, &cancellation)).await
-            .err().ok_or("native attribute source denial ignored")?;
+        let failure = (denied_candidate.change_named_attribute_by_id(
+            file_id,
+            &attribute,
+            Some((&source, NamedAttributeWriteMode::Upsert)),
+            &denied,
+            &cancellation,
+        ))
+        .await
+        .err()
+        .ok_or("native attribute source denial ignored")?;
         assert!(matches!(failure, FsError::Work(_)));
         assert_eq!(denied_candidate.root.file_table, before);
         assert_eq!(denied.receipt().source_bytes_read, 0);
 
         let denied_metadata = crate::NativeMaterializationWork::new(
-            WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
-        ).map_err(|(cause, _)| cause)?;
+            WorkBudget {
+                bytes_encoded: 0,
+                ..WorkBudget::UNBOUNDED
+            },
+            &cancellation,
+        )
+        .map_err(|(cause, _)| cause)?;
         let mut denied_candidate = checkout.private_candidate(&denied_metadata, &cancellation)?;
         let before = denied_candidate.root.file_table;
         let failure = (denied_candidate.set_attributes_by_id(
-            file_id, updated, Some(3), &denied_metadata, &cancellation,
-        )).await
-            .err().ok_or("native metadata encoding denial ignored")?;
+            file_id,
+            updated,
+            Some(3),
+            &denied_metadata,
+            &cancellation,
+        ))
+        .await
+        .err()
+        .ok_or("native metadata encoding denial ignored")?;
         assert!(matches!(failure, FsError::Work(_)));
         assert_eq!(denied_candidate.root.file_table, before);
         assert_eq!(denied_metadata.receipt().bytes_encoded, 0);
     }
 
     assert!(
-        (checkout.list_directory(&file, None, 8, WorkBudget::UNBOUNDED, &cancellation,)).await
+        (checkout.list_directory(&file, None, 8, WorkBudget::UNBOUNDED, &cancellation,))
+            .await
             .is_err()
     );
     assert!(
@@ -672,7 +903,8 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             8,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await
+        ))
+        .await
         .is_err()
     );
     assert!(
@@ -684,7 +916,8 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             },
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await
+        ))
+        .await
         .is_err()
     );
     assert!(
@@ -696,7 +929,8 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             },
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await
+        ))
+        .await
         .is_err()
     );
     assert!(
@@ -709,7 +943,8 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             8,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await
+        ))
+        .await
         .is_err()
     );
     assert!(
@@ -719,52 +954,52 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             ExtentSeekTarget::Data,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await
+        ))
+        .await
         .is_err()
     );
     assert!(
-        (checkout.read_symbolic_link(&file, WorkBudget::UNBOUNDED, &cancellation,)).await
+        (checkout.read_symbolic_link(&file, WorkBudget::UNBOUNDED, &cancellation,))
+            .await
             .is_err()
     );
     assert!(
-        (checkout.read_reparse_point(&file, WorkBudget::UNBOUNDED, &cancellation,)).await
+        (checkout.read_reparse_point(&file, WorkBudget::UNBOUNDED, &cancellation,))
+            .await
             .is_err()
     );
     assert!(
-        (checkout.read_metadata(&missing, WorkBudget::UNBOUNDED, &cancellation,)).await
+        (checkout.read_metadata(&missing, WorkBudget::UNBOUNDED, &cancellation,))
+            .await
             .is_err()
     );
     assert!(
-        (checkout.read_named_attribute(
-            &missing,
+        (checkout
+            .read_named_attribute(&missing, &attribute, WorkBudget::UNBOUNDED, &cancellation,))
+        .await
+        .is_err()
+    );
+    assert!(
+        (checkout.list_named_attributes(&missing, None, 8, WorkBudget::UNBOUNDED, &cancellation,))
+            .await
+            .is_err()
+    );
+    assert!(
+        (checkout.change_named_attribute(
+            missing.clone(),
             &attribute,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await
-        .is_err()
-    );
-    assert!(
-        (checkout.list_named_attributes(
-            &missing,
             None,
-            8,
             WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await
-        .is_err()
-    );
-    assert!(
-        (checkout.change_named_attribute(missing.clone(), &attribute, None, WorkBudget::UNBOUNDED, &cancellation)).await
+            &cancellation
+        ))
+        .await
         .is_err()
     );
 
     assert!(
-        (checkout.read_file_record_by_id(
-            unknown_id,
-            WorkBudget::UNBOUNDED,
-            &cancellation,
-        )).await
-        .is_err()
+        (checkout.read_file_record_by_id(unknown_id, WorkBudget::UNBOUNDED, &cancellation,))
+            .await
+            .is_err()
     );
     assert!(
         (checkout.read_file_range_by_id(
@@ -775,7 +1010,8 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             },
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await
+        ))
+        .await
         .is_err()
     );
     assert!(
@@ -787,7 +1023,8 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             },
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await
+        ))
+        .await
         .is_err()
     );
     assert!(
@@ -800,7 +1037,8 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             8,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await
+        ))
+        .await
         .is_err()
     );
     assert!(
@@ -810,11 +1048,13 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             ExtentSeekTarget::Data,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await
+        ))
+        .await
         .is_err()
     );
     assert!(
-        (checkout.read_metadata_by_id(unknown_id, WorkBudget::UNBOUNDED, &cancellation,)).await
+        (checkout.read_metadata_by_id(unknown_id, WorkBudget::UNBOUNDED, &cancellation,))
+            .await
             .is_err()
     );
     assert!(
@@ -823,7 +1063,8 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             &attribute,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await
+        ))
+        .await
         .is_err()
     );
     assert!(
@@ -833,15 +1074,33 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             8,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await
+        ))
+        .await
         .is_err()
     );
     assert!(
-        (checkout.change_content(directory_id, crate::ContentChange::Write { offset: 0, bytes: (bytes::Bytes::from_static(b"x")).into() }, crate::ContentTimes::Preserve, WorkBudget::UNBOUNDED, &cancellation)).await
+        (checkout.change_content(
+            directory_id,
+            crate::ContentChange::Write {
+                offset: 0,
+                bytes: (bytes::Bytes::from_static(b"x")).into()
+            },
+            crate::ContentTimes::Preserve,
+            WorkBudget::UNBOUNDED,
+            &cancellation
+        ))
+        .await
         .is_err()
     );
     assert!(
-        (checkout.change_named_attribute_by_id(unknown_id, &attribute, None, WorkBudget::UNBOUNDED, &cancellation)).await
+        (checkout.change_named_attribute_by_id(
+            unknown_id,
+            &attribute,
+            None,
+            WorkBudget::UNBOUNDED,
+            &cancellation
+        ))
+        .await
         .is_err()
     );
     assert!(checkout.has_pending_mutations());
@@ -854,7 +1113,8 @@ async fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             },
             WorkBudget::UNBOUNDED,
             &cancellation,
-        )).await?
+        ))
+        .await?
         .value
         .bytes
         .as_ref(),

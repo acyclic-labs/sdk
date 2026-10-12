@@ -1,7 +1,6 @@
 use super::*;
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
-
     /// Reads one exact immutable object for resumable manifest transfer.
     pub async fn export_object(
         &self,
@@ -16,7 +15,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .read(object_id, maximum_bytes, budget, cancellation)
             .await
             .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
-        Ok(FsReceipt {
+        Ok(OperationReceipt {
             value: receipt.value,
             work: receipt.work,
         })
@@ -36,7 +35,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             .put(object_id, bytes.into(), budget, cancellation)
             .await
             .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
-        Ok(FsReceipt {
+        Ok(OperationReceipt {
             value: (),
             work: receipt.work,
         })
@@ -116,7 +115,6 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
-
     /// Builds a deterministic complete manifest for the current immutable or
     pub async fn export_manifest(
         &self,
@@ -138,10 +136,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
         .await
         .map_err(|failure| failure.map_with_prior_work(work, map_transfer_error))?;
         work = add(work, manifest.work)?;
-        Ok(FsReceipt {
+        Ok(OperationReceipt {
             value: manifest.value,
             work,
         })
     }
 }
-
