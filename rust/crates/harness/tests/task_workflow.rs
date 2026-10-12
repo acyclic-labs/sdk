@@ -2017,7 +2017,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
             initial: MachineCheckpoint { machine: MachineIdentity { name: "test.custom-merge".into(), version: "7".into(), digest: [145; 32] },
                 revision: 0, state } };
         let journal = FilesystemWorkflowJournal::new(Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await
-            .map_err(|e| Error::Storage(e.to_string()))?), host.clone(), "custom-merge", private.clone(), issuer.verifier(&mut None).expect("verifier copy"), signed.clone(), 65_536)?;
+            .map_err(|e| Error::Storage(e.to_string()))?), host.clone(), "custom-merge", &private, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?;
         assert_eq!(journal.admit(admission.clone()).await?, admission);
         let mut registry = MergeDriverRegistry::new();
         registry.register("review", driver.clone()).map_err(|e| Error::Invalid(e.to_string()))?;
@@ -2038,7 +2038,7 @@ async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> R
     for retry in 0..2 {
         let host = Arc::new(FilesystemHost::new(Fs::local(options.clone()).await.map_err(|e| Error::Storage(e.to_string()))?, provider.clone())?);
         let journal = FilesystemWorkflowJournal::new(Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await
-            .map_err(|e| Error::Storage(e.to_string()))?), host.clone(), "custom-merge", private.clone(), issuer.verifier(&mut None).expect("verifier copy"), signed.clone(), 65_536)?;
+            .map_err(|e| Error::Storage(e.to_string()))?), host.clone(), "custom-merge", &private, &issuer.verifier(&mut None).expect("verifier copy"), &signed, 65_536, None)?;
         let retained = journal.admission().await?.ok_or_else(|| Error::NotFound("merge admission".into()))?;
         assert_eq!(retained, admission);
         let records = journal.replay(0, 1).await?;

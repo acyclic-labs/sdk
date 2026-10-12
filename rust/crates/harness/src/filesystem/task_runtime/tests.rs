@@ -545,7 +545,7 @@ async fn stock_model_deadline_preserves_original_attempt_and_never_dispatches_ex
         } else {
             assert!(execution.reconcile(input, 1_000).await?.is_some());
             assert_eq!(provider.reconciled.load(Ordering::SeqCst), 1);
-            assert!(reopened.execution_journal(task, fence, turn).await?.is_quiescent().await?);
+            assert!(reopened.execution_journal(task, fence, turn).await?.is_quiescent(None).await?);
         }
         assert_eq!(provider.generated.load(Ordering::SeqCst), usize::from(!expired_before_dispatch));
         assert!(reopened.task_host().observe_task(task).await?.outcome.is_none());

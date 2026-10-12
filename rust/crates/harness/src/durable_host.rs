@@ -7075,8 +7075,8 @@ pub(crate) mod tests {
         let operation = OperationId::from_bytes(task.into_bytes());
         let attempt = OperationId::from_bytes([54; 16]);
         let workflow = Arc::new(FilesystemWorkflowJournal::for_task(
-            owner.clone(), filesystem.clone(), volume.clone(),
-            issuer.verifier(&mut None).expect("verifier copy"), content_scope.clone(), 65_536,
+            owner.clone(), filesystem.clone(), &volume,
+            &issuer.verifier(&mut None).expect("verifier copy"), &content_scope, 65_536, None,
         )?);
         let journal = FilesystemExecutionJournal::for_task(
             owner.clone(), attempt, attempt, filesystem.clone(), &volume,
@@ -7230,8 +7230,8 @@ pub(crate) mod tests {
         ).await?;
         assert_ne!(replacement_owner.task_binding().1, &fence);
         let replacement_workflow = FilesystemWorkflowJournal::for_task(
-            replacement_owner.clone(), filesystem.clone(), volume.clone(),
-            issuer.verifier(&mut None).expect("verifier copy"), content_scope.clone(), 65_536,
+            replacement_owner.clone(), filesystem.clone(), &volume,
+            &issuer.verifier(&mut None).expect("verifier copy"), &content_scope, 65_536, None,
         )?;
         let denied_prefix = work.receipt();
         assert!(matches!(
@@ -7254,8 +7254,8 @@ pub(crate) mod tests {
             other_volume.capability(crate::conversation::VolumeOperation::Write)?,
         ]), Some(agent), None, &mut None).expect("scope proof");
         let other_volume_workflow = FilesystemWorkflowJournal::for_task(
-            replacement_owner, filesystem.clone(), other_volume,
-            issuer.verifier(&mut None).expect("verifier copy"), other_scope, 65_536,
+            replacement_owner, filesystem.clone(), &other_volume,
+            &issuer.verifier(&mut None).expect("verifier copy"), &other_scope, 65_536, None,
         )?;
         assert!(matches!(
             replacement_journal.release_if_quiescent_with_native_work(&work, &other_volume_workflow).await,
@@ -7267,8 +7267,8 @@ pub(crate) mod tests {
         });
         assert!(matches!(
             FilesystemWorkflowJournal::for_task(
-                owner, filesystem.clone(), volume.clone(), other_issuer.verifier(&mut None).expect("verifier copy"),
-                content_scope.clone(), 65_536,
+                owner, filesystem.clone(), &volume, &other_issuer.verifier(&mut None).expect("verifier copy"),
+                &content_scope, 65_536, None,
             ),
             Err(Error::Unauthorized(_))
         ));
@@ -7293,7 +7293,7 @@ pub(crate) mod tests {
             crate::scheduler::LeaseFence::from(&other_lease.reservation),
         ).await?;
         let other_workflow = FilesystemWorkflowJournal::for_task(
-            other_owner, filesystem, volume, issuer.verifier(&mut None).expect("verifier copy"), content_scope, 65_536,
+            other_owner, filesystem, &volume, &issuer.verifier(&mut None).expect("verifier copy"), &content_scope, 65_536, None,
         )?;
         assert!(matches!(
             replacement_journal.release_if_quiescent_with_native_work(&work, &other_workflow).await,
@@ -7469,10 +7469,10 @@ pub(crate) mod tests {
             let journal = Arc::new(crate::filesystem::FilesystemWorkflowJournal::for_task(
                 binding,
                 filesystem.clone(),
-                volume.clone(),
-                issuer.verifier(&mut None).expect("verifier copy"),
-                content_scope.clone(),
-                65_536,
+                &volume,
+                &issuer.verifier(&mut None).expect("verifier copy"),
+                &content_scope,
+                65_536, None,
             )?);
             let release_budget = acyclic_fs::performance::work_budget(100_000, 100_000_000);
             let release_cancellation = acyclic_fs::CancellationToken::new();
@@ -8057,10 +8057,10 @@ pub(crate) mod tests {
             let journal = crate::filesystem::FilesystemWorkflowJournal::for_task(
                 binding,
                 filesystem.clone(),
-                volume.clone(),
-                issuer.verifier(&mut None).expect("verifier copy"),
-                content_scope.clone(),
-                65_536,
+                &volume,
+                &issuer.verifier(&mut None).expect("verifier copy"),
+                &content_scope,
+                65_536, None,
             )?;
             assert!(matches!(
                 journal

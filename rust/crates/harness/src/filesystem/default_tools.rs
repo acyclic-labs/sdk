@@ -512,7 +512,7 @@ impl RecursiveToolMachine {
                     }
                     (Plan::Fork(fork), "observe") => {
                         let observed: ForkReport = decode(&value, io)?;
-                        recursive_observe(io, |work| observed.validate(work))?;
+                        crate::executor::with_history_io(io, |work| observed.validate(work))?;
                         if !recursive_encoded_equal(&observed.request, &fork.request.payload, io)? {
                             return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized, "fork report changed the original source request"));
                         }
@@ -523,8 +523,8 @@ impl RecursiveToolMachine {
                         let seed: ForkSeed = decode(&value, io)?;
                         let expected = match report.as_ref() {
                             Some(report) => {
-                                let copy = recursive_observe(io, |work| report.copy(work).map(|(report, _)| report))?;
-                                Some(recursive_observe(io, |work| copy.into_seed(work))?)
+                                let copy = crate::executor::with_history_io(io, |work| report.copy(work).map(|(report, _)| report))?;
+                                Some(crate::executor::with_history_io(io, |work| copy.into_seed(work))?)
                             }
                             None => None,
                         };
@@ -544,7 +544,7 @@ impl RecursiveToolMachine {
                         }
                         let prepared = report.take().ok_or_else(|| recursive_reject(
                             io, crate::wire::ErrorCode::Invalid, "fork has no prepared report"))?;
-                        let seed = recursive_observe(io, |work| (*prepared).into_seed(work))?;
+                        let seed = crate::executor::with_history_io(io, |work| (*prepared).into_seed(work))?;
                         #[derive(Serialize)]
                         struct Admitted<'a> {
                             status: &'static str, id: crate::AgentId, task: TaskId,
@@ -612,7 +612,7 @@ fn recursive_complete_state(value: &Value, io: Option<&super::PreparationIo>) ->
     encode(&Complete { phase: "complete", value }, io)
 }
 fn check_command(command: &WorkflowCommand, stage: &str, plan: &Plan, io: Option<&super::PreparationIo>) -> Result<()> {
-    recursive_observe(io, |work| command.validate(work))?;
+    crate::executor::with_history_io(io, |work| command.validate(work))?;
     let effect = match plan {
         Plan::Fork(plan) => recursive_decoded::<ForkRequest, _>(&plan.request.payload, io, |request| Ok(request.operation_id))?,
         Plan::Merge(plan) => plan.operation_id,
@@ -623,7 +623,7 @@ fn check_command(command: &WorkflowCommand, stage: &str, plan: &Plan, io: Option
     Ok(())
 }
 fn validate_source_intent(intent: &RecursiveForkSourceIntent, arguments: &Value, io: Option<&super::PreparationIo>) -> Result<()> {
-    recursive_observe(io, |work| intent.request.validate(work))?;
+    crate::executor::with_history_io(io, |work| intent.request.validate(work))?;
     for selection in &intent.request.selections {
         recursive_inspect(io, 1)?;
         if matches!(&selection.revision, crate::fork::ResourceRevision::PrivateVolume { volume, paths, .. }
@@ -641,7 +641,7 @@ fn validate_source_intent(intent: &RecursiveForkSourceIntent, arguments: &Value,
     Ok(())
 }
 fn check_source_command(command: &WorkflowCommand, intent: &RecursiveForkSourceIntent, io: Option<&super::PreparationIo>) -> Result<()> {
-    recursive_observe(io, |work| command.validate(work))?;
+    crate::executor::with_history_io(io, |work| command.validate(work))?;
     if command.kind != FORK_SOURCE_STAGE
         || command.operation_id != derived(intent.request.operation_id, "source-stage", io)?
     {
@@ -652,7 +652,7 @@ fn check_source_command(command: &WorkflowCommand, intent: &RecursiveForkSourceI
 fn validate_plan(plan: &Plan, arguments: &Value, io: Option<&super::PreparationIo>) -> Result<()> {
     match plan {
         Plan::Fork(plan) => {
-            recursive_observe(io, |work| {
+            crate::executor::with_history_io(io, |work| {
                 plan.request.validate(work)?;
                 plan.preparation.validate(work)?;
                 plan.source_checkpoint.validate(work)
@@ -661,7 +661,7 @@ fn validate_plan(plan: &Plan, arguments: &Value, io: Option<&super::PreparationI
                 return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized, "fork plan changed its original source checkpoint"));
             }
             recursive_decoded::<ForkRequest, _>(&plan.request.payload, io, |fork| {
-                recursive_observe(io, |work| fork.validate(work))?;
+                crate::executor::with_history_io(io, |work| fork.validate(work))?;
                 if !recursive_encoded_equal(&plan.arguments, arguments, io)? || fork.child_agent != plan.arguments.id
                     || plan.preparation.parent != Some(plan.caller) || plan.request.child.parent != Some(plan.caller)
                     || plan.preparation.operation_id == plan.request.child.operation_id
@@ -686,7 +686,7 @@ fn validate_plan(plan: &Plan, arguments: &Value, io: Option<&super::PreparationI
             if !recursive_encoded_equal(&plan.arguments, arguments, io)? || plan.source_project == plan.target_project {
                 return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized, "merge plan changed original arguments or source/destination"));
             }
-            recursive_observe(io, |work| {
+            crate::executor::with_history_io(io, |work| {
                 plan.source_project.validate(work)?;
                 plan.target_project.validate(work)?;
                 plan.source_generation.validate(work)?;
@@ -694,7 +694,7 @@ fn validate_plan(plan: &Plan, arguments: &Value, io: Option<&super::PreparationI
                 plan.notice.validate(work)
             })?;
             if let Some(source) = &plan.authorized_source {
-                recursive_observe(io, |work| source.validate(work))?;
+                crate::executor::with_history_io(io, |work| source.validate(work))?;
                 if source.operation_id != plan.operation_id || source.caller_task != plan.caller
                     || source.source_task != plan.arguments.source
                     || source.project != plan.source_project || source.generation != plan.source_generation
@@ -708,7 +708,7 @@ fn validate_plan(plan: &Plan, arguments: &Value, io: Option<&super::PreparationI
     Ok(())
 }
 fn validate_merge_receipt(plan: &RecursiveMergeToolPlan, receipt: &ProjectMergeReceipt, io: Option<&super::PreparationIo>) -> Result<()> {
-    recursive_observe(io, |work| receipt.validate_shape(work))?;
+    crate::executor::with_history_io(io, |work| receipt.validate_shape(work))?;
     if receipt.operation_id != plan.operation_id || receipt.child != plan.source || receipt.source_project != plan.source_project
         || receipt.source_generation != plan.source_generation || receipt.target_project != plan.target_project
         || receipt.expected_target_generation != plan.expected_target_generation || receipt.notice != plan.notice {
@@ -756,13 +756,6 @@ recursive_preparation_records!(
 );
 
 pub(super) use super::interaction_host::interaction_boundary as recursive_reject;
-pub(super) fn recursive_observe<T>(
-    io: Option<&super::PreparationIo>,
-    operation: impl FnOnce(&mut Option<&mut dyn crate::store::history::HistoryIo>) -> Result<T>,
-) -> Result<T> {
-    let mut history = io.map(super::PreparationIo::history_io);
-    operation(&mut history.as_mut().map(|history| history as &mut dyn crate::store::history::HistoryIo))
-}
 fn recursive_inspect(io: Option<&super::PreparationIo>, items: u64) -> Result<()> {
     if let Some(io) = io { io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items }, false)?; }
     Ok(())
@@ -1078,7 +1071,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let (arguments, intent) = match state {
             State::Ready { arguments } if self.durable.definition.name == "acyclic.fork" => {
                 let original: ForkToolArguments = decode(&arguments, io)?;
-                recursive_observe(io, |work| original.source_task(caller, recursive_effective_scope(context, io).limits(), work))?;
+                crate::executor::with_history_io(io, |work| original.source_task(caller, recursive_effective_scope(context, io).limits(), work))?;
                 let payload = stage(context, derived(invocation.operation_id, "source-arguments", io)?,
                     "source-arguments", &arguments, self.maximum_request_bytes, cancellation, io).await?;
                 let intent = 'selected: {
@@ -1164,7 +1157,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let native_work = io.and_then(super::PreparationIo::original_native_work);
         let plan = if self.durable.definition.name == "acyclic.fork" {
             let original: ForkToolArguments = decode(arguments, io)?;
-            recursive_observe(io, |work| original.source_task(
+            crate::executor::with_history_io(io, |work| original.source_task(
                 caller, recursive_effective_scope(context, io).limits(), work))?;
             let intent = intent.ok_or_else(|| recursive_reject(io, crate::wire::ErrorCode::Unauthorized,
                 "fork source choice is not durably pinned"))?;
@@ -1197,7 +1190,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 drop(hold);
                 file
             };
-            let checkpoint = recursive_observe(io, |work| binding.source_checkpoint.copy(work))?;
+            let checkpoint = crate::executor::with_history_io(io, |work| binding.source_checkpoint.copy(work))?;
             let request = fork_preparation_request(binding.source.preparer.as_ref(), &binding.source.request,
                 task_id_for_admission(operation), binding.child, WorkflowCommand {
                     operation_id: context.operation_id(),
@@ -1264,7 +1257,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 None => binding.destination.reducer().authority().clone(),
             };
             let authorized_source = binding.source_read.as_ref().map(|source|
-                recursive_observe(io, |work| source.authorization().clone_with_work_and_custody(work))
+                crate::executor::with_history_io(io, |work| source.authorization().clone_with_work_and_custody(work))
                     .map(|copied| copied.0)).transpose()?;
             drop(controller);
             Plan::Merge(recursive_box(RecursiveMergeToolPlan { arguments: original, caller,
@@ -1476,7 +1469,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             crate::wire::ErrorCode::Invalid, "original preparation command missing"))?;
         let command = WorkflowCommand { operation_id: command.operation_id,
             kind: crate::filesystem::fork_preparer_io::clone_text(&command.kind, io)?,
-            payload: recursive_observe(io, |work| command.payload.copy(work))? };
+            payload: crate::executor::with_history_io(io, |work| command.payload.copy(work))? };
         let restored = fork_preparation_request(
             binding.source.preparer.as_ref(), &binding.source.request,
             fork.preparation.task_id(), binding.child, command, binding.limits,
@@ -1488,8 +1481,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
         let report = report.ok_or_else(|| recursive_reject(io, crate::wire::ErrorCode::Invalid,
             "fork publication has no canonical report"))?;
-        let expected_seed = recursive_observe(io, |work| report.copy(work)?.0.into_seed(work))?;
-        let report_copy = recursive_observe(io, |work| report.copy(work).map(|(report, _)| report))?;
+        let expected_seed = crate::executor::with_history_io(io, |work| report.copy(work)?.0.into_seed(work))?;
+        let report_copy = crate::executor::with_history_io(io, |work| report.copy(work).map(|(report, _)| report))?;
         let remaining = 'publication: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(io) = io {
@@ -1549,7 +1542,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized,
                 "merge receipt belongs to another original effect"));
         }
-        let receipt_copy = recursive_observe(io, |work| receipt.clone_with_work_and_custody(work))?.0;
+        let receipt_copy = crate::executor::with_history_io(io, |work| receipt.clone_with_work_and_custody(work))?.0;
         let receipt_copy = recursive_box(receipt_copy, io)?;
         let key = crate::contract::preparation_format(
             format_args!("recursive-merge-publication:{}", context.operation_id()), io)?;
@@ -1638,7 +1631,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 };
                 if let Some(Outcome::Succeeded(value)) = &outcome {
                     recursive_decoded::<ForkReport, _>(value, io, |report| {
-                        recursive_observe(io, |work| report.validate(work))?;
+                        crate::executor::with_history_io(io, |work| report.validate(work))?;
                         if !recursive_encoded_equal(&report.request, &fork.request.payload, io)? {
                             return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized,
                                 "preparation output changed original retained request"));
@@ -1818,12 +1811,12 @@ async fn validate_fork_binding<P, A, O>(context: &ToolContext, arguments: &ForkT
     io: Option<&super::PreparationIo>) -> Result<()>
 where P: StreamProvider, A: AsyncAuthorityStore, O: AsyncObjectStore {
     let effective = recursive_effective_scope(context, io);
-    recursive_observe(io, |work| {
+    crate::executor::with_history_io(io, |work| {
         binding.source.request.validate(work)?;
         binding.child.validate(work)?;
         effective.limits().validate_file(&binding.source_checkpoint, work)
     })?;
-    if !recursive_observe(io, |work| crate::runtime::read_granted_with_work(effective.grants(), &binding.source_checkpoint, work))? {
+    if !crate::executor::with_history_io(io, |work| crate::runtime::read_granted_with_work(effective.grants(), &binding.source_checkpoint, work))? {
         return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized,
             "caller cannot read the original fork checkpoint"));
     }
@@ -1858,8 +1851,8 @@ where P: StreamProvider, A: AsyncAuthorityStore, O: AsyncObjectStore {
         }
     }
     for file in &binding.input_files {
-        recursive_observe(io, |work| effective.limits().validate_file(file, work))?;
-        if !recursive_observe(io, |work| crate::runtime::read_granted_with_work(effective.grants(), file, work))?
+        crate::executor::with_history_io(io, |work| effective.limits().validate_file(file, work))?;
+        if !crate::executor::with_history_io(io, |work| crate::runtime::read_granted_with_work(effective.grants(), file, work))?
             || !recursive_exact_file_granted(&binding.child.grants, file, io)?
             || !recursive_exact_file_granted(binding.child_scope.capabilities(), file, io)?
         {
@@ -1879,12 +1872,12 @@ where P: StreamProvider, A: AsyncAuthorityStore, O: AsyncObjectStore {
     }
     let file: FileRef = decode(selected, io)?;
     let command: WorkflowCommand = decode(&binding.child.input, io)?;
-    recursive_observe(io, |work| command.validate(work))?;
+    crate::executor::with_history_io(io, |work| command.validate(work))?;
     if command.payload != file || !binding.input_files.contains(&file) {
         return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized,
             "child msg reference is not its exact admitted immutable command input"));
     }
-    if !recursive_observe(io, |work| crate::runtime::read_granted_with_work(&binding.child.grants, &file, work))? {
+    if !crate::executor::with_history_io(io, |work| crate::runtime::read_granted_with_work(&binding.child.grants, &file, work))? {
         return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized,
             "child cannot read its exact initial message"));
     }
@@ -1939,7 +1932,7 @@ fn validate_merge_binding<P, A, O>(context: &ToolContext, source_task: TaskId,
     binding: &RecursiveMergeToolBinding<P, A, O>, io: Option<&super::PreparationIo>) -> Result<()>
 where P: StreamProvider {
     let effective = recursive_effective_scope(context, io);
-    recursive_observe(io, |work| binding.verifier.verify_scope_for_with_work(
+    crate::executor::with_history_io(io, |work| binding.verifier.verify_scope_for_with_work(
         binding.destination.reducer().authority(), &binding.scope, work))?;
     if !recursive_volume_granted(effective.grants(), &binding.project, VolumeOperation::Write, io)? {
         return Err(recursive_reject(io, crate::wire::ErrorCode::Unauthorized,
@@ -1992,7 +1985,7 @@ fn recursive_volume_granted(grants: &Capabilities, volume: &VolumeRef, operation
 fn recursive_verify_volume(verifier: &AuthorityVerifier, scope: &Scope, volume: &VolumeRef,
     operation: VolumeOperation, io: Option<&super::PreparationIo>) -> Result<()> {
     let maximum = io.map(|io| io.remaining().map(|remaining| remaining.bytes_encoded)).transpose()?.unwrap_or(u64::MAX);
-    recursive_observe(io, |work| ContentGrant::authorize_volume(verifier, scope, volume, operation, maximum, work))
+    crate::executor::with_history_io(io, |work| ContentGrant::authorize_volume(verifier, scope, volume, operation, maximum, work))
 }
 fn check_merge_binding<P: StreamProvider, A, O>(plan: &RecursiveMergeToolPlan,
     binding: &RecursiveMergeToolBinding<P, A, O>, io: Option<&super::PreparationIo>) -> Result<()> {
