@@ -320,55 +320,15 @@ impl HostRoot {
         &self,
         path: &[u16],
         work: &mut W,
-    ) -> Result<(Dir, NativeRootIdentity), W::Error> {
+    ) -> Result<Dir, W::Error> {
         let mut current = clone_directory(&self.directory, work)?;
-        let mut identity = self.identity;
-        if path.is_empty() {
-            return Ok((current, identity));
+        if !path.is_empty() {
+            for name in path.split(|unit| *unit == 92) {
+                work.started_io(ITEM)?;
+                current = open_windows_directory(&current, name, work)?.0;
+            }
         }
-        for component in path.split(|unit| *unit == u16::from(b'\\')) {
-            let item = ITEM;
-            work.started_io(item)?;
-            let (next, next_identity) = self.open_dir_component_wide(&current, component, work)?;
-            identity = next_identity;
-            current = next;
-        }
-        Ok((current, identity))
-    }
-    pub(crate) fn open_dir_component_wide<W: NativeHostWork>(
-        &self,
-        parent: &Dir,
-        name: &[u16],
-        work: &mut W,
-    ) -> Result<(Dir, NativeRootIdentity), W::Error> {
-        use windows::Wdk::Storage::FileSystem::{
-            FILE_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
-        };
-        use windows::Win32::Storage::FileSystem::{
-            FILE_ATTRIBUTE_REPARSE_POINT, FILE_GENERIC_READ,
-        };
-        if name.is_empty() || name == [46] || name == [46, 46] {
-            return Err(W::invalid_request());
-        }
-        let file = open_windows_wide_at(
-            parent,
-            name,
-            FILE_GENERIC_READ,
-            FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
-            work,
-            W::invalid_request,
-        )?
-        .ok_or_else(W::invalid_request)?
-        .into_std();
-        let stat = self.stat_file(&file, work)?;
-        if stat.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT.0 != 0 {
-            return Err(W::invalid_request());
-        }
-        let identity = NativeRootIdentity {
-            device: u64::from(stat.volume_serial_number()),
-            object: stat.file_index(),
-        };
-        Ok((Dir::from_std_file(file), identity))
+        Ok(current)
     }
     pub(crate) fn stat_wide<W: NativeHostWork>(
         &self,
@@ -389,9 +349,7 @@ impl HostRoot {
             }
         }
         let (parent, leaf) = wide_parent_leaf(path).map_err(|_| W::invalid_request())?;
-        let parent = self
-            .open_dir_held_wide(parent, work)
-            .map(|(directory, _)| directory)?;
+        let parent = self.open_dir_held_wide(parent, work)?;
         let file = open_windows_wide_at(
             &parent,
             leaf,
@@ -410,12 +368,10 @@ impl HostRoot {
         work: &mut W,
     ) -> Result<(HostStatReader, W::Allocation), W::Error> {
         let volume_serial_number = self.volume_serial_number()?;
-        let directory = self
-            .open_dir_held_wide(path, work)
-            .map(|(directory, _)| directory)?;
+        let directory = self.open_dir_held_wide(path, work)?;
         read_dir_held_with_volume(&directory, volume_serial_number, work)
     }
-    pub(super) fn open_file_wide<W: NativeHostWork>(
+    pub(crate) fn open_file_wide<W: NativeHostWork>(
         &self,
         path: &[u16],
         synchronization: windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS,
@@ -435,9 +391,7 @@ impl HostRoot {
             return Ok(file);
         }
         let (parent, leaf) = wide_parent_leaf(path).map_err(|_| W::invalid_request())?;
-        let parent = self
-            .open_dir_held_wide(parent, work)
-            .map(|(directory, _)| directory)?;
+        let parent = self.open_dir_held_wide(parent, work)?;
         open_windows_wide_at(
             &parent,
             leaf,
@@ -447,17 +401,6 @@ impl HostRoot {
             W::invalid_request,
         )?
         .ok_or_else(W::invalid_request)
-    }
-    pub(crate) fn open_file_positional_wide<W: NativeHostWork>(
-        &self,
-        path: &[u16],
-        work: &mut W,
-    ) -> Result<cap_std::fs::File, W::Error> {
-        self.open_file_wide(
-            path,
-            windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0),
-            work,
-        )
     }
     pub(crate) fn open_file_yielding_wide<W: SourceDemandReadWork>(
         &self,
@@ -505,9 +448,7 @@ impl HostRoot {
         work: &mut W,
     ) -> Result<(Vec<u16>, W::Allocation), W::Error> {
         let (parent, leaf) = wide_parent_leaf(path).map_err(|_| W::invalid_request())?;
-        let parent = self
-            .open_dir_held_wide(parent, work)
-            .map(|(directory, _)| directory)?;
+        let parent = self.open_dir_held_wide(parent, work)?;
         read_link_held_wide(&parent, leaf, maximum_bytes, work)
     }
     pub(crate) fn read_source_link<W: SourceDemandReadWork>(
@@ -517,9 +458,7 @@ impl HostRoot {
         work: &mut W,
     ) -> Result<acyclic_stream::OwnedBytes, DemandError> {
         let (parent, leaf) = wide_parent_leaf(path).map_err(|_| DemandError::InvalidRequest)?;
-        let parent = self
-            .open_dir_held_wide(parent, work)
-            .map(|(directory, _)| directory)?;
+        let parent = self.open_dir_held_wide(parent, work)?;
         read_source_link_held_wide(&parent, leaf, maximum_bytes, work)
     }
 }
@@ -556,4 +495,35 @@ pub(crate) fn reports_every_change<W: NativeHostWork<Error = DemandError>>(
         length += 1;
     }
     Ok(name.get(..length) == Some(&[78, 84, 70, 83][..]))
+}
+
+pub(crate) fn open_windows_directory<W: NativeHostWork>(
+    parent: &Dir,
+    name: &[u16],
+    work: &mut W,
+) -> Result<(Dir, NativeRootIdentity), W::Error> {
+    use windows::Wdk::Storage::FileSystem::{
+        FILE_DIRECTORY_FILE, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+    };
+    if name.is_empty() || name == [46] || name == [46, 46] {
+        return Err(W::invalid_request());
+    }
+    let file = open_windows_wide_at(
+        parent,
+        name,
+        windows::Win32::Storage::FileSystem::FILE_GENERIC_READ,
+        FILE_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+        work,
+        W::invalid_request,
+    )?
+    .ok_or_else(W::invalid_request)?;
+    let directory = Dir::from_std_file(file.into_std());
+    let identity = directory_identity(&directory, work).map_err(|error| {
+        if W::io_error_kind(&error) == Some(io::ErrorKind::InvalidInput) {
+            W::invalid_request()
+        } else {
+            error
+        }
+    })?;
+    Ok((directory, identity))
 }

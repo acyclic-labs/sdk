@@ -37,7 +37,7 @@ pub(super) fn next_native_walk_name(
     #[cfg(windows)]
     {
         reader
-            .next_wide(&mut &*work)
+            .next(&mut &*work)
             .map(|entry| entry.map(|(entry, allocation)| (entry.name, allocation)))
     }
 }

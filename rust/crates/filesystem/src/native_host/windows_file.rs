@@ -168,7 +168,7 @@ pub(crate) fn create_windows_directory<W: NativeHostWork>(
     Ok(file)
 }
 
-pub(super) fn windows_set_information<T>(
+pub(super) fn windows_set_information<T: ?Sized>(
     file: &File,
     information: &T,
     class: windows::Wdk::Storage::FileSystem::FILE_INFORMATION_CLASS,
@@ -181,7 +181,7 @@ pub(super) fn windows_set_information<T>(
             windows::Win32::Foundation::HANDLE(file.as_raw_handle()),
             &raw mut block,
             std::ptr::from_ref(information).cast(),
-            std::mem::size_of::<T>() as u32,
+            std::mem::size_of_val(information) as u32,
             class,
         )
     };
@@ -498,14 +498,7 @@ pub(crate) fn rename_windows_leaf<W: SourceDemandReadWork>(
 }
 
 impl HostRoot {
-    pub(crate) fn create_overlapped_file_wide<W: SourceDemandReadWork>(
-        &self,
-        path: &[u16],
-        work: &mut W,
-    ) -> Result<File, DemandError> {
-        self.create_windows_file_wide(path, true, false, work)
-    }
-    pub(super) fn create_windows_file_wide<W: SourceDemandReadWork>(
+    pub(crate) fn create_windows_file_wide<W: SourceDemandReadWork>(
         &self,
         path: &[u16],
         overlapped: bool,
@@ -513,9 +506,7 @@ impl HostRoot {
         work: &mut W,
     ) -> Result<File, DemandError> {
         let (parent, leaf) = wide_parent_leaf(path)?;
-        let parent = self
-            .open_dir_held_wide(parent, work)
-            .map(|(directory, _)| directory)?;
+        let parent = self.open_dir_held_wide(parent, work)?;
         create_windows_wide_at(&parent, leaf, false, overlapped, false, temporary, work)
     }
     pub(crate) fn create_dir_wide<W: SourceDemandReadWork>(
@@ -524,9 +515,7 @@ impl HostRoot {
         work: &mut W,
     ) -> Result<(), DemandError> {
         let (parent, leaf) = wide_parent_leaf(path)?;
-        let parent = self
-            .open_dir_held_wide(parent, work)
-            .map(|(directory, _)| directory)?;
+        let parent = self.open_dir_held_wide(parent, work)?;
         create_windows_wide_at(&parent, leaf, true, false, false, false, work)?;
         Ok(())
     }
@@ -567,9 +556,7 @@ impl HostRoot {
         };
         use windows::Win32::Storage::FileSystem::{DELETE, FILE_READ_ATTRIBUTES, SYNCHRONIZE};
         let (source_parent, source_leaf) = wide_parent_leaf(source)?;
-        let source_parent = self
-            .open_dir_held_wide(source_parent, work)
-            .map(|(directory, _)| directory)?;
+        let source_parent = self.open_dir_held_wide(source_parent, work)?;
         let source = open_windows_wide_at(
             &source_parent,
             source_leaf,
@@ -581,9 +568,7 @@ impl HostRoot {
         .ok_or(DemandError::InvalidRequest)?
         .into_std();
         let (parent, leaf) = wide_parent_leaf(destination)?;
-        let parent = self
-            .open_dir_held_wide(parent, work)
-            .map(|(directory, _)| directory)?;
+        let parent = self.open_dir_held_wide(parent, work)?;
         set_windows_name(
             &source,
             &parent,
@@ -651,24 +636,25 @@ pub(super) fn set_windows_name<W: NativeHostWork>(
 ) -> Result<(), W::Error> {
     use windows::Wdk::Storage::FileSystem::FILE_RENAME_INFORMATION;
     windows_wide_name(name, work, W::invalid_request)?.ok_or_else(W::invalid_request)?;
-    let copied = WorkCounters {
-        bytes_copied: (name.len() as u64)
+    let copied = copy_work(
+        (name.len() as u64)
             .checked_mul(2)
             .ok_or(crate::WorkError::Overflow)?,
-        ..WorkCounters::UNCHARGED
-    };
+    );
     work.admit(copied)?;
     let (storage, allocation, length) =
         windows_name_packet(parent, name.iter().copied(), name.len(), replace, work)?;
     let result = (|| {
         work.record(copied)?;
         work.attempt_io(WRITE, || {
-            windows_name_packet_once(
-                file,
-                &storage,
-                length.max(std::mem::size_of::<FILE_RENAME_INFORMATION>() as u32),
-                class,
-            )
+            // SAFETY: the initialized packet covers both its tail and the fixed header.
+            let bytes = unsafe {
+                std::slice::from_raw_parts(
+                    storage.as_ptr().cast::<u8>(),
+                    length.max(std::mem::size_of::<FILE_RENAME_INFORMATION>() as u32) as usize,
+                )
+            };
+            windows_set_information(file, bytes, class)
         })
     })();
     drop(storage);

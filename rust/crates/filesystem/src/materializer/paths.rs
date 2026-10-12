@@ -49,9 +49,9 @@ pub(super) fn validate_layout(
     #[cfg(unix)]
     let nested = {
         let (root, _root_allocation) =
-            crate::native_host::canonical_directory_path_held_with_work(root, &mut &*work)?;
+            crate::native_host::canonical_directory_path_held(root, &mut &*work)?;
         let (operation, operation_allocation) =
-            crate::native_host::canonical_directory_path_held_with_work(operation, &mut &*work)?;
+            crate::native_host::canonical_directory_path_held(operation, &mut &*work)?;
         let (prospective, _allocation) = work.path(&operation, Some(suffix))?;
         drop(operation);
         drop(operation_allocation);

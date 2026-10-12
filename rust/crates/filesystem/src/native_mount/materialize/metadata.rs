@@ -118,7 +118,7 @@ pub(super) async fn apply_host_attributes_offloaded(
             #[cfg(target_os = "linux")]
             let target = root.0.open_linux_metadata_target(path.0.path(), work)?;
             #[cfg(target_os = "macos")]
-            let target = root.0.open_macos_metadata_target(path.0.path(), work)?;
+            let target = crate::native_host::open_macos_metadata_target(&root.0.directory, path.0.path(), work)?;
             #[cfg(target_os = "linux")]
             let result = crate::native_host::set_extended_attributes(&target, &attributes.0, work);
             #[cfg(target_os = "macos")]
@@ -168,7 +168,7 @@ pub(super) async fn apply_host_metadata_offloaded(
         #[cfg(target_os = "linux")]
         let target = root.0.open_linux_metadata_target(path.0.path(), work)?;
         #[cfg(target_os = "macos")]
-        let target = root.0.open_macos_metadata_target(path.0.path(), work)?;
+        let target = crate::native_host::open_macos_metadata_target(&root.0.directory, path.0.path(), work)?;
         #[cfg(windows)]
         let target = root
             .0
@@ -232,7 +232,7 @@ pub(super) fn validate_options(
     #[cfg(unix)]
     let next = receipt.run(|work| entries.next(work));
     #[cfg(windows)]
-    let next = receipt.run(|work| entries.next_wide(work));
+    let next = receipt.run(|work| entries.next(work));
     drop(entries);
     receipt.run(|work| crate::native_host::NativeHostWork::release(work, reader_allocation))?;
     if let Some((entry, allocation)) = next? {
@@ -261,7 +261,7 @@ pub(super) fn create_file(
 ) -> Result<acyclic_native_runtime::NativeFile, MaterializeError> {
     #[cfg(windows)]
     let file =
-        receipt.run(|work| host_root.create_overlapped_file_wide(&path.units, work))?;
+        receipt.run(|work| host_root.create_windows_file_wide(&path.units, true, false, work))?;
     #[cfg(unix)]
     let file = receipt.run(|work| host_root.create_file(path.path(), work))?;
     let meter = Some(acyclic_native_runtime::NativeFileMeter::Owned(

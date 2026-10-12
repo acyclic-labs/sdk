@@ -306,30 +306,25 @@ pub(super) fn windows_time(ticks: u64) -> cap_std::time::SystemTime {
     })
 }
 
-/// One enumerated name with its facts. `stat` is `None` when enumeration
-/// cannot report the facts exactly as [`HostRoot::stat`] would, and the name
-/// must be stat'ed on its own.
+/// One enumerated native name and its optional facts.
 pub struct HostListedEntry {
+    #[cfg(unix)]
     pub name: OsString,
+    #[cfg(windows)]
+    pub name: Vec<u16>,
     pub stat: Option<HostStat>,
 }
 
 impl HostListedEntry {
     pub(crate) fn logical_owned_bytes(&self) -> u64 {
-        self.name.as_encoded_bytes().len() as u64
-    }
-}
-
-#[cfg(windows)]
-pub(crate) struct HostListedWideEntry {
-    pub(crate) name: Vec<u16>,
-    pub(crate) stat: Option<HostStat>,
-}
-
-#[cfg(windows)]
-impl HostListedWideEntry {
-    pub(crate) fn logical_owned_bytes(&self) -> u64 {
-        self.name.len() as u64 * 2
+        #[cfg(unix)]
+        {
+            self.name.as_encoded_bytes().len() as u64
+        }
+        #[cfg(windows)]
+        {
+            self.name.len() as u64 * 2
+        }
     }
 }
 

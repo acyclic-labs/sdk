@@ -634,7 +634,7 @@ async fn capability_opened_overlapped_file_runs_native_io_without_reopen() -> st
     let root = HostRoot::open(directory.path(), &mut ordinary_work()).map_err(ordinary_error)?;
     let path = Path::new("overlapped.bin");
     let file = with_wide_path(path, &mut ordinary_work(), |path, work| {
-        root.create_overlapped_file_wide(path, work)
+        root.create_windows_file_wide(path, true, false, work)
     })
     .map_err(ordinary_error)?;
     // SAFETY: HostRoot used FILE_FLAG_OVERLAPPED and this new handle is transferred directly, with no other I/O or completion-port owner.

@@ -15,10 +15,7 @@ impl HostRoot {
     ) -> Result<Dir, W::Error> {
         #[cfg(windows)]
         {
-            with_wide_path(path, work, |path, work| {
-                self.open_dir_held_wide(path, work)
-                    .map(|(directory, _)| directory)
-            })
+            with_wide_path(path, work, |path, work| self.open_dir_held_wide(path, work))
         }
         #[cfg(unix)]
         {
@@ -112,7 +109,11 @@ impl HostRoot {
         #[cfg(windows)]
         {
             with_wide_path(path, work, |path, work| {
-                self.open_file_positional_wide(path, work)
+                self.open_file_wide(
+                    path,
+                    windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS(0),
+                    work,
+                )
             })
         }
         #[cfg(unix)]
@@ -143,7 +144,7 @@ impl HostRoot {
     ) -> Result<(Vec<u8>, W::Allocation), W::Error> {
         let leaf = path.file_name().ok_or_else(W::invalid_request)?;
         let parent = self.open_dir_held(path.parent().ok_or_else(W::invalid_request)?, work)?;
-        read_unix_link(&parent, leaf, maximum_bytes, work, W::invalid_request)
+        read_unix_link(&parent, leaf, maximum_bytes, work)
     }
     #[cfg(unix)]
     pub(crate) fn read_source_link<W: SourceDemandReadWork>(
@@ -371,15 +372,6 @@ impl HostRoot {
         receiver
             .await
             .map_err(|_| io::Error::other("native copy owner stopped before completion"))?
-    }
-    #[cfg(target_os = "macos")]
-    #[cfg(any(feature = "native-mount", test))]
-    pub(crate) fn open_macos_metadata_target<W: SourceDemandReadWork>(
-        &self,
-        path: &Path,
-        work: &mut W,
-    ) -> Result<MacMetadataTarget, DemandError> {
-        open_macos_metadata_target(&self.directory, path, work)
     }
     #[cfg(target_os = "linux")]
     #[cfg(any(feature = "native-mount", test))]
