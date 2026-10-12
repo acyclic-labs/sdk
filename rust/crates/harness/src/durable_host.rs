@@ -46,6 +46,7 @@ pub use headless::TaskVolumeSnapshot;
 #[cfg(feature = "filesystem")]
 mod source_authorization;
 mod mail;
+pub(crate) use mail::received_copy_operation;
 
 /// Exact canonical send acknowledgement, authenticated by the atomic mail receipt.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -5824,8 +5825,11 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let (scope, retained) = self.authenticated_scope_with_work(admission, quota.work()).await?;
         quota.adopt(retained)?;
+        #[cfg(feature = "filesystem")]
         let access = scope.created_access();
-        let mut reader = None;
+        #[cfg(feature = "filesystem")]
+        let mut reader: Option<&dyn ContentResidencyVerifier> = None;
+        #[cfg(feature = "filesystem")]
         if let Some(access) = access.as_ref() {
             for binding in &access.references {
                 if let Some(io) = quota.work().as_deref_mut() { io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?; }
@@ -5838,6 +5842,9 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 }
             }
         }
+        #[cfg(not(feature = "filesystem"))]
+        let reader = scope.created_reference(payload).map(|reader| reader.as_ref())
+            .or_else(|| scope.created_content(Some(payload.volume())).map(|binding| binding.reader.as_ref()));
         let reader = reader.unwrap_or(self.reader.as_ref());
         let bytes = match quota.work().as_deref_mut() {
             Some(io) => crate::store::history::read_content_with_work(io, reader, payload).await?.0,
