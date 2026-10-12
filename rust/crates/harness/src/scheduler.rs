@@ -477,11 +477,6 @@ impl PartialEq for Scheduler {
     }
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-type SchedulerAllocation = acyclic_fs::NativeAllocation;
-#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-type SchedulerAllocation = ();
-
 #[derive(Clone, Copy)]
 // Guard slots follow these variants; the final slot holds guard-map storage.
 enum CachedSchedulerField { Declaration, Reservation, Checkpoint, Workflow, Outcome }
@@ -912,7 +907,7 @@ impl Scheduler {
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         // Declare custody before temporary payloads; retire the event explicitly on failure.
-        let mut custody: Option<SchedulerAllocation> = None;
+        let mut custody: crate::NativeCustody = None;
         let mut child_slot = None;
         let mut cancellation = Vec::new();
         let mut observer_owned = if work.is_some() { event.logical_owned_bytes()? } else { 0 };
@@ -1189,7 +1184,7 @@ impl Scheduler {
 
     fn install_native_field(
         &mut self, id: OperationId, field: CachedSchedulerField,
-        incoming: &mut Option<SchedulerAllocation>,
+        incoming: &mut crate::NativeCustody,
     ) {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         {
@@ -1879,19 +1874,14 @@ fn observe(work: &mut Option<&mut dyn crate::store::history::HistoryIo>) -> Resu
     Ok(())
 }
 
-fn native_observer(work: &Option<&mut dyn crate::store::history::HistoryIo>) -> bool {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = work.as_ref() { return io.original_native_work().is_some(); }
-    let _ = work;
-    false
-}
-
 pub(crate) fn diagnostic(
     work: &Option<&mut dyn crate::store::history::HistoryIo>,
     code: crate::wire::ErrorCode, reason: &'static str,
 ) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if native_observer(work) { return Error::NativeBoundary { code, reason }; }
+    if work.as_ref().is_some_and(|io| io.original_native_work().is_some()) {
+        return Error::NativeBoundary { code, reason };
+    }
     let _ = work;
     match code {
         crate::wire::ErrorCode::Unauthorized => Error::Unauthorized(reason.into()),
