@@ -5,6 +5,7 @@ fn identity_processes() -> Result<(), Box<dyn std::error::Error>> {
     let status = std::process::Command::new("node")
         .arg("--test")
         .arg("tests/identity.test.mjs")
+        .arg("tests/identity-mcp.test.mjs")
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .env("ACYCLIC_TEST_BINARY", env!("CARGO_BIN_EXE_acyclic"))
         .status()?;

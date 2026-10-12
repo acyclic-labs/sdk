@@ -38,8 +38,9 @@ the Codex plugin delivers its per-prompt, per-tool, and subagent hooks to
 `acyclic __mcp`, a hook-only MCP server that Codex keeps connected for each
 thread and that lists no tools to the model; only `SessionStart`, which starts
 the service, and `SessionEnd` remain command hooks. Acyclic adds no
-model-visible MCP server or second command implementation to shell-capable
-hosts. Codex plugins do not inject
+workspace MCP server or second command implementation to shell-capable
+hosts. The separate [identity MCP server](identity-mcp.md) exposes customer
+login and identity operations with `acyclic identity-mcp`. Codex plugins do not inject
 arbitrary executables into `PATH`, so install the npm package globally when
 humans or agent shell commands need the `acyclic` executable.
 
@@ -71,6 +72,7 @@ acyclic login [--json]
 acyclic whoami [--json]
 acyclic orgs [--json]
 acyclic refresh [--json]
+acyclic identity-mcp
 ```
 
 Set `ACYCLIC_API_URL` to the public Edge origin, or pass `--endpoint ORIGIN`

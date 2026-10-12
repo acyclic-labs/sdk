@@ -1,0 +1,36 @@
+# Acyclic SDK
+
+> Acyclic provides SDKs and a customer CLI for recursive agent workspaces and public cloud services.
+
+## Customer CLI
+
+- [CLI installation and commands](plugin/README.md): Install the native `acyclic` executable with `npm install -g @acyclic-labs/plugin` or `cargo install --locked acyclic-plugin`.
+- [Identity API contract](plugin/identity-api.md): Public Edge identity requests and session refresh behavior.
+
+Configure `ACYCLIC_API_URL` with the public Edge origin. Identity commands accept
+`--endpoint ORIGIN`, `--credentials PATH`, and `--json`. The default credential
+file is `~/.acyclic/identity.json`; `ACYCLIC_IDENTITY_FILE` overrides it.
+
+`acyclic login --json` starts device approval. Relay the URL and code from stderr
+to the user. Stdout contains one final JSON success or error. The user must
+approve in their browser; the CLI then saves the session.
+
+`acyclic whoami --json` returns the signed-in identity. `acyclic orgs --json`
+lists organizations. These commands refresh expiring access tokens automatically.
+`acyclic refresh --json` explicitly rotates the stored refresh token.
+Commands exit nonzero on errors. Never read or expose the credential file to a
+model. If refresh fails, sign in again instead of replaying the old refresh token.
+
+## Identity MCP server
+
+Run `acyclic identity-mcp --endpoint ORIGIN` as a stdio MCP server. It uses the
+same credential file as the CLI. `identity_login` returns approval instructions;
+relay them to the user, then call `identity_login_complete` to save the approved
+session. `identity_whoami`, `identity_orgs`, and `identity_refresh` expose the
+corresponding CLI operations. Token secrets stay inside the server.
+
+## SDK documentation
+
+- [SDK overview](README.md): Service contracts and supported language families.
+- [TypeScript SDK](typescript/packages/sdk/README.md): Public package composition.
+- [MCP composition](docs/mcp-composition.md): Harness MCP integration.
