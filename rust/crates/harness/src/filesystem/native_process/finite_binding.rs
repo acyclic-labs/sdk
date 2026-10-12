@@ -242,9 +242,9 @@ async fn bind_body<P: StreamProvider + 'static>(
                     crate::conversation::VolumeOperation::Write, work)?; }
             }
             None => {
-                owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Read)?;
+                owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Read, &mut None)?;
                 if mapping.writable { owner.require_volume_grant(&mapping.volume,
-                    crate::conversation::VolumeOperation::Write)?; }
+                    crate::conversation::VolumeOperation::Write, &mut None)?; }
             }
         }
     }
@@ -280,7 +280,7 @@ async fn bind_body<P: StreamProvider + 'static>(
     for operation in [crate::conversation::VolumeOperation::Write, crate::conversation::VolumeOperation::Read] {
         match work {
             Some(work) => owner.require_volume_grant_with_native_work(authority.results.volume(), operation, work)?,
-            None => owner.require_volume_grant(authority.results.volume(), operation)?,
+            None => owner.require_volume_grant(authority.results.volume(), operation, &mut None)?,
         }
     }
     let approval_digest = request.approval_digest_with_io(owner.task_binding().0, command, io)?;

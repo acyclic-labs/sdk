@@ -767,7 +767,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 reason: "native source owner differs from original context" });
         }
         let caller = self.caller(task, Some(&super::PreparationIo::from_native_work(work)?))?;
-        if owner.authenticated_binding_agent_with_native_work(work)? != caller.owner.scope.agent() {
+        if owner.authenticated_binding_agent(&mut Some(&mut crate::store::history::native_work_io(work)?))? != caller.owner.scope.agent() {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                 reason: "native source actor differs from admitted current creator" });
         }

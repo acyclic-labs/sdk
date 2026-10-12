@@ -827,9 +827,9 @@ fn require_view_grants<P: StreamProvider>(
 ) -> Result<()> {
     manifest.validate()?;
     for mapping in &manifest.volumes {
-        owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Read)?;
+        owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Read, &mut None)?;
         if mapping.writable {
-            owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Write)?;
+            owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Write, &mut None)?;
         }
     }
     Ok(())

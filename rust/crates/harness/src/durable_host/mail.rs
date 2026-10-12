@@ -271,7 +271,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
     #[cfg(feature = "filesystem")]
     pub(crate) async fn send_owned_with_io(self: &Arc<Self>, sender: TaskId,
         fence: &crate::scheduler::LeaseFence, recipient: TaskId, message: OperationId,
-        payload: FileRef, io: Option<&PreparationIo>) -> Result<MailSendAck> {
+        payload: FileRef, io: Option<&PreparationIo>) -> Result<FileRef> {
         require_original(io)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let owner = match io {
@@ -286,7 +286,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
 
     #[cfg(feature = "filesystem")]
     pub(crate) async fn send_from_owner(&self, owner: &TaskJournalOwner<P>,
-        recipient: TaskId, message: OperationId, payload: FileRef, io: Option<&PreparationIo>) -> Result<MailSendAck> {
+        recipient: TaskId, message: OperationId, payload: FileRef, io: Option<&PreparationIo>) -> Result<FileRef> {
         require_original(io)?;
         if !std::ptr::eq(self, owner.host.as_ref()) {
             return Err(boundary(io, crate::wire::ErrorCode::Unauthorized, "mail sender belongs to another original host"));
@@ -300,7 +300,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         self.verify_mail_owner(owner.task_id, Some(&owner.fence), Some(owner), false, &mut work).await?;
         let (bytes, payload) = self.prepare_mail(owner.task_id, recipient, message, payload, io).await?;
         self.publish_mail(owner.task_id, recipient, message, bytes, Some(&owner.fence), Some(owner), io).await?;
-        Ok(MailSendAck { sender: owner.task_id, recipient, operation_id: message, payload })
+        Ok(payload)
     }
 
     #[cfg(feature = "filesystem")]

@@ -7244,7 +7244,7 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
     fn matches_task_binding(&self, task: TaskId, fence: &crate::scheduler::LeaseFence) -> bool;
     fn send<'a>(
         &'a self, recipient: TaskId, operation: OperationId, payload: FileRef,
-    ) -> BoxFuture<'a, Result<crate::durable_host::MailSendAck>>;
+    ) -> BoxFuture<'a, Result<crate::conversation::FileRef>>;
     fn inbox<'a>(&'a self, after: u64, maximum: usize) -> BoxFuture<'a, Result<Vec<InboxItem>>>;
     fn read_received<'a>(
         &'a self, receive_operation: OperationId, item: &'a InboxItem,
@@ -7257,7 +7257,7 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
         _operation: OperationId,
         _payload: &'a FileRef,
         _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (crate::durable_host::MailSendAck, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, (crate::conversation::FileRef, acyclic_fs::NativeAllocation)>> {
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
             reason: "owned mailbox has no original native-ledger sender",
@@ -8978,7 +8978,7 @@ impl TaskContext {
         recipient: TaskId,
         message_id: OperationId,
         payload: FileRef,
-    ) -> Result<crate::durable_host::MailSendAck> {
+    ) -> Result<crate::conversation::FileRef> {
         payload.validate()?;
         let mailbox = self.owned_mailbox.as_ref()
             .ok_or_else(|| Error::Unauthorized("mail requires a retained task mailbox owner".into()))?;
@@ -9027,7 +9027,7 @@ impl TaskContext {
         message_id: OperationId,
         payload: &'a FileRef,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (crate::durable_host::MailSendAck, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, (crate::conversation::FileRef, acyclic_fs::NativeAllocation)>> {
         self.native_mailbox(work)?.send_with_native_work(recipient, message_id, payload, work)
     }
 

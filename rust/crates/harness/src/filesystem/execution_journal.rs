@@ -2014,20 +2014,14 @@ impl<P, A, O> FilesystemExecutionJournal<P, A, O> {
             if let Some(binding) = binding {
                 let (owner, _) = self.owner.as_ref().ok_or_else(|| Self::journal_read_boundary(
                     io, crate::wire::ErrorCode::Unsupported, "native options require an original task owner"))?;
-                match io {
-                    Some(io) => { owner.validate_native_configuration_with_io(binding, io)?; }
-                    None => { owner.validate_native_configuration(binding)?; }
-                }
+                owner.validate_native_configuration(binding, io)?;
             }
         }
         for (_, binding) in &references {
             if let Some(binding) = binding {
                 let (owner, _) = self.owner.as_ref().ok_or_else(|| Self::journal_read_boundary(
                     io, crate::wire::ErrorCode::Unsupported, "native options require an original task owner"))?;
-                match io {
-                    Some(io) => owner.verify_native_configuration_with_io(binding, io).await?,
-                    None => owner.verify_native_configuration(binding).await?,
-                }
+                owner.verify_native_configuration(binding, io).await?;
             }
         }
         for (file, _) in &references {

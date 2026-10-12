@@ -321,7 +321,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     let owner = fixture.host.journal_owner(
         fixture.root, (&fixture.root_lease.reservation).into(),
     ).await?;
-    let agent = owner.authenticated_binding_agent()?
+    let agent = owner.authenticated_binding_agent(&mut None)?
         .ok_or_else(|| Error::Invalid("original ROOT fixture has no authenticated agent".into()))?;
     let audience = Authority {
         kind: AggregateKind::Conversation,

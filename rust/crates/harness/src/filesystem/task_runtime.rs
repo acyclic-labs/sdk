@@ -279,7 +279,7 @@ struct TaskJournalMailbox<P: StreamProvider> {
 
 impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJournalMailbox<P> {
     fn validate_scope(&self, scope: &RuntimeScope) -> Result<()> {
-        self.owner.as_ref().require_mail_scope(scope)
+        self.owner.as_ref().require_mail_scope(scope, &mut None)
     }
     fn task_binding(&self) -> (TaskId, &LeaseFence) {
         self.owner.as_ref().task_binding()
@@ -301,7 +301,7 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
         &'a self, recipient: TaskId, operation: OperationId,
         payload: &'a crate::conversation::FileRef,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (crate::durable_host::MailSendAck, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, (crate::conversation::FileRef, acyclic_fs::NativeAllocation)>> {
         native_mailbox::send(self, recipient, operation, payload, work)
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -319,7 +319,7 @@ impl<P: StreamProvider + 'static> crate::runtime::OwnedTaskMailbox for TaskJourn
     }
     fn send<'a>(
         &'a self, recipient: TaskId, operation: OperationId, payload: crate::conversation::FileRef,
-    ) -> BoxFuture<'a, Result<crate::durable_host::MailSendAck>> {
+    ) -> BoxFuture<'a, Result<crate::conversation::FileRef>> {
         Box::pin(async move {
             let (task, fence) = self.owner.as_ref().task_binding();
             self.host.send_owned(task, fence.clone(), recipient, operation, payload).await
@@ -1899,9 +1899,7 @@ where
                 self.execution_journal_with_native_work(task, fence, command, work).await?.0
                     .suspend_workflow_command_if_quiescent_with_native_work(revision, command, work).await
             } else {
-                self.host.suspend_workflow_command_with_native_work(
-                    task, observed::clone_fence(fence, Some(io))?, revision, Some(command), work,
-                ).await
+                self.host.suspend_workflow(task, fence, revision, Some(command), None, None, &mut Some(&mut crate::store::history::native_work_io(work)?)).await
             };
         }
         if guard_execution {
@@ -1911,7 +1909,7 @@ where
                 .await
         } else {
             self.host
-                .suspend_workflow_command(task, fence.clone(), revision, Some(command))
+                .suspend_workflow(task, &fence, revision, Some(command), None, None, &mut None)
                 .await
         }
     }

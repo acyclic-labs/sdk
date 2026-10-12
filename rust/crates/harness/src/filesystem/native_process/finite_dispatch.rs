@@ -485,8 +485,11 @@ async fn append_receipt_original<P: StreamProvider>(
     };
     let bytes = Bytes::from(bytes);
     let result = match work {
-        Some(work) => owner.append_with_native_work(target, tail, &key, bytes.clone(), write, work).await,
-        None => owner.append(target, tail, &key, bytes.clone(), write).await,
+        Some(work) => {
+            let mut io = crate::store::history::native_work_io(work).map_err(NativeReceiptError::Owner)?;
+            owner.append(target, tail, &key, bytes.clone(), write, &mut Some(&mut io)).await
+        },
+        None => owner.append(target, tail, &key, bytes.clone(), write, &mut None).await,
     };
     drop(bytes);
     drop(key);

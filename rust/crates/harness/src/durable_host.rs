@@ -50,25 +50,6 @@ mod source_authorization;
 mod mail;
 pub(crate) use mail::received_copy_operation;
 
-/// Exact canonical send acknowledgement, authenticated by the atomic mail receipt.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-#[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-pub struct MailSendAck {
-    /// Retained sender admission.
-    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
-    pub sender: TaskId,
-    /// Exact retained recipient.
-    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
-    pub recipient: TaskId,
-    /// Exact idempotent send identity.
-    #[cfg_attr(feature = "wasm", tsify(type = "string"))]
-    pub operation_id: OperationId,
-    /// Exact donor-authorized payload accepted under the retained route and byte limits.
-    #[cfg_attr(feature = "wasm", tsify(type = "WasmFileRefWire"))]
-    pub payload: FileRef,
-}
-
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct MailEvent {
@@ -561,11 +542,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         self.task_id
     }
 
-    pub(crate) fn require_mail_scope(&self, scope: &RuntimeScope) -> Result<()> {
-        self.require_mail_scope_with_work(scope, &mut None)
-    }
-
-    fn require_mail_scope_with_work(
+    pub(crate) fn require_mail_scope(
         &self,
         scope: &RuntimeScope,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -602,7 +579,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 reason: "mailbox scope differs from its original native admission" });
         }
         let mut observer = crate::store::history::native_work_io(work)?;
-        self.require_mail_scope_with_work(scope, &mut Some(&mut observer))
+        self.require_mail_scope(scope, &mut Some(&mut observer))
     }
     fn task_context_binding_matches(
         &self, context: &crate::runtime::TaskContext,
@@ -778,100 +755,56 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok(true)
     }
 
+
+
     pub(crate) fn validate_native_configuration(
-        &self,
-        binding: &crate::model::NativeConfigurationBinding,
-    ) -> Result<(&crate::core::SchemaRegistry, [u8; 32])> {
-        let (schemas, expected) = binding.verify_original(
-            self.extensions.as_ref(),
-            self.extension_schemas.as_ref(),
-            self.extension_runtime.as_deref(),
-        )?;
-        let file = &binding.configuration.content;
-        self.validate_input_file(file)?;
-        if file.descriptor().byte_length() > self.input_limits.render_bytes {
-            return Err(Error::Invalid(
-                "native options exceed render byte limit".into(),
-            ));
-        }
-        Ok((schemas, expected))
-    }
-
-    /// Verifies options against the original authenticated admission and linked code.
-    pub(crate) async fn verify_native_configuration(
-        &self,
-        binding: &crate::model::NativeConfigurationBinding,
-    ) -> Result<()> {
-        let (schemas, expected) = self.validate_native_configuration(binding)?;
-        let bytes = self
-            .host
-            .reader
-            .read(&binding.configuration.content)
-            .await?;
-        schemas.verify_configuration_binding(
-            &binding.configuration,
-            expected,
-            &bytes,
-            self.input_limits,
-        )
-    }
-
-    pub(crate) const fn input_grants(&self) -> &crate::Capabilities {
-        &self.input_grants
-    }
-
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn validate_native_configuration_with_io(
         &self, binding: &crate::model::NativeConfigurationBinding,
-        io: &crate::filesystem::PreparationIo,
+        io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<(&crate::core::SchemaRegistry, [u8; 32])> {
-        let (schemas, expected) = binding.verify_original_with_io(
-            self.extensions.as_ref(), self.extension_schemas.as_ref(),
-            self.extension_runtime.as_deref(), io)?;
+        let (schemas, expected) = match io {
+            Some(io) => binding.verify_original_with_io(self.extensions.as_ref(),
+                self.extension_schemas.as_ref(), self.extension_runtime.as_deref(), io)?,
+            None => binding.verify_original(self.extensions.as_ref(),
+                self.extension_schemas.as_ref(), self.extension_runtime.as_deref())?,
+        };
         let file = &binding.configuration.content;
-        self.validate_input_file_with_io(file, io)?;
+        match io {
+            Some(io) => self.validate_input_file_with_io(file, io)?,
+            None => self.validate_input_file(file)?,
+        }
         if file.descriptor().byte_length() > self.input_limits.render_bytes {
             return Err(Error::Invalid("native options exceed render byte limit".into()));
         }
         Ok((schemas, expected))
     }
 
-    #[cfg(feature = "filesystem")]
-    pub(crate) async fn verify_native_configuration_with_io(
+    pub(crate) async fn verify_native_configuration(
         &self, binding: &crate::model::NativeConfigurationBinding,
-        io: &crate::filesystem::PreparationIo,
+        io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<()> {
-        let (schemas, expected) = self.validate_native_configuration_with_io(binding, io)?;
-        let bytes_hold;
-        let mut borrowed = io.history_io();
-        let (bytes, retained) = crate::store::history::HistoryIo::read_content(
-            &mut borrowed, self.host.reader.as_ref(), &binding.configuration.content)?.await?;
-        bytes_hold = io.guard_owned(retained)?;
-        let result = schemas.verify_configuration_binding_with_io(
-            &binding.configuration, expected, &bytes, self.input_limits, io);
-        drop(bytes);
-        drop(bytes_hold);
-        result
+        let (schemas, expected) = self.validate_native_configuration(binding, io)?;
+        let mut history = io.map(crate::filesystem::PreparationIo::history_io);
+        let mut work = history.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
+        let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
+        let (bytes, retained) = match quota.work().as_deref_mut() {
+            Some(observer) => crate::store::history::read_content_with_work(
+                observer, self.host.reader.as_ref(), &binding.configuration.content).await?,
+            None => (self.host.reader.read(&binding.configuration.content).await?, 0),
+        };
+        quota.adopt(retained)?;
+        match io {
+            Some(io) => schemas.verify_configuration_binding_with_io(
+                &binding.configuration, expected, &bytes, self.input_limits, io),
+            None => schemas.verify_configuration_binding(
+                &binding.configuration, expected, &bytes, self.input_limits),
+        }
     }
 
-    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-    pub(crate) fn require_volume_grant(
-        &self,
-        volume: &crate::conversation::VolumeRef,
-        operation: crate::conversation::VolumeOperation,
-    ) -> Result<()> {
-        if self.readonly_original.is_some()
-            && matches!(operation, crate::conversation::VolumeOperation::Write)
-        {
-            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                reason: "historical READ owner cannot authorize namespace WRITE" });
-        }
-        let grant = volume.capability(operation)?;
-        if !self.input_grants.contains(&grant) {
-            return Err(Error::Unauthorized(format!("task scope lacks {grant}")));
-        }
-        Ok(())
+    pub(crate) const fn input_grants(&self) -> &crate::Capabilities {
+        &self.input_grants
     }
+
+
 
     /// Checks the original cached grant with bounded canonical identity work.
     pub fn require_volume_grant_measured(
@@ -883,52 +816,52 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     ) -> acyclic_fs::MeasuredResult<acyclic_fs::OperationReceipt<()>, Error> {
         let mut work = crate::store::history::HistoryWork::new(budget, cancellation);
         let result = work.preflight().and_then(|()|
-            self.require_volume_grant_with_work(volume, operation, &mut work));
+            self.require_volume_grant(volume, operation, &mut Some(&mut work)));
         work.finish(result)
     }
 
-    fn require_volume_grant_with_work(
+    pub(crate) fn require_volume_grant(
         &self, volume: &crate::conversation::VolumeRef,
         operation: crate::conversation::VolumeOperation,
-        io: &mut dyn crate::store::history::HistoryIo,
+        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-            io.check_cancellation()?;
-            #[cfg(not(target_arch = "wasm32"))]
-            if self.readonly_original.is_some()
-                && matches!(operation, crate::conversation::VolumeOperation::Write)
-            {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "historical READ owner cannot authorize namespace WRITE" });
-            }
-            volume.validate_with_work(&mut Some(&mut *io))?;
+        if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.readonly_original.is_some() && operation == crate::conversation::VolumeOperation::Write {
+            return Err(Self::grant_denied(work, "historical READ owner cannot authorize namespace WRITE"));
+        }
+        volume.validate_with_work(work)?;
+        let observed = work.is_some();
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let digest = {
             let encoded = crate::store::history::canonical_bytes_with_work(
-                volume, acyclic_stream::MAX_RECORD_BYTES as u64, &mut Some(&mut *io),
-            )?;
-            let hashing = io.hashed_bytes(encoded.len() as u64);
-            let digest = hashing.as_ref().ok().map(|_| blake3::hash(&encoded));
-            let retained = encoded.capacity() as u64;
-            drop(encoded);
-            let released = io.release_owned(retained);
-            hashing?;
-            released?;
-            let digest = digest.expect("successful hash admission produced a digest");
-            io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes:64, items:0 })?;
-            let hex = digest.to_hex();
-            let prefix: &[u8] = match operation {
-                crate::conversation::VolumeOperation::Read => b"volume:read:",
-                crate::conversation::VolumeOperation::Write => b"volume:write:",
-            };
-            io.codec_charge(crate::contract::JsonCodecCharge::Copy { bytes:(prefix.len() + hex.len()) as u64 })?;
-            let mut grant = [0; 77];
-            grant[..prefix.len()].copy_from_slice(prefix);
-            grant[prefix.len()..prefix.len()+hex.len()].copy_from_slice(hex.as_bytes());
-            let grant = std::str::from_utf8(&grant[..prefix.len()+hex.len()])
-                .map_err(|_| Error::Invalid("volume grant identity is not UTF-8".into()))?;
-            if !self.input_grants.contains(grant)
-                && !self.input_created.as_ref().is_some_and(|access| access.grants.contains(grant)) {
-                return Err(Self::grant_denied(&Some(io), "task scope lacks required volume grant"));
-            }
-            Ok(())
+                volume, acyclic_stream::MAX_RECORD_BYTES as u64, quota.work())?;
+            quota.adopt(encoded.capacity() as u64)?;
+            if let Some(io) = quota.work().as_deref_mut() { io.hashed_bytes(encoded.len() as u64)?; }
+            blake3::hash(&encoded)
+        };
+        quota.relinquish(quota.retained())?;
+        if let Some(io) = quota.work().as_deref_mut() {
+            io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 64, items: 0 })?;
+        }
+        let hex = digest.to_hex();
+        let prefix: &[u8] = match operation {
+            crate::conversation::VolumeOperation::Read => b"volume:read:",
+            crate::conversation::VolumeOperation::Write => b"volume:write:",
+        };
+        if let Some(io) = quota.work().as_deref_mut() {
+            io.codec_charge(crate::contract::JsonCodecCharge::Copy { bytes: (prefix.len() + hex.len()) as u64 })?;
+        }
+        let mut grant = [0; 77];
+        grant[..prefix.len()].copy_from_slice(prefix);
+        grant[prefix.len()..prefix.len() + hex.len()].copy_from_slice(hex.as_bytes());
+        let grant = std::str::from_utf8(&grant[..prefix.len() + hex.len()])
+            .expect("volume grant is ASCII");
+        if !self.input_grants.contains(grant)
+            && !(observed && self.input_created.as_ref().is_some_and(|access| access.grants.contains(grant))) {
+            return Err(Self::grant_denied(quota.work(), "task scope lacks required volume grant"));
+        }
+        Ok(())
     }
 
     /// Obtains only the original currently selected scratch allocation.
@@ -986,8 +919,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if binding.binding.writer.is_none() {
             return Err(Self::grant_denied(&Some(&mut *work), "scratch settlement lacks original WRITE custody"));
         }
-        self.require_volume_grant_with_work(
-            proof.volume(), crate::conversation::VolumeOperation::Write, work,
+        self.require_volume_grant(
+            proof.volume(), crate::conversation::VolumeOperation::Write, &mut Some(&mut *work),
         )?;
         self.condition(crate::distributed::JournalWrite::Settlement, &mut Some(work)).await?;
         Ok(())
@@ -1002,8 +935,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let mut io = crate::store::history::native_work_io(work)?;
         self.authorize_created_scratch_settlement_with_work(proof, &mut io).await
     }
-
-
 
     pub(crate) fn require_interaction_grant(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -1027,7 +958,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         command: OperationId,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.host.suspend_workflow_command_guarded_with_work(
+        self.host.suspend_workflow(
             self.task_id,
             &self.fence,
             revision,
@@ -1095,8 +1026,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         result
     }
 
-
-
     pub(crate) fn validate_storage(
         &self, verifier: &AuthorityVerifier, maximum_payload_bytes: u64,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -1152,7 +1081,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         {
             return Err(Error::Unauthorized("tool workflow differs from original task owner".into()));
         }
-        self.require_mail_scope(context.task().scope())?;
+        self.require_mail_scope(context.task().scope(), &mut None)?;
         let admission = self.host.observe_admission(self.task_id).await?;
         if context.task().scope().run_limits() != admission.run_limits
             || context.task().scope().extensions() != admission.extensions.as_ref()
@@ -1169,8 +1098,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     pub(crate) fn require_native_workflow_validation(&self) -> Result<()> {
         self.host.machines.require_native_work(&self.workflow.initial.machine)
     }
-
-
 
     pub(crate) fn validate_workflow_record(
         &self, record: &crate::workflow::WorkflowRecord,
@@ -1281,7 +1208,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         result
     }
 
-
     pub(crate) async fn verify(
         &self, allow_settlement: bool,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -1303,7 +1229,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                     if binding.binding.writer.is_none() {
                         return Err(Self::grant_denied(&Some(&mut io), "current created scratch has no WRITE custody"));
                     }
-                    self.require_volume_grant_with_work(&binding.volume, crate::conversation::VolumeOperation::Write, &mut io)?;
+                    self.require_volume_grant(&binding.volume, crate::conversation::VolumeOperation::Write, &mut Some(&mut io))?;
                 }
             }
             self.verify(allow_settlement, &mut Some(&mut io)).await
@@ -1389,7 +1315,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                     }
                 }
             }
-            self.require_volume_grant_with_work(volume, operation, &mut io)
+            self.require_volume_grant(volume, operation, &mut Some(&mut io))
         })();
         result
     }
@@ -1661,7 +1587,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok(token)
     }
 
-
     fn execution_write(
         operation: OperationId,
         event: &crate::executor::ExecutionEvent,
@@ -1699,8 +1624,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             .map(|_| ())
     }
 
-
-
     pub(crate) async fn verify_model_history<'a>(
         &self, operation: OperationId,
         records: impl Iterator<Item=&'a crate::executor::ExecutionRecord> + Clone,
@@ -1708,8 +1631,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     ) -> Result<()> {
         self.host.verify_model_history(self.task_id,operation,records,work).await
     }
-
-
 
     pub(crate) fn require_effect_grants(
         &self, provider: &str, planning: bool,
@@ -1799,12 +1720,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok(())
     }
 
-    /// Returns the authenticated executing agent from current sealed creation provenance, or the verified matching proofless-root declaration.
-    pub fn authenticated_binding_agent(&self) -> Result<Option<crate::AgentId>> {
-        self.authenticated_binding_agent_with_work(&mut None)
-    }
 
-    pub(crate) fn authenticated_binding_agent_with_work(
+    pub(crate) fn authenticated_binding_agent(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<Option<crate::AgentId>> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
@@ -1814,14 +1731,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok(self.input_agent)
     }
 
-    /// Observes the same protected cached binding agent, never caller identity.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn authenticated_binding_agent_with_native_work(
-        &self, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Option<crate::AgentId>> {
-        let mut io = crate::store::history::native_work_io(work)?;
-        self.authenticated_binding_agent_with_work(&mut Some(&mut io))
-    }
 
     pub(crate) fn authenticated_fork_agent(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
@@ -1846,12 +1755,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     }
 
     pub(crate) fn check_root_binding(
-        &self, audience: &Authority, operation: OperationId, intent: [u8;32],
-    ) -> Result<()> {
-        self.check_root_binding_with_work(audience, operation, intent, &mut None)
-    }
-
-    pub(crate) fn check_root_binding_with_work(
         &self, audience: &Authority, operation: OperationId, intent: [u8; 32],
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -1867,14 +1770,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         Ok(())
     }
 
-    /// Pins a denial-only choice after protected scope authentication and measured audience hashing.
     pub(crate) fn pin_root_binding_choice(
-        &self, operation: OperationId, intent: [u8;32], audience_digest: [u8;32],
-    ) -> Result<()> {
-        self.pin_root_binding_choice_with_work(operation, intent, audience_digest, &mut None)
-    }
-
-    pub(crate) fn pin_root_binding_choice_with_work(
         &self, operation: OperationId, intent: [u8; 32], audience_digest: [u8; 32],
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -2053,11 +1949,11 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         let native = false;
         #[cfg(not(target_arch = "wasm32"))]
         let agent = match native_work {
-            Some(work) => self.authenticated_binding_agent_with_native_work(work)?,
-            None => self.authenticated_binding_agent()?,
+            Some(work) => self.authenticated_binding_agent(&mut Some(&mut crate::store::history::native_work_io(work)?))?,
+            None => self.authenticated_binding_agent(&mut None)?,
         };
         #[cfg(target_arch = "wasm32")]
-        let agent = self.authenticated_binding_agent()?;
+        let agent = self.authenticated_binding_agent(&mut None)?;
         if !self.input_is_root || proof.original_task() != self.task_id
             || proof.admission_digest() != self.workflow.request_digest
             || proof.fence() != &self.fence
@@ -2116,7 +2012,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         scope: &Scope,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        let agent = self.authenticated_binding_agent()?.ok_or_else(|| Error::Unauthorized("binding owner has no authenticated agent".into()))?;
+        let agent = self.authenticated_binding_agent(&mut None)?.ok_or_else(|| Error::Unauthorized("binding owner has no authenticated agent".into()))?;
         if scope.agent() != Some(agent) || !scope.capabilities().contains(capability::CONVERSATION_BIND) {
             return Err(Error::Unauthorized("binding scope differs from the original task actor or grant".into()));
         }
@@ -2195,7 +2091,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             ));
         }
         let path = crate::distributed::execution_path(operation, work)?;
-        self.append_with_work(
+        self.append(
             path, expected_tail, key, bytes,
             Self::execution_write(operation, event), work,
         ).await
@@ -2242,7 +2138,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         }
         let path = acyclic_stream::StreamPath::new(path_text)?;
         if let Some(io) = work.as_deref_mut() { io.release_owned(temporary_capacity)?; }
-        let result = self.append_with_work(
+        let result = self.append(
             path,
             expected_tail,
             key,
@@ -2355,31 +2251,6 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     }
 
     pub(crate) async fn append(
-        &self,
-        path: acyclic_stream::StreamPath,
-        expected_tail: u64,
-        key: &StreamKey,
-        bytes: OwnedBytes,
-        write: crate::distributed::JournalWrite,
-    ) -> Result<bool> {
-        self.append_with_work(path, expected_tail, key, bytes, write, &mut None).await
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(crate) async fn append_with_native_work(
-        &self,
-        path: acyclic_stream::StreamPath,
-        expected_tail: u64,
-        key: &StreamKey,
-        bytes: OwnedBytes,
-        write: crate::distributed::JournalWrite,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<bool> {
-        let mut io = crate::store::history::native_work_io(work)?;
-        self.append_with_work(path, expected_tail, key, bytes, write, &mut Some(&mut io)).await
-    }
-
-    async fn append_with_work(
         &self,
         path: acyclic_stream::StreamPath,
         expected_tail: u64,
@@ -2513,8 +2384,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         ).await?;
         Ok(state)
     }
-
-
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(crate) async fn verify_model_history_with_native_work(
@@ -2938,7 +2807,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 if let Some(io) = custody.work().as_deref_mut() { io.check_cancellation()?; }
                 return Ok(self.clock.now_unix_millis() >= deadline_unix_ms);
             }
-            let appended = owner.append_with_work(
+            let appended = owner.append(
                 path.clone(), tail, &key, bytes.clone(),
                 crate::distributed::JournalWrite::Fresh, custody.work(),
             ).await?;
@@ -2984,7 +2853,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         recipient: TaskId,
         message_id: OperationId,
         payload: FileRef,
-    ) -> Result<MailSendAck> {
+    ) -> Result<FileRef> {
         self.send_owned_with_io(sender, &fence, recipient, message_id, payload, None).await
     }
 
@@ -3200,79 +3069,21 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(())
     }
 
-    /// Releases an owned slot after the worker durably retains its checkpoint and knows there is no uncertain active dispatch.
-    pub async fn suspend_workflow(
-        &self,
-        task: TaskId,
-        fence: crate::scheduler::LeaseFence,
-        revision: u64,
-    ) -> Result<()> {
-        self.suspend_workflow_command(task, fence, revision, None)
-            .await
-    }
 
-    /// Retains the exact passive command in the existing suspension slot.
-    pub async fn suspend_workflow_command(
-        &self,
-        task: TaskId,
-        fence: crate::scheduler::LeaseFence,
-        revision: u64,
-        waiting_command: Option<OperationId>,
-    ) -> Result<()> {
-        self.suspend_workflow_command_guarded(task, fence, revision, waiting_command, None)
-            .await
-    }
 
-    async fn suspend_workflow_command_guarded(
-        &self,
-        task: TaskId,
-        fence: crate::scheduler::LeaseFence,
-        revision: u64,
-        waiting_command: Option<OperationId>,
-        idle_execution: Option<(OperationId, u64)>,
-    ) -> Result<()> {
-        self.suspend_workflow_command_owned_with_work(
-            task, fence, revision, waiting_command, idle_execution, None, &mut None,
-        ).await
-    }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub async fn suspend_workflow_with_native_work(
-        &self, task: TaskId, fence: crate::scheduler::LeaseFence, revision: u64,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        self.suspend_workflow_command_with_native_work(task, fence, revision, None, work).await
-    }
 
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub async fn suspend_workflow_command_with_native_work(
-        &self, task: TaskId, fence: crate::scheduler::LeaseFence, revision: u64,
-        waiting_command: Option<OperationId>, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        let mut io = crate::store::history::native_work_io(work)?;
-        self.suspend_workflow_command_owned_with_work(
-            task, fence, revision, waiting_command, None, None, &mut Some(&mut io),
-        ).await
-    }
 
-    pub(crate) async fn suspend_workflow_command_guarded_with_work(
+
+
+
+    pub(crate) async fn suspend_workflow(
         &self, task: TaskId, fence: &crate::scheduler::LeaseFence, revision: u64,
         waiting_command: Option<OperationId>, idle_execution: Option<(OperationId, u64)>,
         pending: Option<(&acyclic_stream::StreamPath, u64)>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         let fence = host_fence_with_work(fence, work)?;
-        self.suspend_workflow_command_owned_with_work(
-            task, fence, revision, waiting_command, idle_execution, pending, work,
-        ).await
-    }
-
-    async fn suspend_workflow_command_owned_with_work(
-        &self, task: TaskId, fence: crate::scheduler::LeaseFence, revision: u64,
-        waiting_command: Option<OperationId>, idle_execution: Option<(OperationId, u64)>,
-        pending: Option<(&acyclic_stream::StreamPath, u64)>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
         let operation_id = OperationId::from_bytes(task.into_bytes());
         let mut coordinator = self.coordinator.lock().await;
         coordinator.refresh_with_work(work).await?;
@@ -4251,13 +4062,13 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 work.as_deref_mut().expect("original native observer").absorb_native_custody(state.1)?;
                 state.0
             } else {
-                self.machines.resolve(&admission.machine)
+                self.machines.resolve(&admission.machine, work)?
                     .ok_or_else(|| Error::Unsupported("pinned task machine is unavailable".into()))?
                     .initialize(&admission.input)?
             }
             #[cfg(target_arch = "wasm32")]
             {
-                self.machines.resolve(&admission.machine)
+                self.machines.resolve(&admission.machine, work)?
                     .ok_or_else(|| Error::Unsupported("pinned task machine is unavailable".into()))?
                     .initialize(&admission.input)?
             }
@@ -4999,10 +4810,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(false)
     }
 
-    async fn verify_created_access_with_work(
-        &self, admission: &TaskAdmissionRecord, visited: &mut Vec<OperationId>,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Option<crate::resource_preparation::CreatedResourceAccess>> {
+    fn verify_created_access_with_work<'a, 'b>(
+        &'a self, admission: &'a TaskAdmissionRecord, visited: &'a mut Vec<OperationId>,
+        work: &'a mut Option<&'b mut dyn crate::store::history::HistoryIo>,
+    ) -> impl std::future::Future<Output = Result<Option<crate::resource_preparation::CreatedResourceAccess>>>
+        + acyclic_stream::ProviderTask + 'a {
+        async move {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         if admission.resource_proofs.is_empty() { return Ok(None); }
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -5012,6 +4825,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             })?.await;
         }
         Box::pin(self.verify_created_access_body(admission, visited, work)).await
+        }
     }
 
     async fn verify_created_access_body(
@@ -5905,13 +5719,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let stream = self.stream.stream(text)?;
         Ok((stream, if work.is_some() { owned } else { 0 }))
     }
-
-
-
-
-
-
-
 
 
     async fn timer_state_with_work(
@@ -6847,9 +6654,7 @@ pub(crate) mod tests {
         drop(stale);
         let fence = crate::scheduler::LeaseFence::from(&lease.reservation);
         let waiting = OperationId::from_bytes([91; 16]);
-        fixture.host.suspend_workflow_command_with_native_work(
-            fixture.root, fence, 1, Some(waiting), &work,
-        ).await?;
+        fixture.host.suspend_workflow(fixture.root, &fence, 1, Some(waiting), None, None, &mut Some(&mut crate::store::history::native_work_io(&work)?)).await?;
         drop(lease);
         drop(recovered_guard);
         let (slot, slot_guard) = fixture.host.workflow_suspension_with_native_work(fixture.root, &work).await?;
@@ -6887,17 +6692,9 @@ pub(crate) mod tests {
             .expect("actual protected terminal result");
         assert_eq!(bytes.as_ref(), br#"{"ok":true}"#);
         reference.descriptor().verify(&bytes)?;
-        let before_alias = work.receipt();
-        let retained = bytes.clone();
-        let empty_alias = retained.slice(..0);
-        assert_eq!(work.receipt(), before_alias);
         drop(bytes);
         drop(reference);
         drop(metadata_guard);
-        assert_eq!(retained.as_ref(), br#"{"ok":true}"#);
-        drop(retained);
-        assert!(empty_alias.is_empty());
-        drop(empty_alias);
         assert!(work.receipt().backend_read_operations > 0);
         assert!(work.receipt().backend_write_operations > 0);
         let before = work.receipt();
@@ -6919,9 +6716,7 @@ pub(crate) mod tests {
         let cancellation = acyclic_fs::CancellationToken::new();
         let work = acyclic_fs::NativeMaterializationWork::new(native_lifecycle_budget(), &cancellation)
             .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
-        fixture.host.suspend_workflow_with_native_work(
-            fixture.root, crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation), 1, &work,
-        ).await?;
+        fixture.host.suspend_workflow(fixture.root, &crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation), 1, None, None, None, &mut Some(&mut crate::store::history::native_work_io(&work)?)).await?;
         let operation = OperationId::from_bytes(fixture.root.into_bytes());
         let mut original_input = None;
         for _ in 0..2 {
@@ -7007,7 +6802,6 @@ pub(crate) mod tests {
             })
         }
     }
-
 
     #[tokio::test]
     async fn atomic_mail_envelope_reuse_and_hostile_inbox_controls() -> Result<()> {
@@ -8034,60 +7828,6 @@ pub(crate) mod tests {
         assert!(work.receipt().backend_read_operations > 0);
         assert!(work.receipt().backend_write_operations > 0);
         drop(transition);
-        {
-            let baseline = work.live_allocation_bytes();
-            let observed = workflow.observe_transition_with_native_work(1, &work).await?;
-            assert_eq!(observed.0.next.revision, 1);
-            assert!(matches!(observed.0.transition.status, crate::workflow::MachineStatus::Suspended));
-            assert!(observed.1.bytes() > 0);
-            assert_eq!(work.live_allocation_bytes(), baseline + observed.1.bytes());
-            drop(observed);
-            assert_eq!(work.live_allocation_bytes(), baseline);
-            let admitted = workflow.admission_with_native_work(&work)?.await?;
-            assert_eq!(admitted.0.as_ref(), Some(owner.workflow_admission()));
-            assert!(admitted.1.bytes() > 0);
-            assert_eq!(work.live_allocation_bytes(), baseline + admitted.1.bytes());
-            drop(admitted);
-            assert_eq!(work.live_allocation_bytes(), baseline);
-            let replay = workflow.replay_with_native_work(0, 1, &work)?.await?;
-            assert_eq!(replay.0.len(), 1);
-            assert_eq!(replay.0[0].next.revision, 1);
-            assert_eq!(work.live_allocation_bytes(), baseline + replay.1.bytes());
-            let retry = workflow.commit_with_native_work(
-                0, replay.0[0].idempotency_key.clone(), replay.0[0].clone(), &work,
-            )?.await?;
-            assert!(matches!(&retry.0, crate::workflow::WorkflowCommitOutcome::Replayed(record)
-                if record == &replay.0[0]));
-            drop(retry);
-            assert!(workflow.commit_with_native_work(
-                1, replay.0[0].idempotency_key.clone(), replay.0[0].clone(), &work,
-            )?.await.is_err(), "stale supplied revision cannot alter the original receipt");
-            drop(replay);
-            assert_eq!(work.live_allocation_bytes(), baseline);
-            let denied_work = acyclic_fs::NativeMaterializationWork::new(
-                acyclic_fs::WorkBudget { backend_read_operations: 0, ..budget }, &cancellation,
-            ).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let denied_live = denied_work.live_allocation_bytes();
-            assert!(matches!(workflow.observe_transition_with_native_work(1, &denied_work).await,
-                Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Work(_), .. })));
-            assert_eq!(denied_work.receipt().backend_read_operations, 0);
-            assert_eq!(denied_work.live_allocation_bytes(), denied_live);
-            assert!(matches!(workflow.replay_with_native_work(0, 1, &denied_work)?.await,
-                Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Work(_), .. })));
-            assert_eq!(denied_work.receipt().backend_read_operations, 0);
-            assert_eq!(denied_work.live_allocation_bytes(), denied_live);
-            let cancelled = acyclic_fs::CancellationToken::new();
-            let cancelled_work = acyclic_fs::NativeMaterializationWork::new(budget, &cancelled)
-                .map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-            let prefix = cancelled_work.receipt();
-            cancelled.cancel();
-            assert!(matches!(workflow.admission_with_native_work(&cancelled_work),
-                Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
-            assert_eq!(cancelled_work.receipt(), prefix);
-            assert!(matches!(workflow.replay_with_native_work(0, 1, &cancelled_work),
-                Err(Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, .. })));
-            assert_eq!(cancelled_work.receipt(), prefix);
-        }
         assert!(!journal.release_if_quiescent_with_native_work(&work, &workflow).await?);
         {
             let coordinator = host.coordinator.lock().await;

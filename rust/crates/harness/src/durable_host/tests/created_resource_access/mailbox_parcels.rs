@@ -74,8 +74,7 @@ async fn default_created_private_parcels_restart_without_importing_donor_file_au
     let child_receive = receive_checkpoint(&runtime, child, child_fence.clone(), 164).await?;
     let send = OperationId::from_bytes([161;16]);
     let ack = parent.send(child, send, parent_file.clone()).await?;
-    assert_eq!(ack.payload, parent_file);
-    assert_eq!(ack.recipient, child);
+    assert_eq!(ack, parent_file);
     let item = receiver.inbox(0, 1).await?.remove(0);
     assert_eq!(receiver.read_received_mail(child_receive, &item).await?.as_ref(), b"parent steering after child admission".as_ref());
     consume_checkpoint(&runtime, child, child_fence.clone(), child_receive, &item, 167).await?;
