@@ -537,9 +537,6 @@ pub enum LocalCoreStateStoreError {
     /// Content-addressed state did not match its claimed digest.
     #[error("core state content address does not match its payload")]
     Integrity,
-    /// A transferred native payload belonged to a different original ledger.
-    #[error("native core-state payload belongs to another operation ledger")]
-    NativeLedgerMismatch,
     /// A durable workspace-context transaction was malformed or incompatible.
     #[error("workspace-context transaction is incompatible: {0}")]
     ContextTransaction(String),

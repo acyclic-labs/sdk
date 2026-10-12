@@ -111,17 +111,12 @@ async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result
         ..WorkBudget::UNBOUNDED
     };
     let mut work = crate::AuthorityWork::new(below_retry_peak, &cancellation);
-    let denied = store
-        .put(object_id, bytes.clone(), &mut work)
-        .await
-        .err()
-        .ok_or_else(|| js_error("retained existing Blob handle escaped admission"))?;
     assert!(matches!(
-        denied,
-        ObjectStoreError::Work(WorkError::BudgetExceeded {
+        store.put(object_id, bytes.clone(), &mut work).await,
+        Err(ObjectStoreError::Work(WorkError::BudgetExceeded {
             counter: "peak_allocation_bytes",
             ..
-        })
+        }))
     ));
     let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     let read = store
@@ -147,31 +142,24 @@ async fn indexed_db_objects_are_bounded_idempotent_and_authenticated() -> Result
         ..WorkBudget::UNBOUNDED
     };
     let mut work = crate::AuthorityWork::new(one_byte_short, &cancellation);
-    let bounded = store
-        .read(object_id, 1_024, &mut work)
-        .await
-        .err()
-        .ok_or_else(|| {
-            js_error("one-byte-short browser allocation budget unexpectedly succeeded")
-        })?;
     assert!(matches!(
-        bounded,
-        ObjectStoreError::Work(WorkError::BudgetExceeded {
+        store.read(object_id, 1_024, &mut work).await,
+        Err(ObjectStoreError::Work(WorkError::BudgetExceeded {
             counter: "peak_allocation_bytes",
             ..
-        })
+        }))
     ));
     let forged = ObjectId {
         kind: ObjectKind::BlobChunk,
         digest: Digest::from_bytes([9; 32]),
     };
     let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-    let mismatch = store
-        .put(forged, OwnedBytes::from_static(b"forged"), &mut work)
-        .await
-        .err()
-        .ok_or_else(|| js_error("forged browser object unexpectedly succeeded"))?;
-    assert!(matches!(mismatch, ObjectStoreError::DigestMismatch));
+    assert!(matches!(
+        store
+            .put(forged, OwnedBytes::from_static(b"forged"), &mut work)
+            .await,
+        Err(ObjectStoreError::DigestMismatch)
+    ));
     Ok(())
 }
 
@@ -239,17 +227,12 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
         ..WorkBudget::UNBOUNDED
     };
     let mut work = crate::AuthorityWork::new(below_peak, &cancellation);
-    let rejected = store
-        .read_many(&requests, &mut work)
-        .await
-        .err()
-        .ok_or_else(|| js_error("batch retained peak escaped admission"))?;
     assert!(matches!(
-        rejected,
-        ObjectStoreError::Work(WorkError::BudgetExceeded {
+        store.read_many(&requests, &mut work).await,
+        Err(ObjectStoreError::Work(WorkError::BudgetExceeded {
             counter: "peak_allocation_bytes",
             ..
-        })
+        }))
     ));
     let reopened = IndexedDbObjectStore::open(DATABASE_NAME, 1_024)
         .await
@@ -263,23 +246,19 @@ async fn indexed_db_object_batches_commit_all_or_nothing() -> Result<(), JsValue
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancelled);
-    let rejected = reopened
-        .read_many(&requests, &mut work)
-        .await
-        .err()
-        .ok_or_else(|| js_error("cancelled batch unexpectedly materialized"))?;
-    assert!(matches!(rejected, ObjectStoreError::Cancelled));
+    assert!(matches!(
+        reopened.read_many(&requests, &mut work).await,
+        Err(ObjectStoreError::Cancelled)
+    ));
     assert_eq!(work.spent(), WorkCounters::default());
     let fourth = blob_write(b"fourth batch object");
     let mut forged = blob_write(b"forged batch object");
     forged.object_id.digest = Digest::from_bytes([9; 32]);
     let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-    let rejected = store
-        .put_many(&[fourth.clone(), forged], &mut work)
-        .await
-        .err()
-        .ok_or_else(|| js_error("forged batch unexpectedly succeeded"))?;
-    assert!(matches!(rejected, ObjectStoreError::DigestMismatch));
+    assert!(matches!(
+        store.put_many(&[fourth.clone(), forged], &mut work).await,
+        Err(ObjectStoreError::DigestMismatch)
+    ));
     let mut work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
     assert!(
         !store
@@ -345,7 +324,7 @@ async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Re
         first.clone(),
         PublicationPermit::Unrestricted,
     );
-    let (AppendOutcome::Committed(first_commit), _) = store
+    let AppendOutcome::Committed(first_commit) = store
         .compare_and_append(request.clone(), &mut work, None::<&mut ()>)
         .await
         .map_err(js_error)?
@@ -356,8 +335,7 @@ async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Re
         store
             .compare_and_append(request, &mut work, None::<&mut ()>)
             .await
-            .map_err(js_error)?
-            .0,
+            .map_err(js_error)?,
         AppendOutcome::AlreadyCommitted(first_commit.clone())
     );
     let conflict = ProposedCommit {
@@ -377,8 +355,7 @@ async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Re
                 None::<&mut ()>
             )
             .await
-            .map_err(js_error)?
-            .0,
+            .map_err(js_error)?,
         AppendOutcome::IdempotencyConflict {
             committed_fingerprint: first_commit.fingerprint
         }
@@ -390,7 +367,7 @@ async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Re
         proposal(11, 12, Bytes::from_static(b"second")),
         PublicationPermit::Unrestricted,
     );
-    let (AppendOutcome::Committed(second_commit), _) = store
+    let AppendOutcome::Committed(second_commit) = store
         .compare_and_append(second, &mut work, None::<&mut ()>)
         .await
         .map_err(js_error)?
@@ -448,8 +425,7 @@ async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Re
         store
             .find_operation(authority, first_commit.operation_id, &mut work)
             .await
-            .map_err(js_error)?
-            .0,
+            .map_err(js_error)?,
         Some(first_commit)
     );
 
@@ -476,8 +452,7 @@ async fn indexed_db_authority_is_atomic_fenced_idempotent_and_replayable() -> Re
         store
             .compare_and_append(stale, &mut work, None::<&mut ()>)
             .await
-            .map_err(js_error)?
-            .0,
+            .map_err(js_error)?,
         AppendOutcome::Fenced {
             actual_epoch: fenced.epoch
         }
@@ -549,8 +524,7 @@ async fn indexed_db_publication_reservations_are_atomic_and_idempotent() -> Resu
         store
             .compare_and_append(request.clone(), &mut work, None::<&mut ()>)
             .await
-            .map_err(js_error)?
-            .0,
+            .map_err(js_error)?,
         AppendOutcome::Fenced { .. }
     ));
     let request = GuardedAppend {
@@ -565,8 +539,7 @@ async fn indexed_db_publication_reservations_are_atomic_and_idempotent() -> Resu
         store
             .compare_and_append(request, &mut work, None::<&mut ()>)
             .await
-            .map_err(js_error)?
-            .0,
+            .map_err(js_error)?,
         AppendOutcome::Committed(_)
     ));
     store
@@ -621,7 +594,6 @@ async fn indexed_db_authority_serializes_competing_connections() -> Result<(), J
         store
             .compare_and_append(request, &mut work, None::<&mut ()>)
             .await
-            .map(|(outcome, _)| outcome)
     };
     let (left, right) = futures::join!(append(left, 22), append(right, 23));
     let outcomes = [left.map_err(js_error)?, right.map_err(js_error)?];
@@ -684,7 +656,6 @@ async fn indexed_db_forks_and_creates_in_one_transaction_and_resolves_retries()
             .find_operation(authority, commit.operation_id, &mut work)
             .await
             .map_err(js_error)?
-            .0
             .expect("first record is found by its operation");
         assert_eq!(found.fingerprint, commit.fingerprint);
     }
