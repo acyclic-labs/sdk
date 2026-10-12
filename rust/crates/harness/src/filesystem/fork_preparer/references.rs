@@ -190,7 +190,7 @@ pub(in crate::filesystem) fn require_reference_donor(
 pub(super) fn add_summary_readers(
     request: &ForkRequest,
     grants: &mut Vec<ReferenceGrant>,
-    files: &std::collections::BTreeMap<[u8; 32], crate::conversation::FileRef>,
+    files: &std::collections::BTreeMap<[u8; 32], &crate::conversation::FileRef>,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
     let reject = |reason| bounded_io::failure(io, crate::wire::ErrorCode::Invalid, reason);
@@ -214,7 +214,7 @@ pub(super) fn add_summary_readers(
             let mut present = false;
             for grant in &*grants {
                 bounded_io::item(io, 0)?;
-                if grant.reader == reader && grant.file == *file {
+                if grant.reader == reader && grant.file == **file {
                     present = true;
                     break;
                 }
