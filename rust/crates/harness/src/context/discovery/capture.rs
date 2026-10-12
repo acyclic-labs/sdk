@@ -176,7 +176,7 @@ impl DiscoveredContext {
             {
                 bound_skill_values(&self.skills, limits.render_bytes, observer)?;
             }
-            crate::contract::json_byte_length(&self.skills, limits.render_bytes, work)
+            crate::executor::json::json_byte_length(&self.skills, limits.render_bytes, work)
         })?;
         crate::executor::with_history_io(io, |work| {
             for file in &self.instructions {
@@ -250,7 +250,7 @@ impl DiscoveredContext {
     /// Composes this immutable revision through the existing source/stage path.
     pub fn stage(self, placement: ContextPlacement) -> Result<SourceStage> {
         self.validate(&mut None)?;
-        let revision = crate::contract::canonical_json_digest(&self, u64::MAX, &mut None)?;
+        let revision = crate::executor::json::canonical_json_digest(&self, u64::MAX, &mut None)?;
         let revision = blake3::Hash::from_bytes(revision).to_hex().to_string();
         Ok(SourceStage::new(
             "declared-context",

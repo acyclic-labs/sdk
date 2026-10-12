@@ -109,7 +109,7 @@ pub(super) fn bound_skill_values(
                 reason: "JSON exceeds declared structural bound",
             });
         }
-        io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+        io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
         match value {
             serde_json::Value::String(text) => byte_bound(text.len(), maximum)?,
             serde_json::Value::Array(values) => {
@@ -122,7 +122,7 @@ pub(super) fn bound_skill_values(
                 byte_bound(values.len(), maximum)?;
                 for (key, value) in values {
                     io.check_cancellation()?;
-                    io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                    io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
                     byte_bound(key.len(), maximum)?;
                     value_bound(value, depth + 1, maximum, io)?;
                 }
@@ -135,7 +135,7 @@ pub(super) fn bound_skill_values(
     byte_bound(skills.len(), maximum_bytes)?;
     for skill in skills {
         io.check_cancellation()?;
-        io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+        io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
         byte_bound(skill.name.len(), maximum_bytes)?;
         byte_bound(skill.description.len(), maximum_bytes)?;
         byte_bound(skill.fields.len(), maximum_bytes)?;
@@ -155,7 +155,7 @@ pub(super) fn bound_skill_values(
         }
         for (key, value) in &skill.fields {
             io.check_cancellation()?;
-            io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+            io.codec_charge(crate::executor::json::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
             byte_bound(key.len(), maximum_bytes)?;
             // skills array -> skill object -> fields object -> actual field value.
             value_bound(value, 3, maximum_bytes, io)?;
@@ -273,7 +273,7 @@ pub(super) fn skill_text_native(
         "key must be a string",
         "number out of range",
     ];
-    let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(
+    let diagnostic_bytes = crate::executor::json::audited_serde_diagnostic_bytes(
         size,
         labels.iter().map(|label| label.len() as u64 + 4).sum(),
     )?;

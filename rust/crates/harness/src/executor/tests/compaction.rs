@@ -641,7 +641,7 @@ async fn summary_reconciles_exact_source_and_stages_durable_output() -> Result<(
         .await?;
     assert_eq!(
         summary.source_digest,
-        crate::contract::canonical_json_digest(&source, u64::MAX, &mut None)?
+        crate::executor::json::canonical_json_digest(&source, u64::MAX, &mut None)?
     );
     assert_eq!(
         journal.load(&summary.output, None)?.await?.as_ref(),

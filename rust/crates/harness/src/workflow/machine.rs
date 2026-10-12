@@ -18,7 +18,7 @@ impl MachineIdentity {
         for label in [&self.name, &self.version] {
             if let Some(observer) = work.as_deref_mut() {
                 observer.check_cancellation()?;
-                observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
+                observer.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
             }
             if !crate::contract::is_valid_component_label(label) {
                 return Err(crate::scheduler::diagnostic(
@@ -139,7 +139,7 @@ impl MachineRegistry {
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let identity = machine.identity();
         identity.validate(work)?;
-        crate::contract::compile_json_schema(machine.state_schema(), "machine state", work)?;
+        crate::executor::compile_json_schema(machine.state_schema(), "machine state", work)?;
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let key = identity.copy_fields(&mut quota)?;
         if self.0.contains_key(&key) {
@@ -174,8 +174,8 @@ impl MachineRegistry {
     ) -> Result<Option<&Arc<dyn ResumableMachine>>> {
         if let Some(observer) = work.as_deref_mut() {
             observer.check_cancellation()?;
-            observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
-            observer.codec_charge(crate::contract::JsonCodecCharge::Work {
+            observer.codec_charge(crate::executor::json::JsonCodecCharge::Inspect { items: 1 })?;
+            observer.codec_charge(crate::executor::json::JsonCodecCharge::Work {
                 bytes: identity.name.len() as u64 + identity.version.len() as u64 + 32,
                 items: self.0.len() as u64,
             })?;
@@ -222,7 +222,7 @@ impl MachineRegistry {
             cfg!(all(feature = "filesystem", not(target_arch = "wasm32"))) && io.is_some(),
         )?;
         with_history_io(io, |work| {
-            crate::contract::validate_json_schema_value(
+            crate::executor::validate_json_schema_value(
                 machine.state_schema(),
                 &checkpoint.state,
                 "machine state",
@@ -258,7 +258,7 @@ impl MachineRegistry {
             let retained = custody.bytes();
             io.absorb_native_custody(custody)?;
             with_history_io(Some(&io), |work| {
-                crate::contract::validate_json_schema_value(
+                crate::executor::validate_json_schema_value(
                     machine.state_schema(),
                     &state,
                     "machine state",
@@ -284,7 +284,7 @@ impl MachineRegistry {
             cfg!(all(feature = "filesystem", not(target_arch = "wasm32"))) && io.is_some(),
         )?;
         with_history_io(io, |work| {
-            crate::contract::validate_json_schema_value(
+            crate::executor::validate_json_schema_value(
                 machine.state_schema(),
                 &checkpoint.state,
                 "machine state",
@@ -312,7 +312,7 @@ impl MachineRegistry {
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let transition = machine.transition(&checkpoint.state, &input)?;
         with_history_io(io, |work| {
-            crate::contract::validate_json_schema_value(
+            crate::executor::validate_json_schema_value(
                 machine.state_schema(),
                 &transition.state,
                 "machine state",
