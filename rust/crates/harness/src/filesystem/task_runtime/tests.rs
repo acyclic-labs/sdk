@@ -219,7 +219,7 @@ impl Fixture {
             machine.clone(), json!({"type":"object"}), json!({}),
         )?)?;
         let mut machines = MachineRegistry::default();
-        machines.register(machine.clone())?;
+        machines.register(machine.clone(), &mut None)?;
         let clock = Arc::new(Clock(AtomicU64::new(10)));
         let tool = Arc::new(PendingTool {
             clock: clock.clone(), executed: AtomicUsize::new(0), reconciled: AtomicUsize::new(0),

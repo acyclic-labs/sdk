@@ -6008,7 +6008,7 @@ pub(crate) mod tests {
         let mut tasks = TaskRegistry::default();
         tasks.register(definition)?;
         let mut machines = MachineRegistry::default();
-        machines.register(implementation)?;
+        machines.register(implementation, &mut None)?;
         Ok((task, machine, tasks, machines))
     }
 
@@ -7604,7 +7604,7 @@ pub(crate) mod tests {
         let mut tasks = TaskRegistry::default();
         tasks.register(definition)?;
         let mut machines = MachineRegistry::default();
-        machines.register(implementation)?;
+        machines.register(implementation, &mut None)?;
         let host = Arc::new(CoordinatorTaskHost::new(
             DistributedCoordinator::open(&stream, payloads.clone()).await?,
             stream.clone(),
@@ -8684,7 +8684,7 @@ pub(crate) mod tests {
                 identity: machine.clone(),
                 schema: serde_json::json!({"type": "integer"}),
             });
-            machines.register(implementation.clone())?;
+            machines.register(implementation.clone(), &mut None)?;
             let definition = TaskDefinition::<Value, i64>::resumable(
                 implementation,
                 serde_json::json!({"type": "integer"}),
@@ -8903,7 +8903,7 @@ pub(crate) mod tests {
             identity: machine.clone(),
             schema: serde_json::json!({"type": "integer"}),
         });
-        machines.register(implementation.clone())?;
+        machines.register(implementation.clone(), &mut None)?;
         let definition = TaskDefinition::<Value, i64>::resumable(
             implementation,
             serde_json::json!({"type": "integer"}),

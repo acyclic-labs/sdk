@@ -392,7 +392,7 @@ impl<I, O> TaskDefinition<I, O> {
         };
         let mut registry = MachineRegistry::default();
         let before_registry = crate::workflow::workflow_owned_bytes(io)?;
-        registry.register_with_io(machine.clone(), io)?;
+        crate::executor::with_history_io(io, |work| registry.register(machine.clone(), work))?;
         let registry_retained = crate::workflow::workflow_owned_bytes(io)?.checked_sub(before_registry)
             .ok_or_else(|| task_workflow_error(native, crate::wire::ErrorCode::Conflict,
                 "workflow registry custody changed"))?;

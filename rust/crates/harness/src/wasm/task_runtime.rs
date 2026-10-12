@@ -598,7 +598,7 @@ impl WasmTaskRegistry {
                 "task version is already registered".into(),
             )));
         }
-        self.machines.register(machine).map_err(js_error)?;
+        self.machines.register(machine, &mut None).map_err(js_error)?;
         self.tasks.register(task).map_err(js_error)?;
         Ok(())
     }
