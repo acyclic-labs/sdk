@@ -3,6 +3,7 @@ use super::*;
 #[tokio::test]
 async fn workspace_creation_is_one_commit_and_exact_at_every_provider_cut()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let mut uninterrupted_commits = None;
     for cut in [ForkCut::Before, ForkCut::AfterCommit] {
         for fail_at in 1.. {
@@ -15,15 +16,7 @@ async fn workspace_creation_is_one_commit_and_exact_at_every_provider_cut()
                 crate::EmbeddedCapabilities::MEMORY,
             );
             cutting.arm(fail_at, cut);
-            let attempt = fs
-                .create_workspace(
-                    "repo",
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error);
+            let attempt = fs.create_workspace("repo", B, &cancel).await;
             let fired = cutting.disarm();
             let committed = cutting.commits();
             let volume = fs.workspace_id("repo")?.volume_id();
@@ -31,10 +24,10 @@ async fn workspace_creation_is_one_commit_and_exact_at_every_provider_cut()
                 first_fork_record(&stream, crate::kernel::volume_authority_id(volume)).await?;
             if let Some(created) = &created {
                 assert_eq!(
-                    crate::kernel::decode_volume_created(
+                    crate::kernel::decode_volume_created::<Box<dyn Error>>(
                         &created.payload,
                         4 * 1024,
-                        &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(())
+                        &mut |_| Ok(())
                     )?
                     .volume_id,
                     volume
@@ -51,41 +44,17 @@ async fn workspace_creation_is_one_commit_and_exact_at_every_provider_cut()
                 "a fault at call {fail_at} was not reported"
             );
             // An interruption leaves no volume or the complete one.
-            let opened = fs
-                .open_workspace(
-                    "repo",
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                )
-                .await
-                .map(|receipt| receipt.value)
-                .map_err(|failure| failure.error);
+            let opened = fs.open_workspace("repo", B, &cancel).await;
             assert_eq!(opened.is_ok(), created.is_some());
-            let retried = fs
-                .create_workspace(
-                    "repo",
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                )
-                .await?
-                .value;
+            let retried = fs.create_workspace("repo", B, &cancel).await?.value;
             retried.write_text("/after.txt", "after").await?;
             assert_eq!(
-                fs.open_workspace(
-                    "repo",
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new()
-                )
-                .await?
-                .value
-                .read(
-                    "/after.txt",
-                    16,
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new()
-                )
-                .await?
-                .value,
+                fs.open_workspace("repo", B, &cancel)
+                    .await?
+                    .value
+                    .read("/after.txt", 16, B, &cancel)
+                    .await?
+                    .value,
                 OwnedBytes::from_static(b"after")
             );
         }
@@ -97,6 +66,7 @@ async fn workspace_creation_is_one_commit_and_exact_at_every_provider_cut()
 #[tokio::test]
 async fn a_fork_of_the_head_is_one_commit_and_exact_at_every_provider_cut()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     // The fork of a published head shares its lineage, which the same
     // commit extends with the new workspace's first generation.
     assert_eq!(fork_through_every_cut(false, None).await?, 1);
@@ -106,12 +76,14 @@ async fn a_fork_of_the_head_is_one_commit_and_exact_at_every_provider_cut()
 #[tokio::test]
 async fn an_independent_fork_is_one_commit_and_exact_at_every_provider_cut()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     assert_eq!(fork_through_every_cut(true, None).await?, 1);
     Ok(())
 }
 
 #[tokio::test]
 async fn filtered_forks_reconcile_at_every_provider_cut() -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     for advanced in [false, true] {
         for paths in [Vec::new(), vec!["/base.txt".to_owned()]] {
             assert_eq!(fork_through_every_cut(advanced, Some(paths)).await?, 1);

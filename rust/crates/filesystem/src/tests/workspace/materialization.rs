@@ -4,29 +4,18 @@ use super::*;
 #[tokio::test]
 async fn public_generation_materialize_path_is_a_complete_consumer_flow()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace(
-            "materialize-consumer",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("materialize-consumer", B, &cancel)
         .await?
         .value;
     let mut transaction = workspace
-        .begin_transaction(
-            IdempotencyKey::new(),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .begin_transaction(IdempotencyKey::new(), B, &cancel)
         .await?
         .value;
     transaction
-        .create_dir_all(
-            "/output/nested",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_dir_all("/output/nested", B, &cancel)
         .await?
         .value;
     transaction
@@ -40,23 +29,18 @@ async fn public_generation_materialize_path_is_a_complete_consumer_flow()
                 posix_mode: crate::kernel::MetadataField::Value(0o700),
                 ..FileMetadata::default()
             },
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            B,
+            &cancel,
         )
         .await?
         .value;
     let TransactionCommit::Committed(generation) = transaction
         .commit(
             None,
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            |_| async {
-                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::default(),
-                })
-            },
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            allow::<WorkspaceError>,
         )
         .await?
         .value
@@ -69,13 +53,13 @@ async fn public_generation_materialize_path_is_a_complete_consumer_flow()
             std::iter::once("/output/nested/status"),
             &crate::MaterializeOptions {
                 destination: destination.path().to_path_buf(),
-                expected_root_identity: None,
                 maximum_directory_entries: 32,
                 maximum_extent_spans: 32,
                 transfer_bytes: 4096,
+                expected_root_identity: None,
             },
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            B,
+            &cancel,
         )
         .await?;
     assert_eq!(receipt.value.files, 1);
@@ -89,13 +73,13 @@ async fn public_generation_materialize_path_is_a_complete_consumer_flow()
             std::iter::once("/output/nested"),
             &crate::MaterializeOptions {
                 destination: directory_destination.path().to_path_buf(),
-                expected_root_identity: None,
                 maximum_directory_entries: 32,
                 maximum_extent_spans: 32,
                 transfer_bytes: 4096,
+                expected_root_identity: None,
             },
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            B,
+            &cancel,
         )
         .await?;
     assert_eq!(
@@ -117,54 +101,33 @@ async fn public_generation_materialize_path_is_a_complete_consumer_flow()
 #[tokio::test]
 async fn public_generation_materialize_paths_shares_parents_and_hard_link_identity()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace(
-            "materialize-paths-consumer",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("materialize-paths-consumer", B, &cancel)
         .await?
         .value;
     let mut transaction = workspace
-        .begin_transaction(
-            IdempotencyKey::new(),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .begin_transaction(IdempotencyKey::new(), B, &cancel)
         .await?
         .value;
     transaction
-        .create_dir_all(
-            "/nested",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_dir_all("/nested", B, &cancel)
         .await?
         .value;
     transaction.write_text("/nested/a", "linked").await?;
     transaction
-        .hard_link(
-            "/nested/a",
-            "/nested/b",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .hard_link("/nested/a", "/nested/b", B, &cancel)
         .await?
         .value;
     transaction.write_text("/nested/c", "sibling").await?;
     let TransactionCommit::Committed(generation) = transaction
         .commit(
             None,
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            |_| async {
-                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::default(),
-                })
-            },
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            allow::<WorkspaceError>,
         )
         .await?
         .value
@@ -174,10 +137,16 @@ async fn public_generation_materialize_paths_shares_parents_and_hard_link_identi
     let destination = tempfile::tempdir()?;
     let receipt = generation
         .materialize(
-            ["/nested/a", "/nested/b", "/nested/c"].into_iter(),
+            (&[
+                "/nested/a".to_owned(),
+                "/nested/b".to_owned(),
+                "/nested/c".to_owned(),
+            ])
+                .iter()
+                .map(String::as_str),
             &crate::MaterializeOptions::native(destination.path()),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            B,
+            &cancel,
         )
         .await?;
     assert_eq!(receipt.value.files, 3);
@@ -197,29 +166,18 @@ async fn public_generation_materialize_paths_shares_parents_and_hard_link_identi
 #[tokio::test]
 async fn public_generation_restore_host_path_replaces_and_removes_exactly_one_path()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace(
-            "restore-host-consumer",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("restore-host-consumer", B, &cancel)
         .await?
         .value;
     let mut transaction = workspace
-        .begin_transaction(
-            IdempotencyKey::new(),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .begin_transaction(IdempotencyKey::new(), B, &cancel)
         .await?
         .value;
     transaction
-        .create_dir_all(
-            "/nested",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_dir_all("/nested", B, &cancel)
         .await?
         .value;
     transaction
@@ -228,15 +186,10 @@ async fn public_generation_restore_host_path_replaces_and_removes_exactly_one_pa
     let TransactionCommit::Committed(generation) = transaction
         .commit(
             None,
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            |_| async {
-                Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::default(),
-                })
-            },
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            allow::<WorkspaceError>,
         )
         .await?
         .value
@@ -249,18 +202,18 @@ async fn public_generation_restore_host_path_replaces_and_removes_exactly_one_pa
     std::fs::write(destination.path().join("sibling"), b"untouched")?;
     let options = crate::MaterializeOptions {
         destination: destination.path().to_path_buf(),
-        expected_root_identity: None,
         maximum_directory_entries: 32,
         maximum_extent_spans: 32,
         transfer_bytes: 4096,
+        expected_root_identity: None,
     };
     let restored = generation
         .restore_host_path(
             Path::new("nested/file"),
             crate::HostPathReplacement::Atomic,
             &options,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            B,
+            &cancel,
         )
         .await?;
     assert_eq!(restored.value, crate::HostPathRestore::Restored);
@@ -279,8 +232,8 @@ async fn public_generation_restore_host_path_replaces_and_removes_exactly_one_pa
             Path::new("missing"),
             crate::HostPathReplacement::Atomic,
             &options,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            B,
+            &cancel,
         )
         .await?;
     assert_eq!(removed.value, crate::HostPathRestore::Removed);
@@ -292,8 +245,8 @@ async fn public_generation_restore_host_path_replaces_and_removes_exactly_one_pa
                     invalid,
                     crate::HostPathReplacement::Atomic,
                     &options,
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
+                    B,
+                    &cancel,
                 )
                 .await
                 .is_err()
@@ -306,22 +259,13 @@ async fn public_generation_restore_host_path_replaces_and_removes_exactly_one_pa
 #[tokio::test]
 async fn public_generation_restore_host_path_rejects_symlinked_parent() -> Result<(), Box<dyn Error>>
 {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace(
-            "restore-host-containment",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("restore-host-containment", B, &cancel)
         .await?
         .value;
-    let generation = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let generation = workspace.head(B, &cancel).await?.value;
     let destination = tempfile::tempdir()?;
     let outside = tempfile::tempdir()?;
     std::os::unix::fs::symlink(outside.path(), destination.path().join("escape"))?;
@@ -331,13 +275,13 @@ async fn public_generation_restore_host_path_rejects_symlinked_parent() -> Resul
             crate::HostPathReplacement::Atomic,
             &crate::MaterializeOptions {
                 destination: destination.path().to_path_buf(),
-                expected_root_identity: None,
                 maximum_directory_entries: 32,
                 maximum_extent_spans: 32,
                 transfer_bytes: 4096,
+                expected_root_identity: None,
             },
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            B,
+            &cancel,
         )
         .await;
     assert!(result.is_err());
@@ -349,22 +293,13 @@ async fn public_generation_restore_host_path_rejects_symlinked_parent() -> Resul
 #[tokio::test]
 async fn public_generation_restore_host_path_rejects_reparse_parent_when_available()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let workspace = fs
-        .create_workspace(
-            "restore-host-containment-windows",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("restore-host-containment-windows", B, &cancel)
         .await?
         .value;
-    let generation = workspace
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let generation = workspace.head(B, &cancel).await?.value;
     let destination = tempfile::tempdir()?;
     let outside = tempfile::tempdir()?;
     if let Err(error) =
@@ -381,13 +316,13 @@ async fn public_generation_restore_host_path_rejects_reparse_parent_when_availab
             crate::HostPathReplacement::Atomic,
             &crate::MaterializeOptions {
                 destination: destination.path().to_path_buf(),
-                expected_root_identity: None,
                 maximum_directory_entries: 32,
                 maximum_extent_spans: 32,
                 transfer_bytes: 4096,
+                expected_root_identity: None,
             },
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
+            B,
+            &cancel,
         )
         .await;
     assert!(result.is_err());

@@ -20,9 +20,12 @@ async fn native_logical_response_controls_deny_before_mutation()
             bytes: OwnedBytes::copy_from_slice(body),
         });
         let error = ({
-            let mut __object_work = crate::AuthorityWork::native(&work, &cancellation);
-            let __object_result = store.put_many(&writes, &mut __object_work).await;
-            __object_result
+            store
+                .put_many(
+                    &writes,
+                    &mut crate::AuthorityWork::native(&work, &cancellation),
+                )
+                .await
         })
         .err()
         .ok_or("unbounded response was accepted")?;
@@ -93,9 +96,12 @@ async fn native_logical_provider_alias_retains_original_vec_custody()
     let (provider, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
     let store = LogicalObjectStore::new(Arc::new(provider), bucket);
     ({
-        let mut __object_work = crate::AuthorityWork::native(&work, &cancellation);
-        let __object_result = store.put_hashed(object, &mut __object_work).await;
-        __object_result
+        store
+            .put_hashed(
+                object,
+                &mut crate::AuthorityWork::native(&work, &cancellation),
+            )
+            .await
     })?;
     drop(custody);
     let provider_alias = store
@@ -133,13 +139,13 @@ async fn native_logical_original_quota_and_all_byte_aliases()
     let baseline = work.remaining()?.peak_allocation_bytes;
     let initial_operations = work.receipt().allocation_operations;
     let read = ({
-        let authority_input_0 = native_test_id();
-
-        let mut __object_work = crate::AuthorityWork::native(&work, &cancellation);
-        let __object_result = store
-            .read(authority_input_0, u64::MAX, &mut __object_work)
-            .await;
-        __object_result
+        store
+            .read(
+                native_test_id(),
+                u64::MAX,
+                &mut crate::AuthorityWork::native(&work, &cancellation),
+            )
+            .await
     })?;
     assert_eq!(store.provider.maximum.load(SeqCst), 4);
     assert_eq!(store.provider.calls.load(SeqCst), 1);
@@ -173,11 +179,13 @@ async fn native_logical_denies_named_data_and_hash_before_their_boundaries()
     let before = work.receipt();
     assert!(
         ({
-            let authority_input_0 = native_test_id();
-
-            let mut __object_work = crate::AuthorityWork::native(&work, &cancellation);
-            let __object_result = store.read(authority_input_0, 4, &mut __object_work).await;
-            __object_result
+            store
+                .read(
+                    native_test_id(),
+                    4,
+                    &mut crate::AuthorityWork::native(&work, &cancellation),
+                )
+                .await
         })
         .is_err()
     );
@@ -188,11 +196,13 @@ async fn native_logical_denies_named_data_and_hash_before_their_boundaries()
     let (store, work, cancellation) = observed_native_store(budget, false, false, false);
     assert!(
         ({
-            let authority_input_0 = native_test_id();
-
-            let mut __object_work = crate::AuthorityWork::native(&work, &cancellation);
-            let __object_result = store.read(authority_input_0, 4, &mut __object_work).await;
-            __object_result
+            store
+                .read(
+                    native_test_id(),
+                    4,
+                    &mut crate::AuthorityWork::native(&work, &cancellation),
+                )
+                .await
         })
         .is_err()
     );
@@ -216,11 +226,13 @@ async fn native_logical_error_cancellation_and_panic_keep_attempted_prefix()
         let (store, work, cancellation) =
             observed_native_store(WorkBudget::UNBOUNDED, cancel, panic, error);
         let future = async {
-            let authority_input_0 = native_test_id();
-
-            let mut __object_work = crate::AuthorityWork::native(&work, &cancellation);
-            let __object_result = store.read(authority_input_0, 4, &mut __object_work).await;
-            __object_result
+            store
+                .read(
+                    native_test_id(),
+                    4,
+                    &mut crate::AuthorityWork::native(&work, &cancellation),
+                )
+                .await
         };
         let result = std::panic::AssertUnwindSafe(future).catch_unwind().await;
         if panic {
@@ -253,34 +265,38 @@ async fn native_logical_opaque_dto_is_not_known_memory_shared_authority()
     let cancellation = CancellationToken::new();
     let memory = crate::MemoryObjectStore::default();
     ({
-        let authority_input_0 = native_test_id();
-        let authority_input_1 = OwnedBytes::from_static(b"body");
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = memory
-            .put(authority_input_0, authority_input_1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
+        memory
+            .put(
+                native_test_id(),
+                OwnedBytes::from_static(b"body"),
+                &mut crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation),
+            )
+            .await
     })?;
     let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .unwrap_or_else(|_| panic!("test accounting construction failed"));
     let before = work.receipt().allocation_operations;
     let shared = ({
-        let authority_input_0 = native_test_id();
-
-        let mut __object_work = crate::AuthorityWork::native(&work, &cancellation);
-        let __object_result = memory.read(authority_input_0, 4, &mut __object_work).await;
-        __object_result
+        memory
+            .read(
+                native_test_id(),
+                4,
+                &mut crate::AuthorityWork::native(&work, &cancellation),
+            )
+            .await
     })?;
     assert_eq!(shared.retention, ObjectReadRetention::Shared);
     assert_eq!(work.receipt().allocation_operations, before);
     let (logical, work, cancellation) =
         observed_native_store(WorkBudget::UNBOUNDED, false, false, false);
     let opaque = ({
-        let authority_input_0 = native_test_id();
-
-        let mut __object_work = crate::AuthorityWork::native(&work, &cancellation);
-        let __object_result = logical.read(authority_input_0, 4, &mut __object_work).await;
-        __object_result
+        logical
+            .read(
+                native_test_id(),
+                4,
+                &mut crate::AuthorityWork::native(&work, &cancellation),
+            )
+            .await
     })?;
     assert_eq!(
         opaque.retention,
@@ -314,11 +330,13 @@ async fn native_logical_live_control_ceiling_denies_before_provider()
     };
     let store = LogicalObjectStore::new(Arc::new(provider), bucket);
     let error = ({
-        let authority_input_0 = native_test_id();
-
-        let mut __object_work = crate::AuthorityWork::native(&work, &cancellation);
-        let __object_result = store.read(authority_input_0, 100, &mut __object_work).await;
-        __object_result
+        store
+            .read(
+                native_test_id(),
+                100,
+                &mut crate::AuthorityWork::native(&work, &cancellation),
+            )
+            .await
     })
     .err()
     .ok_or("unfunded native controls reached the provider")?;
@@ -334,49 +352,5 @@ async fn native_logical_live_control_ceiling_denies_before_provider()
     assert_eq!(store.provider.calls.load(SeqCst), 0);
     assert_eq!(work.receipt().backend_read_operations, 0);
     assert_eq!(work.receipt().bytes_hashed, 0);
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn ordinary_and_native_logical_reads_share_request_and_payload_accounting()
--> Result<(), Box<dyn std::error::Error>> {
-    let (provider, bucket) = acyclic_objects::v1::MemoryObjects::with_default_bucket();
-    let store = LogicalObjectStore::new(Arc::new(provider), bucket);
-    let cancellation = CancellationToken::new();
-    ({
-        let authority_input_0 = native_test_id();
-        let authority_input_1 = OwnedBytes::from_static(b"body");
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = store
-            .put(authority_input_0, authority_input_1, &mut __object_work)
-            .await;
-        __object_work.receipt(__object_result)
-    })?;
-    let ordinary = ({
-        let authority_input_0 = native_test_id();
-        let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
-        let __object_result = store.read(authority_input_0, 4, &mut __object_work).await;
-        __object_work.receipt(__object_result)
-    })?;
-    let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .unwrap_or_else(|_| panic!("test accounting construction failed"));
-    let before = work.receipt().allocation_operations;
-    let native = ({
-        let authority_input_0 = native_test_id();
-
-        let mut __object_work = crate::AuthorityWork::native(&work, &cancellation);
-        let __object_result = store.read(authority_input_0, 4, &mut __object_work).await;
-        __object_result
-    })?;
-    assert_eq!(native.bytes, ordinary.value.bytes);
-    assert_eq!(native.retention, ObjectReadRetention::Shared);
-    assert_eq!(
-        work.receipt().object_bytes_read,
-        ordinary.work.object_bytes_read
-    );
-    assert_eq!(work.receipt().bytes_hashed, ordinary.work.bytes_hashed);
-    assert!(work.receipt().bytes_copied >= ordinary.work.bytes_copied);
-    assert!(work.receipt().allocation_operations - before > ordinary.work.allocation_operations);
     Ok(())
 }

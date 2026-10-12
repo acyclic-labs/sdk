@@ -132,7 +132,7 @@ async fn lazy_workspace(
         FilesystemProfile::Posix
     };
     let demand = NativeDemandSource::open(
-        std::borrow::Cow::Owned(std::path::Path::new(&source_root).to_path_buf()),
+        std::borrow::Cow::Owned(source_root),
         profile,
         VolumeLimits::default(),
         None,
@@ -258,17 +258,6 @@ fn measure_common(source: &str, view: &dyn MountFilesystem) -> TestResult {
             .write_range(0, Bytes::from_static(b"written"))
     })?;
     measure(&mut measured, "flush", || view.flush(&work))?;
-    let profile = if cfg!(debug_assertions) {
-        "unoptimized"
-    } else {
-        "optimized"
-    };
-    for (kind, used, budget) in &measured {
-        println!(
-            "stack {} {profile} {source} {kind}: {used} KiB of {budget} KiB",
-            std::env::consts::OS
-        );
-    }
     assert_eq!(
         measured.len(),
         BUDGETS.len(),
