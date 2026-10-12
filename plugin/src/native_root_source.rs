@@ -702,7 +702,7 @@ mod tests {
         // Fixture::new obtained this protected result by observing the real
         // original Root effect and its actual Filesystem creator resources.
         let created = &fixture.root_allocation.roots[key];
-        if created.repository_workspace_id != fixture.source.workspace().id().into_bytes() {
+        if created.repository_workspace_id != fixture.root_handle.workspace.workspace().id().into_bytes() {
             return Err(RootError::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Conflict,
                 reason: "fixture source differs from its protected original creator",

@@ -2986,8 +2986,8 @@ impl NativeWorkspaceTransaction {
         self.inner
             .lock()
             .await
-            .write(&path, bytes::Bytes::from(bytes.to_vec()))
-            .await
+            .write(&path, bytes::Bytes::from(bytes.to_vec()), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(napi_error)
     }
 
@@ -3001,8 +3001,8 @@ impl NativeWorkspaceTransaction {
         self.inner
             .lock()
             .await
-            .remove(&path)
-            .await
+            .remove(&path, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(napi_error)
     }
 

@@ -135,7 +135,7 @@ impl WasmTaskRuntime {
         }
         cancellation.check().map_err(|error| js_error(Error::Storage(error.to_string())))?;
         let parent = StreamAggregate::open(&self.stream, caller_owner.reducer.authority().clone(),
-            caller_owner.issuer.verifier(&mut None).expect("verifier copy"), super::super::schema_registry(schemas)?).await.map_err(js_error)?;
+            caller_owner.issuer.verifier(&mut None).expect("verifier copy"), super::super::schema_registry(schemas)?, None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await.map_err(js_error)?;
         cancellation.check().map_err(|error| js_error(Error::Storage(error.to_string())))?;
         let snapshot = parent.reducer().snapshot(1, &mut None).map(|(snapshot, _)| snapshot).map_err(js_error)?;
         let arguments: ForkToolArguments = from_js(arguments)?;
@@ -216,7 +216,7 @@ impl WasmTaskRuntime {
         let lease = from_js(lease)?;
         self.validate_recursive_lease(source, &lease).await?;
         let commands = self.commands().with_fork_preparer(source.binding.preparer.clone());
-        work_to_js(&work_value(self.runtime.resume_task(lease, &commands, maximum_transitions).await))
+        work_to_js(&work_value(self.runtime.resume_task(lease, &commands, maximum_transitions, None).await))
     }
 
     #[wasm_bindgen(js_name = reconcileForkPreparation, unchecked_return_type = "WasmBrowserWork")]

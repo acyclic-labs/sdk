@@ -4,32 +4,16 @@ import type {
   WasmRawFileRecordSnapshot,
   WorkspaceFileKind,
 } from "./contracts.js";
-import type * as NativeBinding from "../generated/native/binding.js";
-import type * as WasmBinding from "../generated/wasm/acyclic_fs_wasm.js";
 import { isFileKind } from "../generated/hosted-contract.js";
 import { copyBytes } from "./binding-values.js";
 
-type RawFileRecord = WasmRawFileRecordSnapshot;
-type BoundaryFileKind = WorkspaceFileKind | WasmBinding.FileKind | NativeBinding.FileKind;
-type RawTreeEntry = TreeEntrySnapshot;
-
-/**
- * File-kind values are validated and emitted as finite Rust-owned types at
- * each native/WASM boundary. Keep this projection as a type-preserving seam
- * for the shared adapters; do not duplicate the Rust domain list here.
- */
-export function projectFileKind(value: BoundaryFileKind): WorkspaceFileKind {
+/** Validates the generated binding file kind. */
+export function projectFileKind(value: string): WorkspaceFileKind {
   if (!isFileKind(value)) throw new TypeError("filesystem binding returned an invalid file kind");
   return value;
 }
 
-/** Validate the stringly accessor exposed by generated resolved-file classes. */
-export function projectRawFileKind(value: string): WorkspaceFileKind {
-  if (!isFileKind(value)) throw new TypeError("filesystem binding returned an invalid file kind");
-  return value;
-}
-
-export function copyFileRecord(record: FileRecordSnapshot | RawFileRecord): FileRecordSnapshot {
+export function copyFileRecord(record: FileRecordSnapshot | WasmRawFileRecordSnapshot): FileRecordSnapshot {
   return {
     ...record,
     fileKind: projectFileKind(record.fileKind),
@@ -103,7 +87,7 @@ export function copyDirectoryRecordPage(value: {
     hasMore: value.hasMore, work };
 }
 
-function copyTreeEntry(entry: RawTreeEntry): TreeEntrySnapshot {
+function copyTreeEntry(entry: TreeEntrySnapshot): TreeEntrySnapshot {
   return {
     ...entry,
     fileKind: projectFileKind(entry.fileKind),
@@ -115,8 +99,8 @@ function copyTreeEntry(entry: RawTreeEntry): TreeEntrySnapshot {
 export function copyBindingChange(change: {
   readonly directoryId: Uint8Array;
   readonly name: TreeEntrySnapshot["name"];
-  readonly before: RawTreeEntry | undefined;
-  readonly after: RawTreeEntry | undefined;
+  readonly before: TreeEntrySnapshot | undefined;
+  readonly after: TreeEntrySnapshot | undefined;
 }): DirectoryBindingChange {
   return {
     ...change,
@@ -130,14 +114,14 @@ export function copyBindingChange(change: {
 export function copyGenerationDiff(value: {
   readonly files: readonly {
     readonly fileId: Uint8Array;
-    readonly before: FileRecordSnapshot | RawFileRecord | undefined;
-    readonly after: FileRecordSnapshot | RawFileRecord | undefined;
+    readonly before: FileRecordSnapshot | WasmRawFileRecordSnapshot | undefined;
+    readonly after: FileRecordSnapshot | WasmRawFileRecordSnapshot | undefined;
   }[];
   readonly bindings: readonly {
     readonly directoryId: Uint8Array;
     readonly name: TreeEntrySnapshot["name"];
-    readonly before: RawTreeEntry | undefined;
-    readonly after: RawTreeEntry | undefined;
+    readonly before: TreeEntrySnapshot | undefined;
+    readonly after: TreeEntrySnapshot | undefined;
   }[];
   readonly truncated: boolean;
 }, work: WorkCounters): GenerationDiff {

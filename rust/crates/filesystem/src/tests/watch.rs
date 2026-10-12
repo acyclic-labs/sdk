@@ -1,4 +1,5 @@
 use super::*;
+use crate::demand::NativeSourceWork;
 
 #[test]
 fn native_root_identity_encoding_is_exact_and_round_trips() {
@@ -124,10 +125,10 @@ fn root_replacement_during_a_baseline_invalidates_the_rescan()
     let original_identity = watch.root_identity();
     let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    watch.begin_rescan_with_native_work(&work)?;
+    watch.begin_rescan_with_work(&mut NativeSourceWork::from_native_materialization_work(&work))?;
     std::fs::rename(&root, &displaced)?;
     std::fs::create_dir(&root)?;
-    let finished = watch.finish_rescan_with_native_work(&work)?;
+    let finished = watch.finish_rescan_with_work(&mut NativeSourceWork::from_native_materialization_work(&work))?;
     assert_eq!(watch.root_identity(), original_identity);
     assert!(matches!(
         finished,
@@ -287,10 +288,10 @@ fn measured_native_watch_baseline_failures_leave_the_rescan_recoverable()
     watch.abort_rescan(WatchInvalidationReason::NativeRescanRequired)?;
     let work = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
         .map_err(|(error, _)| error)?;
-    watch.begin_rescan_with_native_work(&work)?;
-    assert!(matches!(watch.finish_rescan_with_native_work(&cancelled_work),
+    watch.begin_rescan_with_work(&mut NativeSourceWork::from_native_materialization_work(&work))?;
+    assert!(matches!(watch.finish_rescan_with_work(&mut NativeSourceWork::from_native_materialization_work(&cancelled_work)),
         Err(NativeWatchError::Cancelled(_))));
-    assert!(matches!(watch.finish_rescan_with_native_work(&denied),
+    assert!(matches!(watch.finish_rescan_with_work(&mut NativeSourceWork::from_native_materialization_work(&denied)),
         Err(NativeWatchError::Work(_))));
     watch.abort_rescan(WatchInvalidationReason::NativeRescanRequired)?;
     assert!(matches!(watch.accept_lazy_baseline_with_native_work(&work)?,
@@ -317,7 +318,7 @@ fn measured_native_watch_cleanup_retains_prior_work_and_can_be_retried()
     let denied = crate::NativeMaterializationWork::new(WorkBudget {
         backend_write_operations: 1, ..WorkBudget::UNBOUNDED
     }, &cancellation).map_err(|(error, _)| error)?;
-    assert!(matches!(watch.begin_rescan_with_native_work(&denied), Err(NativeWatchError::Work(_))));
+    assert!(matches!(watch.begin_rescan_with_work(&mut NativeSourceWork::from_native_materialization_work(&denied)), Err(NativeWatchError::Work(_))));
     assert!(!watch.watched_directories.contains(&root.join("a")));
     assert!(watch.watched_directories.contains(&root.join("b")));
     watch.abort_rescan(WatchInvalidationReason::NativeRescanRequired)?;

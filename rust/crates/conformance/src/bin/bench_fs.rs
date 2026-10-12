@@ -57,7 +57,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         for index in 0..writes {
             Box::pin(transaction.write(
                 &format!("/entry-{index:04}"),
-                Bytes::from(format!("value-{index}")),
+                Bytes::from(format!("value-{index}")), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),
             ))
             .await?;
         }

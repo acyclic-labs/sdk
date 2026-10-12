@@ -129,11 +129,7 @@ pub struct ProviderJoinProof {
 
 impl ProviderJoinProof {
     /// Rejects an invalid or unbounded provider proof.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    pub(crate) fn validate_with_work(
+    pub fn validate(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
@@ -252,11 +248,7 @@ pub struct ProjectMergeReceipt {
 
 impl ProjectMergeReceipt {
     /// Checks ref-only shape and provider identities without fork lineage.
-    pub fn validate_shape(&self) -> Result<()> {
-        self.validate_shape_with_work(&mut None)
-    }
-
-    pub(crate) fn validate_shape_with_work(
+    pub fn validate_shape(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
@@ -280,7 +272,7 @@ impl ProjectMergeReceipt {
         self.source_generation.validate_with_work(work)?;
         self.expected_target_generation.validate_with_work(work)?;
         self.result_generation.validate_with_work(work)?;
-        self.provider_proof.validate_with_work(work)?;
+        self.provider_proof.validate(work)?;
         self.notice.validate(work)?;
         if self.notice.kind != MessageKind::Merge {
             return Err(merge_boundary(work, "project merge notice has the wrong kind"));
@@ -293,7 +285,7 @@ impl ProjectMergeReceipt {
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<(Self, u64)> {
         if work.is_none() { return Ok((self.clone(), 0)); }
-        self.validate_shape_with_work(work)?;
+        self.validate_shape(work)?;
         // FIRST: all copied DTO fields drop before the quota on failure.
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let receipt = Self {
@@ -319,7 +311,7 @@ impl ProjectMergeReceipt {
 
     /// Checks the receipt against the exact child fork selected by the parent.
     pub fn validate(&self, seed: &ForkSeed) -> Result<()> {
-        self.validate_shape()?;
+        self.validate_shape(&mut None)?;
         if self.child != seed.child {
             return Err(Error::Invalid(
                 "project merge child does not match fork seed".into(),
@@ -381,7 +373,7 @@ mod tests {
         assert!(forged.validate(&seed).is_err());
         let mut unsafe_proof = receipt.provider_proof;
         unsafe_proof.statement = serde_json::json!({"unsafe": 9_007_199_254_740_992_u64});
-        assert!(unsafe_proof.validate().is_err());
+        assert!(unsafe_proof.validate(&mut None).is_err());
         Ok(())
     }
 
@@ -399,7 +391,7 @@ mod tests {
             }],
         };
         receipt.notice.extensions.insert("merge-proof".into(), receipt.notice.content.clone());
-        receipt.validate_shape()?;
+        receipt.validate_shape(&mut None)?;
         Ok(receipt)
     }
 
@@ -416,11 +408,11 @@ mod tests {
         ] {
             let mut malformed = receipt.clone();
             malformed.provider_proof.statement = statement;
-            assert!(malformed.validate_shape().is_err());
+            assert!(malformed.validate_shape(&mut None).is_err());
         }
         let mut malformed = receipt;
         malformed.provider_operation_id.fill(0);
-        assert!(malformed.validate_shape().is_err());
+        assert!(malformed.validate_shape(&mut None).is_err());
         Ok(())
     }
 
@@ -452,7 +444,7 @@ mod tests {
         assert_eq!(observed.work.bytes_hashed, 0);
         let mut denied = HistoryWork::new(
             acyclic_fs::WorkBudget { items_examined: 0, ..field_copy_budget() }, &cancellation);
-        assert!(receipt.validate_shape_with_work(&mut Some(&mut denied)).is_err());
+        assert!(receipt.validate_shape(&mut Some(&mut denied)).is_err());
         let mut partial = HistoryWork::new(
             acyclic_fs::WorkBudget { bytes_copied: receipt.child.id.len() as u64, ..field_copy_budget() },
             &cancellation);
@@ -507,7 +499,7 @@ mod tests {
         let baseline = NativeMaterializationWork::new(field_copy_budget(), &baseline_token)
             .expect("validation-only original ledger");
         let mut baseline_io = crate::store::history::native_work_io(&baseline).expect("validation observer");
-        receipt.validate_shape_with_work(&mut Some(&mut baseline_io))?;
+        receipt.validate_shape(&mut Some(&mut baseline_io))?;
         let validation_copies = baseline.receipt().bytes_copied;
         assert_eq!(baseline_io.into_custody().bytes(), 0);
         let cancellation = CancellationToken::new();

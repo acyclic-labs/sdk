@@ -46,7 +46,7 @@ pub struct AuthorityBinding {
 impl AuthorityBinding {
     pub(super) fn verifier(&self) -> Result<AuthorityVerifier> {
         let verifier = AuthorityIssuer::new(&self.issuer, self.key, self.authority.clone()).verifier(&mut None).expect("verifier copy");
-        verifier.verify(&self.scope)?;
+        verifier.verify(&self.scope, &mut None)?;
         Ok(verifier)
     }
 }
@@ -130,7 +130,7 @@ impl WorkflowContext {
             pipeline = pipeline.with(Arc::new(discovered.clone().stage(ContextPlacement::Prepend)?));
         }
         for attribute in &self.attributes {
-            attribute.validate()?;
+            attribute.validate(&mut None)?;
             let mode = self.attribute_mode.unwrap_or(ContextRenderMode::Prompt);
             let text = serde_json::to_string(attribute).map_err(|error| Error::Invalid(error.to_string()))?;
             pipeline = pipeline.with(Arc::new(SourceStage::new(
@@ -207,7 +207,7 @@ impl NativeSession {
         let source = super::native_tools::source(&config, stream.clone(), files.clone())?;
         if let Some(graph_root) = config.project_source_root {
             let policy = acyclic_harness::filesystem::FsRootProjectSourceProvider::new(
-                files.clone(), config.owner.authority.clone(), graph_root,
+                files.clone(), &config.owner.authority, graph_root, None,
             )?;
             source.with_project_source_policy(
                 AuthorityIssuer::new(&config.owner.issuer, config.owner.key, config.owner.authority.clone()),
@@ -229,14 +229,12 @@ impl NativeSession {
             }), serde_json::json!({"type":"object"}),
         )?.requires("host")?.requires("model")?)?;
         let mut machines = MachineRegistry::default();
-        machines.register(machine)?;
-        machines.register(preparation)?;
-        machines.register(mailbox)?;
+        machines.register(machine, &mut None)?;
+        machines.register(preparation, &mut None)?;
+        machines.register(mailbox, &mut None)?;
         let scope = RuntimeScope::new(config.owner.scope.capabilities().clone(), config.limits)?
-            .with_run_limits(config.run_limits)?;
-        let creation = Arc::new(FilesystemResourceCreationProvider::new(
-            files.clone(), AuthorityIssuer::new(&config.owner.issuer, config.owner.key, config.owner.authority.clone()),
-        )?);
+            .with_run_limits(config.run_limits, &mut None)?;
+        let creation = Arc::new(FilesystemResourceCreationProvider::new(files.clone(), &AuthorityIssuer::new(&config.owner.issuer, config.owner.key, config.owner.authority.clone()), #[cfg(not(target_arch = "wasm32"))] None)?);
         let runtime = Arc::new(Runtime::open_with_creation_providers(
             stream.clone(), files.clone(), config.private_volume.clone(), verifier,
             config.owner.scope.clone(), scope, tasks, machines, toolset.tools,
@@ -364,7 +362,7 @@ impl NativeSession {
 
     pub async fn claim(&self, task: TaskId, worker: &Worker) -> Result<WorkPull> {
         let admission = self.runtime.task_host().observe_admission(task).await?;
-        self.runtime.poll_task_wake(task).await?;
+        self.runtime.poll_task_wake(task, None).await?;
         self.runtime.task_host().pull_operation(worker, admission.operation_id).await
     }
 
@@ -380,7 +378,7 @@ impl NativeSession {
             self.context.read().map_err(|_| Error::Storage("context lock poisoned".into()))?.pipeline()?,
             Default::default(),
         );
-        render_attempt(self.runtime.resume_task(lease, &commands, 16).await)
+        render_attempt(self.runtime.resume_task(lease, &commands, 16, None).await)
     }
 
     /// Resolve the caller through canonical admission and verify its actual retained fence before granting any scoped file/mail/workflow handle.
@@ -450,18 +448,16 @@ impl NativeSession {
             self.files.clone(), &parent_binding.owner.verifier()?, &parent_binding.owner.scope,
             MAX_FRAME_BYTES as u64, None,
         )?);
-        let mut parent = StreamAggregate::open_with_read_limits(
+        let mut parent = StreamAggregate::open(
             &self.stream, parent_binding.owner.authority.clone(), parent_binding.owner.verifier()?,
-            SchemaRegistry::default(), HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 },
-        ).await?.with_content_verifier(content)
+            SchemaRegistry::default(), None, HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 }, crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?.with_content_verifier(content)
             .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
                 Arc::new(FilesystemForkVerifier::new(self.files.clone(), MAX_FRAME_BYTES as u64)?),
                 Arc::new(StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut None)?),
             ], &mut None)?));
-        let mut child = StreamAggregate::open_with_read_limits(
+        let mut child = StreamAggregate::open(
             &self.stream, child_binding.authority.clone(), child_binding.verifier()?,
-            SchemaRegistry::default(), HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 },
-        ).await?;
+            SchemaRegistry::default(), None, HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 }, crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?;
         let seed = child.spawn_from_report(&mut parent, report,
             parent_binding.owner.scope.clone(), child_binding.scope.clone()).await?;
         let operation = input.child.operation_id;
@@ -537,14 +533,14 @@ impl HarnessWireApi for NativeSession {
             let reader = Arc::new(FilesystemContentVerifier::new(
                 self.files.clone(), &verifier, &binding.scope, MAX_FRAME_BYTES as u64, None,
             )?);
-            let mut aggregate = StreamAggregate::open(&self.stream, authority, verifier, SchemaRegistry::new()).await?
+            let mut aggregate = StreamAggregate::open(&self.stream, authority, verifier, SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?
                 .with_content_verifier(reader)
                 .with_fork_verifier(Arc::new(CompositeForkVerifier::new(&[
                     Arc::new(FilesystemForkVerifier::new(self.files.clone(), MAX_FRAME_BYTES as u64)?),
                     Arc::new(StreamHistoryForkVerifier::new(&self.config.stream_provider, &mut None)?),
                 ], &mut None)?))
                 .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(self.files.clone())));
-            let (state, error) = match aggregate.execute(command).await {
+            let (state, error) = match aggregate.execute(command, #[cfg(feature = "filesystem")] None, &mut None).await {
                 Ok(_) => (wire::AdmissionState::Accepted, None),
                 Err(error @ Error::Indeterminate(_)) => (wire::AdmissionState::Indeterminate, Some(acyclic_harness::encode_error(&error))),
                 Err(error) => (wire::AdmissionState::Rejected, Some(acyclic_harness::encode_error(&error))),
@@ -567,7 +563,7 @@ impl HarnessWireApi for NativeSession {
             let authority = cursor.authority.as_ref().ok_or_else(|| Error::Invalid("cursor authority missing".into()))?;
             let binding = self.binding(authority)?;
             let reader = HistoryReader::new(&self.stream, &binding.authority, binding.verifier()?)?;
-            let pinned = reader.pin(cursor.revision).await?;
+            let pinned = reader.pin(cursor.revision, None).await?;
             let page = reader.read_page(&pinned, HistoryReadLimits {
                 maximum_events: MAX_PAGE_EVENTS as u32,
                 maximum_bytes: (MAX_FRAME_BYTES - 8192) as u64,
