@@ -567,7 +567,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             observer.check_cancellation()?;
             observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
         }
-        crate::core::source_metadata_inspection_with_work(
+        crate::core::inspect_metadata(
             &(scope.grants(), &self.input_grants),
             work,
         )?;
@@ -634,7 +634,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             .as_ref()
             .map_or(&[][..], |access| access.proofs.as_slice());
         crate::executor::with_history_io(io, |work| {
-            crate::core::source_metadata_inspection_with_work(
+            crate::core::inspect_metadata(
                 &(
                     context.scope().grants(),
                     &self.input_grants,
@@ -2357,7 +2357,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 "current caller has no authenticated publication audience",
             )
         })?;
-        crate::core::source_metadata_inspection_with_work(&(audience, parent), work)?;
+        crate::core::inspect_metadata(&(audience, parent), work)?;
         if audience != parent {
             return Err(admission_boundary(
                 work,
@@ -8920,7 +8920,7 @@ pub(crate) mod tests {
             request: Mutex::new(None),
         });
         let mut providers = EffectRegistry::default().with_result_resolver(payloads.clone());
-        providers.register(receipt.clone())?;
+        providers.register(receipt.clone(), None)?;
         let conversation = Authority {
             kind: AggregateKind::Conversation,
             id: "effect-conversation".into(),

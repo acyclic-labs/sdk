@@ -18,7 +18,7 @@ impl Snapshot {
     /// Copies authenticated state under the optional work ledger.
     pub fn copy(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<Self> {
         self.require_work(work)?;
-        source_metadata_inspection_with_work(self, work)?;
+        inspect_metadata(self, work)?;
         let bytes = if work.is_some() {
             self.fields_owned_bytes()?
         } else {
@@ -92,12 +92,17 @@ impl Reducer {
         }
         let mut bytes = 0;
         if work.is_some() {
-            native_custody::NativeComponentCustody::visit(self, |key, owned| {
-                if !matches!(key, NativeComponentKey::ConversationMessage(_)) {
-                    bytes = ownership::owned_sum([bytes, owned])?;
-                }
-                Ok(())
-            })?;
+            self.projection.visit(
+                &self.authority,
+                self.events.iter(),
+                self.events.capacity(),
+                |key, owned| {
+                    if !matches!(key, NativeComponentKey::ConversationMessage(_)) {
+                        bytes = ownership::owned_sum([bytes, owned])?;
+                    }
+                    Ok(())
+                },
+            )?;
         }
         let mut quota = admit_copy(bytes, work)?;
         let (conversation, retained) = match self.resident_checkpoint_selection() {

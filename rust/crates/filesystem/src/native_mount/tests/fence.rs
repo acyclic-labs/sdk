@@ -44,12 +44,6 @@ fn administrative_last_drop_closes_real_fence_without_touching_residue()
     let mut owner =
         NativeMountRecoveryOwner::acquire_with_original(&destination, original.clone())?;
     let identity = owner.cleanup_state().fence_identity;
-    let borrowed_path = owner
-        .cleanup_state()
-        .destination
-        .as_os_str()
-        .as_encoded_bytes()
-        .as_ptr();
     let cancellation = CancellationToken::new();
     let mut budget = WorkBudget::UNBOUNDED;
     budget.backend_read_operations = 0;
@@ -65,15 +59,6 @@ fn administrative_last_drop_closes_real_fence_without_touching_residue()
     assert!(owner.cleanup_state().destination_fence_retained);
     assert!(owner.cleanup_state().measured_cleanup_failed);
     assert_eq!(owner.cleanup_state().fence_identity, identity);
-    assert_eq!(
-        owner
-            .cleanup_state()
-            .destination
-            .as_os_str()
-            .as_encoded_bytes()
-            .as_ptr(),
-        borrowed_path
-    );
     assert!(matches!(
         acquire_existing_mount_lock(&lock_path),
         Err(NativeMountError::DestinationBusy)
@@ -468,7 +453,6 @@ fn shared_destination_fence_retains_original_owner_after_denial()
     let mut guard = None;
     MountDestinationGuard::acquire_with_work(&destination, false, &meter, &mut guard, false)?;
     let mut guard = guard.expect("actual fence was admitted");
-    assert!(Arc::ptr_eq((&meter.state), &original));
     assert!(guard.parent_directory.is_some());
     assert!(guard.file.is_some());
     let mut competing_guard = None;

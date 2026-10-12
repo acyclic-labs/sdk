@@ -8,7 +8,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Workspace<A, O> {
         work.finish(result, &accounting)
     }
 
-    pub(super) async fn checkout_accounted(&self, selector: GenerationSelector, mode: CheckoutMode, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken) -> Result<Checkout<A, O>, WorkspaceError> {
+    pub(crate) async fn checkout_accounted(&self, selector: GenerationSelector, mode: CheckoutMode, accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken) -> Result<Checkout<A, O>, WorkspaceError> {
         accounting.check()?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = accounting.native_work() {

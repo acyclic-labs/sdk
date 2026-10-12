@@ -144,10 +144,11 @@ async fn source_requires_its_current_protected_original_root_record() -> Result<
     let initial = ProjectSourceSnapshot {
         project: selection.project.clone(),
         generation: GenerationRef::new(
-            fixture.filesystem_provider.clone(),
-            birth.initial_generation.digest().into_bytes().to_vec(),
+            &fixture.filesystem_provider,
+            birth.initial_generation.digest().as_bytes(),
             None,
-        )?,
+            None,
+        )?.0,
         native_snapshot: None,
     };
     assert!(

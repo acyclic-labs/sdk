@@ -1,6 +1,5 @@
 use super::*;
 use crate::demand::native::NativeDemandSource;
-use crate::lazy_workspace::LazyReadonlyNode;
 use crate::model::{FilesystemProfile, VolumeLimits};
 use crate::{Fs, MemoryLazyWorkspaceStore, PublicationPermit};
 

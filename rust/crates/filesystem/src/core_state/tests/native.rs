@@ -34,13 +34,13 @@ fn paid_lineage(
     value: &WorkspaceLineageRecord,
     work: &NativeMaterializationWork,
     cxl: &crate::CancellationToken,
-) -> NativeOwnedCoreState<WorkspaceLineageRecord> {
+) -> (WorkspaceLineageRecord, crate::NativeAllocation) {
     let owned =
         native_records::clone_native_record_value(&RecordValue::Lineage(value.clone()), work, cxl)
             .expect("actual original producer");
-    let parts = owned.into_parts();
+    let parts = owned;
     match parts.0 {
-        RecordValue::Lineage(value) => NativeOwnedCoreState::from_parts(value, parts.1),
+        RecordValue::Lineage(value) => (value, parts.1),
         _ => panic!("lineage producer changed its actual type"),
     }
 }
@@ -104,8 +104,8 @@ async fn stock_native_lineage_preserves_original_resource_and_durable_restart() 
         .await
         .expect("stock original load")
         .expect("exact record");
-    assert_eq!(loaded.as_state(), &value);
-    let parts = loaded.into_parts();
+    assert_eq!((&loaded.0), &value);
+    let parts = loaded;
     assert!(parts.1.work().shares_allocation_context(&work));
     drop(parts);
     assert!(
@@ -126,7 +126,7 @@ async fn stock_native_lineage_preserves_original_resource_and_durable_restart() 
         .await
         .expect("cold canonical WAL replay")
         .expect("durable record");
-    assert_eq!(loaded.as_state(), &value);
+    assert_eq!((&loaded.0), &value);
     assert_eq!(
         WorkspaceLineageStore::load(&restarted, id)
             .await
@@ -171,7 +171,7 @@ async fn stock_native_input_forgeries_and_cancellation_fail_before_exchange() {
         )
     ));
     assert_eq!(work.receipt(), before);
-    let forged = NativeOwnedCoreState::from_parts(
+    let forged = (
         lineage(id),
         work.claim(0, 0, crate::WorkCounters::UNCHARGED)
             .expect("zero-byte caller guard"),
@@ -201,11 +201,9 @@ async fn stock_native_input_forgeries_and_cancellation_fail_before_exchange() {
         .expect_err("original cancellation");
     assert!(matches!(
         error.0,
-        crate::lineage::WorkspaceLineageError::Store(
-            LocalCoreStateStoreError::MaterializationWork(
-                NativeTreeMaterializationError::Cancelled
-            )
-        )
+        crate::lineage::WorkspaceLineageError::Store(LocalCoreStateStoreError::LazyWork(
+            crate::LazyWorkspaceError::Cancelled
+        ))
     ));
     assert_eq!(work.receipt(), before);
     assert!(!store.root().exists());
@@ -236,9 +234,9 @@ async fn stock_native_context_projects_deep_payload_and_stops_at_exact_source_li
             .expect_err("real original read boundary");
     assert!(matches!(
         error.0,
-        crate::workspace_context::WorkspaceContextError::Store(
-            LocalCoreStateStoreError::MaterializationWork(NativeTreeMaterializationError::Work(_))
-        )
+        crate::workspace_context::WorkspaceContextError::Store(LocalCoreStateStoreError::LazyWork(
+            crate::LazyWorkspaceError::Demand(crate::DemandError::Work(_))
+        ))
     ));
     assert_eq!(tight_work.receipt().source_bytes_read, 7);
     let original =
@@ -250,8 +248,8 @@ async fn stock_native_context_projects_deep_payload_and_stops_at_exact_source_li
         .await
         .expect("funded deep projection")
         .expect("context");
-    assert_eq!(loaded.as_state(), &value);
-    let mut parts = loaded.into_parts();
+    assert_eq!((&loaded.0), &value);
+    let mut parts = loaded;
     assert!(parts.1.work().shares_allocation_context(&work));
     assert_eq!(
         parts.1.bytes(),
@@ -264,7 +262,7 @@ async fn stock_native_context_projects_deep_payload_and_stops_at_exact_source_li
             &store,
             id,
             1,
-            NativeOwnedCoreState::from_parts(parts.0, parts.1),
+            (parts.0, parts.1),
             &work,
             &cancellation,
         )
@@ -277,9 +275,9 @@ async fn stock_native_context_projects_deep_payload_and_stops_at_exact_source_li
         .await
         .expect("reopened original context")
         .expect("context");
-    assert_eq!(actual.as_state().revision, 2);
-    assert_eq!(actual.as_state().state, WorkspaceContextState::Frozen);
-    assert_eq!(actual.as_state().roots, value.roots);
+    assert_eq!((&actual.0).revision, 2);
+    assert_eq!((&actual.0).state, WorkspaceContextState::Frozen);
+    assert_eq!((&actual.0).roots, value.roots);
     work.receipt()
         .verify(finite_budget())
         .expect("finite root resource");
@@ -350,61 +348,61 @@ async fn intact_corrupt_native_log_retains_exact_error_path_custody() {
 proptest::proptest! {
     #![proptest_config(proptest::test_runner::Config::with_cases(16))]
     #[test]
-    fn ordinary_and_native_context_parent_transitions_survive_real_wal_restart(moves in proptest::collection::vec(0_u8..4, 1..12)) {
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("test runtime");
-        runtime.block_on(async {
-            for native in [false, true] {
-                let directory = tempfile::tempdir().expect("real canonical namespace");
-                let parents = [1_u8, 2, 3].map(|byte| WorkspaceContextId::from_bytes([byte; 16]));
-                let child = WorkspaceContextId::from_bytes([4; 16]);
-                let sibling = WorkspaceContextId::from_bytes([5; 16]);
-                let store = LocalCoreStateStore::open_owned(directory.path()).expect("real owner");
-                for parent in parents {
-                    let mut root = context(parent, None, directory.path());
-                    root.roots.clear();
-                    assert!(WorkspaceContextStore::compare_and_swap(&store, parent, 0, root).await.expect("root fixture"));
-                }
-                let mut selected = context(child, Some(parents[0]), directory.path());
-                selected.roots.clear();
-                let mut other = context(sibling, Some(parents[1]), directory.path());
-                other.roots.clear();
-                assert!(WorkspaceContextStore::compare_and_swap(&store, child, 0, selected.clone()).await.expect("child fixture"));
-                assert!(WorkspaceContextStore::compare_and_swap(&store, sibling, 0, other).await.expect("sibling fixture"));
-                let cancellation = crate::CancellationToken::new();
-                let original = NativeMaterializationWork::new(finite_budget(), &cancellation).expect("finite original");
-                let work = original.native_volume_work(finite_budget()).expect("original resource");
-                // Always exercise last-child removal and an unaffected sibling;
-                // generated suffixes then explore repeated moves and no-ops.
-                for destination in [1_u8, 3, 2, 0].iter().chain(moves.iter()) {
-                    let previous = selected.revision;
-                    selected.revision += 1;
-                    selected.parent_context_id = parents.get(*destination as usize).copied();
-                    if native {
-                        let packet = NativeOwnedCoreState::from_parts(selected.clone(), work.claim(0, 0, crate::WorkCounters::UNCHARGED).expect("actual zero deep payload"));
-                        assert!(WorkspaceContextStore::compare_and_swap_with_native_work(
-                            &store, child, previous, packet, &work, &cancellation,
-                        ).await.expect("original parent transition"));
-                    } else {
-                        assert!(WorkspaceContextStore::compare_and_swap(&store, child, previous, selected.clone()).await.expect("ordinary parent transition"));
+        fn ordinary_and_native_context_parent_transitions_survive_real_wal_restart(moves in proptest::collection::vec(0_u8..4, 1..12)) {
+            let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("test runtime");
+            runtime.block_on(async {
+                for native in [false, true] {
+                    let directory = tempfile::tempdir().expect("real canonical namespace");
+                    let parents = [1_u8, 2, 3].map(|byte| WorkspaceContextId::from_bytes([byte; 16]));
+                    let child = WorkspaceContextId::from_bytes([4; 16]);
+                    let sibling = WorkspaceContextId::from_bytes([5; 16]);
+                    let store = LocalCoreStateStore::open_owned(directory.path()).expect("real owner");
+                    for parent in parents {
+                        let mut root = context(parent, None, directory.path());
+                        root.roots.clear();
+                        assert!(WorkspaceContextStore::compare_and_swap(&store, parent, 0, root).await.expect("root fixture"));
                     }
+                    let mut selected = context(child, Some(parents[0]), directory.path());
+                    selected.roots.clear();
+                    let mut other = context(sibling, Some(parents[1]), directory.path());
+                    other.roots.clear();
+                    assert!(WorkspaceContextStore::compare_and_swap(&store, child, 0, selected.clone()).await.expect("child fixture"));
+                    assert!(WorkspaceContextStore::compare_and_swap(&store, sibling, 0, other).await.expect("sibling fixture"));
+                    let cancellation = crate::CancellationToken::new();
+                    let original = NativeMaterializationWork::new(finite_budget(), &cancellation).expect("finite original");
+                    let work = original.native_volume_work(finite_budget()).expect("original resource");
+                    // Always exercise last-child removal and an unaffected sibling;
+                    // generated suffixes then explore repeated moves and no-ops.
+                    for destination in [1_u8, 3, 2, 0].iter().chain(moves.iter()) {
+                        let previous = selected.revision;
+                        selected.revision += 1;
+                        selected.parent_context_id = parents.get(*destination as usize).copied();
+                        if native {
+                            let packet = (selected.clone(), work.claim(0, 0, crate::WorkCounters::UNCHARGED).expect("actual zero deep payload"));
+                            assert!(WorkspaceContextStore::compare_and_swap_with_native_work(
+                                &store, child, previous, packet, &work, &cancellation,
+                            ).await.expect("original parent transition"));
+                        } else {
+                            assert!(WorkspaceContextStore::compare_and_swap(&store, child, previous, selected.clone()).await.expect("ordinary parent transition"));
+                        }
+                        for parent in parents {
+                            let mut expected = BTreeSet::new();
+                            if parent == parents[1] { expected.insert(sibling); }
+                            if Some(parent) == selected.parent_context_id { expected.insert(child); }
+                            assert_bucket(&store, parent, expected).await;
+                        }
+                    }
+                    drop(store);
+                    let reopened = LocalCoreStateStore::new(directory.path());
+                    assert_eq!(WorkspaceContextStore::load(&reopened, child).await.expect("reopened child"), Some(selected.clone()));
                     for parent in parents {
                         let mut expected = BTreeSet::new();
                         if parent == parents[1] { expected.insert(sibling); }
                         if Some(parent) == selected.parent_context_id { expected.insert(child); }
-                        assert_bucket(&store, parent, expected).await;
+                        assert_bucket(&reopened, parent, expected).await;
                     }
+                    work.receipt().verify(finite_budget()).expect("same finite original receipt");
                 }
-                drop(store);
-                let reopened = LocalCoreStateStore::new(directory.path());
-                assert_eq!(WorkspaceContextStore::load(&reopened, child).await.expect("reopened child"), Some(selected.clone()));
-                for parent in parents {
-                    let mut expected = BTreeSet::new();
-                    if parent == parents[1] { expected.insert(sibling); }
-                    if Some(parent) == selected.parent_context_id { expected.insert(child); }
-                    assert_bucket(&reopened, parent, expected).await;
-                }
-                work.receipt().verify(finite_budget()).expect("same finite original receipt");
-            }
-        });
-    }
+            });
+        }
 }
