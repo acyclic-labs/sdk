@@ -1,7 +1,11 @@
 mod events;
 mod http;
 
-use events::{claude_child_tool_events, anthropic_lifecycle_events, anthropic_failed_agent_events, responses_root_tool_events, responses_spawn_events, responses_workflow_tool_events, responses_text_events, anthropic_text_events};
+use events::{
+    anthropic_failed_agent_events, anthropic_lifecycle_events, anthropic_text_events,
+    claude_child_tool_events, responses_root_tool_events, responses_spawn_events,
+    responses_text_events, responses_workflow_tool_events,
+};
 use http::{read_request, write_conflict, write_response};
 
 use serde_json::{Value, json};
@@ -385,22 +389,43 @@ fn request_fingerprint(request: &Value) -> RequestFingerprint {
 fn tool_results(value: &Value) -> Vec<&Value> {
     fn collect<'a>(value: &'a Value, results: &mut Vec<&'a Value>) {
         match value {
-            Value::Object(values) if values.get("type").and_then(Value::as_str) == Some("tool_result") => {
-                if values.get("tool_use_id").and_then(Value::as_str).is_some() { results.push(value); }
-            },
+            Value::Object(values)
+                if values.get("type").and_then(Value::as_str) == Some("tool_result") =>
+            {
+                if values.get("tool_use_id").and_then(Value::as_str).is_some() {
+                    results.push(value);
+                }
+            }
             Value::Object(values) => values.values().for_each(|value| collect(value, results)),
             Value::Array(values) => values.iter().for_each(|value| collect(value, results)),
-            _ => {},
+            _ => {}
         }
     }
-    let mut results = Vec::new(); collect(value, &mut results); results
+    let mut results = Vec::new();
+    collect(value, &mut results);
+    results
 }
 
-fn expected_tool_result(results: &[&Value], id: &str, is_error: bool, receipt: Option<&str>) -> bool {
-    let mut matching = results.iter().filter(|result| result.get("tool_use_id").and_then(Value::as_str) == Some(id));
+fn expected_tool_result(
+    results: &[&Value],
+    id: &str,
+    is_error: bool,
+    receipt: Option<&str>,
+) -> bool {
+    let mut matching = results
+        .iter()
+        .filter(|result| result.get("tool_use_id").and_then(Value::as_str) == Some(id));
     matching.next().is_some_and(|result| {
-        result.get("is_error").and_then(Value::as_bool).unwrap_or(false) == is_error
-            && receipt.is_none_or(|receipt| result.get("content").is_some_and(|content| contains_text(content, receipt)))
+        result
+            .get("is_error")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            == is_error
+            && receipt.is_none_or(|receipt| {
+                result
+                    .get("content")
+                    .is_some_and(|content| contains_text(content, receipt))
+            })
     }) && matching.next().is_none()
 }
 

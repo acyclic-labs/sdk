@@ -5596,11 +5596,11 @@ where
     } else {
 
         let (changes, changes_custody) = from_generation
-            .diff_to_with_native_work(to_generation, u32::MAX, &work, cancellation)
-            .await.map_err(|error| (error, None))?;
+            .diff_to(to_generation, u32::MAX, &work, cancellation)
+            .await.map(|(value, allocation)| (value, allocation.expect("native result allocation"))).map_err(|error| (error, None))?;
         let (changed, mut changed_custody) = changes
-            .changed_paths_with_native_work(u32::MAX, &work, cancellation)
-            .await.map_err(|error| (error, None))?;
+            .changed_paths(u32::MAX, &work, cancellation)
+            .await.map(|(value, allocation)| (value, allocation.expect("native result allocation"))).map_err(|error| (error, None))?;
         drop(changes);
         drop(changes_custody);
         let held_root = crate::native_host::HostRoot::open(&root, &mut &work)?;
@@ -5951,8 +5951,8 @@ where
     let mut after_custody = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
     loop {
         let (mut page, mut page_custody) = generation
-            .list_after_with_native_work(&directory, after.as_ref(), 1_024, work, cancellation)
-            .await.map_err(|error| (error, None))?;
+            .list_directory(&directory, after.as_ref(), 1_024, work, cancellation)
+            .await.map(|(page, allocation)| (page, allocation.expect("native directory allocation"))).map_err(|error| (error, None))?;
         for entry in &page.entries {
             let mut index = 0;
             let mut found = false;

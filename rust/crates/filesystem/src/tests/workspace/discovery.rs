@@ -15,7 +15,7 @@ async fn pinned_directory_discovery_does_not_scan_ten_thousand_retained_workspac
         WorkBudget::UNBOUNDED,
         &cancellation,
     )
-    .await?;
+    .await.map(|receipt| crate::OperationReceipt { value: receipt.value.0, work: receipt.work })?;
     let mut retained = Vec::with_capacity(10_000);
     for index in 0..10_000 {
         let other = fs
@@ -33,7 +33,7 @@ async fn pinned_directory_discovery_does_not_scan_ten_thousand_retained_workspac
         WorkBudget::UNBOUNDED,
         &cancellation,
     )
-    .await?;
+    .await.map(|receipt| crate::OperationReceipt { value: receipt.value.0, work: receipt.work })?;
     assert_eq!(retained.len(), 10_000);
     assert_eq!(before.value, after.value);
     assert_eq!(after.value.entries.len(), 1);

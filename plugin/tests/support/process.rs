@@ -1,6 +1,13 @@
 use super::ScriptedProvider;
 use acyclic_native_runtime::{ProcessTree, spawn_process_tree};
-use std::{ffi::OsStr, fs, io::{Read as _, Seek as _, Write as _}, path::Path, process::{Command, Output, Stdio}, time::{Duration, Instant}};
+use std::{
+    ffi::OsStr,
+    fs,
+    io::{Read as _, Seek as _, Write as _},
+    path::Path,
+    process::{Command, Output, Stdio},
+    time::{Duration, Instant},
+};
 
 const MAX_CAPTURED_OUTPUT_BYTES: u64 = 4 * 1024 * 1024;
 
@@ -236,4 +243,3 @@ fn captured_output_exceeds_limit(stdout: &fs::File, stderr: &fs::File) -> std::i
         .saturating_add(stderr.metadata()?.len())
         > MAX_CAPTURED_OUTPUT_BYTES)
 }
-

@@ -1,5 +1,9 @@
 use super::{ACYCLIC, command, isolated_state};
-use std::{fs, path::{Path, PathBuf}, process::Command};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 pub struct PackagedPlugin {
     pub root: PathBuf,

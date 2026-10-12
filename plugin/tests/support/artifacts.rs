@@ -1,6 +1,10 @@
 use super::{ACYCLIC, command};
 use sha2::{Digest as _, Sha256};
-use std::{collections::BTreeMap, fs, path::{Path, PathBuf}};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+};
 
 pub fn tree_snapshot(root: &Path) -> BTreeMap<PathBuf, (u64, String)> {
     fn visit(root: &Path, current: &Path, snapshot: &mut BTreeMap<PathBuf, (u64, String)>) {
@@ -127,4 +131,3 @@ fn tree_digest(root: &Path) -> String {
     }
     hex::encode(digest.finalize())
 }
-

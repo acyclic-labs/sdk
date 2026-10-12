@@ -349,11 +349,11 @@ async fn customer_reads_are_bounded_sparse_link_aware_and_generation_exact()
     );
 
     let listing = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let first = listing.list_directory("/tree", None, 1, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let first = listing.list_directory("/tree", None, 1, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)?;
     assert_eq!(first.entries.len(), 1);
     assert!(first.has_more);
     workspace.write_text("/tree/late", "new").await?;
-    let second = listing.list_directory("/tree", Some(&first.entries[0].name), 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let second = listing.list_directory("/tree", Some(&first.entries[0].name), 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)?;
     assert_eq!(second.entries.len(), 3);
     assert!(!second.has_more);
 

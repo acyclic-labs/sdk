@@ -37,4 +37,3 @@ fn default_e2e_scratch_root() -> PathBuf {
         .expect("plugin workspace parent")
         .to_path_buf()
 }
-

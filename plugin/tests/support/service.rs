@@ -1,8 +1,14 @@
-use super::{ACYCLIC, BoundedOutput, command, isolated_state, output_with_stdin_timeout};
 use super::process::try_output_with_timeout;
+use super::{ACYCLIC, BoundedOutput, command, isolated_state, output_with_stdin_timeout};
 use acyclic_native_runtime::ProcessTree;
 use serde_json::Value;
-use std::{cell::RefCell, fs, path::{Path, PathBuf}, process::{Command, Output}, time::{Duration, Instant}};
+use std::{
+    cell::RefCell,
+    fs,
+    path::{Path, PathBuf},
+    process::{Command, Output},
+    time::{Duration, Instant},
+};
 
 pub struct ServiceGuard {
     home: PathBuf,
@@ -285,4 +291,3 @@ fn service_data(home: &Path) -> PathBuf {
         home.join("state").join("acyclic").join("state-v5")
     }
 }
-

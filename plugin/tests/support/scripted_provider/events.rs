@@ -1,7 +1,10 @@
 use super::{CLAUDE_FAILURE_MARKER, CLAUDE_SUCCESS_MARKER, CODEX_WORKFLOW_MARKER};
 use serde_json::{Value, json};
 
-pub(super) fn claude_child_tool_events(target: Option<&String>, offered_tools: &[String]) -> Option<String> {
+pub(super) fn claude_child_tool_events(
+    target: Option<&String>,
+    offered_tools: &[String],
+) -> Option<String> {
     let failed = target.is_none();
     let target = target.map_or("", String::as_str);
     let (tool, input) = if offered_tools.iter().any(|tool| tool == "PowerShell") {
@@ -215,4 +218,3 @@ pub(super) fn anthropic_text_events() -> String {
         json!({"type":"message_stop"}),
     ])
 }
-

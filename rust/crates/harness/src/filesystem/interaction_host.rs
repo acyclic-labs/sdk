@@ -222,7 +222,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
             let ticket_hold;
             let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
             let copied = crate::executor::with_history_io(io, |work|
-                crate::core::native_interaction_ticket_clone_with_custody(ticket, work).map(|(ticket, _)| ticket))?;
+                crate::wire_codec::CodecQuota::produce(work, |copy_quota| crate::core::copy_ticket(ticket, copy_quota)).map(|(ticket, _)| ticket))?;
             ticket_hold = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
                 .ok_or_else(|| interaction_boundary(Some(io), ErrorCode::Invalid, "interaction ticket custody underflows"))?)).transpose()?;
             let result = self.execute(operation_id, scope.unwrap_or(&self.owner_scope),
@@ -363,9 +363,8 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let aggregate = self.aggregate(io).await?;
         crate::executor::with_history_io(io, |work| {
             aggregate.0.reducer().interaction(&Uuid::from_bytes(id.into_bytes())).map(|(ticket, resolution)| {
-                Ok((crate::core::native_interaction_ticket_clone_with_custody(ticket, work)?.0,
-                    resolution.as_ref().map(|resolution| crate::core::native_interaction_resolution_clone_with_custody(
-                        resolution, work).map(|(value, _)| value)).transpose()?))
+                Ok((crate::wire_codec::CodecQuota::produce(work, |copy_quota| crate::core::copy_ticket(ticket, copy_quota))?.0,
+                    resolution.as_ref().map(|resolution| crate::wire_codec::CodecQuota::produce(work, |copy_quota| crate::core::copy_resolution(resolution, copy_quota)).map(|(value, _)| value)).transpose()?))
             }).transpose()
         })
     }
@@ -376,7 +375,7 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         crate::executor::with_history_io(io, |work| {
             aggregate.0.reducer().interaction(&Uuid::from_bytes(id.into_bytes()))
                 .and_then(|(_, resolution)| resolution.as_ref()).map(|resolution|
-                    crate::core::native_interaction_outcome_clone_with_custody(&resolution.outcome, work)
+                    crate::wire_codec::CodecQuota::produce(work, |copy_quota| crate::core::copy_interaction_outcome(&resolution.outcome, copy_quota))
                         .map(|(value, _)| value)).transpose()
         })
     }
@@ -508,12 +507,10 @@ where P: StreamProvider, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore +
         let authority = match work.as_deref_mut() { Some(work) => work.clone_authority(self.verifier.audience())?, None => self.verifier.audience().clone() };
         let verifier = self.verifier.copy(&mut work)?;
         let schemas = self.schemas.copy(&mut work)?;
-        if let Some(io) = io { io.retain_owned(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?;
-            io.allocation_attempt(std::mem::size_of::<FilesystemContentVerifier<A, O>>() as u64)?; }
         let content = FilesystemContentVerifier::new(Arc::clone(&self.host), &self.verifier, &self.owner_scope, self.maximum_bytes, io)?;
         let aggregate = StreamAggregate::open(&self.stream, authority, verifier, schemas, None,
             crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut work)
-            .await?.with_content_verifier(Arc::new(content));
+            .await?.with_content_verifier(content);
         let agent = aggregate.reducer().conversation().and_then(|conversation| conversation.agent)
             .ok_or_else(|| interaction_boundary(io, ErrorCode::Conflict, "interaction conversation is not bound to an agent"))?;
         if self.private_volume.owner() != &VolumeOwner::Agent(agent) {

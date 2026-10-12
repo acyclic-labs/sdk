@@ -1,5 +1,9 @@
 use serde_json::json;
-use std::{io::{Read as _, Write as _}, net::TcpStream, time::Duration};
+use std::{
+    io::{Read as _, Write as _},
+    net::TcpStream,
+    time::Duration,
+};
 
 pub(super) fn write_conflict(stream: &mut TcpStream, message: &str) {
     write_response(
@@ -109,4 +113,3 @@ pub(super) fn write_response(stream: &mut TcpStream, status: u16, content_type: 
     let _ = stream.write_all(response.as_bytes());
     let _ = stream.flush();
 }
-

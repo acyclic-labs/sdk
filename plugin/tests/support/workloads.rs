@@ -1,8 +1,8 @@
 //! Local, real-mount toolchain qualification. This deliberately stays out of CI:
 //! compiler caches, toolchain installation, and workstation load affect timing.
 
-use super::{command, test_tempdir};
 use super::process::try_output_with_timeout;
+use super::{command, test_tempdir};
 use acyclic_fs::kernel::FileMetadata;
 use acyclic_fs::{
     Fs, IdempotencyKey, LocalOptions, MountOptions, MountPublication, TransactionCommit,
@@ -41,22 +41,46 @@ async fn native_and_mounted_cargo_and_lake_workloads() {
         .await
         .expect("local SDK engine");
     let workspace = engine
-        .create_workspace("toolchain-workloads", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .create_workspace(
+            "toolchain-workloads",
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
         .await
-        .expect("SDK workload workspace").value;
-    let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+        .expect("SDK workload workspace")
+        .value;
+    let mut transaction = workspace
+        .begin_transaction(
+            IdempotencyKey::new(),
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
         .expect("fixture transaction");
     transaction
-        .create_dir_all("/src", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
-        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+        .create_dir_all(
+            "/src",
+            acyclic_fs::WorkBudget::UNBOUNDED,
+            &acyclic_fs::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)
         .expect("fixture source directory");
     for (relative, contents) in files {
         transaction
             .create_file(
                 &format!("/{relative}"),
                 Bytes::from(contents),
-                FileMetadata::default(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                FileMetadata::default(),
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            )
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
             .expect("fixture file in SDK workspace");
     }
     assert!(matches!(
