@@ -847,7 +847,7 @@ fn prepare_publication_commit(
             )?;
             cancellation.check()?;
             original.admit(WorkCounters::UNCHARGED)?;
-            let control = original.claim(super::allocation::bytes_owner_control_bytes::<NativePublicationPayload>()?)?;
+            let control = { let claim_bytes = super::allocation::bytes_owner_control_bytes::<NativePublicationPayload>()?; original.claim(claim_bytes, u64::from(claim_bytes != 0), crate::WorkCounters::UNCHARGED) }?;
             let (payload, fingerprint) = built;
             let super::persistent_point::Owned { value: payload, allocation, .. } = payload;
             let super::allocation::KernelOwnedAllocation::NativeOriginal(allocation) = allocation else {

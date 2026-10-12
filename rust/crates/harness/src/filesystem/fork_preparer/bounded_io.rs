@@ -283,7 +283,7 @@ impl PreparationIo {
     /// Uses the original native ledger for filesystem operations.
     pub fn from_native_work(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
         work.remaining().map_err(Error::from)?;
-        let custody = work.retain_owned(0).map_err(Error::from)?;
+        let custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(Error::from)?;
         Ok(Self::Native { work: work.clone(), custody: Mutex::new(custody) })
     }
 
@@ -1043,7 +1043,7 @@ pub(in crate::filesystem) fn source_bytes_from_vec(bytes: Vec<u8>, io: Option<&P
             Ok(custody) => custody,
             Err(error) => { drop(bytes); return Err(error); }
         };
-        return acyclic_stream::OwnedBytes::from_vec_with_guard(bytes, custody, original.runtime_meter_owner())
+        return acyclic_stream::OwnedBytes::from_vec_with_guard(bytes, custody, original.runtime_meter())
             .map_err(|failure| {
                 let error = failure.into_error();
                 Error::NativeWork { cause: match error {

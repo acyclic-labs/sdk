@@ -231,12 +231,12 @@ pub(super) async fn exercise_streaming<'a>(
     Ok(())
 }
 
-fn bucket() -> Option<wire::BucketRef> {
+pub(super) fn bucket() -> Option<wire::BucketRef> {
     Some(wire::BucketRef {
         name: "customer.inputs".into(),
     })
 }
-fn identity(key: &str) -> Option<wire::MutationIdentity> {
+pub(super) fn identity(key: &str) -> Option<wire::MutationIdentity> {
     Some(wire::MutationIdentity {
         idempotency_key: key.into(),
     })
@@ -248,7 +248,7 @@ fn put(key: &str) -> wire::PutObjectHeader {
         ..Default::default()
     }
 }
-fn get(key: &str) -> wire::GetObjectRequest {
+pub(super) fn get(key: &str) -> wire::GetObjectRequest {
     wire::GetObjectRequest {
         bucket: bucket(),
         object_key: key.into(),

@@ -3013,7 +3013,7 @@ async fn collections_run_alongside_publications() -> Result<(), Box<dyn Error>> 
                     .write_text("/churn.txt", &round.to_string().repeat(20_000))
                     .await?
                 else {
-                    return Err(WorkspaceError::manual_engine("churn fixture did not commit"));
+                    return Err(WorkspaceError::Engine("churn fixture did not commit".to_owned()));
                 };
                 generation.pin(format!("churn-{round}"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
                 let agent = main

@@ -760,7 +760,7 @@ fn clone_summary_native(
                 source_messages: summary.source_messages, source_digest: summary.source_digest,
                 output }), custody))
         }
-        None => Ok((None, work.retain_owned(0)?)),
+        None => Ok((None, work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?)),
     }
 }
 
@@ -870,7 +870,7 @@ pub(super) fn context_contract_native<T: Serialize>(
     let private_labels = labels.checked_add(std::any::type_name::<T>().len() as u64 + 4)
         .ok_or_else(|| crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "context serializer diagnostic witness overflows" })?;
     let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(0, private_labels)?;
-    let diagnostic = work.retain_owned(diagnostic_bytes)?;
+    let diagnostic = work.claim(diagnostic_bytes, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
     let mut io = crate::store::history::native_work_io(work)?;
     let encoded = (|| {
         crate::contract::validate_json_byte_bound_native_trusted(value, bounds,
@@ -979,8 +979,7 @@ impl ContextSource for DurableContextProvider {
             crate::executor::with_history_io(Some(&io), |work| limits.validate(work))?;
             let tail = self.tail_revision(Some(&io)).await?;
             if tail == 0 {
-                return Ok((Vec::new(), work.retain_owned(0)
-                    ?));
+                return Ok((Vec::new(), work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?));
             }
             let record = self.revision_bounded(tail, limits, Some(&io)).await?;
             let retained = io.owned_bytes()?;
@@ -1200,7 +1199,7 @@ impl ContextStage for SourceStage {
         let owned = text_bytes.checked_add(3 * std::mem::size_of::<(String, Value)>() as u64)
             .ok_or_else(|| crate::Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason: "context contract storage overflows" })?;
         // The original map convention retains typed entry slots; opaque std node/RSS layout is excluded.
-        let guard = work.retain_owned(owned)?;
+        let guard = work.claim(owned, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         work.charge(acyclic_fs::WorkCounters { bytes_copied: text_bytes, allocation_operations: 6,
             ..acyclic_fs::WorkCounters::default() })?;
         Ok((self.contract_value(), guard))
@@ -1499,7 +1498,7 @@ pub(crate) fn copy_context(context: &Context, io: Option<&crate::executor::Prepa
 fn reserve_context_vec_native<T>(
     values: &mut Vec<T>, capacity: usize, work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<acyclic_fs::NativeAllocation> {
-    let mut guard = work.retain_owned(0)?;
+    let mut guard = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
     if capacity <= values.capacity() { return Ok(guard); }
     let old = values.capacity();
     let bytes = capacity.checked_mul(std::mem::size_of::<T>())
@@ -1770,7 +1769,7 @@ impl ContextPipeline {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if let (Some(io), Some(work)) = (io, native) {
                 // The operation observer retains the actual input payloads, not this zero transfer guard.
-                let guard = work.retain_owned(0)?;
+                let guard = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
                 let (next, guard) = stage.apply_native(input, (context, guard), limits, work)?.await?;
                 io.absorb_native_custody(guard)?;
                 context = next;

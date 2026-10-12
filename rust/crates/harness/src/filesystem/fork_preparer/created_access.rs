@@ -33,7 +33,7 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
         #[cfg(not(target_arch = "wasm32"))]
         let mut native = match work {
             Some(work) => {
-                Some((work.retain_owned(std::mem::size_of::<Self>() as u64).map_err(Error::from)?,
+                Some((work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED).map_err(Error::from)?,
                     crate::store::history::native_work_io(work)?))
             }
             None => None,
@@ -1079,8 +1079,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ResourceCr
             let access = Arc::new(RootCreatedFilesystemAccess {
                 allocation: allocation.clone(), reader, writer, _custody: custody,
             });
-            let mut receipt_custody = work.retain_owned((std::mem::size_of::<RootBootstrapContentReceipt>()
-                - std::mem::size_of::<crate::resource_preparation::RootBootstrapContentRequest>()) as u64)?;
+            let mut receipt_custody = work.claim((std::mem::size_of::<RootBootstrapContentReceipt>()
+                - std::mem::size_of::<crate::resource_preparation::RootBootstrapContentRequest>()) as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
             let (request, mut request_custody) = request.copy(work)?;
             receipt_custody.absorb(&mut request_custody).map_err(|cause| Error::NativeWork {
                 cause, custody: Some(request_custody),
@@ -1417,7 +1417,7 @@ mod tests {
         let configured_issuer = AuthorityIssuer::new("created-owner", [80; 32], configured_audience.clone());
         let mut metadata = crate::store::history::native_work_io(work)
             .map_err(Error::from)?;
-        metadata.retain_owned(std::mem::size_of::<(Authority, AuthorityIssuer, crate::core::Scope)>() as u64)?;
+        metadata.claim(std::mem::size_of::<(Authority, AuthorityIssuer, crate::core::Scope)>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
         let mut custody;
         let audience = metadata.clone_authority(&configured_audience)?;
         custody = metadata.into_custody();
