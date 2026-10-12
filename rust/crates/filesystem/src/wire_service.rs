@@ -619,7 +619,7 @@ where
         }
         let generation = self.generation(request.generation).await?;
         let after = page.after.map(input_logical_name).transpose()?;
-        let listed = generation.list_directory(&request.path, after.as_ref(), page.maximum_items, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+        let listed = generation.list_directory(&request.path, after.as_ref(), page.maximum_items, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)
             .map_err(|error| status(&error))?;
         let next = listed
             .has_more
