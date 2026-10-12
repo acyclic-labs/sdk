@@ -33,14 +33,14 @@ impl<A, O> FilesystemResourceCreationProvider<A, O> {
         #[cfg(not(target_arch = "wasm32"))]
         let mut native = match work {
             Some(work) => {
-                host.provider.validate_with_native_work(work)?;
+                host.provider.validate(&mut Some(&mut crate::store::native_work_io(work)?))?;
                 Some((work.retain_owned(std::mem::size_of::<Self>() as u64).map_err(Error::from)?,
                     crate::store::history::native_work_io(work)?))
             }
-            None => { host.provider.validate()?; None }
+            None => { host.provider.validate(&mut None)?; None }
         };
         #[cfg(target_arch = "wasm32")]
-        host.provider.validate()?;
+        host.provider.validate(&mut None)?;
         #[cfg(not(target_arch = "wasm32"))]
         let mut history = native.as_mut().map(|(_, io)| io as &mut dyn crate::store::history::HistoryIo);
         #[cfg(target_arch = "wasm32")]
@@ -192,16 +192,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let context = crate::resource_preparation::RootBootstrapContentContext::from_verified_root_with_native_work(
                 owner, &original_root, root, work,
             ).await?;
-            volume.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
-            if owner.root_bootstrap_owner() != self.issuer.audience() || volume.provider() != &self.host.provider
-                || !match role {
-                    crate::resource_preparation::RootBootstrapContentRole::Project =>
-                        volume.class() == crate::conversation::VolumeClass::Project,
-                    crate::resource_preparation::RootBootstrapContentRole::Scratch =>
-                        volume.class() == crate::conversation::VolumeClass::AgentPrivate
-                            && volume.owner() == &crate::conversation::VolumeOwner::Agent(root.agent()),
-                }
-            {
+            if role == crate::resource_preparation::RootBootstrapContentRole::Scratch
+                && volume.owner() != &VolumeOwner::Agent(root.agent()) {
                 return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root bootstrap differs from its configured creator, actor or namespace"));
             }
             owner.require_volume_grant_with_native_work(volume, VolumeOperation::Read, work)?;
@@ -522,13 +514,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> RootCreate
         let absolute = crate::contract::preparation_format(format_args!("/{path}"), Some(io))?;
         let hold = io.guard_owned(absolute.capacity() as u64)?;
         let absolute = (absolute, hold);
-        let future = source.backing.read(snapshot, &absolute.0, maximum, io)?;
-        let frame = match &future {
-            crate::store::history::HistoryContentFuture::Ordinary { frame_bytes, .. } => Some(io.guard_owned(*frame_bytes)?),
-            crate::store::history::HistoryContentFuture::Native(_) => None,
-        };
-        let result = future.await;
-        drop(frame);
+        let result = io.finish_future(source.backing.read(snapshot, &absolute.0, maximum, io)?).await;
         drop(absolute);
         result
     }
@@ -790,10 +776,9 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
 ) -> Result<AuthenticatedAllocation> {
     let owned;
     let io = match io {
-        Some(io) => io,
+        Some(io) => { request.validate(&mut None)?; io }
         None => { owned = PreparationIo::new(request, &CancellationToken::new())?; &owned }
     };
-    request.validate(&mut None)?;
     proof.validate(&mut None)?;
     if request.provider != host.provider || proof.provider != host.provider
         || request.creation_grant != capability::FORK_PUBLISH
@@ -818,6 +803,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         return Err(Error::Unauthorized("fork payload is not the exact admitted request".into()));
     }
     drop(decoded);
+    let digest = *bounded_io::digest(&encoded, Some(io))?.as_bytes();
     drop(encoded);
     drop(encoded_hold);
     if request.resources.len() != creation_volumes(&fork).count() {
@@ -851,20 +837,12 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         .ok_or_else(|| Error::Unauthorized("fork allocation has no completed report".into()))?;
     let mut observer = io.history_io();
     let seed = report.into_seed(&mut Some(&mut observer))?;
-    let encoded_hold;
-    let encoded = io.encode(&fork, record_limit, false)?;
-    encoded_hold = io.guard_bytes(&encoded)?;
     let canonical_hold;
     let canonical = io.encode(request, request.maximum_bytes, true)?;
     canonical_hold = io.guard_bytes(&canonical)?;
-    let hashing = WorkCounters { bytes_hashed: (encoded.len() + canonical.len()) as u64,
-        ..WorkCounters::default() };
-    io.preflight(hashing)?;
-    let digest = *blake3::hash(&encoded).as_bytes();
-    let request_digest = *blake3::hash(&canonical).as_bytes();
-    io.charge(hashing)?;
-    drop((encoded, canonical));
-    drop((encoded_hold, canonical_hold));
+    let request_digest = *bounded_io::digest(&canonical, Some(io))?.as_bytes();
+    drop(canonical);
+    drop(canonical_hold);
     let binding = seed_digest(&seed, record_limit, Some(io))?;
     let mut selected: Option<AuthenticatedAllocation> = None;
     let mut original_origin: Option<ResourceCreationOrigin> = None;
@@ -1518,7 +1496,7 @@ mod tests {
         let (scope, retained) = fixture.root_scope.with_created_access_with_work(&admission, Some(access), &mut Some(&mut io))?;
         scope_custody = crate::store::history::HistoryIo::take_native_custody(&mut io, retained)?;
         assert_eq!(scope.grants(), fixture.root_scope.grants());
-        assert_eq!(scope.current_created_private_volume_with_native_work(&work)?, Some(&scratch.request.volume));
+        assert_eq!(scope.current_created_private_volume(&mut Some(&mut crate::store::native_work_io(&work).map_err(|cause| Error::NativeWork { cause, custody: None })?))?, Some(&scratch.request.volume));
         assert!(scope.created_content(Some(&project.request.volume)).unwrap().writer.is_none());
         assert!(scope.created_content(Some(&scratch.request.volume)).unwrap().writer.is_some());
         let reader = &scope.created_content(Some(&project.request.volume)).unwrap().reader;

@@ -112,7 +112,7 @@ pub(crate) fn vec_with_capacity<T>(
 pub(crate) fn clone_file(
     file: &FileRef, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<FileRef> {
-    model_step(io, 1)?;
+    charge_items(io, 1)?;
     crate::executor::with_history_io(io, |work| file.copy(work))
 }
 
@@ -139,20 +139,12 @@ pub(crate) fn clone_content(
     Ok((content, retained))
 }
 
-fn model_copy_node(quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<()> {
-    if let Some(work) = quota.work().as_deref_mut() {
-        work.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-    }
-    Ok(())
-}
-
 fn model_media_policy_in_quota(
     policy: &NativeMediaPolicy, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<NativeMediaPolicy> {
-    if quota.work().is_none() { return Ok(policy.clone()); }
-    model_copy_node(quota)?;
+    model_history_step(quota.work(), 1)?;
     let configuration = policy.configuration.as_ref().map(|binding| -> Result<NativeConfigurationBinding> {
-        model_copy_node(quota)?;
+        model_history_step(quota.work(), 1)?;
         Ok(NativeConfigurationBinding {
             source: crate::core::copy_reference(&binding.source, quota)?,
             configuration: crate::core::copy_configuration(&binding.configuration, quota)?,
@@ -166,8 +158,7 @@ fn model_media_policy_in_quota(
 fn model_policy_in_quota(
     policy: &FileProjectionPolicy, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<FileProjectionPolicy> {
-    if quota.work().is_none() { return Ok(policy.clone()); }
-    model_copy_node(quota)?;
+    model_history_step(quota.work(), 1)?;
     Ok(match policy {
         FileProjectionPolicy::Reference => FileProjectionPolicy::Reference,
         FileProjectionPolicy::BoundedFull => FileProjectionPolicy::BoundedFull,
@@ -179,13 +170,12 @@ fn model_policy_in_quota(
 fn model_tool_result_in_quota(
     content: &ToolResultContent, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<ToolResultContent> {
-    if quota.work().is_none() { return Ok(content.clone()); }
-    model_copy_node(quota)?;
+    model_history_step(quota.work(), 1)?;
     Ok(match content {
         ToolResultContent::Json { value } => ToolResultContent::Json { value: crate::core::copy_value(value, quota)? },
         ToolResultContent::Parts { parts } => ToolResultContent::Parts {
             parts: crate::core::copy_vector(parts, quota, |part, quota| {
-                model_copy_node(quota)?;
+                model_history_step(quota.work(), 1)?;
                 Ok(match part {
                     ModelDataPart::Text { text } => ModelDataPart::Text { text: crate::core::copy_text(text, quota)? },
                     ModelDataPart::File { file, policy } => ModelDataPart::File {
@@ -200,7 +190,7 @@ fn model_tool_result_in_quota(
 fn model_part_in_quota(
     part: &ModelContentPart, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<ModelContentPart> {
-    model_copy_node(quota)?;
+    model_history_step(quota.work(), 1)?;
     Ok(match part {
         ModelContentPart::Text { text } => ModelContentPart::Text { text: crate::core::copy_text(text, quota)? },
         ModelContentPart::File { file, policy } => ModelContentPart::File {
@@ -221,7 +211,7 @@ fn model_content_in_quota(
     content: &ModelContent, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<ModelContent> {
     if quota.work().is_none() { return Ok(content.clone()); }
-    model_copy_node(quota)?;
+    model_history_step(quota.work(), 1)?;
     Ok(match content {
         ModelContent::Text(text) => ModelContent::Text(crate::core::copy_text(text, quota)?),
         ModelContent::Part(part) => ModelContent::Part(model_part_in_quota(part, quota)?),
@@ -235,7 +225,7 @@ pub(crate) fn clone_messages(
     if io.is_none() { return Ok(messages.to_vec()); }
     let mut copied = vec_with_capacity(messages.len(), io)?;
     for message in messages {
-        model_step(io, 1)?;
+        charge_items(io, 1)?;
         let content = crate::executor::with_history_io(io, |work|
             clone_content(&message.content, work).map(|(copy, _)| copy))?;
         crate::executor::stock_vec_push(&mut copied, ModelMessage { role: message.role, content }, io)?;
@@ -247,7 +237,7 @@ pub(crate) fn clone_model(
     model: &Model, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<Model> {
     if io.is_none() { return Ok(model.clone()); }
-    model_step(io, 1)?;
+    charge_items(io, 1)?;
     Ok(Model {
         provider: crate::executor::stock_string_copy(&model.provider, io)?,
         name: crate::executor::stock_string_copy(&model.name, io)?,
@@ -260,7 +250,7 @@ pub(crate) fn clone_tool_definition(
     tool: &crate::tool::ToolDefinition, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<crate::tool::ToolDefinition> {
     if io.is_none() { return Ok(tool.clone()); }
-    model_step(io, 1)?;
+    charge_items(io, 1)?;
     Ok(crate::tool::ToolDefinition {
         name: crate::executor::stock_string_copy(&tool.name, io)?,
         revision: crate::executor::stock_string_copy(&tool.revision, io)?,
@@ -275,7 +265,7 @@ pub(crate) fn clone_request(
     request: &ModelRequest, io: Option<&crate::executor::PreparationIo>,
 ) -> Result<ModelRequest> {
     if io.is_none() { return Ok(request.clone()); }
-    model_step(io, 1)?;
+    charge_items(io, 1)?;
     let model = clone_model(&request.model, io)?;
     let messages = clone_messages(&request.messages, io)?;
     let mut tools = vec_with_capacity(request.tools.len(), io)?;
@@ -283,7 +273,7 @@ pub(crate) fn clone_request(
     Ok(ModelRequest { model, messages, tools, max_output_tokens: request.max_output_tokens })
 }
 
-fn model_step(io: Option<&crate::executor::PreparationIo>, items: u64) -> Result<()> {
+pub(crate) fn charge_items(io: Option<&crate::executor::PreparationIo>, items: u64) -> Result<()> {
     #[cfg(not(feature = "filesystem"))]
     let _ = (io, items);
     #[cfg(feature = "filesystem")]
@@ -800,7 +790,7 @@ impl NativeConfigurationBinding {
         let extension = &self.configuration.extension;
         let mut linked = None;
         for identity in runtime.selected() {
-            model_step(io, (identity.name.len() as u64).saturating_add(1))?;
+            charge_items(io, (identity.name.len() as u64).saturating_add(1))?;
             if identity.name == extension.name && identity.version == extension.version {
                 linked = Some(identity);
                 break;
@@ -1139,8 +1129,8 @@ impl ModelRequest {
         use std::collections::BTreeMap;
 
         crate::executor::with_history_io(io, |work| limits.validate(work))?;
-        model_step(io, 1)?;
-        model_step(io, (self.model.provider.len() as u64)
+        charge_items(io, 1)?;
+        charge_items(io, (self.model.provider.len() as u64)
             .saturating_add(self.model.name.len() as u64)
             .saturating_add(self.model.revision.len() as u64))?;
         self.model.validate()?;
@@ -1156,7 +1146,7 @@ impl ModelRequest {
         let _maps = if let Some(io) = io {
             let mut calls = 0u64;
             for message in &self.messages {
-                model_step(Some(io), 1)?;
+                charge_items(Some(io), 1)?;
                 calls = calls.checked_add(message.content.parts().len() as u64)
                     .ok_or_else(|| Error::Invalid("model validation slot count overflow".into()))?;
             }
@@ -1169,7 +1159,7 @@ impl ModelRequest {
         } else { None };
         let mut tools = BTreeMap::new();
         for tool in &self.tools {
-            model_step(io, 1)?;
+            charge_items(io, 1)?;
             crate::executor::with_history_io(io, |work| tool.validate(work))?;
             if tools.insert(&tool.name, tool).is_some() {
                 return Err(Error::Invalid("model tool definition is repeated".into()));
@@ -1177,18 +1167,18 @@ impl ModelRequest {
         }
         let mut pending = BTreeMap::new();
         for message in &self.messages {
-            model_step(io, 1)?;
+            charge_items(io, 1)?;
             crate::executor::with_history_io(io, |work| message.content.validate_limits(limits, work))?;
             let parts = message.content.parts();
             for part in parts {
-                model_step(io, 1)?;
+                charge_items(io, 1)?;
                 match part {
                     ModelContentPart::ToolCall {
                         call_id,
                         name,
                         arguments,
                     } => {
-                        model_step(io, (call_id.len() as u64).saturating_add(name.len() as u64))?;
+                        charge_items(io, (call_id.len() as u64).saturating_add(name.len() as u64))?;
                         ToolInvocation::validate_identity(call_id, Some(name), &mut None)?;
                         if message.role != ModelRole::Assistant || pending.contains_key(call_id) {
                             return Err(Error::Invalid(
@@ -1208,7 +1198,7 @@ impl ModelRequest {
                         name,
                         content,
                     } => {
-                        model_step(io, (call_id.len() as u64).saturating_add(name.len() as u64))?;
+                        charge_items(io, (call_id.len() as u64).saturating_add(name.len() as u64))?;
                         ToolInvocation::validate_identity(call_id, Some(name), &mut None)?;
                         if message.role != ModelRole::Tool || pending.remove(call_id) != Some(name)
                         {
@@ -1279,7 +1269,7 @@ impl PreparedModelRequest {
                 .map_err(|error| Error::Invalid(error.to_string()))?,
         };
         let prepared = Self::prepare_engine(request, limits, io)?;
-        model_step(io, bytes.len() as u64)?;
+        charge_items(io, bytes.len() as u64)?;
         if prepared.bytes() != bytes {
             return Err(Error::Invalid(
                 "retained model request is not exact canonical input".into(),
@@ -1299,22 +1289,27 @@ impl PreparedModelRequest {
             if io.original_native_work().is_some() {
                 return Self::prepare_engine(request, limits, Some(io));
             }
+            // Guards outlive their payloads on failed preparation.
+            let request_hold;
+            let bytes_hold;
+            let request = request;
             let before = io.receipt().items_examined;
-            let _witness;
-            let witness = io.encode(&request, io.remaining()?.bytes_encoded, false)?;
-            _witness = io.guard_bytes(&witness)?;
+            let bytes = io.encode(&request, io.remaining()?.bytes_encoded, true)?;
+            bytes_hold = io.guard_bytes(&bytes)?;
             let items = io.receipt().items_examined.checked_sub(before)
-                .ok_or_else(|| Error::Invalid("model request witness underflow".into()))?;
+                .ok_or_else(|| Error::Invalid("model request encoding count underflow".into()))?;
             let owned = items.checked_mul(<ModelRequest as crate::filesystem::PreparationRecord>::maximum_slot_bytes())
                 .and_then(|slots| slots.checked_mul(8))
-                .and_then(|slots| (witness.len() as u64).checked_mul(4)
+                .and_then(|slots| (bytes.len() as u64).checked_mul(4)
                     .and_then(|strings| slots.checked_add(strings)))
                 .and_then(|owned| owned.checked_add(std::mem::size_of::<ModelRequest>() as u64))
                 .ok_or_else(|| Error::Invalid("model request ownership overflow".into()))?;
-            let request_hold = io.reserve_decode(owned)?;
-            let prepared = Self::prepare_engine(request, limits, Some(io))?;
+            request_hold = io.reserve_decode(owned)?;
+            request.validate(limits, Some(io))?;
+            let request_digest = hash_bytes(&bytes, Some(io))?;
+            if let Some(hold) = bytes_hold { hold.into_retained(); }
             request_hold.into_retained();
-            return Ok(prepared);
+            return Ok(Self { request, bytes, request_digest });
         }
         Self::prepare_engine(request, limits, io)
     }
@@ -1372,13 +1367,13 @@ impl PreparedModelRequest {
         io.retain_owned(std::mem::size_of::<crate::context::ModelTokenCount>() as u64)?;
         let mut message_tokens = Vec::new();
         for message in &self.request.messages {
-            model_step(Some(&io), 1)?;
+            charge_items(Some(&io), 1)?;
             let _hold;
             let bytes = io.encode(message, io.remaining()?.bytes_encoded, false)?;
             _hold = io.guard_bytes(&bytes)?;
             let mut tokens = bytes.len() as u64;
             for file in message.content.file_refs() {
-                model_step(Some(&io), 1)?;
+                charge_items(Some(&io), 1)?;
                 tokens = tokens.checked_add(file.descriptor().byte_length())
                     .ok_or_else(|| Error::Invalid("deterministic token count overflows".into()))?;
             }
@@ -1471,7 +1466,7 @@ impl PreparedModelRequest {
         let mut visited = std::collections::BTreeSet::new();
         let mut expected_count = None;
         while let Some(reference) = next {
-            model_step(io, 1)?;
+            charge_items(io, 1)?;
             crate::executor::with_history_io(io, |work| reference.validate(work))?;
             let identity = crate::executor::preparation_digest(&reference, io)?;
             #[cfg(feature = "filesystem")]
@@ -1512,7 +1507,7 @@ impl PreparedModelRequest {
             {
                 _canonical_hold = io.map(|io| io.guard_bytes(&canonical)).transpose()?.flatten();
             }
-            model_step(io, bytes.len() as u64)?;
+            charge_items(io, bytes.len() as u64)?;
             if segment.version != 1
                 || segment.messages.is_empty()
                 || expected_count.is_some_and(|count| count != segment.total_messages)
@@ -1563,7 +1558,7 @@ impl PreparedModelRequest {
         for message in local_messages { crate::executor::stock_vec_push(&mut local.messages, message, io)?; }
         for message in &local.messages {
             for file in message.content.file_refs() {
-                model_step(io, 1)?;
+                charge_items(io, 1)?;
                 crate::context::verify_file(file, verifier, io).await?;
             }
         }
@@ -2079,7 +2074,7 @@ mod tests {
         use crate::conversation::{FileDescriptor, VolumeClass, VolumeOwner, VolumeRef};
         let file = FileRef::new(
             VolumeRef::new(
-                crate::resources::ProviderRef::new("test", "filesystem", "2")?,
+                crate::resources::ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "private".into(),
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes([1; 16])),
@@ -2253,26 +2248,6 @@ mod tests {
         let mut valid = base.clone();
         exchange(&mut valid);
         PreparedModelRequest::prepare(valid.clone(), Limits::default(), None)?;
-        let mut candidates = Vec::new();
-        let mut changed = valid.clone();
-        changed.messages.pop();
-        candidates.push(changed);
-        let mut changed = valid.clone();
-        changed.messages.swap(1, 2);
-        candidates.push(changed);
-        let mut changed = valid.clone();
-        changed.messages[1].role = ModelRole::User;
-        candidates.push(changed);
-        let mut changed = valid.clone();
-        if let ModelContent::Part(ModelContentPart::ToolResult { content, .. }) =
-            &mut changed.messages[2].content
-        {
-            *content = ToolResultContent::Json { value: json!(42) };
-        }
-        candidates.push(changed);
-        let mut changed = valid.clone();
-        changed.tools.push(changed.tools[0].clone());
-        candidates.push(changed);
         let mut changed = valid.clone();
         changed.max_output_tokens = None;
         let unconstrained = PreparedModelRequest::prepare(changed, Limits::default(), None)?;
@@ -2283,21 +2258,27 @@ mod tests {
                 .max_output_tokens,
             None
         );
-        let mut changed = valid.clone();
-        changed.max_output_tokens = Some(0);
-        candidates.push(changed);
-        let mut changed = valid.clone();
-        changed.model.revision.clear();
-        candidates.push(changed);
-        let mut changed = valid.clone();
-        if let ModelContent::Part(ModelContentPart::ToolCall { arguments, .. }) =
-            &mut changed.messages[1].content
-        {
-            *arguments = json!(false);
-        }
-        candidates.push(changed);
-        for candidate in candidates {
-            assert!(PreparedModelRequest::prepare(candidate, Limits::default(), None).is_err());
+        for mutate in [
+            (|request: &mut ModelRequest| { request.messages.pop(); }) as fn(&mut ModelRequest),
+            |request| request.messages.swap(1, 2),
+            |request| request.messages[1].role = ModelRole::User,
+            |request| {
+                let ModelContent::Part(ModelContentPart::ToolResult { content, .. }) =
+                    &mut request.messages[2].content else { unreachable!() };
+                *content = ToolResultContent::Json { value: json!(42) };
+            },
+            |request| request.tools.push(request.tools[0].clone()),
+            |request| request.max_output_tokens = Some(0),
+            |request| request.model.revision.clear(),
+            |request| {
+                let ModelContent::Part(ModelContentPart::ToolCall { arguments, .. }) =
+                    &mut request.messages[1].content else { unreachable!() };
+                *arguments = json!(false);
+            },
+        ] {
+            let mut changed = valid.clone();
+            mutate(&mut changed);
+            assert!(PreparedModelRequest::prepare(changed, Limits::default(), None).is_err());
         }
         let mut oversized = base;
         let maximum = 64 * 1024 * 1024 + 1;

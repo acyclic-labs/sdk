@@ -686,16 +686,13 @@ impl PreparationIo {
         &self, future: crate::store::history::HistoryContentFuture<'_, T>,
     ) -> Result<T> {
         let frame = match &future {
-            crate::store::history::HistoryContentFuture::Ordinary { frame_bytes, .. } => *frame_bytes,
+            crate::store::history::HistoryContentFuture::Ordinary { frame_bytes, .. } => Some(self.guard_owned(*frame_bytes)?),
             #[cfg(not(target_arch = "wasm32"))]
-            crate::store::history::HistoryContentFuture::Native(_) => 0,
+            crate::store::history::HistoryContentFuture::Native(_) => None,
         };
         let result = future.await;
-        let released = if frame == 0 { Ok(()) } else { self.release(frame) };
-        match result {
-            Ok(value) => released.map(|()| value),
-            Err(error) => { let _ = released; Err(error) }
-        }
+        drop(frame);
+        result
     }
 
     pub(crate) async fn verify_publication_lease(
@@ -1177,7 +1174,7 @@ pub(in crate::filesystem) fn volume_storage_name(volume: &VolumeRef, io: Option<
 pub(crate) async fn open<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>, reference: &WorkspaceRef, io: &PreparationIo,
 ) -> Result<acyclic_fs::Workspace<A, O>> {
-    reference.validate_with_work(&mut Some(&mut io.history_io()))?;
+    reference.validate(&mut Some(&mut io.history_io()))?;
     if reference.as_resource().provider() != &host.provider {
         return Err(failure(Some(io), crate::wire::ErrorCode::Invalid, "resource belongs to another Filesystem provider"));
     }
@@ -1192,7 +1189,7 @@ pub(crate) async fn generation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     host: &FilesystemHost<A, O>, workspace: &acyclic_fs::Workspace<A, O>,
     reference: &crate::resources::GenerationRef, io: &PreparationIo,
 ) -> Result<acyclic_fs::Generation<A, O>> {
-    reference.validate_with_work(&mut Some(&mut io.history_io()))?;
+    reference.validate(&mut Some(&mut io.history_io()))?;
     if reference.as_resource().provider() != &host.provider {
         return Err(failure(Some(io), crate::wire::ErrorCode::Invalid, "resource belongs to another Filesystem provider"));
     }
@@ -1240,7 +1237,7 @@ pub(in crate::filesystem) async fn resolve<A: AsyncAuthorityStore, O: AsyncObjec
                 let provider = crate::core::copy_provider(reference.provider(), &mut quota)?;
                 let key = crate::core::copy_copy_vector(reference.key(), &mut quota)?;
                 let version = reference.version().map(|value| crate::core::copy_text(value, &mut quota)).transpose()?;
-                let resource = ResourceRef::new_with_work(reference.kind(), provider, key, version, quota.work())?;
+                let resource = ResourceRef::new(reference.kind(), provider, key, version, quota.work())?;
                 let workspace = WorkspaceRef::from_resource_with_work(resource, quota.work())?;
                 quota.transfer();
                 workspace
@@ -1612,7 +1609,7 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
                 let work = work.clone();
                 async move { guard.verify_creation_with_native_work(&work)?.await }
             };
-            workspace.fork_with_permit_guarded_with_native_work(&child_name, options,
+            workspace.fork_with_native_work(&child_name, options,
                 acyclic_fs::PublicationPermit::Unrestricted, original, io.cancellation(), &mut before).await?
         } else {
             io.receive(workspace.fork(&child_name, options, acyclic_fs::PublicationPermit::Unrestricted, io.remaining()?, io.cancellation(), |_| std::future::ready(Ok(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }))).await)?
@@ -1645,8 +1642,21 @@ mod tests {
     use acyclic_fs::Fs;
 
     #[tokio::test]
+    async fn dropping_pending_completion_releases_its_frame() -> Result<()> {
+        let io = PreparationIo::from_budget(acyclic_fs::performance::work_budget(100_000, 16_000_000), &CancellationToken::new())?;
+        let before = io.owned_bytes()?;
+        let future = io.history_future(|| async { std::future::pending::<()>().await; Ok(()) })?;
+        assert!(io.owned_bytes()? > before);
+        let mut completion = Box::pin(io.finish_future(future));
+        assert!(futures::poll!(&mut completion).is_pending());
+        drop(completion);
+        assert_eq!(io.owned_bytes()?, before);
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn finite_ordinary_owner_callback_retains_full_failure_and_real_sdk_prefix() -> Result<()> {
-        let provider = crate::resources::ProviderRef::new("ordinary-owner-control", "filesystem", "2")?;
+        let provider = crate::resources::ProviderRef::new("ordinary-owner-control".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = FilesystemHost::new(Fs::memory(), provider.clone())?;
         let volume = VolumeRef::new(provider, "owned", VolumeClass::Project,
             VolumeOwner::Project("ordinary-owner-control".into()))?;
@@ -1679,7 +1689,7 @@ mod tests {
 
     #[tokio::test]
     async fn exact_read_gate_precedes_backend_and_pinned_fork_never_writes_back() -> Result<()> {
-        let provider = crate::resources::ProviderRef::new("source-read-control", "filesystem", "2")?;
+        let provider = crate::resources::ProviderRef::new("source-read-control".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = FilesystemHost::new(Fs::memory(), provider.clone())?;
         let project = |name: &str| VolumeRef::new(provider.clone(), name, VolumeClass::Project,
             VolumeOwner::Project("source-read-control".into()));

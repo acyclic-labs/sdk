@@ -1282,12 +1282,12 @@ pub trait MountFilesystem: Send + Sync + 'static {
         work: &NativeMaterializationWork,
     ) -> Result<(), MountSourceError>;
     /// Mutates actual metadata and optional length through the same source.
-    fn set_attributes_with_meter(
+    fn set_attributes(
         &self, path: &MountPath, metadata: FileMetadata, logical_bytes: Option<u64>,
         work: &NativeMaterializationWork,
     ) -> Result<(), MountSourceError>;
     /// Flushes the actual candidate on the shared original invocation.
-    fn flush_with_meter(&self, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
+    fn flush(&self, work: &NativeMaterializationWork) -> Result<(), MountSourceError>;
     /// Opens an actual attached handle and reports its pre-erasure SDK payload claim.
     fn open_file_with_meter(&self, path: &MountPath, work: &NativeMaterializationWork)
         -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError>;
@@ -1304,16 +1304,16 @@ pub trait MountFilesystem: Send + Sync + 'static {
     fn create_file_with_meter(&self, path: &MountPath, metadata: FileMetadata, work: &NativeMaterializationWork)
         -> Result<MountLookup, MountSourceError>;
     /// Preserves the source's actual absent-since proof while creating.
-    fn create_absent_file_with_meter(&self, path: &MountPath, metadata: FileMetadata,
+    fn create_absent_file(&self, path: &MountPath, metadata: FileMetadata,
         absent_since: ViewStamp, work: &NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
     /// Creates an actual directory through the same source engine.
-    fn create_directory_with_meter(&self, path: &MountPath, metadata: FileMetadata, work: &NativeMaterializationWork)
+    fn create_directory(&self, path: &MountPath, metadata: FileMetadata, work: &NativeMaterializationWork)
         -> Result<MountLookup, MountSourceError>;
     /// Consumes the exact already-admitted opaque symbolic-link target.
-    fn create_symbolic_link_with_meter(&self, path: &MountPath, target: crate::kernel::OwnedSourceChunk,
+    fn create_symbolic_link(&self, path: &MountPath, target: crate::kernel::OwnedSourceChunk,
         metadata: FileMetadata, work: &NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
     /// Creates the exact native special-file kind and device identity.
-    fn create_special_with_meter(&self, path: &MountPath, kind: MountNodeKind, device: Option<(u32, u32)>,
+    fn create_special(&self, path: &MountPath, kind: MountNodeKind, device: Option<(u32, u32)>,
         metadata: FileMetadata, work: &NativeMaterializationWork) -> Result<MountLookup, MountSourceError>;
     /// Reads the exact owned attribute on the operative source invocation.
     fn read_attribute_with_meter(&self, path: &MountPath, name: &[u8], work: &NativeMaterializationWork)
@@ -1329,11 +1329,11 @@ pub trait MountFilesystem: Send + Sync + 'static {
     fn remove_attribute_with_meter(&self, path: &MountPath, name: &[u8], work: &NativeMaterializationWork)
         -> Result<(), MountSourceError>;
     /// Clones the actual immutable range between authenticated file identities.
-    fn clone_range_by_id_with_meter(&self, source_file_id: FileId, source_offset: u64,
+    fn clone_range_by_id(&self, source_file_id: FileId, source_offset: u64,
         destination_file_id: FileId, destination_offset: u64, length: u64, work: &NativeMaterializationWork)
         -> Result<(), MountSourceError>;
     /// Creates the actual same-volume hard-link binding.
-    fn hard_link_with_meter(&self, source: &MountPath, destination: &MountPath, work: &NativeMaterializationWork)
+    fn hard_link(&self, source: &MountPath, destination: &MountPath, work: &NativeMaterializationWork)
         -> Result<(), MountSourceError>;
     /// Folds the actual source representation and reports exact owned capacity.
     fn folded_path_with_meter(&self, path: &MountPath, work: &NativeMaterializationWork)
@@ -1544,44 +1544,6 @@ pub trait MountFilesystem: Send + Sync + 'static {
         path: &MountPath,
         metadata: FileMetadata,
     ) -> Result<MountLookup, MountSourceError>;
-    /// Creates one empty regular file at `path`, which the caller found absent in the view as of `absent_since`; the source verifies the absence still holds as it creates, and fails with [`MountSourceError::AlreadyExists`] otherwise.
-    fn create_absent_file(
-        &self,
-        path: &MountPath,
-        metadata: FileMetadata,
-        absent_since: ViewStamp,
-    ) -> Result<MountLookup, MountSourceError> {
-        let _ = absent_since;
-        self.create_file(path, metadata)
-    }
-    /// Creates one empty directory.
-    fn create_directory(
-        &self,
-        path: &MountPath,
-        metadata: FileMetadata,
-    ) -> Result<MountLookup, MountSourceError>;
-    /// Creates one symbolic link with an exact opaque target.
-    fn create_symbolic_link(
-        &self,
-        path: &MountPath,
-        target: Bytes,
-        metadata: FileMetadata,
-    ) -> Result<MountLookup, MountSourceError>;
-    /// Creates one FIFO, socket, character device, or block device.
-    fn create_special(
-        &self,
-        path: &MountPath,
-        kind: MountNodeKind,
-        device: Option<(u32, u32)>,
-        metadata: FileMetadata,
-    ) -> Result<MountLookup, MountSourceError>;
-    /// Atomically replaces complete metadata and optionally logical size.
-    fn set_attributes(
-        &self,
-        path: &MountPath,
-        metadata: FileMetadata,
-        logical_bytes: Option<u64>,
-    ) -> Result<(), MountSourceError>;
     /// Reads one exact native named attribute.
     fn read_attribute(
         &self,
@@ -1631,15 +1593,6 @@ pub trait MountFilesystem: Send + Sync + 'static {
         destination_offset: u64,
         length: u64,
     ) -> Result<(), MountSourceError>;
-    /// Clones one logical range between stable attached file identities.
-    fn clone_range_by_id(
-        &self,
-        source_file_id: FileId,
-        source_offset: u64,
-        destination_file_id: FileId,
-        destination_offset: u64,
-        length: u64,
-    ) -> Result<(), MountSourceError>;
     /// Removes one namespace binding.
     fn remove(&self, path: &MountPath, expected: Option<FileId>) -> Result<(), MountSourceError>;
     /// Renames one binding atomically within the volume.
@@ -1649,14 +1602,6 @@ pub trait MountFilesystem: Send + Sync + 'static {
         destination: &MountPath,
         replace: bool,
     ) -> Result<(), MountSourceError>;
-    /// Creates one same-volume hard link.
-    fn hard_link(
-        &self,
-        source: &MountPath,
-        destination: &MountPath,
-    ) -> Result<(), MountSourceError>;
-    /// Seals all pending authored mutations through the checkout's configured fenced publication path before acknowledging native durability.
-    fn flush(&self) -> Result<(), MountSourceError>;
     /// Reconciles exact final host state for one projected path and seals it.
     fn capture_host_path(
         &self,
@@ -3778,8 +3723,8 @@ mod tests {
         };
         let config = VolumeConfig::portable(Lifecycle::Ephemeral);
         let runtime = tokio::runtime::Builder::new_current_thread().build()?;
+        let cancellation = CancellationToken::new();
         let checkout = runtime.block_on(async {
-            let cancellation = CancellationToken::new();
             let volume = memory_volume(VolumeId::new(), config, &cancellation).await?;
             private_checkout(&volume, &cancellation).await
         })?;
@@ -3797,7 +3742,7 @@ mod tests {
 
     pub(super) async fn memory_volume(
         id: VolumeId, config: VolumeConfig, cancellation: &CancellationToken,
-    ) -> Result<crate::Volume<impl crate::AsyncAuthorityStore, impl crate::AsyncObjectStore>, Box<dyn std::error::Error>> {
+    ) -> Result<crate::Volume<impl crate::AsyncAuthorityStore + use<>, impl crate::AsyncObjectStore + use<>>, Box<dyn std::error::Error>> {
         Ok(Fs::memory().create_volume_with_id(id, config, WorkBudget::UNBOUNDED, cancellation).await?.value)
     }
 
@@ -4404,7 +4349,9 @@ mod tests {
             )?)
         };
         let paths = [path("a")?, path("b")?];
-        crate::native_capture::capture_paths_batched_with_baseline(
+        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
+            .map_err(|(error, _)| error)?;
+        crate::native_capture::capture_paths_batched(
             &mut checkout,
             &paths,
             &CaptureOptions {
@@ -4414,9 +4361,9 @@ mod tests {
                 maximum_extent_spans: 16,
             },
             1,
-            WorkBudget::UNBOUNDED,
             &cancellation,
             None,
+            &original,
         )
         .await?;
         let first = checkout

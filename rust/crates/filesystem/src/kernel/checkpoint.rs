@@ -1,12 +1,15 @@
 //! Immutable checkpoint and two-parent merge-generation construction.
 
-use super::{DecodeLimits, GenerationRoot, decode_generation_root, encode_generation_root};
+use super::{DecodeLimits, GenerationRoot, encode_generation_root};
+#[cfg(not(target_arch = "wasm32"))]
+use super::allocation::KernelOwnedAllocation;
+use super::persistent_point::Owned;
 use crate::cancellation::CancellationToken;
 use crate::foundation::{GenerationId, usize_to_u64};
-use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
+use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{
     OBJECT_DIGEST_ENVELOPE_BYTES, ObjectId, ObjectKind, ObjectStoreError,
-    object_digest,
+    HashedObject,
 };
 use std::mem::size_of;
 use thiserror::Error;
@@ -22,19 +25,6 @@ pub struct CheckpointRequest {
     pub merge_parent: Option<ObjectId>,
 }
 
-/// Candidate checkpoint construction evidence.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CheckpointReceipt {
-    /// Candidate generation-root object.
-    pub root: ObjectId,
-    /// Content-addressed generation identity.
-    pub generation_id: GenerationId,
-    /// Whether the unchanged single-parent request reused its base exactly.
-    pub reused_base: bool,
-    /// Exact reads, encoding, hashing, and immutable writes.
-    pub work: WorkCounters,
-}
-
 /// Checkpoint construction failure retaining all spent work and orphan writes.
 pub type CheckpointFailure = OperationFailure<CheckpointError>;
 
@@ -45,7 +35,7 @@ pub async fn build_checkpoint<S: crate::async_storage::AsyncObjectStore>(
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &CancellationToken,
-) -> Result<CheckpointReceipt, CheckpointFailure> {
+) -> Result<OperationReceipt<ObjectId>, CheckpointFailure> {
     let span = crate::obs::span!(
         DEBUG,
         "acyclic.fs.kernel.checkpoint",
@@ -58,7 +48,8 @@ pub async fn build_checkpoint<S: crate::async_storage::AsyncObjectStore>(
     let mut accounting = super::allocation::KernelAccounting::standalone(budget, cancellation);
     let result = crate::obs::in_span(&span, async {
         build_checkpoint_with_accounting(store, request, limits, &mut accounting, cancellation)
-            .await.map_err(|error| OperationFailure::new(
+            .await.map(|value| OperationReceipt { value, work: accounting.spent() })
+            .map_err(|error| OperationFailure::new(
                 checkpoint_error(error), accounting.spent(),
             ))
     })
@@ -70,6 +61,7 @@ fn checkpoint_error(error: crate::FsError) -> CheckpointError {
     match error {
         crate::FsError::Checkpoint(error) => error,
         crate::FsError::Work(error) => error.into(),
+        crate::FsError::RootReadWorkMerge { error, .. } => error.into(),
         crate::FsError::Decode(error) => error.into(),
         crate::FsError::Object(error) => error.into(),
         crate::FsError::Cancelled(_) => ObjectStoreError::Cancelled.into(),
@@ -77,140 +69,108 @@ fn checkpoint_error(error: crate::FsError) -> CheckpointError {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) async fn build_checkpoint_with_native_work<S: crate::AsyncObjectStore>(
-    store: &S,
-    request: CheckpointRequest,
-    limits: DecodeLimits,
-    original: &crate::NativeMaterializationWork,
-    cancellation: &CancellationToken,
-) -> Result<CheckpointReceipt, crate::FsError> {
-    let mut accounting = super::allocation::KernelAccounting::native(original, cancellation);
-    build_checkpoint_with_accounting(store, request, limits, &mut accounting, cancellation).await
-}
-
 async fn checkpoint_parent<S: crate::AsyncObjectStore>(
     store: &S, object: ObjectId, limits: DecodeLimits,
     accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
-) -> Result<(GenerationRoot, super::allocation::KernelOwnedAllocation), crate::FsError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if accounting.native_work().is_some() {
-        return super::generation::read_generation_root_with_limits_and_accounting(
-            store, object, limits, accounting, cancellation,
-        ).await;
-    }
-    let result = read_root_async(
-        store, object, limits, accounting.remaining()?, WorkCounters::default(), cancellation,
-    ).await;
-    let spent = match &result { Ok((_, work)) => *work, Err(error) => *error.work };
-    accounting.charge(spent)?;
-    result.map(|(root, _)| (root, super::allocation::KernelOwnedAllocation::Standalone))
-        .map_err(|failure| failure.error.into())
+) -> Result<Owned<GenerationRoot>, crate::FsError> {
+    let (root, allocation) = super::generation::read_generation_root_with_limits_and_accounting(
+        store, object, limits, accounting, cancellation,
+    ).await?;
+    let bytes = usize_to_u64(root.parents.capacity() * size_of::<GenerationId>());
+    Ok(Owned::new(root, allocation, bytes))
 }
 
 pub(crate) async fn build_checkpoint_with_accounting<S: crate::AsyncObjectStore>(
     store: &S, request: CheckpointRequest, limits: DecodeLimits,
     accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken,
-) -> Result<CheckpointReceipt, crate::FsError> {
-    validate_request(request).map_err(|failure| crate::FsError::from(failure.error))?;
+) -> Result<ObjectId, crate::FsError> {
+    validate_request(request)?;
     accounting.check()?;
     let base = checkpoint_parent(store, request.base, limits, accounting, cancellation).await?;
     let result = async {
         if let Some(parent_id) = request.merge_parent {
             let parent = checkpoint_parent(store, parent_id, limits, accounting, cancellation).await?;
-            let valid = validate_merge_parents(&base.0, &parent.0, accounting.spent())
-                .map_err(|failure| crate::FsError::from(failure.error));
-            drop(parent);
+            let valid = validate_merge_parents(&base.value, &parent.value);
+            parent.retire(accounting)?;
             valid?;
         }
-        if request.merge_parent.is_none() && request.file_table == base.0.file_table {
-            return Ok(reused_checkpoint(request.base, accounting.spent()));
+        if request.merge_parent.is_none() && request.file_table == base.value.file_table {
+            return Ok(request.base);
         }
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(original) = accounting.native_work() {
-            let count = 1 + usize::from(request.merge_parent.is_some());
-            let requested = usize_to_u64(count * size_of::<GenerationId>());
-            let allocation = accounting.claim_owned(requested, 1)?;
-            // Tuple destruction always frees the vector before its paid guard.
-            let mut parents = (Vec::new(), allocation);
-            if parents.0.try_reserve_exact(count).is_err() {
-                return Err(crate::FsError::HandleAllocationFailed);
+        let mut parents = Owned::<Vec<GenerationId>>::allocate(1 + usize::from(request.merge_parent.is_some()), accounting)?;
+        parents.value.push(GenerationId::new(request.base.digest));
+        if let Some(parent) = request.merge_parent { parents.value.push(GenerationId::new(parent.digest)); }
+        let Owned { value: parents, allocation, bytes } = parents;
+        let root = Owned::new(GenerationRoot {
+            volume_id: base.value.volume_id, root_file_id: base.value.root_file_id,
+            file_table: request.file_table, parents,
+            required_features: base.value.continuation_features(),
+        }, allocation, bytes);
+        let encoded = super::codec::encode_owned(accounting, |observe, reserve| {
+            encode_generation_root(&root.value, observe, reserve)
+        });
+        root.retire(accounting)?;
+        let (value, allocation) = encoded?;
+        let bytes = usize_to_u64(value.capacity());
+        let mut encoded = Owned::new(value, allocation, bytes);
+        let written = async {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(original) = accounting.native_work() {
+                let KernelOwnedAllocation::NativeOriginal(guard) = &mut encoded.allocation else {
+                    return Err(WorkError::Overflow.into());
+                };
+                let hashed = HashedObject::from_native_vec(
+                    ObjectKind::GenerationRoot, &mut encoded.value, guard, original, cancellation,
+                ).map_err(checkpoint_storage_error)?;
+                let object = hashed.object_id();
+                store.put_hashed_with_native_work(hashed, original, cancellation).await
+                    .map_err(checkpoint_storage_error)?;
+                return Ok(object);
             }
-            let actual = usize_to_u64(parents.0.capacity() * size_of::<GenerationId>());
-            accounting.reconcile_owned(&mut parents.1, requested, actual)?;
-            accounting.check()?;
-            parents.0.push(GenerationId::new(request.base.digest));
-            if let Some(parent) = request.merge_parent {
-                parents.0.push(GenerationId::new(parent.digest));
-            }
-            let root = (GenerationRoot {
-                volume_id: base.0.volume_id, root_file_id: base.0.root_file_id,
-                file_table: request.file_table, parents: parents.0,
-                required_features: base.0.continuation_features(),
-            }, parents.1);
-            let mut encoded = crate::kernel::codec::encode_owned(accounting, |observe, _reserve| { cancellation.check()?; super::generation::encode_generation_root(&root.0, observe, crate::FsError::EncodedAllocationFailed) })?;
-            drop(root);
-            let guard = match &mut encoded.1 {
-                super::allocation::KernelOwnedAllocation::NativeOriginal(guard) => guard,
-                _ => unreachable!("native encoding retains original custody"),
+            let hashing = WorkCounters {
+                bytes_hashed: usize_to_u64(encoded.value.len()).checked_add(OBJECT_DIGEST_ENVELOPE_BYTES)
+                    .ok_or(WorkError::Overflow)?, ..WorkCounters::UNCHARGED
             };
-            let hashed = crate::storage::HashedObject::from_native_vec(
-                ObjectKind::GenerationRoot, &mut encoded.0, guard, original, cancellation,
-            ).map_err(native_checkpoint_storage_error)?;
+            accounting.admit(hashing)?;
+            let hashed = HashedObject::new(ObjectKind::GenerationRoot, std::mem::take(&mut encoded.value).into());
+            accounting.record_completed(hashing)?;
             let object = hashed.object_id();
-            store.put_hashed_with_native_work(hashed, original, cancellation).await
-                .map_err(native_checkpoint_storage_error)?;
-            return Ok(CheckpointReceipt {
-                root: object, generation_id: GenerationId::new(object.digest),
-                reused_base: false, work: accounting.spent(),
-            });
-        }
-        let (object, encoded, prospective) = encode_checkpoint(
-            request, &base.0, request.merge_parent, WorkCounters::default(), accounting.remaining()?,
-        ).map_err(|failure| crate::FsError::from(failure.error))?;
-        accounting.charge(prospective)?;
-        let receipt = store.put(object, encoded.into(), accounting.remaining()?, cancellation).await;
-        let spent = match &receipt { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
-        accounting.charge(spent)?;
-        receipt.map_err(|failure| crate::FsError::from(failure.error))?;
-        Ok(CheckpointReceipt {
-            root: object, generation_id: GenerationId::new(object.digest),
-            reused_base: false, work: accounting.spent(),
-        })
+            let receipt = store.put_hashed(hashed, accounting.remaining()?, cancellation).await;
+            let spent = match &receipt { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
+            super::file_read::complete_standalone_backend(accounting, spent, 0)?;
+            receipt.map_err(|failure| checkpoint_storage_error(failure.error))?;
+            Ok(object)
+        }.await;
+        encoded.retire(accounting)?;
+        written
     }.await;
-    drop(base);
+    base.retire(accounting)?;
     result
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-fn native_checkpoint_storage_error(error: ObjectStoreError) -> crate::FsError {
+fn checkpoint_storage_error(error: ObjectStoreError) -> crate::FsError {
     match error {
+        #[cfg(not(target_arch = "wasm32"))]
         ObjectStoreError::Native(error) => crate::FsError::NativeKernel(error),
         error => error.into(),
     }
 }
 
-fn validate_request(request: CheckpointRequest) -> Result<(), CheckpointFailure> {
+fn validate_request(request: CheckpointRequest) -> Result<(), CheckpointError> {
     if request.base.kind != ObjectKind::GenerationRoot
         || request
             .merge_parent
             .is_some_and(|parent| parent.kind != ObjectKind::GenerationRoot)
     {
-        return Err(OperationFailure::before_work(
-            CheckpointError::WrongGenerationKind,
-        ));
+        return Err(CheckpointError::WrongGenerationKind);
     }
     if request.file_table.kind != ObjectKind::FileTablePage {
-        return Err(OperationFailure::before_work(
-            CheckpointError::WrongFileTableKind,
-        ));
+        return Err(CheckpointError::WrongFileTableKind);
     }
     if request.merge_parent == Some(request.base) {
-        return Err(OperationFailure::before_work(
-            CheckpointError::DuplicateParent,
-        ));
+        return Err(CheckpointError::DuplicateParent);
     }
     Ok(())
 }
@@ -218,107 +178,14 @@ fn validate_request(request: CheckpointRequest) -> Result<(), CheckpointFailure>
 fn validate_merge_parents(
     base: &GenerationRoot,
     parent: &GenerationRoot,
-    work: WorkCounters,
-) -> Result<(), CheckpointFailure> {
+) -> Result<(), CheckpointError> {
     if parent.volume_id != base.volume_id {
-        return Err(OperationFailure::new(
-            CheckpointError::CrossVolumeMerge,
-            work,
-        ));
+        return Err(CheckpointError::CrossVolumeMerge);
     }
     if parent.root_file_id != base.root_file_id {
-        return Err(OperationFailure::new(
-            CheckpointError::RootIdentityMismatch,
-            work,
-        ));
+        return Err(CheckpointError::RootIdentityMismatch);
     }
     Ok(())
-}
-
-fn reused_checkpoint(root: ObjectId, work: WorkCounters) -> CheckpointReceipt {
-    CheckpointReceipt {
-        root,
-        generation_id: GenerationId::new(root.digest),
-        reused_base: true,
-        work,
-    }
-}
-
-fn encode_checkpoint(
-    request: CheckpointRequest,
-    base: &GenerationRoot,
-    merge: Option<ObjectId>,
-    work: WorkCounters,
-    budget: WorkBudget,
-) -> Result<(ObjectId, Vec<u8>, WorkCounters), CheckpointFailure> {
-    let parent_count = 1_usize + usize::from(merge.is_some());
-    let mut parents = Vec::with_capacity(parent_count);
-    parents.push(GenerationId::new(request.base.digest));
-    if let Some(parent) = merge {
-        parents.push(GenerationId::new(parent.digest));
-    }
-    let root = GenerationRoot {
-        volume_id: base.volume_id,
-        root_file_id: base.root_file_id,
-        file_table: request.file_table,
-        parents,
-        required_features: base.continuation_features(),
-    };
-    let encoded =
-        encode_generation_root(&root, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed).map_err(|error| OperationFailure::new(error.into(), work))?;
-    let object = ObjectId {
-        kind: ObjectKind::GenerationRoot,
-        digest: object_digest(ObjectKind::GenerationRoot, &encoded),
-    };
-    let encoded_capacity = usize_to_u64(encoded.capacity());
-    let parent_capacity = usize_to_u64(root.parents.capacity())
-        .checked_mul(usize_to_u64(size_of::<GenerationId>()))
-        .ok_or_else(|| OperationFailure::new(WorkError::Overflow.into(), work))?;
-    let peak_allocation_bytes = encoded_capacity
-        .checked_add(parent_capacity)
-        .ok_or_else(|| OperationFailure::new(WorkError::Overflow.into(), work))?;
-    let encoded_length = usize_to_u64(encoded.len());
-    let prospective = work
-        .checked_add(WorkCounters {
-            bytes_encoded: encoded_length,
-            bytes_hashed: encoded_length.saturating_add(OBJECT_DIGEST_ENVELOPE_BYTES),
-            allocation_operations: 2,
-            peak_allocation_bytes,
-            ..WorkCounters::default()
-        })
-        .map_err(|error| OperationFailure::new(error.into(), work))?;
-    prospective
-        .verify(budget)
-        .map_err(|error| OperationFailure::new(error.into(), work))?;
-    Ok((object, encoded, prospective))
-}
-
-async fn read_root_async<S: crate::async_storage::AsyncObjectStore>(
-    store: &S,
-    object: ObjectId,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-    work: WorkCounters,
-    cancellation: &CancellationToken,
-) -> Result<(GenerationRoot, WorkCounters), CheckpointFailure> {
-    let remaining = work
-        .remaining(budget)
-        .map_err(|error| OperationFailure::new(error.into(), work))?;
-    let receipt = crate::async_storage::AsyncObjectStore::read(
-        store,
-        object,
-        limits.maximum_object_bytes,
-        remaining,
-        cancellation,
-    )
-    .await
-    .map_err(|failure| failure.map_with_prior_work(work, Into::into))?;
-    let combined = work
-        .checked_add(receipt.work)
-        .map_err(|error| OperationFailure::new(error.into(), work))?;
-    let root = decode_generation_root(&receipt.value.bytes, limits, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))
-        .map_err(|error| OperationFailure::new(error.into(), combined))?;
-    Ok((root, combined))
 }
 
 /// Immutable checkpoint construction failures.

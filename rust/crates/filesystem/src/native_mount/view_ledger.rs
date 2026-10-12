@@ -1101,10 +1101,12 @@ impl ViewLedger {
         let mut terminal = key_of(&());
         // One read of bindings covers every prefix, as in the ordinary query.
         let bindings = self.bindings.0.read().unwrap_or_else(PoisonError::into_inner);
-        if !bindings.unchanged_key(terminal, stamp, work)? { return Ok(false); }
+        if !bindings.slots.is_empty() { super::lazy::mount_items(work, 1)?; }
+        if bindings.slots.get(&terminal).copied().unwrap_or(0).max(bindings.floor) > stamp.0 { return Ok(false); }
         for name in path.components() {
             terminal = child_key(terminal, name, &mut ViewRecordWork::Ordinary(work))?;
-            if !bindings.unchanged_key(terminal, stamp, work)? { return Ok(false); }
+            if !bindings.slots.is_empty() { super::lazy::mount_items(work, 1)?; }
+            if bindings.slots.get(&terminal).copied().unwrap_or(0).max(bindings.floor) > stamp.0 { return Ok(false); }
         }
         drop(bindings);
         if !self.directories.unchanged_key(terminal, stamp, work)? { return Ok(false); }
@@ -1125,10 +1127,12 @@ impl ViewLedger {
             || !stamp.precedes_none_of(&self.everything) { return Ok(false); }
         let mut key = key_of(&());
         let bindings = self.bindings.0.read().unwrap_or_else(PoisonError::into_inner);
-        if !bindings.unchanged_key(key, stamp, work)? { return Ok(false); }
+        if !bindings.slots.is_empty() { super::lazy::mount_items(work, 1)?; }
+        if bindings.slots.get(&key).copied().unwrap_or(0).max(bindings.floor) > stamp.0 { return Ok(false); }
         for name in path.components() {
             key = child_key(key, name, &mut ViewRecordWork::Ordinary(work))?;
-            if !bindings.unchanged_key(key, stamp, work)? { return Ok(false); }
+            if !bindings.slots.is_empty() { super::lazy::mount_items(work, 1)?; }
+            if bindings.slots.get(&key).copied().unwrap_or(0).max(bindings.floor) > stamp.0 { return Ok(false); }
         }
         Ok(true)
     }
@@ -1648,7 +1652,7 @@ mod tests {
     use crate::FileId;
     use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
     use crate::model::VolumeLimits;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, atomic::Ordering};
 
     #[derive(Default)]
     struct Counted(std::sync::atomic::AtomicU64);

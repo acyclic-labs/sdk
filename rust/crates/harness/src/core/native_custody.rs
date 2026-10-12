@@ -27,7 +27,7 @@ pub(crate) fn copy_provider(
     let namespace = copy_text(source.namespace(), quota)?;
     let family = copy_text(source.family(), quota)?;
     let version = copy_text(source.version(), quota)?;
-    crate::resources::ProviderRef::new_with_work(namespace, family, version, quota.work())
+    crate::resources::ProviderRef::new(namespace, family, version, quota.work())
 }
 
 pub(crate) fn copy_file(
@@ -459,13 +459,6 @@ pub(super) fn copy_reducer(
         let copied = component!(NativeComponentKey::Event(event.revision), |quota| copy_event(event, quota));
         output.events.push_back(copied);
     }
-    for (operation, revision) in &source.operation_positions {
-        component!(NativeComponentKey::OperationPosition(*operation), |quota| {
-            retain_entry::<(OperationId, u64)>(quota)?;
-            Ok(())
-        });
-        output.operation_positions.insert(*operation, *revision);
-    }
     for (id, effect) in &source.effects {
         let mut copied = component!(NativeComponentKey::EffectAction(*id), |quota| {
             retain_entry::<(EffectId, EffectState)>(quota)?;
@@ -746,7 +739,7 @@ pub(crate) fn event_owned_bytes(event: &Event) -> Result<u64> {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum NativeComponentKey<'a> {
-    Base, Authority, Event(u64), OperationPosition(OperationId), EventBuffer, TerminalEffectBuffer,
+    Base, Authority, Event(u64), EventBuffer, TerminalEffectBuffer,
     EffectAction(EffectId), EffectStatus(EffectId), EffectAttempts(EffectId),
     ExtensionState(Cow<'a, str>), ExtensionConfiguration(Cow<'a, ExtensionDependency>),
     ActiveExtensions, ActiveConfigurations, Fork(Cow<'a, Authority>),
@@ -759,7 +752,7 @@ impl NativeComponentKey<'_> {
         use NativeComponentKey as K;
         Ok(match self {
             Self::Base => K::Base, Self::Authority => K::Authority,
-            Self::Event(v) => K::Event(*v), Self::OperationPosition(v) => K::OperationPosition(*v),
+            Self::Event(v) => K::Event(*v),
             Self::EventBuffer => K::EventBuffer, Self::TerminalEffectBuffer => K::TerminalEffectBuffer,
             Self::EffectAction(v) => K::EffectAction(*v), Self::EffectStatus(v) => K::EffectStatus(*v),
             Self::EffectAttempts(v) => K::EffectAttempts(*v),
@@ -946,9 +939,13 @@ impl NativeComponentCustody {
         }
         Ok(bytes)
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) fn original_work(&self) -> Option<&acyclic_fs::NativeMaterializationWork> {
-        self.components.first().map(|(_,allocation,_)| allocation.work())
+    pub(super) fn require_work(&self, work: &Option<&mut dyn HistoryIo>, reason: &'static str) -> Result<()> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if !self.components.is_empty() && !work.as_deref().is_some_and(is_native) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason });
+        }
+        let _ = (self, work, reason);
+        Ok(())
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) fn from_reducer(
@@ -989,10 +986,7 @@ impl NativeComponentCustody {
                 key_allocation.absorb(&mut entry)
                     .map_err(|cause| Error::NativeWork { cause, custody: Some(entry) })?;
             }
-            let split = if matches!(key,NativeComponentKey::OperationPosition(_)) {
-                metadata.split_off(bytes)
-            } else { data.split_off(payload) };
-            let claim = match split {
+            let claim = match data.split_off(payload) {
                 Ok(claim) => claim,
                 Err(cause) => {
                     drop(owned_key);
@@ -1008,9 +1002,6 @@ impl NativeComponentCustody {
         use NativeComponentKey as K;
         f(K::Authority, reducer.authority.id.capacity() as u64)?;
         for event in &reducer.events { f(K::Event(event.revision), event_owned_bytes(event)?)?; }
-        for operation in reducer.operation_positions.keys() {
-            f(K::OperationPosition(*operation), std::mem::size_of::<(OperationId, u64)>() as u64)?;
-        }
         f(K::EventBuffer, owned_buffer::<Event>(reducer.events.capacity())?)?;
         f(K::TerminalEffectBuffer, owned_buffer::<EffectId>(reducer.indexed_terminal_effects.capacity())?)?;
         for (id, effect) in &reducer.effects {

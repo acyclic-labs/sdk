@@ -710,7 +710,7 @@ impl NativeExistingLazyVolume {
             {
                 return Err(Error::from(acyclic_fs::NativeTreeMaterializationError::InvalidLayout));
             }
-            let callback = guard.for_volume(owner, binding.volume, binding.writable, work)?.publication;
+            let callback = guard.for_volume(owner, binding.volume, binding.writable, work)?.1;
             let mut holder_custody = work.retain_owned((std::mem::size_of::<Self>()
                 + std::mem::size_of::<HeldLazyVolume<P, A, O, D, S>>()) as u64)?;
             let (volume, mut volume_custody) = allocate(work, |io| binding.volume.clone_with_io(io))?;
@@ -1578,7 +1578,7 @@ where
                 }
                 let callback_guard = guards[index]
                     .for_volume(owner, binding.volume, binding.writable, &volume_work)?;
-                let crate::runtime::NativeVolumeCallbackPorts { sdk, publication } = callback_guard;
+                let (sdk, publication) = callback_guard;
                 let identity = materializer.backend().mapping_root_identity(binding.path)?;
                 if volumes.iter().any(|volume| volume.original_identity == identity) {
                     return Err(boundary(crate::wire::ErrorCode::Conflict, "native volume directory aliases changed"));
@@ -2414,10 +2414,10 @@ pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider>
     let operation = native_root_output_binding_operation(
         &audience, private_volume, original_creation, work,
     )?;
-    let reader = crate::store::HistoryReader::new_with_native_work(
-        stream, &audience, &verifier.0, work,
-    )?;
-    let event = reader.0.operation_event_bounded_with_native_work(
+    let mut reader_io = crate::store::native_work_io(work).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
+    let reader = crate::store::HistoryReader::new(stream, &audience, &verifier.0, &mut Some(&mut reader_io))?;
+    let reader_custody = reader_io.into_custody();
+    let event = reader.operation_event_bounded_with_native_work(
         operation, limits.file_bytes, work,
     ).await?;
     let original_revision = match event.0.as_ref() {
@@ -2438,6 +2438,7 @@ pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider>
     };
     drop(event);
     drop(reader);
+    drop(reader_custody);
     let aggregate = crate::store::StreamAggregate::open_with_native_work(
         stream, audience,
         verifier.0, crate::core::SchemaRegistry::new(), work,
@@ -2642,7 +2643,7 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
             None => return Err(boundary(crate::wire::ErrorCode::Storage, "empty materializer journal")),
         };
         self.verify_read_owner().await?;
-        let stream = crate::store::operations::stream_with_work(self.read_client(), &path, &mut observer)?;
+        let stream = crate::store::operations::stream(self.read_client(), (&path).as_str(), &mut observer)?;
         let mut records = crate::store::operations::read_records_with_work(
             self.read_client(), &stream.stream, sequence, 1, &mut observer,
         ).await?.map_err(|error| crate::distributed::sdk_error(error, &observer))?;

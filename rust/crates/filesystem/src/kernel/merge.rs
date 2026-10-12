@@ -436,7 +436,7 @@ fn merge_generation_core<'a, 'accounting, S: AsyncObjectStore>(
                     None => {
                         let parent = build_checkpoint_with_accounting(store, CheckpointRequest { base: request.base_generation,
                             file_table: request.ours.file_table, merge_parent: None }, limits, accounting, cancellation).await?;
-                        (parent.root, parent.generation_id)
+                        (parent, GenerationId::new(parent.digest))
                     }
                 };
                 let merged = build_checkpoint_with_accounting(store, CheckpointRequest { base: parent, file_table: merged_table,
@@ -456,7 +456,7 @@ fn merge_generation_core<'a, 'accounting, S: AsyncObjectStore>(
                 });
                 if let Err(error) = copied { parents.retire(accounting)?; return Err(error); }
                 let Owned { value: parents, allocation, .. } = parents;
-                Ok((MergeGenerationOutcome::Prepared { generation_root: merged.root, generation_id: merged.generation_id,
+                Ok((MergeGenerationOutcome::Prepared { generation_root: merged, generation_id: GenerationId::new(merged.digest),
                     root: GenerationRoot { volume_id: request.ours.volume_id, root_file_id: request.ours.root_file_id,
                         file_table: merged_table, parents, required_features: request.ours.continuation_features() } }, allocation))
             }.await;

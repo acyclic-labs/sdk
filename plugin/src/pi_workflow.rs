@@ -231,10 +231,7 @@ impl<'a> PiWorkflowHost<'a> {
                 "/",
                 operation_id.hyphenated().encode_lower(&mut operation_text),
             ], &self.work)?;
-            host.resume_workflow_with_native_work(
-                task, suspension.revision, input,
-                acyclic_harness::IdempotencyKey::new(key)?, &self.work,
-            ).await?;
+            host.resume_workflow(task, suspension.revision, input, acyclic_harness::IdempotencyKey::new(key)?, Some(&self.work)).await?;
             drop(key_custody);
         }
         drop(suspension);
