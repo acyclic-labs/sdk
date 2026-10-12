@@ -227,7 +227,7 @@ impl<P: StreamProvider> CreatedTaskPublicationLease<P> {
             write!(&mut text, "task-cancel:{}", self.operation).expect("writing into String");
             coordinator.cancel_operation(
                 self.verifier.audience(), &self.scope, &self.verifier, self.operation,
-                IdempotencyKey::new(text)?, true, work,
+                IdempotencyKey::new(text)?, true, None, work,
             ).await?;
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             if work.as_deref().and_then(|io| io.original_native_work()).is_some() {
@@ -2052,7 +2052,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         write!(&mut key, "task-cancel:{operation_id}").expect("writing into String");
         self.coordinator.lock().await.cancel_operation(
             self.verifier.audience(), &self.owner_scope, &self.verifier, operation_id,
-            IdempotencyKey::new(key)?, true, &mut work,
+            IdempotencyKey::new(key)?, true, None, &mut work,
         ).await?;
         Ok(())
     }
@@ -2103,7 +2103,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             &self.verifier,
             request.control.operation_id,
             request.idempotency_key.clone(),
-            request.recursive, &mut None,
+            request.recursive, None, &mut None,
         ).await?;
         Ok(state)
     }
@@ -2208,7 +2208,6 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             ))?;
         let fence = fence.clone_with_work(work)?;
         coordinator.apply(
-            operation_id,
             IdempotencyKey::new(key)?,
             crate::scheduler::SchedulerEvent::ModelDispatchClaimed {
                 operation_id, attempt_id, step, request_digest, fence, ceiling,
@@ -2669,12 +2668,16 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         }
         use std::fmt::Write as _;
         write!(&mut key, "task-child-cancel:{parent}:{operation}").expect("writing into String");
-        coordinator.cancel_child_operation(
-            self.verifier.audience(), &self.owner_scope, &self.verifier,
-            OperationId::from_bytes(child.into_bytes()),
-            IdempotencyKey::new(key)?,
-            OperationId::from_bytes(parent.into_bytes()), fence,
-         work,).await
+        coordinator.cancel_operation(
+                self.verifier.audience(),
+                &self.owner_scope,
+                &self.verifier,
+                OperationId::from_bytes(child.into_bytes()),
+                IdempotencyKey::new(key)?,
+                true,
+                Some((OperationId::from_bytes(parent.into_bytes()), fence)),
+                work,
+            ).await.map(|(_, state)| state)
     }
 
     /// Starts or reattaches the exact already-admitted lease.
@@ -2724,7 +2727,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         } else {
             crate::scheduler::SchedulerEvent::Started { operation_id, fence }
         };
-        coordinator.apply(operation_id, key, event, &mut work).await?;
+        coordinator.apply(key, event, &mut work).await?;
         drop(admission);
         Ok(())
     }
@@ -2760,7 +2763,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 )
                 .await?;
         } else {
-            coordinator.apply(operation_id, key, event, work).await?;
+            coordinator.apply(key, event, work).await?;
         }
         let current = coordinator.observe_operation(
             self.verifier.audience(),
@@ -3101,7 +3104,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             write!(&mut text, "task-cancel:{operation_id}").expect("writing into String");
             coordinator.cancel_operation(
                 self.verifier.audience(), &self.owner_scope, &self.verifier, operation_id,
-                IdempotencyKey::new(text)?, true, work,
+                IdempotencyKey::new(text)?, true, None, work,
             ).await?;
             return Err(Error::Indeterminate(operation_id));
         }
@@ -3109,8 +3112,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             self.verifier.audience(), &self.owner_scope, &self.verifier, operation_id, work,
         )?;
         crate::scheduler::require_execution_owner(current, &fence, settlement, &mut None)?;
-        coordinator.apply(
-            operation_id, key,
+        coordinator.apply( key,
             crate::scheduler::SchedulerEvent::Completed {
                 operation_id, outcome, fence: Some(fence), execution_duration_ns: None,
             },
@@ -3859,7 +3861,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         write!(&mut text, "task-cancel:{operation}").expect("writing into String");
         coordinator.cancel_operation(
             self.verifier.audience(), &self.owner_scope, &self.verifier, operation,
-            IdempotencyKey::new(text)?, true, work,
+            IdempotencyKey::new(text)?, true, None, work,
         ).await?;
         Ok(())
     }
@@ -6335,7 +6337,7 @@ pub(crate) mod tests {
                         .declare_operation(authority, signed, &verifier, *spec, key, None, &mut None)
                         .await?;
                 } else {
-                    coordinator.apply(operation, key, event, &mut None).await?;
+                    coordinator.apply(key, event, &mut None).await?;
                 }
             }
         }
@@ -6345,7 +6347,6 @@ pub(crate) mod tests {
         };
         coordinator
             .apply(
-                OperationId::from_bytes([3; 16]),
                 IdempotencyKey::new("discovery-cancel-3")?,
                 cancel(3), &mut None,
             )
@@ -6363,7 +6364,6 @@ pub(crate) mod tests {
             .lock()
             .await
             .apply(
-                OperationId::from_bytes([17; 16]),
                 IdempotencyKey::new("discovery-cancel-17")?,
                 cancel(17), &mut None,
             )
@@ -7413,7 +7413,6 @@ pub(crate) mod tests {
             let fence = crate::scheduler::LeaseFence::from(&lease.reservation);
             coordinator
                 .apply(
-                    operation_id,
                     IdempotencyKey::new("model-start")?,
                     crate::scheduler::SchedulerEvent::Started {
                         operation_id,
@@ -7917,7 +7916,6 @@ pub(crate) mod tests {
             let mut coordinator = host.coordinator.lock().await;
             coordinator
                 .apply(
-                    operation_id,
                     IdempotencyKey::new("model-release")?,
                     crate::scheduler::SchedulerEvent::LeaseReleased {
                         operation_id,
@@ -7936,7 +7934,6 @@ pub(crate) mod tests {
             let replacement = crate::scheduler::LeaseFence::from(&lease.reservation);
             coordinator
                 .apply(
-                    operation_id,
                     IdempotencyKey::new("model-restart")?,
                     crate::scheduler::SchedulerEvent::Started {
                         operation_id,
@@ -8126,7 +8123,7 @@ pub(crate) mod tests {
                 &issuer.verifier(&mut None).expect("verifier copy"),
                 operation_id,
                 IdempotencyKey::new("model-cancel")?,
-                false, &mut None,
+                false, None, &mut None,
             )
             .await?;
         host.verify_execution_owner(task_id, fence.clone()).await?;
@@ -8557,7 +8554,7 @@ pub(crate) mod tests {
                     &issuer.verifier(&mut None).expect("verifier copy"),
                     operation_id,
                     IdempotencyKey::new("renewal-parent-cancel")?,
-                    false, &mut None,
+                    false, None, &mut None,
                 )
                 .await?;
             let cancelled_revision = reopened.coordinator.lock().await.revision();

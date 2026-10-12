@@ -119,7 +119,7 @@ async fn measured_quiescent_release_requires_witness_and_the_same_owner_verified
     assert_eq!(provider.io_snapshot().reads, 0);
     assert_eq!(provider.io_snapshot().writes, 0);
     let mut remote = DistributedCoordinator::open(&client, Arc::new(UnmeasuredContent::default()), None, &mut None).await?;
-    remote.apply(operation, IdempotencyKey::new("remote-original-start")?,
+    remote.apply(IdempotencyKey::new("remote-original-start")?,
         SchedulerEvent::Started {
             operation_id:operation, fence:LeaseFence::from(&lease.reservation),
         }, &mut None).await?;
