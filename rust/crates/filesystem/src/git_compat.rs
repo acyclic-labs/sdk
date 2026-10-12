@@ -4925,11 +4925,11 @@ where
 {
     let diff = from
         .diff_to(to, maximum_changes, WorkBudget::UNBOUNDED, cancellation)
-        .await.map_err(|failure| failure.error)?;
+        .await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)?;
     let paths = diff
         .changed_paths(maximum_changes, WorkBudget::UNBOUNDED, cancellation)
         .await.map_err(|failure| failure.error)?
-        .value;
+        .value.0;
     let mut before_policies = BTreeMap::new();
     let mut after_policies = BTreeMap::new();
     let mut files = BTreeSet::new();
@@ -5241,8 +5241,8 @@ where
     O: AsyncObjectStore,
 {
     let live = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    let changes = previous_live.diff_to(&live, u32::MAX, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map_err(|failure| failure.error)?;
-    let changed = changes.changed_paths(u32::MAX, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let changes = previous_live.diff_to(&live, u32::MAX, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)?;
+    let changed = changes.changed_paths(u32::MAX, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)?;
     let mut portable = Vec::with_capacity(changed.len());
     for change in changed {
         let path = portable_changed_path(&change.path)?;
@@ -7478,10 +7478,10 @@ mod tests {
         let after = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("after");
         let changes = before
             .diff_to(&after, 16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .await.map_err(|failure| failure.error)
+            .await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)
             .expect("diff")
             .changed_paths(16, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+            .await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)
             .expect("changed paths");
         let policy = GitIgnorePolicy::parse("*.tmp\nbuild/\n");
         assert_eq!(

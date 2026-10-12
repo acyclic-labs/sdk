@@ -43,3 +43,15 @@ pub(super) fn merge_workspace_work<T>(
     work.verify(budget).map_err(|error| crate::OperationFailure::new(WorkspaceError::from(error), work))?;
     Ok(crate::OperationReceipt { value: receipt.value, work })
 }
+
+pub(super) fn workspace_allocation(allocation: KernelOwnedAllocation, accounting: &KernelAccounting<'_>) -> Result<crate::AuthorityAllocation, WorkspaceError> {
+    match allocation {
+        #[cfg(not(target_arch = "wasm32"))]
+        KernelOwnedAllocation::NativeOriginal(allocation) => Ok(Some(allocation)),
+        KernelOwnedAllocation::Standalone => {
+            #[cfg(not(target_arch = "wasm32"))]
+            if accounting.native_work().is_some() { return Err(crate::NativeTreeMaterializationError::InvalidLayout.into()); }
+            Ok(None)
+        }
+    }
+}

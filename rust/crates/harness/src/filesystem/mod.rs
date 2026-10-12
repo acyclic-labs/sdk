@@ -997,22 +997,22 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.original_native_work() {
             let _changes_custody;
-            let (changes, custody) = initial.diff_to_with_native_work(head, u32::MAX, work, work.cancellation())
-                .await.map_err(|source| Error::NativeWorkspace { source, custody: None })?;
+            let (changes, custody) = initial.diff_to(head, u32::MAX, work, work.cancellation())
+                .await.map(|(value, allocation)| (value, allocation.expect("native result allocation"))).map_err(|source| Error::NativeWorkspace { source, custody: None })?;
             _changes_custody = custody;
-            let (paths, custody) = changes.changed_paths_with_native_work(u32::MAX, work, work.cancellation())
-                .await.map_err(|source| Error::NativeWorkspace { source, custody: None })?;
+            let (paths, custody) = changes.changed_paths(u32::MAX, work, work.cancellation())
+                .await.map(|(value, allocation)| (value, allocation.expect("native result allocation"))).map_err(|source| Error::NativeWorkspace { source, custody: None })?;
             drop(changes);
             drop(_changes_custody);
             io.absorb_native_custody(custody)?;
             return Ok(paths);
         }
         let budget = io.remaining()?;
-        let changes = match initial.diff_to(head, u32::MAX, budget, io.cancellation()).await {
-            Ok(changes) => changes,
+        let changes = match initial.diff_to(head, u32::MAX, budget, io.cancellation()).await.map(|receipt| receipt.value.0) {
+            Ok(receipt) => receipt.value.0,
             Err(failure) => { io.spent(*failure.work)?; return Err(map_error(failure.error)); }
         };
-        io.receive(changes.changed_paths(u32::MAX, budget, io.cancellation()).await)
+        io.receive(changes.changed_paths(u32::MAX, budget, io.cancellation()).await).map(|(paths, _)| paths)
     }
 
     async fn verify_with_io(&self, seed: &ForkSeed, io: &PreparationIo) -> Result<()> {

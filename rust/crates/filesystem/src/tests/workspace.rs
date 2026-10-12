@@ -2006,7 +2006,7 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
         return Err("changed paths did not commit".into());
     };
 
-    let paths = before.diff_to(&after, 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map_err(|failure| failure.error)?.changed_paths(64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let paths = before.diff_to(&after, 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)?.changed_paths(64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)?;
     let names: Vec<_> = paths
         .iter()
         .map(|change| super::namespace_path_text(&change.path))
@@ -2042,10 +2042,10 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
         super::namespace_path_text(&change.path).is_ok_and(|path| path == "/linked")
     }));
     assert!(matches!(
-        before.diff_to(&after, 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map_err(|failure| failure.error)?.changed_paths(1, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
+        before.diff_to(&after, 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)?.changed_paths(1, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value.0).map_err(|failure| failure.error),
         Err(WorkspaceError::ChangedPathLimit)
     ));
-    let exact = before.diff_to(&after, 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map_err(|failure| failure.error)?;
+    let exact = before.diff_to(&after, 64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)?;
     let mut truncated_changes = exact.changes().clone();
     truncated_changes.truncated = true;
     let truncated = ChangeSet {
@@ -2055,15 +2055,15 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
         work: exact.work(),
     };
     assert!(matches!(
-        truncated.changed_paths(64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
+        truncated.changed_paths(64, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value.0).map_err(|failure| failure.error),
         Err(WorkspaceError::ChangedPathLimit)
     ));
     assert!(
         after
             .diff_to(&after, 1, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .await.map_err(|failure| failure.error)?
+            .await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)?
             .changed_paths(0, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
-            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
+            .await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)?
             .is_empty()
     );
     #[cfg(not(target_arch = "wasm32"))]
@@ -2071,11 +2071,11 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
         let cancellation = CancellationToken::new();
         let original = crate::NativeMaterializationWork::new(selected_transaction_budget(), &cancellation)
             .map_err(|(error, _)| error)?;
-        let (native_changes, diff_guard) = before.diff_to_with_native_work(&after, 64, &original, &cancellation)
-            .await?;
+        let (native_changes, diff_guard) = before.diff_to(&after, 64, &original, &cancellation)
+            .await.map(|(value, allocation)| (value, allocation.expect("native result allocation")))?;
         let retained_diff = original.live_allocation_bytes();
-        let (native_paths, path_guard) = native_changes.changed_paths_with_native_work(64, &original, &cancellation)
-            .await?;
+        let (native_paths, path_guard) = native_changes.changed_paths(64, &original, &cancellation)
+            .await.map(|(value, allocation)| (value, allocation.expect("native result allocation")))?;
         assert_eq!(native_paths, paths);
         let rename_before = native_paths.iter().find(|change|
             super::namespace_path_text(&change.path).is_ok_and(|path| path == "/rename"))
@@ -2091,7 +2091,7 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
         drop(native_paths);
         drop(path_guard);
         assert_eq!(original.live_allocation_bytes(), retained_diff);
-        let failure = match native_changes.changed_paths_with_native_work(1, &original, &cancellation).await {
+        let failure = match native_changes.changed_paths(1, &original, &cancellation).await.map(|(value, allocation)| (value, allocation.expect("native result allocation"))) {
             Err(failure) => failure,
             Ok(_) => return Err("native path bound unexpectedly succeeded".into()),
         };
@@ -2109,7 +2109,7 @@ async fn change_set_resolves_only_changed_bindings_to_portable_paths() -> Result
                 .map_err(|(error, _)| error)?;
             let receipt = denied.receipt();
             let baseline = denied.live_allocation_bytes();
-            let failure = match exact.changed_paths_with_native_work(64, &denied, &cancellation).await {
+            let failure = match exact.changed_paths(64, &denied, &cancellation).await.map(|(value, allocation)| (value, allocation.expect("native result allocation"))) {
                 Err(failure) => failure,
                 Ok(_) => return Err("native path admission unexpectedly succeeded".into()),
             };
