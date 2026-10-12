@@ -69,6 +69,7 @@ struct RetainedRootLazy<A, O, D, S> {
 
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
     D: DemandSource + 'static, S: LazyWorkspaceStore> RootLazyBacking<A, O> for RetainedRootLazy<A, O, D, S>
+where for<'source> &'source LazyWorkspace<A, O, D, S>: Send
 {
     fn workspace_id(&self) -> acyclic_fs::WorkspaceId { self.lazy.workspace().id() }
     #[cfg(not(target_arch = "wasm32"))]
@@ -144,7 +145,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
                 Some(io), crate::wire::ErrorCode::Conflict, "Root upload publication was rejected")),
         };
         if let Some(original) = io.original_native_work() {
-            let lazy = Arc::clone(&self.lazy);
             return crate::NativeFutureBundle::new(original, || async move {
                 let lease = Arc::clone(lease);
                 let mut before_mutation = move |work: &acyclic_fs::NativeMaterializationWork| {
@@ -152,12 +152,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
                     let lease = Arc::clone(&lease);
                     async move { lease.verify_with_native_work(&original)?.await }
                 };
-                let _mutations_hold;
-                let mut selected = super::fork_preparer_io::vector(mutations.len(), Some(io))?;
-                selected.extend(root_lazy_mutations(mutations));
-                _mutations_hold = io.guard_owned((selected.capacity() * std::mem::size_of::<acyclic_fs::lazy_workspace::LazyWriteMutation<'_>>()) as u64)?;
-                let (commit, snapshot) = lazy.write_at_snapshot_with_native_work_guarded(
-                    snapshot, selected, key, permit, original,
+                let (commit, snapshot) = self.lazy.write_at_snapshot_with_native_work_guarded(
+                    snapshot, root_lazy_mutations(mutations), key, permit, original,
                     io.cancellation(), &mut before_mutation,
                 ).await?;
                 Ok((generation(commit)?, snapshot))
