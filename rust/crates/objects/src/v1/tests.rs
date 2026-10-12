@@ -1157,7 +1157,7 @@ fn native_wire_aliases_keep_original_claim_after_context_retirement()
     let observed = Arc::new(NativeTransportMeter::new());
     let meter: Arc<dyn NativeReadMeter> = observed.clone();
     let errors = super::NativeTransportErrors::new(&meter)?;
-    let controls = super::response::NativeGetControls { meter, errors };
+    let controls = errors;
     let (data, allocation) = controls.copy(b"immutable native wire")?;
     let wire = controls.wire_bytes(data, allocation)?;
     let alias = wire.slice(1..4);
