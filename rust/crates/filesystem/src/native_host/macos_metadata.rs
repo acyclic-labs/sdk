@@ -1,8 +1,6 @@
 use super::*;
 
 /// An exact, no-follow target pinned before metadata work is deferred.
-#[cfg(target_os = "macos")]
-#[cfg(any(feature = "native-mount", test))]
 pub(crate) enum MacMetadataTarget {
     Held(File),
     Noop {
@@ -13,9 +11,7 @@ pub(crate) enum MacMetadataTarget {
     },
 }
 
-#[cfg(target_os = "macos")]
-#[cfg(any(feature = "native-mount", test))]
-pub(super) fn open_macos_metadata_target<W: crate::demand::SourceDemandReadWork>(
+pub(super) fn open_macos_metadata_target<W: SourceDemandReadWork>(
     root: &Dir,
     path: &Path,
     work: &mut W,
@@ -69,15 +65,13 @@ pub(super) fn open_macos_metadata_target<W: crate::demand::SourceDemandReadWork>
     })
 }
 
-#[cfg(target_os = "macos")]
-#[cfg(any(feature = "native-mount", test))]
-pub(super) fn macos_stat_at<W: crate::demand::SourceDemandReadWork>(
+pub(super) fn macos_stat_at<W: SourceDemandReadWork>(
     parent: &Dir,
     leaf: &std::ffi::CStr,
     work: &mut W,
 ) -> Result<libc::stat, DemandError> {
     let mut observed = std::mem::MaybeUninit::<libc::stat>::uninit();
-    native_read(work)?;
+    work.started_io(READ)?;
     // SAFETY: the parent, single-component name, and output remain live.
     if unsafe {
         libc::fstatat(
@@ -94,8 +88,6 @@ pub(super) fn macos_stat_at<W: crate::demand::SourceDemandReadWork>(
     Ok(unsafe { observed.assume_init() })
 }
 
-#[cfg(target_os = "macos")]
-#[cfg(any(feature = "native-mount", test))]
 impl MacMetadataTarget {
     pub(crate) fn logical_owned_bytes(&self) -> u64 {
         match self {
@@ -103,7 +95,7 @@ impl MacMetadataTarget {
             Self::Noop { leaf, .. } => leaf.capacity() as u64,
         }
     }
-    pub(crate) fn apply<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn apply<W: SourceDemandReadWork>(
         self,
         metadata: crate::kernel::FileMetadata,
         work: &mut W,
@@ -156,7 +148,7 @@ impl MacMetadataTarget {
                 MetadataField::Unavailable => current.st_gid,
             };
             if uid != current.st_uid || gid != current.st_gid {
-                native_write(work)?;
+                work.charge(WRITE)?;
                 // SAFETY: fd pins the admitted inode; no later path lookup occurs.
                 if unsafe { libc::fchown(fd, uid, gid) } != 0 {
                     return Err(io::Error::last_os_error().into());
@@ -165,7 +157,7 @@ impl MacMetadataTarget {
             if let MetadataField::Value(mode) = metadata.posix_mode {
                 let mask = libc::mode_t::try_from(mode & 0o7777)
                     .map_err(|_| NativeMetadataError("posix_mode"))?;
-                native_write(work)?;
+                work.charge(WRITE)?;
                 // SAFETY: fd pins the admitted inode; fchmod reads no memory.
                 if unsafe { libc::fchmod(fd, mask) } != 0 {
                     return Err(io::Error::last_os_error().into());
@@ -190,8 +182,6 @@ impl MacMetadataTarget {
     }
 }
 
-#[cfg(target_os = "macos")]
-#[cfg(any(feature = "native-mount", test))]
 pub(super) fn validate_macos_metadata_fields(
     metadata: crate::kernel::FileMetadata,
 ) -> Result<(), NativeMetadataError> {
@@ -222,9 +212,7 @@ pub(super) fn validate_macos_metadata_fields(
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
-#[cfg(any(feature = "native-mount", test))]
-pub(super) fn apply_macos_timestamp_metadata<W: crate::demand::SourceDemandReadWork>(
+pub(super) fn apply_macos_timestamp_metadata<W: SourceDemandReadWork>(
     fd: libc::c_int,
     metadata: crate::kernel::FileMetadata,
     work: &mut W,
@@ -241,7 +229,7 @@ pub(super) fn apply_macos_timestamp_metadata<W: crate::demand::SourceDemandReadW
             forkattr: 0,
         };
         let mut created = macos_timespec(value);
-        native_write(work)?;
+        work.charge(WRITE)?;
         // SAFETY: both buffers remain live for the synchronous system call.
         if unsafe {
             libc::fsetattrlist(
@@ -273,7 +261,7 @@ pub(super) fn apply_macos_timestamp_metadata<W: crate::demand::SourceDemandReadW
                 MetadataField::Unavailable => omitted,
             },
         ];
-        native_write(work)?;
+        work.charge(WRITE)?;
         // SAFETY: fd pins the inode and times is a live two-element array.
         if unsafe { libc::futimens(fd, times.as_ptr()) } != 0 {
             return Err(io::Error::last_os_error().into());
@@ -282,8 +270,6 @@ pub(super) fn apply_macos_timestamp_metadata<W: crate::demand::SourceDemandReadW
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
-#[cfg(any(feature = "native-mount", test))]
 pub(super) fn macos_mismatch<T: Copy + Eq>(
     field: crate::kernel::MetadataField<T>,
     observed: T,
@@ -291,8 +277,6 @@ pub(super) fn macos_mismatch<T: Copy + Eq>(
     matches!(field, crate::kernel::MetadataField::Value(expected) if expected != observed)
 }
 
-#[cfg(target_os = "macos")]
-#[cfg(any(feature = "native-mount", test))]
 pub(super) fn macos_timespec(value: i64) -> libc::timespec {
     libc::timespec {
         tv_sec: value.div_euclid(1_000_000_000),
@@ -300,8 +284,6 @@ pub(super) fn macos_timespec(value: i64) -> libc::timespec {
     }
 }
 
-#[cfg(target_os = "macos")]
-#[cfg(any(feature = "native-mount", test))]
 pub(super) fn macos_nanos(seconds: libc::time_t, nanoseconds: libc::c_long) -> Option<i64> {
     let nanos = i128::from(seconds) * 1_000_000_000 + i128::from(nanoseconds);
     i64::try_from(nanos).ok()
