@@ -1127,7 +1127,7 @@ impl CompositeContentVerifier {
     #[cfg(feature = "filesystem")]
     fn finite_bound_reader(&self, volume: &VolumeRef, io: &crate::filesystem::PreparationIo) -> Result<&dyn ContentResidencyVerifier> {
         let key_hold;
-        let key = io.encode_json(volume, io.remaining()?.bytes_encoded, false)?;
+        let key = io.encode(volume, io.remaining()?.bytes_encoded, false)?;
         key_hold = io.guard_owned(key.len() as u64)?;
         volume.validate(&mut None)?;
         let text = std::str::from_utf8(&key).map_err(|error| Error::Invalid(error.to_string()))?;
@@ -1354,7 +1354,7 @@ pub fn decode_attachment_manifest(
             }
         }
         let mut failure = None;
-        let result = io.decode_preparation_seed_with_code(
+        let result = io.decode_seed(
             ManifestSeed { maximum: maximum_members, io, failure: &mut failure },
             bytes, crate::wire::ErrorCode::Invalid,
         );

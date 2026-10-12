@@ -210,7 +210,7 @@ impl MemoryStore {
         #[cfg(feature = "filesystem")]
         let file_key = match io {
             Some(io) => {
-                let encoded = io.encode_json(
+                let encoded = io.encode(
                     &(reference.volume(), reference.path(), reference.version()), io.remaining()?.bytes_encoded, true,
                 )?;
                 let encoded_hold = io.guard_bytes(&encoded)?;

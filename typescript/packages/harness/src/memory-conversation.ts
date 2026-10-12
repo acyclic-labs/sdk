@@ -446,7 +446,6 @@ export class MemoryConversation {
       }, { resolveFile: file => this.read(file), maxMessages: limits.context_messages,
         maxAttachments: limits.attachments, maxManifestBytes: limits.file_bytes,
         maxRenderBytes: limits.render_bytes,
-        decodeManifest: (manifest, bytes, count) => this.#core.decodeAttachmentManifest(manifest, bytes, count),
         validateMessage: message => this.#core.validateConversationMessage(message, limits) });
       if (newSelection) this.#apply(operationId, "context", { kind: "select_model_context", selection });
       let output: RunOutput;

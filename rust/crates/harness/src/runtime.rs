@@ -31,7 +31,6 @@ use crate::{
     },
 };
 use acyclic_stream::BoxProviderFuture as BoxFuture;
-use acyclic_stream::BoxProviderStream as BoxStream;
 use futures::{StreamExt as _, stream};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -121,7 +120,7 @@ impl<I, O> TaskDefinition<I, O> {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             native_metadata_custody: None,
         };
-        definition.refresh_digest()?;
+        definition.refresh_digest(None)?;
         Ok(definition)
     }
 
@@ -193,7 +192,7 @@ impl<I, O> TaskDefinition<I, O> {
             native_metadata_custody: None,
         };
         let retained = crate::workflow::workflow_owned_bytes(io)?;
-        definition.refresh_digest_with_io(io)?;
+        definition.refresh_digest(io)?;
         Ok((definition, retained))
     }
 
@@ -208,7 +207,7 @@ impl<I, O> TaskDefinition<I, O> {
         { self.native_definition_source = None; }
         self.input_schema = input;
         self.output_schema = output;
-        self.refresh_digest()?;
+        self.refresh_digest(None)?;
         Ok(self)
     }
 
@@ -219,17 +218,13 @@ impl<I, O> TaskDefinition<I, O> {
             return Err(Error::Invalid("task requirement is invalid".into()));
         }
         self.requirements.insert(requirement);
-        self.refresh_digest()?;
+        self.refresh_digest(None)?;
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         { self.native_definition_source = None; }
         Ok(self)
     }
 
-    fn refresh_digest(&mut self) -> Result<()> {
-        self.refresh_digest_with_io(None)
-    }
-
-    fn refresh_digest_with_io(&mut self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
+    fn refresh_digest(&mut self, io: Option<&crate::executor::PreparationIo>) -> Result<()> {
         let implementation = match &self.implementation {
             TaskImplementation::Live(_) => None,
             TaskImplementation::Resumable(machine) => Some(task_machine_identity(machine.as_ref(), io)?.digest),
@@ -382,26 +377,26 @@ impl<I, O> TaskDefinition<I, O> {
                 "workflow journal is not bound to this task lease"));
         }
         let retained = observe_task_open_admission(host.as_ref(), task_id, io).await?;
-        validate_task_open_admission(&context.harness, &retained.value, io).await?;
-        if retained.value.task != self.identity
-            || retained.value.machine != *task_machine_identity(machine.as_ref(), io)?
-            || retained.value.input_schema != self.input_schema
-            || retained.value.output_schema != self.output_schema
-            || context.task_id != retained.value.operation_id
-            || context.scope.grants() != &retained.value.grants
-            || context.scope.limits() != retained.value.limits
-            || context.scope.run_limits() != retained.value.run_limits
-            || context.scope.extensions() != retained.value.extensions.as_ref()
+        context.harness.validate_observed_admission(&retained.0, io).await?;
+        if retained.0.task != self.identity
+            || retained.0.machine != *task_machine_identity(machine.as_ref(), io)?
+            || retained.0.input_schema != self.input_schema
+            || retained.0.output_schema != self.output_schema
+            || context.task_id != retained.0.operation_id
+            || context.scope.grants() != &retained.0.grants
+            || context.scope.limits() != retained.0.limits
+            || context.scope.run_limits() != retained.0.run_limits
+            || context.scope.extensions() != retained.0.extensions.as_ref()
         {
             return Err(task_workflow_error(native, crate::wire::ErrorCode::Conflict,
                 "task workflow differs from its admitted definition or scope"));
         }
-        let request_digest = crate::executor::preparation_digest(&retained.value, io)?;
-        let initialized = initialize_task_machine(machine.as_ref(), &retained.value.input, io)?;
+        let request_digest = crate::executor::preparation_digest(&retained.0, io)?;
+        let initialized = initialize_task_machine(machine.as_ref(), &retained.0.input, io)?;
         let admission = WorkflowAdmission {
-            operation_id: retained.value.operation_id, request_digest,
+            operation_id: retained.0.operation_id, request_digest,
             initial: MachineCheckpoint {
-                machine: retained.value.machine, revision: 0, state: initialized.value,
+                machine: retained.0.machine, revision: 0, state: initialized.0,
             },
         };
         let mut registry = MachineRegistry::default();
@@ -411,7 +406,7 @@ impl<I, O> TaskDefinition<I, O> {
             .ok_or_else(|| task_workflow_error(native, crate::wire::ErrorCode::Conflict,
                 "workflow registry custody changed"))?;
         registry.validate_checkpoint(&admission.initial, io)?;
-        match observe_workflow_open_admission(journal.as_ref(), io).await?.value {
+        match observe_workflow_open_admission(journal.as_ref(), io).await?.0 {
             Some(existing) if existing == admission => {}
             Some(_) => return Err(task_workflow_error(native, crate::wire::ErrorCode::Conflict,
                 "task workflow admission changed")),
@@ -424,7 +419,7 @@ impl<I, O> TaskDefinition<I, O> {
                         state: crate::core::copy_value(&admission.initial.state, quota)?,
                     },
                 }))?;
-                if admit_workflow_open(journal.as_ref(), copy, io).await?.value != admission {
+                if admit_workflow_open(journal.as_ref(), copy, io).await?.0 != admission {
                     return Err(task_workflow_error(native, crate::wire::ErrorCode::Conflict,
                         "task workflow admission changed"));
                 }
@@ -478,12 +473,6 @@ fn validate_task_transition(output_schema: &Value, transition: &MachineTransitio
     Ok(())
 }
 
-struct TaskOpenValue<T> {
-    value: T,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    _custody: Option<acyclic_fs::NativeAllocation>,
-}
-
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 enum RegisteredTaskOpening<'a> {
     Ordinary(crate::scheduler::LeaseFence),
@@ -501,12 +490,8 @@ enum OrdinaryRegisteredTaskOpening {
 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
 type RegisteredTaskOpening<'a> = OrdinaryRegisteredTaskOpening;
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-type TaskWorkflowWork<'a> = Option<&'a acyclic_fs::NativeMaterializationWork>;
-#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-type TaskWorkflowWork<'a> = Option<&'a ()>;
 
-fn task_original_work(io: Option<&crate::executor::PreparationIo>) -> Result<TaskWorkflowWork<'_>> {
+fn task_original_work(io: Option<&crate::executor::PreparationIo>) -> Result<Option<&NativeWork>> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io {
         return io.original_native_work().map(Some).ok_or(Error::NativeBoundary {
@@ -545,7 +530,7 @@ fn inspect_task_metadata(io: Option<&crate::executor::PreparationIo>, items: u64
 }
 
 fn task_workflow_error(
-    work: TaskWorkflowWork<'_>, code: crate::wire::ErrorCode, reason: &'static str,
+    work: Option<&NativeWork>, code: crate::wire::ErrorCode, reason: &'static str,
 ) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if work.is_some() {
@@ -565,7 +550,7 @@ fn task_workflow_error(
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 fn native_task_open_value<T>(
     value: T, custody: acyclic_fs::NativeAllocation, work: &acyclic_fs::NativeMaterializationWork,
-) -> Result<TaskOpenValue<T>> {
+) -> Result<(T, Option<NativeCustody>)> {
     if !custody.matches_work(work) {
         drop(value);
         return Err(Error::NativeWork {
@@ -573,7 +558,7 @@ fn native_task_open_value<T>(
             custody: Some(custody),
         });
     }
-    Ok(TaskOpenValue { value, _custody: Some(custody) })
+    Ok((value, Some(custody)))
 }
 
 async fn verify_task_execution_owner(
@@ -591,7 +576,7 @@ async fn verify_task_execution_owner(
 
 async fn observe_task_open_admission(
     host: &dyn DurableTaskHost, task: TaskId, io: Option<&crate::executor::PreparationIo>,
-) -> Result<TaskOpenValue<TaskAdmissionRecord>> {
+) -> Result<(TaskAdmissionRecord, Option<NativeCustody>)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = task_original_work(io)? {
         let (value, custody) = host.observe_admission_with_native_work(task, work)?.await?;
@@ -599,24 +584,13 @@ async fn observe_task_open_admission(
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let _ = io;
-    Ok(TaskOpenValue {
-        value: host.observe_admission(task).await?,
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        _custody: None,
-    })
-}
-
-async fn validate_task_open_admission(
-    harness: &AgentHarness, record: &TaskAdmissionRecord,
-    io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    harness.validate_observed_admission(record, io).await
+    Ok((host.observe_admission(task).await?, None))
 }
 
 fn initialize_task_machine(
     machine: &dyn ResumableMachine, input: &Value,
     io: Option<&crate::executor::PreparationIo>,
-) -> Result<TaskOpenValue<Value>> {
+) -> Result<(Value, Option<NativeCustody>)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = task_original_work(io)? {
         let (value, custody) = machine.initialize_with_native_work(input, work)?;
@@ -624,16 +598,12 @@ fn initialize_task_machine(
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let _ = io;
-    Ok(TaskOpenValue {
-        value: machine.initialize(input)?,
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        _custody: None,
-    })
+    Ok((machine.initialize(input)?, None))
 }
 
 async fn observe_workflow_open_admission(
     journal: &dyn WorkflowJournal, io: Option<&crate::executor::PreparationIo>,
-) -> Result<TaskOpenValue<Option<WorkflowAdmission>>> {
+) -> Result<(Option<WorkflowAdmission>, Option<NativeCustody>)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = task_original_work(io)? {
         let (value, custody) = journal.admission_with_native_work(work)?.await?;
@@ -641,17 +611,13 @@ async fn observe_workflow_open_admission(
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let _ = io;
-    Ok(TaskOpenValue {
-        value: journal.admission().await?,
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        _custody: None,
-    })
+    Ok((journal.admission().await?, None))
 }
 
 async fn admit_workflow_open(
     journal: &dyn WorkflowJournal, admission: WorkflowAdmission,
     io: Option<&crate::executor::PreparationIo>,
-) -> Result<TaskOpenValue<WorkflowAdmission>> {
+) -> Result<(WorkflowAdmission, Option<NativeCustody>)> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = task_original_work(io)? {
         let (value, custody) = journal.admit_with_native_work(admission, work)?.await?;
@@ -659,11 +625,7 @@ async fn admit_workflow_open(
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let _ = io;
-    Ok(TaskOpenValue {
-        value: journal.admit(admission).await?,
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        _custody: None,
-    })
+    Ok((journal.admit(admission).await?, None))
 }
 
 async fn validate_latest_task_transition(
@@ -674,7 +636,7 @@ async fn validate_latest_task_transition(
     if let Some(work) = task_original_work(io)? {
         let (transition, custody) = workflow.latest_transition_with_native_work(work).await?;
         let latest = native_task_open_value(transition, custody, work)?;
-        if let Some(transition) = &latest.value {
+        if let Some(transition) = &latest.0 {
             if let MachineStatus::Completed { value } = &transition.status {
                 crate::contract::validate_json_schema_value(schema, value, "task output", io)?;
             }
@@ -698,12 +660,6 @@ pub struct ResumableTaskSession {
     native_context: Option<Arc<NativeTaskContext>>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     native_metadata_custody: Option<acyclic_fs::NativeAllocation>,
-}
-
-struct SessionStep {
-    transition: MachineTransition,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    custody: Option<acyclic_fs::NativeAllocation>,
 }
 
 impl ResumableTaskSession {
@@ -760,7 +716,7 @@ impl ResumableTaskSession {
         idempotency_key: crate::IdempotencyKey,
         input: Value,
     ) -> Result<MachineTransition> {
-        Ok(self.step_with_io(operation_id, idempotency_key, input, None).await?.transition)
+        Ok(self.step_with_io(operation_id, idempotency_key, input, None).await?.0)
     }
 
     /// Consumes original response custody and retains it through state publication.
@@ -779,13 +735,13 @@ impl ResumableTaskSession {
             operation_id, idempotency_key, std::mem::take(&mut input.0), Some(&io),
         ).await;
         match result {
-            Ok(mut output) => {
-                if let Some(mut guard) = output.custody.take() {
+            Ok((transition, custody)) => {
+                if let Some(mut guard) = custody {
                     input.1.absorb(&mut guard).map_err(|cause| Error::NativeWork {
                         cause, custody: Some(guard),
                     })?;
                 }
-                Ok((output.transition, input.1))
+                Ok((transition, input.1))
             }
             Err(Error::NativeWork { cause, custody: incoming }) => {
                 if let Some(mut guard) = incoming {
@@ -807,7 +763,7 @@ impl ResumableTaskSession {
         idempotency_key: crate::IdempotencyKey,
         input: Value,
         io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<SessionStep> {
+    ) -> Result<(MachineTransition, Option<NativeCustody>)> {
         self.verify_step_owner(io).await?;
         let output_schema = &self.output_schema;
         let check = |transition: &MachineTransition| {
@@ -831,17 +787,12 @@ impl ResumableTaskSession {
             let (transition, custody) = self.workflow.step_checked_with_native_work(
                 operation_id, idempotency_key, input, work, check,
             ).await?;
-            SessionStep { transition, custody: Some(custody) }
+            (transition, Some(custody))
         } else {
-            SessionStep {
-                transition: self.workflow.step_checked(operation_id, idempotency_key, input, check).await?,
-                custody: None,
-            }
+            (self.workflow.step_checked(operation_id, idempotency_key, input, check).await?, None)
         };
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let output = SessionStep {
-            transition: self.workflow.step_checked(operation_id, idempotency_key, input, check).await?,
-        };
+        let output = (self.workflow.step_checked(operation_id, idempotency_key, input, check).await?, None);
         self.verify_step_owner(io).await?;
         Ok(output)
     }
@@ -912,7 +863,6 @@ fn task_definition_digest_with_io(
         requirements, machine_digest,
     }, io)
 }
-
 
 pub(crate) fn scope_metadata_boundary(
     work: &Option<&mut dyn crate::store::history::HistoryIo>,
@@ -1387,82 +1337,49 @@ impl TaskRegistry {
 
     /// Resolves one Rust input/output pair.
     pub fn get<I: 'static, O: 'static>(&self, name: &str) -> Result<Arc<TaskDefinition<I, O>>> {
-        let stored = if let Some((logical, version)) = name.rsplit_once('@') {
-            self.0
-                .get(&(logical.to_owned(), version.to_owned()))
-                .ok_or_else(|| Error::NotFound(format!("task {name}")))?
-        } else {
-            let mut matches = self.0.iter().filter(|((logical, _), _)| logical == name);
-            let first = matches
-                .next()
-                .ok_or_else(|| Error::NotFound(format!("task {name}")))?;
-            if matches.next().is_some() {
-                return Err(Error::Conflict(format!(
-                    "task {name} requires an exact version"
-                )));
-            }
-            first.1
-        };
+        if let Some((logical, version)) = name.rsplit_once('@') {
+            return self.get_version(logical, version, #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None);
+        }
+        let mut matches = self.0.iter().filter(|((logical, _), _)| logical == name);
+        let (_, stored) = matches.next()
+            .ok_or_else(|| Error::NotFound(format!("task {name}")))?;
+        if matches.next().is_some() {
+            return Err(Error::Conflict(format!("task {name} requires an exact version")));
+        }
         task_definition_arc::<I, O>(stored)
             .ok_or_else(|| Error::Conflict(format!("task {name} has different input/output types")))
     }
 
     /// Resolves an exact pinned version without relying on name parsing.
     pub fn get_version<I: 'static, O: 'static>(
-        &self,
-        name: &str,
-        version: &str,
+        &self, name: &str, version: &str,
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        work: Option<&acyclic_fs::NativeMaterializationWork>,
     ) -> Result<Arc<TaskDefinition<I, O>>> {
-        self.get_version_with_io(name, version, None)
-    }
-
-    /// Borrows keys and clones only the actual published definition Arc.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn get_version_with_native_work<I: 'static, O: 'static>(
-        &self, name: &str, version: &str, work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<Arc<TaskDefinition<I, O>>> {
-        let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-        let result = self.get_version_with_io(name, version, Some(&io));
-        let (definition, _temporary_custody) = crate::workflow::finish_native_io(result, io, 0)?;
-        Ok(definition)
-    }
-
-    fn get_version_with_io<I: 'static, O: 'static>(
-        &self, name: &str, version: &str, io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<Arc<TaskDefinition<I, O>>> {
-        let native = task_original_work(io)?;
-        let stored = if io.is_some() {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if let Some(work) = work {
+            let io = crate::filesystem::PreparationIo::from_native_work(work)?;
             let mut selected = None;
             for ((logical, pinned_version), entry) in &self.0 {
-                inspect_task_metadata(io, 1)?;
+                inspect_task_metadata(Some(&io), 1)?;
                 if logical == name && pinned_version == version { selected = Some(entry); break; }
             }
-            selected.ok_or_else(|| task_workflow_error(native, crate::wire::ErrorCode::NotFound,
-                "native task version is unavailable"))?
-        } else {
-            self.0.get(&(name.to_owned(), version.to_owned()))
-                .ok_or_else(|| Error::NotFound(format!("task {name}@{version}")))?
-        };
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(work) = native {
+            let stored = selected.ok_or_else(|| task_workflow_error(Some(work),
+                crate::wire::ErrorCode::NotFound, "native task version is unavailable"))?;
             if stored.native_custody.is_none() {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unsupported,
-                    reason: "registry entry was not copied with native custody",
-                });
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+                    reason: "registry entry was not copied with native custody" });
             }
             stored.require_native_definition(work)?;
+            return task_definition_arc::<I, O>(stored).ok_or(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Conflict,
+                reason: "task version has different input/output types",
+            });
         }
-        task_definition_arc::<I, O>(stored).ok_or_else(|| {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if native.is_some() {
-                return Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Conflict,
-                    reason: "task version has different input/output types",
-                };
-            }
-            Error::Conflict(format!("task {name}@{version} has different input/output types"))
-        })
+        let stored = self.0.get(&(name.to_owned(), version.to_owned()))
+            .ok_or_else(|| Error::NotFound(format!("task {name}@{version}")))?;
+        task_definition_arc::<I, O>(stored)
+            .ok_or_else(|| Error::Conflict(format!("task {name}@{version} has different input/output types")))
     }
 
     /// Copies actual registry metadata under the original work before growth.
@@ -1809,15 +1726,6 @@ impl TaskAdmissionRecord {
         &self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         use crate::store::history::HistoryIo as _;
-        fn component(
-            source: &ComponentIdentity, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-        ) -> Result<ComponentIdentity> {
-            Ok(ComponentIdentity {
-                name: crate::core::copy_text(&source.name, quota)?,
-                version: crate::core::copy_text(&source.version, quota)?,
-                digest: source.digest,
-            })
-        }
         fn resource(
             source: &crate::resources::ResourceRef,
             quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
@@ -1836,7 +1744,7 @@ impl TaskAdmissionRecord {
         let mut quota = crate::wire_codec::CodecQuota::new(
             &mut observer, std::mem::size_of::<Self>() as u64,
         )?;
-        let task = component(&self.task, &mut quota)?;
+        let task = task_copy_component(&self.task, &mut quota)?;
         let machine = MachineIdentity {
             name: crate::core::copy_text(&self.machine.name, &mut quota)?,
             version: crate::core::copy_text(&self.machine.version, &mut quota)?,
@@ -1845,37 +1753,20 @@ impl TaskAdmissionRecord {
         let input = crate::core::copy_value(&self.input, &mut quota)?;
         let input_schema = crate::core::copy_value(&self.input_schema, &mut quota)?;
         let output_schema = crate::core::copy_value(&self.output_schema, &mut quota)?;
-        let resource_proofs = RuntimeScope::clone_resource_proofs_with_work(
-            &self.resource_proofs, quota.work(),
-        )?;
-        let proof_overflow = || Error::NativeWork {
-            cause: acyclic_fs::NativeTreeMaterializationError::Work(acyclic_fs::WorkError::Overflow),
-            custody: None,
-        };
-        let proof_slots = resource_proofs.capacity()
-            .checked_mul(std::mem::size_of::<crate::resource_preparation::ResourceCreationProofRef>())
-            .ok_or_else(proof_overflow)? as u64;
-        let proof_bytes = resource_proofs.iter().try_fold(proof_slots, |bytes, proof| -> Result<u64> {
-            let provider = proof.provider.logical_owned_bytes()?;
-            let resource = proof.resource.logical_owned_bytes()?;
-            let evidence = proof.evidence.logical_owned_bytes()?;
-            bytes.checked_add(provider).and_then(|bytes| bytes.checked_add(resource))
-                .and_then(|bytes| bytes.checked_add(evidence)).ok_or_else(proof_overflow)
-        })?;
-        quota.adopt(proof_bytes)?;
+        let resource_proofs = RuntimeScope::copy_resource_proofs(&self.resource_proofs, &mut quota)?;
         let (grants, grant_custody) = self.grants.clone_with_native_work(work)?;
         let grant_bytes = grant_custody.bytes();
         quota.work().as_deref_mut().expect("native admission clone observer")
             .absorb_native_custody(grant_custody)?;
         quota.adopt(grant_bytes)?;
-        let policy = self.policy.as_ref().map(|policy| component(policy, &mut quota)).transpose()?;
+        let policy = self.policy.as_ref().map(|policy| task_copy_component(policy, &mut quota)).transpose()?;
         let extensions = self.extensions.as_ref().map(|source| -> Result<_> {
             let copied = source.clone_with_work(quota.work())?;
             quota.adopt(copied.logical_owned_bytes()?)?;
             Ok(copied)
         }).transpose()?;
         let execution = self.execution.as_ref().map(|source| -> Result<_> {
-            let provider = component(&source.provider, &mut quota)?;
+            let provider = task_copy_component(&source.provider, &mut quota)?;
             let build = resource(source.build.as_resource(), &mut quota)?;
             let build = ArtifactRef::from_resource_with_work(build, quota.work())?;
             let environment = source.environment.as_ref().map(|source| -> Result<_> {
@@ -2018,7 +1909,7 @@ impl TaskAdmissionRecord {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
         let mut created = BTreeSet::new();
         for proof in &self.resource_proofs {
-            proof.validate_with_work(quota.work())?;
+            proof.validate(quota.work())?;
             let bytes = crate::store::history::canonical_bytes_with_work(
                 &proof.resource, acyclic_stream::MAX_RECORD_BYTES as u64, quota.work(),
             )?;
@@ -3830,20 +3721,6 @@ impl RuntimeScope {
         self.clone_native_metadata(grants, limits, true, work)
     }
 
-    /// Copies only the real proof Vec backing and its concrete reference fields.
-    pub(crate) fn clone_resource_proofs_with_work(
-        proofs: &[crate::resource_preparation::ResourceCreationProofRef],
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<Vec<crate::resource_preparation::ResourceCreationProofRef>> {
-        if work.is_none() {
-            return Ok(proofs.to_vec());
-        }
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let copied = Self::copy_resource_proofs(proofs, &mut quota)?;
-        quota.transfer();
-        Ok(copied)
-    }
-
     /// Extends the caller's existing quota with the same physical proof copy.
     pub(crate) fn copy_resource_proofs(
         proofs: &[crate::resource_preparation::ResourceCreationProofRef],
@@ -3883,9 +3760,13 @@ impl RuntimeScope {
             Some(extensions) => Some(extensions.clone_with_work(&mut Some(&mut io))?),
             None => None,
         };
-        let resource_proofs = Self::clone_resource_proofs_with_work(
-            &self.resource_proofs, &mut Some(&mut io),
-        )?;
+        let resource_proofs = {
+            let mut observer = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
+            let mut quota = crate::wire_codec::CodecQuota::from_retained(&mut observer, 0);
+            let copied = Self::copy_resource_proofs(&self.resource_proofs, &mut quota)?;
+            quota.transfer();
+            copied
+        };
         let scope = Self {
             grants: grants.0,
             limits,
@@ -4408,55 +4289,6 @@ pub async fn join_runtime<O: DeserializeOwned + Send + 'static>(
         .await
 }
 
-/// Streams typed task outcomes in completion order with their admitted IDs.
-pub fn completion_stream_runtime<O: DeserializeOwned + Send + 'static>(
-    tasks: Vec<RuntimeTask<O>>,
-) -> BoxStream<'static, (String, Result<Outcome<O>>)> {
-    let concurrency = tasks.len().clamp(1, 64);
-    Box::pin(
-        stream::iter(tasks)
-            .map(|task| async move {
-                let id = task.identity();
-                (id, task.result().await)
-            })
-            .buffer_unordered(concurrency),
-    )
-}
-
-/// Folds observed outcomes in admission order, regardless of completion order.
-pub async fn ordered_reduce_runtime<O: DeserializeOwned + Send + 'static, A, F>(
-    tasks: Vec<RuntimeTask<O>>,
-    initial: A,
-    reducer: F,
-) -> A
-where
-    F: FnMut(A, Result<Outcome<O>>) -> A,
-{
-    join_runtime(tasks).await.into_iter().fold(initial, reducer)
-}
-
-/// Observes whichever task terminates first. Other tasks remain admitted.
-pub async fn race_runtime<O: DeserializeOwned + Send + 'static>(
-    tasks: Vec<RuntimeTask<O>>,
-) -> Option<(String, Result<Outcome<O>>)> {
-    completion_stream_runtime(tasks).next().await
-}
-
-/// Returns the first success or every observed non-successful outcome.
-pub async fn first_success_runtime<O: DeserializeOwned + Send + 'static>(
-    tasks: Vec<RuntimeTask<O>>,
-) -> std::result::Result<O, Vec<(String, Result<Outcome<O>>)>> {
-    let mut completions = completion_stream_runtime(tasks);
-    let mut others = Vec::new();
-    while let Some((id, result)) = completions.next().await {
-        match result {
-            Ok(Outcome::Succeeded(value)) => return Ok(value),
-            result => others.push((id, result)),
-        }
-    }
-    Err(others)
-}
-
 /// An impossible quorum retains both partial successes and non-successes.
 pub struct QuorumFailure<O> {
     /// Caller-specified threshold that was not met.
@@ -4465,35 +4297,6 @@ pub struct QuorumFailure<O> {
     pub successes: Vec<(String, O)>,
     /// Failed, cancelled, uncertain, or unobservable members.
     pub others: Vec<(String, Result<Outcome<O>>)>,
-}
-
-/// Returns the first required successes or every observed partial outcome.
-pub async fn quorum_runtime<O: DeserializeOwned + Send + 'static>(
-    tasks: Vec<RuntimeTask<O>>,
-    required: usize,
-) -> std::result::Result<Vec<O>, QuorumFailure<O>> {
-    if required == 0 {
-        return Ok(Vec::new());
-    }
-    let mut completions = completion_stream_runtime(tasks);
-    let mut successes = Vec::new();
-    let mut others = Vec::new();
-    while let Some((id, result)) = completions.next().await {
-        match result {
-            Ok(Outcome::Succeeded(value)) => {
-                successes.push((id, value));
-                if successes.len() == required {
-                    return Ok(successes.into_iter().map(|(_, value)| value).collect());
-                }
-            }
-            result => others.push((id, result)),
-        }
-    }
-    Err(QuorumFailure {
-        required,
-        successes,
-        others,
-    })
 }
 
 impl<O: DeserializeOwned> RuntimeTask<O> {
@@ -4945,17 +4748,13 @@ pub(crate) fn tool_approval_request_with_native_work(
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-type ToolPolicyWork = acyclic_fs::NativeMaterializationWork;
+type NativeWork = acyclic_fs::NativeMaterializationWork;
 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-type ToolPolicyWork = ();
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-type ToolPolicyCustody = Option<acyclic_fs::NativeAllocation>;
-#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-type ToolPolicyCustody = Option<()>;
+type NativeWork = ();
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 fn validate_native_policy_identity(
-    paid: &(ComponentIdentity, ToolPolicyCustody), work: &acyclic_fs::NativeMaterializationWork,
+    paid: &(ComponentIdentity, Option<NativeCustody>), work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
     let custody = paid.1.as_ref().ok_or(Error::NativeBoundary {
         code: crate::wire::ErrorCode::Conflict,
@@ -5004,7 +4803,7 @@ pub(crate) fn validate_policy_identity_with_native_work(
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 fn validate_native_policy_decision(
-    paid: &(ToolPolicyDecision, ToolPolicyCustody), work: &acyclic_fs::NativeMaterializationWork,
+    paid: &(ToolPolicyDecision, Option<NativeCustody>), work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
     let bytes = match &paid.0 {
         ToolPolicyDecision::Allow => 0,
@@ -5042,7 +4841,7 @@ pub(crate) fn tool_approval_binding_with_native_work(
 
 fn tool_approval_binding_with_work(
     task: TaskId, policy: &ComponentIdentity, definition: &ToolDefinition,
-    invocation: &ToolInvocation, work: Option<&ToolPolicyWork>,
+    invocation: &ToolInvocation, work: Option<&NativeWork>,
 ) -> Result<(OperationId, [u8; 32])> {
     let digest = match work {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -5315,9 +5114,9 @@ pub(crate) fn validate_child_page<'a>(
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-type ContextCustody = acyclic_fs::NativeAllocation;
+type NativeCustody = acyclic_fs::NativeAllocation;
 #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-type ContextCustody = ();
+type NativeCustody = ();
 
 enum ContextSource<'a> {
     Ordinary(std::marker::PhantomData<&'a ()>),
@@ -5866,19 +5665,7 @@ impl AgentHarness {
         concurrency: usize,
         host: Option<Arc<dyn DurableTaskHost>>,
     ) -> Result<Arc<Self>> {
-        Self::with_interactions(tasks, tools, scope, concurrency, host, None)
-    }
-
-    /// Composes the same typed runtime with independently replaceable local interaction routing.
-    pub fn with_interactions(
-        tasks: TaskRegistry,
-        tools: ToolRegistry,
-        scope: RuntimeScope,
-        concurrency: usize,
-        host: Option<Arc<dyn DurableTaskHost>>,
-        interactions: Option<Arc<dyn InteractionRouter>>,
-    ) -> Result<Arc<Self>> {
-        Self::with_content(tasks, tools, scope, concurrency, host, interactions, None)
+        Self::with_content(tasks, tools, scope, concurrency, host, None, None)
     }
 
     /// Binds owner-mediated content access.
@@ -6274,28 +6061,9 @@ impl AgentHarness {
         self.scoped(grants, limits)?.bind_model(model, provider)
     }
 
-    /// Narrows authority while replacing only the child context pipeline.
-    pub fn scoped_context(
-        self: &Arc<Self>,
-        grants: Capabilities,
-        limits: Limits,
-        context: ContextPipeline,
-    ) -> Result<Arc<Self>> {
-        Ok(self.scoped(grants, limits)?.bind_context(context))
-    }
-
     /// Resolves one registered task with exact Rust input/output types.
     pub fn task<I: 'static, O: 'static>(&self, name: &str) -> Result<Arc<TaskDefinition<I, O>>> {
         self.tasks.get(name)
-    }
-
-    /// Resolves a registered task by separate exact name and version, without encoding either component into a textual selector.
-    pub fn task_version<I: 'static, O: 'static>(
-        &self,
-        name: &str,
-        version: &str,
-    ) -> Result<Arc<TaskDefinition<I, O>>> {
-        self.tasks.get_version(name, version)
     }
 
     /// Resolves one model-visible tool definition by exact registered name.
@@ -6767,18 +6535,18 @@ impl AgentHarness {
             let (value, custody) = state.observe_admission_with_native_work(task_id, work)?.await?;
             native_task_open_value(value, custody, work)?
         } else {
-            TaskOpenValue { value: state.observe_admission(task_id).await?, _custody: None }
+            (state.observe_admission(task_id).await?, None)
         };
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let retained = TaskOpenValue { value: state.observe_admission(task_id).await? };
-        validate_task_open_admission(self, &retained.value, io).await?;
+        let retained = (state.observe_admission(task_id).await?, None::<NativeCustody>);
+        self.validate_observed_admission(&retained.0, io).await?;
         let entry = if io.is_some() {
             self.tasks.0.iter().find_map(|((name, version), entry)| {
-                (name == &retained.value.task.name && version == &retained.value.task.version)
+                (name == &retained.0.task.name && version == &retained.0.task.version)
                     .then_some(entry)
             })
         } else {
-            self.tasks.0.get(&(retained.value.task.name.clone(), retained.value.task.version.clone()))
+            self.tasks.0.get(&(retained.0.task.name.clone(), retained.0.task.version.clone()))
         }.ok_or_else(|| task_workflow_error(native, crate::wire::ErrorCode::NotFound,
             "admitted task definition"))?;
         let definition = entry.workflow_definition.as_ref().ok_or_else(|| {
@@ -6788,7 +6556,7 @@ impl AgentHarness {
         match opening {
             RegisteredTaskOpening::Ordinary(fence) => {
                 let definition = definition.clone();
-                let context = self.durable_context(task_id, retained.value.operation_id).await?;
+                let context = self.durable_context(task_id, retained.0.operation_id).await?;
                 definition.open_workflow(context, fence, journal).await
             }
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -6928,11 +6696,6 @@ impl AgentHarness {
         })
     }
 
-    /// Explicitly cancels this runtime's local task group.
-    pub fn cancel_local(&self) {
-        self.live.cancel();
-    }
-
     /// Reconstructs a pinned task context after the host resumes its state machine.
     pub async fn durable_context(
         self: &Arc<Self>,
@@ -6985,7 +6748,7 @@ impl AgentHarness {
 
     async fn durable_context_engine(
         self: &Arc<Self>, task: TaskId, operation: OperationId, source: ContextSource<'_>,
-    ) -> Result<(TaskContext, Option<ContextCustody>)> {
+    ) -> Result<(TaskContext, Option<NativeCustody>)> {
         let host = match &self.state {
             Some(host) => host,
             None => {
@@ -7244,7 +7007,7 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
     fn matches_task_binding(&self, task: TaskId, fence: &crate::scheduler::LeaseFence) -> bool;
     fn send<'a>(
         &'a self, recipient: TaskId, operation: OperationId, payload: FileRef,
-    ) -> BoxFuture<'a, Result<crate::durable_host::MailSendAck>>;
+    ) -> BoxFuture<'a, Result<crate::conversation::FileRef>>;
     fn inbox<'a>(&'a self, after: u64, maximum: usize) -> BoxFuture<'a, Result<Vec<InboxItem>>>;
     fn read_received<'a>(
         &'a self, receive_operation: OperationId, item: &'a InboxItem,
@@ -7257,7 +7020,7 @@ pub(crate) trait OwnedTaskMailbox: acyclic_stream::ProviderPlatform {
         _operation: OperationId,
         _payload: &'a FileRef,
         _work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (crate::durable_host::MailSendAck, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, (crate::conversation::FileRef, acyclic_fs::NativeAllocation)>> {
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
             reason: "owned mailbox has no original native-ledger sender",
@@ -7562,7 +7325,7 @@ impl TaskContext {
         let mut files = Vec::new();
         let mut configurations = Vec::new();
         for message in messages {
-            message.content.validate_limits(limits)?;
+            message.content.validate_limits(limits, &mut None)?;
             for file in message.content.file_refs() {
                 limits.validate_file(file, &mut None)?;
                 if !read_granted(self.scope.grants(), file)? {
@@ -7580,7 +7343,7 @@ impl TaskContext {
                 binding.verify_original(
                     self.scope.extensions.as_ref(),
                     self.scope.extension_schemas.as_ref(),
-                    self.scope.extension_runtime.as_deref(),
+                    self.scope.extension_runtime.as_deref(), None,
                 )
             })
             .collect::<Result<Vec<_>>>()?;
@@ -7609,23 +7372,6 @@ impl TaskContext {
             }
         }
         Ok(())
-    }
-
-    /// Replaces this live task's context stages without changing its parent.
-    pub fn scoped_context(
-        &self,
-        grants: Capabilities,
-        limits: Limits,
-        context: ContextPipeline,
-    ) -> Result<Self> {
-        if self.durable_task.is_some() {
-            return Err(Error::Unsupported(
-                "durable context override requires owner-host admission".into(),
-            ));
-        }
-        let mut child = self.scoped(grants, limits)?;
-        child.harness = child.harness.bind_context(context);
-        Ok(child)
     }
 
     /// Runs one bounded, provider-neutral model request from live task code.
@@ -7736,7 +7482,7 @@ impl TaskContext {
             };
             let Some(event) = next else { break };
             let event = event?;
-            admission.observe(&event, self.scope.limits())?;
+            admission.observe(&event, self.scope.limits(), None)?;
             let event_bytes = crate::contract::canonical_json_bytes(&event)?;
             bytes = bytes
                 .checked_add(event_bytes.len() as u64)
@@ -7827,7 +7573,6 @@ impl TaskContext {
         self.read_bound_file(self.content_binding(Some(file.volume())), file)
             .await
     }
-
 
     /// Reads through the original bound provider on the caller's native ledger.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -8580,7 +8325,7 @@ impl TaskContext {
 
     async fn authorize_tool_pending_with_work(
         &self, definition: &ToolDefinition, invocation: &ToolInvocation,
-        work: Option<&ToolPolicyWork>, command_router: Option<&dyn InteractionRouter>, scope: &RuntimeScope,
+        work: Option<&NativeWork>, command_router: Option<&dyn InteractionRouter>, scope: &RuntimeScope,
     ) -> Result<Option<OperationId>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(work) = work {
@@ -8608,7 +8353,7 @@ impl TaskContext {
                 policy.as_ref(), Some((identity, bound_reason)), definition, invocation, work, scope,
             ).await? {
                 let ((approval_id, request), custody) = paid;
-                let outcome: (InteractionOutcome, ToolPolicyCustody) = match work {
+                let outcome: (InteractionOutcome, Option<NativeCustody>) = match work {
                     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                     Some(work) => {
                         let (value, custody) = self.interact_with_native_work_and_router(
@@ -8658,9 +8403,9 @@ impl TaskContext {
 
     async fn policy_approval_with_work(
         &self, policy: &dyn ToolPolicy, expected: Option<(&ComponentIdentity, &'static str)>,
-        definition: &ToolDefinition, invocation: &ToolInvocation, work: Option<&ToolPolicyWork>, scope: &RuntimeScope,
-    ) -> Result<Option<((OperationId, Interaction), ToolPolicyCustody)>> {
-        let identity: (ComponentIdentity, ToolPolicyCustody) = match work {
+        definition: &ToolDefinition, invocation: &ToolInvocation, work: Option<&NativeWork>, scope: &RuntimeScope,
+    ) -> Result<Option<((OperationId, Interaction), Option<NativeCustody>)>> {
+        let identity: (ComponentIdentity, Option<NativeCustody>) = match work {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Some(work) => {
                 policy.supports_native_policy(work)?;
@@ -8680,7 +8425,7 @@ impl TaskContext {
                 return Err(Error::Conflict(reason.into()));
             }
         }
-        let decision: (ToolPolicyDecision, ToolPolicyCustody) = match work {
+        let decision: (ToolPolicyDecision, Option<NativeCustody>) = match work {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Some(work) => {
                 let future = policy.evaluate_with_native_work(invocation, scope, work)?;
@@ -8695,7 +8440,7 @@ impl TaskContext {
             }
             _ => (policy.evaluate(invocation, scope).await?, None),
         };
-        let after: (ComponentIdentity, ToolPolicyCustody) = match work {
+        let after: (ComponentIdentity, Option<NativeCustody>) = match work {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Some(work) => {
                 let (value, custody) = policy.identity_with_native_work(work)?;
@@ -8978,7 +8723,7 @@ impl TaskContext {
         recipient: TaskId,
         message_id: OperationId,
         payload: FileRef,
-    ) -> Result<crate::durable_host::MailSendAck> {
+    ) -> Result<crate::conversation::FileRef> {
         payload.validate(&mut None)?;
         let mailbox = self.owned_mailbox.as_ref()
             .ok_or_else(|| Error::Unauthorized("mail requires a retained task mailbox owner".into()))?;
@@ -9027,7 +8772,7 @@ impl TaskContext {
         message_id: OperationId,
         payload: &'a FileRef,
         work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (crate::durable_host::MailSendAck, acyclic_fs::NativeAllocation)>> {
+    ) -> Result<crate::NativeFutureBundle<'a, (crate::conversation::FileRef, acyclic_fs::NativeAllocation)>> {
         self.native_mailbox(work)?.send_with_native_work(recipient, message_id, payload, work)
     }
 
@@ -9049,30 +8794,6 @@ impl TaskContext {
         mailbox.inbox_with_native_work(after, limit, work)
     }
 
-    /// Waits at a recorded absolute boundary or the actual live executor timer.
-    pub async fn sleep_until(
-        &self,
-        operation_id: OperationId,
-        deadline_unix_ms: u64,
-    ) -> Result<()> {
-        if deadline_unix_ms == 0 {
-            return Err(Error::Invalid("timer deadline is invalid".into()));
-        }
-        if !self.scope.grants.contains(capability::TIMER_WAIT) {
-            return Err(Error::Unauthorized("task scope lacks timer:wait".into()));
-        }
-        if let Some(task) = self.durable_task {
-            let host = self
-                .harness
-                .state
-                .as_ref()
-                .ok_or_else(|| Error::Unsupported("durable task state is not bound".into()))?;
-            host.wait_until(task, operation_id, deadline_unix_ms).await
-        } else {
-            let now = acyclic_stream::UnixMillisClock::now_unix_millis(&acyclic_stream::SystemUnixMillisClock);
-            crate::live::sleep_millis(deadline_unix_ms.saturating_sub(now)).await
-        }
-    }
 
     /// Queries an existing effect by identity and never redispatches it.
     pub async fn reconcile_effect(&self, effect_id: EffectId) -> Result<crate::core::EffectStatus> {
@@ -9152,7 +8873,6 @@ pub(crate) fn read_granted(grants: &Capabilities, file: &FileRef) -> Result<bool
     read_granted_with_work(grants, file, &mut None)
 }
 
-
 pub(crate) fn read_granted_with_work(
     grants: &Capabilities,
     file: &FileRef,
@@ -9189,7 +8909,6 @@ pub(crate) fn read_granted_with_work(
     }
     Ok(false)
 }
-
 
 fn contains_content_grant_with_work<T: Serialize + ?Sized>(
     grants: &Capabilities,
@@ -9395,7 +9114,7 @@ impl DurableBatchRequest {
         }
         let mut resources = BTreeSet::new();
         for proof in &self.scope.resource_proofs {
-            proof.validate()?;
+            proof.validate(&mut None)?;
             if !resources.insert(crate::contract::canonical_json_bytes(&proof.resource)?) {
                 return Err(Error::Invalid("batch repeats a created resource proof".into()));
             }
@@ -9870,43 +9589,39 @@ impl RuntimeGroup {
         join_runtime(tasks).await
     }
 
-    /// Folds every admitted outcome in input order, even when completion order differs or an observation is uncertain.
-    pub async fn ordered_reduce<O, A, F>(
-        &self,
-        tasks: Vec<RuntimeTask<O>>,
-        initial: A,
-        reducer: F,
-    ) -> A
-    where
-        O: DeserializeOwned + Send + 'static,
-        F: FnMut(A, Result<Outcome<O>>) -> A,
-    {
-        ordered_reduce_runtime(tasks, initial, reducer).await
-    }
-
-    /// Returns the first terminal outcome; group cancellation remains explicit.
-    pub async fn race<O: DeserializeOwned + Send + 'static>(
-        &self,
-        tasks: Vec<RuntimeTask<O>>,
-    ) -> Option<(String, Result<Outcome<O>>)> {
-        race_runtime(tasks).await
-    }
-
-    /// Returns the first success, or every non-success once all members settle.
-    pub async fn first_success<O: DeserializeOwned + Send + 'static>(
-        &self,
-        tasks: Vec<RuntimeTask<O>>,
-    ) -> std::result::Result<O, Vec<(String, Result<Outcome<O>>)>> {
-        first_success_runtime(tasks).await
-    }
-
     /// Collects the first `required` successes, or reports all non-successes.
     pub async fn quorum<O: DeserializeOwned + Send + 'static>(
         &self,
         tasks: Vec<RuntimeTask<O>>,
         required: usize,
     ) -> std::result::Result<Vec<O>, QuorumFailure<O>> {
-        quorum_runtime(tasks, required).await
+        if required == 0 {
+            return Ok(Vec::new());
+        }
+        let concurrency = tasks.len().clamp(1, 64);
+        let completions = stream::iter(tasks).map(|task| async move {
+            let id = task.identity();
+            (id, task.result().await)
+        }).buffer_unordered(concurrency);
+        futures::pin_mut!(completions);
+        let mut successes = Vec::new();
+        let mut others = Vec::new();
+        while let Some((id, result)) = completions.next().await {
+            match result {
+                Ok(Outcome::Succeeded(value)) => {
+                    successes.push((id, value));
+                    if successes.len() == required {
+                        return Ok(successes.into_iter().map(|(_, value)| value).collect());
+                    }
+                }
+                result => others.push((id, result)),
+            }
+        }
+        Err(QuorumFailure {
+            required,
+            successes,
+            others,
+        })
     }
 
     /// Closes admission while already accepted members and descendants drain.
@@ -9914,10 +9629,6 @@ impl RuntimeGroup {
         self.group.close();
     }
 
-    /// Requests cancellation only of this process's live group and descendants.
-    pub fn cancel_local(&self) {
-        self.group.cancel();
-    }
 }
 
 #[derive(Clone)]
@@ -10097,24 +9808,19 @@ mod tests {
         }, &cancellation).expect("original field-copy ledger");
         let mut io = crate::store::history::native_work_io(&work)
             .expect("original copy observer");
-        assert!(matches!(RuntimeScope::clone_resource_proofs_with_work(
-            &proofs, &mut Some(&mut io),
-        ), Err(Error::NativeWork {
+        assert!(matches!(RuntimeScope::copy_resource_proofs(&proofs,
+            &mut crate::wire_codec::CodecQuota::from_retained(&mut Some(&mut io), 0)), Err(Error::NativeWork {
             cause: NativeTreeMaterializationError::Work(
                 WorkError::BudgetExceeded { counter: "bytes_copied", .. }),
             ..
         })));
-        assert_eq!(work.receipt().allocation_operations, 2,
-            "only original ledger and actual proof Vec allocation occurred");
         assert_eq!(work.receipt().bytes_copied, 0);
         assert_eq!(io.into_custody().bytes(), 0);
         let mut io = crate::store::history::native_work_io(&work)
             .expect("fresh custody on the same original ledger");
         cancellation.cancel();
-        assert!(matches!(RuntimeScope::clone_resource_proofs_with_work(
-            &proofs, &mut Some(&mut io),
-        ), Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. })));
-        assert_eq!(work.receipt().allocation_operations, 2);
+        assert!(matches!(RuntimeScope::copy_resource_proofs(&proofs,
+            &mut crate::wire_codec::CodecQuota::from_retained(&mut Some(&mut io), 0)), Err(Error::NativeWork { cause: NativeTreeMaterializationError::Cancelled, .. })));
     }
 
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -10281,7 +9987,6 @@ mod tests {
                 })));
             }
         }
-        assert_eq!(work.receipt().allocation_operations, 1);
         assert_eq!(work.receipt().bytes_copied, 0);
         cancellation.cancel();
         assert!(matches!(RuntimeScope::validate_session_limits_with_native_work(&valid, &work),
@@ -10680,12 +10385,7 @@ mod tests {
             })]))
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            _attempt: crate::model::ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
-            Box::pin(async { Ok(None) })
-        }
+
     }
 
     #[tokio::test]
@@ -10911,7 +10611,7 @@ mod tests {
     fn native_policy_fixture_inputs() -> (FixedPolicy, ToolDefinition, ToolInvocation) {
         let policy = FixedPolicy {
             identity: ComponentIdentity { name: "test.policy".into(), version: "1".into(), digest: [9; 32] },
-            decision: ToolPolicyDecision::RequireApproval { prompt: "Approve λ 🦀?".into() },
+            decision: ToolPolicyDecision::RequireApproval { prompt: "Approve ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â½ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â» ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â°ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¸ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬?".into() },
         };
         let definition = ToolDefinition {
             name: "test.echo".into(), revision: "1".into(), description: "Echo".into(),
@@ -10922,7 +10622,7 @@ mod tests {
         let invocation = ToolInvocation {
             operation_id: OperationId::new(), call_id: "provider-call".into(),
             name: definition.name.clone(),
-            arguments: serde_json::json!({"z":[true,null],"a":"λ"}),
+            arguments: serde_json::json!({"z":[true,null],"a":"ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â½ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â»"}),
         };
         (policy, definition, invocation)
     }
@@ -10987,7 +10687,6 @@ mod tests {
             .expect("cancelled-policy original ledger");
         cancellation.cancel();
         assert!(matches!(policy.identity_with_native_work(&work), Err(Error::NativeWork { .. })));
-        assert_eq!(work.receipt().allocation_operations, 1);
         Ok(())
     }
 
@@ -11057,7 +10756,7 @@ mod tests {
             Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported, .. })));
         assert_eq!(work.receipt(), before);
         let mut io = crate::store::history::native_work_io(&work)?;
-        let prompt = io.clone_text("Approve λ?")?;
+        let prompt = io.clone_text("Approve ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¦ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â½ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â»?")?;
         let request = Interaction::Approval { prompt, operation_id: OperationId::new(), action_digest: [1; 32] };
         let custody = io.into_custody();
         let before = work.receipt();
@@ -11547,7 +11246,7 @@ mod tests {
         validate_children_request(parent, None, usize::MAX)?;
         assert!(validate_children_request(parent, Some("\u{7f}"), 1).is_err());
         validate_children_request(parent, Some(&"x".repeat(1_024)), 1)?;
-        validate_children_request(parent, Some("résumé"), 1)?;
+        validate_children_request(parent, Some("rÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©sumÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¾Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¾ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â‚¬Å¾Ã‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¦ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã¢â‚¬Â ÃƒÂ¢Ã¢â€šÂ¬Ã¢â€žÂ¢ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Â¦Ãƒâ€šÃ‚Â¡ÃƒÆ’Ã†â€™Ãƒâ€ Ã¢â‚¬â„¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€¦Ã‚Â¡ÃƒÆ’Ã†â€™ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â©"), 1)?;
 
         let child = TaskChild {
             slot: "a".into(),

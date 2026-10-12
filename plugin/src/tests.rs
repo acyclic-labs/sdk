@@ -931,7 +931,7 @@ async fn shared_service_case() {
     service.sessions["a"].physical_roots[&root_a_key]
         .source
         .inner()
-        .invalidate();
+        .invalidate(&mut acyclic_fs::demand::DemandWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).expect("invalidate source");
     for session_id in ["a", "same-root"] {
         let root_agent = service.sessions[session_id].state.root_agent_id.clone();
         let mut observed = false;
@@ -966,7 +966,7 @@ async fn shared_service_case() {
     service.sessions["a"].physical_roots[&root_a_key]
         .source
         .inner()
-        .invalidate();
+        .invalidate(&mut acyclic_fs::demand::DemandWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).expect("invalidate source");
     service
         .sessions
         .get_mut("a")
@@ -2983,7 +2983,7 @@ async fn publication_history_recovery_case() {
         .write_text("/sub/cache.tmp", "nested child cache")
         .await
         .expect("nested ignored child file");
-    transaction.commit().await.expect("child commit");
+    transaction.commit(None, acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("child commit");
     fs::write(root.join("scratch.tmp"), b"competing parent cache").expect("parent cache update");
     fs::write(root.join("sub/cache.tmp"), b"competing nested parent cache")
         .expect("parent nested cache update");
@@ -3029,7 +3029,7 @@ async fn publication_history_recovery_case() {
         .write_text("/later.txt", "must not enter recovered publication history")
         .await
         .expect("later root update");
-    later_transaction.commit().await.expect("later root commit");
+    later_transaction.commit(None, acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("later root commit");
     drop(transaction);
     drop(later_transaction);
     drop(child);
@@ -4669,7 +4669,7 @@ async fn lifecycle_hardening_case() {
         .write_text("/first.txt", "first")
         .await
         .expect("first file");
-    transaction.commit().await.expect("commit first file");
+    transaction.commit(None, acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("commit first file");
     drop(transaction);
     control.mounts["child"]
         .advance_to_head()
@@ -4706,7 +4706,7 @@ async fn lifecycle_hardening_case() {
         .write_text("/second.txt", "second")
         .await
         .expect("incremental file");
-    transaction.commit().await.expect("incremental commit");
+    transaction.commit(None, acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("incremental commit");
     drop(transaction);
     control.mounts["child"]
         .advance_to_head()
@@ -5331,7 +5331,7 @@ async fn recursive_publication_case() {
         .write_text("/nested.txt", "nested")
         .await
         .expect("nested file");
-    transaction.commit().await.expect("commit nested file");
+    transaction.commit(None, acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("commit nested file");
     drop(transaction);
     assert_eq!(
         fs::read(root.join("base.txt")).expect("base after grandchild write"),
@@ -5592,7 +5592,7 @@ async fn multi_root_publication_case() {
             .write_text("/child.txt", &route_root.mount_name())
             .await
             .expect("root write");
-        transaction.commit().await.expect("root commit");
+        transaction.commit(None, acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error).expect("root commit");
     }
     let changes = control
         .agent_changes(json!({

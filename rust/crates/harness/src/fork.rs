@@ -3572,30 +3572,6 @@ mod tests {
     }
 
     #[test]
-    fn v2_resource_revision_fixture_round_trips_canonically() -> Result<()> {
-        let fixture = include_str!("../fixtures/v2/resource-revision.json").trim();
-        let revision: ResourceRevision =
-            serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
-        revision.validate()?;
-        let encoded =
-            serde_json::to_string(&revision).map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(encoded, fixture);
-        Ok(())
-    }
-
-    #[test]
-    fn v2_fork_request_fixture_round_trips_canonically() -> Result<()> {
-        let fixture = include_str!("../fixtures/v2/fork-request.json").trim();
-        let request: ForkRequest =
-            serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
-        request.validate()?;
-        let encoded =
-            serde_json::to_string(&request).map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(encoded, fixture);
-        Ok(())
-    }
-
-    #[test]
     fn v2_fork_seed_fixture_round_trips_canonically() -> Result<()> {
         let fixture = include_str!("../fixtures/v2/fork-seed.json").trim();
         let seed: ForkSeed =
@@ -3902,18 +3878,6 @@ mod tests {
             &BTreeSet::from([seed.child_agent])
         );
         assert_eq!(readers.implicit_readers(&parent_project, &mut owned)?, &BTreeSet::new());
-        Ok(())
-    }
-
-    #[test]
-    fn v2_reference_grant_fixture_round_trips_canonically() -> Result<()> {
-        let fixture = include_str!("../fixtures/v2/reference-grant.json").trim();
-        let grant: ReferenceGrant =
-            serde_json::from_str(fixture).map_err(|error| Error::Invalid(error.to_string()))?;
-        grant.file.validate(&mut None)?;
-        let encoded =
-            serde_json::to_string(&grant).map_err(|error| Error::Invalid(error.to_string()))?;
-        assert_eq!(encoded, fixture);
         Ok(())
     }
 

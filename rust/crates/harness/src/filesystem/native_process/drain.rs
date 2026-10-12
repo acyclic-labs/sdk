@@ -1,38 +1,28 @@
 use super::*;
-use super::receipt_observation::OriginalNativeRequest;
 use crate::filesystem::native_execution::NativeVolumeView;
-use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, NativeAllocation, NativeMaterializationWork, WorkCounters};
+use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, NativeMaterializationWork, WorkCounters};
 use std::any::Any;
 
 /// SDK-issued physical process quiescence for one original accepted invocation.
 pub struct NativeProcessDrainProof {
     view: Arc<dyn Any + Send + Sync>,
-    request: OriginalNativeRequest,
     receipt: NativeProcessReceipt,
-    plan: Arc<TaskEffectPlan>,
-    effect_id: EffectId,
-    _provider_custody: Arc<Mutex<NativeAllocation>>,
-    _custody: NativeAllocation,
 }
 
 fn boundary(code: crate::wire::ErrorCode, reason: &'static str) -> Error {
     Error::NativeBoundary { code, reason }
 }
 
-fn native(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
-    Error::NativeWork { cause, custody: None }
-}
-
 fn same_manifest(
     actual: &NativeViewManifest, expected: &NativeViewManifest,
     work: &NativeMaterializationWork,
 ) -> Result<bool> {
-    work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() }).map_err(native)?;
+    work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() }).map_err(Error::from)?;
     if actual.options != expected.options || actual.volumes.len() != expected.volumes.len() {
         return Ok(false);
     }
     for (actual, expected) in actual.volumes.iter().zip(&expected.volumes) {
-        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() }).map_err(native)?;
+        work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() }).map_err(Error::from)?;
         if actual != expected { return Ok(false); }
     }
     Ok(true)
@@ -50,16 +40,13 @@ impl NativeProcessDrainProof {
     {
         let held = self.view.as_ref().downcast_ref::<NativeVolumeView<A, O>>()
             .ok_or(boundary(crate::wire::ErrorCode::Conflict, "process drain proof belongs to another physical view type"))?;
-        let preparation = view.preparation_receipts().first()
-            .ok_or(boundary(crate::wire::ErrorCode::Conflict, "process drain proof requires original preparation evidence"))?;
+        let preparation = view.preparation();
         if !std::ptr::eq(held, view)
-            || !view.original_native_work().is_some_and(|work| work.shares_ledger(original))
+            || !view.work().shares_ledger(original)
             || (self.receipt.task, &self.receipt.original_fence) != owner.task_binding()
             || self.receipt.task != preparation.task
             || self.receipt.original_fence != preparation.original_fence
-            || self.receipt.effect.provider != self.plan.provider
             || self.receipt.effect.attempt_id != crate::EffectAttemptId::from_bytes(self.receipt.effect.effect_id.into_bytes())
-            || self.request.request().view != preparation.manifest
         {
             return Err(boundary(crate::wire::ErrorCode::Conflict, "process drain proof differs from the original task, fence or physical namespace"));
         }
@@ -68,31 +55,11 @@ impl NativeProcessDrainProof {
 
     pub(crate) fn require_command_binding(&self, command: OperationId) -> Result<()> {
         if self.receipt.command != command
-            || self.receipt.effect.effect_id != self.effect_id
-            || self.receipt.effect.attempt_id != crate::EffectAttemptId::from_bytes(self.effect_id.into_bytes())
-            || self.receipt.effect.provider != self.plan.provider
+            || self.receipt.effect.attempt_id != crate::EffectAttemptId::from_bytes(self.receipt.effect.effect_id.into_bytes())
         {
             return Err(boundary(crate::wire::ErrorCode::Conflict, "process drain proof differs from its original approved command"));
         }
         Ok(())
-    }
-}
-
-/// A borrowed SDK control gate.
-pub(super) struct NativeCleanupControl<'a> {
-    supervisor: &'a NativeSupervisorControl,
-    original: &'a NativeMaterializationWork,
-    cleanup: &'a NativeMaterializationWork,
-}
-
-impl NativeCleanupControl<'_> {
-    pub(super) fn original_work_for(
-        &self, supervisor: &NativeSupervisorControl, cleanup: &NativeMaterializationWork,
-    ) -> Result<&NativeMaterializationWork> {
-        if !std::ptr::eq(self.supervisor, supervisor) || !self.cleanup.shares_ledger(cleanup) {
-            return Err(boundary(crate::wire::ErrorCode::Conflict, "cleanup control differs from its authenticated original supervisor or span"));
-        }
-        Ok(self.original)
     }
 }
 
@@ -109,25 +76,21 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         O: AsyncObjectStore + Send + Sync + 'static,
     {
         finite_dispatch::require_finite(work)?;
-        let provider_custody = self._custody.as_ref()
-            .ok_or(boundary(crate::wire::ErrorCode::Unsupported, "process drain requires original provider payload custody"))?;
-        let original = view.original_native_work()
-            .ok_or(boundary(crate::wire::ErrorCode::Unsupported, "process drain requires an existing original native view"))?;
-        let preparation = view.preparation_receipts().first()
-            .ok_or(boundary(crate::wire::ErrorCode::Conflict, "process drain requires original preparation evidence"))?;
+        let original = view.work();
+        let preparation = view.preparation();
         if attempt != self.original_attempt()
             || (preparation.task, &preparation.original_fence) != self.owner.task_binding()
         {
             return Err(boundary(crate::wire::ErrorCode::Conflict, "process drain differs from the original attempt or prepared task fence"));
         }
-        if let Some(held) = &self.view {
-            if !std::ptr::addr_eq(Arc::as_ptr(held), Arc::as_ptr(view))
-                || !self._native_work.as_ref().is_some_and(|work| work.shares_ledger(original))
+        if let Some(invocation) = &self.invocation {
+            if !std::ptr::addr_eq(Arc::as_ptr(&invocation.view), Arc::as_ptr(view))
+                || !self._native_work.shares_ledger(original)
             {
                 return Err(boundary(crate::wire::ErrorCode::Conflict, "process drain must retain the same originally dispatched physical view"));
             }
         }
-        if self.view.is_none()
+        if self.invocation.is_none()
             && (!self.authority.content.supports_native_read(self.plan.request.volume(), work)?
                 || !self.authority.result_content.supports_native_read(self.authority.results.volume(), work)?)
         {
@@ -135,24 +98,23 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                 "cold process drain requires actual finite request and result readers"));
         }
         crate::NativeFutureBundle::new(work, || async move {
-            let custody = work.retain_owned(std::mem::size_of::<NativeProcessDrainProof>() as u64).map_err(native)?;
-            cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from).map_err(native)?;
+            let mut custody = work.retain_owned(std::mem::size_of::<NativeProcessDrainProof>() as u64).map_err(Error::from)?;
+            cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from).map_err(Error::from)?;
             self.authenticate_cleanup_owner(work).await?;
-            let request = self.original_request_with_native_work(work).await?;
+            let request = self.request(work).await?;
             if !same_manifest(&request.request().view,
                 NativeProcessView::<P>::manifest(view.as_ref()), work)?
             {
                 return Err(boundary(crate::wire::ErrorCode::Conflict, "process drain request differs from the existing original namespace"));
             }
-            let phase = match &self.view {
+            let phase = match &self.invocation {
                 Some(_) => {
-                    let control = NativeCleanupControl { supervisor: &self.supervisor, original, cleanup: work };
-                    Some(self.wait_for_original_collection(attempt, work, cleanup_cancellation, Some(&control))
-                        .await.map_err(NativeReceiptError::into_root_error)?)
+                    Some(self.wait_for_original_collection(attempt, work, cleanup_cancellation, original)
+                        .await?)
                 }
                 None => None,
             };
-            let receipt = self.approved_original_receipt_with_native_work(
+            let mut receipt = self.approved_receipt(
                 attempt, request.request(), work,
             ).await?;
             if (receipt.task, &receipt.original_fence) != self.owner.task_binding()
@@ -181,8 +143,6 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                         reference, u64::from(request.request().maximum_result_bytes), work,
                     )?.await?;
                     let (result, custody) = NativeProcessResult::decode_with_native_work(bytes.as_ref(), work)?;
-                    let custody = custody;
-                    let result = result;
                     if result.stop.as_ref().is_some_and(|stop| !stop.cleanup_completed) {
                         return Err(Error::Indeterminate(self.command));
                     }
@@ -191,14 +151,13 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                     drop(bytes);
                 }
             }
-            cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from).map_err(native)?;
+            cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from).map_err(Error::from)?;
             self.authenticate_cleanup_owner(work).await?;
+            drop(request);
             let held_view: Arc<dyn Any + Send + Sync> = view.clone();
-            let proof = NativeProcessDrainProof {
-                view: held_view, request, receipt, plan: Arc::clone(&self.plan),
-                effect_id: self.effect_id,
-                _provider_custody: Arc::clone(provider_custody), _custody: custody,
-            };
+            receipt._custody.as_mut().expect("authenticated receipt retains its allocation")
+                .absorb(&mut custody)?;
+            let proof = NativeProcessDrainProof { view: held_view, receipt };
             proof.require_view_binding::<P, A, O>(
                 view.as_ref(), &self.owner, original,
             )?;
@@ -209,8 +168,6 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
 
     pub(super) async fn authenticate_cleanup_owner(&self, work: &NativeMaterializationWork) -> Result<()> {
         let (outcome, custody) = self.owner.outcome_with_native_work(work).await?;
-        let custody = custody;
-        let outcome = outcome;
         if outcome.is_none() { self.owner.verify_with_native_work(true, work).await?; }
         drop(outcome);
         drop(custody);

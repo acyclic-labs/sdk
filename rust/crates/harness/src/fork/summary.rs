@@ -248,7 +248,7 @@ pub(crate) async fn prepare_summary_fork_context_with_io<P: StreamProvider>(
             Error::Invalid("summary fork parent conversation is unbound".into())
         })?;
     let through_sequence = conversation.logical_revision();
-    let (checkpoint, context) = crate::executor::load_canonical_checkpoint_through_with_io(
+    let (checkpoint, context) = crate::executor::load_canonical_checkpoint_through(
         journal,
         &selection.checkpoint,
         selection.limits,

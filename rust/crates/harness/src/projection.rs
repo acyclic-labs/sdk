@@ -108,7 +108,7 @@ pub fn select_turn_delta(
         ));
     }
     let (after, checkpoint) = if let Some((envelope, reference)) = checkpoint {
-        envelope.validate(limits)?;
+        envelope.validate(limits, None)?;
         limits.validate_file(&reference, &mut None)?;
         reference
             .descriptor()
@@ -116,11 +116,7 @@ pub fn select_turn_delta(
         if !conversation
             .checkpoint_covers_archived_prefix(&reference, envelope.selection.conversation_revision)
         {
-            validate_model_context_selection_at_revision(
-                conversation,
-                &envelope.selection,
-                envelope.selection.conversation_revision,
-            )?;
+            validate_model_context_selection_at_revision(conversation, &envelope.selection, envelope.selection.conversation_revision, None)?;
         }
         if envelope.selection.conversation_revision >= current.sequence {
             return Err(Error::Conflict(
@@ -243,9 +239,9 @@ impl SelectedModelContext {
                 "selected context must end with the current user message".into(),
             ));
         }
-        last.content.validate_user_input()?;
+        last.content.validate_user_input(&mut None)?;
         for message in &self.messages {
-            message.content.validate_limits(limits)?;
+            message.content.validate_limits(limits, &mut None)?;
         }
         Ok(())
     }
@@ -298,8 +294,13 @@ impl SelectedModelContext {
     }
 }
 
-async fn select_model_context_with_projection_limit_and_io<R: ContentResidencyVerifier + ?Sized>(
+
+/// Projects a selection from the explicitly pinned conversation revision.
+#[allow(clippy::too_many_arguments,
+    reason = "the original revision selection ABI adds only its original optional preparation IO")]
+pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
     conversation: &ConversationState,
+    conversation_revision: u64,
     selection: ModelContextSelection,
     resolver: &R,
     maximum_messages: usize,
@@ -308,7 +309,7 @@ async fn select_model_context_with_projection_limit_and_io<R: ContentResidencyVe
     maximum_projected_attachments: usize,
     io: Option<&crate::executor::PreparationIo>,
 ) -> Result<SelectedModelContext> {
-    validate_loaded_selection(conversation, &selection, io)?;
+    validate_model_context_selection_at_revision(conversation, &selection, conversation_revision, io)?;
     if maximum_messages == 0
         || maximum_render_bytes == 0
         || maximum_render_bytes > MAX_PROJECTION_JSON_BYTES
@@ -324,7 +325,6 @@ async fn select_model_context_with_projection_limit_and_io<R: ContentResidencyVe
         let message = conversation
             .message(*id)
             .ok_or_else(|| projection_invalid(io, "selected conversation message is missing"))?;
-        validate_projection_message(message, io)?;
         if message.kind == MessageKind::ToolCall {
             let invocation: ProjectedToolInvocation =
                 read_projected_invocation(resolver, &message.content, maximum_render_bytes, io).await?;
@@ -366,8 +366,8 @@ async fn select_model_context_with_projection_limit_and_io<R: ContentResidencyVe
             let projection = projection_result_attachment(attachments.as_slice(), io)?;
             let value =
                 read_projected_tool_result(resolver, &projection.file, maximum_render_bytes, io).await?;
-            let call_id = projection_string(call_id, io)?;
-            let name = projection_string(name, io)?;
+            let call_id = crate::executor::stock_string_copy(call_id, io)?;
+            let name = crate::executor::stock_string_copy(name, io)?;
             messages.push(ModelMessage {
                 role: ModelRole::Tool,
                 content: ModelContent::Part(ModelContentPart::ToolResult {
@@ -426,7 +426,7 @@ async fn select_model_context_with_projection_limit_and_io<R: ContentResidencyVe
         let capacity = 1 + projected_count + usize::from(omitted_count != 0);
         let mut parts = projection_vec::<ModelContentPart>(capacity, io)?;
         parts.push(ModelContentPart::File {
-            file: projection_file(&message.content, io)?,
+            file: crate::model::clone_file(&message.content, io)?,
             policy: primary_policy,
         });
         for file in attachments.into_projected(projected_count, io)? {
@@ -457,55 +457,6 @@ async fn select_model_context_with_projection_limit_and_io<R: ContentResidencyVe
     })
 }
 
-/// Projects a selection from the explicitly pinned conversation revision.
-#[allow(clippy::too_many_arguments,
-    reason = "the original revision selection ABI adds only its original optional preparation IO")]
-pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
-    conversation: &ConversationState,
-    conversation_revision: u64,
-    selection: ModelContextSelection,
-    resolver: &R,
-    maximum_messages: usize,
-    maximum_attachments: usize,
-    maximum_render_bytes: u64,
-    maximum_projected_attachments: usize,
-    io: Option<&crate::executor::PreparationIo>,
-) -> Result<SelectedModelContext> {
-    validate_model_context_selection_at_revision_with_io(
-        conversation,
-        &selection,
-        conversation_revision,
-        io,
-    )?;
-    let original_revision = selection.conversation_revision;
-    let mut loaded_selection = selection;
-    loaded_selection.conversation_revision = conversation.logical_revision();
-    let mut selected = select_model_context_with_projection_limit_and_io(
-        conversation,
-        loaded_selection,
-        resolver,
-        maximum_messages,
-        maximum_attachments,
-        maximum_render_bytes,
-        maximum_projected_attachments,
-        io,
-    )
-    .await?;
-    selected.selection.conversation_revision = original_revision;
-    Ok(selected)
-}
-
-/// Validates selection order and role/linkage semantics without resolving any owner bytes.
-pub fn validate_model_context_selection_at_revision(
-    conversation: &ConversationState,
-    selection: &ModelContextSelection,
-    conversation_revision: u64,
-) -> Result<()> {
-    validate_model_context_selection_at_revision_with_io(
-        conversation, selection, conversation_revision, None,
-    )
-}
-
 /// Reuses the canonical validation engine for an already admitted history observer; the native facade borrows its original ledger and creates no budget.
 pub(crate) fn validate_model_context_selection_at_revision_with_work(
     conversation: &ConversationState,
@@ -518,19 +469,20 @@ pub(crate) fn validate_model_context_selection_at_revision_with_work(
         .and_then(crate::store::history::HistoryIo::original_native_work)
     {
         let io = crate::executor::PreparationIo::from_native_work(native)?;
-        return validate_model_context_selection_at_revision_with_io(
+        return validate_model_context_selection_at_revision(
             conversation, selection, conversation_revision, Some(&io),
         );
     }
     if let Some(io) = work.as_deref_mut() {
         io.check_cancellation()?;
     }
-    validate_model_context_selection_at_revision_with_io(
+    validate_model_context_selection_at_revision(
         conversation, selection, conversation_revision, None,
     )
 }
 
-fn validate_model_context_selection_at_revision_with_io(
+/// Validates ordered source identities and tool linkage at the pinned revision.
+pub fn validate_model_context_selection_at_revision(
     conversation: &ConversationState,
     selection: &ModelContextSelection,
     conversation_revision: u64,
@@ -538,6 +490,13 @@ fn validate_model_context_selection_at_revision_with_io(
 ) -> Result<()> {
     if selection.conversation_revision != conversation_revision {
         return Err(projection_conflict(io, "model context selection has a stale conversation revision"));
+    }
+    if let Some(checkpoint) = &selection.checkpoint {
+        match io {
+            #[cfg(feature = "filesystem")]
+            Some(io) => checkpoint.validate_with_work(&mut Some(&mut io.history_io()))?,
+            _ => checkpoint.validate()?,
+        }
     }
     let mut previous_sequence = 0;
     let mut tool_calls = ProjectionIndex::<&ConversationMessage>::new(io);
@@ -657,14 +616,6 @@ fn projection_vec<T>(capacity: usize, io: Option<&crate::executor::PreparationIo
     Ok(Vec::with_capacity(capacity))
 }
 
-fn projection_string(text: &str, io: Option<&crate::executor::PreparationIo>) -> Result<String> {
-    crate::model::model_string_clone_with_io(text, io)
-}
-
-fn projection_file(file: &FileRef, io: Option<&crate::executor::PreparationIo>) -> Result<FileRef> {
-    crate::model::model_file_clone_with_io(file, io)
-}
-
 fn projection_omission_text(count: usize, io: Option<&crate::executor::PreparationIo>) -> Result<String> {
     struct Omission(usize);
     impl std::fmt::Display for Omission {
@@ -697,36 +648,6 @@ fn projection_omission_text(count: usize, io: Option<&crate::executor::Preparati
     Ok(format!("{}", Omission(count)))
 }
 
-fn validate_loaded_selection(
-    conversation: &ConversationState, selection: &ModelContextSelection,
-    io: Option<&crate::executor::PreparationIo>,
-) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io.filter(|io| io.original_native_work().is_some()) {
-        io.check_cancellation()?;
-        if selection.conversation_revision != conversation.logical_revision() {
-            return Err(projection_conflict(Some(io), "model context selection has a stale conversation revision"));
-        }
-        if let Some(checkpoint) = &selection.checkpoint {
-            let mut history = io.history_io();
-            checkpoint.validate(&mut Some(&mut history))?;
-        }
-        let mut previous_sequence = 0;
-        for id in &selection.message_ids {
-            projection_step(Some(io), 1)?;
-            let sequence = conversation.message(*id)
-                .map(|message| message.sequence)
-                .ok_or_else(|| projection_invalid(Some(io), "selected conversation message is missing"))?;
-            if sequence <= previous_sequence {
-                return Err(projection_invalid(Some(io), "model context selection is not ordered and unique"));
-            }
-            previous_sequence = sequence;
-        }
-        return Ok(());
-    }
-    let _ = io;
-    selection.validate(conversation)
-}
 
 fn validate_projection_message(
     message: &ConversationMessage, io: Option<&crate::executor::PreparationIo>,
@@ -918,7 +839,7 @@ impl Iterator for ProjectionFiles<'_> {
                 Some((|| {
                     projection_step(self.io, 1)?;
                     validate_projection_attachment(attachment, self.io)?;
-                    projection_file(&attachment.file, self.io)
+                    crate::model::clone_file(&attachment.file, self.io)
                 })())
             }
             ProjectionFileSource::Owned(items) => {
@@ -927,7 +848,7 @@ impl Iterator for ProjectionFiles<'_> {
                     projection_step(self.io, 1)?;
                     validate_projection_attachment(&attachment, self.io)?;
                     if self.move_files { Ok(attachment.file) }
-                    else { projection_file(&attachment.file, self.io) }
+                    else { crate::model::clone_file(&attachment.file, self.io) }
                 })())
             }
         }
@@ -1003,26 +924,19 @@ async fn read_projected_tool_result<R: ContentResidencyVerifier + ?Sized>(
 
 // Private, closed source DTOs only. This is not a DeserializeOwned theorem.
 #[cfg(feature = "filesystem")]
-trait NativeProjectionArtifact: DeserializeOwned {
-    fn value_schema() -> crate::contract::JsonValueSchema;
+trait ProjectionArtifact: crate::filesystem::PreparationRecord {
     fn heap_owned_bytes(&self, io: &crate::executor::PreparationIo) -> Result<u64>;
 }
 
 #[cfg(feature = "filesystem")]
-impl NativeProjectionArtifact for serde_json::Value {
-    fn value_schema() -> crate::contract::JsonValueSchema {
-        crate::contract::JsonValueSchema::Root
-    }
+impl ProjectionArtifact for serde_json::Value {
     fn heap_owned_bytes(&self, _io: &crate::executor::PreparationIo) -> Result<u64> {
         crate::contract::json_value_logical_owned_bytes(self)
     }
 }
 
 #[cfg(feature = "filesystem")]
-impl NativeProjectionArtifact for ProjectedToolInvocation {
-    fn value_schema() -> crate::contract::JsonValueSchema {
-        crate::contract::JsonValueSchema::ProjectedToolInvocation
-    }
+impl ProjectionArtifact for ProjectedToolInvocation {
     fn heap_owned_bytes(&self, io: &crate::executor::PreparationIo) -> Result<u64> {
         let arguments = crate::contract::json_value_logical_owned_bytes(&self.arguments)?;
         (self.call_id.capacity() as u64).checked_add(self.name.capacity() as u64)
@@ -1032,10 +946,7 @@ impl NativeProjectionArtifact for ProjectedToolInvocation {
 }
 
 #[cfg(feature = "filesystem")]
-impl NativeProjectionArtifact for crate::model::ToolResultContent {
-    fn value_schema() -> crate::contract::JsonValueSchema {
-        crate::contract::JsonValueSchema::ToolResultContent
-    }
+impl ProjectionArtifact for crate::model::ToolResultContent {
     fn heap_owned_bytes(&self, io: &crate::executor::PreparationIo) -> Result<u64> {
         self.logical_owned_bytes()?.checked_sub(std::mem::size_of::<Self>() as u64)
             .ok_or_else(|| projection_invalid(Some(io), "projected tool result ownership overflows"))
@@ -1043,7 +954,7 @@ impl NativeProjectionArtifact for crate::model::ToolResultContent {
 }
 
 #[cfg(feature = "filesystem")]
-fn projection_conversion_allowance<T: NativeProjectionArtifact>(
+fn projection_conversion_allowance<T: ProjectionArtifact>(
     shape: crate::contract::JsonValueShape,
     io: &crate::executor::PreparationIo,
 ) -> Result<u64> {
@@ -1052,7 +963,7 @@ fn projection_conversion_allowance<T: NativeProjectionArtifact>(
     let overflow = || projection_invalid(Some(io), "tool projection conversion allowance overflows");
     let nodes = shape.lexical_items().checked_add(shape.virtual_items()).ok_or_else(overflow)?;
     let slots = nodes.checked_mul(10).ok_or_else(overflow)?;
-    let typed_result = T::value_schema() == crate::contract::JsonValueSchema::ToolResultContent;
+    let typed_result = T::json_value_schema() == crate::contract::JsonValueSchema::ToolResultContent;
     let content_slot = size_of::<Content<'static>>()
         .max(size_of::<(Content<'static>, Content<'static>)>()) as u64;
     let typed_slot = [
@@ -1092,7 +1003,7 @@ fn projection_conversion_allowance<T: NativeProjectionArtifact>(
 }
 
 #[cfg(feature = "filesystem")]
-fn convert_projection_value<'a, T: NativeProjectionArtifact>(
+fn convert_projection_value<'a, T: ProjectionArtifact>(
     source: (serde_json::Value, crate::filesystem::DecodeReservation<'a>), maximum_bytes: u64,
     io: &'a crate::executor::PreparationIo,
 ) -> Result<(T, crate::filesystem::DecodeReservation<'a>)> {
@@ -1104,7 +1015,7 @@ fn convert_projection_value<'a, T: NativeProjectionArtifact>(
         &input,
         crate::contract::JsonBounds { maximum_bytes, maximum_items: io.remaining()?.items_examined,
             maximum_depth: 128 },
-        T::value_schema(),
+        T::json_value_schema(),
         &mut |next| match next {
             crate::contract::JsonCodecCharge::Inspect { items } => projection_step(Some(io), items),
             _ => Err(projection_invalid(Some(io), "owned projection inspection reported nonresident work")),
@@ -1176,8 +1087,8 @@ async fn read_projection_value<'io, R: ContentResidencyVerifier + ?Sized>(
     if bytes.len() as u64 > maximum_bytes {
         return Err(projection_invalid(Some(io), "resolved tool artifact exceeds rendering limit"));
     }
-    file.descriptor().verify(&bytes, Some(io))?;
-    let parsed = io.decode_preparation_with_code::<serde_json::Value>(
+    crate::executor::with_history_io(Some(io), |work| file.descriptor().verify(&bytes, work))?;
+    let parsed = io.decode_preparation::<serde_json::Value>(
         &bytes, crate::wire::ErrorCode::Invalid,
     )?;
     validate_model_json_numbers(&parsed.value, Some(io))?;

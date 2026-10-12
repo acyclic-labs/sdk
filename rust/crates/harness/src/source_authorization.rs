@@ -5,7 +5,7 @@ use crate::core::{Authority, AuthorityVerifier, Scope};
 use crate::resources::GenerationRef;
 use crate::runtime::TaskAdmissionRecord;
 use crate::scheduler::LeaseFence;
-use crate::{Capabilities, Error, OperationId, Result, TaskId};
+use crate::{Error, OperationId, Result, TaskId};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -177,11 +177,7 @@ impl ProjectSourceAuthorization {
 }
 impl ProjectSourceAuthorization {
     /// Checks structure only; callers cannot turn this into authority themselves.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    pub(crate) fn validate_with_work(
+    pub(crate) fn validate(
         &self,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -204,11 +200,7 @@ impl ProjectSourceAuthorization {
         crate::contract::validate_trusted_json_byte_bound(self, self.maximum_bytes, work)
     }
 
-    pub(crate) fn scope_label(&self) -> Result<String> {
-        self.scope_label_with_work(&mut None)
-    }
-
-    pub(crate) fn scope_label_with_work(
+    pub(crate) fn scope_label(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<String> {
         const LABEL_BYTES: usize = "project-source:".len() + 64;
@@ -240,8 +232,8 @@ impl ProjectSourceAuthorization {
         &self, verifier: &AuthorityVerifier,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
-        self.validate_with_work(work)?;
-        let label = self.scope_label_with_work(work)?;
+        self.validate(work)?;
+        let label = self.scope_label(work)?;
         let mut capabilities = self.policy_scope.capabilities().iter();
         let matches = verifier.audience() == &self.owner
             && self.policy_scope.id() == label

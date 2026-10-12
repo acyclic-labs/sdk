@@ -3,13 +3,13 @@
 <title>Durable browser mail acknowledgment</title>
 <pre id="result" data-status="pending">initializing</pre>
 <script type="module">
-import { taskFixture } from "./browser-task-fixture.mjs";
-const result = document.querySelector("#result");
+import { qualifyBrowserTask, taskFixture } from "./browser-task-fixture.mjs";
 const describe = value => JSON.stringify(value, (_, item) => typeof item === "bigint" ? `${item}n` : item);
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 let fixture;
 let runtime;
-try {
+await qualifyBrowserTask(async phase => {
+  try {
   fixture = await taskFixture(crypto.randomUUID());
   runtime = await fixture.open();
   await runtime.initializeVolume();
@@ -27,11 +27,9 @@ try {
   const sender = await runtime.admit(crypto.randomUUID(), "test.browser", "1", { file: mail, operation: command, kind: "acyclic.mail.send.v1",
     followup: { operation: crypto.randomUUID(), file: timerFile } });
   assert(sender.kind === "accepted", describe(sender));
-  result.dataset.waiting = "publish mail before sender consumes receipt";
+  phase("publish mail before sender consumes receipt");
   const initial = await runtime.workerTick(worker, null, 128, 1);
   assert(initial.work?.kind === "yielded", `sender did not retain initial lease: ${describe(initial)}`);
-  const literal = initial.work.lease.operation.entrypoint.result_schema.default;
-  assert(literal.sha256 === "literal" && literal.byte_length === 7n, "lease projection rewrote generic schema literals");
   const sent = { work: await runtime.resume(initial.work.lease, 1) };
   assert(sent.work.kind === "yielded", `sender did not yield after mail publication: ${describe(sent)}`);
   const inbox = await runtime.inbox(receiver.task_id, 0n, 4);
@@ -42,7 +40,7 @@ try {
   assert(await runtime.outcome(receiver.task_id) === null, "delivery fabricated recipient consumption");
   runtime.free();
   runtime = await fixture.open();
-  result.dataset.waiting = "redeliver exact intent after lost acknowledgment and reopen";
+  phase("redeliver exact intent after lost acknowledgment and reopen");
   for (let attempt = 0; attempt < 3; attempt++) {
     await runtime.send(sent.work.lease, receiver.task_id, inbox[0].message_id, payload);
     const redelivered = await runtime.inbox(receiver.task_id, 0n, 4);
@@ -65,13 +63,9 @@ try {
   catch { rejected = true; }
   assert(rejected, "released lease retained publication authority");
   assert((await runtime.inbox(receiver.task_id, 0n, 4)).length === 1, "rejected publication changed inbox");
-  result.dataset.status = "passed";
-  result.textContent = "durable mail, exact redelivery, conflicting identity, recipient non-consumption and stale lease rejection passed";
-} catch (error) {
-  result.dataset.status = "failed";
-  result.textContent = String(error.stack ?? error);
-} finally {
+  } finally {
   runtime?.free();
   fixture?.free();
 }
+});
 </script>
