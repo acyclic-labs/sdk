@@ -9,10 +9,16 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<crate::storage::ObjectRead> {
-        let receipt = ({ let __object_args = (object_id, maximum_bytes, budget, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = self
-            .inner
-            .objects.read(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) })
-            .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
+        let receipt = ({
+            let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
+            let __object_result = self
+                .inner
+                .objects
+                .read(object_id, maximum_bytes, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        })
+        .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
         Ok(OperationReceipt {
             value: receipt.value,
             work: receipt.work,
@@ -27,10 +33,17 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         budget: WorkBudget,
         cancellation: &CancellationToken,
     ) -> FsResult<()> {
-        let receipt = ({ let __object_args = (object_id, bytes.into(), budget, cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = self
-            .inner
-            .objects.put(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) })
-            .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
+        let receipt = ({
+            let authority_input_1 = bytes.into();
+            let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
+            let __object_result = self
+                .inner
+                .objects
+                .put(object_id, authority_input_1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        })
+        .map_err(|failure| OperationFailure::new(failure.error.into(), *failure.work))?;
         Ok(OperationReceipt {
             value: (),
             work: receipt.work,

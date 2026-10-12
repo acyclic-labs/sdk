@@ -63,12 +63,13 @@ async fn accounting_requires_original_objects_and_authoritative_time_not_offline
     .await?;
     for object in current.objects {
         let bytes = {
-            let __object_args = (object, 16 * 1024 * 1024, BUDGET, &cancellation);
-            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let authority_input_1 = 16 * 1024 * 1024;
+
+            let mut __object_work = crate::AuthorityWork::new(BUDGET, &cancellation);
             let __object_result = crate::AsyncObjectStore::read(
                 &objects,
-                __object_args.0,
-                __object_args.1,
+                object,
+                authority_input_1,
                 &mut __object_work,
             )
             .await;
@@ -77,15 +78,9 @@ async fn accounting_requires_original_objects_and_authoritative_time_not_offline
         .value
         .bytes;
         {
-            let __object_args = (object, bytes, BUDGET, &cancellation);
-            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-            let __object_result = crate::AsyncObjectStore::put(
-                &absent,
-                __object_args.0,
-                __object_args.1,
-                &mut __object_work,
-            )
-            .await;
+            let mut __object_work = crate::AuthorityWork::new(BUDGET, &cancellation);
+            let __object_result =
+                crate::AsyncObjectStore::put(&absent, object, bytes, &mut __object_work).await;
             __object_work.receipt(__object_result)
         }?;
     }

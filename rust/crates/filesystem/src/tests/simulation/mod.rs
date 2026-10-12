@@ -228,19 +228,42 @@ async fn exercise_object_before_work(
     }];
     let cancelled = fault.is_none();
     assert_object_before_work(
-        (async { let __object_args = (object_id, bytes, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = objects.put(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) }).await,
+        (async {
+            let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+            let __object_result = objects.put(object_id, bytes, &mut __object_work).await;
+            __object_work.receipt(__object_result)
+        })
+        .await,
         cancelled,
     )?;
     assert_object_before_work(
-        (async { let __object_args = (object_id, 64, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3); let __object_result = objects.read(__object_args.0, __object_args.1, &mut __object_work).await; __object_work.receipt(__object_result) }).await,
+        (async {
+            let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+            let __object_result = objects.read(object_id, 64, &mut __object_work).await;
+            __object_work.receipt(__object_result)
+        })
+        .await,
         cancelled,
     )?;
     assert_object_before_work(
-        (async { let __object_args = (&requests, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = objects.read_many(__object_args.0, &mut __object_work).await.map(|(values, _allocation)| values); __object_work.receipt(__object_result) }).await,
+        (async {
+            let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+            let __object_result = objects
+                .read_many(&requests, &mut __object_work)
+                .await
+                .map(|(values, _allocation)| values);
+            __object_work.receipt(__object_result)
+        })
+        .await,
         cancelled,
     )?;
     assert_object_before_work(
-        (async { let __object_args = (object_id, WorkBudget::UNBOUNDED, &cancellation,); let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2); let __object_result = objects.contains(__object_args.0, &mut __object_work).await; __object_work.receipt(__object_result) }).await,
+        (async {
+            let mut __object_work = crate::AuthorityWork::new(WorkBudget::UNBOUNDED, &cancellation);
+            let __object_result = objects.contains(object_id, &mut __object_work).await;
+            __object_work.receipt(__object_result)
+        })
+        .await,
         cancelled,
     )?;
     assert!(simulation.trace()?.is_empty() == cancelled);

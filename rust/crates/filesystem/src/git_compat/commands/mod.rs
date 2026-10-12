@@ -1,9 +1,5 @@
 use super::*;
 
-/// Revision or branch-like object name.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct GitObjectName(pub String);
-
 /// Reset behavior supported by the compatibility layer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub enum GitResetMode {

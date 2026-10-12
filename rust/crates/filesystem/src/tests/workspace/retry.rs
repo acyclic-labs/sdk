@@ -929,7 +929,7 @@ async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_
         )
         .await?;
     assert!(
-        matches!(recovered.value, Some(crate::CheckoutCommitOutcome::AlreadyCommitted { generation_id, .. })
+        matches!(recovered.value, Some(crate::LivePublicationObservation::AlreadyCommitted { generation_id, .. })
         if generation_id == generation.id())
     );
     let changed_evidence = transaction
@@ -950,7 +950,7 @@ async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_
         .await?;
     assert!(matches!(
         changed_evidence.value,
-        Some(crate::CheckoutCommitOutcome::IdempotencyConflict { .. })
+        Some(crate::LivePublicationObservation::IdempotencyConflict { .. })
     ));
     transaction
         .write(
@@ -977,7 +977,7 @@ async fn original_fingerprint_survives_current_reservation_rotation_and_rejects_
         .await?;
     assert!(matches!(
         changed_payload.value,
-        Some(crate::CheckoutCommitOutcome::IdempotencyConflict { .. })
+        Some(crate::LivePublicationObservation::IdempotencyConflict { .. })
     ));
     assert_eq!(
         workspace
