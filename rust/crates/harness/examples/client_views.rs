@@ -260,7 +260,7 @@ impl Domain for HarnessViews {
 
 fn file(label: &str, bytes: &[u8]) -> FileRef {
     let volume = VolumeRef::new(
-        ProviderRef::new("example", "filesystem", "2").unwrap(),
+        ProviderRef::new("example".into(), "filesystem".into(), "2".into(), &mut None).unwrap(),
         "project",
         VolumeClass::Project,
         VolumeOwner::Project("project".into()),
@@ -321,11 +321,8 @@ pub fn trace() {
         id: "conversation".into(),
     };
     let issuer = AuthorityIssuer::new("example", [7; 32], authority.clone());
-    let scope = issuer.root(
-        "host",
-        Capabilities::new(["conversation:bind", "conversation:append"]),
-    );
-    let mut reducer = Reducer::new(authority.clone(), issuer.verifier(), SchemaRegistry::new());
+    let scope = issuer.issue("host", &Capabilities::new(["conversation:bind", "conversation:append"]), None, None, &mut None).expect("scope proof");
+    let mut reducer = Reducer::new(authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
     let command = |id, revision, action| Command {
         operation_id: op(id),
         idempotency_key: IdempotencyKey(format!("{id}")),
@@ -517,8 +514,7 @@ pub fn trace() {
     let mut scheduler = Scheduler::default();
     let spec = OperationSpec {
         operation_id: op(20),
-        owner_scope: AuthorityIssuer::new("example", [7; 32], task_authority.clone())
-            .root("host", Capabilities::new(["task:declare"])),
+        owner_scope: AuthorityIssuer::new("example", [7; 32], task_authority.clone()).issue("host", &Capabilities::new(["task:declare"]), None, None, &mut None).expect("scope proof"),
         parent: None,
         owner: DurableOwner::Attached {
             authority: task_authority.clone(),
@@ -535,7 +531,7 @@ pub fn trace() {
         orchestration: Orchestration::Leaf,
         state: file("state.json", b"{}"),
     };
-    scheduler.apply(scheduler.declare(spec).unwrap()).unwrap();
+    scheduler.apply(&(scheduler.declare(spec).unwrap()), &mut None).unwrap();
     let queue = snapshot(
         20,
         task_authority.clone(),
@@ -570,10 +566,10 @@ pub fn trace() {
         admitted: ResourceRequest::default(),
     };
     scheduler
-        .apply(SchedulerEvent::Admitted {
+        .apply(&(SchedulerEvent::Admitted {
             operation_id: op(20),
             reservation,
-        })
+        }), &mut None)
         .unwrap();
     let state = scheduler.operation(op(20)).unwrap();
     assert_eq!(state.phase, OperationPhase::Admitted);
@@ -743,7 +739,7 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
         )
     };
     let filesystem = acyclic_fs::Fs::memory();
-    let provider = ProviderRef::new("client-edit", "filesystem", "2")?;
+    let provider = ProviderRef::new("client-edit".into(), "filesystem".into(), "2".into(), &mut None)?;
     let host = FilesystemHost::new(filesystem.clone(), provider.clone())?;
     let owner = AgentId::from_bytes([3; 16]);
     let volume = VolumeRef::new(
@@ -758,14 +754,10 @@ pub async fn filesystem_trace() -> acyclic_harness::Result<()> {
         id: "client-edit".into(),
     };
     let issuer = AuthorityIssuer::new("client-edit", [4; 32], authority.clone());
-    let scope = issuer.root_for_agent(
-        owner,
-        "owner",
-        Capabilities::new([
+    let scope = issuer.issue("owner", &Capabilities::new([
             volume.capability(VolumeOperation::Read)?,
             volume.capability(VolumeOperation::Write)?,
-        ]),
-    );
+        ]), Some(owner), None, &mut None).expect("scope proof");
     let read = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Read)?;
     let write = ContentGrant::verify(&issuer.verifier(), &scope, &volume, VolumeOperation::Write)?;
     let source = host

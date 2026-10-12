@@ -12,17 +12,9 @@ pub mod client;
 pub mod contract;
 
 /// Native gRPC client for the canonical Actors v1 service.
-///
-/// The client applies bearer authentication and TLS configuration to every
-/// generated RPC. Browser bindings use the Rust-owned gRPC-Web transport through
-/// [`client::Client`]; this adapter is unavailable on `wasm32`.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod grpc;
 /// Native HTTP client for the canonical Actors v1 Protobuf JSON service.
-///
-/// The client exposes the same nine operations with bounded responses and
-/// bearer authentication. Browser bindings use the Rust-owned gRPC-Web transport
-/// through [`client::Client`]; this adapter is unavailable on `wasm32`.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod http;
 
@@ -46,11 +38,9 @@ pub const MAX_SUBSCRIPTIONS: usize = 64;
 pub const MAX_BINDINGS: usize = 64;
 
 /// Largest bearer credential, in bytes, that an SDK client accepts. It matches the
-/// Acyclic platform's maximum bearer (12 KiB), so every platform-issued credential fits.
 pub const MAX_BEARER_TOKEN_BYTES: usize = 12 * 1024;
 
-/// Bearer credentials must be nonblank and at most [`MAX_BEARER_TOKEN_BYTES`]; the HTTP and gRPC
-/// header parsers additionally reject control characters such as CR, LF, and NUL.
+/// Bearer credentials must be nonblank, bounded and header-safe.
 pub(crate) fn valid_token(token: &str) -> bool {
     !token.trim().is_empty()
         && token.len() <= MAX_BEARER_TOKEN_BYTES
@@ -162,7 +152,6 @@ pub fn validate_create(request: &wire::CreateActorRequest) -> Result<(), Contrac
 }
 
 /// Validates a full compare-and-replace Actor configuration mutation.
-/// The service checks checkpoint compatibility or migration before activation.
 pub fn validate_update(request: &wire::UpdateActorRequest) -> Result<(), ContractError> {
     if request.actor_id.is_empty()
         || !domain::valid_code_sha256(&request.code_sha256)
@@ -191,7 +180,6 @@ pub fn validate_update(request: &wire::UpdateActorRequest) -> Result<(), Contrac
 }
 
 /// Validates a terminal Actor deletion. Identity and idempotency rules match
-/// [`validate_update`]; an exact retry with the same key succeeds again.
 pub fn validate_delete(request: &wire::DeleteActorRequest) -> Result<(), ContractError> {
     if request.actor_id.is_empty() || !valid_idempotency_key(&request.idempotency_key) {
         return Err(ContractError::InvalidArgument);
@@ -390,6 +378,7 @@ mod tests {
         use tonic::codegen::Service as _;
         let mut channel = grpc::TracedChannel::new(
             tonic::transport::Endpoint::from_shared(format!("http://{address}"))?.connect_lazy(),
+            grpc::transport_span,
         );
         std::future::poll_fn(|cx| channel.poll_ready(cx)).await?;
         let request = tonic::codegen::http::Request::builder()
@@ -410,49 +399,15 @@ mod tests {
     {
         use http_body::Body as _;
         use std::pin::Pin;
-        use std::sync::{Arc, Mutex};
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
-        use tracing_subscriber::layer::{Context, SubscriberExt as _};
+        use tracing_subscriber::layer::SubscriberExt as _;
 
-        type Seen = Arc<Mutex<Vec<(&'static str, &'static str, String)>>>;
-        struct Capture(Seen);
-        struct Fields<'a>(&'static str, &'a Seen);
-        impl tracing::field::Visit for Fields<'_> {
-            fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
-                let value = format!("{value:?}").trim_matches('"').to_owned();
-                self.1.lock().unwrap().push((self.0, field.name(), value));
-            }
-        }
-        impl<S> tracing_subscriber::Layer<S> for Capture
-        where
-            S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
-        {
-            fn on_new_span(
-                &self,
-                attrs: &tracing::span::Attributes<'_>,
-                _: &tracing::span::Id,
-                _: Context<'_, S>,
-            ) {
-                attrs.record(&mut Fields(attrs.metadata().name(), &self.0));
-            }
-            fn on_record(
-                &self,
-                id: &tracing::span::Id,
-                values: &tracing::span::Record<'_>,
-                ctx: Context<'_, S>,
-            ) {
-                values.record(&mut Fields(ctx.span(id).unwrap().name(), &self.0));
-            }
-            fn on_close(&self, id: tracing::span::Id, ctx: Context<'_, S>) {
-                let name = ctx.span(&id).unwrap().name();
-                self.0.lock().unwrap().push((name, "closed", String::new()));
-            }
-        }
+        use acyclic_grpc_observability::test_support::Capture;
         // A second live dispatcher keeps callsites consulting this test's subscriber.
         let _second = tracing::Dispatch::new(tracing_subscriber::registry());
-        let seen = Seen::default();
+        let seen = Capture::default();
         let _guard = tracing::subscriber::set_default(
-            tracing_subscriber::registry().with(Capture(Arc::clone(&seen))),
+            tracing_subscriber::registry().with(seen.clone()),
         );
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
@@ -480,19 +435,15 @@ mod tests {
         // The span stays open while a slow body runs and records a status sent in trailers.
         let address = slow_status_server().await?;
         let mut body = traced_call(address, "GetActor").await?.into_body();
-        let grpc_closed = || {
-            seen.lock()
-                .unwrap()
-                .iter()
-                .filter(|(s, f, _)| (*s, *f) == ("acyclic.actors.grpc.transport", "closed"))
-                .count()
-        };
+        let grpc_closed = || seen.closed("acyclic.actors.grpc.transport");
         assert_eq!(grpc_closed(), 1);
         let frame = std::future::poll_fn(|cx| Pin::new(&mut body).poll_frame(cx)).await;
         assert!(frame.is_some_and(|frame| frame.is_ok_and(|frame| frame.is_trailers())));
         assert_eq!(grpc_closed(), 2);
 
-        let seen = seen.lock().unwrap();
+        let seen = seen.0.lock().unwrap();
+        let fields = || seen.spans.iter().flat_map(|span| span.fields.iter()
+            .map(move |(field, value)| (span.name, field.as_str(), value.as_str())));
         for expected in [
             ("acyclic.actors.http.call", "route", "v1/actors/create"),
             ("acyclic.actors.http.call", "http.status", "503"),
@@ -503,14 +454,12 @@ mod tests {
             ("acyclic.actors.grpc.transport", "error.kind", "status"),
         ] {
             assert!(
-                seen.iter()
-                    .any(|(s, f, v)| (*s, *f, v.as_str()) == expected),
-                "{expected:?} not in {seen:?}"
+                fields().any(|actual| actual == expected),
+                "{expected:?} not in {:?}", seen.spans
             );
         }
         assert!(
-            seen.iter()
-                .all(|(_, field, value)| *field != "authorization" && !value.contains("secret"))
+            fields().all(|(_, field, value)| field != "authorization" && !value.contains("secret"))
         );
         Ok(())
     }

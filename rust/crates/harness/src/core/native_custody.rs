@@ -27,14 +27,14 @@ pub(crate) fn copy_provider(
     let namespace = copy_text(source.namespace(), quota)?;
     let family = copy_text(source.family(), quota)?;
     let version = copy_text(source.version(), quota)?;
-    crate::resources::ProviderRef::new_with_work(namespace, family, version, quota.work())
+    crate::resources::ProviderRef::new(namespace, family, version, quota.work())
 }
 
 pub(crate) fn copy_file(
     source: &FileRef, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<FileRef> {
     if quota.work().is_none() { return Ok(source.clone()); }
-    let file = source.clone_with_work(quota.work())?;
+    let file = source.copy(quota.work())?;
     quota.adopt(file.logical_owned_bytes()?)?;
     Ok(file)
 }
@@ -198,21 +198,22 @@ fn copy_value_inner(
 }
 
 macro_rules! physical_clone_factory {
-    ($name:ident, $ty:ty, $copy:path) => {
+    ($name:ident, $ty:ty, $copy:path, $source:ident) => {
         pub(crate) fn $name(
-            source: &$ty, work: &mut Option<&mut dyn HistoryIo>,
+            $source: &$ty, work: &mut Option<&mut dyn HistoryIo>,
         ) -> Result<($ty, u64)> {
-            if work.is_none() { return Ok((source.clone(), 0)); }
+            if work.is_none() { return Ok(($source.clone(), 0)); }
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-            let output = $copy(source, &mut quota)?;
+            let output = $copy($source, &mut quota)?;
             let bytes = quota.retained();
             quota.transfer();
             Ok((output, bytes))
         }
     };
 }
-physical_clone_factory!(native_effect_clone_with_custody, EffectState, copy_effect);
-physical_clone_factory!(native_value_clone_with_custody, Value, copy_value);
+pub(crate) use physical_clone_factory;
+physical_clone_factory!(native_effect_clone_with_custody, EffectState, copy_effect, source);
+physical_clone_factory!(native_value_clone_with_custody, Value, copy_value, source);
 pub(crate) fn copy_boxed<T>(
     source: &T, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
     copy: impl FnOnce(&T, &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<T>,
@@ -266,9 +267,9 @@ pub(super) fn copy_resolution(
         id: source.id, expected_version: source.expected_version, outcome, detail,
     })
 }
-physical_clone_factory!(native_interaction_ticket_clone_with_custody, InteractionTicket, copy_ticket);
-physical_clone_factory!(native_interaction_resolution_clone_with_custody, InteractionResolution, copy_resolution);
-physical_clone_factory!(native_interaction_outcome_clone_with_custody, InteractionOutcome, copy_interaction_outcome);
+physical_clone_factory!(native_interaction_ticket_clone_with_custody, InteractionTicket, copy_ticket, source);
+physical_clone_factory!(native_interaction_resolution_clone_with_custody, InteractionResolution, copy_resolution, source);
+physical_clone_factory!(native_interaction_outcome_clone_with_custody, InteractionOutcome, copy_interaction_outcome, source);
 pub(crate) fn copy_capabilities(
     source: &Capabilities, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<Capabilities> {
@@ -319,7 +320,7 @@ pub(super) fn copy_observation(
 pub(super) fn copy_seed(
     source: &ForkSeed, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<ForkSeed> {
-    let (seed, bytes) = source.clone_with_work_and_custody(quota.work())?;
+    let (seed, bytes) = source.copy(quota.work())?;
     quota.adopt(bytes)?;
     Ok(seed)
 }
@@ -403,72 +404,63 @@ pub(super) fn copy_event(
         payload: copy_payload(&source.payload, quota)?, attestation: source.attestation,
     })
 }
-physical_clone_factory!(native_event_clone_with_custody, Event, copy_event);
-physical_clone_factory!(native_effect_attestation_clone_with_custody, EffectAttestation, copy_observation);
+physical_clone_factory!(native_event_clone_with_custody, Event, copy_event, source);
 
 /// Logical inline map/set payload, never an estimate of opaque allocator nodes.
 pub(super) fn retain_entry<T>(quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<()> {
     let bytes = std::mem::size_of::<T>() as u64;
-    let io = quota.work().as_deref_mut().expect("component inline entry observer");
+    let Some(io) = quota.work().as_deref_mut() else { return Ok(()); };
     io.admit_owned(bytes)?;
     io.retain_owned(bytes)?;
     quota.adopt(bytes)
 }
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn clone_reducer(
+pub(super) fn copy_reducer(
     source: &Reducer, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Reducer> {
-    let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+    let native = work.as_deref().is_some_and(is_native);
+    let conversation = if native { None } else { Some(source.conversation.copy(work, None)?.0) };
+    let mut portable = None;
+    let mut quota = crate::wire_codec::CodecQuota::new(if native { work } else { &mut portable }, 0)?;
     let authority = copy_authority(&source.authority, &mut quota)?;
-    let verifier = source.authority_verifier.clone_with_work(quota.work())?;
+    let verifier = source.authority_verifier.copy(quota.work())?;
     quota.adopt(verifier.logical_owned_bytes()?)?;
     quota.transfer();
     let mut output = Reducer::new_with_preclaimed_work(authority, verifier, source.schemas.clone(), quota.work())?;
     macro_rules! component {
         ($key:expr, $copy:expr) => {{
-            let (value, retired) = Reducer::produce_component(
-                &mut output.native_custody, $key, quota.work(),
-                || unreachable!("native reducer clone"), $copy,
-            )?;
+            let (value, retired) = output.native_custody.produce(&$key, quota.work(), $copy)?;
             drop(retired);
             value
         }};
     }
-    output.active_extensions = component!(NativeComponentRef::ActiveExtensions,
+    output.active_extensions = component!(NativeComponentKey::ActiveExtensions,
         |quota| copy_vector(&source.active_extensions, quota, copy_dependency));
-    output.active_configurations = component!(NativeComponentRef::ActiveConfigurations,
+    output.active_configurations = component!(NativeComponentKey::ActiveConfigurations,
         |quota| copy_vector(&source.active_configurations, quota, copy_configuration));
     for (name, (reference, record)) in &source.extension_states {
-        let entry = component!(NativeComponentRef::ExtensionState(name), |quota| {
+        let entry = component!(NativeComponentKey::ExtensionState(Cow::Borrowed(name)), |quota| {
             retain_entry::<(String, (EventReference, ExtensionRecord))>(quota)?;
             Ok((copy_text(name, quota)?, (copy_reference(reference, quota)?, copy_extension_record(record, quota)?)))
         });
         output.extension_states.insert(entry.0, entry.1);
     }
     for (extension, record) in &source.configured_extensions {
-        let entry = component!(NativeComponentRef::ExtensionConfiguration(extension), |quota| {
+        let entry = component!(NativeComponentKey::ExtensionConfiguration(Cow::Borrowed(extension)), |quota| {
             retain_entry::<(ExtensionDependency, ExtensionConfiguration)>(quota)?;
             Ok((copy_dependency(extension, quota)?, copy_configuration(record, quota)?))
         });
         output.configured_extensions.insert(entry.0, entry.1);
     }
-    let events = component!(NativeComponentRef::EventBuffer,
+    let events = component!(NativeComponentKey::EventBuffer,
         |quota| reserve_copy_vector::<Event>(source.events.len(), quota));
     output.events = VecDeque::from(events);
     for event in &source.events {
-        let copied = component!(NativeComponentRef::Event(event.revision), |quota| copy_event(event, quota));
+        let copied = component!(NativeComponentKey::Event(event.revision), |quota| copy_event(event, quota));
         output.events.push_back(copied);
     }
-    for (operation, revision) in &source.operation_positions {
-        component!(NativeComponentRef::OperationPosition(*operation), |quota| {
-            retain_entry::<(OperationId, u64)>(quota)?;
-            Ok(())
-        });
-        output.operation_positions.insert(*operation, *revision);
-    }
     for (id, effect) in &source.effects {
-        let mut copied = component!(NativeComponentRef::EffectAction(*id), |quota| {
+        let mut copied = component!(NativeComponentKey::EffectAction(*id), |quota| {
             retain_entry::<(EffectId, EffectState)>(quota)?;
             Ok(EffectState {
                 provider: copy_text(&effect.provider, quota)?, guarantee: effect.guarantee,
@@ -477,59 +469,66 @@ pub(super) fn clone_reducer(
                 result_schema_digest: effect.result_schema_digest, status: EffectStatus::Planned, attempts: Vec::new(),
             })
         });
-        copied.status = component!(NativeComponentRef::EffectStatus(*id), |quota| copy_status(&effect.status, quota));
-        copied.attempts = component!(NativeComponentRef::EffectAttempts(*id), |quota| copy_copy_vector(&effect.attempts, quota));
+        copied.status = component!(NativeComponentKey::EffectStatus(*id), |quota| copy_status(&effect.status, quota));
+        copied.attempts = component!(NativeComponentKey::EffectAttempts(*id), |quota| copy_copy_vector(&effect.attempts, quota));
         output.effects.insert(*id, copied);
     }
-    output.indexed_terminal_effects = VecDeque::from(component!(NativeComponentRef::TerminalEffectBuffer,
+    output.indexed_terminal_effects = VecDeque::from(component!(NativeComponentKey::TerminalEffectBuffer,
         |quota| copy_iter(source.indexed_terminal_effects.len(), source.indexed_terminal_effects.iter(), quota,
             |id, quota| {
-                quota.work().as_deref_mut().expect("terminal id copy observer")
-                    .copy_bytes(std::mem::size_of::<EffectId>() as u64)?;
+                if let Some(io) = quota.work().as_deref_mut() {
+                    io.copy_bytes(std::mem::size_of::<EffectId>() as u64)?;
+                }
                 Ok(*id)
             })));
     for (authority, seed) in &source.forks {
-        let entry = component!(NativeComponentRef::Fork(authority), |quota| {
+        let entry = component!(NativeComponentKey::Fork(Cow::Borrowed(authority)), |quota| {
             retain_entry::<(Authority, ForkSeed)>(quota)?;
             Ok((copy_authority(authority, quota)?, copy_seed(seed, quota)?))
         });
         output.forks.insert(entry.0, entry.1);
     }
     for (name, operation) in &source.published_merges {
-        let entry = component!(NativeComponentRef::Merge(name, operation), |quota| {
+        let entry = component!(NativeComponentKey::Merge(Cow::Borrowed(name), Cow::Borrowed(operation)), |quota| {
             retain_entry::<(String, Vec<u8>)>(quota)?;
             Ok((copy_text(name, quota)?, copy_copy_vector(operation, quota)?))
         });
         output.published_merges.insert(entry);
     }
-    for message in &source.conversation.messages {
-        let retired = NativeComponentCustody::prepare(
-            NativeComponentRef::ConversationMessage(message.sequence), 0, quota.work(),
-        )?.install(&mut output.native_custody, quota.work())?;
-        drop(retired);
+    if let Some(conversation) = conversation {
+        output.conversation = conversation;
     }
-    let (conversation, remaining) = source.conversation.copy(
-        quota.work(), Some(&mut |sequence, produced, work| {
-            output.native_custody.absorb_produced(NativeComponentRef::ConversationMessage(sequence),
-                produced, work.as_deref_mut().expect("message producing observer"))
-        }),
-    )?;
-    output.conversation = conversation;
-    if remaining != 0 {
-        output.native_custody.absorb_produced(NativeComponentRef::Base, remaining,
-            quota.work().as_deref_mut().expect("conversation remainder observer"))?;
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if native {
+        for message in &source.conversation.messages {
+            let retired = output.native_custody.install(NativeComponentCustody::prepare(
+                &NativeComponentKey::ConversationMessage(message.sequence), 0, quota.work(),
+            )?, quota.work())?;
+            drop(retired);
+        }
+        let (conversation, remaining) = source.conversation.copy(
+            quota.work(), Some(&mut |sequence, produced, work| {
+                output.native_custody.absorb_produced(&NativeComponentKey::ConversationMessage(sequence),
+                    produced, work.as_deref_mut().expect("message producing observer"))
+            }),
+        )?;
+        output.conversation = conversation;
+        if remaining != 0 {
+            output.native_custody.absorb_produced(&NativeComponentKey::Base, remaining,
+                quota.work().as_deref_mut().expect("conversation remainder observer"))?;
+        }
     }
     if let Some(file) = &source.latest_context_checkpoint {
-        output.latest_context_checkpoint = Some(component!(NativeComponentRef::ContextCheckpoint,
+        output.latest_context_checkpoint = Some(component!(NativeComponentKey::ContextCheckpoint,
             |quota| copy_file(file, quota)));
     }
     for (id, (ticket, resolution)) in &source.interactions {
-        let ticket = component!(NativeComponentRef::InteractionTicket(*id), |quota| {
+        let ticket = component!(NativeComponentKey::InteractionTicket(*id), |quota| {
             retain_entry::<(uuid::Uuid, (InteractionTicket, Option<InteractionResolution>))>(quota)?;
             copy_ticket(ticket, quota)
         });
         let resolution = resolution.as_ref().map(|resolution| -> Result<InteractionResolution> {
-            Ok(component!(NativeComponentRef::InteractionResolution(*id), |quota| copy_resolution(resolution, quota)))
+            Ok(component!(NativeComponentKey::InteractionResolution(*id), |quota| copy_resolution(resolution, quota)))
         }).transpose()?;
         output.interactions.insert(*id, (ticket, resolution));
     }
@@ -738,70 +737,33 @@ pub(crate) fn event_owned_bytes(event: &Event) -> Result<u64> {
         }
     }
 
-#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
-pub(super) enum NativeComponentKey {
-    Base, Authority, Event(u64), OperationPosition(OperationId), EventBuffer, TerminalEffectBuffer,
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum NativeComponentKey<'a> {
+    Base, Authority, Event(u64), EventBuffer, TerminalEffectBuffer,
     EffectAction(EffectId), EffectStatus(EffectId), EffectAttempts(EffectId),
-    ExtensionState(String), ExtensionConfiguration(ExtensionDependency),
-    ActiveExtensions, ActiveConfigurations, Fork(Authority), Merge(String, Vec<u8>),
+    ExtensionState(Cow<'a, str>), ExtensionConfiguration(Cow<'a, ExtensionDependency>),
+    ActiveExtensions, ActiveConfigurations, Fork(Cow<'a, Authority>),
+    Merge(Cow<'a, str>, Cow<'a, [u8]>),
     ConversationMessage(u64), ContextCheckpoint,
     InteractionTicket(uuid::Uuid), InteractionResolution(uuid::Uuid),
 }
-
-#[derive(Clone, Copy)]
-pub(super) enum NativeComponentRef<'a> {
-    Base, Authority, Event(u64), OperationPosition(OperationId), EventBuffer, TerminalEffectBuffer,
-    EffectAction(EffectId), EffectStatus(EffectId), EffectAttempts(EffectId),
-    ExtensionState(&'a str), ExtensionConfiguration(&'a ExtensionDependency),
-    ActiveExtensions, ActiveConfigurations, Fork(&'a Authority), Merge(&'a str, &'a [u8]),
-    ConversationMessage(u64), ContextCheckpoint,
-    InteractionTicket(uuid::Uuid), InteractionResolution(uuid::Uuid),
-}
-impl NativeComponentRef<'_> {
-    fn matches(self, key: &NativeComponentKey) -> bool {
-        match (self,key) {
-            (Self::Base, NativeComponentKey::Base) | (Self::Authority, NativeComponentKey::Authority)
-            | (Self::EventBuffer, NativeComponentKey::EventBuffer)
-            | (Self::TerminalEffectBuffer, NativeComponentKey::TerminalEffectBuffer)
-            | (Self::ActiveExtensions, NativeComponentKey::ActiveExtensions)
-            | (Self::ActiveConfigurations, NativeComponentKey::ActiveConfigurations)
-            | (Self::ContextCheckpoint, NativeComponentKey::ContextCheckpoint) => true,
-            (Self::Event(a),NativeComponentKey::Event(b))
-            | (Self::ConversationMessage(a),NativeComponentKey::ConversationMessage(b)) => a == *b,
-            (Self::OperationPosition(a),NativeComponentKey::OperationPosition(b)) => a == *b,
-            (Self::EffectAction(a),NativeComponentKey::EffectAction(b))
-            | (Self::EffectStatus(a),NativeComponentKey::EffectStatus(b))
-            | (Self::EffectAttempts(a),NativeComponentKey::EffectAttempts(b)) => a == *b,
-            (Self::ExtensionState(a),NativeComponentKey::ExtensionState(b)) => a == b,
-            (Self::ExtensionConfiguration(a),NativeComponentKey::ExtensionConfiguration(b)) => a == b,
-            (Self::Fork(a),NativeComponentKey::Fork(b)) => a == b,
-            (Self::Merge(a,b),NativeComponentKey::Merge(c,d)) => a == c && b == d,
-            (Self::InteractionTicket(a),NativeComponentKey::InteractionTicket(b))
-            | (Self::InteractionResolution(a),NativeComponentKey::InteractionResolution(b)) => a == *b,
-            _ => false,
-        }
-    }
-    fn copy(self, quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<NativeComponentKey> {
+impl NativeComponentKey<'_> {
+    fn copy(&self, quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<NativeComponentKey<'static>> {
+        use NativeComponentKey as K;
         Ok(match self {
-            Self::Base => NativeComponentKey::Base,
-            Self::Authority => NativeComponentKey::Authority,
-            Self::Event(v) => NativeComponentKey::Event(v),
-            Self::OperationPosition(v) => NativeComponentKey::OperationPosition(v),
-            Self::EventBuffer => NativeComponentKey::EventBuffer,
-            Self::TerminalEffectBuffer => NativeComponentKey::TerminalEffectBuffer,
-            Self::EffectAction(v) => NativeComponentKey::EffectAction(v),
-            Self::EffectStatus(v) => NativeComponentKey::EffectStatus(v),
-            Self::EffectAttempts(v) => NativeComponentKey::EffectAttempts(v),
-            Self::ExtensionState(v) => NativeComponentKey::ExtensionState(copy_text(v, quota)?),
-            Self::ExtensionConfiguration(v) => NativeComponentKey::ExtensionConfiguration(copy_dependency(v, quota)?),
-            Self::ActiveExtensions => NativeComponentKey::ActiveExtensions,
-            Self::ActiveConfigurations => NativeComponentKey::ActiveConfigurations,
-            Self::Fork(v) => NativeComponentKey::Fork(copy_authority(v, quota)?),
-            Self::Merge(a,b) => NativeComponentKey::Merge(copy_text(a, quota)?, copy_copy_vector(b, quota)?),
-            Self::ConversationMessage(v) => NativeComponentKey::ConversationMessage(v),
-            Self::ContextCheckpoint => NativeComponentKey::ContextCheckpoint,
-            Self::InteractionTicket(v) => NativeComponentKey::InteractionTicket(v),
-            Self::InteractionResolution(v) => NativeComponentKey::InteractionResolution(v),
+            Self::Base => K::Base, Self::Authority => K::Authority,
+            Self::Event(v) => K::Event(*v),
+            Self::EventBuffer => K::EventBuffer, Self::TerminalEffectBuffer => K::TerminalEffectBuffer,
+            Self::EffectAction(v) => K::EffectAction(*v), Self::EffectStatus(v) => K::EffectStatus(*v),
+            Self::EffectAttempts(v) => K::EffectAttempts(*v),
+            Self::ExtensionState(v) => K::ExtensionState(Cow::Owned(copy_text(v, quota)?)),
+            Self::ExtensionConfiguration(v) => K::ExtensionConfiguration(Cow::Owned(copy_dependency(v, quota)?)),
+            Self::ActiveExtensions => K::ActiveExtensions, Self::ActiveConfigurations => K::ActiveConfigurations,
+            Self::Fork(v) => K::Fork(Cow::Owned(copy_authority(v, quota)?)),
+            Self::Merge(a,b) => K::Merge(Cow::Owned(copy_text(a, quota)?),
+                Cow::Owned(copy_copy_vector(b, quota)?)),
+            Self::ConversationMessage(v) => K::ConversationMessage(*v), Self::ContextCheckpoint => K::ContextCheckpoint,
+            Self::InteractionTicket(v) => K::InteractionTicket(*v), Self::InteractionResolution(v) => K::InteractionResolution(*v),
         })
     }
 }
@@ -809,7 +771,7 @@ impl NativeComponentRef<'_> {
 #[derive(Default)]
 pub(super) struct NativeComponentCustody {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    components: Vec<(NativeComponentKey, acyclic_fs::NativeAllocation, Option<acyclic_fs::NativeAllocation>)>,
+    components: Vec<Component>,
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     buffer: Option<acyclic_fs::NativeAllocation>,
 }
@@ -820,143 +782,106 @@ impl std::fmt::Debug for NativeComponentCustody {
 }
 impl PartialEq for NativeComponentCustody { fn eq(&self, _: &Self) -> bool { true } }
 
-pub(super) struct PreparedComponent {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    key: Option<NativeComponentKey>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    allocation: Option<acyclic_fs::NativeAllocation>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    key_allocation: Option<acyclic_fs::NativeAllocation>,
-}
-pub(super) struct RetiredComponent {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    _key: Option<NativeComponentKey>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    _allocation: Option<acyclic_fs::NativeAllocation>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    _key_allocation: Option<acyclic_fs::NativeAllocation>,
-}
-impl PreparedComponent {
-    pub(super) fn install(
-        mut self, holder: &mut NativeComponentCustody,
-        work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<RetiredComponent> {
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub(super) type Component = (NativeComponentKey<'static>, acyclic_fs::NativeAllocation, Option<acyclic_fs::NativeAllocation>);
+#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+pub(super) type Component = ();
+
+impl NativeComponentCustody {
+    pub(super) fn produce<T>(
+        &mut self, key: &NativeComponentKey<'_>, work: &mut Option<&mut dyn HistoryIo>,
+        copy: impl FnOnce(&mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<T>,
+    ) -> Result<(T, Option<Component>)> {
+        let retired = self.install(Self::prepare(key, 0, work)?, work)?;
+        let native = work.as_deref().is_some_and(is_native);
+        let mut portable = None;
+        let result = (|| {
+            let mut quota = crate::wire_codec::CodecQuota::new(if native { work } else { &mut portable }, 0)?;
+            let value = copy(&mut quota)?;
+            let produced = quota.retained();
+            quota.transfer();
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if native && let Err(error) = self.absorb_produced(
+                key, produced, quota.work().as_deref_mut().expect("component producing observer"),
+            ) {
+                drop(value);
+                return Err(error);
+            }
+            let _ = produced;
+            Ok(value)
+        })();
+        match result {
+            Ok(value) => Ok((value, retired)),
+            Err(error) => { drop(self.rollback(key, retired)); Err(error) }
+        }
+    }
+
+    pub(super) fn install(&mut self, component: Option<Component>, work: &mut Option<&mut dyn HistoryIo>) -> Result<Option<Component>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(key) = &self.key {
-            if let Some(index) = holder.components.iter().position(|(current,_,_)| current == key) {
-                let (old_key,old_allocation,old_key_allocation) = std::mem::replace(
-                    &mut holder.components[index],
-                    (self.key.take().expect("prepared key"),self.allocation.take().expect("prepared claim"),
-                        self.key_allocation.take()),
-                );
-                return Ok(RetiredComponent {
-                    _key: Some(old_key), _allocation: Some(old_allocation), _key_allocation: old_key_allocation,
+        if let Some(component) = component {
+            if let Some(index) = self.components.iter().position(|(key, _, _)| key == &component.0) {
+                return Ok(Some(std::mem::replace(&mut self.components[index], component)));
+            }
+            let maximum = self.components.capacity().checked_mul(2).unwrap_or(usize::MAX).max(2);
+            if let Err(error) = if self.components.len() == self.components.capacity() { self.reserve(maximum, work) } else { Ok(()) } {
+                let (key, allocation, key_allocation) = component;
+                drop(key);
+                drop(key_allocation);
+                return Err(match error {
+                    Error::NativeWork { cause, custody: None } => Error::NativeWork { cause, custody: Some(allocation) },
+                    error => error,
                 });
             }
-            if holder.components.len() == holder.components.capacity() {
-                let maximum = holder.components.capacity().checked_mul(2).unwrap_or(usize::MAX).max(2);
-                let bytes = NativeComponentCustody::metadata_bytes(maximum)?;
-                let buffer: Result<acyclic_fs::NativeAllocation> = (|| {
-                    let io = work.as_deref_mut().filter(|io| is_native(&**io))
-                        .ok_or_else(|| Error::NativeWork {
-                            cause: acyclic_fs::NativeTreeMaterializationError::InvalidLayout, custody: None,
-                        })?;
-                    io.admit_copy(NativeComponentCustody::metadata_bytes(holder.components.len())?)?;
-                    io.admit_owned(bytes)?;
-                    io.original_native_work().expect("explicit metadata issuer")
-                        .admit(acyclic_fs::WorkCounters {
-                            allocation_operations: 1, ..acyclic_fs::WorkCounters::default()
-                        }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                    io.retain_owned(bytes)?;
-                    let buffer = io.take_native_custody(bytes)?;
-                    io.original_native_work().expect("explicit metadata issuer")
-                        .charge(acyclic_fs::WorkCounters {
-                            allocation_operations: 1, ..acyclic_fs::WorkCounters::default()
-                        }).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                    Ok(buffer)
-                })();
-                let buffer = match buffer {
-                    Ok(buffer) => buffer,
-                    Err(error) => return Err(self.source_error(error)),
-                };
-                let mut buffer = buffer;
-                let mut replacement = Vec::new();
-                if let Err(cause) = replacement.try_reserve_exact(maximum) {
-                    return Err(Error::NativeWork {
-                        cause: acyclic_fs::NativeTreeMaterializationError::AllocationFailed(cause),
-                        custody: self.allocation.take(),
-                    });
-                }
-                let actual = NativeComponentCustody::metadata_bytes(replacement.capacity())?;
-                let copied = NativeComponentCustody::metadata_bytes(holder.components.len())?;
-                let io = work.as_deref_mut().expect("native metadata producing observer");
-                if actual > bytes {
-                    io.admit_owned(actual - bytes)?;
-                    io.retain_owned(actual - bytes)?;
-                    let mut extra = io.take_native_custody(actual - bytes)?;
-                    buffer.absorb(&mut extra).map_err(|cause| Error::NativeWork { cause, custody: Some(extra) })?;
-                }
-                io.copy_bytes(copied)?;
-                let old = holder.buffer.replace(buffer);
-                replacement.append(&mut holder.components);
-                let old_payload = std::mem::replace(&mut holder.components, replacement);
-                drop(old_payload);
-                drop(old);
-            }
-            holder.components.push((
-                self.key.take().expect("prepared key"),self.allocation.take().expect("prepared claim"),
-                self.key_allocation.take(),
-            ));
+            self.components.push(component);
         }
-        let _ = (self,holder,work);
-        Ok(RetiredComponent {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] _key: None,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] _allocation: None,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] _key_allocation: None,
-        })
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let _ = (component, work);
+        Ok(None)
     }
+
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    fn source_error(&mut self,error: Error) -> Error {
-        match error {
-            Error::NativeWork { cause,custody: None } =>
-                Error::NativeWork { cause,custody: self.allocation.take() },
-            error => error,
-        }
+    fn reserve(&mut self, maximum: usize, work: &mut Option<&mut dyn HistoryIo>) -> Result<()> {
+        if maximum <= self.components.capacity() { return Ok(()); }
+        let copied = Self::metadata_bytes(self.components.len())?;
+        work.as_deref().expect("native table observer").admit_copy(copied)?;
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let buffer;
+        let mut replacement = reserve_copy_vector::<Component>(maximum, &mut quota)?;
+        let produced = quota.retained();
+        buffer = quota.work().as_deref_mut().expect("native table issuer").take_native_custody(produced)?;
+        quota.transfer();
+        quota.work().as_deref_mut().expect("native table observer").copy_bytes(copied)?;
+        let old = self.buffer.replace(buffer);
+        replacement.append(&mut self.components);
+        drop(std::mem::replace(&mut self.components, replacement));
+        drop(old);
+        Ok(())
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) fn preclaimed(key: NativeComponentKey, allocation: acyclic_fs::NativeAllocation) -> Self {
-        Self { key: Some(key), allocation: Some(allocation), key_allocation: None }
-    }
-}
-impl NativeComponentCustody {
+
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) fn absorb_produced(
-        &mut self, key: NativeComponentRef<'_>, bytes: u64, io: &mut dyn HistoryIo,
+        &mut self, key: &NativeComponentKey<'_>, bytes: u64, io: &mut dyn HistoryIo,
     ) -> Result<()> {
         let mut incoming = io.take_native_custody(bytes)?;
-        let (_, allocation, _) = self.components.iter_mut().find(|(current, _, _)| key.matches(current))
+        let index = self.components.iter().position(|(current, _, _)| current == key)
             .ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Storage,
                 reason: "native component copy destination is absent",
             })?;
-        allocation.absorb(&mut incoming).map_err(|cause| Error::NativeWork {
+        self.components[index].1.absorb(&mut incoming).map_err(|cause| Error::NativeWork {
             cause, custody: Some(incoming),
         })
     }
     pub(super) fn metadata_bytes(count: usize) -> Result<u64> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        let slot = std::mem::size_of::<(NativeComponentKey, acyclic_fs::NativeAllocation, Option<acyclic_fs::NativeAllocation>)>();
+        let slot = std::mem::size_of::<Component>();
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let slot = std::mem::size_of::<NativeComponentKey>();
         count.checked_mul(slot).map(|bytes| bytes as u64)
             .ok_or_else(|| Error::Invalid("native component metadata overflows".into()))
     }
-    pub(super) fn bytes(_key: NativeComponentRef<'_>, payload: u64) -> Result<u64> { Ok(payload) }
-
-    #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) fn component_count(&self) -> usize { self.components.len() }
-    pub(super) fn prepare(key: NativeComponentRef<'_>, payload: u64,
-        work: &mut Option<&mut dyn HistoryIo>) -> Result<PreparedComponent> {
+    pub(super) fn prepare(key: &NativeComponentKey<'_>, payload: u64,
+        work: &mut Option<&mut dyn HistoryIo>) -> Result<Option<Component>> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(io) = work.as_deref_mut() {
             if io.original_native_work().is_some() {
@@ -970,17 +895,11 @@ impl NativeComponentCustody {
                 let io = quota.work().as_deref_mut().expect("native component issuer");
                 key_allocation = io.take_native_custody(produced_key_bytes)?;
                 allocation = io.take_native_custody(payload)?;
-                return Ok(PreparedComponent {
-                    key: Some(owned_key), allocation: Some(allocation), key_allocation: Some(key_allocation),
-                });
+                return Ok(Some((owned_key, allocation, Some(key_allocation))));
             }
         }
         let _ = (key,payload,work);
-        Ok(PreparedComponent {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] key: None,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] allocation: None,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] key_allocation: None,
-        })
+        Ok(None)
     }
     pub(super) fn remove(&mut self,key: &NativeComponentKey) {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -993,36 +912,16 @@ impl NativeComponentCustody {
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let _ = key;
     }
-    pub(super) fn rollback(&mut self, key: NativeComponentRef<'_>, retired: RetiredComponent) {
-        drop(self.rollback_retaining(key, retired));
-    }
-    pub(super) fn rollback_retaining(&mut self, key: NativeComponentRef<'_>, retired: RetiredComponent) -> RetiredComponent {
+    pub(super) fn rollback(&mut self, key: &NativeComponentKey<'_>, retired: Option<Component>) -> Option<Component> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(index) = self.components.iter().position(|(current,_,_)| key.matches(current)) {
-            match (retired._key,retired._allocation) {
-                (Some(old_key),Some(old_allocation)) => {
-                    let (new_key,new_allocation,new_key_allocation) = std::mem::replace(
-                        &mut self.components[index],(old_key,old_allocation,retired._key_allocation),
-                    );
-                    return RetiredComponent {
-                        _key: Some(new_key), _allocation: Some(new_allocation), _key_allocation: new_key_allocation,
-                    };
-                }
-                _ => {
-                    let (new_key,new_allocation,new_key_allocation) = self.components.swap_remove(index);
-                    return RetiredComponent {
-                        _key: Some(new_key), _allocation: Some(new_allocation), _key_allocation: new_key_allocation,
-                    };
-                }
-            }
+        if let Some(index) = self.components.iter().position(|(current, _, _)| current == key) {
+            return Some(match retired {
+                Some(retired) => std::mem::replace(&mut self.components[index], retired),
+                None => self.components.swap_remove(index),
+            });
         }
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        let _ = (key,retired);
-        RetiredComponent {
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] _key: None,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] _allocation: None,
-            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] _key_allocation: None,
-        }
+        let _ = (key, retired);
+        None
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) fn transfer_effect(&mut self, id: EffectId, io: &mut dyn HistoryIo) -> Result<u64> {
@@ -1040,16 +939,13 @@ impl NativeComponentCustody {
         }
         Ok(bytes)
     }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) fn original_work(&self) -> Option<&acyclic_fs::NativeMaterializationWork> {
-        self.components.first().map(|(_,allocation,_)| allocation.work())
-    }
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) fn adopt(
-        &mut self,key: NativeComponentKey, allocation: acyclic_fs::NativeAllocation,
-        key_allocation: Option<acyclic_fs::NativeAllocation>,
-    ) {
-        self.components.push((key,allocation,key_allocation));
+    pub(super) fn require_work(&self, work: &Option<&mut dyn HistoryIo>, reason: &'static str) -> Result<()> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if !self.components.is_empty() && !work.as_deref().is_some_and(is_native) {
+            return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason });
+        }
+        let _ = (self, work, reason);
+        Ok(())
     }
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) fn from_reducer(
@@ -1064,24 +960,7 @@ impl NativeComponentCustody {
             Ok(())
         })?;
         if count > holder.components.capacity() {
-            let copied = Self::metadata_bytes(holder.components.len())?;
-            let io = work.as_deref_mut().expect("cold metadata observer");
-            io.admit_copy(copied)?;
-            let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-            let buffer;
-            let mut replacement = reserve_copy_vector::<(
-                NativeComponentKey, acyclic_fs::NativeAllocation, Option<acyclic_fs::NativeAllocation>,
-            )>(count, &mut quota)?;
-            let produced = quota.retained();
-            buffer = quota.work().as_deref_mut().expect("cold table issuer")
-                .take_native_custody(produced)?;
-            quota.transfer();
-            quota.work().as_deref_mut().expect("cold metadata observer").copy_bytes(copied)?;
-            let old = holder.buffer.replace(buffer);
-            replacement.append(&mut holder.components);
-            let old_payload = std::mem::replace(&mut holder.components, replacement);
-            drop(old_payload);
-            drop(old);
+            holder.reserve(count, work)?;
         }
         Self::visit(reducer, |key,bytes| {
             let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
@@ -1092,9 +971,9 @@ impl NativeComponentCustody {
                 .take_native_custody(produced)?;
             quota.transfer();
             let inline = match key {
-                NativeComponentRef::ExtensionConfiguration(_) =>
+                NativeComponentKey::ExtensionConfiguration(_) =>
                     std::mem::size_of::<(ExtensionDependency, ExtensionConfiguration)>() as u64,
-                NativeComponentRef::Fork(_) =>
+                NativeComponentKey::Fork(_) =>
                     std::mem::size_of::<(Authority, ForkSeed)>() as u64,
                 _ => 0,
             };
@@ -1107,28 +986,22 @@ impl NativeComponentCustody {
                 key_allocation.absorb(&mut entry)
                     .map_err(|cause| Error::NativeWork { cause, custody: Some(entry) })?;
             }
-            let split = if matches!(key,NativeComponentRef::OperationPosition(_)) {
-                metadata.split_off(bytes)
-            } else { data.split_off(payload) };
-            let claim = match split {
+            let claim = match data.split_off(payload) {
                 Ok(claim) => claim,
                 Err(cause) => {
                     drop(owned_key);
                     return Err(Error::NativeWork { cause, custody: Some(key_allocation) });
                 }
             };
-            holder.adopt(owned_key,claim,Some(key_allocation));
+            holder.components.push((owned_key, claim, Some(key_allocation)));
             Ok(())
         })?;
         Ok(())
     }
-    fn visit(reducer: &Reducer, mut f: impl FnMut(NativeComponentRef<'_>,u64)->Result<()>) -> Result<()> {
-        use NativeComponentRef as K;
+    fn visit(reducer: &Reducer, mut f: impl FnMut(NativeComponentKey<'_>,u64)->Result<()>) -> Result<()> {
+        use NativeComponentKey as K;
         f(K::Authority, reducer.authority.id.capacity() as u64)?;
         for event in &reducer.events { f(K::Event(event.revision), event_owned_bytes(event)?)?; }
-        for operation in reducer.operation_positions.keys() {
-            f(K::OperationPosition(*operation), std::mem::size_of::<(OperationId, u64)>() as u64)?;
-        }
         f(K::EventBuffer, owned_buffer::<Event>(reducer.events.capacity())?)?;
         f(K::TerminalEffectBuffer, owned_buffer::<EffectId>(reducer.indexed_terminal_effects.capacity())?)?;
         for (id, effect) in &reducer.effects {
@@ -1138,12 +1011,12 @@ impl NativeComponentCustody {
             f(K::EffectAttempts(*id), owned_buffer::<EffectAttemptId>(effect.attempts.capacity())?)?;
         }
         for (key, (reference, record)) in &reducer.extension_states {
-            f(K::ExtensionState(key), owned_sum([
+            f(K::ExtensionState(Cow::Borrowed(key)), owned_sum([
                 std::mem::size_of::<(String, (EventReference, ExtensionRecord))>() as u64,
                 key.capacity() as u64, reference.authority.id.capacity() as u64, owned_record(record)?])?)?;
         }
         for (key, record) in &reducer.configured_extensions {
-            f(K::ExtensionConfiguration(key), owned_sum([
+            f(K::ExtensionConfiguration(Cow::Borrowed(key)), owned_sum([
                 std::mem::size_of::<(ExtensionDependency, ExtensionConfiguration)>() as u64,
                 key.name.capacity() as u64, owned_configuration(record)?])?)?;
         }
@@ -1151,11 +1024,11 @@ impl NativeComponentCustody {
             |extension| Ok(extension.name.capacity() as u64))?)?;
         f(K::ActiveConfigurations, owned_vector(&reducer.active_configurations, owned_configuration)?)?;
         for (key, seed) in &reducer.forks {
-            f(K::Fork(key), owned_sum([std::mem::size_of::<(Authority, ForkSeed)>() as u64,
+            f(K::Fork(Cow::Borrowed(key)), owned_sum([std::mem::size_of::<(Authority, ForkSeed)>() as u64,
                 key.id.capacity() as u64, owned_seed(seed)?])?)?;
         }
         for (name, operation) in &reducer.published_merges {
-            f(K::Merge(name, operation), owned_sum([std::mem::size_of::<(String, Vec<u8>)>() as u64,
+            f(K::Merge(Cow::Borrowed(name), Cow::Borrowed(operation)), owned_sum([std::mem::size_of::<(String, Vec<u8>)>() as u64,
                 name.capacity() as u64, operation.capacity() as u64])?)?;
         }
         for message in &reducer.conversation.messages {
@@ -1232,36 +1105,32 @@ pub(super) fn admission_from_owned_value(
     fn number(value: Value) -> Result<u64> {
         value.as_u64().ok_or_else(invalid)
     }
-    fn dependency(value: Value, _work: &mut Option<&mut dyn HistoryIo>) -> Result<ExtensionDependency> {
+    fn dependency(value: Value, _quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<ExtensionDependency> {
         let mut fields = object(value, 2)?;
         let name = text(field(&mut fields, "name")?)?;
         let version = u32::try_from(number(field(&mut fields, "version")?)?).map_err(|_| invalid())?;
         Ok(ExtensionDependency { name, version })
     }
-    fn configuration(value: Value, work: &mut Option<&mut dyn HistoryIo>) -> Result<ExtensionConfiguration> {
+    fn configuration(value: Value, quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<ExtensionConfiguration> {
         let mut fields = object(value, 3)?;
-        let extension = dependency(field(&mut fields, "extension")?, work)?;
+        let extension = dependency(field(&mut fields, "extension")?, quota)?;
         let Value::Array(bytes) = field(&mut fields, "schema_digest")? else { return Err(invalid()) };
         if bytes.len() != 32 { return Err(invalid()); }
         let mut schema_digest = [0_u8;32];
         for (output, value) in schema_digest.iter_mut().zip(bytes) {
             *output = u8::try_from(number(value)?).map_err(|_| invalid())?;
         }
-        let content = FileRef::from_owned_value_with_work(field(&mut fields, "content")?, work)?;
+        let content = FileRef::from_value(field(&mut fields, "content")?, quota.work())?;
         Ok(ExtensionConfiguration { extension, schema_digest, content })
     }
     fn vector<T>(
-        value: Value, work: &mut Option<&mut dyn HistoryIo>,
-        mut decode: impl FnMut(Value, &mut Option<&mut dyn HistoryIo>) -> Result<T>,
-    ) -> Result<(Vec<T>, u64)> {
+        value: Value, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
+        mut decode: impl FnMut(Value, &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<T>,
+    ) -> Result<Vec<T>> {
         let Value::Array(values) = value else { return Err(invalid()) };
-        let count = values.len();
-        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let mut output = reserve_copy_vector(count, &mut quota)?;
-        for value in values { output.push(decode(value, quota.work())?); }
-        let added = quota.retained();
-        quota.transfer();
-        Ok((output, added))
+        let mut output = reserve_copy_vector(values.len(), quota)?;
+        for value in values { output.push(decode(value, quota)?); }
+        Ok(output)
     }
     work.as_deref().expect("original owned admission observer").check_cancellation()?;
     let mut fields = object(value, 3)?;
@@ -1278,11 +1147,11 @@ pub(super) fn admission_from_owned_value(
     };
     let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
     let admission = (|| -> Result<ExtensionAdmission> {
-        let (selected, selected_bytes) = vector(field(&mut fields, "selected")?, quota.work(), dependency)?;
-        quota.adopt(selected_bytes)?;
-        let (configurations, configuration_bytes) = vector(field(&mut fields, "configurations")?, quota.work(), configuration)?;
-        quota.adopt(configuration_bytes)?;
-        ExtensionAdmission::from_parts_with_work(source, selected, configurations, quota.work())
+        let selected = vector(field(&mut fields, "selected")?, &mut quota, dependency)?;
+        let configurations = vector(field(&mut fields, "configurations")?, &mut quota, configuration)?;
+        let admission = ExtensionAdmission { source, selected, configurations };
+        admission.validate(quota.work())?;
+        Ok(admission)
     })()?;
     let added = quota.retained();
     quota.transfer();

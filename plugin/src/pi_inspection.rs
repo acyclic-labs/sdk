@@ -7,6 +7,7 @@ use acyclic_harness::{
     filesystem::{FilesystemTaskRuntime, TaskSourceInspection},
     runtime::TaskContext,
 };
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_stream::StreamProvider;
 use acyclic_fs::DemandSource as _;
 use serde::{Deserialize, Serialize};
@@ -110,7 +111,7 @@ pub(crate) struct PiWritebackPublicationGuard<P> {
     protected: std::sync::Arc<crate::pi_owner::PiOwnerConfig>,
     resources: crate::ServiceResources,
     filesystem: std::sync::Arc<acyclic_harness::filesystem::FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>,
-    stream: acyclic_stream::StreamClient<P>,
+    stream: std::sync::Arc<P>,
     context: std::sync::Arc<acyclic_harness::NativeTaskContext>,
     owner: std::sync::Arc<TaskJournalOwner<P>>,
     request: crate::pi_root_inputs::PiRootRequest,
@@ -127,7 +128,7 @@ impl<P: StreamProvider + 'static> PiWritebackPublicationGuard<P> {
         protected: std::sync::Arc<crate::pi_owner::PiOwnerConfig>,
         resources: &crate::ServiceResources,
         filesystem: std::sync::Arc<acyclic_harness::filesystem::FilesystemHost<acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>>,
-        stream: acyclic_stream::StreamClient<P>,
+        stream: std::sync::Arc<P>,
         context: std::sync::Arc<acyclic_harness::NativeTaskContext>,
         owner: std::sync::Arc<TaskJournalOwner<P>>,
         request: (crate::pi_root_inputs::PiRootRequest, acyclic_fs::NativeAllocation),
@@ -146,7 +147,7 @@ impl<P: StreamProvider + 'static> PiWritebackPublicationGuard<P> {
             .ok_or_else(|| selected_unauthorized("writeback lost its original project"))?
             .capability_with_native_work(acyclic_harness::conversation::VolumeOperation::Write, work)?;
         let preparation = crate::pi_root_provider::load_original_preparation_with_native_work(
-            &protected, &filesystem, &request.0, std::sync::Arc::clone(&context), work).await?;
+            &protected, &filesystem, &request.0.binding, &request.0.root, std::sync::Arc::clone(&context), work).await?;
         let original = crate::pi_root_provider::observe_root_allocation(
             std::sync::Arc::clone(&protected), resources, std::sync::Arc::clone(&filesystem),
             stream.clone(), preparation, work).await?
@@ -178,7 +179,7 @@ impl<P: StreamProvider + 'static> PiWritebackPublicationGuard<P> {
         self.owner.require_volume_grant_with_native_work(volume,
             acyclic_harness::conversation::VolumeOperation::Write, work)?;
         let preparation = crate::pi_root_provider::load_original_preparation_with_native_work(
-            &self.protected, &self.filesystem, &self.request,
+            &self.protected, &self.filesystem, &self.request.binding, &self.request.root,
             std::sync::Arc::clone(&self.context), work).await?;
         let identity = crate::pi_root_provider::guard_created_root_source_with_native_work(
             std::sync::Arc::clone(&self.protected), &self.resources,
@@ -208,7 +209,6 @@ pub(crate) async fn build_writeback_generations<'a, P: StreamProvider + 'static>
 ) -> Result<PiWritebackGenerations<'a, acyclic_fs::LocalAuthorityBackend, acyclic_fs::LocalObjectBackend>> {
     let context = native_context.context();
 
-    let result = async {
     authenticate_root(root, context, owner, verifier, scope, native_work).await?;
     let _read_grant = acyclic_harness::conversation::ContentGrant::verify_with_native_work(
         verifier, scope, &root.volume, acyclic_harness::conversation::VolumeOperation::Read, native_work)?;
@@ -261,8 +261,6 @@ pub(crate) async fn build_writeback_generations<'a, P: StreamProvider + 'static>
     Ok(PiWritebackGenerations {
         from, candidate, original_snapshot: original, imported: imported.id(), operation, paths,
     })
-    }.await;
-    result
 }
 
 fn phase_operation(operation: acyclic_harness::OperationId, phase: &[u8]) -> acyclic_harness::OperationId {
@@ -310,10 +308,10 @@ impl<P: StreamProvider + 'static> PiSelectedPublicationGuard<P> {
 
     async fn verify(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
         if let Some(guard) = &self.mount_guard {
-            let original_volume = work.native_mount_work();
+            let original_volume = work.clone();
             guard.check(&original_volume)
-                .map_err(|cause| crate::pi_native::native_view_error(acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?
-                .await.map_err(|cause| crate::pi_native::native_view_error(
+                .map_err(|cause| Error::from(acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?
+                .await.map_err(|cause| Error::from(
                     acyclic_fs::native_mount::MountLifecycleError::Native(cause)))?;
         }
         for (index, (context, owner)) in [
@@ -373,7 +371,6 @@ pub(crate) async fn prepare_writeback<'a, P, A, O>(
 where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::AsyncObjectStore,
 {
 
-    let result = async {
     authenticate_root(root, context, owner, verifier, scope, native_work).await?;
     let from = &generations.from;
     let candidate = &generations.candidate;
@@ -411,7 +408,7 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::Asyn
     authenticate_root(root, context, owner, verifier, scope, native_work).await?;
     let digest_value = writeback_digest_value(root, operation, from.id(), candidate.id(), paths,
         generations.original_snapshot, generations.imported, &journal);
-    let mut digest = crate::pi_root_provider::digest_pi_value(&digest_value, native_work)?;
+    let mut digest = crate::pi_root_provider::digest_pi_value(&digest_value, native_work.budget().bytes_encoded, native_work)?;
     let mut encoded = crate::pi_root_provider::canonical_pi_value(&digest_value,
         crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64, native_work)?;
     digest.1.absorb(&mut encoded.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
@@ -423,8 +420,6 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::Asyn
             original_snapshot: generations.original_snapshot, imported: generations.imported,
             excluded_names,
             journal, approval_digest: digest.0, canonical_digest_input, _codec_custody: digest.1 })
-    }.await;
-    result
 }
 
 /// Publishes only the exact user-confirmed preparation.
@@ -441,13 +436,12 @@ pub(crate) async fn publish_writeback<P, A, O>(
 where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::AsyncObjectStore,
 {
 
-    let result = async {
     authenticate_root(root, context, owner, verifier, scope, native_work).await?;
     let from = &generations.from;
     let candidate = &generations.candidate;
     let digest = crate::pi_root_provider::digest_pi_value(
         &writeback_digest_value(root, prepared.operation, from.id(), candidate.id(), &prepared.paths,
-            prepared.original_snapshot, prepared.imported, &prepared.journal), native_work)?;
+            prepared.original_snapshot, prepared.imported, &prepared.journal), native_work.budget().bytes_encoded, native_work)?;
     if !confirmed_by_user || confirmed_digest != prepared.approval_digest
         || root.task != prepared.root_task || &root.volume != prepared.root_volume
         || root.identity != prepared.root_identity || from.id() != prepared.from || candidate.id() != prepared.to
@@ -487,8 +481,6 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore, O: acyclic_fs::Asyn
             })),
     };
     Ok(value)
-    }.await;
-    result
 }
 
 /// A replay can acknowledge only the SDK's authenticated completed original journal, with the same exact user digest.
@@ -509,7 +501,7 @@ pub(crate) fn validate_applied_writeback<A: acyclic_fs::AsyncAuthorityStore, O: 
     let digest = crate::pi_root_provider::digest_pi_value(
         &writeback_digest_value(root, acyclic_fs::OperationId::from_bytes(generations.operation.into_bytes()),
             generations.from.id(), generations.candidate.id(), &generations.paths, generations.original_snapshot,
-            generations.imported, journal), native_work)?;
+            generations.imported, journal), native_work.budget().bytes_encoded, native_work)?;
     if digest.0 != confirmed_digest {
         return Err(selected_unauthorized("completed writeback changed its exact user approval"));
     }
@@ -574,22 +566,14 @@ fn require_selected_edits(edits: &[acyclic_fs::MaterializationEdit], paths: &[St
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PiNativeInspectionCursor {
+pub(crate) struct PiNativeInspectionCursor<V = VolumeRef> {
     pub(crate) source: TaskId,
-    pub(crate) volume: VolumeRef,
+    pub(crate) volume: V,
     pub(crate) snapshot: acyclic_fs::LazySnapshotRef,
     pub(crate) directory: String,
     pub(crate) continuation: Vec<u8>,
 }
 
-#[derive(Serialize)]
-pub(crate) struct PiNativeInspectionCursorRef<'a> {
-    pub(crate) source: TaskId,
-    pub(crate) volume: &'a VolumeRef,
-    pub(crate) snapshot: acyclic_fs::LazySnapshotRef,
-    pub(crate) directory: String,
-    pub(crate) continuation: Vec<u8>,
-}
 
 #[derive(Serialize)]
 pub(crate) struct PiNativeInspectionEntry {
@@ -604,7 +588,7 @@ pub(crate) struct PiNativeInspectionPage<'a> {
     pub(crate) snapshot: acyclic_fs::LazySnapshotRef,
     pub(crate) directory: String,
     pub(crate) entries: Vec<PiNativeInspectionEntry>,
-    pub(crate) cursor: Option<PiNativeInspectionCursorRef<'a>>,
+    pub(crate) cursor: Option<PiNativeInspectionCursor<&'a VolumeRef>>,
     #[serde(skip)]
     _custody: acyclic_fs::NativeAllocation,
 }
@@ -658,7 +642,6 @@ where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectSt
         native_work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<PiNativeInspectionPage<'b>> {
 
-        let result = async {
         owner.native_view_owner().verify_with_native_work(native_work).await?;
         if context.durable_task_id() != Some(owner.task_id()) {
             return Err(selected_unauthorized("native inspection changed its ORIGINAL caller context"));
@@ -703,7 +686,7 @@ where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectSt
             let mut directory = native_work.display(&format_args!("{directory}")).map_err(native_error)?;
             output.2.absorb(&mut continuation.1).map_err(native_error)?;
             output.2.absorb(&mut directory.1).map_err(native_error)?;
-            Some(PiNativeInspectionCursorRef {
+            Some(PiNativeInspectionCursor {
                 source: self.source, volume: self.volume, snapshot: self.snapshot,
                 directory: directory.0, continuation: continuation.0,
             })
@@ -714,8 +697,6 @@ where A: acyclic_fs::AsyncAuthorityStore + 'static, O: acyclic_fs::AsyncObjectSt
             source: self.source, volume: self.volume, snapshot: self.snapshot,
             directory: output.1, entries: output.0, cursor, _custody: output.2,
         })
-        }.await;
-        result
     }
 
     /// The canonical sealed reader retains its original SDK byte capacity through the caller's encoding/publication; this is not post-hoc adoption.
@@ -778,7 +759,6 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
     let caller = caller_native.context();
     let destination = destination_native.context();
 
-    let result = async {
     if mount.is_some() != mount_guard.is_some() {
         return Err(selected_unauthorized("selected mounted publication lacks its original SDK source WRITE guard"));
     }
@@ -841,40 +821,31 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
     let operation = acyclic_fs::OperationId::from_bytes(operation.into_bytes());
     let value = if let Some(mount) = mount {
         mount.import_selected_work_guarded(checkpoint, plan.0, plan.1, operation, permit,
-            &native_work.native_mount_work(), cancellation, move |original: &acyclic_fs::NativeMaterializationWork| {
+            &native_work, cancellation, move |original: &acyclic_fs::NativeMaterializationWork| {
                 let publication_guard = std::sync::Arc::clone(&publication_guard);
                 let original = original.clone();
                 async move { publication_guard.verify(&original).await }
             }).await?
     } else {
-        destination_workspace.import_selected_with_native_work_guarded(checkpoint, plan.0, plan.1,
-            operation, permit, native_work, cancellation, move |original: &acyclic_fs::NativeMaterializationWork| {
+        (async { let cancellation = cancellation; let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(native_work, cancellation)?; destination_workspace.import_selected(checkpoint, plan.0, plan.1, operation, permit, &accounting, move |original: &acyclic_fs::NativeMaterializationWork| {
                 let publication_guard = std::sync::Arc::clone(&publication_guard);
                 let original = original.clone();
                 async move { publication_guard.verify(&original).await }
-            }).await?
+            }).await }).await?
     };
     Ok(value)
-    }.await;
-    result
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PiNativeSourceKey {
+pub(crate) struct PiNativeSourceKey<V = VolumeRef> {
     source: TaskId,
-    volume: VolumeRef,
+    volume: V,
     snapshot: acyclic_fs::LazySnapshotRef,
 }
 
-#[derive(Clone, Copy, Serialize)]
-struct PiNativeSourceKeyRef<'a> {
-    source: TaskId,
-    volume: &'a VolumeRef,
-    snapshot: acyclic_fs::LazySnapshotRef,
-}
 
-impl PiNativeSourceKeyRef<'_> {
+impl PiNativeSourceKey<&VolumeRef> {
     fn matches(&self, value: &PiNativeSourceKey) -> bool {
         self.source == value.source && self.volume == &value.volume && self.snapshot == value.snapshot
     }
@@ -882,9 +853,9 @@ impl PiNativeSourceKeyRef<'_> {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct PiNativeDiffCursor {
-    before: PiNativeSourceKey,
-    after: PiNativeSourceKey,
+pub(crate) struct PiNativeDiffCursor<V = VolumeRef> {
+    before: PiNativeSourceKey<V>,
+    after: PiNativeSourceKey<V>,
     directory: String,
     before_pass: bool,
     continuation: Option<Vec<u8>>,
@@ -894,20 +865,12 @@ impl PiNativeDiffCursor {
     pub(crate) fn after_snapshot(&self) -> acyclic_fs::LazySnapshotRef { self.after.snapshot }
 }
 
-#[derive(Serialize)]
-pub(crate) struct PiNativeDiffCursorRef<'a> {
-    before: PiNativeSourceKeyRef<'a>,
-    after: PiNativeSourceKeyRef<'a>,
-    directory: String,
-    before_pass: bool,
-    continuation: Option<Vec<u8>>,
-}
 
 #[derive(Serialize)]
 pub(crate) struct PiNativeDiffPage<'a> {
     pub(crate) entries: Vec<PiDifference>,
     pub(crate) directory: String,
-    pub(crate) cursor: Option<PiNativeDiffCursorRef<'a>>,
+    pub(crate) cursor: Option<PiNativeDiffCursor<&'a VolumeRef>>,
     #[serde(skip)]
     _custody: acyclic_fs::NativeAllocation,
 }
@@ -924,7 +887,6 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acycli
       D: acyclic_fs::DemandSource + 'static, S: acyclic_fs::LazyWorkspaceStore + 'static,
 {
 
-    let result = async {
     owner.native_view_owner().verify_with_native_work(native_work).await?;
     if context.durable_task_id() != Some(owner.task_id()) {
         return Err(selected_unauthorized("native diff changed its ORIGINAL caller context"));
@@ -932,8 +894,8 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acycli
     before.require_reader(context, directory)?;
     after.require_reader(context, directory)?;
     validate_page(directory, maximum_entries)?;
-    let before_key = PiNativeSourceKeyRef { source: before.source, volume: before.volume, snapshot: before.snapshot };
-    let after_key = PiNativeSourceKeyRef { source: after.source, volume: after.volume, snapshot: after.snapshot };
+    let before_key = PiNativeSourceKey { source: before.source, volume: before.volume, snapshot: before.snapshot };
+    let after_key = PiNativeSourceKey { source: after.source, volume: after.volume, snapshot: after.snapshot };
     let before_pass = if let Some(cursor) = cursor {
         if !before_key.matches(&cursor.before) || !after_key.matches(&cursor.after) || cursor.directory != directory {
             return Err(selected_invalid("native diff cursor belongs to another source, snapshot or directory"));
@@ -1034,12 +996,12 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acycli
         let mut directory = native_work.display(&format_args!("{directory}")).map_err(native_error)?;
         output.2.absorb(&mut continuation.1).map_err(native_error)?;
         output.2.absorb(&mut directory.1).map_err(native_error)?;
-        Some(PiNativeDiffCursorRef { before: before_key, after: after_key, directory: directory.0,
+        Some(PiNativeDiffCursor { before: before_key, after: after_key, directory: directory.0,
             before_pass, continuation: Some(continuation.0) })
     } else if !before_pass {
         let mut directory = native_work.display(&format_args!("{directory}")).map_err(native_error)?;
         output.2.absorb(&mut directory.1).map_err(native_error)?;
-        Some(PiNativeDiffCursorRef { before: before_key, after: after_key, directory: directory.0,
+        Some(PiNativeDiffCursor { before: before_key, after: after_key, directory: directory.0,
             before_pass: true, continuation: None })
     } else { None };
     drop(page);
@@ -1047,8 +1009,6 @@ where P: StreamProvider, A: acyclic_fs::AsyncAuthorityStore + 'static, O: acycli
     Ok(PiNativeDiffPage {
         entries: output.0, directory: output.1, cursor: next, _custody: output.2,
     })
-    }.await;
-    result
 }
 
 fn native_extra_facts_differ(before: &acyclic_fs::LazyLookup, after: &acyclic_fs::LazyLookup) -> bool {

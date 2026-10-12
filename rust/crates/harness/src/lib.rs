@@ -36,7 +36,6 @@ pub mod filesystem;
 pub mod fork;
 #[cfg(feature = "grpc")]
 pub mod grpc;
-mod handles;
 pub mod interaction;
 pub mod live;
 #[cfg(feature = "machines")]
@@ -76,6 +75,20 @@ mod test_stream;
 pub mod wire_validation;
 pub mod wire_values;
 pub mod workflow;
+
+/// Optional original native work; `None` selects unbounded work.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub type NativeWork<'a> = Option<&'a acyclic_fs::NativeMaterializationWork>;
+/// Optional original native work; `None` selects unbounded work.
+#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+pub type NativeWork<'a> = Option<&'a ()>;
+
+/// Optional custody retained for an original native allocation.
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+pub type NativeCustody = Option<acyclic_fs::NativeAllocation>;
+/// Optional custody retained for an original native allocation.
+#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+pub type NativeCustody = Option<()>;
 
 /// Generated Protobuf packages, nested as their package names are, so the harness messages resolve the shared protocol handshake they import.
 #[allow(
@@ -117,7 +130,7 @@ pub use contract::{
     OperationId, Outcome, PolicyLayer, ProtocolIdentity, Result, SessionId, TaskId, TurnId,
     JsonBounds, JsonCodecCharge, JsonValueSchema, JsonValueShape,
     canonical_json_bytes_bounded, json_bytes_bounded,
-    json_from_slice_bounded_trusted, json_value_bounded, json_value_decode_owned_bytes,
+    json_from_slice_bounded, json_value_bounded, json_value_decode_owned_bytes,
     sdk_json_diagnostic_bytes,
     json_owned_value_conversion_additional_bytes, json_typed_diagnostic_owned_bytes,
     preparation_serde_diagnostic_label_bytes,
@@ -126,16 +139,14 @@ pub use contract::{
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use contract::{
      
-    json_from_slice_bounded_native_trusted, json_from_value_bounded_native_trusted,
-    json_from_value_owned_bounded_native_trusted, 
+    json_from_value_bounded,
 };
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub use native_future::NativeFutureBundle;
 pub use extension::{
-    ExtensionIdentity, ExtensionLease, ExtensionLeases, ExtensionLinker, ExtensionRegistry,
+    ExtensionIdentity, ExtensionLease, ExtensionRegistry,
     ExtensionRuntime, NativeExtension,
 };
-pub use handles::{Agent, Conversation, Session, Task, Turn};
 #[cfg(feature = "filesystem")]
 pub use resource_preparation::ChildScratchCreationProof;
 pub use live::{

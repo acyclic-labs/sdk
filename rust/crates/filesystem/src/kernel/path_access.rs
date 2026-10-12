@@ -1,9 +1,4 @@
 //! Exact no-follow namespace-path resolution over authenticated frontiers.
-//!
-//! Standalone and native callers use the same lookup, observation and shared-prefix
-//! batch machines. Native cache slots and returned dependency buffers retain the
-//! original invocation guard; canonical OwnedBytes aliases retain their source
-//! owner through every path-cache forwarding boundary.
 
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
 use super::{AuthenticatedProbeError, DecodeLimits, Dependency, DependencyRegion, DependencyState,
@@ -17,7 +12,7 @@ use crate::model::{VolumeConfig, VolumeConfigError};
 use crate::model::FilesystemProfile;
 use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectFailure, ObjectId, ObjectRead, ObjectReadRequest,
-    ObjectReadRetention, ObjectReceipt, ObjectResult, ObjectStoreError};
+    ObjectReadRetention, ObjectResult, ObjectStoreError};
 use acyclic_stream::OwnedBytes;
 use std::cmp::Ordering;
 use std::mem::size_of;
@@ -25,7 +20,6 @@ use std::ops::{Deref, DerefMut};
 use std::sync::{Mutex, MutexGuard};
 use thiserror::Error;
 
-/// Data always precedes its allocation guard in physical destruction order.
 struct GuardedVec<T> {
     values: Vec<T>,
     allocation: KernelOwnedAllocation,
@@ -74,8 +68,6 @@ fn reserve_slots<T>(count: usize, accounting: &mut KernelAccounting<'_>, custody
     Ok(slots)
 }
 
-/// Runs the SDK inspection outside original primitives, then commits its actual
-/// prefix before any late cancellation or budget refusal can escape.
 fn examine_item<T>(accounting: &mut KernelAccounting<'_>, custody: Option<&super::ProofDataCustody>,
     examine: impl FnOnce() -> T) -> Result<T, crate::FsError> {
     let delta = WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED };
@@ -88,7 +80,6 @@ fn examine_item<T>(accounting: &mut KernelAccounting<'_>, custody: Option<&super
     Ok(value)
 }
 
-/// Reports the existing short-frame primitive, never an adopted payload.
 struct FrameObservation<'a> {
     owner: Option<&'a super::ProofDataCustody>,
     bytes: u64,
@@ -168,12 +159,10 @@ impl<'a, S> OperationReadCache<'a, S> {
         Self::slot_bytes(&state)?.checked_add(state.retained_owned_bytes)
             .and_then(|bytes| bytes.checked_sub(state.accounted_bytes)).ok_or(WorkError::Overflow.into())
     }
-    /// Copies no backing bytes: native aliases retain the provider's physical owner.
     fn probe(&self, object_id: ObjectId, accounting: &mut KernelAccounting<'_>) -> Result<Option<ObjectRead>, crate::FsError> {
         let state = self.lock_state();
         Ok(probe_slots(&state.slots, object_id, accounting, self.data_custody)?.0)
     }
-    /// The very same slot-growth and rehash leaves serve both accounting modes.
     fn admit(&self, object_id: ObjectId, bytes: &OwnedBytes, owned_bytes: u64,
         accounting: &mut KernelAccounting<'_>) -> Result<bool, crate::FsError> {
         let mut state = self.lock_state();
@@ -206,7 +195,6 @@ impl<'a, S> OperationReadCache<'a, S> {
         if let Some(owner) = self.data_custody { owner.add_operation_cache_bytes(owned_bytes)?; }
         Ok(true)
     }
-    /// Reconciles only actual standalone backing residency, never native receipts.
     fn reconcile(&self, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
         match accounting {
             #[cfg(not(target_arch = "wasm32"))]
@@ -280,8 +268,6 @@ fn object_error(error: crate::FsError) -> ObjectStoreError {
     }
 }
 
-/// A standalone provider callback subtracts only backing not already present
-/// in its caller's original allocation ledger.
 fn provider_remaining(accounting: &KernelAccounting<'_>, resident: u64) -> Result<WorkBudget, crate::FsError> {
     let mut remaining = accounting.remaining()?;
     remaining.peak_allocation_bytes = remaining.peak_allocation_bytes.checked_sub(resident).ok_or(
@@ -290,8 +276,6 @@ fn provider_remaining(accounting: &KernelAccounting<'_>, resident: u64) -> Resul
     Ok(remaining)
 }
 
-/// Standalone receipts are composed at their actual callback boundary. Native
-/// hooks below do not call this leaf: they already charge the original ledger.
 fn compose_backend(accounting: &mut KernelAccounting<'_>, backend: WorkCounters, resident: u64) -> Result<(), crate::FsError> {
     let (_, work, budget, _) = accounting.standalone_parts().expect("native backend work is original, never composed");
     *work = work.with_backend(backend, resident)?;
@@ -325,9 +309,8 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             }
         }.await;
         let work = accounting.spent();
-        result.map(|()| ObjectReceipt { value: (), work }).map_err(|error| ObjectFailure::new(object_error(error), work))
+        result.map(|()| crate::OperationReceipt { value: (), work }).map_err(|error| ObjectFailure::new(object_error(error), work))
     }
-
 
     async fn historical_generation_evidence(
         &self,
@@ -356,7 +339,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             }
         }.await;
         let work = accounting.spent();
-        result.map(|value| ObjectReceipt { value, work })
+        result.map(|value| crate::OperationReceipt { value, work })
             .map_err(|error| ObjectFailure::new(object_error(error), work))
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -395,7 +378,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             }
         }.await;
         let work = accounting.spent();
-        result.map(|value| ObjectReceipt { value, work })
+        result.map(|value| crate::OperationReceipt { value, work })
             .map_err(|error| ObjectFailure::new(object_error(error), work))
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -425,7 +408,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             }
         }.await;
         let work = accounting.spent();
-        result.map(|()| ObjectReceipt { value: (), work })
+        result.map(|()| crate::OperationReceipt { value: (), work })
             .map_err(|error| ObjectFailure::new(object_error(error), work))
     }
     #[cfg(not(target_arch = "wasm32"))]
@@ -478,23 +461,23 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             Ok::<_, crate::FsError>(value)
         }.await;
         let work = accounting.spent();
-        result.map(|value| ObjectReceipt { value, work }).map_err(|error| ObjectFailure::new(object_error(error), work))
+        result.map(|value| crate::OperationReceipt { value, work }).map_err(|error| ObjectFailure::new(object_error(error), work))
     }
     #[cfg(not(target_arch = "wasm32"))]
     async fn read_with_native_work(&self, object_id: ObjectId, maximum_bytes: u64,
         work: &crate::NativeMaterializationWork, cancellation: &CancellationToken)
-        -> Result<async_storage::NativeObjectRead, ObjectStoreError> {
+        -> Result<crate::storage::ObjectRead, ObjectStoreError> {
         let mut accounting = KernelAccounting::native(work, cancellation);
         accounting.check().map_err(object_error)?;
         if let Some(value) = self.probe(object_id, &mut accounting).map_err(object_error)? {
             if usize_to_u64(value.bytes.len()) > maximum_bytes {
                 return Err(ObjectStoreError::TooLarge { observed: usize_to_u64(value.bytes.len()), maximum: maximum_bytes });
             }
-            return async_storage::NativeObjectRead::shared(value);
+            return Ok(value);
         }
         // No cache lock or original ledger borrow spans this backend await.
         let read = self.store.read_with_native_work(object_id, maximum_bytes, work, cancellation).await?;
-        self.admit(object_id, &read.read().bytes, 0, &mut accounting).map_err(object_error)?;
+        self.admit(object_id, &read.bytes, 0, &mut accounting).map_err(object_error)?;
         Ok(read)
     }
     async fn read_with_custody(&self, object_id: ObjectId, maximum_bytes: u64, budget: WorkBudget,
@@ -524,7 +507,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for OperationReadCache<'_, S> {
             }
         }.await;
         let work = accounting.spent();
-        result.map(|value| ObjectReceipt { value, work }).map_err(|error| ObjectFailure::new(object_error(error), work))
+        result.map(|value| crate::OperationReceipt { value, work }).map_err(|error| ObjectFailure::new(object_error(error), work))
     }
 }
 
@@ -550,9 +533,7 @@ pub struct ObservedPathLookup {
     pub dependencies: Vec<Dependency>,
 }
 
-/// A shared path batch plus the canonical regions observed while resolving
-/// every path in it: exactly the union of what [`observe_path_async`]
-/// captures for each path.
+/// A shared path batch plus the canonical regions observed while resolving every path in it: exactly the union of what [`observe_path_async`] captures for each path.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ObservedPathBatch {
     /// Ordinary batch result.
@@ -632,8 +613,6 @@ pub enum PathLookupError {
     Work(#[from] WorkError),
 }
 
-/// The payload's original allocation remains attached until its caller drops it.
-/// Callers moving the value must carry the second `into_parts` component too.
 pub(crate) struct AccountedPath<T> {
     value: T,
     allocation: KernelOwnedAllocation,
@@ -722,42 +701,7 @@ pub(super) fn path_error(error: crate::FsError) -> PathLookupError {
 }
 
 /// Resolves one exact path without following terminal or intermediate links.
-///
-/// This synchronous surface drives the same asynchronous composition used by
-/// browser and remote stores. It reads only the file-table and directory
-/// frontiers required by the requested path and never reads file bodies or
-/// enumerates unrelated namespace subtrees.
-///
-/// # Errors
-///
-/// Rejects unsupported name semantics/encodings before backend work, malformed
-/// authenticated routing, kind mismatches, non-directory intermediates,
-/// storage/cancellation failures, and work outside the admitted budget.
-pub fn lookup_path<S: crate::ImmediateObjectStore>(
-    store: &S,
-    generation: &super::GenerationRoot,
-    path: &NamespacePath,
-    config: VolumeConfig,
-    budget: WorkBudget,
-) -> Result<PathLookup, PathLookupFailure> {
-    let cancellation = CancellationToken::new();
-    async_storage::poll_immediate(lookup_path_async(
-        store,
-        generation,
-        path,
-        config,
-        budget,
-        &cancellation,
-    ))
-}
-
-/// Asynchronously resolves one exact no-follow path through authenticated frontiers.
-///
-/// # Errors
-///
-/// Returns the same typed failures and exact receipts as [`lookup_path`], plus
-/// cooperative cancellation from the object-store boundary.
-pub async fn lookup_path_async<S: AsyncObjectStore>(
+pub async fn lookup_path<S: AsyncObjectStore>(
     store: &S,
     generation: &super::GenerationRoot,
     path: &NamespacePath,
@@ -769,17 +713,6 @@ pub async fn lookup_path_async<S: AsyncObjectStore>(
 }
 
 /// Resolves one path and captures the exact semantic regions needed for a safe rebase.
-///
-/// Resolution walks the path once through an operation-local authenticated
-/// object cache, so work is proportional to depth and no prefix paths are
-/// constructed or rescanned.
-/// Negative lookups capture the first absent edge; positive lookups capture
-/// every namespace edge and the terminal path-independent record.
-///
-/// # Errors
-///
-/// Returns the same measured failures as [`lookup_path_async`], plus canonical
-/// dependency-state construction failures.
 pub async fn observe_path_async<S: AsyncObjectStore>(
     store: &S,
     generation: &super::GenerationRoot,
@@ -792,13 +725,6 @@ pub async fn observe_path_async<S: AsyncObjectStore>(
         .await
 }
 
-/// Resolves one path while retaining namespace-edge observations but omitting
-/// the terminal whole-record observation.
-///
-/// This is the internal primitive used by metadata, content-range, and
-/// directory-page reads. Those operations append their narrower terminal
-/// region after resolution, so unrelated changes to the same file record do
-/// not create false rebase conflicts. Exact negative lookups remain captured.
 pub(crate) async fn observe_path_edges_async<S: AsyncObjectStore>(
     store: &S,
     generation: &super::GenerationRoot,
@@ -811,56 +737,8 @@ pub(crate) async fn observe_path_edges_async<S: AsyncObjectStore>(
         .await
 }
 
-pub(crate) async fn observe_path_with_data_async<S: AsyncObjectStore>(
-    store: &S,
-    generation: &super::GenerationRoot,
-    path: &NamespacePath,
-    config: VolumeConfig,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-    terminal: bool,
-    data_custody: &super::ProofDataCustody,
-) -> Result<ObservedPathLookup, PathLookupFailure> {
-    observe_path_with_terminal_async(
-        store, generation, path, config, budget, cancellation, terminal, Some(data_custody),
-    ).await
-}
-
 /// Resolves a non-empty exact path batch through shared authenticated prefixes.
-///
-/// Input order and duplicates are preserved. Paths sharing a directory prefix
-/// use one directory-frontier batch, while all bindings discovered at one depth
-/// use one shared file-table batch. No file body or unrelated subtree is read.
-///
-/// # Errors
-///
-/// Returns the same fail-closed semantic and storage errors as [`lookup_path`],
-/// plus explicit empty/excessive batch and allocation failures.
-pub fn lookup_paths<S: crate::ImmediateObjectStore>(
-    store: &S,
-    generation: &super::GenerationRoot,
-    paths: &[NamespacePath],
-    config: VolumeConfig,
-    budget: WorkBudget,
-) -> Result<PathBatchLookup, PathLookupFailure> {
-    let cancellation = CancellationToken::new();
-    async_storage::poll_immediate(lookup_paths_async(
-        store,
-        generation,
-        paths,
-        config,
-        budget,
-        &cancellation,
-    ))
-}
-
-/// Asynchronously resolves a non-empty no-follow path batch with shared work.
-///
-/// # Errors
-///
-/// Returns exact operation-wide work on cancellation, malformed authenticated
-/// routing, semantic mismatch, storage failure, or resource-bound rejection.
-pub async fn lookup_paths_async<S: AsyncObjectStore>(
+pub async fn lookup_paths<S: AsyncObjectStore>(
     store: &S,
     generation: &super::GenerationRoot,
     paths: &[NamespacePath],
@@ -883,9 +761,6 @@ pub async fn lookup_paths_async<S: AsyncObjectStore>(
     .map(|observed| observed.lookup)
 }
 
-/// Read-only selected restoration evidence over the same authenticated walk.
-/// A missing or non-directory ancestor proves that its requested descendant is
-/// absent. Ordinary no-follow lookup keeps its non-directory error semantics.
 pub(crate) async fn lookup_paths_selected_async<S: AsyncObjectStore>(
     store: &S,
     generation: &super::GenerationRoot,
@@ -900,14 +775,7 @@ pub(crate) async fn lookup_paths_selected_async<S: AsyncObjectStore>(
     ).await.map(|observed| observed.lookup)
 }
 
-/// Resolves a non-empty no-follow path batch with shared work while
-/// capturing, in the same walk, every region [`observe_path_async`] would
-/// capture for each path.
-///
-/// # Errors
-///
-/// Returns the same bounded, fail-closed outcomes as [`lookup_paths_async`],
-/// plus canonical dependency-state construction failures.
+/// Resolves a non-empty no-follow path batch with shared work while capturing, in the same walk, every region [`observe_path_async`] would capture for each path.
 pub async fn observe_paths_async<S: AsyncObjectStore>(
     store: &S,
     generation: &super::GenerationRoot,
@@ -930,46 +798,8 @@ pub async fn observe_paths_async<S: AsyncObjectStore>(
     .await
 }
 
-pub(crate) async fn observe_paths_with_data_async<S: AsyncObjectStore>(
-    store: &S,
-    generation: &super::GenerationRoot,
-    paths: &[NamespacePath],
-    config: VolumeConfig,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-    data_custody: &super::ProofDataCustody,
-) -> Result<ObservedPathBatch, PathLookupFailure> {
-    lookup_path_queries_async(
-        store, generation, PathQueries::Owned(paths), true, config, budget, cancellation, Some(data_custody),
-        PathBatchMode::NoFollow,
-    ).await
-}
-
-/// The same observation engine over borrowed path references.
-pub(crate) async fn observe_path_refs_async<S: AsyncObjectStore>(
-    store: &S,
-    generation: &super::GenerationRoot,
-    paths: &[&NamespacePath],
-    config: VolumeConfig,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-    data_custody: &super::ProofDataCustody,
-) -> Result<ObservedPathBatch, PathLookupFailure> {
-    lookup_path_queries_async(
-        store, generation, PathQueries::Borrowed(paths), true, config, budget, cancellation, Some(data_custody),
-        PathBatchMode::NoFollow,
-    ).await
-}
-
 /// Resolves borrowed paths without first cloning their names into an owned batch.
-///
-/// This is the mutation-planner and latency-sensitive batch surface. Input
-/// order, duplicates, semantics, and receipts are identical to [`lookup_paths`].
-///
-/// # Errors
-///
-/// Returns the same bounded, fail-closed outcomes as [`lookup_paths_async`].
-pub async fn lookup_path_refs_async<S: AsyncObjectStore>(
+pub async fn lookup_path_refs<S: AsyncObjectStore>(
     store: &S,
     generation: &super::GenerationRoot,
     paths: &[&NamespacePath],
@@ -992,34 +822,11 @@ pub async fn lookup_path_refs_async<S: AsyncObjectStore>(
     .map(|observed| observed.lookup)
 }
 
-/// Synchronously resolves borrowed paths without constructing owned path copies.
-///
-/// # Errors
-///
-/// Returns the same bounded, fail-closed outcomes as [`lookup_paths`].
-pub fn lookup_path_refs<S: crate::ImmediateObjectStore>(
-    store: &S,
-    generation: &super::GenerationRoot,
-    paths: &[&NamespacePath],
-    config: VolumeConfig,
-    budget: WorkBudget,
-) -> Result<PathBatchLookup, PathLookupFailure> {
-    async_storage::poll_immediate(lookup_path_refs_async(
-        store,
-        generation,
-        paths,
-        config,
-        budget,
-        &CancellationToken::new(),
-    ))
-}
-
 #[derive(Clone, Copy)]
 enum PathBatchMode {
     NoFollow,
     SelectedRestore,
 }
-
 
 pub(crate) async fn lookup_path_async_with_custody<S: AsyncObjectStore>(
     store: &S, generation: &super::GenerationRoot, path: &NamespacePath, config: VolumeConfig,
@@ -1198,7 +1005,6 @@ pub(crate) async fn lookup_paths_async_with_accounting<S: AsyncObjectStore>(
     Ok(AccountedPath { value: value.lookup, allocation })
 }
 
-/// Selected restoration uses the same guarded batch body and absence semantics.
 pub(crate) async fn lookup_paths_selected_async_with_accounting<S: AsyncObjectStore>(
     store: &S, generation: &super::GenerationRoot, paths: &[NamespacePath], config: VolumeConfig,
     accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken, custody: Option<&super::ProofDataCustody>,
@@ -1224,7 +1030,6 @@ pub(crate) async fn observe_paths_async_with_accounting<S: AsyncObjectStore>(
         PathBatchMode::NoFollow).await
 }
 
-/// Borrowed observation preserves the existing batch's terminal capture.
 pub(crate) async fn observe_path_refs_async_with_accounting<S: AsyncObjectStore>(
     store: &S, generation: &super::GenerationRoot, paths: &[&NamespacePath], config: VolumeConfig,
     accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken, custody: Option<&super::ProofDataCustody>,

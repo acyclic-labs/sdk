@@ -4,7 +4,7 @@ use crate::core::RecordedScope;
 use crate::{
     AgentId, Capabilities, Error, IdempotencyKey, OperationId, Result,
     contract::canonical_json_bytes,
-    core::{Action, AggregateKind, Authority, Command, Event, EventPayload, EventReference, Scope, canonical_intent},
+    core::{Action, AggregateKind, Authority, Command, Event, EventPayload, EventReference, Scope},
     wire,
 };
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
@@ -147,9 +147,9 @@ pub(crate) fn decode_event(
     };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let payload: EventPayload = if native {
-        let decoded = crate::contract::json_from_slice_bounded_native_trusted(
-            &envelope.canonical_payload_json, bounds, 0, wire::ErrorCode::Storage,
-            crate::contract::JsonValueSchema::EventPayload, &mut |charge| {
+        let decoded = crate::contract::json_from_slice_bounded(std::marker::PhantomData,
+            &envelope.canonical_payload_json, bounds, 0, Some(wire::ErrorCode::Storage),
+            Some(crate::contract::JsonValueSchema::EventPayload), &mut |charge| {
                 match charge {
                     crate::contract::JsonCodecCharge::Admission { value_shape, .. } => {
                         let witness = crate::contract::json_decode_owned_bytes(
@@ -370,7 +370,7 @@ pub fn decode_command_envelope(envelope: wire::CommandEnvelope) -> Result<(Autho
         action,
     };
     if !envelope.intent_digest.is_empty()
-        && envelope.intent_digest.as_slice() != canonical_intent(&command)?
+        && envelope.intent_digest.as_slice() != crate::contract::canonical_json_digest_with_work(&command, crate::store::default_projection_read_limits().maximum_bytes, &mut None)?
     {
         return Err(Error::Conflict("command intent digest mismatch".into()));
     }
@@ -556,7 +556,7 @@ mod tests {
                     fork_policy: crate::core::ExtensionForkPolicy::Inherit,
                     content: FileRef::new(
                         VolumeRef::new(
-                            ProviderRef::new("test", "filesystem", "2")?,
+                            ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
                             "extension",
                             VolumeClass::AgentPrivate,
                             VolumeOwner::Agent(AgentId::from_bytes([9; 16])),
@@ -638,12 +638,9 @@ mod tests {
             id: "conversation-1".into(),
         };
         let issuer = AuthorityIssuer::new("test", [7; 32], authority.clone());
-        let mut reducer = Reducer::new(authority.clone(), issuer.verifier(), SchemaRegistry::new());
+        let mut reducer = Reducer::new(authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
         let agent = AgentId::from_bytes([4; 16]);
-        let scope = issuer.root(
-            "root",
-            Capabilities::new(["conversation:bind", "conversation:append"]),
-        );
+        let scope = issuer.issue("root", &Capabilities::new(["conversation:bind", "conversation:append"]), None, None, &mut None).expect("scope proof");
         reducer.apply(Command {
             operation_id: OperationId::from_bytes([1; 16]),
             idempotency_key: IdempotencyKey("bind-1".into()),
@@ -654,7 +651,7 @@ mod tests {
         })?;
         let file = FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("fixture", "filesystem", "2")?,
+                ProviderRef::new("fixture".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "scratch",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(agent),
@@ -676,7 +673,7 @@ mod tests {
                     sequence: 1,
                     kind: MessageKind::User,
                     content: file,
-                    attachments: Vec::new().into(),
+                    attachments: crate::conversation::ReferencedAttachments::Inline { items: Vec::new() },
                     reply_to: None,
                     tool_call_id: None,
                     extensions: BTreeMap::new(),

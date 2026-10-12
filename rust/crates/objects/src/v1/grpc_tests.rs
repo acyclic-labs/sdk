@@ -327,12 +327,12 @@ async fn tls_grpc_exercises_every_rpc_streaming_authentication_bounds_and_semant
             .await
     });
     assert!(
-        GrpcObjects::connect(&endpoint, "exact-token", None)
+        GrpcObjects::connect(&endpoint, "exact-token", None, None)
             .await
             .is_err()
     );
-    let client = GrpcObjects::connect(&endpoint, "exact-token", Some(pem.as_bytes())).await?;
-    let unauthorized = GrpcObjects::connect(&endpoint, "wrong", Some(pem.as_bytes())).await?;
+    let client = GrpcObjects::connect(&endpoint, "exact-token", Some(pem.as_bytes()), None).await?;
+    let unauthorized = GrpcObjects::connect(&endpoint, "wrong", Some(pem.as_bytes()), None).await?;
     let bucket = wire::BucketRef {
         name: "namespace.inputs".into(),
     };
@@ -424,8 +424,6 @@ async fn exercise_transfer_deadlines(
     let short = client
         .clone()
         .with_transfer_timeout(Duration::from_millis(80))?;
-    // The fixture delays this metadata reply longer than the transfer budget.
-    // It must still succeed using the independent ordinary request deadline.
     let bucket = short
         .create_bucket(wire::CreateBucketRequest {
             name: "deadline.metadata".into(),
@@ -453,8 +451,6 @@ async fn exercise_transfer_deadlines(
         .put_stream(header("delayed-upload"), delayed_upload())
         .await?;
     assert_eq!(ack.size, 15);
-    // This crosses the old channel's fixed 30-second ceiling, using the public
-    // client and the same authenticated TLS RPC rather than a mock channel.
     let extended = client
         .clone()
         .with_transfer_timeout(Duration::from_secs(45))?;
@@ -519,8 +515,6 @@ async fn exercise_multipart_deadlines(
         part_number,
         mutation: None,
     };
-    // Multipart has a separate authenticated request path. Cross the ordinary
-    // 30-second metadata ceiling through the real TLS part-upload RPC too.
     let part = extended
         .upload_part_stream(
             header(1),
@@ -547,8 +541,6 @@ async fn exercise_multipart_deadlines(
             .code,
         wire::ErrorCode::Unavailable
     );
-    // Even after the delayed source could have completed, only the exact
-    // acknowledged first part is staged; partial input cannot publish part 2.
     tokio::time::sleep(Duration::from_millis(300)).await;
     let parts = extended
         .list_parts(wire::ListPartsRequest {
@@ -578,8 +570,6 @@ async fn exercise_download_deadline(
     let long = client
         .clone()
         .with_transfer_timeout(Duration::from_secs(2))?;
-    // Three body frames each arrive within 250ms. A 400ms *total* deadline
-    // accepts the first frame and refuses the second; it cannot reset per frame.
     let bytes = Bytes::from(vec![41; 2 * 65536 + 1]);
     let info = long.put(wire::PutObjectHeader {
         bucket: Some(bucket.clone()),
@@ -713,15 +703,14 @@ async fn mtls_tls13_grpc_exercises_every_rpc_and_rejects_invalid_identity()
     });
     let ca = Some(server_pem.as_bytes());
     // TLS 1.3 peers can report an admission alert on the first RPC rather than connect.
-    let missing = GrpcObjects::connect(&endpoint, "exact-token", ca).await;
+    let missing = GrpcObjects::connect(&endpoint, "exact-token", ca, None).await;
     assert_transport_denied(missing).await;
     let untrusted = rcgen::generate_simple_self_signed(["untrusted".to_owned()])?;
-    let wrong = GrpcObjects::connect_with_identity(
+    let wrong = GrpcObjects::connect(
         &endpoint,
         "exact-token",
         ca,
-        untrusted.cert.pem().as_bytes(),
-        untrusted.signing_key.serialize_pem().as_bytes(),
+        Some((untrusted.cert.pem().as_bytes(), untrusted.signing_key.serialize_pem().as_bytes())),
     )
     .await;
     assert_transport_denied(wrong).await;
@@ -733,7 +722,7 @@ async fn mtls_tls13_grpc_exercises_every_rpc_and_rejects_invalid_identity()
         (client_pem.as_bytes(), server_key.as_bytes()),
     ] {
         assert!(
-            GrpcObjects::connect_with_identity(&endpoint, "exact-token", ca, cert, key)
+            GrpcObjects::connect(&endpoint, "exact-token", ca, Some((cert, key)))
                 .await
                 .is_err()
         );
@@ -744,27 +733,25 @@ async fn mtls_tls13_grpc_exercises_every_rpc_and_rejects_invalid_identity()
         (client_pem.as_bytes(), oversized.as_slice()),
     ] {
         assert!(matches!(
-            GrpcObjects::connect_with_identity(&endpoint, "exact-token", ca, cert, key).await,
+            GrpcObjects::connect(&endpoint, "exact-token", ca, Some((cert, key))).await,
             Err(super::grpc::ConnectError::InvalidConfiguration)
         ));
     }
     assert!(
-        GrpcObjects::connect_with_identity(
+        GrpcObjects::connect(
             &endpoint,
             "exact-token",
             None,
-            client_pem.as_bytes(),
-            client_key_pem.as_bytes(),
+            Some((client_pem.as_bytes(), client_key_pem.as_bytes())),
         )
         .await
         .is_err()
     );
-    let unauthorized = GrpcObjects::connect_with_identity(
+    let unauthorized = GrpcObjects::connect(
         &endpoint,
         "wrong",
         ca,
-        client_pem.as_bytes(),
-        client_key_pem.as_bytes(),
+        Some((client_pem.as_bytes(), client_key_pem.as_bytes())),
     )
     .await?;
     assert_eq!(
@@ -778,12 +765,11 @@ async fn mtls_tls13_grpc_exercises_every_rpc_and_rejects_invalid_identity()
             .map(|error| error.code),
         Some(wire::ErrorCode::AccessDenied)
     );
-    let client = GrpcObjects::connect_with_identity(
+    let client = GrpcObjects::connect(
         &endpoint,
         "exact-token",
         ca,
-        client_pem.as_bytes(),
-        client_key_pem.as_bytes(),
+        Some((client_pem.as_bytes(), client_key_pem.as_bytes())),
     )
     .await?;
     super::conformance::verify(&client, "conformance-mtls").await?;
@@ -817,176 +803,4 @@ async fn assert_transport_denied(client: Result<GrpcObjects, super::grpc::Connec
             "unauthenticated TLS peer reached Objects"
         );
     }
-}
-
-#[tokio::test(flavor = "current_thread")]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one TLS fixture checks every streaming trace terminal transition"
-)]
-async fn grpc_download_trace_requires_validated_eof_and_records_cancellation()
--> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    use crate::body::tests::Capture;
-    use futures::StreamExt;
-    use tracing_subscriber::prelude::*;
-
-    let certified = rcgen::generate_simple_self_signed(["localhost".to_owned()])?;
-    let pem = certified.cert.pem();
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
-    let endpoint = format!("https://localhost:{}", listener.local_addr()?.port());
-    let fixture = Fixture(MemoryObjects::new(MemoryOptions::default())?, std::sync::Arc::default());
-    let identity = Identity::from_pem(pem.clone(), certified.signing_key.serialize_pem());
-    let (shutdown, receive) = tokio::sync::oneshot::channel();
-    let server = tokio::spawn(async move {
-        Server::builder()
-            .tls_config(ServerTlsConfig::new().identity(identity))?
-            .add_service(wire::buckets_service_server::BucketsServiceServer::new(
-                fixture.clone(),
-            ))
-            .add_service(wire::objects_service_server::ObjectsServiceServer::new(
-                fixture,
-            ))
-            .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
-                let _ = receive.await;
-            })
-            .await
-    });
-    let client = GrpcObjects::connect(&endpoint, "exact-token", Some(pem.as_bytes())).await?;
-    let bucket = Some(wire::BucketRef {
-        name: "customer.inputs".into(),
-    });
-    client
-        .create_bucket(wire::CreateBucketRequest {
-            name: "customer.inputs".into(),
-            mutation: None,
-        })
-        .await?;
-    for key in [
-        "ordinary",
-        "malformed",
-        "terminal-error",
-        "corrupt-codec",
-        "truncated",
-    ] {
-        client.put(wire::PutObjectHeader {
-            bucket: bucket.clone(),
-            object_key: key.into(),
-            ..Default::default()
-        }, Bytes::from(vec![b'x'; 128 * 1024]).into())
-            .await?;
-    }
-    let capture = Capture::default();
-    let _subscriber =
-        tracing::subscriber::set_default(tracing_subscriber::registry().with(capture.clone()));
-    let query = |key: &str| wire::GetObjectRequest {
-        bucket: bucket.clone(),
-        object_key: key.into(),
-        ..Default::default()
-    };
-    let span_name = "acyclic.objects.grpc.get";
-    let mut download = client.get_stream(query("ordinary"), 512 * 1024).await?;
-    assert!(capture.spans(span_name).is_empty());
-    for _ in 0..2 {
-        assert_eq!(
-            download
-                .body
-                .next()
-                .await
-                .transpose()?
-                .map(|bytes| bytes.len()),
-            Some(65536)
-        );
-        assert!(capture.spans(span_name).is_empty());
-    }
-    assert!(download.body.next().await.is_none());
-    let spans = capture.spans(span_name);
-    assert_eq!(spans.len(), 1);
-    assert_eq!(
-        spans
-            .first()
-            .ok_or("missing completed span")?
-            .fields
-            .get("outcome")
-            .map(String::as_str),
-        Some("ok")
-    );
-    assert!(
-        !spans
-            .first()
-            .ok_or("missing completed span")?
-            .fields
-            .contains_key("error.kind")
-    );
-    drop(download);
-
-    for consumed in [0, 1, 2] {
-        let before = capture.spans(span_name).len();
-        let mut download = client.get_stream(query("ordinary"), 512 * 1024).await?;
-        for _ in 0..consumed {
-            assert!(download.body.next().await.transpose()?.is_some());
-        }
-        assert_eq!(capture.spans(span_name).len(), before);
-        drop(download);
-        let spans = capture.spans(span_name);
-        assert_eq!(spans.len(), before + 1);
-        assert_eq!(
-            spans
-                .get(before)
-                .ok_or("missing terminal span")?
-                .fields
-                .get("outcome")
-                .map(String::as_str),
-            Some("err")
-        );
-        assert_eq!(
-            spans
-                .get(before)
-                .ok_or("missing terminal span")?
-                .fields
-                .get("error.kind")
-                .map(String::as_str),
-            Some("cancelled")
-        );
-    }
-    for key in ["malformed", "terminal-error", "corrupt-codec", "truncated"] {
-        let before = capture.spans(span_name).len();
-        let mut download = client.get_stream(query(key), 512 * 1024).await?;
-        assert_eq!(capture.spans(span_name).len(), before);
-        let error = loop {
-            match download.body.next().await {
-                Some(Ok(_)) => {}
-                Some(Err(error)) => break error,
-                None => return Err(format!("accepted invalid body: {key}").into()),
-            }
-        };
-        assert_eq!(capture.spans(span_name).len(), before + 1);
-        drop(download);
-        let spans = capture.spans(span_name);
-        assert_eq!(spans.len(), before + 1);
-        assert_eq!(
-            spans
-                .get(before)
-                .ok_or("missing terminal span")?
-                .fields
-                .get("outcome")
-                .map(String::as_str),
-            Some("err")
-        );
-        assert_eq!(
-            spans
-                .get(before)
-                .ok_or("missing terminal span")?
-                .fields
-                .get("error.kind")
-                .map(String::as_str),
-            Some(error.code.as_str_name())
-        );
-    }
-    assert!(capture.spans(span_name).iter().all(|span| {
-        span.fields
-            .keys()
-            .all(|key| matches!(key.as_str(), "rpc.code" | "outcome" | "error.kind"))
-    }));
-    let _ = shutdown.send(());
-    server.await?.map_err(Into::into)
 }

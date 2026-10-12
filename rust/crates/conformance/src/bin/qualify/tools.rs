@@ -892,7 +892,7 @@ fn with_lazy_mount<T>(
     use acyclic_fs::demand::native::NativeDemandSource;
     use acyclic_fs::model::VolumeLimits;
     use acyclic_fs::native_mount::MountOptions;
-    use acyclic_fs::{DistributedFs, LocalCoreStateStore, MountPublication};
+    use acyclic_fs::{LazyWorkspace, LocalCoreStateStore, MountPublication};
     use std::sync::Arc;
 
     let mount_dir = work.join("mnt");
@@ -905,14 +905,14 @@ fn with_lazy_mount<T>(
                 .map_err(engine_err("open store"))?;
             let state = LocalCoreStateStore::open_owned(work.join("core-state"))
                 .map_err(engine_err("open core state"))?;
-            let distributed = DistributedFs::new(engine, state);
             let demand = NativeDemandSource::open(source, profile, VolumeLimits::default(), None, None)
                 .await
                 .map_err(engine_err("open source"))?;
-            let workspace = distributed
-                .attach_lazy_with_config(
+            let workspace = LazyWorkspace::attach_with_config(
+                    &engine,
                     "mount-bench",
                     Arc::new(demand),
+                    state,
                     VolumeConfig::native(Lifecycle::Durable),
                 )
                 .await
@@ -1315,10 +1315,7 @@ fn par_bench(args: &[String]) -> Result<(), Failure> {
             })
             .collect::<Result<Vec<_>, Failure>>()?;
         for mut child in children {
-            let output = child.wait_with_output(
-                std::time::Duration::from_secs(120).saturating_sub(started.elapsed()),
-                8 * 1024 * 1024,
-            )?;
+            let output = child.wait_with_output(std::time::Duration::from_secs(120).saturating_sub(started.elapsed()), 8 * 1024 * 1024, None, || Ok(()), |_| Ok(acyclic_native_runtime::ProcessInput::default()), None, None).map_err(|failure| failure.error)?;
             if !output.status.success() {
                 return Err(format!(
                     "writer failed: {}",
@@ -1475,7 +1472,7 @@ async fn bench_inner(source: &Path, store_dir: &Path, rounds: usize) -> Result<(
     };
 
     let started = Instant::now();
-    let receipt = capture_baseline(&mut checkout, &options, WorkCounters::UNBOUNDED, &cancel)
+    let receipt = capture_baseline(&mut checkout, &options, &acyclic_fs::CapturePolicy::default(), WorkCounters::UNBOUNDED, &cancel)
         .await
         .map_err(engine_err("baseline"))?
         .value;
@@ -1520,6 +1517,7 @@ async fn bench_inner(source: &Path, store_dir: &Path, rounds: usize) -> Result<(
             &mut checkout,
             batch,
             &options,
+            &acyclic_fs::CapturePolicy::default(),
             WorkCounters::UNBOUNDED,
             &cancel,
         )
@@ -1680,7 +1678,7 @@ async fn capture_and_commit(
         maximum_extent_spans: 65_536,
     };
     let started = Instant::now();
-    let receipt = capture_baseline(&mut checkout, &options, WorkCounters::UNBOUNDED, &cancel)
+    let receipt = capture_baseline(&mut checkout, &options, &acyclic_fs::CapturePolicy::default(), WorkCounters::UNBOUNDED, &cancel)
         .await
         .map_err(engine_err("capture_baseline"))?
         .value;

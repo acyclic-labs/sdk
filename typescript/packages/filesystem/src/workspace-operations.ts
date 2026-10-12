@@ -1,102 +1,37 @@
 import type {
-  FsGeneration, FsJoinPlan, FsWorkspace, JoinResult, MergeConflictSelection,
-  NativeRawJoinPlan, ResolvableFsJoinPlan, WasmRawGeneration, WasmRawJoinPlan,
-  WasmRawJoinResult, WasmRawWorkspace, WorkspaceRebaseResult,
+  FsJoinPlan, JoinResult, MergeConflictSelection,
+  NativeRawJoinPlan, ResolvableFsJoinPlan, WasmRawJoinPlan,
 } from "./contracts.js";
-import { requireGenerationIdentity } from "./binding-values.js";
-import { copyWorkspaceExtentPlan, copyWorkspaceStat } from "./workspace-copies.js";
-import { parseWorkspaceCommit, parseWorkspaceDelete } from "./workspace-results.js";
+import { parseJoinResult } from "./workspace-results.js";
+import { copyName } from "./binding-values.js";
 
-function nativeBoundary<T>(value: unknown): T {
-  return value as T;
-}
-
-type RawOperations = Pick<WasmRawWorkspace,
-  "head" | "generation" | "sync" | "checkpoint" | "pin" | "delete" |
-  "read" | "readRange" | "stat" | "readSymbolicLink" |
-  "planExtents" | "write" | "remove" | "liveRebase"
->;
-type WorkspaceOperations = Pick<FsWorkspace,
-  "head" | "generation" | "sync" | "checkpoint" | "pin" | "delete" |
-  "read" | "readRange" | "stat" | "readSymbolicLink" |
-  "planExtents" | "write" | "remove" | "liveRebase"
->;
-
-export function workspaceOperations(
-  raw: RawOperations,
-  adaptGeneration: (raw: WasmRawGeneration) => FsGeneration,
-  parseRebase: (raw: WasmRawJoinResult) => WorkspaceRebaseResult,
-): WorkspaceOperations {
-  return {
-    async head() { return Uint8Array.from(await raw.head()); },
-    async generation(id) {
-      requireGenerationIdentity(id, "generation identity");
-      return adaptGeneration(await raw.generation(Uint8Array.from(id)));
-    },
-    async sync() { return adaptGeneration(await raw.sync()); },
-    async checkpoint(label) {
-      return adaptGeneration(await raw.checkpoint(label));
-    },
-    async pin(identity) {
-      return adaptGeneration(await raw.pin(identity));
-    },
-    async delete(idempotencyKey) {
-      return parseWorkspaceDelete(await raw.delete(idempotencyKey));
-    },
-    async read(path, maximumBytes) {
-      if (maximumBytes <= 0n) throw new RangeError("maximum read bytes must be positive");
-      return Uint8Array.from(await raw.read(path, maximumBytes));
-    },
-    async readRange(path, offset, length) { return Uint8Array.from(await raw.readRange(path, offset, length)); },
-    async stat(path) { return copyWorkspaceStat(await raw.stat(path)); },
-    async readSymbolicLink(path) { return Uint8Array.from(await raw.readSymbolicLink(path)); },
-    async planExtents(path, offset, length, maximumSpans) {
-      return copyWorkspaceExtentPlan(await raw.planExtents(path, offset, length, maximumSpans));
-    },
-    async write(path, bytes) { return parseWorkspaceCommit(await raw.write(path, bytes)); },
-    async remove(path) { return parseWorkspaceCommit(await raw.remove(path)); },
-    async liveRebase(options, idempotencyKey) {
-      return parseRebase(await raw.liveRebase(
-        idempotencyKey, options.maximumGenerations, options.maximumChanges, options.maximumConflicts,
-      ));
-    },
-  };
-}
-
-export function adaptJoinPlanBase(
-  raw: WasmRawJoinPlan,
-  parseResult: (raw: WasmRawJoinResult) => JoinResult,
-): FsJoinPlan {
+export function adaptJoinPlan(
+  raw: WasmRawJoinPlan & Partial<Pick<NativeRawJoinPlan, "applySides">>,
+): FsJoinPlan & Partial<Pick<ResolvableFsJoinPlan, "applySides">> {
   return {
     get targetHead() { return Uint8Array.from(raw.targetHead); },
     get commonAncestor() { return Uint8Array.from(raw.commonAncestor); },
     async apply(ifTarget, idempotencyKey) {
-      return parseResult(nativeBoundary<Parameters<typeof parseResult>[0]>(await raw.apply(ifTarget, idempotencyKey)));
+      return parseJoinResult(await raw.apply(ifTarget, idempotencyKey));
     },
     async close() {},
+    ...(raw.applySides === undefined ? {} : {
+      async applySides(
+        ifTarget: Uint8Array,
+        selections: readonly MergeConflictSelection[],
+        idempotencyKey?: Uint8Array,
+      ): Promise<JoinResult> {
+        return parseJoinResult(await raw.applySides!(ifTarget, idempotencyKey, selections.map((selection) =>
+          selection.kind === "file"
+            ? { kind: "file", fileId: Uint8Array.from(selection.fileId), side: selection.side }
+            : {
+                kind: "binding",
+                directoryId: Uint8Array.from(selection.directoryId),
+                name: copyName(selection.name),
+                side: selection.side,
+              }
+        )));
+      },
+    }),
   };
-}
-
-export function adaptResolvableJoinPlan(
-  raw: NativeRawJoinPlan,
-  parseResult: (raw: WasmRawJoinResult) => JoinResult,
-): ResolvableFsJoinPlan {
-  return Object.assign(adaptJoinPlanBase(nativeBoundary<WasmRawJoinPlan>(raw), parseResult), {
-    async applySides(
-      ifTarget: Uint8Array,
-      selections: readonly MergeConflictSelection[],
-      idempotencyKey?: Uint8Array,
-    ): Promise<JoinResult> {
-      return parseResult(nativeBoundary<Parameters<typeof parseResult>[0]>(await raw.applySides(ifTarget, idempotencyKey, selections.map((selection) =>
-        selection.kind === "file"
-          ? { kind: "file", fileId: Uint8Array.from(selection.fileId), side: selection.side }
-          : {
-              kind: "binding",
-              directoryId: Uint8Array.from(selection.directoryId),
-              name: { encoding: selection.name.encoding, bytes: Uint8Array.from(selection.name.bytes) },
-              side: selection.side,
-            }
-      ))));
-    },
-  });
 }

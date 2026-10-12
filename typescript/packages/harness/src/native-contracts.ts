@@ -3,7 +3,7 @@ export type { ExecutionEvent } from "../generated/wasm/acyclic_harness_wasm.js";
 /** Explicitly initialized Rust contract validator with strongly typed v2 inputs. */
 import * as wasm from "../generated/wasm/acyclic_harness_wasm.js";
 import type {
-  CompactionPolicy, ThresholdCompaction, ModelContextCapacity, ModelTokenCount, WasmModelRequestWire,
+  CompactionPolicy, ThresholdCompaction, ModelContextCapacity, ModelTokenCount, ModelRequest as ModelRequestWire,
   Context, ContextSelection, ContextRenderMode, ContextPlacement, WasmModelMessageInput, WasmModelContentInventoryWire,
   ContextDiscovery, ContextDiscoveryReader, ContextPathResult, ContextReloadPolicy,
   DiscoveredContext, PinnedContextPath, SkillMetadata,
@@ -11,8 +11,8 @@ import type {
   WasmTaskAdmissionIdentities, WasmTaskAdmissionInput, WasmTaskAdmissionWire,
   WasmMachineIdentityWire, WasmNativeLimitsWire, WasmTaskRunLimitsWire,
   WasmExecutionPlacementWire, WasmWorkflowAdmissionWire,
-  WasmTaskIdentityInput, WasmTurnPreparation, WasmModelContent, WasmModelContentPart,
-  WasmModelEventAdmission, WasmModelEventAdmissionState, WasmModelRole,
+  WasmTaskIdentityInput, WasmTurnPreparation, ModelContent as ModelContentWire, ModelContentPart as ModelContentPartWire,
+  WasmModelEventAdmission, WasmModelEventAdmissionState, ModelRole as ModelRoleWire,
   WasmTaskDependencyInput,
   McpCatalog, McpStdioRequest, McpCallbackRequest,
 } from "../generated/wasm/acyclic_harness_wasm.js";
@@ -73,8 +73,8 @@ export type ModelEventAdmission = Omit<WasmModelEventAdmission, "event" | "state
 export type NativeFileRef = Omit<FileRef, "descriptor"> & Readonly<{
   descriptor: Omit<FileDescriptor, "byte_length"> & Readonly<{ byte_length: number | bigint }>;
 }>;
-export type NativeModelContentPart = WasmModelContentPart;
-export type NativeModelContent = WasmModelContent;
+export type NativeModelContentPart = ModelContentPartWire;
+export type NativeModelContent = ModelContentWire;
 export interface NativeSelectedModelContext {
   readonly selection: Readonly<{
     readonly conversation_revision: bigint;
@@ -82,7 +82,7 @@ export interface NativeSelectedModelContext {
     readonly checkpoint?: NativeFileRef;
   }>;
   readonly messages: readonly Readonly<{
-    role: WasmModelRole;
+    role: ModelRoleWire;
     content: NativeModelContent;
   }>[];
 }
@@ -153,7 +153,7 @@ export class NativeContracts {
   }
 
   /** Rust prepares the canonical request and binds the provider's exact additive counts. */
-  validateModelTokenCount(request: WasmModelRequestWire, count: ModelTokenCount, limits: Limits): bigint {
+  validateModelTokenCount(request: ModelRequestWire, count: ModelTokenCount, limits: Limits): bigint {
     return this.native.validateModelTokenCount(request, count, limits);
   }
 
@@ -287,13 +287,13 @@ export class NativeContracts {
   }
 
   /** Project explicitly selected schemas without granting tool authority. */
-  mcpModelDefinitions(catalog: McpCatalog, maximumTools: number, maximumBytes: number): readonly import("../generated/wasm/acyclic_harness_wasm.js").WasmModelToolDefinitionWire[] {
+  mcpModelDefinitions(catalog: McpCatalog, maximumTools: number, maximumBytes: number): readonly import("../generated/wasm/acyclic_harness_wasm.js").ToolDefinition[] {
     return this.native.mcpModelDefinitions(catalog, maximumTools, maximumBytes);
   }
 
   /** Pure bounded search; returned definitions convey no invocation authority. */
   searchMcpCatalog(catalog: McpCatalog, query: string, after: string | undefined,
-    maximumResults: number, maximumTools: number, maximumBytes: number): readonly import("../generated/wasm/acyclic_harness_wasm.js").WasmModelToolDefinitionWire[] {
+    maximumResults: number, maximumTools: number, maximumBytes: number): readonly import("../generated/wasm/acyclic_harness_wasm.js").ToolDefinition[] {
     return this.native.searchMcpCatalog(catalog, query, after, maximumResults, maximumTools, maximumBytes);
   }
 

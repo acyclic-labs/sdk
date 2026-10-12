@@ -7,3 +7,6 @@ pub use runtime::*;
 
 #[cfg(feature = "codegen")]
 pub mod codegen;
+
+#[cfg(all(not(target_arch = "wasm32"), feature = "test-support"))]
+pub mod test_support;

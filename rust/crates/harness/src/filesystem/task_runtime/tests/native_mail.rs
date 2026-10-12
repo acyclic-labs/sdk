@@ -1,25 +1,14 @@
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::conversation::FileRef;
 use crate::test_stream::LostSessionAck;
 use crate::filesystem::PreparationIo;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
-use acyclic_stream::{OwnedBytes, StreamClient};
+use acyclic_stream::{OwnedBytes};
 
 type MailRuntime = FilesystemTaskRuntime<LostSessionAck<MemoryStream>, MemoryAuthorityBackend, MemoryObjectBackend>;
 
-fn budget() -> WorkBudget {
-    let units = 65_536;
-    let bytes = 64 * 1_024 * 1_024;
-    WorkBudget { authority_records_read: units, authority_records_appended: units,
-        authority_bytes_read: bytes, authority_bytes_written: bytes,
-        object_probes: units, backend_read_operations: units, backend_write_operations: units,
-        durability_operations: units, page_reads: units, page_writes: units,
-        object_bytes_read: bytes, object_bytes_written: bytes, bytes_hashed: bytes,
-        bytes_copied: bytes, bytes_encoded: bytes, source_bytes_read: bytes,
-        source_path_components: units, source_entries_visited: units, output_bytes: bytes,
-        items_examined: units, items_returned: units, allocation_operations: units,
-        peak_allocation_bytes: bytes, materializations: units }
-}
+const BUDGET: WorkBudget = acyclic_fs::performance::work_budget(65_536, 64 * 1_024 * 1_024);
 fn work(budget: WorkBudget, cancellation: &CancellationToken) -> Result<NativeMaterializationWork> {
     NativeMaterializationWork::new(budget, cancellation)
         .map_err(|(cause, work)| Error::NativeConstruction { cause, work })
@@ -37,16 +26,15 @@ impl MailFixture {
         let fixture = Fixture::new().await?;
         fixture.machine.native.store(true, Ordering::SeqCst);
         let sdk = Arc::new(LostSessionAck::default());
-        let runtime = FilesystemTaskRuntime::open_with_clock(
-            StreamClient::new(Arc::clone(&sdk)), fixture.filesystem.clone(), fixture.volume.clone(),
-            fixture.issuer.verifier(), fixture.signed.clone(), fixture.scope.clone(),
-            fixture.tasks.clone(), fixture.machines.clone(), fixture.tools.clone(),
+        let runtime = FilesystemTaskRuntime::open(
+            Arc::clone(&sdk), fixture.filesystem.clone(), &fixture.volume,
+            &fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.signed, &fixture.scope,
+            &fixture.tasks, &fixture.machines, &fixture.tools,
             SessionLimits { active_tasks: 8, total_tasks: 8, depth: 4, model_steps: 8 },
-            8, 65_536, fixture.clock.clone(),
+            8, 65_536, fixture.clock.clone(), None, &[], &ResumableToolRegistry::default(), None,
         ).await?;
-        let payloads = FilesystemSchedulerPayloadStore::new(fixture.filesystem.clone(), fixture.volume.clone(),
-            &fixture.issuer.verifier(), &fixture.signed, 65_536)?;
-        let definition = fixture.tasks.get_version::<Value, Value>("test.deadline", "1")?;
+        let payloads = FilesystemSchedulerPayloadStore::new(fixture.filesystem.clone(), &(fixture.volume), &fixture.issuer.verifier(&mut None).expect("verifier copy"), &fixture.signed, 65_536, None)?;
+        let definition = fixture.tasks.get_version::<Value, Value>("test.deadline", "1", #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))] None)?;
         let mut tasks = Vec::new();
         for byte in 190..193 {
             let operation = OperationId::from_bytes([byte; 16]);
@@ -63,7 +51,7 @@ impl MailFixture {
                 WorkPull::Claimed(lease) => lease,
                 _ => return Err(Error::NotFound("native mail original lease".into())),
             };
-            runtime.task_host().start_task(&lease).await?;
+            runtime.task_host().start_task(&lease, None).await?;
             tasks.push((TaskId::from_bytes(lease.operation.operation_id.into_bytes()), LeaseFence::from(&lease.reservation)));
         }
         let payload = payloads.stage(OperationId::from_bytes([193; 16]), "mail-source", b"actual native mailbox source").await?;
@@ -81,7 +69,7 @@ impl MailFixture {
 async fn native_mail_sdk_cursor_atomic_lost_ack_and_multi_recipient_are_original() -> Result<()> {
     let fixture = MailFixture::new().await?;
     assert_eq!(fixture.payload.volume(), &fixture.fixture.volume);
-    let work = work(budget(), &CancellationToken::new())?;
+    let work = work(BUDGET, &CancellationToken::new())?;
     fixture.sdk.native_only.store(true, Ordering::SeqCst);
     fixture.sdk.commit_lose_ack.store(true, Ordering::SeqCst);
     fixture.sdk.reset_io();
@@ -126,7 +114,7 @@ async fn native_mail_sdk_cursor_atomic_lost_ack_and_multi_recipient_are_original
 async fn native_mail_cancellation_and_page_quota_deny_before_more_sdk_io() -> Result<()> {
     let fixture = MailFixture::new().await?;
     let cancellation = CancellationToken::new();
-    let original = work(budget(), &cancellation)?;
+    let original = work(BUDGET, &cancellation)?;
     fixture.sdk.native_only.store(true, Ordering::SeqCst);
     let io = PreparationIo::from_native_work(&original)?;
     let payload = fixture.payload.clone_with_io(&io)?;
@@ -141,7 +129,7 @@ async fn native_mail_cancellation_and_page_quota_deny_before_more_sdk_io() -> Re
     assert_eq!(original.receipt(), before);
     assert_eq!(fixture.sdk.io_snapshot().reads, 0);
     assert_eq!(fixture.sdk.io_snapshot().writes, 0);
-    let mut allowance = budget();
+    let mut allowance = BUDGET;
     allowance.allocation_operations = 0;
     let denied = work(allowance, &CancellationToken::new())?;
     fixture.sdk.reset_io();
@@ -179,7 +167,7 @@ async fn native_mail_sdk_cursor_rejects_actual_hostile_version_and_recipient_rec
         }))?);
         let target = if index == 0 { acyclic_stream::CommitCondition::Absent { path: mailbox.clone() } }
             else { acyclic_stream::CommitCondition::Tail { path: mailbox.clone(), expected: index as u64 } };
-        let committed = StreamClient::new(Arc::clone(&fixture.sdk)).commit(acyclic_stream::CommitRequest {
+        let committed = Arc::clone(&fixture.sdk).commit(acyclic_stream::CommitRequest {
             conditions: vec![target, acyclic_stream::CommitCondition::Absent { path: intent.clone() }],
             mutations: vec![
                 acyclic_stream::CommitMutation::Append { path: mailbox, records: vec![bytes] },
@@ -189,7 +177,7 @@ async fn native_mail_sdk_cursor_rejects_actual_hostile_version_and_recipient_rec
         }).await?;
         assert!(matches!(committed, acyclic_stream::CommitOutcome::Committed(_)));
         fixture.sdk.native_only.store(true, Ordering::SeqCst);
-        let original = work(budget(), &CancellationToken::new())?;
+        let original = work(BUDGET, &CancellationToken::new())?;
         assert!(matches!(host.inbox_with_native_work(recipient, index as u64, 1, &original).await,
             Err(Error::NativeDecode { .. }) | Err(Error::NativeDiagnostic { .. })
                 | Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, .. })));

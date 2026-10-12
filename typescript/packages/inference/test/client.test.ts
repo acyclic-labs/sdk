@@ -2,6 +2,9 @@ import { expect, test } from "bun:test";
 import { create, toBinary, toJsonString } from "@bufbuild/protobuf";
 import {
   ContextViewSchema,
+  EditSchema,
+  EditsSchema,
+  EmptySchema,
   contextRevision,
   CreateContextRequestSchema,
   CreateEvaluationRequestSchema,
@@ -233,7 +236,7 @@ test("generated lifecycle client covers contexts, warm commitments, runs, watch,
   expect(called).toEqual(["models", "create", "inspect:1", "mutate", "retain", "inspect-warm", "renew", "release", "generate", "inspect-run", "inspect-run", "watch:7", "cancel", "create-evaluation", "inspect-evaluation"]);
 });
 
-test("high-level handles preserve typed context, run, and warm identities", async () => {
+test("prepared requests preserve context, run, and warm identities", async () => {
   let revisionCounter = 0;
   const transport: InferenceTransport = {
     async listModels() { return create(ListModelsResponseSchema); },
@@ -253,26 +256,41 @@ test("high-level handles preserve typed context, run, and warm identities", asyn
   };
   const inference = new Inference(new InferenceClient(transport));
   const item = create(ItemSchema, { kind: ItemKind.USER, payload: bytes(1) });
-  const context = await inference.create("model", [item]);
-  expect((await context.items())[0]?.kind).toBe(ItemKind.USER);
-  const fork = await context.append(item).then(value => value.fork());
-  expect(fork.id()).toEqual(revision(3));
-  const run = await fork.generate(item, { maximumOutput: 32n });
-  expect((await inference.attach(context.id())).id()).toEqual(context.id());
-  expect((await inference.recoverRun(run.id())).id()).toEqual(run.id());
-  const result = await run.result();
+  const client = inference.client;
+  const creation = create(CreateContextRequestSchema, { identity: inference.identity(), model: "model", items: [item] });
+  const context = contextRevision((await client.createContext(creation)).revision);
+  expect((await client.inspectContext(context)).items[0]?.kind).toBe(ItemKind.USER);
+  const appended = await client.mutateContext(create(MutateContextRequestSchema, {
+    identity: inference.identity(), source: context,
+    action: { case: "edit", value: create(EditsSchema, { edits: [create(EditSchema, { action: { case: "append", value: item } })] }) },
+  }));
+  const fork = contextRevision((await client.mutateContext(create(MutateContextRequestSchema, {
+    identity: inference.identity(), source: appended.revision, action: { case: "fork", value: create(EmptySchema) },
+  }))).revision);
+  expect(fork).toEqual(revision(3));
+  const generation = create(GenerateRunRequestSchema, { identity: inference.identity(), context: fork, input: item, maximumOutput: 32n });
+  const run = runId((await client.generate(generation)).run!.runId);
+  expect((await client.inspectContext(context)).revision).toEqual(context);
+  expect((await client.inspectRun(run)).runId).toEqual(run);
+  const result = await client.resultRun(run);
   expect(result.terminal).toBe("completed");
   expect(result.output).toEqual(bytes(9));
   expect(result.continuationValid).toBeTrue();
-  expect(result.context?.id()).toEqual(revision(10));
-  expect((await run.cancel()).cancellationRequested).toBeTrue();
-  const events = []; for await (const event of run.events({ from: 4n })) events.push(event.sequence);
+  expect(result.context).toEqual(revision(10));
+  expect((await client.cancelRun(run)).cancellationRequested).toBeTrue();
+  const events = []; for await (const event of client.watchRun(run, 4n)) events.push(event.sequence);
   expect(events).toEqual([4n]);
-  const warm = await fork.retain({ latencyProfile: revision(2), expiresAtMs: 10n });
-  expect(warm.id()).toEqual(revision(7));
-  await warm.inspect();
-  expect((await warm.renew(20n)).expiresAtMs).toBe(20n);
-  expect((await warm.release()).commitment).toEqual(revision(7));
+  const warm = (await client.retainWarm(create(RetainWarmRequestSchema, {
+    identity: inference.identity(), context: fork, latencyProfile: revision(2), expiresAtMs: 10n,
+  }))).commitment;
+  expect(warm).toEqual(revision(7));
+  await client.inspectWarm(warm);
+  expect((await client.renewWarm(create(RenewWarmRequestSchema, {
+    identity: inference.identity(), commitment: warm, expiresAtMs: 20n,
+  }))).expiresAtMs).toBe(20n);
+  expect((await client.releaseWarm(create(ReleaseWarmRequestSchema, {
+    identity: inference.identity(), commitment: warm,
+  }))).commitment).toEqual(revision(7));
 });
 
 test("run recovery rejects substituted or malformed streams and observes an inclusive zero cursor", async () => {
@@ -290,7 +308,7 @@ test("run recovery rejects substituted or malformed streams and observes an incl
     async createEvaluation(request) { return evaluationView(request.identity!.requestId, request.spec!.specDigest); },
     async inspectEvaluation(request) { return evaluationView(request.evaluationId); },
   };
-  const result = await new Inference(new InferenceClient(transport)).run(runId(id)).result();
+  const result = await new InferenceClient(transport).resultRun(runId(id));
   expect(result.terminal).toBe("completed");
 
   let reopened = false;

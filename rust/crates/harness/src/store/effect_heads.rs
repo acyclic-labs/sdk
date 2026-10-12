@@ -5,7 +5,7 @@ use crate::{
     EffectId, Error, Result,
     core::{Authority, AuthorityVerifier, Event},
 };
-use acyclic_stream::{StreamClient, StreamPath, StreamProvider};
+use acyclic_stream::{StreamPath, StreamProvider};
 use serde::{Deserialize, Serialize};
 
 type Digest = [u8; 32];
@@ -35,10 +35,9 @@ fn decode_certificate_with_work(
     bytes: &[u8],
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Certificate> {
-    if work.is_some() {
-        operations::validate_canonical_json_with_work(bytes, MAX_CERTIFICATE_BYTES, work)?;
-    }
-    let Some(observer) = work.as_deref_mut() else { return crate::executor::decode_json(bytes); };
+    operations::validate_canonical_json_with_work(bytes, MAX_CERTIFICATE_BYTES, work)?;
+    let Some(observer) = work.as_deref_mut() else { return crate::contract::json_from_slice(bytes)
+        .map_err(|error| Error::Storage(format!("execution journal content is invalid: {error}"))); };
     let mut reservation = 0;
     let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(
         bytes.len() as u64,
@@ -114,10 +113,9 @@ fn decode_node_with_work(
     bytes: &[u8],
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<Node> {
-    if work.is_some() {
-        operations::validate_canonical_json_with_work(bytes, MAX_NODE_BYTES, work)?;
-    }
-    let Some(observer) = work.as_deref_mut() else { return crate::executor::decode_json(bytes); };
+    operations::validate_canonical_json_with_work(bytes, MAX_NODE_BYTES, work)?;
+    let Some(observer) = work.as_deref_mut() else { return crate::contract::json_from_slice(bytes)
+        .map_err(|error| Error::Storage(format!("execution journal content is invalid: {error}"))); };
     let mut items = 0u64;
     let mut reservation = 0;
     let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(
@@ -189,16 +187,6 @@ struct Walk {
     leaf: Option<(Digest, EffectId, Head)>,
 }
 
-struct Root {
-    hash: Option<Digest>,
-    consumed: u64,
-}
-
-pub(super) struct Selection {
-    pub(super) head: Option<Head>,
-    pub(super) consumed_bytes: u64,
-}
-
 fn certificate_path_with_work(
     authority: &Authority, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(StreamPath, u64)> {
@@ -211,14 +199,8 @@ fn node_path_with_work(
     authority: &Authority, hash: Digest, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(StreamPath, u64)> {
     let suffix = blake3::Hash::from_bytes(hash).to_hex();
-    struct NodeSuffix<'a>(&'a dyn std::fmt::Display);
-    impl std::fmt::Display for NodeSuffix<'_> {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "nodes/{}", self.0)
-        }
-    }
     operations::publication_path_with_work(
-        authority, "harness/v2/effect-heads/", Some((&NodeSuffix(&suffix), 70)), work)
+        authority, "harness/v2/effect-heads/", Some((&format_args!("nodes/{suffix}"), 70)), work)
 }
 
 fn release_after_drop<T>(result: Result<T>, owned: u64, work: &mut Option<&mut dyn HistoryIo>) -> Result<T> {
@@ -238,19 +220,16 @@ fn charge(used: &mut u64, amount: u64, maximum: u64) -> Result<()> {
 }
 
 async fn root_at<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
     revision: u64,
     maximum_bytes: u64,
     work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<Root> {
-    verifier.verify_audience(authority)?;
+) -> Result<(Option<Digest>, u64)> {
+    verifier.verify_audience(authority, &mut None)?;
     if revision == 0 {
-        return Ok(Root {
-            hash: None,
-            consumed: 0,
-        });
+        return Ok((None, 0));
     }
     let (path, path_owned) = certificate_path_with_work(authority, work)?;
     let record = operations::one_record(client, &path, revision - 1, work).await;
@@ -307,7 +286,7 @@ async fn root_at<P: StreamProvider>(
             "effect cut differs from its original atomic publication".into(),
         ));
     }
-    Ok(Root { hash: certificate.root, consumed: used })
+    Ok((certificate.root, used))
     })();
     let canonical_bytes = operations::sdk_record_retained_bytes(&canonical, work);
     drop(canonical);
@@ -341,7 +320,7 @@ fn right(effect: EffectId, bit: u8) -> bool {
 }
 
 async fn load_node<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     hash: Digest,
     used: &mut u64,
@@ -383,7 +362,7 @@ async fn load_node<P: StreamProvider>(
 }
 
 async fn walk<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     effect: EffectId,
     root: Option<Digest>,
@@ -451,7 +430,7 @@ async fn walk<P: StreamProvider>(
 }
 
 async fn stage_node<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     node: Node,
     work: &mut Option<&mut dyn HistoryIo>,
@@ -482,7 +461,7 @@ async fn stage_node<P: StreamProvider>(
 }
 
 async fn update<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     effect: EffectId,
     head: Head,
@@ -567,7 +546,7 @@ async fn update<P: StreamProvider>(
 }
 
 pub(super) async fn publication_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
     event: &Event,
@@ -580,8 +559,8 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
         .revision
         .checked_sub(1)
         .ok_or_else(|| Error::Invalid("effect cut publication revision must be positive".into()))?;
-    let (encoded_authority, encoded_event) =
-        crate::wire_codec::decode_event_with_work(&publication.bytes, work)?;
+    let ((encoded_authority, encoded_event), _) =
+        crate::wire_codec::decode_event(&publication.bytes, work)?;
     let decoded_owned = crate::core::source_inventory(&encoded_event)?
         + encoded_authority.id.capacity() as u64;
     let admitted = (|| {
@@ -604,7 +583,7 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
     drop(encoded_event);
     drop(encoded_authority);
     release_after_drop(admitted, decoded_owned, work)?;
-    let mut previous = root_at(
+    let (mut previous_hash, mut previous_consumed) = root_at(
         client,
         authority,
         verifier,
@@ -625,13 +604,13 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
             client,
             authority,
             effect,
-            previous.hash,
-            &mut previous.consumed,
+            previous_hash,
+            &mut previous_consumed,
             PUBLICATION_READ_BYTES,
             work,
         )
         .await?;
-        previous.hash = Some(update(client, authority, effect, head, observed, work).await?);
+        previous_hash = Some(update(client, authority, effect, head, observed, work).await?);
     } else if crate::core::event_effect_id(&event.payload).is_some() {
         return Err(Error::Storage(
             "effect cut publication omits its effect update".into(),
@@ -641,8 +620,8 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
         observer.hashed_bytes(publication.bytes.len() as u64)?;
     }
     let canonical_digest = *blake3::hash(&publication.bytes).as_bytes();
-    let proof = verifier.effect_history_root_proof_with_work(event.revision, canonical_digest, previous.hash, work)?;
-    let canonical_path = authority.stream_path_with_work(work)?;
+    let proof = verifier.effect_history_root_proof_with_work(event.revision, canonical_digest, previous_hash, work)?;
+    let canonical_path = authority.stream_path(work)?;
     let path_owned = canonical_path.capacity() as u64;
     let cloned_authority = match work.as_deref_mut() {
         Some(observer) => observer.clone_authority(authority),
@@ -660,7 +639,7 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
         canonical_path,
         revision: event.revision,
         canonical_digest,
-        root: previous.hash,
+        root: previous_hash,
         proof,
     };
     let owned = (certificate.authority.id.capacity() + certificate.canonical_path.capacity()) as u64;
@@ -678,21 +657,21 @@ pub(super) async fn publication_with_work<P: StreamProvider>(
 
 
 pub(super) async fn select_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
     effect: EffectId,
     revision: u64,
     maximum_bytes: u64,
     work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<Selection> {
-    let mut root = root_at(client, authority, verifier, revision, maximum_bytes, work).await?;
+) -> Result<(Option<Head>, u64)> {
+    let (root_hash, mut consumed) = root_at(client, authority, verifier, revision, maximum_bytes, work).await?;
     let observed = walk(
         client,
         authority,
         effect,
-        root.hash,
-        &mut root.consumed,
+        root_hash,
+        &mut consumed,
         maximum_bytes,
         work,
     )
@@ -708,10 +687,7 @@ pub(super) async fn select_with_work<P: StreamProvider>(
     let owned = observed.path.capacity() as u64 * std::mem::size_of::<Branch>() as u64;
     drop(observed);
     if let Some(observer) = work.as_deref_mut() { observer.release_owned(owned)?; }
-    Ok(Selection {
-        head,
-        consumed_bytes: root.consumed,
-    })
+    Ok((head, consumed))
 }
 
 #[cfg(test)]

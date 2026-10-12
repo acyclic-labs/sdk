@@ -1,34 +1,19 @@
 //! Shared-frontier batch lookup for authenticated persistent B+trees.
-//!
-//! Standalone projections and native callers use one frontier/routing machine.
-//! Native primitives admit and complete on the original ledger; SDK allocation,
-//! copying and probes execute outside every original mutex. Each query, result,
-//! request, match and visited buffer retains its own physical
-//! allocation custody across provider awaits. Moving decoded values transfers
-//! their existing claims rather than reconstructing ownership from a receipt.
 
 use super::allocation::{KernelAccounting, KernelOwnedAllocation, VisitedObjectSet};
 use super::persistent_point::{Owned, absorb, query_error, project_failure, split_allocation, retire_allocation};
 use super::persistent_btree::{Child, Format, Page, children_within, leaf_within};
 use super::persistent_io;
 use super::search::{binary_search_with_accounting, partition_point_with_accounting};
-#[cfg(test)]
-use super::search::{counted_binary_search, counted_partition_point};
 use super::{CanonicalDecodeError, DecodeLimits};
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
-use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
+use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectStoreError};
 use std::marker::PhantomData;
 use std::ops::Range;
 use thiserror::Error;
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Receipt<V> {
-    pub(crate) values: Vec<Option<V>>,
-    pub(crate) work: WorkCounters,
-}
 
 pub(crate) type Failure = OperationFailure<Error>;
 
@@ -87,33 +72,10 @@ struct Match {
     queries: Range<usize>,
 }
 
-pub(crate) fn lookup<S, F>(
-    store: &S,
-    root: ObjectId,
-    keys: &[F::Key],
-    maximum_queries: u32,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-) -> Result<Receipt<F::Value>, Failure>
-where
-    S: crate::ImmediateObjectStore,
-    F: Format,
-{
-    crate::async_storage::poll_immediate(lookup_async::<S, F>(
-        store,
-        root,
-        keys,
-        maximum_queries,
-        limits,
-        budget,
-        &CancellationToken::new(),
-    ))
-}
-
 pub(crate) async fn lookup_async<S, F>(
     store: &S, root: ObjectId, keys: &[F::Key], maximum_queries: u32,
     limits: DecodeLimits, budget: WorkBudget, cancellation: &CancellationToken,
-) -> Result<Receipt<F::Value>, Failure>
+) -> Result<OperationReceipt<Vec<Option<F::Value>>>, Failure>
 where S: AsyncObjectStore, F: Format {
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
     let result = lookup_async_with_accounting::<S, F>(
@@ -124,13 +86,11 @@ where S: AsyncObjectStore, F: Format {
         .map_err(|error| failed(project_failure(error), work))
 }
 
-/// One shared frontier machine, borrowing either standalone or original-native
-/// accounting only at its synchronous leaves.
 pub(crate) async fn lookup_async_with_accounting<S, F>(
     store: &S, root: ObjectId, keys: &[F::Key], maximum_queries: u32,
     limits: DecodeLimits, accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken, data_custody: Option<&super::ProofDataCustody>,
-) -> Result<(Receipt<F::Value>, KernelOwnedAllocation), crate::FsError>
+) -> Result<(OperationReceipt<Vec<Option<F::Value>>>, KernelOwnedAllocation), crate::FsError>
 where S: AsyncObjectStore, F: Format {
     accounting.check()?;
     let mut machine = Machine::<F>::new(root, keys, maximum_queries, limits, accounting)?;
@@ -217,7 +177,7 @@ impl<'a, F: Format> Machine<'a, F> {
             Ok(())
         })();
         if let Err(error) = initialized { ordered.retire(accounting)?; return Err(error); }
-        let sorted = sort_indexed_with_accounting(&mut ordered.value, accounting);
+        let sorted = sort_indexed(&mut ordered.value, accounting);
         if let Err(error) = sorted { ordered.retire(accounting)?; return Err(error); }
         let values = match Owned::allocate(keys.len(), accounting) {
             Ok(mut values) => { values.value.extend(std::iter::repeat_with(|| None).take(keys.len())); values }
@@ -300,10 +260,7 @@ impl<'a, F: Format> Machine<'a, F> {
         self.matches.value.clear();
         let mut query = request.queries.start;
         while query < request.queries.end {
-            let (group_end, _) = equal_group(&self.ordered.value, query, request.queries.end, |before| {
-                let delta = WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED };
-                if before { accounting.admit(delta) } else { accounting.record_completed(delta) }
-            })?;
+            let group_end = equal_group(&self.ordered.value, query, request.queries.end, accounting)?;
             let key = self.ordered.value.get(query).ok_or_else(|| query_error(Error::InvalidRouting))?.key;
             let found = binary_search_with_accounting(entries, accounting, |value| F::key(value).cmp(key))?;
             if let Ok(entry) = found {
@@ -408,8 +365,6 @@ impl<'a, F: Format> Machine<'a, F> {
         Ok(())
     }
 
-
-
     fn retire_request(request: RequestState<F::Key>, accounting: &mut KernelAccounting<'_>) -> Result<(), crate::FsError> {
         let RequestState { request, lower_allocation, upper_allocation } = request;
         let lower_bytes = request.lower.as_ref().map_or(0, F::key_owned_bytes);
@@ -441,91 +396,56 @@ impl<'a, F: Format> Machine<'a, F> {
         self.cleanup_scratch(accounting)?.retire(accounting)
     }
 
-    fn finish(self, accounting: &mut KernelAccounting<'_>) -> Result<(Receipt<F::Value>, KernelOwnedAllocation), crate::FsError> {
+    fn finish(self, accounting: &mut KernelAccounting<'_>) -> Result<(OperationReceipt<Vec<Option<F::Value>>>, KernelOwnedAllocation), crate::FsError> {
         let returned = accounting.charge(WorkCounters { items_returned: usize_to_u64(self.values.value.len()), ..WorkCounters::UNCHARGED });
         if let Err(error) = returned { self.abort_cleanup(accounting)?; return Err(error); }
         let values = self.cleanup_scratch(accounting)?;
         let Owned { value: values, allocation, .. } = values;
         let work = accounting.spent();
-        Ok((Receipt { values, work }, allocation))
+        Ok((OperationReceipt { value: values, work }, allocation))
     }
 }
 
-enum SortStep {
-    AdmitItems(u64),
-    ItemCompleted,
-    AdmitCopy(u64),
-    CopyCompleted(u64),
-}
-
-fn sort_delta(step: SortStep) -> (bool, WorkCounters) {
-    match step {
-        SortStep::AdmitItems(items_examined) => (false, WorkCounters { items_examined, ..WorkCounters::UNCHARGED }),
-        SortStep::ItemCompleted => (true, WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }),
-        SortStep::AdmitCopy(bytes_copied) => (false, WorkCounters { bytes_copied, ..WorkCounters::UNCHARGED }),
-        SortStep::CopyCompleted(bytes_copied) => (true, WorkCounters { bytes_copied, ..WorkCounters::UNCHARGED }),
-    }
-}
-
-#[cfg(test)]
 fn sort_indexed<K: Ord>(
-    values: &mut [IndexedKey<'_, K>], work: &mut WorkCounters, budget: WorkBudget,
-) -> Result<(), Error> {
-    sort_indexed_engine(values, &mut |step| {
-        let (completed, delta) = sort_delta(step);
-        if completed {
-            work.try_add_assign(&delta)?;
-            work.verify(budget).map_err(Into::into)
-        } else {
-            work.admit(&delta, &budget).map_err(Into::into)
-        }
-    }).map_err(project_failure)
-}
-
-fn sort_indexed_with_accounting<K: Ord>(
-    values: &mut [IndexedKey<'_, K>], accounting: &mut KernelAccounting<'_>,
-) -> Result<(), crate::FsError> {
-    sort_indexed_engine(values, &mut |step| {
-        let (completed, delta) = sort_delta(step);
-        if completed { accounting.record_completed(delta) } else { accounting.admit(delta) }
-    })
-}
-
-fn sort_indexed_engine<K: Ord>(
     values: &mut [IndexedKey<'_, K>],
-    step: &mut impl FnMut(SortStep) -> Result<(), crate::FsError>,
+    accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), crate::FsError> {
     let count = values.len();
     if count < 2 { return Ok(()); }
-    step(SortStep::AdmitItems(usize_to_u64(count - 1)))?;
+    accounting.admit(WorkCounters { items_examined: usize_to_u64(count - 1), ..WorkCounters::UNCHARGED })?;
+    let item = WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED };
     let mut ordered = true;
     for adjacent in values.windows(2) {
         let [left, right] = adjacent else { unreachable!("windows(2) yields two elements"); };
-        step(SortStep::AdmitItems(1))?;
+        accounting.admit(item)?;
         let comparison = indexed_order(left, right);
-        step(SortStep::ItemCompleted)?;
+        accounting.record_completed(item)?;
         if comparison.is_gt() { ordered = false; break; }
     }
     if ordered { return Ok(()); }
-    step(SortStep::AdmitItems(sort_admission_bound(count).map_err(query_error)?))?;
-    for start in (0..heap_parent_count(count)).rev() {
-        sift_down(values, start, count, step)?;
+    accounting.admit(WorkCounters {
+        items_examined: sort_admission_bound(count).map_err(query_error)?,
+        ..WorkCounters::UNCHARGED
+    })?;
+    for start in (0..count / 2).rev() {
+        sift_down(values, start, count, accounting)?;
     }
     for end in (1..count).rev() {
-        swap_indexed(values, 0, end, step)?;
-        sift_down(values, 0, end, step)?;
+        swap_indexed(values, 0, end, accounting)?;
+        sift_down(values, 0, end, accounting)?;
     }
     Ok(())
 }
 
 fn swap_indexed<K>(
     values: &mut [IndexedKey<'_, K>], left: usize, right: usize,
-    step: &mut impl FnMut(SortStep) -> Result<(), crate::FsError>,
+    accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), crate::FsError> {
     let bytes = usize_to_u64(std::mem::size_of::<IndexedKey<'_, K>>() * 2);
-    step(SortStep::AdmitCopy(bytes))?;
+    let delta = WorkCounters { bytes_copied: bytes, ..WorkCounters::UNCHARGED };
+    accounting.admit(delta)?;
     values.swap(left, right);
-    step(SortStep::CopyCompleted(bytes))
+    accounting.record_completed(delta)
 }
 
 fn admit_height(next_height: u16, maximum_height: u16) -> Result<(), Error> {
@@ -548,25 +468,17 @@ fn sort_admission_bound(count: usize) -> Result<u64, Error> {
         .ok_or(Error::Work(WorkError::Overflow))
 }
 
-const fn heap_parent_count(count: usize) -> usize {
-    count >> 1
-}
-
 #[allow(
     clippy::indexing_slicing,
-    reason = "both callers in `sort_indexed` pass `end <= values.len()` (`values.len()` itself, \
-              or a value counting down from it) and an initial `root < end`; within the loop, \
-              `left` is filtered to `*left < end` (or the function returns early), `right` is \
-              only read behind an `if right < end` guard, and `root` is only ever reassigned to \
-              `greater` (one of `left`/`right`, both proven `< end`), so `root`, `left`, and \
-              `greater` are always `< end <= values.len()`"
+    reason = "heap indices stay below end <= values.len()"
 )]
 fn sift_down<K: Ord>(
     values: &mut [IndexedKey<'_, K>],
     mut root: usize,
     end: usize,
-    step: &mut impl FnMut(SortStep) -> Result<(), crate::FsError>,
+    accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), crate::FsError> {
+    let item = WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED };
     loop {
         let Some(left) = root
             .checked_mul(2)
@@ -578,20 +490,20 @@ fn sift_down<K: Ord>(
         let right = left + 1;
         let mut greater = left;
         if right < end {
-            step(SortStep::AdmitItems(1))?;
+            accounting.admit(item)?;
             let comparison = indexed_order(&values[left], &values[right]);
-            step(SortStep::ItemCompleted)?;
+            accounting.record_completed(item)?;
             if comparison.is_lt() {
                 greater = right;
             }
         }
-        step(SortStep::AdmitItems(1))?;
+        accounting.admit(item)?;
         let comparison = indexed_order(&values[root], &values[greater]);
-        step(SortStep::ItemCompleted)?;
+        accounting.record_completed(item)?;
         if !comparison.is_lt() {
             return Ok(());
         }
-        swap_indexed(values, root, greater, step)?;
+        swap_indexed(values, root, greater, accounting)?;
         root = greater;
     }
 }
@@ -607,56 +519,25 @@ fn indexed_order<K: Ord>(
 
 #[allow(
     clippy::indexing_slicing,
-    reason = "`cursor` is bounded by the `while cursor < end` loop condition directly above; its \
-              only caller (`accept_leaf`) always passes `start = query < self.ordered.len()` \
-              (see the invariant on `accept_leaf`) and `end <= self.ordered.len()`, so both \
-              `values[cursor]` and `values[start]` are in bounds"
+    reason = "start and cursor stay below end <= values.len()"
 )]
-fn equal_group<K: Eq, E>(
+fn equal_group<K: Eq>(
     values: &[IndexedKey<'_, K>], start: usize, end: usize,
-    mut probe: impl FnMut(bool) -> Result<(), E>,
-) -> Result<(usize, u64), E> {
+    accounting: &mut KernelAccounting<'_>,
+) -> Result<usize, crate::FsError> {
     let mut cursor = start + 1;
-    let mut comparisons = 0_u64;
+    let item = WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED };
     while cursor < end {
-        probe(true)?;
+        accounting.admit(item)?;
         let equal = values[cursor].key == values[start].key;
-        probe(false)?;
-        comparisons = comparisons.saturating_add(1);
+        accounting.record_completed(item)?;
         if !equal {
             break;
         }
         cursor += 1;
     }
-    Ok((cursor, comparisons))
+    Ok(cursor)
 }
-
-#[cfg(test)]
-#[allow(
-    clippy::indexing_slicing,
-    reason = "standard binary-search invariant: `right` starts at `values.len()` and only ever \
-              decreases (to `middle`), and the loop runs only while `left < right`, so `middle = \
-              left + (right - left) / 2` always satisfies `left <= middle < right <= \
-              values.len()`"
-)]
-fn search<F: Format>(values: &[F::Value], key: &F::Key) -> (Result<usize, usize>, u64) {
-    counted_binary_search(values, |value| F::key(value).cmp(key))
-}
-
-#[cfg(test)]
-#[allow(
-    clippy::indexing_slicing,
-    reason = "standard binary-search invariant: `right` starts at `children.len()` and only ever \
-              decreases (to `middle`), and the loop runs only while `left < right`, so `middle = \
-              left + (right - left) / 2` always satisfies `left <= middle < right <= \
-              children.len()`"
-)]
-fn route<K: Ord>(children: &[Child<K>], key: &K) -> (usize, u64) {
-    let (after, comparisons) = counted_partition_point(children, |child| child.first <= *key);
-    (after.saturating_sub(1), comparisons)
-}
-
-
 
 fn failed(error: Error, work: WorkCounters) -> Failure {
     OperationFailure::new(error, work)

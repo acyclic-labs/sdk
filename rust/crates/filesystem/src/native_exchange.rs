@@ -86,8 +86,7 @@ fn held_identity<W: NativeHostWork>(
     crate::native_host::entry_identity_with_work(parent, name, work)
 }
 
-/// Exchanges entries through their original held parents and the existing
-/// scratch/witness protocol. No lexical parent is reopened for a mutation.
+/// Exchanges entries through their original held parents and the existing scratch/witness protocol.
 pub(crate) fn exchange_native_entries_held_measured<W: NativeHostWork>(
     left: &cap_std::fs::Dir,
     left_name: &Path,
@@ -740,13 +739,7 @@ pub struct NativeExchangeOutcome {
     pub recovery: Vec<u8>,
 }
 
-/// Persists an exchange request before a caller changes any related durable
-/// state. Retrying with the same request is idempotent; a different request at
-/// the same journal path fails closed.
-///
-/// This is the coordination boundary for consumers that must first update a
-/// logical workspace head and then publish its already materialized native
-/// tree. [`publish_native_exchange`] consumes the prepared journal.
+/// Persists an exchange request before a caller changes any related durable state.
 pub fn prepare_native_exchange(
     journal_path: &Path,
     live: &Path,
@@ -825,10 +818,6 @@ pub enum NativeExchangeError {
 }
 
 /// Exchanges a prepared sibling tree with a live root.
-///
-/// The journal is durable before each mutation. Excluded paths are moved into
-/// the prepared tree first, preserving arbitrary nested names and native path
-/// encoding. On success `prepared` names the complete displaced tree.
 pub fn publish_native_exchange(
     journal_path: &Path,
     live: &Path,
@@ -887,12 +876,7 @@ fn same_prepared_request(
         && existing.phase == requested.phase
 }
 
-/// Exchanges two existing sibling filesystem entries without flattening
-/// either entry's metadata, links, sparse allocation, or native name.
-///
-/// Linux and macOS perform one atomic kernel exchange. Windows uses the same
-/// recoverable scratch convention as whole-tree publication and refuses to
-/// overwrite a scratch entry left by an interrupted caller.
+/// Exchanges two existing sibling filesystem entries without flattening either entry's metadata, links, sparse allocation, or native name.
 pub fn exchange_native_entries(left: &Path, right: &Path) -> Result<(), NativeExchangeError> {
     #[cfg(feature = "native-watch")]
     {
@@ -942,7 +926,7 @@ pub(crate) fn recover_native_entry_exchange(live: &Path) -> Result<(), NativeExc
             durable_rename(
                 &scratch,
                 live,
-                acyclic_native_runtime::RenameMode::NoReplace,
+                acyclic_native_runtime::RenameMode::NoReplace, None,
             )?;
         }
         remove_entry_exchange_witness(&witness)?;
@@ -952,12 +936,6 @@ pub(crate) fn recover_native_entry_exchange(live: &Path) -> Result<(), NativeExc
 }
 
 /// Recovers one interrupted whole-tree publication.
-///
-/// The caller owns the journal and serializes exchange/recovery for its roots.
-/// Roots and intermediate directories must remain stable, without symlink or
-/// reparse redirection, throughout recovery. Root identity checks detect prior
-/// replacement; they do not exclude concurrent parent replacement. A rollback
-/// never replaces an existing destination entry and retains the journal on error.
 pub fn recover_native_exchange(
     journal_path: &Path,
 ) -> Result<NativeExchangeOutcome, NativeExchangeError> {
@@ -1051,7 +1029,7 @@ fn move_back(from: &Path, into: &Path, relative: &[PathBuf]) -> Result<(), Nativ
         match durable_rename(
             &source,
             &destination,
-            acyclic_native_runtime::RenameMode::NoReplace,
+            acyclic_native_runtime::RenameMode::NoReplace, None,
         ) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -1080,7 +1058,7 @@ fn write_journal(path: &Path, journal: &NativeExchangeJournal) -> Result<(), Nat
     durable_rename(
         &temporary,
         path,
-        acyclic_native_runtime::RenameMode::Replace,
+        acyclic_native_runtime::RenameMode::Replace, None,
     )?;
     Ok(())
 }
@@ -1185,17 +1163,17 @@ fn exchange(live: &Path, prepared: &Path) -> Result<(), NativeExchangeError> {
     durable_rename(
         live,
         &scratch,
-        acyclic_native_runtime::RenameMode::NoReplace,
+        acyclic_native_runtime::RenameMode::NoReplace, None,
     )?;
     if let Err(error) = durable_rename(
         prepared,
         live,
-        acyclic_native_runtime::RenameMode::NoReplace,
+        acyclic_native_runtime::RenameMode::NoReplace, None,
     ) {
         let _ = durable_rename(
             &scratch,
             live,
-            acyclic_native_runtime::RenameMode::NoReplace,
+            acyclic_native_runtime::RenameMode::NoReplace, None,
         );
         if entry_exists(live)? && !entry_exists(&scratch)? {
             remove_entry_exchange_witness(&witness)?;
@@ -1205,7 +1183,7 @@ fn exchange(live: &Path, prepared: &Path) -> Result<(), NativeExchangeError> {
     durable_rename(
         &scratch,
         prepared,
-        acyclic_native_runtime::RenameMode::NoReplace,
+        acyclic_native_runtime::RenameMode::NoReplace, None,
     )?;
     remove_entry_exchange_witness(&witness)?;
     Ok(())
@@ -1240,7 +1218,7 @@ fn recover_exchange(
         durable_rename(
             &scratch,
             &journal.live,
-            acyclic_native_runtime::RenameMode::NoReplace,
+            acyclic_native_runtime::RenameMode::NoReplace, None,
         )?;
         None
     } else if live == Some(replacement) && prepared.is_none() && scratch_identity == Some(original)
@@ -1248,7 +1226,7 @@ fn recover_exchange(
         durable_rename(
             &scratch,
             &journal.prepared,
-            acyclic_native_runtime::RenameMode::NoReplace,
+            acyclic_native_runtime::RenameMode::NoReplace, None,
         )?;
         Some(journal.prepared.clone())
     } else if live == Some(replacement) && prepared == Some(original) && scratch_identity.is_none()
@@ -1696,9 +1674,9 @@ mod tests {
         drop(journal);
         let failure = recover_native_entry_exchange_with_budget(&live, finite_entry_budget(),
             &crate::CancellationToken::new()).expect_err("overflowing buffer length rejected");
-        assert!(matches!(failure.error, NativeExchangeError::Work(crate::WorkError::Overflow)));
-        assert_eq!(failure.work.backend_write_operations, 0);
-        assert!(failure.work.peak_allocation_bytes < finite_entry_budget().peak_allocation_bytes);
+        assert!(matches!(failure.0, NativeExchangeError::Work(crate::WorkError::Overflow)));
+        assert_eq!(failure.1.backend_write_operations, 0);
+        assert!(failure.1.peak_allocation_bytes < finite_entry_budget().peak_allocation_bytes);
         assert_eq!(std::fs::read(&live).expect("original retained"), b"before");
         assert_eq!(std::fs::read(&prepared).expect("prepared retained"), b"after");
         assert!(witness.exists());
@@ -1720,8 +1698,8 @@ mod tests {
         drop(journal);
         let failure = recover_native_entry_exchange_with_budget(&live, finite_entry_budget(),
             &crate::CancellationToken::new()).expect_err("noncanonical witness retained");
-        assert!(matches!(failure.error, NativeExchangeError::IncompatibleJournal));
-        assert_eq!(failure.work.backend_write_operations, 0);
+        assert!(matches!(failure.0, NativeExchangeError::IncompatibleJournal));
+        assert_eq!(failure.1.backend_write_operations, 0);
         assert!(std::fs::read(&witness).expect("journal retained").ends_with(b"user trailing bytes"));
         assert_eq!(std::fs::read(&live).expect("original retained"), b"before");
         assert_eq!(std::fs::read(&prepared).expect("prepared retained"), b"after");
@@ -2260,7 +2238,7 @@ mod tests {
         durable_rename(
             &live,
             &scratch,
-            acyclic_native_runtime::RenameMode::NoReplace,
+            acyclic_native_runtime::RenameMode::NoReplace, None,
         )
         .expect("move live to scratch");
 
@@ -2310,13 +2288,13 @@ mod tests {
         durable_rename(
             &live,
             &scratch,
-            acyclic_native_runtime::RenameMode::NoReplace,
+            acyclic_native_runtime::RenameMode::NoReplace, None,
         )
         .expect("move live to scratch");
         durable_rename(
             &prepared,
             &live,
-            acyclic_native_runtime::RenameMode::NoReplace,
+            acyclic_native_runtime::RenameMode::NoReplace, None,
         )
         .expect("publish replacement");
 

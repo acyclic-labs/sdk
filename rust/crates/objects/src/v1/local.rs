@@ -1,6 +1,6 @@
 //! Durable logical Objects v1, backed by private state deltas and immutable bodies.
 pub use super::memory::persistence::LocalOpenError;
-use super::{Error, MemoryObjects, NativeBatchObjects, Object, ObjectsProvider, wire};
+use super::{Error, MemoryObjects, Object, ObjectsProvider, wire};
 use acyclic_stream::OwnedBytes;
 use futures::executor::block_on;
 use std::path::Path;
@@ -10,24 +10,6 @@ use acyclic_native_runtime::{NativeReadMeter, ReadAllocation};
 use super::{NativeObjectsCause, NativeObjectsError, ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt};
 
 
-pin_project_lite::pin_project! {
-    // The physical future retires before its original task-payload claim.
-    struct OwnedNativeRead<F> {
-        #[pin]
-        future: F,
-        _allocation: ReadAllocation,
-    }
-}
-impl<F: Future> Future for OwnedNativeRead<F> {
-    type Output = F::Output;
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        context: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        self.project().future.poll(context)
-    }
-}
-
 fn spawn_native_read<F>(
     future: F,
     meter: &Arc<dyn NativeReadMeter>,
@@ -36,40 +18,25 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
-    let mut future = OwnedNativeRead {
+    let mut future = super::GuardedFuture {
         future: tracing::Instrument::in_current_span(future),
-        _allocation: ReadAllocation::empty(meter),
+        _allocation: None,
     };
-    future._allocation = ReadAllocation::new(meter, std::mem::size_of_val(&future))?;
+    future._allocation = Some(ReadAllocation::new(meter, std::mem::size_of_val(&future))?);
     // Admit the actual private task refcount control, without estimating its layout.
     meter.allocate_refcount_header()?;
     Ok(tokio::spawn(future))
 }
 
-/// Durable capacities and explicit host synchronization policy.
-pub type LocalOptions = crate::LocalObjectsLimits;
-/// Private physical storage reclamation counters; no public Objects history.
-pub type GarbageCollection = crate::LocalObjectsGarbageCollection;
+use crate::{LocalObjectsLimits, LocalObjectsGarbageCollection};
 
-/// Runs `work` on a native blocking worker inside the caller's span, so its spans keep their parent.
 fn blocking<T: Send + 'static>(
-    work: impl FnOnce() -> T + Send + 'static,
-) -> acyclic_native_runtime::NativeCompletion<T> {
-    let span = tracing::Span::current();
-    acyclic_native_runtime::run_blocking_io(move || span.in_scope(work))
-}
-
-fn blocking_with_meter<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
     meter: Option<Arc<dyn NativeReadMeter>>,
 ) -> Result<acyclic_native_runtime::NativeCompletion<T>, NativeObjectsError> {
-    match meter {
-        None => Ok(blocking(work)),
-        Some(meter) => {
-            let span = tracing::Span::current();
-            Ok(acyclic_native_runtime::run_blocking_io_measured(move || span.in_scope(work), meter)?)
-        }
-    }
+    let span = tracing::Span::current();
+    Ok(acyclic_native_runtime::run_blocking_io(move || span.in_scope(work),
+        meter.map(|meter| (meter, false)))?)
 }
 
 /// One owned logical store. Clones share admission, retry receipts and ownership.
@@ -79,25 +46,10 @@ pub struct LocalObjects {
     body_io: Arc<RwLock<()>>,
 }
 impl LocalObjects {
-    /// Opens a v1 store and validates every replayed record and referenced segment.
+    /// Opens and validates a store, retaining an optional external ownership anchor.
     pub async fn open(
         root: impl AsRef<Path>,
-        options: LocalOptions,
-    ) -> Result<Self, LocalOpenError> {
-        Self::open_inner(root, options, None).await
-    }
-    /// Opens while retaining the native composition's external ownership anchor.
-    #[doc(hidden)]
-    pub async fn open_with_ownership_anchor(
-        root: impl AsRef<Path>,
-        options: LocalOptions,
-        anchor: acyclic_native_runtime::OwnershipAnchor,
-    ) -> Result<Self, LocalOpenError> {
-        Self::open_inner(root, options, Some(anchor)).await
-    }
-    async fn open_inner(
-        root: impl AsRef<Path>,
-        options: LocalOptions,
+        options: LocalObjectsLimits,
         anchor: Option<acyclic_native_runtime::OwnershipAnchor>,
     ) -> Result<Self, LocalOpenError> {
         let root = root.as_ref().to_path_buf();
@@ -106,7 +58,7 @@ impl LocalObjects {
                 core,
                 body_io: Arc::new(RwLock::new(())),
             })
-        })
+        }, None).map_err(|_| LocalOpenError::Unavailable)?
         .await
         .map_err(|_| LocalOpenError::Unavailable)?
     }
@@ -131,19 +83,18 @@ impl LocalObjects {
             let lease = Arc::clone(&self.body_io).write_owned().await;
             let core = self.core.clone();
             let worker_meter = meter.clone();
-            blocking_with_meter(move || {
+            blocking(move || {
                 let _lease = lease;
-                match worker_meter {
-                    Some(meter) => core.compact_local_if_due_measured(meter),
-                    None => core.compact_local_if_due()
-                        .map_err(|_| NativeObjectsError::from(Error::from(wire::ErrorCode::Unavailable))),
-                }
+                let native = worker_meter.is_some();
+                core.compact_local_if_due(worker_meter).map_err(|error| {
+                    if native { error } else { Error::from(wire::ErrorCode::Unavailable).into() }
+                })
             }, meter.clone())?.await
                 .map_err(|_| Error::from(wire::ErrorCode::Unavailable))??;
         }
         let core = self.core.clone();
         let lease = Arc::clone(&self.body_io).read_owned().await;
-        blocking_with_meter(move || {
+        blocking(move || {
             let _lease = lease;
             action(&core)
         }, meter)?.await
@@ -154,7 +105,7 @@ impl LocalObjects {
     pub async fn collect_garbage(
         &self,
         maximum_candidates: u64,
-    ) -> Result<GarbageCollection, LocalOpenError> {
+    ) -> Result<LocalObjectsGarbageCollection, LocalOpenError> {
         if maximum_candidates == 0 {
             return Err(LocalOpenError::Invalid);
         }
@@ -163,7 +114,7 @@ impl LocalObjects {
         blocking(move || {
             let _lease = lease;
             core.collect_local_garbage(maximum_candidates)
-        })
+        }, None).map_err(|_| LocalOpenError::Unavailable)?
         .await
         .map_err(|_| LocalOpenError::Unavailable)?
     }
@@ -171,138 +122,6 @@ impl LocalObjects {
 
 #[async_trait::async_trait]
 impl ObjectsProvider for LocalObjects {
-    async fn create_bucket(&self, query: wire::CreateBucketRequest) -> Result<wire::Bucket, Error> {
-        self.mutate(move |core| block_on(core.create_bucket(query)))
-            .await
-    }
-    async fn head_bucket(&self, query: wire::HeadBucketRequest) -> Result<wire::Bucket, Error> {
-        self.core.head_bucket(query).await
-    }
-    async fn delete_bucket(
-        &self,
-        query: wire::DeleteBucketRequest,
-    ) -> Result<wire::DeleteBucketResponse, Error> {
-        self.mutate(move |core| block_on(core.delete_bucket(query)))
-            .await
-    }
-    async fn put(
-        &self,
-        query: wire::PutObjectHeader,
-        body: OwnedBytes,
-    ) -> Result<wire::ObjectInfo, Error> {
-        self.mutate(move |core| block_on(core.put(query, body)))
-            .await
-    }
-
-    fn put_native(
-        &self,
-        input: ObjectsNativeRequest<(wire::PutObjectHeader, OwnedBytes)>,
-        meter: Arc<dyn NativeReadMeter>,
-    ) -> Result<ObjectsNativeFuture<'_, ObjectsPutReceipt>, NativeObjectsError> {
-        super::native_input_meter(&meter, &input)?;
-        super::native_future(Arc::clone(&meter), async move {
-            let input = input;
-            let worker_meter = Arc::clone(&meter);
-            self.mutate_with_meter(Some(meter), move |core| {
-                block_on(core.put_native(input, worker_meter)?)
-            }).await
-        })
-    }
-    async fn get(
-        &self,
-        query: wire::GetObjectRequest,
-        maximum_bytes: u64,
-    ) -> Result<Object, Error> {
-        // Caller cancellation detaches observation, not the already owned read.
-        // Its core clone keeps the root/anchor alive until physical work ends.
-        let core = self.core.clone();
-        let body_io = self.body_io.clone();
-        tokio::spawn(tracing::Instrument::in_current_span(async move {
-            let _lease = body_io.read_owned().await;
-            core.get(query, maximum_bytes).await
-        }))
-        .await
-        .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?
-    }
-
-    fn get_native(
-        &self,
-        input: ObjectsNativeRequest<wire::GetObjectRequest>,
-        maximum_bytes: u64,
-        meter: Arc<dyn NativeReadMeter>,
-    ) -> Result<ObjectsNativeFuture<'_, Object>, NativeObjectsError> {
-        super::native_input_meter(&meter, &input)?;
-        super::native_future(Arc::clone(&meter), async move {
-            let input = input;
-            let core = self.core.clone();
-            let body_io = Arc::clone(&self.body_io);
-            let task_meter = Arc::clone(&meter);
-            spawn_native_read(async move {
-                // Detached observation leaves the original input, meter, lease
-                // and store root in the one admitted physical owner.
-                let input = input;
-                let _lease = body_io.read_owned().await;
-                core.get_native(input, maximum_bytes, task_meter)?.await
-            }, &meter)?.await
-                .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?
-        })
-    }
-    async fn head(
-        &self,
-        query: wire::HeadObjectRequest,
-    ) -> Result<wire::HeadObjectResponse, Error> {
-        self.core.head(query).await
-    }
-    async fn delete(
-        &self,
-        query: wire::DeleteObjectRequest,
-    ) -> Result<wire::DeleteObjectResponse, Error> {
-        self.mutate(move |core| block_on(core.delete(query))).await
-    }
-    async fn list(
-        &self,
-        query: wire::ListObjectsRequest,
-    ) -> Result<wire::ListObjectsResponse, Error> {
-        self.core.list(query).await
-    }
-    async fn create_multipart(
-        &self,
-        query: wire::CreateMultipartRequest,
-    ) -> Result<wire::MultipartUpload, Error> {
-        self.mutate(move |core| block_on(core.create_multipart(query)))
-            .await
-    }
-    async fn upload_part(
-        &self,
-        query: wire::UploadPartHeader,
-        body: OwnedBytes,
-    ) -> Result<wire::UploadedPart, Error> {
-        self.mutate(move |core| block_on(core.upload_part(query, body)))
-            .await
-    }
-    async fn list_parts(
-        &self,
-        query: wire::ListPartsRequest,
-    ) -> Result<wire::ListPartsResponse, Error> {
-        self.core.list_parts(query).await
-    }
-    async fn complete_multipart(
-        &self,
-        query: wire::CompleteMultipartRequest,
-    ) -> Result<wire::ObjectInfo, Error> {
-        self.mutate(move |core| block_on(core.complete_multipart(query)))
-            .await
-    }
-    async fn abort_multipart(
-        &self,
-        query: wire::AbortMultipartRequest,
-    ) -> Result<wire::AbortMultipartResponse, Error> {
-        self.mutate(move |core| block_on(core.abort_multipart(query)))
-            .await
-    }
-}
-#[async_trait::async_trait]
-impl NativeBatchObjects for LocalObjects {
     async fn put_batch(
         &self,
         requests: Vec<(wire::PutObjectHeader, OwnedBytes)>,
@@ -367,15 +186,143 @@ impl NativeBatchObjects for LocalObjects {
             let task_meter = Arc::clone(&meter);
             spawn_native_read(async move {
                 let input = input;
-                // One read lease and one core snapshot admission for all
-                // ordered selections; the original input claim moves with them.
+                // Detached work retains the original input custody and store root.
                 let _lease = body_io.read_owned().await;
                 core.get_batch_native(input, task_meter)?.await
             }, &meter)?.await
                 .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?
         })
     }
+
+    async fn create_bucket(&self, query: wire::CreateBucketRequest) -> Result<wire::Bucket, Error> {
+        self.mutate(move |core| block_on(core.create_bucket(query)))
+            .await
+    }
+    async fn head_bucket(&self, query: wire::HeadBucketRequest) -> Result<wire::Bucket, Error> {
+        self.core.head_bucket(query).await
+    }
+    async fn delete_bucket(
+        &self,
+        query: wire::DeleteBucketRequest,
+    ) -> Result<wire::DeleteBucketResponse, Error> {
+        self.mutate(move |core| block_on(core.delete_bucket(query)))
+            .await
+    }
+    async fn put(
+        &self,
+        query: wire::PutObjectHeader,
+        body: OwnedBytes,
+    ) -> Result<wire::ObjectInfo, Error> {
+        self.mutate(move |core| block_on(core.put(query, body)))
+            .await
+    }
+
+    fn put_native(
+        &self,
+        input: ObjectsNativeRequest<(wire::PutObjectHeader, OwnedBytes)>,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, ObjectsPutReceipt>, NativeObjectsError> {
+        super::native_input_meter(&meter, &input)?;
+        super::native_future(Arc::clone(&meter), async move {
+            let input = input;
+            let worker_meter = Arc::clone(&meter);
+            self.mutate_with_meter(Some(meter), move |core| {
+                block_on(core.put_native(input, worker_meter)?)
+            }).await
+        })
+    }
+    async fn get(
+        &self,
+        query: wire::GetObjectRequest,
+        maximum_bytes: u64,
+    ) -> Result<Object, Error> {
+        // The detached read retains the store root until physical completion.
+        let core = self.core.clone();
+        let body_io = self.body_io.clone();
+        tokio::spawn(tracing::Instrument::in_current_span(async move {
+            let _lease = body_io.read_owned().await;
+            core.get(query, maximum_bytes).await
+        }))
+        .await
+        .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?
+    }
+
+    fn get_native(
+        &self,
+        input: ObjectsNativeRequest<wire::GetObjectRequest>,
+        maximum_bytes: u64,
+        meter: Arc<dyn NativeReadMeter>,
+    ) -> Result<ObjectsNativeFuture<'_, Object>, NativeObjectsError> {
+        super::native_input_meter(&meter, &input)?;
+        super::native_future(Arc::clone(&meter), async move {
+            let input = input;
+            let core = self.core.clone();
+            let body_io = Arc::clone(&self.body_io);
+            let task_meter = Arc::clone(&meter);
+            spawn_native_read(async move {
+                // Detached work retains the original input custody and store root.
+                let input = input;
+                let _lease = body_io.read_owned().await;
+                core.get_native(input, maximum_bytes, task_meter)?.await
+            }, &meter)?.await
+                .map_err(|_| Error::from(wire::ErrorCode::Unavailable))?
+        })
+    }
+    async fn head(
+        &self,
+        query: wire::HeadObjectRequest,
+    ) -> Result<wire::HeadObjectResponse, Error> {
+        self.core.head(query).await
+    }
+    async fn delete(
+        &self,
+        query: wire::DeleteObjectRequest,
+    ) -> Result<wire::DeleteObjectResponse, Error> {
+        self.mutate(move |core| block_on(core.delete(query))).await
+    }
+    async fn list(
+        &self,
+        query: wire::ListObjectsRequest,
+    ) -> Result<wire::ListObjectsResponse, Error> {
+        self.core.list(query).await
+    }
+    async fn create_multipart(
+        &self,
+        query: wire::CreateMultipartRequest,
+    ) -> Result<wire::MultipartUpload, Error> {
+        self.mutate(move |core| block_on(core.create_multipart(query)))
+            .await
+    }
+    async fn upload_part(
+        &self,
+        query: wire::UploadPartHeader,
+        body: OwnedBytes,
+    ) -> Result<wire::UploadedPart, Error> {
+        self.mutate(move |core| block_on(core.upload_part(query, body)))
+            .await
+    }
+    async fn list_parts(
+        &self,
+        query: wire::ListPartsRequest,
+    ) -> Result<wire::ListPartsResponse, Error> {
+        self.core.list_parts(query).await
+    }
+    async fn complete_multipart(
+        &self,
+        query: wire::CompleteMultipartRequest,
+    ) -> Result<wire::ObjectInfo, Error> {
+        self.mutate(move |core| block_on(core.complete_multipart(query)))
+            .await
+    }
+    async fn abort_multipart(
+        &self,
+        query: wire::AbortMultipartRequest,
+    ) -> Result<wire::AbortMultipartResponse, Error> {
+        self.mutate(move |core| block_on(core.abort_multipart(query)))
+            .await
+    }
 }
+
 
 #[cfg(test)]
 mod tests {
@@ -407,7 +354,7 @@ mod tests {
         }
     }
     async fn create(root: &Path) -> Result<LocalObjects, LocalOpenError> {
-        LocalObjects::open(root, LocalOptions::default()).await
+        LocalObjects::open(root, LocalObjectsLimits::default(), None).await
     }
     #[tokio::test]
     async fn every_logical_operation_passes_and_the_empty_store_reopens()
@@ -515,18 +462,17 @@ mod tests {
             Err(LocalOpenError::AlreadyOwned)
         ));
         drop(provider);
-        let options = LocalOptions {
+        let options = LocalObjectsLimits {
             maximum_bytes: 123,
-            ..LocalOptions::default()
+            ..LocalObjectsLimits::default()
         };
         assert!(matches!(
-            LocalObjects::open(root.path(), options).await,
+            LocalObjects::open(root.path(), options, None).await,
             Err(LocalOpenError::Invalid)
         ));
         let legacy = tempfile::tempdir()?;
-        // Exact historical journal header, retained as a rejection fixture after
-        // retiring the historical engine. No legacy provider is needed to create it.
-        let limits = LocalOptions::default();
+        // Historical journal rejection fixture.
+        let limits = LocalObjectsLimits::default();
         let mut header = b"ACYCLIC-OBJECTS-LOCAL\0\x04".to_vec();
         for limit in [
             limits.maximum_object_bytes,
@@ -536,7 +482,6 @@ mod tests {
         ] {
             header.extend_from_slice(&limit.to_le_bytes());
         }
-        assert_eq!(header.len(), 55);
         std::fs::write(legacy.path().join("mutations.log"), &header)?;
         let before = std::fs::read(legacy.path().join("mutations.log"))?;
         assert!(matches!(

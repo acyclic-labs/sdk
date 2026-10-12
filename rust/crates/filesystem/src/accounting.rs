@@ -13,7 +13,7 @@ use crate::foundation::{
 use crate::kernel::{
     ClosureLimits, DecodeLimits, RetentionKind, decode_published_generation,
     decode_retention_created, decode_volume_created, decode_workspace_deleted,
-    prove_generation_closure_async, retention_authority_id, volume_authority_id,
+    prove_generation_closure, retention_authority_id, volume_authority_id,
 };
 use crate::model::VolumeConfig;
 use crate::performance::{WorkBudget, WorkCounters, WorkError};
@@ -77,8 +77,7 @@ pub enum AccountingTransition {
     },
 }
 
-/// Whether a durable fact can represent one customer operation after regional
-/// top-level product attribution.
+/// Whether a durable fact can represent one customer operation after regional top-level product attribution.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AccountingOperationClass {
     /// One successful durable FS mutation candidate.
@@ -158,10 +157,7 @@ enum AuthorityKind {
     },
 }
 
-/// Reads and proves at most `maximum_records` records after `cursor`. The
-/// authority head is pinned before replay; a later append belongs to the next
-/// page. Every record must be dense, hash-chained, canonically decoded and
-/// stamped by the replicated Stream authority.
+/// Reads and proves at most `maximum_records` records after `cursor`.
 #[allow(clippy::too_many_lines)] // The pinned read, anchor checks, and page verification form one fail-closed operation.
 pub async fn accounting_page<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     authority: &A,
@@ -295,7 +291,7 @@ pub(crate) async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObje
     {
         return Err(AccountingError::InvalidHistory);
     }
-    let kind = if let Ok(created) = decode_volume_created(&initial.payload, MAX_EVENT_BYTES) {
+    let kind = if let Ok(created) = decode_volume_created(&initial.payload, MAX_EVENT_BYTES, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(())) {
         if volume_authority_id(created.volume_id) != authority_id {
             return Err(AccountingError::InvalidHistory);
         }
@@ -367,7 +363,7 @@ pub(crate) async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObje
         })?;
         let transition = match &kind {
             AuthorityKind::Volume { volume_id, config } if record.sequence == Sequence::new(1) => {
-                let created = decode_volume_created(&record.payload, MAX_EVENT_BYTES)
+                let created = decode_volume_created(&record.payload, MAX_EVENT_BYTES, &mut |_| Ok::<_, crate::kernel::VolumeCreatedError>(()))
                     .map_err(|_| AccountingError::InvalidHistory)?;
                 prove_published(
                     objects,
@@ -382,7 +378,7 @@ pub(crate) async fn accounting_page_at_head<A: AsyncAuthorityStore, O: AsyncObje
                 .await?
             }
             AuthorityKind::Volume { volume_id, config } => {
-                if let Ok(published) = decode_published_generation(&record.payload, MAX_EVENT_BYTES)
+                if let Ok(published) = decode_published_generation(&record.payload, MAX_EVENT_BYTES, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))
                 {
                     if published.volume_id != *volume_id {
                         return Err(AccountingError::InvalidHistory);
@@ -608,7 +604,7 @@ async fn prove_bytes<O: AsyncObjectStore>(
     // Without a provider archive, authenticate only the root named by this
     // historical record. Missing collected bodies fail closed; a current head
     // is never a substitute for the original generation.
-    let proof = prove_generation_closure_async(
+    let proof = prove_generation_closure(
         objects, root, limits, measured.remaining()?, cancellation,
     ).await.map_err(|failure| AccountingError::Proof(failure.error.to_string()))?;
     measured.backend(proof.work)?;

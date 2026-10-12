@@ -30,7 +30,6 @@ pub struct FileRangeRequest {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileRangeRead {
     /// Exact requested bytes, with holes and allocated zeros represented as zero.
-    /// Native reads retain original allocation custody through every byte alias.
     pub bytes: acyclic_stream::OwnedBytes,
     /// Actual controlled output-buffer capacity retained by `bytes`.
     pub logical_owned_bytes: u64,
@@ -44,11 +43,6 @@ impl FileRangeRead {
 }
 
 /// Reads one regular-file range without materializing untouched extents.
-///
-/// # Errors
-///
-/// Rejects non-regular files, invalid or excessive ranges, malformed sparse
-/// trees and blobs, cancellation, storage failures, and work beyond budget.
 pub async fn read_file_range_async<S: AsyncObjectStore>(
     store: &S,
     request: FileRangeRequest,
@@ -152,7 +146,6 @@ pub(crate) fn allocation_error(error: AllocationError) -> FsError {
     error.into_work_or(FsError::FileRead(FileRangeReadError::AllocationFailed))
 }
 
-/// Owns physical data before its original allocation guard in every error scope.
 pub(crate) struct ReadOwned<T> {
     pub(crate) value: T,
     pub(crate) custody: KernelOwnedAllocation,
@@ -249,7 +242,7 @@ pub(crate) async fn read_object_with_accounting<S: AsyncObjectStore>(
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(original) = accounting.native_work() {
         return store.read_with_native_work(object, maximum, original, cancellation).await
-            .map(|read| (read.into_read(), 0))
+            .map(|read| (read, 0))
             .map_err(read_store_error);
     }
     let result = store.read(object, maximum, accounting.remaining()?, cancellation).await;
@@ -268,7 +261,6 @@ pub(crate) fn complete_standalone_backend(
     record_standalone_backend(accounting, completed, retained).map_err(|(error, _)| error)
 }
 
-/// The flag reports whether exact returned backing was recorded before a late refusal.
 fn record_standalone_backend(
     accounting: &mut KernelAccounting<'_>, completed: WorkCounters, retained: u64,
 ) -> Result<(), (FsError, bool)> {
@@ -307,9 +299,6 @@ pub(crate) fn accept_standalone_object_read(
     Ok((receipt.value, retained))
 }
 
-/// Keeps one canonical read-many frontier on the selected accounting context.
-/// Native byte owners retain their original source custody; the returned guard
-/// owns the actual output container, without receipt merging or data adoption.
 pub(crate) async fn read_objects_with_accounting<S: AsyncObjectStore>(
     store: &S,
     requests: &[crate::storage::ObjectReadRequest],
@@ -322,7 +311,7 @@ pub(crate) async fn read_objects_with_accounting<S: AsyncObjectStore>(
     if let Some(original) = accounting.native_work() {
         return store.read_many_with_native_work(requests, original, cancellation).await
             .map(|batch| {
-                let (value, custody) = batch.into_parts();
+                let (value, custody) = batch;
                 ReadOwned { value, custody: KernelOwnedAllocation::NativeOriginal(custody) }
             })
             .map_err(read_store_error);
@@ -355,9 +344,6 @@ pub(crate) async fn read_objects_with_accounting<S: AsyncObjectStore>(
     Ok(ReadOwned { value: receipt.value, custody: KernelOwnedAllocation::Standalone })
 }
 
-/// Exact standalone batch backing: returned container capacity plus owned
-/// source buffers. Compute before dropping the vector, then retire its ledger
-/// claim after physical drop. Native byte-owner custody must not be readopted.
 pub(crate) fn retained_object_reads_bytes(
     reads: &[crate::storage::ObjectRead],
     capacity: usize,
@@ -406,15 +392,6 @@ impl From<WorkError> for ReadDecodeError {
     fn from(error: WorkError) -> Self { Self::Accounting(error.into()) }
 }
 
-pub(crate) struct ReadDecodeAccounting<'a> {
-    pub(crate) allocations: &'a mut super::allocation::AllocationLedger,
-    pub(crate) work: &'a mut WorkCounters,
-    pub(crate) budget: WorkBudget,
-    pub(crate) cancellation: &'a CancellationToken,
-}
-
-/// Owns original claims while the canonical parser performs its real work
-/// outside the original meter lock. Each callback only updates accounting.
 pub(crate) struct OriginalReadAccounting<'a, 'operation> {
     accounting: &'a mut KernelAccounting<'operation>,
     allocation: KernelOwnedAllocation,
@@ -485,19 +462,12 @@ impl<'a, 'operation> OriginalReadAccounting<'a, 'operation> {
         self.accounting.record_completed(delta)
     }
 
-    /// Call only after the failed decoder has destroyed its physical buffers.
     pub(crate) fn release_failed(mut self) -> Result<(), FsError> {
         self.accounting.release_owned(&mut self.allocation, self.owned_bytes)
     }
 }
 
-pub(crate) fn reserve_decoded_items<T>(
-    values: &mut Vec<T>, count: usize, accounting: &mut Option<ReadDecodeAccounting<'_>>,
-) -> Result<(), ReadDecodeError> {
-    reserve_decoded_items_with_steps(values, count, &mut |step| observe_read_decode_step(accounting, step))
-}
-
-pub(crate) fn reserve_decoded_items_with_steps<T, E: From<super::CanonicalDecodeError>>(
+pub(crate) fn reserve_decoded_items<T, E: From<super::CanonicalDecodeError>>(
     values: &mut Vec<T>, count: usize,
     observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<(), E> {
@@ -515,59 +485,6 @@ pub(crate) fn reserve_decoded_items_with_steps<T, E: From<super::CanonicalDecode
     observe(super::codec::ReadAllocationStep::Capacity {
         admitted_bytes: usize_to_u64(admitted), actual_bytes: usize_to_u64(actual),
     })?;
-    Ok(())
-}
-
-
-
-pub(crate) fn observe_read_decode_step(
-    accounting: &mut Option<ReadDecodeAccounting<'_>>, step: super::codec::ReadAllocationStep,
-) -> Result<(), ReadDecodeError> {
-    use super::codec::ReadAllocationStep;
-    let Some(accounting) = accounting else { return Ok(()) };
-    match step {
-        ReadAllocationStep::Allocate { bytes, operations } => {
-            accounting.cancellation.check().map_err(FsError::from)?;
-            accounting.allocations.claim_bytes(bytes, operations, accounting.work, accounting.budget)
-                .map_err(allocation_error)?;
-        }
-        ReadAllocationStep::ReserveFailed(error) => {
-            return Err(ReadDecodeError::AllocationFailed(error));
-        }
-        ReadAllocationStep::Capacity { admitted_bytes, actual_bytes } => {
-            let excess = actual_bytes.checked_sub(admitted_bytes).ok_or_else(|| FsError::Work(WorkError::Overflow))?;
-            accounting.allocations.record_owned_bytes(excess, accounting.work).map_err(allocation_error)?;
-            accounting.work.verify(accounting.budget).map_err(FsError::from)?;
-        }
-        ReadAllocationStep::BeforeCopy(bytes) => {
-            accounting.cancellation.check().map_err(FsError::from)?;
-            accounting.work.admit(&WorkCounters { bytes_copied: bytes, ..WorkCounters::UNCHARGED },
-                &accounting.budget).map_err(FsError::from)?;
-        }
-        ReadAllocationStep::Copied(bytes) => {
-            *accounting.work = accounting.work.checked_add(WorkCounters { bytes_copied: bytes, ..WorkCounters::UNCHARGED }).map_err(FsError::from)?;
-            accounting.work.verify(accounting.budget).map_err(FsError::from)?;
-        }
-        ReadAllocationStep::BeforeHash(bytes) => {
-            accounting.cancellation.check().map_err(FsError::from)?;
-            accounting.work.admit(&WorkCounters { bytes_hashed: bytes, ..WorkCounters::UNCHARGED },
-                &accounting.budget).map_err(FsError::from)?;
-        }
-        ReadAllocationStep::Hashed(bytes) => {
-            *accounting.work = accounting.work.checked_add(WorkCounters { bytes_hashed: bytes, ..WorkCounters::UNCHARGED }).map_err(FsError::from)?;
-            accounting.work.verify(accounting.budget).map_err(FsError::from)?;
-            accounting.cancellation.check().map_err(FsError::from)?;
-        }
-        ReadAllocationStep::BeforeItem => {
-            accounting.cancellation.check().map_err(FsError::from)?;
-            accounting.work.admit(&WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED },
-                &accounting.budget).map_err(FsError::from)?;
-        }
-        ReadAllocationStep::Item => {
-            *accounting.work = accounting.work.checked_add(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }).map_err(FsError::from)?;
-            accounting.work.verify(accounting.budget).map_err(FsError::from)?;
-        }
-    }
     Ok(())
 }
 
@@ -651,7 +568,6 @@ pub enum FileRangeReadError {
     Context(Box<FsError>),
 }
 
-
 fn failed(error: FileRangeReadError, work: WorkCounters) -> FileRangeReadFailure {
     OperationFailure::new(error, work)
 }
@@ -659,3 +575,15 @@ fn failed(error: FileRangeReadError, work: WorkCounters) -> FileRangeReadFailure
 #[cfg(test)]
 #[path = "tests/file_read.rs"]
 mod tests;
+
+pub(crate) fn decode_owned<T>(
+    accounting: &mut KernelAccounting<'_>,
+    create: impl FnOnce(&mut dyn FnMut(super::codec::ReadAllocationStep) -> Result<(), ReadDecodeError>)
+        -> Result<T, ReadDecodeError>,
+) -> Result<(T, KernelOwnedAllocation), ReadDecodeError> {
+    let mut observed = OriginalReadAccounting::new(accounting)?;
+    match create(&mut |step| observed.observe(step)) {
+        Ok(value) => Ok((value, observed.into_allocation())),
+        Err(error) => { observed.release_failed()?; Err(error) }
+    }
+}

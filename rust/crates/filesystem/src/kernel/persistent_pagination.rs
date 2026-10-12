@@ -6,8 +6,6 @@ use super::allocation::{AllocationLedger, KernelAccounting, KernelOwnedAllocatio
 use super::persistent_btree::{Child, Format, Page, children_within, leaf_within};
 use super::persistent_io::{self, OwnedPage};
 use super::persistent_point::{Owned, retire_allocation, split_allocation};
-#[cfg(test)]
-use super::search::counted_partition_point;
 use super::search::partition_point_with_accounting;
 use super::{CanonicalDecodeError, DecodeLimits};
 use crate::async_storage::AsyncObjectStore;
@@ -104,16 +102,6 @@ impl<K> PendingState<K> {
     }
 }
 
-pub(crate) fn paginate<S, F>(
-    store: &S, root: ObjectId, after: Option<&F::Key>, maximum_values: u32,
-    limits: DecodeLimits, budget: WorkBudget,
-) -> Result<Receipt<F::Value>, Failure>
-where S: crate::ImmediateObjectStore, F: Format {
-    crate::async_storage::poll_immediate(paginate_async::<S, F>(
-        store, root, after, maximum_values, limits, budget, &CancellationToken::new(), None,
-    ))
-}
-
 pub(crate) async fn paginate_async<S, F>(
     store: &S, root: ObjectId, after: Option<&F::Key>, maximum_values: u32,
     limits: DecodeLimits, budget: WorkBudget, cancellation: &CancellationToken,
@@ -151,7 +139,6 @@ where S: AsyncObjectStore, F: Format {
         .map_err(|error| failed(project_failure(error), accounting.spent()))
 }
 
-/// Both projections execute the actual cursor machine on this accounting.
 pub(crate) async fn paginate_async_with_accounting<S, F>(
     store: &S, root: ObjectId, after: Option<&F::Key>, maximum_values: u32,
     limits: DecodeLimits, accounting: &mut KernelAccounting<'_>,
@@ -819,7 +806,6 @@ impl<'a, F: Format> Machine<'a, F> {
     }
 }
 
-
 pub(super) struct CustodyPrefix {
     before: WorkCounters,
     maximum_peak: u64,
@@ -874,7 +860,6 @@ pub(super) fn finish_custody_leaf(
     Ok(())
 }
 
-
 fn query_error(error: Error) -> crate::FsError {
     match error {
         #[cfg(not(target_arch = "wasm32"))]
@@ -904,25 +889,6 @@ pub(super) fn project_failure(error: crate::FsError) -> Error {
         crate::FsError::NativeKernel(error) => Error::Storage(ObjectStoreError::Native(error)),
         _ => unreachable!("pagination leaves return only typed directory, object, decode, cancellation and work errors"),
     }
-}
-
-#[cfg(test)]
-fn upper_bound_values<F: Format>(values: &[F::Value], cursor: &F::Key) -> (usize, u64) {
-    bound_values::<F>(values, cursor, false)
-}
-
-#[cfg(test)]
-fn bound_values<F: Format>(values: &[F::Value], cursor: &F::Key, inclusive: bool) -> (usize, u64) {
-    counted_partition_point(values, |value| {
-        let key = F::key(value);
-        key < cursor || (!inclusive && key == cursor)
-    })
-}
-
-#[cfg(test)]
-fn upper_bound_children<K: Ord>(children: &[Child<K>], cursor: &K) -> (usize, u64) {
-    let (after, comparisons) = counted_partition_point(children, |child| child.first <= *cursor);
-    (after.saturating_sub(1), comparisons)
 }
 
 #[cfg(test)]

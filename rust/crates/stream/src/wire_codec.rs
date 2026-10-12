@@ -12,31 +12,22 @@ pub(crate) type WireMeter<'a> = Option<&'a Arc<dyn NativeReadMeter>>;
 #[cfg(target_arch = "wasm32")]
 pub(crate) type WireMeter<'a> = Option<&'a ()>;
 
-pub(crate) struct ObservedWire<T> {
-    pub(crate) value: T,
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) allocation: Option<ReadAllocation>,
-}
+use crate::memory::{Allocation, MemoryOutput};
 
 /// Custody of the actual SDK-owned generated DTO fields.
 pub(crate) struct WireFunding<'a> {
-    #[cfg(not(target_arch = "wasm32"))]
     meter: WireMeter<'a>,
-    #[cfg(target_arch = "wasm32")]
-    _meter: WireMeter<'a>,
-    #[cfg(not(target_arch = "wasm32"))]
-    allocation: Option<ReadAllocation>,
+    allocation: Allocation,
 }
 
 impl<'a> WireFunding<'a> {
     pub(crate) fn new(meter: WireMeter<'a>) -> Self {
         Self {
-            #[cfg(not(target_arch = "wasm32"))]
             meter,
-            #[cfg(target_arch = "wasm32")]
-            _meter: meter,
             #[cfg(not(target_arch = "wasm32"))]
             allocation: meter.map(ReadAllocation::empty),
+            #[cfg(target_arch = "wasm32")]
+            allocation: (),
         }
     }
 
@@ -99,10 +90,7 @@ impl<'a> WireFunding<'a> {
     }
 
     pub(crate) fn meter(&self) -> WireMeter<'a> {
-        #[cfg(not(target_arch = "wasm32"))]
-        { self.meter }
-        #[cfg(target_arch = "wasm32")]
-        { self._meter }
+        self.meter
     }
 
     pub(crate) fn examine(&self, items: u64) -> std::io::Result<()> {
@@ -167,12 +155,8 @@ impl<'a> WireFunding<'a> {
         Ok(())
     }
 
-    pub(crate) fn finish<T>(self, value: T) -> ObservedWire<T> {
-        ObservedWire {
-            value,
-            #[cfg(not(target_arch = "wasm32"))]
-            allocation: self.allocation,
-        }
+    pub(crate) fn finish<T>(self, value: T) -> MemoryOutput<T> {
+        MemoryOutput { value, allocation: self.allocation }
     }
 }
 
@@ -186,7 +170,7 @@ use crate::{
 /// The closed SDK persistence graph has one borrowed encoder for ordinary and native calls.
 pub(crate) enum CanonicalWire<'a> {
     #[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
-    Journal(crate::journal::CommandRef<'a>),
+    Journal(&'a crate::journal::Command),
     Append(&'a crate::AppendRequest),
     Fork(&'a crate::ForkRequest),
     Commit(&'a crate::CommitRequest),
@@ -209,7 +193,7 @@ struct WireSink<'a> {
     output: Option<&'a mut Vec<u8>>,
     length: usize,
     maximum_record: Option<usize>,
-    observer: Option<&'a crate::memory::MemoryObserver>,
+    observer: WireMeter<'a>,
 }
 
 impl WireSink<'_> {
@@ -255,7 +239,7 @@ impl WireSink<'_> {
     }
 
     fn record(&mut self, tag: u64, value: &crate::OwnedBytes) -> std::io::Result<()> {
-        if let Some(observer) = self.observer { observer.admit_item()?; }
+        crate::memory::admit_item(self.observer)?;
         if let Some(length) = self.maximum_record {
             self.varint((tag << 3) | 2)?;
             self.varint(length as u64)?;
@@ -264,7 +248,7 @@ impl WireSink<'_> {
         } else {
             self.field(tag, value.as_ref(), true)?;
         }
-        if let Some(observer) = self.observer { observer.record_item()?; }
+        crate::memory::record_item(self.observer)?;
         Ok(())
     }
 
@@ -296,7 +280,7 @@ impl WireSink<'_> {
 }
 
 impl CanonicalWire<'_> {
-    pub(crate) fn encoded_len(&self, maximum_record: Option<usize>, observer: Option<&crate::memory::MemoryObserver>) -> std::io::Result<usize> {
+    pub(crate) fn encoded_len(&self, maximum_record: Option<usize>, observer: WireMeter<'_>) -> std::io::Result<usize> {
         let mut sink = WireSink { output: None, length: 0, maximum_record, observer };
         self.write(&mut sink)?;
         Ok(sink.length)
@@ -316,9 +300,9 @@ impl CanonicalWire<'_> {
         match self {
             #[cfg(any(feature = "local", all(feature = "wasm", target_arch = "wasm32")))]
             Self::Journal(command) => match command {
-                crate::journal::CommandRef::Append(value) => sink.nested(1, Self::Append(value))?,
-                crate::journal::CommandRef::Fork(value) => sink.nested(2, Self::Fork(value))?,
-                crate::journal::CommandRef::Commit(value) => sink.nested(5, Self::Commit(value))?,
+                crate::journal::Command::Append(value) => sink.nested(1, Self::Append(value))?,
+                crate::journal::Command::Fork(value) => sink.nested(2, Self::Fork(value))?,
+                crate::journal::Command::Commit(value) => sink.nested(5, Self::Commit(value))?,
             },
             Self::Append(value) => {
                 sink.field(1, value.path.as_str().as_bytes(), false)?;
@@ -334,14 +318,14 @@ impl CanonicalWire<'_> {
             }
             Self::Commit(value) => {
                 for value in &value.conditions {
-                    if let Some(observer) = sink.observer { observer.admit_item()?; }
+                    crate::memory::admit_item(sink.observer)?;
                     sink.nested(1, Self::Condition(value))?;
-                    if let Some(observer) = sink.observer { observer.record_item()?; }
+                    crate::memory::record_item(sink.observer)?;
                 }
                 for value in &value.mutations {
-                    if let Some(observer) = sink.observer { observer.admit_item()?; }
+                    crate::memory::admit_item(sink.observer)?;
                     sink.nested(2, Self::Mutation(value))?;
-                    if let Some(observer) = sink.observer { observer.record_item()?; }
+                    crate::memory::record_item(sink.observer)?;
                 }
                 sink.field(3, value.idempotency_key.as_bytes(), false)?;
             }

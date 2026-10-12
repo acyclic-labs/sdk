@@ -1,5 +1,5 @@
 use super::*;
-use crate::async_storage::{AsyncObjectStore, ImmediateObjectStore};
+use crate::async_storage::AsyncObjectStore;
 use crate::foundation::{FileId, GenerationId, VolumeId};
 use crate::kernel::{
     DecodeLimits, FileKind, FileMetadata, FilePayload, FileRecord, FileTablePage, GenerationRoot,
@@ -83,27 +83,24 @@ fn minimal_generation(
     let metadata = put(
         store,
         ObjectKind::Metadata,
-        encode_file_metadata(empty_metadata())?,
+        encode_file_metadata(empty_metadata(), |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let entries = put(
         store,
         ObjectKind::TreePage,
-        encode_tree_page(&TreePage::Leaf(Vec::new()), 8)?,
+        encode_tree_page(&TreePage::Leaf(Vec::new()), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let root_file_id = FileId::from_bytes([41; 16]);
     let table = put(
         store,
         ObjectKind::FileTablePage,
-        encode_file_table_page(
-            &FileTablePage::Leaf(vec![FileRecord {
+        encode_file_table_page(&FileTablePage::Leaf(vec![FileRecord {
                 file_id: root_file_id,
                 kind: FileKind::Directory,
                 link_count: 1,
                 metadata,
                 payload: FilePayload::Directory { entries },
-            }]),
-            8,
-        )?,
+            }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     put(
         store,
@@ -114,7 +111,7 @@ fn minimal_generation(
             file_table: table,
             parents: Vec::new(),
             required_features: 0,
-        })?,
+        }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )
 }
 
@@ -220,10 +217,8 @@ fn resumable_batches_preserve_manifest_order_and_idempotent_import()
 #[test]
 fn terminal_invalid_and_cancelled_batches_do_no_backend_work()
 -> Result<(), Box<dyn std::error::Error>> {
-    fn assert_immediate<T: ImmediateObjectStore>(_: &T) {}
     let (manifest, _) = fixture();
     let store = MemoryObjectStore::default();
-    assert_immediate(&store);
     let cancellation = CancellationToken::new();
     let terminal = ready(export_generation_batch_async(
         &store,

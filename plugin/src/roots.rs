@@ -9,8 +9,6 @@ use super::*;
 
 pub(crate) type LocalWorkspace = Workspace<LocalAuthorityBackend, LocalObjectBackend>;
 pub(crate) type LocalGeneration = Generation<LocalAuthorityBackend, LocalObjectBackend>;
-pub(crate) type LocalDistributedFs =
-    DistributedFs<LocalAuthorityBackend, LocalObjectBackend, LocalCoreStateStore>;
 pub(crate) type LocalLazySource = FilteredDemandSource<NativeDemandSource>;
 pub(crate) type LocalLazyWorkspace =
     LazyWorkspace<LocalAuthorityBackend, LocalObjectBackend, LocalLazySource, LocalCoreStateStore>;
@@ -82,7 +80,6 @@ impl BackgroundCollection {
     }
 
     pub(crate) fn start(&self, fs: LocalFs, store: LocalCoreStateStore) {
-        let collection = LocalDistributedFs::new(fs, store);
         let cancellation = acyclic_fs::CancellationToken::new();
         let deletions = Arc::clone(&self.deletions);
         let wake = Arc::clone(&self.wake);
@@ -97,7 +94,7 @@ impl BackgroundCollection {
                 deletions.store(0, std::sync::atomic::Ordering::Release);
                 // A failed collection sweeps nothing it should not; the next
                 // one starts over.
-                let _ = collection.collect_garbage(&token).await;
+                let _ = fs.collect_local_garbage(Some(&store), &token).await;
             }
         });
         if let Some(previous) = self
@@ -264,7 +261,7 @@ impl SharedPhysicalRoot {
             |prior_source, reference| {
                 let batch = poll()?;
                 let consumed_changes = observation_consumes_changes(&batch);
-                let source = if consumed_changes { self.source.inner().invalidate() }
+                let source = if consumed_changes { self.source.inner().invalidate(&mut acyclic_fs::demand::DemandWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).map_err(display)? }
                     else { prior_source };
                 *reference = source;
                 Ok(SharedRootObservation { batch, prior_source, source, consumed_changes })
@@ -314,7 +311,7 @@ impl SharedPhysicalRoot {
             },
             |prior_source, reference| {
                 self.source.inner()
-                    .validate_current_with_native_work(prior_source, work)
+                    .validate_current(prior_source, &mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(work))
                     .map_err(native_source_error)?;
                 let mut watcher = self.watcher.lock().map_err(|_| {
                     acyclic_harness::RootError::NativeBoundary {
@@ -328,7 +325,7 @@ impl SharedPhysicalRoot {
                 let (batch, allocation) = watcher
                     .poll_with_native_work_guarded(65_536, work, |batch| {
                         if observation_consumes_changes(batch) {
-                            source = self.source.inner().invalidate_with_native_work(work)?;
+                            source = self.source.inner().invalidate(&mut acyclic_fs::demand::NativeSourceWork::from_native_materialization_work(work))?;
                             // The SDK source epoch has really advanced. Keep
                             // shared state aligned even if later publication
                             // fails; the watcher preserves rescan on that error.
@@ -513,7 +510,7 @@ impl LocalMount {
 pub(crate) type LocalPublicationPublisher = MaterializingWorkspaceMultiRootPublisher<
     LocalAuthorityBackend,
     LocalObjectBackend,
-    LocalDistributedFs,
+    (LocalFs, WorkspaceGraph<LocalCoreStateStore>),
     PluginRootMaterializer,
 >;
 pub(crate) type LocalPublicationCoordinator = MultiRootPublicationCoordinator<

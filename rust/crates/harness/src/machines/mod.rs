@@ -6,10 +6,7 @@
         reason = "adapter tests run ordered scenarios over fixtures they built"
     )
 )]
-#![doc = include_str!("../../docs/machines.md")]
-
-mod execution;
-pub use execution::{AccessFuture, MachinesExecution, MachinesExecutionAccess, MachinesTaskBuild};
+//! Machines provider adapter.
 
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
@@ -36,7 +33,7 @@ pub struct MachinesHost {
 impl MachinesHost {
     /// Binds one explicit provider implementation and immutable provider identity.
     pub fn new(provider: Arc<dyn MachinesProvider>, provider_ref: ProviderRef) -> Result<Self> {
-        provider_ref.validate()?;
+        provider_ref.validate(&mut None)?;
         if provider_ref.family() != "machines" {
             return Err(Error::Invalid(
                 "Machines adapter requires the machines provider family".into(),
@@ -169,7 +166,7 @@ impl MachinesHost {
     }
 
     fn image(&self, reference: &ArtifactRef) -> Result<Image> {
-        reference.validate()?;
+        reference.validate(&mut None)?;
         self.validate_provider(reference.as_resource().provider())?;
         if reference.as_resource().version().is_some() {
             return Err(Error::Invalid(
@@ -184,7 +181,7 @@ impl MachinesHost {
     }
 
     fn machine_id(&self, reference: &SandboxRef) -> Result<MachineId> {
-        reference.validate()?;
+        reference.validate(&mut None)?;
         self.validate_provider(reference.as_resource().provider())?;
         if reference.as_resource().version().is_some() {
             return Err(Error::Invalid(
@@ -195,7 +192,7 @@ impl MachinesHost {
     }
 
     fn checkpoint_id(&self, reference: &CheckpointRef) -> Result<CheckpointId> {
-        reference.validate()?;
+        reference.validate(&mut None)?;
         self.validate_provider(reference.as_resource().provider())?;
         if reference.as_resource().version().is_some() {
             return Err(Error::Invalid(
@@ -206,7 +203,7 @@ impl MachinesHost {
     }
 
     fn validate_provider(&self, provider: &ProviderRef) -> Result<()> {
-        provider.validate()?;
+        provider.validate(&mut None)?;
         if provider != &self.provider_ref {
             return Err(Error::Invalid(
                 "resource belongs to another Machines provider".into(),
@@ -361,7 +358,7 @@ mod tests {
 
     #[tokio::test]
     async fn opaque_refs_round_trip_through_a_replaceable_provider() -> Result<()> {
-        let provider_ref = ProviderRef::new("example", "machines", "1")?;
+        let provider_ref = ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?;
         let host = MachinesHost::new(Arc::new(SimulatedMachines::default()), provider_ref.clone())?;
         let artifact = ArtifactRef::new(provider_ref, [1; 32], None)?;
         let sandbox = host
@@ -377,7 +374,7 @@ mod tests {
         assert_eq!(sandbox.as_resource().key(), observed.id.as_bytes());
 
         let foreign = SandboxRef::new(
-            ProviderRef::new("other", "machines", "1")?,
+            ProviderRef::new("other".into(), "machines".into(), "1".into(), &mut None)?,
             observed.id.as_bytes(),
             None,
         )?;
@@ -390,16 +387,16 @@ mod tests {
 
     #[tokio::test]
     async fn create_requires_explicit_network_policy_and_provider_ownership() -> Result<()> {
-        let provider_ref = ProviderRef::new("example", "machines", "1")?;
+        let provider_ref = ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?;
         let host = MachinesHost::new(Arc::new(SimulatedMachines::default()), provider_ref)?;
-        let foreign = ArtifactRef::new(ProviderRef::new("other", "machines", "1")?, [1; 32], None)?;
+        let foreign = ArtifactRef::new(ProviderRef::new("other".into(), "machines".into(), "1".into(), &mut None)?, [1; 32], None)?;
         assert!(matches!(
             host.qualify(&foreign).await,
             Err(Error::Invalid(_))
         ));
 
         let artifact =
-            ArtifactRef::new(ProviderRef::new("example", "machines", "1")?, [1; 32], None)?;
+            ArtifactRef::new(ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?, [1; 32], None)?;
         assert!(matches!(
             host.create(
                 OperationId::from_bytes([2; 16]),
@@ -416,7 +413,7 @@ mod tests {
 
     #[tokio::test]
     async fn fork_admission_proves_the_selected_checkpoint_exists() -> Result<()> {
-        let machines = ProviderRef::new("example", "machines", "1")?;
+        let machines = ProviderRef::new("example".into(), "machines".into(), "1".into(), &mut None)?;
         let simulator = Arc::new(SimulatedMachines::default());
         let host = MachinesHost::new(simulator.clone(), machines.clone())?;
         let artifact = ArtifactRef::new(machines.clone(), [1; 32], None)?;
@@ -444,11 +441,11 @@ mod tests {
             kind: AggregateKind::Conversation,
             id: "child".into(),
         };
-        let filesystem = ProviderRef::new("example", "filesystem", "2")?;
+        let filesystem = ProviderRef::new("example".into(), "filesystem".into(), "2".into(), &mut None)?;
         let owner = VolumeOwner::Project("project".into());
         let history = ResourceRevision::History(StreamRef::new(
-            ProviderRef::new("example", "stream", "2")?,
-            parent.stream_path()?.into_bytes(),
+            ProviderRef::new("example".into(), "stream".into(), "2".into(), &mut None)?,
+            parent.stream_path(&mut None)?.into_bytes(),
             Some("0".into()),
         )?);
         let project = ResourceRevision::Project {

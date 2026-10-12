@@ -32,7 +32,7 @@ impl HttpObjects {
         query: wire::PutObjectHeader,
         body: UploadBody,
     ) -> Result<wire::ObjectInfo, Error> {
-        Ok(self.put_stream_controlled(response::RequestInput::ordinary(query), body, None).await?.0)
+        Ok(self.put_stream_controlled(response::RequestInput::Ordinary(query), body, None).await?.0)
     }
     async fn put_stream_controlled(
         &self,
@@ -55,13 +55,12 @@ impl HttpObjects {
                         .map_err(|error| controls.fail(error))
                 }).transpose()?;
                 request::put_stream_digest(query)?;
-                let original = response::binary_controlled(query, controls.as_ref())?;
                 let header_frame = request_input.map(|query| wire::PutObjectRequest {
                     frame: Some(wire::put_object_request::Frame::Header(query)),
                 });
                 let header = line_controlled("PutObjectRequest", header_frame.value(), controls.as_ref())?;
                 drop(header_frame);
-                let (chunks, state, failure) = upload::chunks_controlled(body, controls.clone())?;
+                let (chunks, state) = upload::chunks(body, controls.clone())?;
                 let frame_controls = controls.clone();
                 let frames = chunks.map(move |chunk| {
                     let chunk = chunk?;
@@ -88,7 +87,7 @@ impl HttpObjects {
                 let (result, retained_response): (wire::ObjectInfo, _) = upload::run(
                     async {
                         let reply = self
-                            .post_controlled(
+                            .post(
                                 "objects/put",
                                 "application/x-ndjson",
                                 response::http_body(
@@ -103,12 +102,12 @@ impl HttpObjects {
                                 )?, controls.as_ref(),
                             )
                             .await?;
-                        self.decode_put_controlled(reply, controls.as_ref(), response_allocation.take()).await
+                        self.decode_put(reply, controls.as_ref(), response_allocation.take()).await
                     },
-                    failure,
+                    &state,
                 )
                 .await?;
-                response::validate_put_controlled(&original.0, result, retained_response, state.finish(), controls.as_ref())
+                response::validate_put_controlled(result, retained_response, state.finish(), controls.as_ref())
             },
         )
         .await
@@ -135,7 +134,7 @@ impl HttpObjects {
                         frame: Some(wire::upload_part_request::Frame::Header(query)),
                     },
                 )?;
-                let (chunks, state, failure) = upload::chunks(body);
+                let (chunks, state) = upload::chunks(body, None)?;
                 let frames = chunks.map(|chunk| {
                     line(
                         "UploadPartRequest",
@@ -161,11 +160,12 @@ impl HttpObjects {
                                         .chain(frames)
                                         .chain(stream::once(async { Ok::<_, Error>(complete) })),
                                 ),
+                                None,
                             )
                             .await?;
                         self.decode("UploadedPart", reply).await
                     },
-                    failure,
+                    &state,
                 )
                 .await?;
                 response::validate_binary(
@@ -239,14 +239,6 @@ impl HttpObjects {
         route: &'static str,
         content_type: &str,
         body: Body,
-    ) -> Result<Response, Error> {
-        self.post_controlled(route, content_type, body, None).await
-    }
-    async fn post_controlled(
-        &self,
-        route: &'static str,
-        content_type: &str,
-        body: Body,
         controls: Option<&response::NativeGetControls>,
     ) -> Result<Response, Error> {
         if let Some(controls) = controls { controls.check()?; }
@@ -293,14 +285,11 @@ impl HttpObjects {
         if dispatch_failed { return Err(response::invalid()); }
         obs::record!("rpc.code" = response.status().as_u16());
         if response.status().as_u16() != 200 {
-            return Err(self.failure_controlled(response, controls).await);
+            return Err(self.failure(response, controls).await);
         }
         Ok(response)
     }
-    async fn bytes(&self, response: Response) -> Result<Vec<u8>, Error> {
-        Ok(self.bytes_controlled(response, None).await?.0)
-    }
-    async fn bytes_controlled(
+    async fn bytes(
         &self, mut response: Response, controls: Option<&response::NativeGetControls>,
     ) -> Result<(Vec<u8>, Option<acyclic_native_runtime::ReadAllocation>), Error> {
         if response
@@ -346,12 +335,12 @@ impl HttpObjects {
         }
         Ok((bytes, allocation))
     }
-    async fn failure_controlled(&self, response: Response, controls: Option<&response::NativeGetControls>) -> Error {
+    async fn failure(&self, response: Response, controls: Option<&response::NativeGetControls>) -> Error {
         let status = response.status().as_u16();
         if status == 304 {
             return wire::ErrorCode::NotModified.into();
         }
-        let received = match self.bytes_controlled(response, controls).await {
+        let received = match self.bytes(response, controls).await {
             Ok(value) => value,
             Err(error) => return error,
         };
@@ -395,17 +384,17 @@ impl HttpObjects {
         response: Response,
     ) -> Result<O, Error> {
         media_type(&response, "application/json")?;
-        json::decode(name, &self.bytes(response).await?, self.maximum)
+        json::decode(name, &self.bytes(response, None).await?.0, self.maximum)
             .map_err(|_| response::invalid())
     }
-    async fn decode_put_controlled(
+    async fn decode_put(
         &self,
         response: Response,
         controls: Option<&response::NativeGetControls>,
         allocation: Option<acyclic_native_runtime::ReadAllocation>,
     ) -> Result<(wire::ObjectInfo, Option<acyclic_native_runtime::ReadAllocation>), Error> {
         media_type(&response, "application/json")?;
-        let received = self.bytes_controlled(response, controls).await?;
+        let received = self.bytes(response, controls).await?;
         let _codec_allocation = if let Some(controls) = controls {
             match acyclic_native_runtime::ReadAllocation::adopt(&controls.meter, received.0.len().saturating_mul(4)) {
                 Ok(allocation) => Some(allocation),
@@ -451,7 +440,7 @@ impl HttpObjects {
                 if bytes.len() > REQUEST_BYTES {
                     return Err(wire::ErrorCode::QuotaExceeded.into());
                 }
-                let response = self.post(route, "application/json", bytes.into()).await?;
+                let response = self.post(route, "application/json", bytes.into(), None).await?;
                 validate(value, self.decode(output, response).await?)
             },
         )
@@ -463,7 +452,7 @@ impl HttpObjects {
         query: wire::GetObjectRequest,
         maximum_bytes: u64,
     ) -> Result<Download, Error> {
-        self.get_stream_controlled(response::RequestInput::ordinary(query), maximum_bytes, None, &mut None).await
+        self.get_stream_controlled(response::RequestInput::Ordinary(query), maximum_bytes, None, &mut None).await
     }
     async fn get_stream_controlled(
         &self,
@@ -481,9 +470,7 @@ impl HttpObjects {
             ),
             async {
                 let query = request_input.value();
-                let _request_allocation = controls.as_ref().map(|controls| controls.request(query)).transpose()?;
-                let request_binary = response::binary_controlled(query, controls.as_ref())?;
-                request::validate_binary("objects/get", &request_binary.0, 0)?;
+                request::get(query)?;
                 let body_factory = |reader: Frames, remaining: u64|
                     stream::try_unfold((reader, remaining), |(mut reader, remaining)| async move {
                         let Some((frame, allocation)) = reader.next().await? else {
@@ -507,7 +494,6 @@ impl HttpObjects {
                         }
                     });
                 let prepared_body = response::prepare_body_stream(&body_factory, controls.as_ref())?;
-                drop(request_binary);
                 let bytes = if let Some(controls) = &controls {
                     let (bytes, allocation) = json::encode_native("GetObjectRequest", query, controls)?;
                     controls.wire_bytes(bytes, allocation)?
@@ -518,7 +504,7 @@ impl HttpObjects {
                     return Err(wire::ErrorCode::QuotaExceeded.into());
                 }
                 let reply = self
-                    .post_controlled("objects/get", "application/json", bytes.into(), controls.as_ref())
+                    .post("objects/get", "application/json", bytes.into(), controls.as_ref())
                     .await?;
                 media_type(&reply, "application/x-ndjson")?;
                 if reply
@@ -558,7 +544,7 @@ impl HttpObjects {
                         return Err(error);
                     }
                 };
-                let body = response::finish_body_stream(body_factory, reader, remaining, prepared_body);
+                let body = response::finish_body_stream(body_factory(reader, remaining), prepared_body);
                 Ok(Download { header, body })
             },
         )
@@ -613,7 +599,64 @@ struct Frames {
 }
 impl Frames {
     async fn next(&mut self) -> Result<Option<(wire::GetObjectResponse, Option<acyclic_native_runtime::ReadAllocation>)>, Error> {
-        let result = self.next_inner().await;
+        let result = async {
+            let mut frame_allocation = if let Some(controls) = &self.controls {
+                controls.check()?;
+                Some(acyclic_native_runtime::ReadAllocation::adopt(&controls.meter, JSON_FRAME_BYTES * 4)
+                    .map_err(|error| controls.fail(error))?)
+            } else { None };
+            loop {
+                if self.chunk.is_empty() {
+                    if let Some(controls) = &self.controls { controls.check()?; }
+                    let Some(chunk) = self.reply.chunk().await.map_err(|_| response::invalid())? else {
+                        return if self.pending.is_empty() {
+                            Ok(None)
+                        } else {
+                            Err(response::invalid())
+                        };
+                    };
+                    if chunk.len() > self.maximum.saturating_sub(self.total) {
+                        return Err(wire::ErrorCode::QuotaExceeded.into());
+                    }
+                    self.total += chunk.len();
+                    self.chunk = chunk;
+                }
+                let newline = self.chunk.iter().position(|byte| *byte == b'\n');
+                let size = newline.map_or(self.chunk.len(), |index| index + 1);
+                if size > JSON_FRAME_BYTES.saturating_sub(self.pending.len()) {
+                    return Err(response::invalid());
+                }
+                if let Some(controls) = &self.controls {
+                    let needed = self.pending.len() + size;
+                    if needed > self.pending.capacity() {
+                        let allocation = self.pending_allocation.as_mut().expect("native pending custody");
+                        allocation.grow(needed - self.pending.capacity()).map_err(|error| controls.fail(error))?;
+                        self.pending.try_reserve_exact(needed - self.pending.len())
+                            .map_err(|error| controls.fail(controls.meter.allocation_failed(error)))?;
+                        allocation.reconcile_capacity(self.pending.capacity()).map_err(|error| controls.fail(error))?;
+                    }
+                    controls.meter.admit_codec(0, size as u64, 0).map_err(|error| controls.fail(error))?;
+                }
+                self.pending.extend_from_slice(&self.chunk.split_to(size));
+                if let Some(controls) = &self.controls {
+                    controls.meter.record_codec(0, size as u64, 0).map_err(|error| controls.fail(error))?;
+                }
+                if newline.is_some() {
+                    self.pending.pop();
+                    let bytes = self.pending.strip_suffix(b"\r").unwrap_or(&self.pending);
+                    let (frame, allocation) = if let Some(controls) = &self.controls {
+                        let (frame, allocation) = json::decode_get_native(
+                            bytes, JSON_FRAME_BYTES, controls, frame_allocation.take().expect("native frame preclaim"),
+                        ).map_err(|_| response::invalid())?;
+                        (frame, Some(allocation))
+                    } else {
+                        (json::decode("GetObjectResponse", bytes, JSON_FRAME_BYTES).map_err(|_| response::invalid())?, None)
+                    };
+                    self.pending.clear();
+                    return Ok(Some((frame, allocation)));
+                }
+            }
+        }.await;
         match result {
             Err(error) if self.controls.is_some() => {
                 let controls = self.controls.as_ref().expect("native frame controls");
@@ -626,64 +669,7 @@ impl Frames {
             result => result,
         }
     }
-    async fn next_inner(&mut self) -> Result<Option<(wire::GetObjectResponse, Option<acyclic_native_runtime::ReadAllocation>)>, Error> {
-        let mut frame_allocation = if let Some(controls) = &self.controls {
-            controls.check()?;
-            Some(acyclic_native_runtime::ReadAllocation::adopt(&controls.meter, JSON_FRAME_BYTES * 4)
-                .map_err(|error| controls.fail(error))?)
-        } else { None };
-        loop {
-            if self.chunk.is_empty() {
-                if let Some(controls) = &self.controls { controls.check()?; }
-                let Some(chunk) = self.reply.chunk().await.map_err(|_| response::invalid())? else {
-                    return if self.pending.is_empty() {
-                        Ok(None)
-                    } else {
-                        Err(response::invalid())
-                    };
-                };
-                if chunk.len() > self.maximum.saturating_sub(self.total) {
-                    return Err(wire::ErrorCode::QuotaExceeded.into());
-                }
-                self.total += chunk.len();
-                self.chunk = chunk;
-            }
-            let newline = self.chunk.iter().position(|byte| *byte == b'\n');
-            let size = newline.map_or(self.chunk.len(), |index| index + 1);
-            if size > JSON_FRAME_BYTES.saturating_sub(self.pending.len()) {
-                return Err(response::invalid());
-            }
-            if let Some(controls) = &self.controls {
-                let needed = self.pending.len() + size;
-                if needed > self.pending.capacity() {
-                    let allocation = self.pending_allocation.as_mut().expect("native pending custody");
-                    allocation.grow(needed - self.pending.capacity()).map_err(|error| controls.fail(error))?;
-                    self.pending.try_reserve_exact(needed - self.pending.len())
-                        .map_err(|error| controls.fail(controls.meter.allocation_failed(error)))?;
-                    allocation.reconcile_capacity(self.pending.capacity()).map_err(|error| controls.fail(error))?;
-                }
-                controls.meter.admit_codec(0, size as u64, 0).map_err(|error| controls.fail(error))?;
-            }
-            self.pending.extend_from_slice(&self.chunk.split_to(size));
-            if let Some(controls) = &self.controls {
-                controls.meter.record_codec(0, size as u64, 0).map_err(|error| controls.fail(error))?;
-            }
-            if newline.is_some() {
-                self.pending.pop();
-                let bytes = self.pending.strip_suffix(b"\r").unwrap_or(&self.pending);
-                let (frame, allocation) = if let Some(controls) = &self.controls {
-                    let (frame, allocation) = json::decode_get_native(
-                        bytes, JSON_FRAME_BYTES, controls, frame_allocation.take().expect("native frame preclaim"),
-                    ).map_err(|_| response::invalid())?;
-                    (frame, Some(allocation))
-                } else {
-                    (json::decode("GetObjectResponse", bytes, JSON_FRAME_BYTES).map_err(|_| response::invalid())?, None)
-                };
-                self.pending.clear();
-                return Ok(Some((frame, allocation)));
-            }
-        }
-    }
+
 }
 #[async_trait::async_trait]
 impl ObjectsProvider for HttpObjects {
@@ -732,20 +718,19 @@ impl ObjectsProvider for HttpObjects {
     ) -> Result<super::ObjectsNativeFuture<'_, super::ObjectsPutReceipt>, NativeObjectsError> {
         let request_input = response::RequestInput::native(request, &meter)?;
         super::native_future(meter.clone(), async move {
-            let prepared = Download::prepare_native(0, meter.clone())?;
-            let errors = prepared.errors();
+            let errors = super::NativeTransportErrors::new(&meter)?;
             let mut body = None;
             let request_input = request_input.map(|(header, carrier)| {
                 body = Some(carrier);
                 header
             });
             let source = upload::chunks_native(body.expect("native publication owns its canonical body"), meter.clone(), errors.clone())?;
-            let controls = response::NativeGetControls { meter, errors };
+            let controls = response::NativeGetControls { meter, errors: errors.clone() };
             match self.put_stream_controlled(request_input, source, Some(controls)).await {
                 Ok((info, allocation)) => Ok(super::ObjectsPutReceipt::new(info, allocation)),
                 Err(error) => {
-                    let original = prepared.take_error().unwrap_or_else(|| error.into());
-                    Err(prepared.fail(original, None, 0, None))
+                    let original = errors.take().unwrap_or_else(|| error.into());
+                    Err(original)
                 }
             }
         })
@@ -769,18 +754,18 @@ impl ObjectsProvider for HttpObjects {
         let request_input = response::RequestInput::native(request, &meter)?;
         super::native_future(meter.clone(), async move {
             let mut prepared = Download::prepare_native(maximum_bytes, meter.clone())?;
-            let errors = prepared.errors();
+            let errors = prepared.errors.clone();
             let controls = response::NativeGetControls { meter: meter.clone(), errors: errors.clone() };
             let mut header_allocation = Some(acyclic_native_runtime::ReadAllocation::adopt(&meter, JSON_FRAME_BYTES * 4)?);
             let download = match self.get_stream_controlled(request_input, maximum_bytes, Some(controls), &mut header_allocation).await {
                 Ok(download) => download,
                 Err(error) => {
-                    let original = prepared.take_error().unwrap_or_else(|| error.into());
-                    return Err(prepared.fail(original, None, 0, None));
+                    let original = prepared.errors.take().unwrap_or_else(|| error.into());
+                    return Err(original);
                 }
             };
             if let Some(allocation) = header_allocation {
-                prepared.retain_header_allocation(allocation)?;
+                prepared.header_allocation = Some(allocation);
             }
             download.collect_native(prepared).await
         })

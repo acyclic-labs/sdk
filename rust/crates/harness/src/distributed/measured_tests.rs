@@ -1,5 +1,5 @@
 use super::*;
-use super::tests::spec;
+use super::tests::{declare, spec};
 use crate::store::history::HistoryWork;
 use acyclic_fs::{CancellationToken, WorkBudget};
 use acyclic_stream::MemoryStream;
@@ -7,75 +7,52 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 type FaultStream = crate::test_stream::LostSessionAck<MemoryStream>;
 
-fn budget() -> WorkBudget {
-    const LIMIT: u64 = 64 * 1024 * 1024;
-    WorkBudget {
-        authority_records_read: LIMIT, authority_records_appended: LIMIT,
-        authority_bytes_read: LIMIT, authority_bytes_written: LIMIT,
-        object_probes: LIMIT, backend_read_operations: LIMIT, backend_write_operations: LIMIT,
-        durability_operations: LIMIT, page_reads: LIMIT, page_writes: LIMIT,
-        object_bytes_read: LIMIT, object_bytes_written: LIMIT,
-        bytes_hashed: LIMIT, bytes_copied: LIMIT, bytes_encoded: LIMIT,
-        source_bytes_read: LIMIT, source_path_components: LIMIT, source_entries_visited: LIMIT,
-        output_bytes: LIMIT, items_examined: LIMIT, items_returned: LIMIT,
-        allocation_operations: LIMIT, peak_allocation_bytes: LIMIT, materializations: LIMIT,
-    }
-}
+const BUDGET: WorkBudget = acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024);
 
 #[derive(Default)]
 struct UnmeasuredContent(AtomicUsize);
 impl ContentResidencyVerifier for UnmeasuredContent {
-    fn verify<'a>(&'a self, reference: &'a FileRef) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move {
+    fn verify<'a>(&'a self, reference: &'a FileRef, _: u64,
+        io: Option<&'a crate::conversation::ContentIo>,
+    ) -> Result<crate::conversation::BoundedContentFuture<'a, ()>> {
+        if io.is_some() { return Err(Error::Unsupported("fixture has no finite content reader".into())); }
+        crate::conversation::BoundedContentFuture::new(io, || async move {
             self.0.fetch_add(1, Ordering::SeqCst);
-            reference.descriptor().verify(b"null")
+            reference.descriptor().verify(b"null", &mut None)
         })
     }
 }
 
-async fn append_source<P: StreamProvider>(
-    client: &StreamClient<P>, revision: u64, key: &str, event: SchedulerEvent, time: u64,
+async fn append_source(
+    client: &std::sync::Arc<FaultStream>, revision: u64, key: &str, event: SchedulerEvent, time: u64,
 ) -> Result<u64> {
     let canonical = crate::contract::canonical_json_bytes(&event)?;
     let bytes = encode(revision, event.operation_id(), key,
         *blake3::hash(&canonical).as_bytes(), canonical, time, &mut None)?;
     let length = bytes.len() as u64;
-    client.stream(COORDINATOR_PATH)?.append_batch(
+    acyclic_stream::Stream::new(std::sync::Arc::clone(&client), COORDINATOR_PATH)?.append_batch(
         vec![OwnedBytes::from(bytes)], Some(revision - 1), None,
     ).await?;
     Ok(length)
-}
-
-async fn seed(client: &StreamClient<FaultStream>, ids: &[OperationId]) -> Result<()> {
-    let mut coordinator = DistributedCoordinator::open(client, Arc::new(UnmeasuredContent::default())).await?;
-    for (index, id) in ids.iter().enumerate() {
-        let declaration = spec(*id, 0)?;
-        let owner = declaration.owner.authority().clone();
-        let issuer = crate::core::AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
-        coordinator.declare_operation(&owner, &declaration.owner_scope.clone(), &issuer.verifier(),
-            declaration, IdempotencyKey::new(format!("measured-seed-{index}"))?,
-    None,).await?;
-    }
-    Ok(())
 }
 
 #[tokio::test]
 async fn coordinator_quota_and_cancellation_stop_before_the_next_real_sdk_call() -> Result<()> {
     for mode in 0..3 {
         let provider = Arc::new(FaultStream::default());
-        let client = StreamClient::new(provider.clone());
-        let mut coordinator = DistributedCoordinator::open(&client, Arc::new(UnmeasuredContent::default())).await?;
+        let client = provider.clone();
+        let mut coordinator = DistributedCoordinator::open(&client, Arc::new(UnmeasuredContent::default()), None, &mut None).await?;
         let bytes = append_source(&client, 1, "measured-quota", SchedulerEvent::Declared {
             spec: Box::new(spec(OperationId::from_bytes([104; 16]), 0)?),
         }, 1).await?;
         provider.reset_io();
         let cancellation = CancellationToken::new();
         if mode == 0 { cancellation.cancel(); }
-        let mut allowance = budget();
+        let mut allowance = BUDGET;
         if mode == 1 { allowance.source_bytes_read = 0; }
         if mode == 2 { allowance.backend_read_operations = 0; }
         let mut work = HistoryWork::new(allowance, &cancellation);
-        let result = coordinator.refresh_with_work(&mut Some(&mut work)).await;
+        let result = coordinator.refresh(&mut Some(&mut work)).await;
         let failure = work.finish(result).expect_err("admission must fail closed");
         assert_eq!(provider.io_snapshot().reads, u64::from(mode == 1));
         assert_eq!(failure.work.backend_read_operations, u64::from(mode == 1));
@@ -89,16 +66,16 @@ async fn coordinator_quota_and_cancellation_stop_before_the_next_real_sdk_call()
 #[tokio::test]
 async fn declared_content_without_measured_capability_rejects_before_ordinary_content_io() -> Result<()> {
     let provider = Arc::new(FaultStream::default());
-    let client = StreamClient::new(provider.clone());
+    let client = provider.clone();
     let content = Arc::new(UnmeasuredContent::default());
-    let mut coordinator = DistributedCoordinator::open(&client, content.clone()).await?;
+    let mut coordinator = DistributedCoordinator::open(&client, content.clone(), None, &mut None).await?;
     append_source(&client, 1, "unmeasured-content", SchedulerEvent::Declared {
         spec: Box::new(spec(OperationId::from_bytes([105; 16]), 0)?),
     }, 1).await?;
     provider.reset_io();
     let cancellation = CancellationToken::new();
-    let mut work = HistoryWork::new(budget(), &cancellation);
-    let result = coordinator.refresh_with_work(&mut Some(&mut work)).await;
+    let mut work = HistoryWork::new(BUDGET, &cancellation);
+    let result = coordinator.refresh(&mut Some(&mut work)).await;
     let failure = work.finish(result).expect_err("ordinary verification is not a finite capability");
     assert!(matches!(failure.error, Error::Unsupported(_)));
     assert_eq!(content.0.load(Ordering::SeqCst), 0);
@@ -110,11 +87,11 @@ async fn declared_content_without_measured_capability_rejects_before_ordinary_co
 }
 
 async fn admitted_fixture(
-    client: &StreamClient<FaultStream>,
+    client: &std::sync::Arc<FaultStream>,
     operation: OperationId,
 ) -> Result<(DistributedCoordinator<FaultStream>, WorkLease)> {
-    seed(client, &[operation]).await?;
-    let mut coordinator = DistributedCoordinator::open(client, Arc::new(UnmeasuredContent::default())).await?;
+    let mut coordinator = DistributedCoordinator::open(client, Arc::new(UnmeasuredContent::default()), None, &mut None).await?;
+    declare(&mut coordinator, spec(operation, 0)?, "measured-seed-0").await?;
     let lease = coordinator.pull(&Worker {
         id: "measured-release-worker".into(),
         available: ResourceSnapshot::default(),
@@ -126,12 +103,12 @@ async fn admitted_fixture(
 #[tokio::test]
 async fn measured_quiescent_release_requires_witness_and_the_same_owner_verified_revision() -> Result<()> {
     let provider = Arc::new(FaultStream::default());
-    let client = StreamClient::new(provider.clone());
+    let client = provider.clone();
     let operation = OperationId::from_bytes([120; 16]);
     let execution = OperationId::from_bytes([121; 16]);
     let (mut coordinator, lease) = admitted_fixture(&client, operation).await?;
     let cancellation = CancellationToken::new();
-    let mut work = HistoryWork::new(budget(), &cancellation);
+    let mut work = HistoryWork::new(BUDGET, &cancellation);
     provider.reset_io();
     assert!(matches!(coordinator.apply_if_execution_quiescent(
         IdempotencyKey::new("no-workflow-witness")?,
@@ -141,11 +118,11 @@ async fn measured_quiescent_release_requires_witness_and_the_same_owner_verified
     ).await, Err(Error::Invalid(_))));
     assert_eq!(provider.io_snapshot().reads, 0);
     assert_eq!(provider.io_snapshot().writes, 0);
-    let mut remote = DistributedCoordinator::open(&client, Arc::new(UnmeasuredContent::default())).await?;
+    let mut remote = DistributedCoordinator::open(&client, Arc::new(UnmeasuredContent::default()), None, &mut None).await?;
     remote.apply(operation, IdempotencyKey::new("remote-original-start")?,
         SchedulerEvent::Started {
             operation_id:operation, fence:LeaseFence::from(&lease.reservation),
-        }).await?;
+        }, &mut None).await?;
     provider.reset_io();
     let result = coordinator.apply_if_execution_quiescent(
         IdempotencyKey::new("stale-owner-suspension")?,
@@ -162,16 +139,16 @@ async fn measured_quiescent_release_requires_witness_and_the_same_owner_verified
 }
 
 async fn historical_source(
-    client: &StreamClient<FaultStream>, operation: OperationId,
+    client: &std::sync::Arc<FaultStream>, operation: OperationId,
 ) -> Result<(Authority, crate::core::AuthorityIssuer, Scope, LeaseFence, u64)> {
     let declaration = spec(operation, 0)?;
     let owner = declaration.owner.authority().clone();
     let issuer = crate::core::AuthorityIssuer::new("test-runtime", [9; 32], owner.clone());
     let declaration_scope = declaration.owner_scope.clone();
-    let mut coordinator = DistributedCoordinator::open(client, Arc::new(UnmeasuredContent::default())).await?;
-    coordinator.declare_operation(&owner, &declaration_scope, &issuer.verifier(), declaration,
+    let mut coordinator = DistributedCoordinator::open(client, Arc::new(UnmeasuredContent::default()), None, &mut None).await?;
+    coordinator.declare_operation(&owner, &declaration_scope, &issuer.verifier(&mut None).expect("verifier copy"), declaration,
         IdempotencyKey::new(format!("task-admission:{operation}"))?,
-    None,).await?;
+    None, &mut None,).await?;
     let time = coordinator.last_committed_at_ms;
     let fence = LeaseFence { reservation_id: "original-provider-lease".into(), placement: "original-worker".into() };
     append_source(client, 2, "original-admitted", SchedulerEvent::Admitted {
@@ -182,7 +159,7 @@ async fn historical_source(
     append_source(client, 3, "original-started", SchedulerEvent::Started {
         operation_id: operation, fence: fence.clone(),
     }, time + 2).await?;
-    let scope = issuer.root("original-readonly-proof", crate::Capabilities::new(["operation:observe"]));
+    let scope = issuer.issue("original-readonly-proof", &crate::Capabilities::new(["operation:observe"]), None, None, &mut None).expect("scope proof");
     Ok((owner, issuer, scope, fence, time))
 }
 
@@ -190,7 +167,7 @@ async fn historical_source(
 #[tokio::test]
 async fn original_reservation_proof_keeps_the_selected_old_origin_without_current_write_authority() -> Result<()> {
     let provider = Arc::new(FaultStream::default());
-    let client = StreamClient::new(provider.clone());
+    let client = provider.clone();
     let operation = OperationId::from_bytes([128; 16]);
     let (owner, issuer, scope, original, time) = historical_source(&client, operation).await?;
     append_source(&client, 4, "original-released", SchedulerEvent::LeaseReleased {
@@ -207,11 +184,11 @@ async fn original_reservation_proof_keeps_the_selected_old_origin_without_curren
     provider.reset_io();
     provider.forbid_writes.store(true, Ordering::SeqCst);
     let cancellation = CancellationToken::new();
-    let native = acyclic_fs::NativeMaterializationWork::new(budget(), &cancellation)
+    let native = acyclic_fs::NativeMaterializationWork::new(BUDGET, &cancellation)
         .expect("original native ledger control");
     let mut observer = crate::store::history::native_work_io(&native)?;
     let proof = original_reservation_proof_with_work(
-        &client, &owner, &scope, &issuer.verifier(), operation, &original, &mut Some(&mut observer),
+        &client, &owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), operation, &original, &mut Some(&mut observer),
     ).await?;
     let custody = observer.into_custody();
     assert_eq!((&proof.1), &original);
@@ -225,7 +202,7 @@ async fn original_reservation_proof_keeps_the_selected_old_origin_without_curren
 async fn historical_proof_rejects_ambiguous_started_origins_and_foreign_selectors_without_writes() -> Result<()> {
     for duplicate in [false, true] {
         let provider = Arc::new(FaultStream::default());
-        let client = StreamClient::new(provider.clone());
+        let client = provider.clone();
         let operation = OperationId::from_bytes([129; 16]);
         let (owner, issuer, scope, mut candidate, time) = historical_source(&client, operation).await?;
         if duplicate {
@@ -238,9 +215,9 @@ async fn historical_proof_rejects_ambiguous_started_origins_and_foreign_selector
         provider.reset_io();
         provider.forbid_writes.store(true, Ordering::SeqCst);
         let cancellation = CancellationToken::new();
-        let mut work = HistoryWork::new(budget(), &cancellation);
+        let mut work = HistoryWork::new(BUDGET, &cancellation);
         let result = original_reservation_proof_with_work(
-            &client, &owner, &scope, &issuer.verifier(), operation, &candidate, &mut Some(&mut work),
+            &client, &owner, &scope, &issuer.verifier(&mut None).expect("verifier copy"), operation, &candidate, &mut Some(&mut work),
         ).await;
         assert!(if duplicate { matches!(result, Err(Error::Conflict(_))) }
             else { matches!(result, Err(Error::NotFound(_))) });
@@ -249,4 +226,3 @@ async fn historical_proof_rejects_ambiguous_started_origins_and_foreign_selector
     }
     Ok(())
 }
-

@@ -1,11 +1,12 @@
 use super::*;
 use crate::foundation::Digest;
-use crate::kernel::{AttributeClass, attribute_page_id, encode_attribute_page};
+use crate::kernel::{AttributeClass, AttributePage, attribute_page_id, encode_attribute_page};
 use crate::memory::MemoryObjectStore;
-use crate::storage::{ObjectStore, object_digest};
+use crate::storage::{ObjectKind, ObjectStore, object_digest};
 use crate::test_support::OwnedReadObjectStore;
 use acyclic_stream::OwnedBytes;
 
+use crate::kernel::Child;
 fn name(byte: u8) -> Result<AttributeName, Box<dyn std::error::Error>> {
     Ok(AttributeName::new(
         AttributeClass::PosixXattr,
@@ -33,7 +34,7 @@ fn put(
     ObjectStore::put(
         store,
         id,
-        OwnedBytes::from(encode_attribute_page(page, 8)?),
+        OwnedBytes::from(encode_attribute_page(page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
         WorkBudget::UNBOUNDED,
     )?;
     Ok(id)
@@ -45,20 +46,20 @@ fn two_level_tree(store: &MemoryObjectStore) -> Result<ObjectId, Box<dyn std::er
     put(
         store,
         &AttributePage::Internal(vec![
-            AttributeChild {
-                first_name: name(1)?,
+            Child {
+                first: name(1)?,
                 page: first,
             },
-            AttributeChild {
-                first_name: name(3)?,
+            Child {
+                first: name(3)?,
                 page: second,
             },
         ]),
     )
 }
 
-#[test]
-fn lookup_reads_one_frontier_and_authenticates_absence() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn lookup_reads_one_frontier_and_authenticates_absence() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = two_level_tree(&store)?;
     let found = lookup_attribute(
@@ -67,8 +68,9 @@ fn lookup_reads_one_frontier_and_authenticates_absence() -> Result<(), Box<dyn s
         &name(3)?,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
-    assert_eq!(found.entry, Some(entry(3)?));
+        &CancellationToken::new(),
+    ).await?;
+    assert_eq!(found.value, Some(entry(3)?));
     assert_eq!(found.work.page_reads, 2);
     let absent = lookup_attribute(
         &store,
@@ -76,9 +78,18 @@ fn lookup_reads_one_frontier_and_authenticates_absence() -> Result<(), Box<dyn s
         &name(5)?,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
-    assert_eq!(absent.entry, None);
+        &CancellationToken::new(),
+    ).await?;
+    assert_eq!(absent.value, None);
     assert_eq!(absent.work.page_reads, 2);
+
+    let failure = lookup_attribute(
+        &store, root, &name(3)?,
+        DecodeLimits { maximum_visited_pages: 1, ..DecodeLimits::default() },
+        WorkBudget::UNBOUNDED, &CancellationToken::new(),
+    ).await.err().ok_or("lookup exceeded its visited-page limit")?;
+    assert!(matches!(failure.error, AttributeLookupError::AllocationFailed));
+    assert_eq!(failure.work.page_reads, 1);
 
     let names = vec![name(4)?, name(1)?, name(4)?, name(5)?];
     let batch = lookup_attributes(
@@ -88,65 +99,45 @@ fn lookup_reads_one_frontier_and_authenticates_absence() -> Result<(), Box<dyn s
         4,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(
-        batch.entries,
+        batch.value,
         vec![Some(entry(4)?), Some(entry(1)?), Some(entry(4)?), None]
     );
     assert_eq!(batch.work.page_reads, 3);
     Ok(())
 }
 
-#[test]
-fn owned_attribute_pages_are_admitted_and_released_across_the_frontier()
+#[tokio::test]
+async fn owned_attribute_pages_are_admitted_and_released_across_the_frontier()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = OwnedReadObjectStore::default();
     let root = two_level_tree(&store.inner)?;
-    let lookup = crate::async_storage::poll_ready(lookup_attribute_async(
+    let lookup = lookup_attribute(
         &store,
         root,
         &name(4)?,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &CancellationToken::new(),
-    ))
-    .ok_or("owned attribute lookup blocked")??;
-    assert_eq!(lookup.entry, Some(entry(4)?));
+    ).await?;
+    assert_eq!(lookup.value, Some(entry(4)?));
     assert_eq!(lookup.work.page_reads, 2);
     assert!(lookup.work.bytes_copied > 0);
     assert!(lookup.work.peak_allocation_bytes > 0);
     Ok(())
 }
 
-#[test]
-fn async_batch_is_identical_and_precancellation_is_inert() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn precancelled_batch_is_inert() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
     let root = two_level_tree(&store)?;
     let names = vec![name(4)?, name(1)?, name(4)?, name(5)?];
-    let synchronous = lookup_attributes(
-        &store,
-        root,
-        &names,
-        4,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-    )?;
-    let asynchronous = crate::async_storage::poll_ready(lookup_attributes_async(
-        &store,
-        root,
-        &names,
-        4,
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ))
-    .ok_or("memory-backed async attribute batch blocked")??;
-    assert_eq!(asynchronous, synchronous);
-
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let failure = crate::async_storage::poll_ready(lookup_attributes_async(
+    let failure = lookup_attributes(
         &store,
         root,
         &names,
@@ -154,8 +145,8 @@ fn async_batch_is_identical_and_precancellation_is_inert() -> Result<(), Box<dyn
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("pre-cancelled async attribute batch blocked")?
+    )
+    .await
     .err()
     .ok_or("pre-cancelled async attribute batch succeeded")?;
     assert!(matches!(failure.error, AttributeLookupError::Cancelled));
@@ -163,8 +154,8 @@ fn async_batch_is_identical_and_precancellation_is_inert() -> Result<(), Box<dyn
     Ok(())
 }
 
-#[test]
-fn missing_malformed_and_oversized_pages_preserve_exact_storage_boundaries()
+#[tokio::test]
+async fn missing_malformed_and_oversized_pages_preserve_exact_storage_boundaries()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let missing = ObjectId {
@@ -177,7 +168,9 @@ fn missing_malformed_and_oversized_pages_preserve_exact_storage_boundaries()
         &name(1)?,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("missing attribute page resolved")?;
     assert!(matches!(
@@ -198,7 +191,9 @@ fn missing_malformed_and_oversized_pages_preserve_exact_storage_boundaries()
         &name(1)?,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("malformed attribute page decoded")?;
     assert!(matches!(failure.error, AttributeLookupError::Decode(_)));
@@ -211,7 +206,8 @@ fn missing_malformed_and_oversized_pages_preserve_exact_storage_boundaries()
         maximum_page_bytes: 1,
         ..DecodeLimits::default()
     };
-    let failure = lookup_attribute(&store, valid, &name(1)?, limits, WorkBudget::UNBOUNDED)
+    let failure = lookup_attribute(&store, valid, &name(1)?, limits, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
         .err()
         .ok_or("oversized attribute page read succeeded")?;
     assert!(matches!(
@@ -222,8 +218,8 @@ fn missing_malformed_and_oversized_pages_preserve_exact_storage_boundaries()
     Ok(())
 }
 
-#[test]
-fn decoded_attribute_page_is_admitted_before_allocation() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn decoded_attribute_page_is_admitted_before_allocation() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
     let root = two_level_tree(&store)?;
@@ -233,14 +229,16 @@ fn decoded_attribute_page_is_admitted_before_allocation() -> Result<(), Box<dyn 
         &name(4)?,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     let mut budget = WorkBudget::UNBOUNDED;
     budget.peak_allocation_bytes = baseline
         .work
         .peak_allocation_bytes
         .checked_sub(1)
         .ok_or("baseline peak is unexpectedly zero")?;
-    let failure = lookup_attribute(&store, root, &name(4)?, DecodeLimits::default(), budget)
+    let failure = lookup_attribute(&store, root, &name(4)?, DecodeLimits::default(), budget, &CancellationToken::new())
+        .await
         .err()
         .ok_or("one-byte-short attribute allocation unexpectedly succeeded")?;
     assert!(matches!(
@@ -254,15 +252,15 @@ fn decoded_attribute_page_is_admitted_before_allocation() -> Result<(), Box<dyn 
     Ok(())
 }
 
-#[test]
-fn cancellation_and_forged_bounds_fail_before_unsafe_progress()
+#[tokio::test]
+async fn cancellation_and_forged_bounds_fail_before_unsafe_progress()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let leaf = put(&store, &AttributePage::Leaf(vec![entry(1)?]))?;
     let forged = put(
         &store,
-        &AttributePage::Internal(vec![AttributeChild {
-            first_name: name(2)?,
+        &AttributePage::Internal(vec![Child {
+            first: name(2)?,
             page: leaf,
         }]),
     )?;
@@ -272,7 +270,9 @@ fn cancellation_and_forged_bounds_fail_before_unsafe_progress()
         &name(2)?,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("forged lower bound unexpectedly succeeded")?;
     assert!(matches!(
@@ -283,15 +283,15 @@ fn cancellation_and_forged_bounds_fail_before_unsafe_progress()
 
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let cancelled = crate::async_storage::poll_ready(lookup_attribute_async(
+    let cancelled = lookup_attribute(
         &store,
         forged,
         &name(2)?,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("memory-backed async attribute lookup unexpectedly blocked")?
+    )
+    .await
     .err()
     .ok_or("cancelled attribute lookup unexpectedly succeeded")?;
     assert!(matches!(cancelled.error, AttributeLookupError::Cancelled));
@@ -299,8 +299,8 @@ fn cancellation_and_forged_bounds_fail_before_unsafe_progress()
     Ok(())
 }
 
-#[test]
-fn validation_and_boundary_queries_are_fail_closed_and_exact()
+#[tokio::test]
+async fn validation_and_boundary_queries_are_fail_closed_and_exact()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let root = two_level_tree(&store)?;
@@ -314,7 +314,9 @@ fn validation_and_boundary_queries_are_fail_closed_and_exact()
         &name(1)?,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("wrong attribute root kind unexpectedly succeeded")?;
     assert!(matches!(wrong.error, AttributeLookupError::WrongRootKind));
@@ -330,7 +332,9 @@ fn validation_and_boundary_queries_are_fail_closed_and_exact()
         &name(1)?,
         invalid_limits,
         WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("invalid attribute limits unexpectedly succeeded")?;
     assert!(matches!(invalid.error, AttributeLookupError::InvalidLimits));
@@ -343,7 +347,9 @@ fn validation_and_boundary_queries_are_fail_closed_and_exact()
         4,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("empty attribute batch unexpectedly succeeded")?;
     assert!(matches!(empty.error, AttributeLookupError::EmptyBatch));
@@ -355,7 +361,9 @@ fn validation_and_boundary_queries_are_fail_closed_and_exact()
         1,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("excessive attribute batch unexpectedly succeeded")?;
     assert!(matches!(
@@ -376,8 +384,9 @@ fn validation_and_boundary_queries_are_fail_closed_and_exact()
             &name(requested)?,
             DecodeLimits::default(),
             WorkBudget::UNBOUNDED,
-        )?;
-        assert_eq!(lookup.entry, expected);
+            &CancellationToken::new(),
+        ).await?;
+        assert_eq!(lookup.value, expected);
         assert_eq!(lookup.work.page_reads, 2);
     }
 
@@ -385,7 +394,8 @@ fn validation_and_boundary_queries_are_fail_closed_and_exact()
         maximum_page_height: 1,
         ..DecodeLimits::default()
     };
-    let height = lookup_attribute(&store, root, &name(1)?, height_one, WorkBudget::UNBOUNDED)
+    let height = lookup_attribute(&store, root, &name(1)?, height_one, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .await
         .err()
         .ok_or("attribute height limit unexpectedly succeeded")?;
     assert!(matches!(height.error, AttributeLookupError::HeightExceeded));
@@ -393,8 +403,8 @@ fn validation_and_boundary_queries_are_fail_closed_and_exact()
     Ok(())
 }
 
-#[test]
-fn inherited_attribute_upper_bounds_reject_forged_leaf_contents()
+#[tokio::test]
+async fn inherited_attribute_upper_bounds_reject_forged_leaf_contents()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let first = put(&store, &AttributePage::Leaf(vec![entry(1)?]))?;
@@ -406,16 +416,16 @@ fn inherited_attribute_upper_bounds_reject_forged_leaf_contents()
     let root = put(
         &store,
         &AttributePage::Internal(vec![
-            AttributeChild {
-                first_name: name(1)?,
+            Child {
+                first: name(1)?,
                 page: first,
             },
-            AttributeChild {
-                first_name: name(3)?,
+            Child {
+                first: name(3)?,
                 page: forged_middle,
             },
-            AttributeChild {
-                first_name: name(5)?,
+            Child {
+                first: name(5)?,
                 page: last,
             },
         ]),
@@ -426,7 +436,9 @@ fn inherited_attribute_upper_bounds_reject_forged_leaf_contents()
         &name(4)?,
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
+        &CancellationToken::new(),
     )
+    .await
     .err()
     .ok_or("forged attribute upper bound unexpectedly succeeded")?;
     assert!(matches!(

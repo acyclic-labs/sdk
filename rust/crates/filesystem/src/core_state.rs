@@ -44,7 +44,7 @@ const OWNER_LOCK: &str = "owner.lock";
 async fn run_local_transaction<T: Send + 'static>(
     operation: impl FnOnce() -> Result<T, LocalCoreStateStoreError> + Send + 'static,
 ) -> Result<T, LocalCoreStateStoreError> {
-    acyclic_native_runtime::run_blocking_io(operation).await?
+    acyclic_native_runtime::run_blocking_io(operation, None).expect("unmetered task construction cannot fail").await?
 }
 
 /// One journaled private namespace shared by core control-plane state.
@@ -120,6 +120,7 @@ struct Namespace {
     root: PathBuf,
     admission: Admission,
     durability: Durability,
+    _allocation: Option<crate::materializer::NativeAllocation>,
 }
 
 /// When a transaction's log commits become durable.
@@ -209,6 +210,7 @@ impl LocalCoreStateStore {
                 .as_ref()
                 .is_some_and(|deferral| deferral.load(Ordering::Acquire));
         Ok(Namespace {
+            _allocation: None,
             root: self.root.clone(),
             admission,
             durability: if deferred {
@@ -672,8 +674,6 @@ pub enum LocalCoreStateStoreError {
     #[error("core state log holds an undecodable intact frame: {}", .0.display())]
     Corrupt(PathBuf),
 }
-
-
 
 impl WorkspaceLineageStore for LocalCoreStateStore {
     type Error = LocalCoreStateStoreError;
@@ -1231,7 +1231,7 @@ impl NativeChange {
             }
         }
         let value = match value {
-            Some(value) => Some(NativeOwnedCoreState::from_parts(value, work.claim_allocation(0, 0)?)),
+            Some(value) => Some(NativeOwnedCoreState::from_parts(value, work.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?)),
             None => None,
         };
         self.push(key, value, work)
@@ -1241,7 +1241,7 @@ impl NativeChange {
         &mut self, key: RecordKey, value: Option<NativeOwnedCoreState<RecordValue>>,
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(), LocalCoreStateStoreError> {
-        let mut empty = work.claim_allocation(0, 0)?;
+        let mut empty = work.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?;
         let needed = self.change.0.len() + 1;
         self.slots.reserve(&mut self.change.0, needed, work)?;
         self.slots.reserve(&mut self.payloads, needed, work)?;
@@ -1364,7 +1364,7 @@ impl Residents {
                 .map(|value| native_records::native_record_owned_bytes(value, work)).transpose()?.unwrap_or(0);
             let slot = self.payload_slot(key, work)?;
             if self.1[slot].1.bytes() < bytes {
-                let mut prefix = work.claim_allocation(bytes - self.1[slot].1.bytes(), 0)?;
+                let mut prefix = work.claim_allocation(bytes - self.1[slot].1.bytes(), 0, crate::WorkCounters::UNCHARGED)?;
                 self.1[slot].1.absorb(&mut prefix)?;
             }
         }
@@ -1710,7 +1710,7 @@ fn measured_slots<T>(
     let prior = values.capacity().checked_mul(element)
         .ok_or(crate::materializer::NativeTreeMaterializationError::Work(crate::WorkError::Overflow))? as u64;
     if allocation.bytes() < prior {
-        let mut prefix = work.claim_allocation(prior - allocation.bytes(), 0)?;
+        let mut prefix = work.claim_allocation(prior - allocation.bytes(), 0, crate::WorkCounters::UNCHARGED)?;
         allocation.absorb(&mut prefix)?;
     }
     if needed <= values.capacity() { return Ok(()); }
@@ -1722,7 +1722,7 @@ fn measured_slots<T>(
     };
     work.admit(copied)?;
     // The old physical buffer and the entire new allocation overlap in realloc.
-    let mut replacement = work.claim_allocation(bytes, 1)?;
+    let mut replacement = work.claim_allocation(bytes, 1, crate::WorkCounters::UNCHARGED)?;
     values.try_reserve_exact(next - values.len())
         .map_err(crate::materializer::NativeTreeMaterializationError::AllocationFailed)?;
     let actual = (values.capacity() * element) as u64;
@@ -1763,10 +1763,10 @@ impl NativeSlotCustody {
         let index = match existing {
             Some(index) => index,
             None => {
-                let backing = self.backing.get_or_insert(work.claim_allocation(0, 0)?);
+                let backing = self.backing.get_or_insert(work.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?);
                 let needed = self.guards.len() + 1;
                 measured_slots(&mut self.guards, needed, work, backing)?;
-                self.guards.push((pointer, work.claim_allocation(0, 0)?));
+                self.guards.push((pointer, work.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?));
                 self.guards.len() - 1
             }
         };
@@ -1889,7 +1889,7 @@ impl Namespace {
             Admission::Shared { .. } => {
                 let (paths, _paths_allocation) = self.measured_record(CORE_LOG_FAMILY, &[0; 16], work)?;
                 materialization_lock(paths, _paths_allocation, work, |_| {
-                    let residents_allocation = work.claim_allocation(std::mem::size_of::<RwLock<Residents>>() as u64, 1)?;
+                    let residents_allocation = work.claim_allocation(std::mem::size_of::<RwLock<Residents>>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
                     let residents = Arc::default();
                     let mut log = CoreLog::open_measured(self, residents, work)?;
                     log.residents_control = Some(residents_allocation);
@@ -1946,8 +1946,8 @@ impl LocalCoreStateStore {
                 }
             }
         }
-        self.measured_transaction(work, move |root, work| {
-            root.with_measured_log(work, |log| log.get_lazy_measured(root, id, work))
+        self.native_transaction(work, move |root, work| {
+            root.with_measured_log(work, |log| log.get_lazy_measured(&root, id, work))
         }).await
     }
 
@@ -1958,9 +1958,9 @@ impl LocalCoreStateStore {
         replacement: LazyWorkspaceState,
         work: crate::materializer::NativeMaterializationWork,
     ) -> Result<bool, LocalCoreStateStoreError> {
-        self.measured_transaction(work, move |root, work| {
+        self.native_transaction(work, move |root, work| {
             root.with_measured_log(work, |log| {
-                let current = log.get_lazy_measured(root, id, work)?;
+                let current = log.get_lazy_measured(&root, id, work)?;
                 if current.as_ref().map_or(0, |state| state.revision) != expected {
                     return Ok(false);
                 }
@@ -2005,7 +2005,7 @@ impl LocalCoreStateStore {
                         // Authenticate only the first freeze while companion collection
                         // and source binding updates share this same log transaction.
                         let Some(parent) = log.get_lazy_measured(
-                            root, origin.snapshot.workspace_id, work,
+                            &root, origin.snapshot.workspace_id, work,
                         )? else { return Ok(false); };
                         if parent.schema_version != replacement.schema_version
                             || parent.workspace_id != origin.snapshot.workspace_id
@@ -2019,7 +2019,7 @@ impl LocalCoreStateStore {
                         }
                     }
                 }
-                log.commit_lazy_measured(root, id, replacement, work)?;
+                log.commit_lazy_measured(&root, id, replacement, work)?;
                 Ok(true)
             })
         }).await
@@ -2063,7 +2063,7 @@ impl CoreLog {
         let payload = residents.payload_slot(key, work)?;
         let (value, allocation) = match value {
             Some(value) => { let (value, allocation) = value.into_parts(); (Some(value), allocation) },
-            None => (None, work.claim_allocation(0, 0)?),
+            None => (None, work.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?),
         };
         residents.0.push((key, value));
         residents.1[payload].1 = allocation;
@@ -2092,7 +2092,7 @@ impl CoreLog {
         let length = crate::native_host::stat_file_with_work(&file, &mut &*work)?.len();
         let size = usize::try_from(length)
             .map_err(|_| crate::materializer::NativeTreeMaterializationError::Work(crate::WorkError::Overflow))?;
-        let mut bytes_allocation = work.claim_allocation(0, 0)?;
+        let mut bytes_allocation = work.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?;
         let mut bytes = Vec::new();
         measured_slots(&mut bytes, size, work, &mut bytes_allocation)?;
         work.charge(crate::WorkCounters { bytes_copied: length, ..Default::default() })?;
@@ -2384,7 +2384,7 @@ impl CoreLog {
         self.adopt_native(work)?;
         let next_sequence = self.sequence.checked_add(1)
             .ok_or(crate::materializer::NativeTreeMaterializationError::Work(crate::WorkError::Overflow))?;
-        let mut install_allocation = work.claim_allocation(0, 0)?;
+        let mut install_allocation = work.claim_allocation(0, 0, crate::WorkCounters::UNCHARGED)?;
         let mut installs: Vec<NativeInstall> = Vec::new();
         measured_slots(&mut installs, change.change.0.len(), work, &mut install_allocation)?;
         {
@@ -2752,14 +2752,14 @@ impl MaterializationJournalStore for LocalCoreStateStore {
     type ActionCompletion<'a> = LocalMaterializationActionCompletion where Self: 'a;
 
     #[cfg(not(target_arch = "wasm32"))]
-    async fn prepare_action<'a>(&'a self, mut journal: crate::materializer::OwnedMaterializationJournal) -> Result<Self::ActionCompletion<'a>, Self::Error> {
+    async fn prepare_action<'a>(&'a self, mut journal: crate::materializer::MaterializationJournal) -> Result<Self::ActionCompletion<'a>, Self::Error> {
         let work = match &journal.custody {
             Some(allocation) => allocation.work().clone(),
             None => crate::materializer::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
                 .map_err(|(cause, _work)| LocalCoreStateStoreError::MaterializationWork(cause))?,
         };
         if journal.custody.is_none() {
-            journal.custody = Some(work.retain_owned(crate::materializer::NativeMaterializationWork::journal_control_bytes(&journal.journal)?)?);
+            journal.custody = Some(work.retain_owned(crate::materializer::journal_owned_bytes(&journal)?)?);
         }
         self.materialization_with_work(work).prepare_action(journal).await
     }
@@ -2767,27 +2767,22 @@ impl MaterializationJournalStore for LocalCoreStateStore {
     async fn load(
         &self,
         operation_id: OperationId,
-    ) -> Result<Option<crate::materializer::OwnedMaterializationJournal>, Self::Error> {
+    ) -> Result<Option<crate::materializer::MaterializationJournal>, Self::Error> {
         self.load_record(MATERIALIZATION_FAMILY, operation_id.into_bytes())
             .await
-            .map(|journal| journal.map(|journal| crate::materializer::OwnedMaterializationJournal {
-                journal,
-                #[cfg(not(target_arch = "wasm32"))]
-                custody: None,
-            }))
     }
 
     async fn compare_and_swap(
         &self,
         operation_id: OperationId,
         expected_revision: u64,
-        replacement: crate::materializer::OwnedMaterializationJournal,
-    ) -> Result<(bool, crate::materializer::OwnedMaterializationJournal), Self::Error> {
+        replacement: crate::materializer::MaterializationJournal,
+    ) -> Result<(bool, crate::materializer::MaterializationJournal), Self::Error> {
         self.transaction(move |namespace| {
             let stored = compare_and_swap(
                 &namespace.record(MATERIALIZATION_FAMILY, &operation_id.into_bytes()),
                 expected_revision,
-                &replacement.journal,
+                &replacement,
             )?;
             Ok((stored, replacement))
         }).await
@@ -2802,60 +2797,47 @@ pub struct MeasuredMaterializationStore<'a> {
 
 /// The original materialization record's accepted, lock-held completion.
 pub struct LocalMaterializationActionCompletion {
-    prepared: Option<LocalPreparedMaterializationAction>,
-    _body_custody: crate::materializer::NativeAllocation,
-}
-
-struct LocalPreparedMaterializationAction {
-    journal: crate::materializer::OwnedMaterializationJournal,
-    encoding: PreparedMaterializationEncoding,
-    host: crate::native_host::PreparedMaterializationRecord,
-    record_lock: MaterializationRecordLock,
-    paths: RecordPaths<'static>,
-    namespace: Namespace,
+    journal: Option<crate::materializer::MaterializationJournal>,
+    encoding: Vec<u8>,
+    encoding_credit: crate::materializer::NativeWorkReservation,
+    host: Option<crate::native_host::PreparedMaterializationRecord>,
+    record_lock: OwnerLock,
+    _paths: RecordPaths<'static>,
+    _namespace: Namespace,
     work: crate::materializer::NativeMaterializationWork,
-    paths_custody: crate::materializer::NativeAllocation,
-    namespace_custody: crate::materializer::NativeAllocation,
-}
-
-impl crate::materializer::MaterializationActionCompletion for LocalMaterializationActionCompletion {
-    type Error = LocalCoreStateStoreError;
-
-    fn complete(self) -> impl Future<Output = Result<crate::materializer::OwnedMaterializationJournal, Self::Error>> + Send { self }
+    _paths_custody: crate::materializer::NativeAllocation,
+    _body_custody: crate::materializer::NativeAllocation,
+    _encoding_allocation: crate::materializer::NativeAllocation,
 }
 
 impl Future for LocalMaterializationActionCompletion {
-    type Output = Result<crate::materializer::OwnedMaterializationJournal, LocalCoreStateStoreError>;
+    type Output = Result<crate::materializer::MaterializationJournal, LocalCoreStateStoreError>;
 
     fn poll(self: std::pin::Pin<&mut Self>, _context: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
         let this = self.get_mut();
-        let Some(prepared) = this.prepared.take() else {
+        let Some(mut journal) = this.journal.take() else {
             return std::task::Poll::Ready(Err(crate::materializer::NativeTreeMaterializationError::InvalidLayout.into()));
         };
-        std::task::Poll::Ready(prepared.complete())
+        std::task::Poll::Ready((|| {
+            journal.work = this.work.journal_work()?;
+            let capacity = this.encoding.len();
+            let mut writer = &mut this.encoding[..];
+            let encoded = serde_json::to_writer(&mut writer, &journal);
+            let length = capacity - writer.len();
+            this.encoding_credit.record_completed(crate::WorkCounters {
+                bytes_encoded: length as u64, bytes_copied: length as u64,
+                ..crate::WorkCounters::UNCHARGED
+            })?;
+            encoded.map_err(|_| crate::materializer::NativeTreeMaterializationError::InvalidLayout)?;
+            this.host.take().ok_or(crate::materializer::NativeTreeMaterializationError::MissingCustody)?.complete(&this.encoding[..length])?;
+            let cleanup = this.record_lock.1.take()
+                .ok_or(crate::materializer::NativeTreeMaterializationError::MissingCustody)?;
+            let (unlocked, recorded) = cleanup.attempt(|| FileExt::unlock(&this.record_lock.0));
+            recorded?;
+            unlocked?;
+            Ok(journal)
+        })())
     }
-}
-
-impl LocalPreparedMaterializationAction {
-    fn complete(mut self) -> Result<crate::materializer::OwnedMaterializationJournal, LocalCoreStateStoreError> {
-        self.journal.journal.work = self.work.journal_work()?;
-        let length = self.encoding.encode(&self.journal.journal)?;
-        self.host.complete(&self.encoding.bytes[..length])?;
-        // A committed current image remains authoritative if unlock reports a
-        // lost acknowledgement. Keep its same native work and record identity.
-        let cleanup = self.record_lock.1.take()
-            .ok_or(crate::materializer::NativeTreeMaterializationError::MissingCustody)?;
-        let (unlocked, recorded) = cleanup.attempt_recorded(|| FileExt::unlock(&self.record_lock.0));
-        recorded?;
-        unlocked?;
-        Ok(self.journal)
-    }
-}
-
-struct PreparedMaterializationEncoding {
-    bytes: Vec<u8>,
-    credit: crate::materializer::NativeWorkReservation,
-    _allocation: crate::materializer::NativeAllocation,
 }
 
 struct MaterializationEncodedSize<'a> {
@@ -2879,71 +2861,31 @@ impl Write for MaterializationEncodedSize<'_> {
     fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
 }
 
-struct MaterializationFixedEncoding<'a> {
-    bytes: &'a mut [u8],
-    position: usize,
-    credit: &'a mut crate::materializer::NativeWorkReservation,
-    failure: Option<crate::materializer::NativeTreeMaterializationError>,
-}
-
-impl Write for MaterializationFixedEncoding<'_> {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        let Some(end) = self.position.checked_add(bytes.len()).filter(|end| *end <= self.bytes.len()) else {
-            self.failure = Some(crate::materializer::NativeTreeMaterializationError::InvalidLayout);
-            return Err(std::io::ErrorKind::Other.into());
-        };
-        // The same buffer and accepted encoding quota exist before the action.
-        self.bytes[self.position..end].copy_from_slice(bytes);
-        self.position = end;
-        if let Err(error) = self.credit.record_completed(crate::WorkCounters {
-            bytes_encoded: bytes.len() as u64, bytes_copied: bytes.len() as u64,
-            ..crate::WorkCounters::UNCHARGED
-        }) {
-            self.failure = Some(error);
-            return Err(std::io::ErrorKind::Other.into());
-        }
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
-}
-
-impl PreparedMaterializationEncoding {
-    fn prepare(
-        journal: &mut MaterializationJournal,
-        work: &crate::materializer::NativeMaterializationWork,
-    ) -> Result<Self, LocalCoreStateStoreError> {
-        // Only the inline work scalars can change in this accepted window.
-        // Serialize the actual immutable journal with maximal decimal widths
-        // using its existing serializer, rather than a guessed schema estimate.
-        let original_work = journal.work;
-        journal.work = crate::WorkBudget::UNBOUNDED;
-        let mut count = MaterializationEncodedSize { work, length: 0, failure: None };
-        let encoded = serde_json::to_writer(&mut count, journal);
-        journal.work = original_work;
-        if let Some(error) = count.failure { return Err(error.into()); }
-        encoded?;
-        let mut allocation = work.claim(count.length as u64)?;
-        let mut bytes = Vec::new();
-        bytes.try_reserve_exact(count.length)
-            .map_err(crate::materializer::NativeTreeMaterializationError::AllocationFailed)?;
-        bytes.resize(count.length, 0);
-        allocation.reconcile_capacity(bytes.capacity() as u64)?;
-        let credit = work.reserve_work(crate::WorkCounters {
-            bytes_encoded: count.length as u64, bytes_copied: count.length as u64,
-            ..crate::WorkCounters::UNCHARGED
-        })?;
-        Ok(Self { bytes, credit, _allocation: allocation })
-    }
-
-    fn encode(&mut self, journal: &MaterializationJournal) -> Result<usize, LocalCoreStateStoreError> {
-        let mut writer = MaterializationFixedEncoding {
-            bytes: &mut self.bytes, position: 0, credit: &mut self.credit, failure: None,
-        };
-        let encoded = serde_json::to_writer(&mut writer, journal);
-        if let Some(error) = writer.failure { return Err(error.into()); }
-        encoded?;
-        Ok(writer.position)
-    }
+fn prepare_materialization_encoding(
+    journal: &mut MaterializationJournal,
+    work: &crate::materializer::NativeMaterializationWork,
+) -> Result<(Vec<u8>, crate::materializer::NativeWorkReservation, crate::materializer::NativeAllocation), LocalCoreStateStoreError> {
+    // Only the inline work scalars can change in this accepted window.
+    // Serialize the actual immutable journal with maximal decimal widths
+    // using its existing serializer, rather than a guessed schema estimate.
+    let original_work = journal.work;
+    journal.work = crate::WorkBudget::UNBOUNDED;
+    let mut count = MaterializationEncodedSize { work, length: 0, failure: None };
+    let encoded = serde_json::to_writer(&mut count, journal);
+    journal.work = original_work;
+    if let Some(error) = count.failure { return Err(error.into()); }
+    encoded?;
+    let mut allocation = work.claim(count.length as u64)?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(count.length)
+        .map_err(crate::materializer::NativeTreeMaterializationError::AllocationFailed)?;
+    bytes.resize(count.length, 0);
+    allocation.reconcile_capacity(bytes.capacity() as u64)?;
+    let credit = work.reserve_work(crate::WorkCounters {
+        bytes_encoded: count.length as u64, bytes_copied: count.length as u64,
+        ..crate::WorkCounters::UNCHARGED
+    })?;
+    Ok((bytes, credit, allocation))
 }
 
 impl LocalCoreStateStore {
@@ -2955,22 +2897,10 @@ impl LocalCoreStateStore {
         MeasuredMaterializationStore { store: self, work }
     }
 
-    async fn measured_transaction<T: Send + 'static>(
+    async fn native_transaction<T: Send + 'static>(
         &self,
         work: crate::materializer::NativeMaterializationWork,
-        operation: impl FnOnce(&Namespace, &crate::materializer::NativeMaterializationWork) -> Result<T, LocalCoreStateStoreError> + Send + 'static,
-    ) -> Result<T, LocalCoreStateStoreError> {
-        self.measured_transaction_owned(work, move |namespace, custody, work| {
-            let _custody = custody;
-            let namespace = namespace;
-            operation(&namespace, work)
-        }).await
-    }
-
-    async fn measured_transaction_owned<T: Send + 'static>(
-        &self,
-        work: crate::materializer::NativeMaterializationWork,
-        operation: impl FnOnce(Namespace, crate::materializer::NativeAllocation, &crate::materializer::NativeMaterializationWork) -> Result<T, LocalCoreStateStoreError> + Send + 'static,
+        operation: impl FnOnce(Namespace, &crate::materializer::NativeMaterializationWork) -> Result<T, LocalCoreStateStoreError> + Send + 'static,
     ) -> Result<T, LocalCoreStateStoreError> {
         let bytes = self.root.as_os_str().len() as u64;
         let copy = crate::WorkCounters { bytes_copied: bytes, ..crate::WorkCounters::default() };
@@ -3002,8 +2932,8 @@ impl LocalCoreStateStore {
             let namespace_allocation = work.claim(bytes)?;
             let root = store.root.clone();
             work.spent(copy)?;
-            let namespace = Namespace { root, admission, durability: if deferred { Durability::Deferred } else { Durability::Flushed } };
-            operation(namespace, namespace_allocation, &work)
+            let namespace = Namespace { root, admission, durability: if deferred { Durability::Deferred } else { Durability::Flushed }, _allocation: Some(namespace_allocation) };
+            operation(namespace, &work)
         }).await
     }
 }
@@ -3013,28 +2943,28 @@ impl MaterializationJournalStore for MeasuredMaterializationStore<'_> {
 
     type ActionCompletion<'a> = LocalMaterializationActionCompletion where Self: 'a;
 
-    async fn prepare_action<'a>(&'a self, mut journal: crate::materializer::OwnedMaterializationJournal) -> Result<Self::ActionCompletion<'a>, Self::Error> {
+    async fn prepare_action<'a>(&'a self, mut journal: crate::materializer::MaterializationJournal) -> Result<Self::ActionCompletion<'a>, Self::Error> {
         let custody = journal.custody.as_ref().ok_or(crate::materializer::NativeTreeMaterializationError::MissingCustody)?;
         if !custody.work().shares_allocation_context(&self.work) {
             return Err(LocalCoreStateStoreError::NativeLedgerMismatch);
         }
-        if journal.journal.phase != crate::MaterializationPhase::Preparing
-            || !journal.journal.is_valid_for(journal.journal.plan.operation_id) {
+        if journal.phase != crate::MaterializationPhase::Preparing
+            || !journal.is_valid_for(journal.plan.operation_id) {
             return Err(crate::materializer::NativeTreeMaterializationError::InvalidLayout.into());
         }
-        self.store.measured_transaction_owned(self.work.clone(), move |namespace, namespace_custody, work| {
-            let (paths, paths_custody) = namespace.measured_record(MATERIALIZATION_FAMILY, &journal.journal.plan.operation_id.into_bytes(), work)?;
+        self.store.native_transaction(self.work.clone(), move |namespace, work| {
+            let (paths, paths_custody) = namespace.measured_record(MATERIALIZATION_FAMILY, &journal.plan.operation_id.into_bytes(), work)?;
             let (paths, paths_custody, record_lock) = materialization_acquire_lock(paths, paths_custody, work)?;
             let current = measured_read_record::<MaterializationJournal>(&paths, work)?
                 .ok_or(crate::materializer::NativeTreeMaterializationError::InvalidLayout)?;
-            if current.0 != journal.journal {
+            if current.0 != journal {
                 return Err(crate::materializer::NativeTreeMaterializationError::InvalidLayout.into());
             }
             drop(current);
             let body_custody = work.retain_owned(std::mem::size_of::<LocalMaterializationActionCompletion>() as u64)?;
-            journal.journal.revision = journal.journal.revision.checked_add(1).ok_or(crate::WorkError::Overflow)
+            journal.revision = journal.revision.checked_add(1).ok_or(crate::WorkError::Overflow)
                 .map_err(crate::materializer::NativeTreeMaterializationError::from)?;
-            let encoding = PreparedMaterializationEncoding::prepare(&mut journal.journal, work)?;
+            let (encoding, encoding_credit, encoding_allocation) = prepare_materialization_encoding(&mut journal, work)?;
             // Preserve the actual old image durably before the action. This is
             // the same previous/current family, not a second journal.
             materialization_copy(&paths.current, &paths.previous, work)?;
@@ -3044,48 +2974,44 @@ impl MaterializationJournalStore for MeasuredMaterializationStore<'_> {
                 Path::new(paths.current.file_name().ok_or(crate::materializer::NativeTreeMaterializationError::InvalidLayout)?),
                 Path::new(paths.previous.file_name().ok_or(crate::materializer::NativeTreeMaterializationError::InvalidLayout)?),
                 Path::new(paths.temporary.file_name().ok_or(crate::materializer::NativeTreeMaterializationError::InvalidLayout)?),
-                true, work, encoding.bytes.len(),
+                true, work, encoding.len(),
             )?;
             let RecordPaths { directory, current, previous, temporary, lock, .. } = paths;
             let paths = RecordPaths { directory, current, previous, temporary, lock, namespace: PhantomData };
             Ok(LocalMaterializationActionCompletion {
-                prepared: Some(LocalPreparedMaterializationAction {
-                    journal, encoding, host, record_lock, paths, namespace,
-                    work: work.clone(), paths_custody, namespace_custody,
-                }),
-                _body_custody: body_custody,
+                journal: Some(journal), encoding, encoding_credit, host: Some(host), record_lock, _paths: paths, _namespace: namespace,
+                work: work.clone(), _paths_custody: paths_custody,
+                _body_custody: body_custody, _encoding_allocation: encoding_allocation,
             })
         }).await
     }
 
-    async fn load(&self, operation_id: OperationId) -> Result<Option<crate::materializer::OwnedMaterializationJournal>, Self::Error> {
-        self.store.measured_transaction(self.work.clone(), move |namespace, work| {
+    async fn load(&self, operation_id: OperationId) -> Result<Option<crate::materializer::MaterializationJournal>, Self::Error> {
+        self.store.native_transaction(self.work.clone(), move |namespace, work| {
             let (paths, _paths_allocation) = namespace.measured_record(MATERIALIZATION_FAMILY, &operation_id.into_bytes(), work)?;
             materialization_lock(paths, _paths_allocation, work, |paths| {
                 let journal = measured_read_record::<MaterializationJournal>(&paths, work)?;
-                let journal = journal.map(|(journal, allocation)| crate::materializer::OwnedMaterializationJournal {
-                    journal, custody: Some(allocation),
-                });
-                work.set_original_work(journal.as_ref().map_or_else(crate::WorkCounters::default, |record| record.journal.work));
+                let journal = journal.map(|(journal, allocation)| { let mut journal = journal; journal.custody = Some(allocation); journal });
+                work.set_original_work(journal.as_ref().map_or_else(crate::WorkCounters::default, |record| record.work));
                 Ok(journal)
             })
         }).await
     }
 
-    async fn compare_and_swap(&self, operation_id: OperationId, expected_revision: u64, mut replacement: crate::materializer::OwnedMaterializationJournal) -> Result<(bool, crate::materializer::OwnedMaterializationJournal), Self::Error> {
+    async fn compare_and_swap(&self, operation_id: OperationId, expected_revision: u64, mut replacement: crate::materializer::MaterializationJournal) -> Result<(bool, crate::materializer::MaterializationJournal), Self::Error> {
         let allocation = replacement.custody.as_ref()
             .ok_or(crate::materializer::NativeTreeMaterializationError::MissingCustody)?;
         if !allocation.work().shares_ledger(&self.work) {
             return Err(LocalCoreStateStoreError::NativeLedgerMismatch);
         }
-        self.store.measured_transaction(self.work.clone(), move |namespace, work| {
+        self.store.native_transaction(self.work.clone(), move |namespace, work| {
             let (paths, _paths_allocation) = namespace.measured_record(MATERIALIZATION_FAMILY, &operation_id.into_bytes(), work)?;
             let stored = materialization_lock(paths, _paths_allocation, work, |paths| {
                 let current = measured_read_record::<MaterializationJournal>(&paths, work)?;
                 if current.as_ref().map_or(0, |(journal, _allocation)| journal.revision) != expected_revision { return Ok(false); }
                 work.set_original_work(current.as_ref().map_or_else(crate::WorkCounters::default, |(journal, _allocation)| journal.work));
-                replacement.journal.work = work.journal_work()?;
-                measured_write_record(&paths, &replacement.journal, work)?;
+                replacement.work = work.journal_work()?;
+                measured_write_record(&paths, &replacement, work)?;
                 Ok(true)
             })?;
             Ok((stored, replacement))
@@ -3096,7 +3022,7 @@ impl MaterializationJournalStore for MeasuredMaterializationStore<'_> {
 impl MeasuredMaterializationStore<'_> {
     /// Retains terminal intent until the final record removal; partial cleanup remains observable and retryable through this same journal family.
     pub async fn remove(&self, operation_id: OperationId) -> Result<(), LocalCoreStateStoreError> {
-        self.store.measured_transaction(self.work.clone(), move |namespace, work| {
+        self.store.native_transaction(self.work.clone(), move |namespace, work| {
             let (paths, _paths_allocation) = namespace.measured_record(MATERIALIZATION_FAMILY, &operation_id.into_bytes(), work)?;
             materialization_lock(paths, _paths_allocation, work, |paths| {
                 let current = measured_read_record::<MaterializationJournal>(&paths, work)?;
@@ -3159,20 +3085,10 @@ fn materialization_lock<T>(
     let (paths, _paths_allocation, mut lock) = materialization_acquire_lock(paths, paths_allocation, work)?;
     let result = action(&paths);
     let cleanup = lock.1.take().ok_or(crate::materializer::NativeTreeMaterializationError::MissingCustody)?;
-    let (unlocked, recorded) = cleanup.attempt_recorded(|| FileExt::unlock(&lock.0));
+    let (unlocked, recorded) = cleanup.attempt(|| FileExt::unlock(&lock.0));
     match result {
         Err(error) => Err(error),
         Ok(value) => { recorded?; unlocked?; Ok(value) }
-    }
-}
-
-struct MaterializationRecordLock(File, Option<crate::materializer::NativeCleanupWrite>);
-
-impl Drop for MaterializationRecordLock {
-    fn drop(&mut self) {
-        if let Some(cleanup) = self.1.take() {
-            let _ = cleanup.attempt_recorded(|| FileExt::unlock(&self.0));
-        }
     }
 }
 
@@ -3180,7 +3096,7 @@ fn materialization_acquire_lock<'a>(
     paths: RecordPaths<'a>,
     mut paths_allocation: crate::materializer::NativeAllocation,
     work: &crate::materializer::NativeMaterializationWork,
-) -> Result<(RecordPaths<'a>, crate::materializer::NativeAllocation, MaterializationRecordLock), LocalCoreStateStoreError> {
+) -> Result<(RecordPaths<'a>, crate::materializer::NativeAllocation, OwnerLock), LocalCoreStateStoreError> {
     crate::native_host::create_directories(&paths.directory, &mut &*work)?;
     let lock = materialization_open_options(&paths.lock, &crate::native_host::NativeOpenOptions::ReadWriteCreate, work)?;
     let cleanup = work.reserve_cleanup_write()?;
@@ -3201,7 +3117,7 @@ fn materialization_acquire_lock<'a>(
             Err(error) => return Err(error.into()),
         }
     }
-    Ok((paths, paths_allocation, MaterializationRecordLock(lock, Some(cleanup))))
+    Ok((paths, paths_allocation, OwnerLock(lock, Some(cleanup))))
 }
 
 struct MaterializationReader<'a> {
@@ -3696,7 +3612,6 @@ fn measured_decode_slice<T: DeserializeOwned>(bytes: &[u8], work: &crate::materi
     measured_decode_reader(std::io::Cursor::new(bytes), work, std::marker::PhantomData::<T>)
 }
 
-
 fn measured_read_record<T: DeserializeOwned>(paths: &RecordPaths, work: &crate::materializer::NativeMaterializationWork) -> Result<Option<(T, crate::materializer::NativeAllocation)>, LocalCoreStateStoreError> {
     match measured_read_file(&paths.current, work) {
         Ok(Some(value)) => Ok(Some(value)),
@@ -3738,16 +3653,16 @@ impl Write for MaterializationWriter<'_> {
 }
 
 fn materialization_sync(path: &Path, work: &crate::materializer::NativeMaterializationWork) -> Result<(), LocalCoreStateStoreError> {
-    let root = crate::native_host::HostRoot::open_with_work(path, &mut &*work)?;
-    let directory = root.open_dir_held_with_work(Path::new(""), &mut &*work)?;
+    let root = crate::native_host::HostRoot::open(path, &mut &*work)?;
+    let directory = root.open_dir_held(Path::new(""), &mut &*work)?;
     crate::native_host::sync_directory_held(&directory, &mut &*work)?;
     Ok(())
 }
 
 fn materialization_parent(path: &Path, work: &crate::materializer::NativeMaterializationWork) -> Result<cap_std::fs::Dir, crate::materializer::NativeTreeMaterializationError> {
     let parent = path.parent().filter(|path| !path.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
-    let held = crate::native_host::HostRoot::open_with_work(parent, &mut &*work)?;
-    held.open_dir_held_with_work(Path::new(""), &mut &*work)
+    let held = crate::native_host::HostRoot::open(parent, &mut &*work)?;
+    held.open_dir_held(Path::new(""), &mut &*work)
 }
 
 fn materialization_open(path: &Path, truncate: bool, work: &crate::materializer::NativeMaterializationWork) -> Result<File, crate::materializer::NativeTreeMaterializationError> {
@@ -4170,8 +4085,8 @@ impl LazyNode for LazyOverlay {
         &self,
         meter: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(Self, crate::materializer::NativeAllocation), LocalCoreStateStoreError> {
-        meter.with_owned_allocations(|allocations, work, budget, cancellation| {
-            Ok(self.clone_measured(allocations, work, budget, cancellation)?)
+        meter.allocations(|allocations, work, budget, cancellation| {
+            Ok(crate::lazy_workspace::clone_lazy_node(self, allocations, work, budget, cancellation)?)
         })
     }
 
@@ -4213,8 +4128,8 @@ impl LazyNode for crate::LazyShadow {
         &self,
         meter: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(Self, crate::materializer::NativeAllocation), LocalCoreStateStoreError> {
-        meter.with_owned_allocations(|allocations, work, budget, cancellation| {
-            Ok(self.clone_measured(allocations, work, budget, cancellation)?)
+        meter.allocations(|allocations, work, budget, cancellation| {
+            Ok(crate::lazy_workspace::clone_lazy_node(self, allocations, work, budget, cancellation)?)
         })
     }
 
@@ -4239,12 +4154,11 @@ fn lazy_digest<T: Serialize>(
     value: &T,
     meter: &crate::materializer::NativeMaterializationWork,
 ) -> Result<[u8; 32], LocalCoreStateStoreError> {
-    meter.with_allocations(|_, work, budget, cancellation| {
+    meter.allocations(|_, work, budget, cancellation| {
         crate::lazy_workspace::hash_lazy_value_with_counters(value, work, budget, cancellation)
             .map_err(LocalCoreStateStoreError::LazyWork)
-    })
+    }).map(|(value, _allocation)| value)
 }
-
 
 fn native_core_error(error: LocalCoreStateStoreError) -> crate::LazyWorkspaceError {
     use crate::LazyWorkspaceError as Lazy;
@@ -4302,15 +4216,6 @@ impl LocalCoreStateStore {
         &self,
         id: T::Id,
         meter: crate::materializer::NativeMaterializationWork,
-    ) -> Result<Option<T>, LocalCoreStateStoreError> {
-        Ok(self.load_node_owned::<T>(id, meter).await?
-            .map(|owned| owned.into_parts().0))
-    }
-
-    async fn load_node_owned<T: LazyNode>(
-        &self,
-        id: T::Id,
-        meter: crate::materializer::NativeMaterializationWork,
     ) -> Result<Option<NativeOwnedCoreState<T>>, LocalCoreStateStoreError> {
         if T::address(id) == lazy_digest(&T::default(), &meter)? {
             return Ok(Some(NativeOwnedCoreState::from_parts(T::default(), meter.claim(0)?)));
@@ -4323,7 +4228,7 @@ impl LocalCoreStateStore {
             }
             memo.collected
         };
-        let value = self.measured_transaction(meter.clone(), move |namespace, work| {
+        let value = self.native_transaction(meter.clone(), move |namespace, work| {
             let (paths, _paths_allocation) =
                 namespace.measured_record(T::FAMILY, &T::address(id), work)?;
             materialization_lock(paths, _paths_allocation, work, |paths| {
@@ -4356,16 +4261,6 @@ impl LocalCoreStateStore {
     async fn put_node<T: LazyNode>(
         &self,
         id: T::Id,
-        value: T,
-        meter: crate::materializer::NativeMaterializationWork,
-    ) -> Result<(), LocalCoreStateStoreError> {
-        let allocation = meter.retain_owned(value.owned_bytes())?;
-        self.put_node_owned(id, NativeOwnedCoreState::from_parts(value, allocation), meter).await
-    }
-
-    async fn put_node_owned<T: LazyNode>(
-        &self,
-        id: T::Id,
         owned: NativeOwnedCoreState<T>,
         meter: crate::materializer::NativeMaterializationWork,
     ) -> Result<(), LocalCoreStateStoreError> {
@@ -4395,7 +4290,7 @@ impl LocalCoreStateStore {
                     else { Err(LocalCoreStateStoreError::Integrity) };
             }
         }
-        let stored = self.measured_transaction(meter.clone(), move |namespace, work| {
+        let stored = self.native_transaction(meter.clone(), move |namespace, work| {
             let (paths, _paths_allocation) =
                 namespace.measured_record(T::FAMILY, &T::address(id), work)?;
             materialization_lock(paths, _paths_allocation, work, |paths| {
@@ -4442,7 +4337,8 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         &self,
         overlay: LazyOverlayId,
     ) -> Result<Option<LazyOverlay>, Self::Error> {
-        self.load_node(overlay, unbounded_lazy_work()?).await
+        self.load_node::<LazyOverlay>(overlay, unbounded_lazy_work()?).await
+            .map(|value| value.map(|owned| owned.into_parts().0))
     }
 
     async fn put_lazy_overlay(
@@ -4450,14 +4346,17 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         overlay: LazyOverlayId,
         value: LazyOverlay,
     ) -> Result<(), Self::Error> {
-        self.put_node(overlay, value, unbounded_lazy_work()?).await
+        let work = unbounded_lazy_work()?;
+        let allocation = work.retain_owned(value.owned_bytes())?;
+        self.put_node(overlay, NativeOwnedCoreState::from_parts(value, allocation), work).await
     }
 
     async fn load_lazy_shadow(
         &self,
         shadow: crate::LazyShadowId,
     ) -> Result<Option<crate::LazyShadow>, Self::Error> {
-        self.load_node(shadow, unbounded_lazy_work()?).await
+        self.load_node::<crate::LazyShadow>(shadow, unbounded_lazy_work()?).await
+            .map(|value| value.map(|owned| owned.into_parts().0))
     }
 
     async fn put_lazy_shadow(
@@ -4465,7 +4364,9 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         shadow: crate::LazyShadowId,
         value: crate::LazyShadow,
     ) -> Result<(), Self::Error> {
-        self.put_node(shadow, value, unbounded_lazy_work()?).await
+        let work = unbounded_lazy_work()?;
+        let allocation = work.retain_owned(value.owned_bytes())?;
+        self.put_node(shadow, NativeOwnedCoreState::from_parts(value, allocation), work).await
     }
 
     async fn load_lazy_workspace_measured(
@@ -4503,7 +4404,8 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
     ) -> Result<crate::OperationReceipt<Option<LazyOverlay>>, crate::LazyWorkspaceError> {
         let work = crate::materializer::NativeMaterializationWork::new(budget, cancellation)
             .map_err(lazy_native_failure)?;
-        finish_lazy_receipt(self.load_node(overlay, work.clone()).await, &work)
+        finish_lazy_receipt(self.load_node::<LazyOverlay>(overlay, work.clone()).await
+            .map(|value| value.map(|owned| owned.into_parts().0)), &work)
     }
 
     async fn put_lazy_overlay_measured(
@@ -4515,7 +4417,11 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
     ) -> Result<crate::OperationReceipt<()>, crate::LazyWorkspaceError> {
         let work = crate::materializer::NativeMaterializationWork::new(budget, cancellation)
             .map_err(lazy_native_failure)?;
-        finish_lazy_receipt(self.put_node(overlay, value, work.clone()).await, &work)
+        let result = match work.retain_owned(value.owned_bytes()) {
+            Ok(allocation) => self.put_node(overlay, NativeOwnedCoreState::from_parts(value, allocation), work.clone()).await,
+            Err(error) => Err(error.into()),
+        };
+        finish_lazy_receipt(result, &work)
     }
 
     async fn load_lazy_shadow_measured(
@@ -4526,7 +4432,8 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
     ) -> Result<crate::OperationReceipt<Option<crate::LazyShadow>>, crate::LazyWorkspaceError> {
         let work = crate::materializer::NativeMaterializationWork::new(budget, cancellation)
             .map_err(lazy_native_failure)?;
-        finish_lazy_receipt(self.load_node(shadow, work.clone()).await, &work)
+        finish_lazy_receipt(self.load_node::<crate::LazyShadow>(shadow, work.clone()).await
+            .map(|value| value.map(|owned| owned.into_parts().0)), &work)
     }
 
     async fn put_lazy_shadow_measured(
@@ -4538,7 +4445,11 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
     ) -> Result<crate::OperationReceipt<()>, crate::LazyWorkspaceError> {
         let work = crate::materializer::NativeMaterializationWork::new(budget, cancellation)
             .map_err(lazy_native_failure)?;
-        finish_lazy_receipt(self.put_node(shadow, value, work.clone()).await, &work)
+        let result = match work.retain_owned(value.owned_bytes()) {
+            Ok(allocation) => self.put_node(shadow, NativeOwnedCoreState::from_parts(value, allocation), work.clone()).await,
+            Err(error) => Err(error.into()),
+        };
+        finish_lazy_receipt(result, &work)
     }
 
     async fn load_lazy_workspace_with_native_work(
@@ -4578,7 +4489,7 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         id: LazyOverlayId,
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<Option<NativeOwnedCoreState<LazyOverlay>>, crate::LazyWorkspaceError> {
-        self.load_node_owned::<LazyOverlay>(id, work.clone()).await.map_err(native_core_error)
+        self.load_node::<LazyOverlay>(id, work.clone()).await.map_err(native_core_error)
     }
 
     async fn put_lazy_overlay_with_native_work(
@@ -4587,7 +4498,7 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         value: NativeOwnedCoreState<LazyOverlay>,
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(), crate::LazyWorkspaceError> {
-        self.put_node_owned(id, value, work.clone()).await.map_err(native_core_error)
+        self.put_node(id, value, work.clone()).await.map_err(native_core_error)
     }
 
     async fn load_lazy_shadow_with_native_work(
@@ -4595,7 +4506,7 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         id: crate::LazyShadowId,
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<Option<NativeOwnedCoreState<crate::LazyShadow>>, crate::LazyWorkspaceError> {
-        self.load_node_owned::<crate::LazyShadow>(id, work.clone()).await.map_err(native_core_error)
+        self.load_node::<crate::LazyShadow>(id, work.clone()).await.map_err(native_core_error)
     }
 
     async fn put_lazy_shadow_with_native_work(
@@ -4604,7 +4515,7 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         value: NativeOwnedCoreState<crate::LazyShadow>,
         work: &crate::materializer::NativeMaterializationWork,
     ) -> Result<(), crate::LazyWorkspaceError> {
-        self.put_node_owned(id, value, work.clone()).await.map_err(native_core_error)
+        self.put_node(id, value, work.clone()).await.map_err(native_core_error)
     }
 }
 
@@ -4972,7 +4883,6 @@ mod tests {
         Digest, WorkspaceContextRoot, WorkspaceContextState, WorkspaceName, WorkspaceRootId,
     };
 
-
     #[test]
     fn local_transactions_work_without_a_tokio_runtime() {
         let directory = tempfile::tempdir().expect("local state directory");
@@ -5063,8 +4973,9 @@ mod tests {
     fn workspace() -> WorkspaceId {
         WorkspaceId::derive(
             [4; 16],
-            &WorkspaceName::new("durable").expect("valid workspace"),
-        )
+            &WorkspaceName::new("durable", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).expect("valid workspace").value,
+            crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(),
+        ).expect("unbounded workspace identity").value
     }
 
     fn workspace_context(
@@ -5569,6 +5480,7 @@ mod tests {
 
     fn materialization_journal(operation_id: OperationId) -> MaterializationJournal {
         MaterializationJournal {
+            #[cfg(not(target_arch = "wasm32"))] custody: None,
             version: 2, revision: 1, root_identity: None,
             preparation_identity: None, preparation_progress: None,
             work: crate::WorkCounters::UNCHARGED,
@@ -5592,11 +5504,7 @@ mod tests {
         let operation_id = OperationId::new();
         let journal = materialization_journal(operation_id);
         assert!(
-            MaterializationJournalStore::compare_and_swap(&store, operation_id, 0, crate::materializer::OwnedMaterializationJournal {
-                journal: journal.clone(),
-                #[cfg(not(target_arch = "wasm32"))]
-                custody: None,
-            })
+            MaterializationJournalStore::compare_and_swap(&store, operation_id, 0, { let mut journal = crate::materializer::duplicate_journal(&journal).expect("ordinary journal copy"); journal.custody = None; journal })
                 .await
                 .expect("write journal").0
         );
@@ -5615,11 +5523,7 @@ mod tests {
         terminal.revision = 2;
         terminal.phase = crate::MaterializationPhase::Applied;
         assert!(
-            MaterializationJournalStore::compare_and_swap(&store, operation_id, 1, crate::materializer::OwnedMaterializationJournal {
-                journal: terminal,
-                #[cfg(not(target_arch = "wasm32"))]
-                custody: None,
-            })
+            MaterializationJournalStore::compare_and_swap(&store, operation_id, 1, { let mut journal = terminal; journal.custody = None; journal })
                 .await
                 .expect("finish journal").0
         );
@@ -5646,7 +5550,7 @@ mod tests {
         journal.plan.edits.push(crate::MaterializationEdit::Install {
             path: "file.txt".to_owned(), image: vec![1, 2, 3],
         });
-        journal.preimages.push(crate::MaterializationPreimage { image: vec![4, 5, 6] });
+        journal.preimages.push(crate::MaterializationPreimage { image: vec![4, 5, 6], custody: None });
         let paths = namespace.record("materialization", &operation_id.into_bytes());
         std::fs::create_dir_all(&paths.directory).expect("journal directory");
         std::fs::write(
@@ -5666,7 +5570,7 @@ mod tests {
             MaterializationJournalStore::load(&store, operation_id)
                 .await
                 .expect("recover journal")
-                .map(|record| record.journal),
+                .map(|record| record),
             Some(journal)
         );
         assert!(paths.current.exists());
@@ -5699,7 +5603,6 @@ mod tests {
 
     #[tokio::test]
     async fn accepted_materialization_completion_survives_cancellation_without_new_allocation() {
-        use crate::materializer::MaterializationActionCompletion as _;
         let directory = tempfile::tempdir().expect("real journal namespace");
         let root = directory.path().join("checkout");
         std::fs::create_dir(&root).expect("original checkout allocation");
@@ -5714,7 +5617,7 @@ mod tests {
         }
         let budget: crate::WorkBudget = serde_json::from_value(value).expect("all finite");
         let work = crate::materializer::NativeMaterializationWork::new(budget, &cancellation).expect("original finite work");
-        let held = crate::native_host::HostRoot::open_with_work(&root, &mut &work).expect("actual root identity");
+        let held = crate::native_host::HostRoot::open(&root, &mut &work).expect("actual root identity");
         let operation = OperationId::new();
         let mut journal = materialization_journal(operation);
         journal.root_identity = Some(held.identity().to_bytes());
@@ -5722,12 +5625,10 @@ mod tests {
         journal.plan.edits.push(crate::MaterializationEdit::Install {
             path: "file.txt".to_owned(), image: vec![1],
         });
-        assert!(crate::materializer::MaterializationJournalStore::compare_and_swap(&store, operation, 0, crate::materializer::OwnedMaterializationJournal {
-            journal, custody: None,
-        }).await.expect("original durable preparing intent").0);
+        assert!(crate::materializer::MaterializationJournalStore::compare_and_swap(&store, operation, 0, { let mut journal = journal; journal.custody = None; journal }).await.expect("original durable preparing intent").0);
         let measured = store.materialization_with_work(work.clone());
         let original = measured.load(operation).await.expect("original decoder").expect("same operation");
-        let root_identity = original.journal.root_identity;
+        let root_identity = original.root_identity;
         let mut file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
             .open(root.join("file.txt")).expect("authorized fixture file");
         let completion = measured.prepare_action(original).await.expect("accepted exact original completion");
@@ -5735,12 +5636,12 @@ mod tests {
         cancellation.cancel();
         let known_prefix = work.journal_work().expect("actual post-action prefix");
         let allocations = work.receipt().allocation_operations;
-        let completed = completion.complete().await.expect("only the previously accepted metadata completion");
+        let completed = completion.await.expect("only the previously accepted metadata completion");
         assert_eq!(work.receipt().allocation_operations, allocations, "completion allocates no buffer, filename, request or boxed future");
-        assert_eq!(completed.journal.revision, 2);
-        assert_eq!(completed.journal.root_identity, root_identity);
-        assert_eq!(completed.journal.work, known_prefix);
-        assert_eq!(completed.journal.phase, crate::MaterializationPhase::Preparing);
+        assert_eq!(completed.revision, 2);
+        assert_eq!(completed.root_identity, root_identity);
+        assert_eq!(completed.work, known_prefix);
+        assert_eq!(completed.phase, crate::MaterializationPhase::Preparing);
         assert!(completed.custody.as_ref().expect("original packet").work().shares_ledger(&work));
         work.receipt().verify(budget).expect("all completion work remains within original finite budget");
         drop(completed);
@@ -5748,9 +5649,9 @@ mod tests {
         drop(store);
         let restarted = LocalCoreStateStore::new(&state_root);
         let recovered = crate::materializer::MaterializationJournalStore::load(&restarted, operation).await.expect("real process-style restart").expect("same durable operation");
-        assert_eq!(recovered.journal.revision, 2);
-        assert_eq!(recovered.journal.root_identity, root_identity);
-        assert_eq!(recovered.journal.work, known_prefix, "durable prefix is a lower bound, not the later commit work");
+        assert_eq!(recovered.revision, 2);
+        assert_eq!(recovered.root_identity, root_identity);
+        assert_eq!(recovered.work, known_prefix, "durable prefix is a lower bound, not the later commit work");
         assert_eq!(std::fs::read(effect).expect("real completed source effect"), b"aftere");
     }
 
@@ -5850,7 +5751,6 @@ mod tests {
         ));
         assert_eq!(work.receipt(), before);
     }
-
 
     #[tokio::test]
     async fn measured_lazy_family_preserves_pre_cancelled_failures_without_io() {
@@ -5978,7 +5878,7 @@ mod tests {
         )?;
         let deadline = Instant::now() + Duration::from_secs(10);
         while !ready.is_file() {
-            if let Some(status) = child.try_wait()? {
+            if let Some(status) = child.try_wait(None)? {
                 return Err(format!("owner child exited before readiness: {status}").into());
             }
             if Instant::now() >= deadline {

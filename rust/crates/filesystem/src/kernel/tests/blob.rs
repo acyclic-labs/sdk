@@ -4,7 +4,7 @@ use crate::ObjectFailure;
 use crate::ObjectStoreError;
 use crate::memory::MemoryObjectStore;
 use crate::speculation::{ResidencyHint, ResidencyReason};
-use crate::storage::ObjectReadRequest;
+use crate::storage::{ObjectReadRequest, ObjectStore};
 use crate::test_support::OwnedReadObjectStore;
 use acyclic_stream::OwnedBytes;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -39,7 +39,7 @@ impl AsyncObjectStore for PeakRecordingStore {
         };
         work.verify(budget)
             .map_err(|error| ObjectFailure::before_work(error.into()))?;
-        Ok(crate::storage::ObjectReceipt { value: (), work })
+        Ok(crate::OperationReceipt { value: (), work })
     }
 
     async fn read(
@@ -143,8 +143,8 @@ fn blob_leaf_encoding_has_a_locked_golden_vector() -> Result<(), Box<dyn std::er
         "07070707070707070707070707070707",
         "07070707070707070707070707070707"
     ))?;
-    assert_eq!(encode_blob_page(&page, 1)?, expected);
-    assert_eq!(decode_blob_page(&expected, DecodeLimits::default())?, page);
+    assert_eq!(encode_blob_page(&page, 1, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?, expected);
+    assert_eq!(decode_blob_page(&expected, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?, page);
     let page_id = blob_page_id(&page, 1)?;
     assert_eq!(page_id.kind, ObjectKind::Blob);
     assert_eq!(page_id.digest, object_digest(ObjectKind::Blob, &expected));
@@ -158,9 +158,9 @@ fn blob_leaf_encoding_has_a_locked_golden_vector() -> Result<(), Box<dyn std::er
             page: page_id,
         }]),
     };
-    let internal_bytes = encode_blob_page(&internal, 1)?;
+    let internal_bytes = encode_blob_page(&internal, 1, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     assert_eq!(
-        decode_blob_page(&internal_bytes, DecodeLimits::default())?,
+        decode_blob_page(&internal_bytes, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
         internal
     );
     assert_eq!(
@@ -241,22 +241,22 @@ fn blob_page_codec_rejects_every_noncanonical_shape() -> Result<(), Box<dyn std:
             }]),
         },
     ] {
-        assert!(encode_blob_page(&invalid, 8).is_err());
+        assert!(encode_blob_page(&invalid, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed).is_err());
         assert!(blob_page_id(&invalid, 8).is_err());
     }
     assert!(matches!(
-        encode_blob_page(&valid, 0),
+        encode_blob_page(&valid, 0, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed),
         Err(CanonicalDecodeError::FieldTooLarge {
             observed: 1,
             maximum: 0,
         })
     ));
 
-    let encoded = encode_blob_page(&valid, 1)?;
+    let encoded = encode_blob_page(&valid, 1, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     let mut unknown_tag = encoded.clone();
     unknown_tag[26] = 99;
     assert!(matches!(
-        decode_blob_page(&unknown_tag, DecodeLimits::default()),
+        decode_blob_page(&unknown_tag, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())),
         Err(CanonicalDecodeError::UnknownTag {
             field: "blob_page",
             tag: 99,
@@ -264,14 +264,14 @@ fn blob_page_codec_rejects_every_noncanonical_shape() -> Result<(), Box<dyn std:
     ));
     let mut trailing = encoded.clone();
     trailing.push(0);
-    assert!(decode_blob_page(&trailing, DecodeLimits::default()).is_err());
-    assert!(decode_blob_page(&encoded[..encoded.len() - 1], DecodeLimits::default()).is_err());
+    assert!(decode_blob_page(&trailing, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).is_err());
+    assert!(decode_blob_page(&encoded[..encoded.len() - 1], DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())).is_err());
     let limited = DecodeLimits {
         maximum_page_items: 0,
         ..DecodeLimits::default()
     };
     assert!(matches!(
-        decode_blob_page(&encoded, limited),
+        decode_blob_page(&encoded, limited, &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(())),
         Err(CanonicalDecodeError::FieldTooLarge {
             observed: 1,
             maximum: 0,
@@ -280,8 +280,8 @@ fn blob_page_codec_rejects_every_noncanonical_shape() -> Result<(), Box<dyn std:
     Ok(())
 }
 
-#[test]
-fn tiny_range_reads_only_one_intersecting_chunk() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn tiny_range_reads_only_one_intersecting_chunk() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let first = put(&store, ObjectKind::BlobChunk, OwnedBytes::from_static(b"abcd"))?;
     let second = put(&store, ObjectKind::BlobChunk, OwnedBytes::from_static(b"efgh"))?;
@@ -301,7 +301,7 @@ fn tiny_range_reads_only_one_intersecting_chunk() -> Result<(), Box<dyn std::err
             },
         ]),
     };
-    let bytes = encode_blob_page(&page, 8)?;
+    let bytes = encode_blob_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     let root = put(&store, ObjectKind::Blob, OwnedBytes::from(bytes))?;
     let result = read_blob_range(
         &store,
@@ -312,33 +312,15 @@ fn tiny_range_reads_only_one_intersecting_chunk() -> Result<(), Box<dyn std::err
         },
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(result.bytes.as_ref(), b"fg");
     assert_eq!(result.work.page_reads, 1);
     assert_eq!(result.work.object_probes, 2);
 
-    let cancellation = CancellationToken::new();
-    let mut future = std::pin::pin!(read_blob_range_async(
-        &store,
-        root,
-        ByteRange {
-            offset: 5,
-            length: 2,
-        },
-        DecodeLimits::default(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ));
-    let waker = Waker::noop();
-    let mut context = Context::from_waker(waker);
-    let Poll::Ready(asynchronous) = future.as_mut().poll(&mut context) else {
-        return Err("memory-backed asynchronous blob read remained pending".into());
-    };
-    assert_eq!(asynchronous?, result);
-
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let mut future = std::pin::pin!(read_blob_range_async(
+    let mut future = std::pin::pin!(read_blob_range(
         &store,
         root,
         ByteRange {
@@ -349,6 +331,7 @@ fn tiny_range_reads_only_one_intersecting_chunk() -> Result<(), Box<dyn std::err
         WorkBudget::UNBOUNDED,
         &cancelled,
     ));
+    let mut context = Context::from_waker(Waker::noop());
     let Poll::Ready(cancelled_result) = future.as_mut().poll(&mut context) else {
         return Err("pre-cancelled asynchronous blob read remained pending".into());
     };
@@ -381,9 +364,9 @@ fn owned_blob_pages_and_chunks_preserve_exact_range_results()
     let root = put(
         &store.inner,
         ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(&page, 8)?),
+        OwnedBytes::from(encode_blob_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
     )?;
-    let read = crate::async_storage::poll_ready(read_blob_range_async(
+    let read = crate::async_storage::poll_ready(read_blob_range(
         &store,
         root,
         ByteRange {
@@ -440,9 +423,9 @@ fn asynchronous_blob_ranges_batch_intersecting_leaf_chunks()
     let root = put(
         &store,
         ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(&page, 8)?),
+        OwnedBytes::from(encode_blob_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
     )?;
-    let read = crate::async_storage::poll_ready(read_blob_range_async(
+    let read = crate::async_storage::poll_ready(read_blob_range(
         &store,
         root,
         ByteRange {
@@ -591,12 +574,12 @@ fn owned_blob_page_releases_retention_when_decoded_cache_rejects_admission()
     let root = put(
         &store.inner,
         ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(&page, 8)?),
+        OwnedBytes::from(encode_blob_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
     )?;
     store
         .reject_decoded_admission
         .store(true, std::sync::atomic::Ordering::Relaxed);
-    let failure = crate::async_storage::poll_ready(read_blob_range_async(
+    let failure = crate::async_storage::poll_ready(read_blob_range(
         &store,
         root,
         ByteRange {
@@ -618,8 +601,8 @@ fn owned_blob_page_releases_retention_when_decoded_cache_rejects_admission()
     Ok(())
 }
 
-#[test]
-fn blob_read_exposes_nearest_authenticated_unvisited_chunk()
+#[tokio::test]
+async fn blob_read_exposes_nearest_authenticated_unvisited_chunk()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let first = put(&store, ObjectKind::BlobChunk, OwnedBytes::from_static(b"abcd"))?;
@@ -643,7 +626,7 @@ fn blob_read_exposes_nearest_authenticated_unvisited_chunk()
     let root = put(
         &store,
         ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(&page, 8)?),
+        OwnedBytes::from(encode_blob_page(&page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
     )?;
     let read = read_blob_range(
         &store,
@@ -654,7 +637,8 @@ fn blob_read_exposes_nearest_authenticated_unvisited_chunk()
         },
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(read.bytes.as_ref(), b"abcd");
     assert_eq!(read.work.object_probes, 2);
     assert_eq!(
@@ -670,8 +654,8 @@ fn blob_read_exposes_nearest_authenticated_unvisited_chunk()
     Ok(())
 }
 
-#[test]
-fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
+#[tokio::test]
+async fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let missing_chunk = ObjectId {
@@ -690,7 +674,7 @@ fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
     let missing_root = put(
         &store,
         ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(&missing_page, 8)?),
+        OwnedBytes::from(encode_blob_page(&missing_page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
     )?;
     let missing = read_blob_range(
         &store,
@@ -701,7 +685,8 @@ fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
         },
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )
+        &CancellationToken::new(),
+    ).await
     .err()
     .ok_or("missing blob chunk unexpectedly succeeded")?;
     assert!(matches!(
@@ -723,7 +708,7 @@ fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
     let short_root = put(
         &store,
         ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(&short_page, 8)?),
+        OwnedBytes::from(encode_blob_page(&short_page, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
     )?;
     let short = read_blob_range(
         &store,
@@ -734,7 +719,8 @@ fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
         },
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )
+        &CancellationToken::new(),
+    ).await
     .err()
     .ok_or("short blob chunk unexpectedly succeeded")?;
     assert!(matches!(short.error, BlobReadError::ChunkLengthMismatch));
@@ -756,7 +742,8 @@ fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
             range,
             DecodeLimits::default(),
             WorkBudget::UNBOUNDED,
-        )
+            &CancellationToken::new(),
+        ).await
         .err()
         .ok_or("invalid blob range unexpectedly succeeded")?;
         assert!(matches!(failure.error, BlobReadError::InvalidRange));
@@ -770,7 +757,8 @@ fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
         },
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert!(empty.bytes.is_empty());
     assert_eq!(empty.work.page_reads, 1);
     let wrong = read_blob_range(
@@ -782,7 +770,8 @@ fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
         },
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )
+        &CancellationToken::new(),
+    ).await
     .err()
     .ok_or("wrong blob root kind unexpectedly succeeded")?;
     assert!(matches!(wrong.error, BlobReadError::WrongRootKind));
@@ -800,7 +789,8 @@ fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
         },
         invalid_limits,
         WorkBudget::UNBOUNDED,
-    )
+        &CancellationToken::new(),
+    ).await
     .err()
     .ok_or("invalid blob limits unexpectedly succeeded")?;
     assert!(matches!(invalid.error, BlobReadError::InvalidLimits));
@@ -808,8 +798,8 @@ fn blob_range_rejects_missing_short_invalid_and_wrongly_typed_inputs()
     Ok(())
 }
 
-#[test]
-fn blob_read_allocations_are_admitted_before_decode_queue_and_output_growth()
+#[tokio::test]
+async fn blob_read_allocations_are_admitted_before_decode_queue_and_output_growth()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let first = put(&store, ObjectKind::BlobChunk, OwnedBytes::from_static(b"abcd"))?;
@@ -833,7 +823,7 @@ fn blob_read_allocations_are_admitted_before_decode_queue_and_output_growth()
     let root = put(
         &store,
         ObjectKind::Blob,
-        OwnedBytes::from(encode_blob_page(&page, 2)?),
+        OwnedBytes::from(encode_blob_page(&page, 2, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?),
     )?;
     let limits = DecodeLimits {
         maximum_page_items: 2,
@@ -845,7 +835,7 @@ fn blob_read_allocations_are_admitted_before_decode_queue_and_output_growth()
         offset: 1,
         length: 6,
     };
-    let baseline = read_blob_range(&store, root, range, limits, WorkBudget::UNBOUNDED)?;
+    let baseline = read_blob_range(&store, root, range, limits, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     let maximum = baseline.work.peak_allocation_bytes - 1;
     let failure = read_blob_range(
         &store,
@@ -856,7 +846,8 @@ fn blob_read_allocations_are_admitted_before_decode_queue_and_output_growth()
             peak_allocation_bytes: maximum,
             ..WorkBudget::UNBOUNDED
         },
-    )
+        &CancellationToken::new(),
+    ).await
     .err()
     .ok_or("one-byte-short blob read allocation budget unexpectedly succeeded")?;
     assert!(matches!(
@@ -872,8 +863,8 @@ fn blob_read_allocations_are_admitted_before_decode_queue_and_output_growth()
     Ok(())
 }
 
-#[test]
-fn parent_child_bound_forgery_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn parent_child_bound_forgery_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let chunk = put(&store, ObjectKind::BlobChunk, OwnedBytes::from_static(b"abcd"))?;
     let leaf = BlobPage {
@@ -885,7 +876,7 @@ fn parent_child_bound_forgery_fails_closed() -> Result<(), Box<dyn std::error::E
             chunk,
         }]),
     };
-    let leaf_bytes = encode_blob_page(&leaf, 8)?;
+    let leaf_bytes = encode_blob_page(&leaf, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     let leaf_id = put(&store, ObjectKind::Blob, OwnedBytes::from(leaf_bytes))?;
     let root = BlobPage {
         first_offset: 1,
@@ -896,7 +887,7 @@ fn parent_child_bound_forgery_fails_closed() -> Result<(), Box<dyn std::error::E
             page: leaf_id,
         }]),
     };
-    let root_bytes = encode_blob_page(&root, 8)?;
+    let root_bytes = encode_blob_page(&root, 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     let root_id = put(&store, ObjectKind::Blob, OwnedBytes::from(root_bytes))?;
     assert!(matches!(
         read_blob_range(
@@ -907,8 +898,9 @@ fn parent_child_bound_forgery_fails_closed() -> Result<(), Box<dyn std::error::E
                 length: 1
             },
             DecodeLimits::default(),
-            WorkBudget::UNBOUNDED
-        ),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        ).await,
         Err(BlobReadFailure {
             error: BlobReadError::ChildBoundsMismatch,
             ..
@@ -917,8 +909,8 @@ fn parent_child_bound_forgery_fails_closed() -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
-#[test]
-fn streaming_builder_round_trips_a_multilevel_index() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn streaming_builder_round_trips_a_multilevel_index() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let mut source = std::io::Cursor::new(b"abcdefghi");
     let built = build_blob(
@@ -931,7 +923,8 @@ fn streaming_builder_round_trips_a_multilevel_index() -> Result<(), Box<dyn std:
             maximum_blob_bytes: 9,
         },
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(built.logical_bytes, 9);
     assert_eq!(built.work.source_bytes_read, 9);
     let read = read_blob_range(
@@ -946,7 +939,8 @@ fn streaming_builder_round_trips_a_multilevel_index() -> Result<(), Box<dyn std:
             ..DecodeLimits::default()
         },
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(read.bytes.as_ref(), b"bcdefgh");
     assert!(read.work.page_reads >= 3);
     let narrow = read_blob_range(
@@ -961,7 +955,8 @@ fn streaming_builder_round_trips_a_multilevel_index() -> Result<(), Box<dyn std:
             ..DecodeLimits::default()
         },
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(narrow.bytes.as_ref(), b"e");
     assert!(narrow.work.object_probes < read.work.object_probes);
 
@@ -978,7 +973,8 @@ fn streaming_builder_round_trips_a_multilevel_index() -> Result<(), Box<dyn std:
             ..DecodeLimits::default()
         },
         WorkBudget::UNBOUNDED,
-    )
+        &CancellationToken::new(),
+    ).await
     .err()
     .ok_or("multilevel blob unexpectedly fit a one-page height bound")?;
     assert!(matches!(shallow.error, BlobReadError::CycleOrHeight));
@@ -1038,7 +1034,7 @@ fn measured_async_source_work_replaces_inferred_bytes_and_obeys_budget()
         returned: false,
         work: None,
     };
-    let built = crate::async_storage::poll_ready(build_blob_async(
+    let built = crate::async_storage::poll_ready(build_blob(
         &MemoryObjectStore::default(),
         &mut source,
         options,
@@ -1055,7 +1051,7 @@ fn measured_async_source_work_replaces_inferred_bytes_and_obeys_budget()
     };
     let mut budget = WorkBudget::UNBOUNDED;
     budget.source_path_components = 6;
-    let failed = crate::async_storage::poll_ready(build_blob_async(
+    let failed = crate::async_storage::poll_ready(build_blob(
         &MemoryObjectStore::default(),
         &mut source,
         options,
@@ -1110,7 +1106,7 @@ fn owned_chunk_retains_actual_backing_capacity_not_visible_length()
         maximum_blob_bytes: 3,
     };
     let (mut source, capacity) = make_source();
-    let built = crate::async_storage::poll_ready(build_blob_async(
+    let built = crate::async_storage::poll_ready(build_blob(
         &MemoryObjectStore::default(), &mut source, options,
         WorkBudget::UNBOUNDED, &CancellationToken::new(),
     )).ok_or("owned capacity build blocked")??;
@@ -1121,7 +1117,7 @@ fn owned_chunk_retains_actual_backing_capacity_not_visible_length()
     let (mut source, capacity) = make_source();
     let mut budget = WorkBudget::UNBOUNDED;
     budget.peak_allocation_bytes = capacity - 1;
-    let failed = crate::async_storage::poll_ready(build_blob_async(
+    let failed = crate::async_storage::poll_ready(build_blob(
         &MemoryObjectStore::default(), &mut source, options,
         budget, &CancellationToken::new(),
     )).ok_or("owned capacity refusal blocked")?
@@ -1133,8 +1129,8 @@ fn owned_chunk_retains_actual_backing_capacity_not_visible_length()
     Ok(())
 }
 
-#[test]
-fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_work()
+#[tokio::test]
+async fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let options = BlobBuildOptions {
         chunk_bytes: 4,
@@ -1150,7 +1146,7 @@ fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_work()
         fail_after: None,
         cancel_at: None,
     };
-    let built = crate::async_storage::poll_ready(build_blob_async(
+    let built = crate::async_storage::poll_ready(build_blob(
         &store,
         &mut partial,
         options,
@@ -1170,7 +1166,8 @@ fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_work()
             },
             DecodeLimits::default(),
             WorkBudget::UNBOUNDED,
-        )?
+            &CancellationToken::new(),
+        ).await?
         .bytes,
         OwnedBytes::from_static(b"abcdef")
     );
@@ -1182,7 +1179,7 @@ fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_work()
         fail_after: Some(1),
         cancel_at: None,
     };
-    let failure = crate::async_storage::poll_ready(build_blob_async(
+    let failure = crate::async_storage::poll_ready(build_blob(
         &MemoryObjectStore::default(),
         &mut failing,
         options,
@@ -1204,7 +1201,7 @@ fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_work()
         fail_after: None,
         cancel_at: Some(1),
     };
-    let cancelled = crate::async_storage::poll_ready(build_blob_async(
+    let cancelled = crate::async_storage::poll_ready(build_blob(
         &MemoryObjectStore::default(),
         &mut cancelling,
         options,
@@ -1226,7 +1223,7 @@ fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_work()
         fail_after: None,
         cancel_at: Some(5),
     };
-    let cancelled = crate::async_storage::poll_ready(build_blob_async(
+    let cancelled = crate::async_storage::poll_ready(build_blob(
         &MemoryObjectStore::default(),
         &mut queued,
         options,
@@ -1243,7 +1240,7 @@ fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_work()
     let mut tight_budget = WorkBudget::UNBOUNDED;
     tight_budget.peak_allocation_bytes = cancelled.work.peak_allocation_bytes.saturating_sub(1);
     let mut bounded = std::io::Cursor::new(OwnedBytes::from_static(b"abcdef"));
-    let rejected = crate::async_storage::poll_ready(build_blob_async(
+    let rejected = crate::async_storage::poll_ready(build_blob(
         &MemoryObjectStore::default(),
         &mut bounded,
         options,
@@ -1259,8 +1256,8 @@ fn partial_async_source_failure_and_midstream_cancellation_preserve_exact_work()
     Ok(())
 }
 
-#[test]
-fn empty_source_builds_one_authenticated_empty_root() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn empty_source_builds_one_authenticated_empty_root() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let mut source = std::io::Cursor::new(OwnedBytes::new());
     let built = build_blob(
@@ -1273,13 +1270,14 @@ fn empty_source_builds_one_authenticated_empty_root() -> Result<(), Box<dyn std:
             maximum_blob_bytes: 1,
         },
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(built.logical_bytes, 0);
     assert_eq!(built.work.source_bytes_read, 0);
     assert_eq!(built.work.backend_write_operations, 1);
     let encoded = ObjectStore::read(&store, built.root, 127, WorkBudget::UNBOUNDED)?.value;
     assert_eq!(
-        decode_blob_page(&encoded, DecodeLimits::default())?,
+        decode_blob_page(&encoded, DecodeLimits::default(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?,
         BlobPage {
             first_offset: 0,
             end_offset: 0,
@@ -1295,7 +1293,8 @@ fn empty_source_builds_one_authenticated_empty_root() -> Result<(), Box<dyn std:
         },
         DecodeLimits::default(),
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert!(read.bytes.is_empty());
     Ok(())
 }
@@ -1306,7 +1305,7 @@ fn pre_cancelled_async_blob_build_performs_zero_work() -> Result<(), Box<dyn std
     let mut source = std::io::Cursor::new(b"abc");
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let failure = crate::async_storage::poll_ready(build_blob_async(
+    let failure = crate::async_storage::poll_ready(build_blob(
         &store,
         &mut source,
         BlobBuildOptions {
@@ -1327,8 +1326,8 @@ fn pre_cancelled_async_blob_build_performs_zero_work() -> Result<(), Box<dyn std
     Ok(())
 }
 
-#[test]
-fn oversized_source_consumes_only_one_detection_byte_past_bound() {
+#[tokio::test]
+async fn oversized_source_consumes_only_one_detection_byte_past_bound() {
     let store = MemoryObjectStore::default();
     let mut source = std::io::Cursor::new([7_u8; 100]);
     let result = build_blob(
@@ -1341,7 +1340,8 @@ fn oversized_source_consumes_only_one_detection_byte_past_bound() {
             maximum_blob_bytes: 3,
         },
         WorkBudget::UNBOUNDED,
-    );
+        &CancellationToken::new(),
+    ).await;
     assert!(matches!(
         result,
         Err(OperationFailure {
@@ -1352,8 +1352,8 @@ fn oversized_source_consumes_only_one_detection_byte_past_bound() {
     assert_eq!(source.position(), 4);
 }
 
-#[test]
-fn streaming_index_memory_is_logarithmic_in_chunk_count() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn streaming_index_memory_is_logarithmic_in_chunk_count() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
     let content = vec![3_u8; 4_096];
@@ -1368,7 +1368,8 @@ fn streaming_index_memory_is_logarithmic_in_chunk_count() -> Result<(), Box<dyn 
             maximum_blob_bytes: 4_096,
         },
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     let linear_reference_bytes = u64::try_from(4_096 * size_of::<BlobChunkRef>())?;
     assert!(built.work.peak_allocation_bytes < linear_reference_bytes / 8);
     let read = read_blob_range(
@@ -1384,13 +1385,14 @@ fn streaming_index_memory_is_logarithmic_in_chunk_count() -> Result<(), Box<dyn 
             ..DecodeLimits::default()
         },
         WorkBudget::UNBOUNDED,
-    )?;
+        &CancellationToken::new(),
+    ).await?;
     assert_eq!(read.bytes, OwnedBytes::from_static(&[3, 3, 3]));
     Ok(())
 }
 
-#[test]
-fn page_byte_bound_and_peak_budget_reject_before_unadmitted_allocation()
+#[tokio::test]
+async fn page_byte_bound_and_peak_budget_reject_before_unadmitted_allocation()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     for options in [
@@ -1414,7 +1416,7 @@ fn page_byte_bound_and_peak_budget_reject_before_unadmitted_allocation()
         },
     ] {
         let mut source = std::io::Cursor::new(b"x");
-        let failure = build_blob(&store, &mut source, options, WorkBudget::UNBOUNDED)
+        let failure = build_blob(&store, &mut source, options, WorkBudget::UNBOUNDED, &CancellationToken::new()).await
             .err()
             .ok_or("invalid blob options unexpectedly succeeded")?;
         assert!(matches!(failure.error, BlobBuildError::InvalidOptions));
@@ -1432,7 +1434,8 @@ fn page_byte_bound_and_peak_budget_reject_before_unadmitted_allocation()
             maximum_blob_bytes: 3,
         },
         WorkBudget::UNBOUNDED,
-    )
+        &CancellationToken::new(),
+    ).await
     .err()
     .ok_or("undersized blob page unexpectedly succeeded")?;
     assert!(matches!(invalid.error, BlobBuildError::InvalidOptions));
@@ -1446,7 +1449,7 @@ fn page_byte_bound_and_peak_budget_reject_before_unadmitted_allocation()
         maximum_blob_bytes: 8,
     };
     let mut baseline_source = std::io::Cursor::new(b"abcdefgh");
-    let baseline = build_blob(&store, &mut baseline_source, options, WorkBudget::UNBOUNDED)?;
+    let baseline = build_blob(&store, &mut baseline_source, options, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     let maximum = baseline.work.peak_allocation_bytes - 1;
     let mut limited_source = std::io::Cursor::new(b"abcdefgh");
     let failure = build_blob(
@@ -1457,7 +1460,8 @@ fn page_byte_bound_and_peak_budget_reject_before_unadmitted_allocation()
             peak_allocation_bytes: maximum,
             ..WorkBudget::UNBOUNDED
         },
-    )
+        &CancellationToken::new(),
+    ).await
     .err()
     .ok_or("one-byte-short blob peak budget unexpectedly succeeded")?;
     assert!(matches!(
@@ -1486,7 +1490,7 @@ fn decoded_blob_shape_and_sync_source_cancellation_fail_before_hidden_work()
             },
         }]),
     };
-    let encoded = encode_blob_page(&page, 1)?;
+    let encoded = encode_blob_page(&page, 1, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     let limits = DecodeLimits {
         maximum_page_items: 1,
         ..DecodeLimits::default()

@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::{AgentId, Capabilities, core::{AggregateKind, Authority}, conversation::{VolumeClass, VolumeOwner}};
 use wasm_bindgen_test::wasm_bindgen_test;
 
@@ -14,14 +15,14 @@ async fn public_browser_selected_inspection_and_custom_loop_use_real_owner_and_p
     let owner = WasmReducer::new(to_js(&Authority { kind: AggregateKind::Task, id: id.clone() })?,
         "headless-browser".into(), vec![41; 32], to_js(&Vec::<Value>::new())?)?;
     let agent = AgentId::from_bytes([42; 16]);
-    let provider = ProviderRef::new("headless-browser", "filesystem", "2").map_err(js_error)?;
+    let provider = ProviderRef::new("headless-browser".into(), "filesystem".into(), "2".into(), &mut None).map_err(js_error)?;
     let volume = VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).map_err(js_error)?;
-    let scope = owner.issuer.root_for_agent(agent, "owner", Capabilities::new([
+    let scope = owner.issuer.issue("owner", &Capabilities::new([
         "operation:declare".into(), "operation:observe".into(), "operation:cancel".into(),
         "task:spawn:test.headless@1".into(), "tool:call:test.headless".into(), "model:generate".into(),
         volume.capability(VolumeOperation::Read).map_err(js_error)?,
         volume.capability(VolumeOperation::Write).map_err(js_error)?,
-    ]));
+    ]), Some(agent), None, &mut None).expect("scope proof");
     let mut registry = WasmTaskRegistry::new();
     registry.register_machine(wire(&serde_json::json!({
         "name":"test.headless", "version":"1", "digest":vec![43;32],
@@ -82,7 +83,7 @@ async fn public_browser_selected_inspection_and_custom_loop_use_real_owner_and_p
         WorkPull::Claimed(lease) => lease,
         _ => return Err(JsValue::from_str("headless lease unavailable")),
     };
-    runtime.runtime.task_host().start_task(&lease).await.map_err(js_error)?;
+    runtime.runtime.task_host().start_task(&lease, None).await.map_err(js_error)?;
     let execution = runtime.headless_execution(task, to_js(&crate::scheduler::LeaseFence::from(&lease.reservation))?, OperationId::new().to_string()).await?;
     let input = TurnInput { operation_id:OperationId::parse(&execution.operation_id()).map_err(js_error)?, input:crate::model::ModelContent::Text("headless".into()), selected_context:None, max_steps:1 };
     let first = execution.model_step(to_js(&input)?, 0, to_js(&Vec::<crate::model::ModelMessage>::new())?).await?;

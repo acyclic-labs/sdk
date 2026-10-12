@@ -2,7 +2,7 @@
 
 use super::allocation::{AllocationError, LogicalVecCapacity, VisitedObjectSet};
 use super::allocation::{KernelAccounting, KernelOwnedAllocation};
-use super::file_read::{ReadOwned, ReadDecodeError, reserve_decoded_items_with_steps,
+use super::file_read::{ReadOwned, ReadDecodeError, reserve_decoded_items,
     allocate_read_buffer, completed_read_work, owned_read_bytes, read_object_with_accounting, release_read_allocation};
 use crate::FsError;
 use super::codec::{
@@ -19,7 +19,7 @@ use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::speculation::{ResidencyHint, ResidencyReason};
 use crate::storage::{
     ByteRange, HashedObject, ObjectId, ObjectKind, ObjectReadRequest,
-    ObjectReadRetention, ObjectStore, ObjectStoreError, object_digest,
+    ObjectReadRetention, ObjectStoreError, object_digest,
 };
 use bytes::Bytes;
 use std::future::Future;
@@ -138,38 +138,27 @@ fn contiguous(first: u64, end: u64, mut ranges: impl Iterator<Item = (u64, u64)>
     prior_end == end
 }
 
-/// Encodes one canonical blob-index page.
-///
-/// # Errors
-///
-/// Rejects unbounded, discontinuous, empty-with-bounds, or wrongly typed pages.
-pub fn encode_blob_page(
+/// Encodes one canonical page with before-effect admission.
+pub fn encode_blob_page<E: From<CanonicalDecodeError>>(
     page: &BlobPage,
     maximum_items: u32,
-) -> Result<Vec<u8>, CanonicalDecodeError> {
-    encode_blob_page_with_steps(
-        page, maximum_items, |_| Ok(()),
-        |_| CanonicalDecodeError::AllocationFailed,
-    )
-}
-
-/// Observes the real reserve/capacity/header boundaries of the same canonical writer.
-pub(crate) fn encode_blob_page_with_steps<E: From<CanonicalDecodeError>>(
-    page: &BlobPage,
-    maximum_items: u32,
-    observe: impl FnMut(super::codec::EncodeAllocationStep) -> Result<(), E>,
+    mut observe: impl FnMut(super::codec::EncodeWorkStep) -> Result<(), E>,
     allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
 ) -> Result<Vec<u8>, E> {
+    use super::codec::{EncodeAllocationStep, EncodeWorkStep};
+    observe(EncodeWorkStep::Check)?;
     let encoded_length = blob_page_encoded_length(page, maximum_items)?;
-    let encoder = Encoder::with_exact_capacity_with_steps(
-        DOMAIN, VERSION, encoded_length, observe, allocation_error,
+    observe(EncodeWorkStep::Admit(WorkCounters {
+        bytes_encoded: encoded_length as u64, ..WorkCounters::UNCHARGED
+    }))?;
+    let mut encoder = Encoder::with_exact_capacity(
+        DOMAIN, VERSION, encoded_length, |step| {
+            if matches!(step, EncodeAllocationStep::BeforeHeader { .. }) {
+                observe(EncodeWorkStep::Check)?;
+            }
+            observe(EncodeWorkStep::Allocation(step))
+        }, allocation_error,
     )?;
-    encode_blob_page_body(page, encoder).map_err(Into::into)
-}
-
-fn encode_blob_page_body(
-    page: &BlobPage, mut encoder: Encoder,
-) -> Result<Vec<u8>, CanonicalDecodeError> {
     encoder.u64(page.first_offset);
     encoder.u64(page.end_offset);
     match &page.node {
@@ -192,10 +181,14 @@ fn encode_blob_page_body(
             }
         }
     }
+    observe(EncodeWorkStep::Completed(WorkCounters {
+        bytes_encoded: (encoded_length - DOMAIN.len() - 2) as u64,
+        ..WorkCounters::UNCHARGED
+    }))?;
     Ok(encoder.finish())
 }
 
-fn blob_page_encoded_length(
+pub(super) fn blob_page_encoded_length(
     page: &BlobPage,
     maximum_items: u32,
 ) -> Result<usize, CanonicalDecodeError> {
@@ -211,31 +204,15 @@ fn blob_page_encoded_length(
         .ok_or(CanonicalDecodeError::LengthOverflow)
 }
 
-/// Decodes one canonical blob-index page under hard allocation limits.
-///
-/// # Errors
-///
-/// Fails closed on malformed bytes, unknown versions/tags, or bad ranges.
-pub fn decode_blob_page(
-    bytes: &[u8],
-    limits: DecodeLimits,
-) -> Result<BlobPage, CanonicalDecodeError> {
-    decode_blob_page_with_steps(bytes, limits, &mut |_| Ok(()))
-}
-
 pub(crate) fn decode_blob_page_with_accounting(
     bytes: &[u8], limits: DecodeLimits, accounting: &mut KernelAccounting<'_>,
 ) -> Result<(BlobPage, u64, KernelOwnedAllocation), FsError> {
     #[cfg(not(target_arch = "wasm32"))]
     let native = accounting.native_work().is_some();
-    let mut observed = super::file_read::OriginalReadAccounting::new(accounting)?;
-    let decoded = decode_blob_page_with_steps::<ReadDecodeError>(
-        bytes, limits, &mut |step| observed.observe(step),
-    );
+    let decoded = super::file_read::decode_owned(accounting, |observe| decode_blob_page(bytes, limits, &mut |step| observe(step)));
     let page = match decoded {
         Ok(page) => page,
         Err(error) => {
-            observed.release_failed()?;
             #[cfg(not(target_arch = "wasm32"))]
             if native {
                 return Err(match error.into_original_fs_error() {
@@ -246,7 +223,7 @@ pub(crate) fn decode_blob_page_with_accounting(
             return Err(read_decode_error(error));
         }
     };
-    let owner = ReadOwned { value: page, custody: observed.into_allocation() };
+    let owner = ReadOwned { value: page.0, custody: page.1 };
     let bytes = match &owner.value.node {
         BlobNode::Leaf(items) => items.capacity() * size_of::<BlobChunkRef>(),
         BlobNode::Internal(items) => items.capacity() * size_of::<BlobChild>(),
@@ -254,15 +231,16 @@ pub(crate) fn decode_blob_page_with_accounting(
     Ok((owner.value, usize_to_u64(bytes), owner.custody))
 }
 
-pub(crate) fn decode_blob_page_with_steps<E: From<CanonicalDecodeError>>(
+/// Decodes one canonical page with physical allocation observation.
+pub fn decode_blob_page<E: From<CanonicalDecodeError>>(
     bytes: &[u8], limits: DecodeLimits,
     observe: &mut impl FnMut(ReadAllocationStep) -> Result<(), E>,
 ) -> Result<BlobPage, E> {
-    let mut decoder = Decoder::new_with_steps(bytes, DOMAIN, VERSION, limits.maximum_page_object_bytes(), observe)?;
-    let first_offset = decoder.u64_with_steps(observe)?;
-    let end_offset = decoder.u64_with_steps(observe)?;
-    let tag = decoder.u8_with_steps(observe)?;
-    let item_count = decoder.u32_with_steps(observe)?;
+    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, limits.maximum_page_object_bytes(), observe)?;
+    let first_offset = decoder.u64(observe)?;
+    let end_offset = decoder.u64(observe)?;
+    let tag = decoder.u8(observe)?;
+    let item_count = decoder.u32(observe)?;
     if item_count > limits.maximum_page_items {
         return Err(CanonicalDecodeError::FieldTooLarge {
             observed: item_count,
@@ -273,30 +251,30 @@ pub(crate) fn decode_blob_page_with_steps<E: From<CanonicalDecodeError>>(
     let mut internal = Vec::new();
     match tag {
         1 => {
-            reserve_decoded_items_with_steps(&mut leaf, capacity(item_count)?, observe)?;
+            reserve_decoded_items(&mut leaf, capacity(item_count)?, observe)?;
             for _ in 0..item_count {
                 observe(ReadAllocationStep::BeforeItem)?;
                 leaf.push(BlobChunkRef {
-                    first_offset: decoder.u64_with_steps(observe)?,
-                    end_offset: decoder.u64_with_steps(observe)?,
+                    first_offset: decoder.u64(observe)?,
+                    end_offset: decoder.u64(observe)?,
                     chunk: ObjectId {
                         kind: ObjectKind::BlobChunk,
-                        digest: crate::foundation::Digest::from_bytes(decoder.fixed_with_steps::<32, E>(observe)?),
+                        digest: crate::foundation::Digest::from_bytes(decoder.fixed::<32, E>(observe)?),
                     },
                 });
                 observe(ReadAllocationStep::Item)?;
             }
         }
         2 => {
-            reserve_decoded_items_with_steps(&mut internal, capacity(item_count)?, observe)?;
+            reserve_decoded_items(&mut internal, capacity(item_count)?, observe)?;
             for _ in 0..item_count {
                 observe(ReadAllocationStep::BeforeItem)?;
                 internal.push(BlobChild {
-                    first_offset: decoder.u64_with_steps(observe)?,
-                    end_offset: decoder.u64_with_steps(observe)?,
+                    first_offset: decoder.u64(observe)?,
+                    end_offset: decoder.u64(observe)?,
                     page: ObjectId {
                         kind: ObjectKind::Blob,
-                        digest: crate::foundation::Digest::from_bytes(decoder.fixed_with_steps::<32, E>(observe)?),
+                        digest: crate::foundation::Digest::from_bytes(decoder.fixed::<32, E>(observe)?),
                     },
                 });
                 observe(ReadAllocationStep::Item)?;
@@ -328,11 +306,11 @@ fn blob_page_decode_shape(
     bytes: &[u8],
     limits: DecodeLimits,
 ) -> Result<DecodedPageShape, CanonicalDecodeError> {
-    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, limits.maximum_page_object_bytes())?;
-    decoder.u64()?;
-    decoder.u64()?;
-    let tag = decoder.u8()?;
-    let item_count = decoder.u32()?;
+    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, limits.maximum_page_object_bytes(), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+    decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+    decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+    let tag = decoder.u8(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+    let item_count = decoder.u32(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
     if item_count > limits.maximum_page_items {
         return Err(CanonicalDecodeError::FieldTooLarge {
             observed: item_count,
@@ -342,9 +320,9 @@ fn blob_page_decode_shape(
     let kind = match tag {
         1 | 2 => {
             for _ in 0..item_count {
-                decoder.u64()?;
-                decoder.u64()?;
-                let _: [u8; 32] = decoder.fixed()?;
+                decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+                decoder.u64(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
+                let _: [u8; 32] = decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?;
             }
             if tag == 1 {
                 DecodedPageKind::Leaf
@@ -368,12 +346,8 @@ fn blob_page_decode_shape(
 }
 
 /// Computes the typed identity of one canonical blob-index page.
-///
-/// # Errors
-///
-/// Returns the same validation errors as [`encode_blob_page`].
 pub fn blob_page_id(page: &BlobPage, maximum_items: u32) -> Result<ObjectId, CanonicalDecodeError> {
-    let bytes = encode_blob_page(page, maximum_items)?;
+    let bytes = encode_blob_page(page, maximum_items, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     Ok(ObjectId {
         kind: ObjectKind::Blob,
         digest: object_digest(ObjectKind::Blob, &bytes),
@@ -405,9 +379,6 @@ pub struct BlobBuild {
 }
 
 /// An owned source chunk together with its actual logical backing capacity.
-///
-/// A slice may retain more bytes than it exposes. Static storage owns no
-/// allocation; allocator/refcount bookkeeping headers are not logical payload.
 #[derive(Debug)]
 pub struct OwnedSourceChunk {
     /// Exact bytes supplied by this read.
@@ -416,7 +387,6 @@ pub struct OwnedSourceChunk {
     pub logical_owned_bytes: u64,
     intrinsic: bool,
 }
-
 
 impl OwnedSourceChunk {
     /// Borrows the supplied bytes without detaching their native custody.
@@ -450,7 +420,6 @@ impl OwnedSourceChunk {
 
 /// Nonblocking bounded byte source for browser, network, and native streams.
 pub trait AsyncBlobSource {
-    /// Fills some prefix of `destination`, returning zero only at end of stream.
     fn read<'a>(
         &'a mut self,
         destination: &'a mut [u8],
@@ -458,7 +427,6 @@ pub trait AsyncBlobSource {
         cancellation: &'a CancellationToken,
     ) -> impl Future<Output = std::io::Result<usize>>;
 
-    /// Optionally returns one owned chunk without copying into a caller buffer.
     fn read_owned(
         &mut self,
         _maximum: usize,
@@ -468,7 +436,6 @@ pub trait AsyncBlobSource {
         async { Ok(None) }
     }
 
-    /// Reads directly under the original invocation; custom sources reject before I/O.
     #[cfg(not(target_arch = "wasm32"))]
     fn read_with_native_work<'a>(
         &'a mut self, _destination: &'a mut [u8],
@@ -478,7 +445,6 @@ pub trait AsyncBlobSource {
         async { Err(BlobBuildError::NativeSourceUnavailable.into()) }
     }
 
-    /// Returns intrinsically guarded bytes without transferring their allocation twice.
     #[cfg(not(target_arch = "wasm32"))]
     fn read_owned_with_native_work(
         &mut self, _maximum: usize, _original: &crate::NativeMaterializationWork,
@@ -487,36 +453,29 @@ pub trait AsyncBlobSource {
         async { Ok(None) }
     }
 
-    /// Drains exact work performed by the preceding read, when the source
-    /// already measures its own I/O. Returning `Some` replaces the builder's
-    /// inferred source-byte count for that read; `None` retains that count.
     fn take_work(&mut self) -> Option<WorkCounters> {
         None
     }
 }
 
-struct ImmediateBlobSource<'a, T>(&'a mut T);
-
-impl<T: Read> AsyncBlobSource for ImmediateBlobSource<'_, T> {
-    async fn read<'a>(
-        &'a mut self,
-        destination: &'a mut [u8],
-        budget: WorkBudget,
-        cancellation: &'a CancellationToken,
-    ) -> std::io::Result<usize> {
-        if cancellation.is_cancelled() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::Interrupted,
-                "blob source read cancelled",
-            ));
-        }
-        let maximum = destination.len().min(usize::try_from(budget.source_bytes_read).unwrap_or(usize::MAX));
-        if maximum == 0 && !destination.is_empty() {
-            return Err(std::io::Error::other("blob source byte budget exhausted"));
-        }
-        Read::read(self.0, destination.get_mut(..maximum)
-            .ok_or_else(|| std::io::Error::other("invalid bounded source buffer"))?)
+fn read_source<T: Read>(
+    source: &mut T,
+    destination: &mut [u8],
+    budget: WorkBudget,
+    cancellation: &CancellationToken,
+) -> std::io::Result<usize> {
+    if cancellation.is_cancelled() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Interrupted,
+            "blob source read cancelled",
+        ));
     }
+    let maximum = destination.len().min(usize::try_from(budget.source_bytes_read).unwrap_or(usize::MAX));
+    if maximum == 0 && !destination.is_empty() {
+        return Err(std::io::Error::other("blob source byte budget exhausted"));
+    }
+    Read::read(source, destination.get_mut(..maximum)
+        .ok_or_else(|| std::io::Error::other("invalid bounded source buffer"))?)
 }
 
 impl<T: AsRef<[u8]>> AsyncBlobSource for std::io::Cursor<T> {
@@ -524,7 +483,7 @@ impl<T: AsRef<[u8]>> AsyncBlobSource for std::io::Cursor<T> {
         &'a mut self, destination: &'a mut [u8], budget: WorkBudget,
         cancellation: &'a CancellationToken,
     ) -> std::io::Result<usize> {
-        ImmediateBlobSource(self).read(destination, budget, cancellation).await
+        read_source(self, destination, budget, cancellation)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -559,7 +518,7 @@ impl AsyncBlobSource for &[u8] {
         &'a mut self, destination: &'a mut [u8], budget: WorkBudget,
         cancellation: &'a CancellationToken,
     ) -> std::io::Result<usize> {
-        ImmediateBlobSource(self).read(destination, budget, cancellation).await
+        read_source(self, destination, budget, cancellation)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -584,7 +543,7 @@ impl AsyncBlobSource for std::fs::File {
         &'a mut self, destination: &'a mut [u8], budget: WorkBudget,
         cancellation: &'a CancellationToken,
     ) -> std::io::Result<usize> {
-        ImmediateBlobSource(self).read(destination, budget, cancellation).await
+        read_source(self, destination, budget, cancellation)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -610,36 +569,7 @@ impl AsyncBlobSource for std::fs::File {
 }
 
 /// Streams a source into fixed-size authenticated chunks and a bounded index.
-///
-/// # Errors
-///
-/// Rejects invalid options, oversized input, source/backend failures, arithmetic
-/// overflow, or work beyond the admitted budget. It never materializes the
-/// complete input in one buffer.
-pub fn build_blob<S: crate::ImmediateObjectStore, R: Read>(
-    store: &S,
-    source: &mut R,
-    options: BlobBuildOptions,
-    budget: WorkBudget,
-) -> Result<BlobBuild, BlobBuildFailure> {
-    let cancellation = CancellationToken::new();
-    crate::async_storage::poll_immediate(build_blob_async(
-        store,
-        &mut ImmediateBlobSource(source),
-        options,
-        budget,
-        &cancellation,
-    ))
-}
-
-/// Asynchronously streams a source into authenticated chunks and a bounded,
-/// incremental blob index.
-///
-/// # Errors
-///
-/// Returns the same receipt-bearing failures as [`build_blob`], including
-/// cooperative cancellation before the next source or object-store operation.
-pub async fn build_blob_async<S: AsyncObjectStore, R: AsyncBlobSource>(
+pub async fn build_blob<S: AsyncObjectStore, R: AsyncBlobSource>(
     store: &S, source: &mut R, options: BlobBuildOptions, budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<BlobBuild, BlobBuildFailure> {
@@ -648,7 +578,6 @@ pub async fn build_blob_async<S: AsyncObjectStore, R: AsyncBlobSource>(
         .map_err(|error| build_failed(blob_build_error(error), accounting.spent()))
 }
 
-/// The canonical streaming producer, borrowing either standalone or original accounting.
 pub(crate) async fn build_blob_with_accounting<S: AsyncObjectStore, R: AsyncBlobSource>(
     store: &S, source: &mut R, options: BlobBuildOptions,
     accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,
@@ -723,7 +652,6 @@ fn empty_blob_vec<T>() -> ReadOwned<Vec<T>> {
     ReadOwned { value: Vec::new(), custody: KernelOwnedAllocation::Standalone }
 }
 
-/// Admission and reconciliation loans contain no allocator or copy operation.
 fn reserve_blob_vec<T>(
     owner: &mut ReadOwned<Vec<T>>, capacity: usize, accounting: &mut KernelAccounting<'_>,
 ) -> Result<(), FsError> {
@@ -833,9 +761,9 @@ async fn read_blob_chunk<R: AsyncBlobSource>(
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = &native {
             let capacity = owned.value.capacity();
-            let copied = original.reserve_copy(usize_to_u64(capacity))?;
+            let copied = original.reserve_work(crate::WorkCounters { bytes_copied: usize_to_u64(capacity), ..crate::WorkCounters::UNCHARGED })?;
             owned.value.resize(capacity, 0);
-            copied.record(usize_to_u64(capacity))?;
+            { let mut copy = copied; copy.record_completed(crate::WorkCounters { bytes_copied: usize_to_u64(capacity), ..crate::WorkCounters::UNCHARGED }) }?;
             let owned = buffer.take().expect("original source storage");
             prepared = Some(acyclic_stream::PreparedOwnedBytes::new(
                 owned.value, owned.custody, original.runtime_meter_owner(),
@@ -1104,7 +1032,7 @@ impl BlobIndexBuilder {
     fn push_child<'a, 'store, 'accounting, S: AsyncObjectStore>(
         &'a mut self, store: &'a mut BlobBatchStore<'store, S>, mut level: usize, mut child: BlobChild,
         accounting: &'a mut KernelAccounting<'accounting>, cancellation: &CancellationToken,
-    ) -> impl Future<Output = Result<(), FsError>> + crate::async_storage::StorageFuture + 'a {
+    ) -> impl Future<Output = Result<(), FsError>> + acyclic_stream::ProviderTask + 'a {
         let cancellation = cancellation.clone();
         async move {
         loop {
@@ -1180,64 +1108,24 @@ fn effective_page_width(options: BlobBuildOptions) -> Option<usize> {
 pub(crate) fn encode_blob_page_with_accounting(
     page: &BlobPage, maximum_items: u32, accounting: &mut KernelAccounting<'_>,
 ) -> Result<ReadOwned<Vec<u8>>, FsError> {
-    let length = blob_page_encoded_length(page, maximum_items).map_err(BlobBuildError::Encode)?;
-    let encoded = WorkCounters {
-        bytes_encoded: usize_to_u64(length), page_writes: 1, ..WorkCounters::UNCHARGED
-    };
-    accounting.admit(encoded)?;
-    let mut owner = empty_blob_vec();
-    let mut claimed = 0_u64;
-    // The ordinary encoder and original observer share every canonical field write.
-    let result = (|| {
-        let encoder = Encoder::with_exact_capacity_with_steps(
-            DOMAIN, VERSION, length,
-            |step| -> Result<(), FsError> {
-                match step {
-                    super::codec::EncodeAllocationStep::Reserve { capacity } => {
-                        let requested = usize_to_u64(capacity);
-                        owner.custody = accounting.claim_owned(requested, 1)?;
-                        claimed = requested;
-                    }
-                    super::codec::EncodeAllocationStep::Capacity { admitted_bytes, actual_bytes } => {
-                        claimed = actual_bytes;
-                        accounting.reconcile_owned(&mut owner.custody, admitted_bytes, actual_bytes)?;
-                    }
-                    super::codec::EncodeAllocationStep::BeforeHeader { .. }
-                        => accounting.check()?,
-                    super::codec::EncodeAllocationStep::HeaderWritten { bytes } => {
-                        completed_read_work(accounting, WorkCounters {
-                            bytes_encoded: bytes, ..WorkCounters::UNCHARGED
-                        })?;
-                    }
+    blob_page_encoded_length(page, maximum_items).map_err(BlobBuildError::Encode)?;
+    accounting.admit(WorkCounters { page_writes: 1, ..WorkCounters::UNCHARGED })?;
+    let (value, custody) = super::codec::encode_owned(accounting, |observe, _| {
+        encode_blob_page(page, maximum_items, |step| {
+            let step = match step {
+                super::codec::EncodeWorkStep::Completed(mut work) => {
+                    work.page_writes = 1;
+                    super::codec::EncodeWorkStep::Completed(work)
                 }
-                Ok(())
-            },
-            |error| FsError::BlobBuild(BlobBuildError::ReserveFailed(error)),
-        )?;
-        let body = WorkCounters {
-            bytes_encoded: usize_to_u64(length).checked_sub(usize_to_u64(DOMAIN.len() + 2))
-                .ok_or(WorkError::Overflow)?,
-            page_writes: 1, ..WorkCounters::UNCHARGED
-        };
-        accounting.admit(body)?;
-        owner.value = encode_blob_page_body(page, encoder).map_err(BlobBuildError::Encode)?;
-        completed_read_work(accounting, body)?;
-        Ok(())
-    })();
-    match result {
-        Ok(()) => Ok(owner),
-        Err(error) => {
-            drop(owner.value);
-            match owner.custody {
-                KernelOwnedAllocation::Standalone => {
-                    let _ = release_blob_bytes(claimed, accounting);
-                }
-                #[cfg(not(target_arch = "wasm32"))]
-                KernelOwnedAllocation::NativeOriginal(guard) => drop(guard),
-            }
-            Err(error)
-        }
-    }
+                step => step,
+            };
+            observe(step)
+        }, |error| FsError::BlobBuild(BlobBuildError::ReserveFailed(error)))
+    }).map_err(|error| match error {
+        FsError::Decode(error) => FsError::BlobBuild(BlobBuildError::Encode(error)),
+        error => error,
+    })?;
+    Ok(ReadOwned { value, custody })
 }
 
 async fn put_blob_page<S: AsyncObjectStore>(
@@ -1401,47 +1289,7 @@ impl BlobRead {
 }
 
 /// Reads only blob-index pages and chunks intersecting one exact range.
-///
-/// # Errors
-///
-/// Rejects invalid bounds, missing/corrupt objects, graph cycles, child-bound
-/// forgery, incomplete coverage, or any work outside the admitted budget.
-pub fn read_blob_range<S: ObjectStore>(
-    store: &S, root: ObjectId, range: ByteRange, limits: DecodeLimits, budget: WorkBudget,
-) -> Result<BlobRead, BlobReadFailure> {
-    let cancellation = CancellationToken::new();
-    let mut accounting = KernelAccounting::standalone(budget, &cancellation);
-    let result = (|| {
-        let mut machine = BlobRangeMachine::new(root, range, limits, &mut accounting)?;
-        while !machine.pending.is_empty() {
-            let pending = machine.prepare(&mut accounting)?;
-            let (object, maximum) = pending.request(limits);
-            let result = ObjectStore::read(store, object, maximum, accounting.remaining()?);
-            let (read, retained) = super::file_read::accept_standalone_object_read(result, &mut accounting)?;
-            match pending {
-                PendingBlobRead::Page { expected_first, expected_end, height, .. } => {
-                    let decoded = ReadOwned::decoded(decode_blob_page_with_accounting(&read, limits, &mut accounting)?);
-                    machine.accept_decoded_page(&decoded.value.0, expected_first, expected_end, height, &mut accounting)?;
-                    drop(decoded.value.0);
-                    release_read_allocation(decoded.value.1, decoded.custody, &mut accounting)?;
-                }
-                PendingBlobRead::Chunk(chunk) => machine.accept_chunk(&read, chunk, &mut accounting)?,
-            }
-            drop(read);
-            super::file_read::release_standalone_read_bytes(retained, &mut accounting)?;
-        }
-        machine.finish(&mut accounting)
-    })();
-    result.map_err(|error| failed(blob_error(error), accounting.spent()))
-}
-
-/// Asynchronously reads an authenticated range through the same transition
-/// machine as the synchronous and original-ledger readers.
-///
-/// # Errors
-///
-/// Rejects malformed objects, cancellation, and work beyond the admitted budget.
-pub async fn read_blob_range_async<S: AsyncObjectStore>(
+pub async fn read_blob_range<S: AsyncObjectStore>(
     store: &S, root: ObjectId, range: ByteRange, limits: DecodeLimits, budget: WorkBudget,
     cancellation: &CancellationToken,
 ) -> Result<BlobRead, BlobReadFailure> {
@@ -1658,8 +1506,8 @@ impl BlobRangeMachine {
         let mut chunks = Vec::new();
         let mut requests = Vec::new();
         let prepared = (|| -> Result<(), ReadDecodeError> {
-            reserve_decoded_items_with_steps(&mut chunks, count, &mut |step| observed.observe(step))?;
-            reserve_decoded_items_with_steps(&mut requests, count, &mut |step| observed.observe(step))?;
+            reserve_decoded_items(&mut chunks, count, &mut |step| observed.observe(step))?;
+            reserve_decoded_items(&mut requests, count, &mut |step| observed.observe(step))?;
             let copied = usize_to_u64(size_of::<BlobChunkRef>() + size_of::<ObjectReadRequest>());
             for pending in self.pending.iter().rev().take(count) {
                 let PendingBlobRead::Chunk(chunk) = pending else { return Err(FsError::from(BlobReadError::TraversalState).into()) };
@@ -1744,7 +1592,6 @@ fn read_decode_error(error: ReadDecodeError) -> FsError {
         ReadDecodeError::Accounting(error) => error,
     }
 }
-
 
 /// Authenticated blob-read failure with exact work retained on every path.
 pub type BlobReadFailure = OperationFailure<BlobReadError>;

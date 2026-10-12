@@ -4,41 +4,19 @@ use super::*;
 use crate::kernel::{
     FileTableMutation, FileTablePage, TreeEntry, TreeMutation, Owned,
     apply_file_table_mutations_with_accounting, apply_tree_mutations_with_accounting,
-    encode_file_table_page_with_accounting, encode_tree_page_with_accounting,
+    encode_file_table_page, encode_tree_page,
     list_tree_entries_async_with_accounting, lookup_file_record_async_with_accounting,
 };
-use crate::kernel::allocation::{AllocationLedger, KernelAccounting, KernelOwnedAllocation};
+use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
 use crate::workspace::{
     WorkspaceError, customer_path_with_accounting, workspace_owned_strings_bytes,
-    workspace_remaining, workspace_vec_bytes,
+    workspace_vec_bytes,
 };
 
 struct ForkDirectorySelection {
     path: Option<usize>,
     depth: usize,
     children: Owned<Vec<usize>>,
-}
-
-fn fork_selection_merge_work(
-    work: &mut WorkCounters, next: WorkCounters, live: u64, budget: WorkBudget,
-) -> Result<(), WorkspaceError> {
-    *work = work.with_backend(next, live).map_err(|error| WorkspaceError::WorkMerge {
-        prior: *work, backend: next, error,
-    })?;
-    work.verify_ref(&budget)?;
-    Ok(())
-}
-
-fn fork_selection_failure<E>(
-    failure: OperationFailure<E>, work: &mut WorkCounters, live: u64,
-    map: impl FnOnce(E) -> WorkspaceError,
-) -> WorkspaceError {
-    match work.with_backend(*failure.work, live) {
-        Ok(actual) => { *work = actual; map(failure.error) }
-        Err(error) => WorkspaceError::WorkMerge {
-            prior: *work, backend: *failure.work, error,
-        },
-    }
 }
 
 fn fork_selection_allocation(error: crate::kernel::allocation::AllocationError) -> WorkspaceError {
@@ -70,84 +48,37 @@ fn fork_directory_components<'a>(
 }
 
 impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
-    pub(crate) async fn verify_fork_selection(
-        &self,
-        source: &crate::Generation<A, O>,
-        initial: &crate::Generation<A, O>,
-        paths: Option<Vec<String>>,
-    ) -> Result<bool, WorkspaceError> {
-        self.verify_fork_selection_measured(
-            source, initial, paths, WorkBudget::UNBOUNDED, &CancellationToken::new(),
-        ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
-    }
-
-    pub(crate) async fn verify_fork_selection_measured(
-        &self,
-        source: &crate::Generation<A, O>,
-        initial: &crate::Generation<A, O>,
-        paths: Option<Vec<String>>,
-        budget: WorkBudget,
-        cancellation: &CancellationToken,
-    ) -> crate::MeasuredResult<crate::OperationReceipt<bool>, WorkspaceError> {
-        let mut work = WorkCounters::default();
-        let mut allocations = AllocationLedger::default();
+    pub(crate) async fn verify_fork_selection<W: FsWork>(
+        &self, source: &crate::Generation<A, O>, initial: &crate::Generation<A, O>,
+        paths: Option<Vec<String>>, funding: W, cancellation: &CancellationToken,
+    ) -> W::Output<bool, WorkspaceError> {
+        let mut accounting = funding.accounting(cancellation);
+        let baseline = fork_selection_standalone_live(&mut accounting);
         let result = async {
             let input_bytes = paths.as_ref().map(workspace_owned_strings_bytes).transpose()?.unwrap_or(0);
-            // Incoming storage already exists. Record its actual peak even on
-            // immediate cancellation/denial; this performs no new allocation.
-            allocations.claim_bytes(input_bytes, 0, &mut work, WorkBudget::UNBOUNDED)
-                .map_err(fork_selection_allocation)?;
-            cancellation.check()?;
-            work.verify_ref(&budget)?;
+            let (allocation, admitted) = accounting.record_actual_owned(input_bytes)?;
+            let mut paths = (paths, allocation);
+            match &accounting {
+                KernelAccounting::Standalone { .. } | KernelAccounting::BorrowedStandalone { .. } => cancellation.check()?,
+                #[cfg(not(target_arch = "wasm32"))]
+                KernelAccounting::NativeOriginal { .. } => {}
+            }
+            admitted?;
+            accounting.check()?;
             if !self.same_deployment(&source.workspace.volume.fs)
                 || !self.same_deployment(&initial.workspace.volume.fs) {
                 return Err(WorkspaceError::ForeignGeneration);
             }
-            // Transfer the owned input to the materializer. It adopts the same
-            // backing; only still-parent-owned storage offsets nested work.
-            allocations.release(input_bytes).map_err(fork_selection_allocation)?;
-            let live = allocations.live_bytes();
-            let (expected, source_root, spent) = self.materialize_forked_generation_root(
-                source, initial.workspace.id(), source.workspace.volume.config, paths,
-                workspace_remaining(work, budget, live)?, cancellation,
-            ).await.map_err(|failure| fork_selection_failure(
-                failure, &mut work, live, |error| error,
-            ))?;
-            fork_selection_merge_work(&mut work, spent, live, budget)?;
-            let matches = expected.generation_root.digest == initial.id.digest();
-            drop(expected);
-            drop(source_root);
-            Ok(matches)
+            let selected = paths.0.take();
+            accounting.release_owned(&mut paths.1, input_bytes)?;
+            let (expected, _) = self.materialize_forked_generation_root_with_accounting(
+                source, initial.workspace.id(), source.workspace.volume.config, selected,
+                &mut accounting, cancellation,
+            ).await?;
+            Ok(expected.value.generation_root.digest == initial.id.digest())
         }.await;
-        allocations.release(allocations.live_bytes()).map_err(fork_selection_allocation)
-            .map_err(|error| OperationFailure::new(error, work))?;
-        result.map(|value| OperationReceipt { value, work })
-            .map_err(|error| OperationFailure::new(error, work))
-    }
-
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn verify_fork_selection_with_native_work(
-        &self, source: &crate::Generation<A, O>, initial: &crate::Generation<A, O>,
-        paths: Option<Vec<String>>, original: &crate::NativeMaterializationWork,
-        cancellation: &CancellationToken,
-    ) -> Result<bool, WorkspaceError> {
-        let mut accounting = KernelAccounting::native(original, cancellation);
-        let input_bytes = paths.as_ref().map(workspace_owned_strings_bytes).transpose()?.unwrap_or(0);
-        let (allocation, admitted) = accounting.record_actual_owned(input_bytes)?;
-        let mut paths = (paths, allocation);
-        admitted?;
-        accounting.check()?;
-        if !self.same_deployment(&source.workspace.volume.fs)
-            || !self.same_deployment(&initial.workspace.volume.fs) {
-            return Err(WorkspaceError::ForeignGeneration);
-        }
-        let selected = paths.0.take();
-        accounting.release_owned(&mut paths.1, input_bytes)?;
-        let (expected, _) = self.materialize_forked_generation_root_with_accounting(
-            source, initial.workspace.id(), source.workspace.volume.config, selected,
-            &mut accounting, cancellation,
-        ).await?;
-        Ok(expected.value.generation_root.digest == initial.id.digest())
+        let result = fork_selection_cleanup_standalone(&mut accounting, baseline).and(result);
+        funding.finish(result, &accounting)
     }
 }
 
@@ -319,16 +250,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 }
                 directory.retire(accounting)?;
                 plan.children.retire(accounting)?;
-                let encoded = encode_tree_page_with_accounting(
-                    &TreePage::Leaf(Vec::new()), config.limits.maximum_directory_page_entries, accounting,
-                    cancellation,
-                )?;
+                let encoded = crate::kernel::codec::encode_owned(accounting, |observe, _reserve| { cancellation.check()?; encode_tree_page(&TreePage::Leaf(Vec::new()), config.limits.maximum_directory_page_entries, observe, crate::FsError::EncodedAllocationFailed) })?;
                 let empty = self.put_encoded_with_accounting(
                     ObjectKind::TreePage, encoded, accounting, cancellation,
                 ).await?;
                 let tree_root = if entries.value.is_empty() { empty } else {
                     apply_tree_mutations_with_accounting(&self.inner.objects, empty, &entries.value, maximum,
-                        DecodeLimits::for_volume(config), accounting, cancellation).await?.root
+                        DecodeLimits::for_volume(config), accounting, cancellation).await?.value
                 };
                 entries.retire(accounting)?;
                 let record = FileRecord { payload: FilePayload::Directory { entries: tree_root }, ..original };
@@ -479,14 +407,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         }
         records.retire(accounting)?;
         links.retire(accounting)?;
-        let encoded = encode_file_table_page_with_accounting(&FileTablePage::Leaf(Vec::new()), limits.maximum_page_items, accounting)?;
+        let encoded = crate::kernel::codec::encode_owned(accounting, |observe, reserve| encode_file_table_page(&FileTablePage::Leaf(Vec::new()), limits.maximum_page_items, observe, reserve))?;
         let empty = self.put_encoded_with_accounting(
             ObjectKind::FileTablePage, encoded, accounting, cancellation,
         ).await?;
         let table = apply_file_table_mutations_with_accounting(&self.inner.objects, empty, &mutations.value,
             maximum, limits, accounting, cancellation).await?;
         mutations.retire(accounting)?;
-        Ok(table.root)
+        Ok(table.value)
     }
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { HttpMachinesProvider, Machines, MachinesTransportError, SimulatedMachines, checkpointId, idempotencyKey, managedOci, machineId, operationId, type CreateMachine } from "../src/index.ts";
+import { HttpMachinesProvider, createMachine, listMachines, machineEvents, MachinesTransportError, SimulatedMachines, checkpointId, idempotencyKey, managedOci, machineId, operationId, type CreateMachine } from "../src/index.ts";
 import { normalize_identity as rustNormalizeIdentity, validatePageSize, validateTransportOptions, WasmSimulatedMachines } from "../generated/wasm/acyclic_machines_wasm.js";
 
 const request = (idempotencyKey: string): CreateMachine => ({
@@ -131,41 +131,38 @@ describe("Machines simulation", () => {
 
   test("exposes checked high-level qualification, attachment, recovery, and bounded listing", async () => {
     const provider = new SimulatedMachines();
-    const machines = new Machines(provider);
     const image = managedOci(`ghcr.io/acyclic/agent@sha256:${"a".repeat(64)}`);
-    expect((await machines.qualifyImage(image)).image).toEqual(image);
-    const created = await machines.create({ ...request("high-level"), idempotencyKey: idempotencyKey("high-level") });
-    expect((await machines.attach(created.id)).id).toBe(created.id);
-    await expect(machines.attach(machineId("missing"))).rejects.toMatchObject({ name: "MachinesError", code: "not-found" });
-    const operation = await machines.recoverOperation(idempotencyKey("high-level"));
-    expect(await machines.recover(operation.id)).toEqual({ id: operation.id, phase: "succeeded" });
-    expect(await machines.recoverMutation(idempotencyKey("high-level"))).toHaveProperty("kind", "created");
-    expect(operationId(operation.id)).toBe(operation.id);
+    expect((await provider.qualifyImage(image)).image).toEqual(image);
+    const created = await createMachine(provider, { ...request("high-level"), idempotencyKey: idempotencyKey("high-level") });
+    expect((await provider.inspectMachine(created)).id).toBe(created.id);
+    await expect(provider.inspectMachine(machineId("missing"))).rejects.toMatchObject({ name: "MachinesError", code: "not-found" });
+    const operation = await provider.recoverOperation(idempotencyKey("high-level"));
+    expect(await provider.inspectOperation(operation)).toEqual({ id: operation, phase: "succeeded" });
+    expect(await provider.recover(idempotencyKey("high-level"))).toHaveProperty("kind", "created");
+    expect(operationId(operation)).toBe(operation);
     const listed: string[] = [];
-    for await (const machine of machines.list({ pageSize: 1, maximum: 1 })) listed.push(machine.id);
-    expect(listed).toEqual([created.id]);
+    for await (const machine of listMachines(provider, { pageSize: 1, maximum: 1 })) listed.push(machine);
+    expect(listed).toEqual([created]);
     const none: string[] = [];
-    for await (const machine of machines.list({ maximum: 0 })) none.push(machine.id);
+    for await (const machine of listMachines(provider, { maximum: 0 })) none.push(machine);
     expect(none).toEqual([]);
   });
 
   test("does not impose a client-side maximum beyond safe integer precision", async () => {
     const provider = new SimulatedMachines();
-    const machines = new Machines(provider);
-    const iterator = machines.list({ maximum: 65_537 });
+    const iterator = listMachines(provider, { maximum: 65_537 });
     await expect(iterator.next()).resolves.toEqual({ done: true, value: undefined });
   });
 
   test("uses Rust-generated page limits for high-level defaults", async () => {
     const provider = new SimulatedMachines();
     let listLimit: number | undefined;
-    const listMachines = provider.listMachines.bind(provider);
+    const listPage = provider.listMachines.bind(provider);
     provider.listMachines = async (after, limit) => {
       listLimit = limit;
-      return listMachines(after, limit);
+      return listPage(after, limit);
     };
-    const machines = new Machines(provider);
-    await machines.list().next();
+    await listMachines(provider).next();
     expect(listLimit).toBe(256);
 
     let eventLimit: number | undefined;
@@ -173,13 +170,13 @@ describe("Machines simulation", () => {
       eventLimit = limit;
       return { events: [], nextSequence: null };
     };
-    await machines.machine(machineId("page-limit-test")).events();
+    await machineEvents(provider, machineId("page-limit-test"));
     expect(eventLimit).toBe(1024);
   });
 
   test("constructs a hosted client from explicit or process environment", () => {
-    expect(Machines.fromEnv({ endpoint: "https://example.test", token: "token" }).provider).toBeInstanceOf(HttpMachinesProvider);
-    expect(() => Machines.fromEnv({})).toThrow();
+    expect(HttpMachinesProvider.fromEnv({ endpoint: "https://example.test", token: "token" })).toBeInstanceOf(HttpMachinesProvider);
+    expect(() => HttpMachinesProvider.fromEnv({})).toThrow();
   });
 
   test("replays exact create and rejects key rebinding", async () => {
@@ -330,9 +327,9 @@ describe("Machines simulation", () => {
   });
 
   test("delegates machine page limits to the Rust provider boundary", async () => {
-    const machines = new Machines(new SimulatedMachines());
-    await expect(machines.list({ pageSize: 0, maximum: 1 }).next()).rejects.toThrow();
-    await expect(machines.list({ pageSize: 257, maximum: 257 }).next()).rejects.toThrow();
+    const provider = new SimulatedMachines();
+    await expect(listMachines(provider, { pageSize: 0, maximum: 1 }).next()).rejects.toThrow();
+    await expect(listMachines(provider, { pageSize: 257, maximum: 257 }).next()).rejects.toThrow();
   });
 
   test("validates page size before custom providers are called", async () => {
@@ -345,7 +342,7 @@ describe("Machines simulation", () => {
     }
     const provider = new RecordingProvider();
     for (const pageSize of [0, 257, 1.5]) {
-      await expect(new Machines(provider).list({ pageSize, maximum: 1 }).next()).rejects.toThrow(RangeError);
+      await expect(listMachines(provider, { pageSize, maximum: 1 }).next()).rejects.toThrow(RangeError);
     }
     expect(provider.calls).toBe(0);
   });

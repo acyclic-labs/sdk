@@ -1,14 +1,9 @@
 //! Authoritative origin-private immutable object storage.
-//!
-//! Rust byte carriers keep their allocation ownership across reads and clones.
-//! Bounded concurrent windows admit logical buffer, handle, and future-frame
-//! retention before materialization; browser-owned storage allocations are not
-//! native physical-quota guarantees.
 
 use acyclic_fs::storage::ObjectWrite;
 use acyclic_fs::{
     AsyncObjectStore, CancellationToken, OBJECT_DIGEST_ENVELOPE_BYTES, ObjectFailure, ObjectId,
-    ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectReceipt, ObjectResult,
+    ObjectRead, ObjectReadRequest, ObjectReadRetention, ObjectResult,
     ObjectStoreError, WorkBudget, WorkCounters, object_digest,
 };
 use acyclic_stream::OwnedBytes;
@@ -43,10 +38,6 @@ const MAX_BATCH_CONCURRENCY: usize = 16;
 
 impl OpfsAcceleratedObjectStore {
     /// Opens one explicit OPFS namespace.
-    ///
-    /// # Errors
-    ///
-    /// Fails when options are invalid or OPFS is unavailable.
     pub async fn open(
         database_name: &str,
         maximum_object_bytes: u64,
@@ -57,8 +48,7 @@ impl OpfsAcceleratedObjectStore {
         {
             return Err(OpfsOpenError::InvalidOptions);
         }
-        // Both Window and Worker expose navigator.storage. Storage remains the
-        // authority; no browser-specific execution policy is introduced here.
+        // Window and Worker both expose navigator.storage.
         let navigator = js_sys::Reflect::get(&js_sys::global(), &JsValue::from_str("navigator"))
             .map_err(|error| OpfsOpenError::Unavailable(js_message(&error)))?;
         let storage = js_sys::Reflect::get(&navigator, &JsValue::from_str("storage"))
@@ -198,7 +188,7 @@ impl OpfsAcceleratedObjectStore {
                 work,
             ));
         }
-        Ok(ObjectReceipt {
+        Ok(acyclic_fs::OperationReceipt {
             value: (blob, length),
             work,
         })
@@ -223,7 +213,7 @@ impl OpfsAcceleratedObjectStore {
         {
             return Err(ObjectFailure::new(ObjectStoreError::Corrupt, work));
         }
-        Ok(ObjectReceipt {
+        Ok(acyclic_fs::OperationReceipt {
             value: ObjectRead {
                 bytes,
                 retention: ObjectReadRetention::Owned {
@@ -282,7 +272,7 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
         self.write(object_id, &bytes, cancellation)
             .await
             .map_err(|error| ObjectFailure::new(error, work))?;
-        Ok(ObjectReceipt { value: (), work })
+        Ok(acyclic_fs::OperationReceipt { value: (), work })
     }
 
     async fn put_many(
@@ -330,7 +320,7 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
             let results = join_all(std::iter::once(first).chain(futures)).await;
             total = fold_unit_results(total, results, budget)?;
         }
-        Ok(ObjectReceipt {
+        Ok(acyclic_fs::OperationReceipt {
             value: (),
             work: total,
         })
@@ -463,7 +453,7 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
             retained = retained.checked_add(window_retained)
                 .ok_or_else(|| ObjectFailure::new(acyclic_fs::WorkError::Overflow.into(), total))?;
         }
-        Ok(ObjectReceipt {
+        Ok(acyclic_fs::OperationReceipt {
             value: values,
             work: total,
         })
@@ -498,7 +488,7 @@ impl AsyncObjectStore for OpfsAcceleratedObjectStore {
         cancellation
             .check()
             .map_err(|_| ObjectFailure::new(ObjectStoreError::Cancelled, work))?;
-        Ok(ObjectReceipt { value, work })
+        Ok(acyclic_fs::OperationReceipt { value, work })
     }
 }
 
@@ -567,8 +557,7 @@ fn join_frames_bytes<F: Future>(
     _future: &F,
     count: usize,
 ) -> Result<u64, acyclic_fs::WorkError> {
-    // Windows stay below join_all's small-array threshold. Its pinned
-    // MaybeDone slots retain the real future frames and completed outputs.
+    // Account for pinned futures and completed outputs in the small join_all window.
     allocation_bytes::<futures::future::MaybeDone<F>>(count)
 }
 
@@ -807,9 +796,7 @@ mod tests {
         assert_eq!(denied.work.object_bytes_read, 16 * 1_024);
         assert!(matches!(denied.error, ObjectStoreError::Work(_)));
 
-        // Corrupt the first item in the second concurrent window. All sibling
-        // reads still complete, and their work/live allocation peak is retained
-        // in the failure receipt rather than stopping at the first failed item.
+        // Complete sibling reads after failure to retain their work and allocation peak.
         store.write(writes[16].object_id, &OwnedBytes::from(vec![255; 1_024]), &cancellation)
             .await.unwrap_or_else(|error| unreachable!("corruption setup failed: {error}"));
         let corrupt = store.read_many(&requests, WorkBudget::UNBOUNDED, &cancellation).await

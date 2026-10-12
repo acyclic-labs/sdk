@@ -35,30 +35,6 @@ pub(crate) enum PageLease<F: Format> {
 }
 
 impl<F: Format> OwnedPage<F> {
-    pub(crate) fn into_owned(
-        self,
-        budget: WorkBudget,
-        allocations: &mut AllocationLedger,
-        work: &mut WorkCounters,
-    ) -> Result<(Page<F>, u64), Error> {
-        match self.page {
-            PageLease::Owned(page) => Ok((page, self.logical_bytes)),
-            PageLease::Shared {
-                page,
-                logical_bytes,
-            } => {
-                allocations.claim_bytes(
-                    logical_bytes,
-                    u64::from(logical_bytes != 0),
-                    work,
-                    budget,
-                )?;
-                charge_copy(logical_bytes, &budget, allocations, work)?;
-                Ok(((*page).clone(), logical_bytes))
-            }
-        }
-    }
-
     pub(crate) fn into_owned_with_accounting(
         self,
         source: super::allocation::KernelOwnedAllocation,
@@ -70,11 +46,11 @@ impl<F: Format> OwnedPage<F> {
             PageLease::Shared { page, logical_bytes } => {
                 #[cfg(not(target_arch = "wasm32"))]
                 if accounting.native_work().is_some() {
-                    let cloned = original_read_leaf(accounting, |steps| {
-                        clone_page_with_steps::<F, super::file_read::ReadDecodeError>(
+                    let cloned = super::file_read::decode_owned(accounting, |steps| {
+                        clone_page::<F, super::file_read::ReadDecodeError>(
                             &page, &mut |step| steps(step),
                         )
-                    })?;
+                    }).map_err(super::file_read::ReadDecodeError::into_original_fs_error)?;
                     let bytes = match &cloned.1 {
                         super::allocation::KernelOwnedAllocation::NativeOriginal(owned) => owned.bytes(),
                         super::allocation::KernelOwnedAllocation::Standalone => 0,
@@ -92,7 +68,7 @@ impl<F: Format> OwnedPage<F> {
     }
 }
 
-fn clone_page_with_steps<F: Format, E: From<CanonicalDecodeError>>(
+fn clone_page<F: Format, E: From<CanonicalDecodeError>>(
     page: &Page<F>,
     observe: &mut impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<Page<F>, E> {
@@ -100,10 +76,10 @@ fn clone_page_with_steps<F: Format, E: From<CanonicalDecodeError>>(
     match page {
         Page::Leaf(values) => {
             let mut cloned = Vec::new();
-            super::file_read::reserve_decoded_items_with_steps(&mut cloned, values.len(), observe)?;
+            super::file_read::reserve_decoded_items(&mut cloned, values.len(), observe)?;
             for value in values {
                 observe(ReadAllocationStep::BeforeItem)?;
-                let value = F::try_clone_value_with_steps(value, u32::MAX, observe)?;
+                let value = F::try_clone_value(value, u32::MAX, observe)?;
                 observe(ReadAllocationStep::Item)?;
                 let copied = usize_to_u64(size_of::<F::Value>());
                 observe(ReadAllocationStep::BeforeCopy(copied))?;
@@ -114,10 +90,10 @@ fn clone_page_with_steps<F: Format, E: From<CanonicalDecodeError>>(
         }
         Page::Internal(children) => {
             let mut cloned = Vec::new();
-            super::file_read::reserve_decoded_items_with_steps(&mut cloned, children.len(), observe)?;
+            super::file_read::reserve_decoded_items(&mut cloned, children.len(), observe)?;
             for child in children {
                 observe(ReadAllocationStep::BeforeItem)?;
-                let first = F::try_clone_key_with_steps(&child.first, u32::MAX, observe)?;
+                let first = F::try_clone_key(&child.first, u32::MAX, observe)?;
                 observe(ReadAllocationStep::Item)?;
                 let copied = usize_to_u64(size_of::<Child<F::Key>>());
                 observe(ReadAllocationStep::BeforeCopy(copied))?;
@@ -127,19 +103,6 @@ fn clone_page_with_steps<F: Format, E: From<CanonicalDecodeError>>(
             Ok(Page::Internal(cloned))
         }
     }
-}
-
-#[derive(Clone, Copy)]
-enum ReadMode {
-    Shared,
-    Mutable,
-}
-
-struct ReadContext<'a, 'operation> {
-    limits: DecodeLimits,
-    accounting: &'a mut super::allocation::KernelAccounting<'operation>,
-    cancellation: &'a CancellationToken,
-    data_custody: Option<&'a super::ProofDataCustody>,
 }
 
 #[derive(Debug, Error)]
@@ -193,62 +156,23 @@ where
         .await.map(|(page, _)| page).map_err(standalone_batch_error)
 }
 
-pub(crate) async fn read_page_mutable<S, F>(
-    store: &S,
-    page: ObjectId,
-    limits: DecodeLimits,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-    allocations: &mut AllocationLedger,
-    work: &mut WorkCounters,
-) -> Result<OwnedPage<F>, Error>
-where
-    S: AsyncObjectStore,
-    F: Format,
-{
-    let mut accounting = super::allocation::KernelAccounting::borrowed_standalone(
-        allocations, work, budget, cancellation,
-    );
-    let mut context = ReadContext { limits, accounting: &mut accounting, cancellation, data_custody: None };
-    read_page_mode::<S, F>(store, page, &mut context, ReadMode::Mutable)
-        .await.map(|(page, _)| page).map_err(standalone_batch_error)
-}
-
 pub(crate) async fn read_page_with_accounting<S: AsyncObjectStore, F: Format>(
     store: &S, page: ObjectId, limits: DecodeLimits,
     accounting: &mut super::allocation::KernelAccounting<'_>,
     cancellation: &CancellationToken, data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<(OwnedPage<F>, super::allocation::KernelOwnedAllocation), crate::FsError> {
-    let mut context = ReadContext { limits, accounting, cancellation, data_custody };
-    read_page_mode::<S, F>(store, page, &mut context, ReadMode::Shared).await
-}
-
-pub(crate) async fn read_page_mutable_with_accounting<S: AsyncObjectStore, F: Format>(
-    store: &S, page: ObjectId, limits: DecodeLimits,
-    accounting: &mut super::allocation::KernelAccounting<'_>,
-    cancellation: &CancellationToken,
-) -> Result<(Page<F>, u64, super::allocation::KernelOwnedAllocation), crate::FsError> {
-    let mut context = ReadContext { limits, accounting, cancellation, data_custody: None };
-    let decoded = read_page_mode::<S, F>(store, page, &mut context, ReadMode::Mutable).await?;
-    let owned = decoded.0.into_owned_with_accounting(decoded.1, context.accounting)?;
-    Ok((owned.0.0, owned.0.1, owned.1))
-}
-
-async fn read_page_mode<S: AsyncObjectStore, F: Format>(
-    store: &S, page: ObjectId, context: &mut ReadContext<'_, '_>, mode: ReadMode,
-) -> Result<(OwnedPage<F>, super::allocation::KernelOwnedAllocation), crate::FsError> {
-    context.accounting.check()?;
-    if context.cancellation.is_cancelled() { return Err(crate::FsError::Cancelled(crate::CancellationError)); }
-    context.accounting.charge(PAGE_READ)?;
-    let cache_key = DecodedCacheKey::new::<Page<F>>(page, context.limits);
+    accounting.check()?;
+    if cancellation.is_cancelled() { return Err(crate::FsError::Cancelled(crate::CancellationError)); }
+    accounting.charge(PAGE_READ)?;
+    let cache_key = DecodedCacheKey::new::<Page<F>>(page, limits);
     #[cfg(not(target_arch = "wasm32"))]
-    let original = context.accounting.native_work();
+    let original = accounting.native_work();
     #[cfg(not(target_arch = "wasm32"))]
     let standalone = original.is_none();
     #[cfg(target_arch = "wasm32")]
     let standalone = true;
     if standalone {
-        if let Some(owner) = context.data_custody { owner.record_completed_leaf_work(PAGE_READ)?; }
+        if let Some(owner) = data_custody { owner.record_completed_leaf_work(PAGE_READ)?; }
     }
     #[cfg(not(target_arch = "wasm32"))]
     let cached = match original {
@@ -265,40 +189,29 @@ async fn read_page_mode<S: AsyncObjectStore, F: Format>(
             #[cfg(not(target_arch = "wasm32"))]
             native_custody: cached.native_custody,
         };
-        let allocation = context.accounting.claim_owned(0, 0)?;
-        return match mode {
-            ReadMode::Shared => Ok((source, allocation)),
-            ReadMode::Mutable => {
-                let cloned = source.into_owned_with_accounting(allocation, context.accounting)?;
-                Ok((OwnedPage {
-                    page: PageLease::Owned(cloned.0.0), logical_bytes: cloned.0.1,
-                    #[cfg(not(target_arch = "wasm32"))]
-                    native_custody: None,
-                }, cloned.1))
-            }
-        };
+        let allocation = accounting.claim_owned(0, 0)?;
+        return Ok((source, allocation));
     }
-    let (read, retained) = read_cold_object(store, page, context).await?;
+    let (read, retained) = read_cold_object(store, page, limits, accounting, cancellation, data_custody).await?;
     let decoded = if standalone {
-        let (allocations, work, budget, _) = context.accounting.standalone_parts()
+        let (allocations, work, budget, _) = accounting.standalone_parts()
             .expect("the standalone decode branch has a standalone ledger");
-        decode_read_with_custody::<F>(&read, context.limits, budget, allocations, work, context.data_custody, 0)
+        decode_read_with_custody::<F>(&read, limits, budget, allocations, work, data_custody, 0)
             .map(|page| (page, super::allocation::KernelOwnedAllocation::Standalone))
             .map_err(accounted_leaf_error)
     } else {
-        decode_read_with_accounting::<F>(&read, context.limits, context.accounting)
+        decode_read_with_accounting::<F>(&read, limits, accounting)
     };
     drop(read);
     if standalone {
         let mut allocation = super::allocation::KernelOwnedAllocation::Standalone;
-        context.accounting.release_owned(&mut allocation, retained)?;
+        accounting.release_owned(&mut allocation, retained)?;
     }
     let decoded = decoded?;
-    match mode {
-        ReadMode::Mutable => Ok(decoded),
-        ReadMode::Shared => admit_decoded_with_accounting(store, cache_key, decoded, context.accounting, context.data_custody),
-    }
+    admit_decoded_with_accounting(store, cache_key, decoded, accounting, data_custody)
 }
+
+
 
 fn page_store_error(error: ObjectStoreError) -> crate::FsError {
     #[cfg(not(target_arch = "wasm32"))]
@@ -307,11 +220,13 @@ fn page_store_error(error: ObjectStoreError) -> crate::FsError {
 }
 
 async fn read_cold_object<S: AsyncObjectStore>(
-    store: &S, page: ObjectId, context: &mut ReadContext<'_, '_>,
+    store: &S, page: ObjectId, limits: DecodeLimits,
+    accounting: &mut super::allocation::KernelAccounting<'_>, cancellation: &CancellationToken,
+    data_custody: Option<&super::ProofDataCustody>,
 ) -> Result<(ObjectRead, u64), crate::FsError> {
-    let maximum = context.limits.maximum_page_object_bytes();
+    let maximum = limits.maximum_page_object_bytes();
     #[cfg(not(target_arch = "wasm32"))]
-    if let Some(original) = context.accounting.native_work() {
+    if let Some(original) = accounting.native_work() {
         let mut frame = None;
         let (mut future, _) = crate::heap_future::in_heap_admitted(
             &mut frame,
@@ -319,16 +234,16 @@ async fn read_cold_object<S: AsyncObjectStore>(
                 **frame = Some(original.claim(bytes)?);
                 Ok::<_, crate::NativeTreeMaterializationError>(())
             },
-            |_| store.read_with_native_work(page, maximum, original, context.cancellation),
+            |_| store.read_with_native_work(page, maximum, original, cancellation),
         )?;
         let read = future.as_mut().await;
         drop(future);
         drop(frame);
-        return read.map(|read| (read.into_read(), 0)).map_err(page_store_error);
+        return read.map(|read| (read, 0)).map_err(page_store_error);
     }
-    let (allocations, work, budget, _) = context.accounting.standalone_parts()
+    let (allocations, work, budget, _) = accounting.standalone_parts()
         .expect("native object reads use the original provider callback");
-    read_cold_standalone(store, page, maximum, budget, context.cancellation, allocations, work, context.data_custody)
+    read_cold_standalone(store, page, maximum, budget, cancellation, allocations, work, data_custody)
         .await.map_err(accounted_leaf_error)
 }
 
@@ -356,7 +271,6 @@ async fn read_cold_standalone<S: AsyncObjectStore>(
                 store, page, maximum_bytes, budget, cancellation,
                 data_custody.map(crate::async_storage::ObjectReadObservation::new),
             ).await
-                .map(|receipt| crate::OperationReceipt { value: receipt.value, work: receipt.work })
                 .map_err(|failure| failure.map_with_prior_work(WorkCounters::UNCHARGED, Error::Storage))
         },
         remaining, cancellation, Error::Storage(ObjectStoreError::Cancelled),
@@ -383,8 +297,6 @@ async fn read_cold_standalone<S: AsyncObjectStore>(
     Ok((receipt.value, retained))
 }
 
-/// Publishes a decoded page with the custody of its actual original buffers.
-/// Cache/provider code and both Arc allocations run outside original loans.
 pub(crate) fn admit_decoded_with_accounting<S: AsyncObjectStore, F: Format>(
     store: &S, key: DecodedCacheKey,
     decoded: (OwnedPage<F>, super::allocation::KernelOwnedAllocation),
@@ -430,10 +342,6 @@ pub(crate) fn admit_decoded_with_accounting<S: AsyncObjectStore, F: Format>(
         .map_err(accounted_leaf_error)
 }
 
-/// Transfers the same decoded owned buffers into the disposable cache, retiring
-/// their caller-ledger claim only when the cache assumes shared custody.
-/// The actual `Page<F>` Arc payload is admitted before allocation; allocator
-/// headers/refcount storage are excluded from logical bytes.
 pub(super) fn admit_decoded<S, F>(
     store: &S,
     key: DecodedCacheKey,
@@ -611,9 +519,6 @@ where
         .await.map_err(standalone_batch_error)
 }
 
-/// Prepares the same ordered cache/cold frontier on its selected original ledger.
-/// Native providers return their actual batch container and byte-owner custody;
-/// neither their receipt nor their payload is adopted a second time here.
 pub(crate) async fn read_pages_with_accounting<'a, S, F, I>(
     store: &'a S,
     pages: I,
@@ -860,7 +765,6 @@ fn batch_in_heap<'a, 'accounting, F: Future>(
     Ok(BatchFuture { future: in_heap(|| create(context)), _allocation: allocation })
 }
 
-/// Reads the non-empty cold frontier exactly once through its selected backend.
 async fn read_cold_pages<S: AsyncObjectStore>(
     store: &S,
     requests: &[ObjectReadRequest],
@@ -870,11 +774,11 @@ async fn read_cold_pages<S: AsyncObjectStore>(
     if let Some(original) = context.accounting.native_work() {
         let batch = store.read_many_with_native_work(requests, original, context.cancellation)
             .await.map_err(batch_storage_error)?;
-        if batch.reads().len() != requests.len() {
+        if batch.0.len() != requests.len() {
             drop(batch);
             return Err(accounted_leaf_error(invalid_batch_result()));
         }
-        let (reads, allocation) = batch.into_parts();
+        let (reads, allocation) = batch;
         let container_bytes = allocation.bytes();
         return Ok(ColdReads {
             reads, container_bytes, owned_bytes: 0,
@@ -882,7 +786,7 @@ async fn read_cold_pages<S: AsyncObjectStore>(
         });
     }
     let result = store.read_many(requests, context.remaining, context.cancellation).await;
-    // A failed ordinary backend receipt is retained even if cancellation was
+    // A failed ordinary backend receipt is retained even if context.cancellation was
     // raised during its await; cleanup never needs another admission.
     let (allocations, work, budget) = match context.accounting {
         super::allocation::KernelAccounting::Standalone { allocations, work, budget, .. } => {
@@ -1148,8 +1052,6 @@ fn invalid_batch_result() -> Error {
     ))
 }
 
-/// Owned bytes one decoded page of `shape` retains: its item container and
-/// every nested allocation.
 fn logical_page_bytes<F: Format>(shape: DecodedPageShape) -> Option<u64> {
     let container_bytes = match shape.kind {
         DecodedPageKind::Leaf => shape.items.checked_mul(size_of::<F::Value>()),
@@ -1157,21 +1059,6 @@ fn logical_page_bytes<F: Format>(shape: DecodedPageShape) -> Option<u64> {
     }
     .map(usize_to_u64)?;
     container_bytes.checked_add(shape.nested_bytes)
-}
-
-/// Decodes one page as the shared decoded-cache representation every page
-/// reader uses, sized as a read here would claim it.
-pub(crate) fn decoded_cache_value<F: Format>(
-    bytes: &[u8],
-    limits: DecodeLimits,
-) -> Result<DecodedCacheValue, CanonicalDecodeError> {
-    let shape = F::decode_shape(bytes, limits)?;
-    Ok(DecodedCacheValue {
-        value: Arc::new(F::decode(bytes, limits)?),
-        logical_bytes: logical_page_bytes::<F>(shape).unwrap_or(u64::MAX),
-        #[cfg(not(target_arch = "wasm32"))]
-        native_custody: None,
-    })
 }
 
 fn decode_read<F: Format>(
@@ -1184,9 +1071,6 @@ fn decode_read<F: Format>(
     decode_read_with_custody::<F>(read, limits, budget, allocations, work, None, 0)
 }
 
-/// Runs the canonical decoder on the selected accounting context. The returned
-/// page must be destroyed before its native guard. Standalone claims remain on
-/// their existing ledger; provider buffers and receipts are never readopted.
 pub(crate) fn decode_read_with_accounting<F: Format>(
     read: &ObjectRead,
     limits: DecodeLimits,
@@ -1194,10 +1078,10 @@ pub(crate) fn decode_read_with_accounting<F: Format>(
 ) -> Result<(OwnedPage<F>, super::allocation::KernelOwnedAllocation), crate::FsError> {
     #[cfg(not(target_arch = "wasm32"))]
     if accounting.native_work().is_some() {
-        return original_read_leaf(accounting, |steps| {
-            let page = F::decode_with_steps(read, limits, &mut |step| steps(step))?;
+        return super::file_read::decode_owned(accounting, |steps| {
+            let page = F::decode(read, limits, &mut |step| steps(step))?;
             Ok(page)
-        }).map(|(page, allocation)| {
+        }).map_err(super::file_read::ReadDecodeError::into_original_fs_error).map(|(page, allocation)| {
             let logical_bytes = match &allocation {
                 super::allocation::KernelOwnedAllocation::NativeOriginal(owned) => owned.bytes(),
                 super::allocation::KernelOwnedAllocation::Standalone => 0,
@@ -1212,7 +1096,6 @@ pub(crate) fn decode_read_with_accounting<F: Format>(
         .map_err(accounted_leaf_error)
 }
 
-/// Copies an actual routing key through its canonical admitted clone body.
 pub(crate) fn clone_key_with_accounting<F: Format>(
     key: &F::Key,
     maximum_bytes: u32,
@@ -1221,7 +1104,6 @@ pub(crate) fn clone_key_with_accounting<F: Format>(
     clone_key_with_accounting_and_custody::<F>(key, maximum_bytes, accounting, None, 0)
 }
 
-/// Copies an actual result value through its canonical admitted clone body.
 pub(crate) fn clone_value_with_accounting<F: Format>(
     value: &F::Value,
     maximum_bytes: u32,
@@ -1239,7 +1121,7 @@ pub(crate) fn clone_key_with_accounting_and_custody<F: Format>(
 ) -> Result<(F::Key, super::allocation::KernelOwnedAllocation), crate::FsError> {
     #[cfg(not(target_arch = "wasm32"))]
     if accounting.native_work().is_some() {
-        return original_read_leaf(accounting, |steps| F::try_clone_key_with_steps(key, maximum_bytes, &mut |step| steps(step)));
+        return super::file_read::decode_owned(accounting, |steps| F::try_clone_key(key, maximum_bytes, &mut |step| steps(step))).map_err(super::file_read::ReadDecodeError::into_original_fs_error);
     }
     let (allocations, work, budget, _) = accounting.standalone_parts()
         .expect("native key cloning uses the original step engine");
@@ -1257,26 +1139,13 @@ pub(crate) fn clone_value_with_accounting_and_custody<F: Format>(
 ) -> Result<(F::Value, super::allocation::KernelOwnedAllocation), crate::FsError> {
     #[cfg(not(target_arch = "wasm32"))]
     if accounting.native_work().is_some() {
-        return original_read_leaf(accounting, |steps| F::try_clone_value_with_steps(value, maximum_bytes, &mut |step| steps(step)));
+        return super::file_read::decode_owned(accounting, |steps| F::try_clone_value(value, maximum_bytes, &mut |step| steps(step))).map_err(super::file_read::ReadDecodeError::into_original_fs_error);
     }
     let (allocations, work, budget, _) = accounting.standalone_parts()
         .expect("native value cloning uses the original step engine");
     clone_value::<F>(value, maximum_bytes, budget, allocations, work, data_custody, cached_local_bytes)
         .map(|value| (value, super::allocation::KernelOwnedAllocation::Standalone))
         .map_err(accounted_leaf_error)
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn original_read_leaf<T>(
-    accounting: &mut super::allocation::KernelAccounting<'_>,
-    create: impl FnOnce(
-        &mut dyn FnMut(super::codec::ReadAllocationStep) -> Result<(), super::file_read::ReadDecodeError>,
-    ) -> Result<T, super::file_read::ReadDecodeError>,
-) -> Result<(T, super::allocation::KernelOwnedAllocation), crate::FsError> {
-    let mut scope = super::file_read::OriginalReadAccounting::new(accounting)?;
-    let value = create(&mut |step| scope.observe(step))
-        .map_err(super::file_read::ReadDecodeError::into_original_fs_error)?;
-    Ok((value, scope.into_allocation()))
 }
 
 fn accounted_leaf_error(error: Error) -> crate::FsError {
@@ -1320,10 +1189,6 @@ fn claim_read_allocation(
     Ok(())
 }
 
-/// The canonical decoder only: no page attempt, backend read, or frame charge.
-/// The caller retains/readopts the original ObjectRead retention separately.
-/// `cached_local_bytes` is exact caller-ledger custody already registered in
-/// this observer's operation-cache metric, never borrowed authority residency.
 pub(super) fn decode_read_with_custody<F: Format>(
     read: &ObjectRead,
     limits: DecodeLimits,
@@ -1379,7 +1244,7 @@ pub(super) fn decode_read_with_custody<F: Format>(
             return Err(error.into());
         }
     }
-    let decoded = match F::decode(read, limits) {
+    let decoded = match F::decode(read, limits, &mut |_| Ok::<_, CanonicalDecodeError>(())) {
         Ok(decoded) => decoded,
         Err(error) => {
             allocations.release(logical_bytes)?;
@@ -1404,9 +1269,9 @@ pub(crate) fn clone_key<F: Format>(
     cached_local_bytes: u64,
 ) -> Result<F::Key, Error> {
     let nested = F::key_nested_bytes(key);
-    if nested == 0 { return F::try_clone_key(key, maximum_bytes).map_err(Error::Decode); }
+    if nested == 0 { return F::try_clone_key(key, maximum_bytes, &mut |_| Ok::<_, CanonicalDecodeError>(())).map_err(Error::Decode); }
     admit_clone(nested, budget, allocations, work, data_custody, cached_local_bytes)?;
-    match F::try_clone_key(key, maximum_bytes) {
+    match F::try_clone_key(key, maximum_bytes, &mut |_| Ok::<_, CanonicalDecodeError>(())) {
         Ok(cloned) => Ok(cloned),
         Err(error) => {
             allocations.release(nested)?;
@@ -1425,9 +1290,9 @@ pub(crate) fn clone_value<F: Format>(
     cached_local_bytes: u64,
 ) -> Result<F::Value, Error> {
     let nested = F::value_nested_bytes(value);
-    if nested == 0 { return F::try_clone_value(value, maximum_bytes).map_err(Error::Decode); }
+    if nested == 0 { return F::try_clone_value(value, maximum_bytes, &mut |_| Ok::<_, CanonicalDecodeError>(())).map_err(Error::Decode); }
     admit_clone(nested, budget, allocations, work, data_custody, cached_local_bytes)?;
-    match F::try_clone_value(value, maximum_bytes) {
+    match F::try_clone_value(value, maximum_bytes, &mut |_| Ok::<_, CanonicalDecodeError>(())) {
         Ok(cloned) => Ok(cloned),
         Err(error) => {
             allocations.release(nested)?;
@@ -1483,10 +1348,6 @@ const PAGE_READ: WorkCounters = WorkCounters {
     ..WorkCounters::UNCHARGED
 };
 
-/// Charges `copied` bytes of a shared page cloned into an owned one whose
-/// allocation `allocations` has just claimed. An exceeded budget releases
-/// that claim before failing; an overflowing charge fails without releasing
-/// it, exactly as the prospective sum this replaces did.
 fn charge_copy(
     copied: u64,
     budget: &WorkBudget,

@@ -8,7 +8,7 @@ use acyclic_harness::{
     runtime::TaskRunLimits,
     scheduler::SessionLimits,
 };
-use acyclic_stream::{LocalStream, LocalStreamLimits, StreamClient};
+use acyclic_stream::{LocalStream, LocalStreamLimits};
 use pi_owner::{PiOwnerConfig, PiOwnerPolicy};
 use pi_root::PiRootIntent;
 use pi_root_inputs::{PiRootRequest, ROOT_ALLOCATION_PROVIDER, ROOT_INPUT_DIRECTORY};
@@ -104,7 +104,7 @@ pub(crate) async fn register(
         context_id, root_id,
         paths: BTreeMap::from([(path_key.0, root_path.0)]),
     };
-    root.validate_with_native_work(&binding, work)?;
+    root.validate(&binding, work)?;
     const GRANTS: &[&str] = &[
         "operation:declare", "operation:observe", "operation:cancel", "operation:wake",
         "task:spawn:acyclic.pi@1", "effect:plan", "effect:run", "fork:publish", "conversation:bind",
@@ -172,19 +172,17 @@ pub(crate) async fn register(
     ).await.map_err(|(source, custody)| acyclic_harness::Error::NativeWorkspace { source, custody })?;
     drop(journal_generation);
     drop(journal_name);
-    let stream = StreamClient::new(Arc::new(LocalStream::open(directory.join("stream"), LocalStreamLimits::default()).await?));
+    let stream = Arc::new(LocalStream::open(directory.join("stream"), LocalStreamLimits::default()).await?);
     let runtime = pi_runtime::PiTaskRuntime::open_with_native_work(
         stream, filesystem.clone(), &journal, owner.authority_with_native_work(work)?, work,
     ).await?;
     let request = PiRootRequest { binding, root };
     let command = pi_root_inputs::stage_root_command(&owner, &filesystem, &request, work).await?;
-    let admitted_input = request.clone_with_native_work(work)?;
-    let admission = runtime.admit_root_with_native_work(
-        admitted_input.0.binding, admitted_input.0.root, command.0, work,
+    let admission = runtime.admit_root(
+        &request.binding, &request.root, &command.0, work,
     ).await?;
     drop(admission.0);
     drop(admission.1);
-    drop(admitted_input.1);
     drop(command.1);
     let state_session = work.display(session).map_err(native_error)?;
     let state_agent = work.display(session).map_err(native_error)?;

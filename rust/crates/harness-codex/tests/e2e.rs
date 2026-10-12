@@ -28,8 +28,7 @@ use std::{
     time::{Duration, Instant},
 };
 use support::{
-    FakeUpstream, Journal, RecordingMeter, function_call_turn, message_turn, namespaced_call_turn,
-    sse,
+    FakeUpstream, Journal, RecordingMeter, function_call_turn, message_turn, sse,
 };
 
 fn codex() -> PathBuf {
@@ -68,15 +67,16 @@ async fn scripted() -> FakeUpstream {
                     eprintln!("TOOLS: {}", request.body["tools"]);
                     return sse(message_turn(n, "no echo offered"));
                 };
-                sse(namespaced_call_turn(
+                sse(function_call_turn(
                     n,
-                    &namespace,
+                    Some(&namespace),
                     &name,
                     &json!({"text": "from codex"}),
                 ))
             }
             1 => sse(function_call_turn(
                 n,
+                None,
                 "exec_command",
                 &json!({"cmd": "echo done > report.md"}),
             )),
@@ -181,7 +181,10 @@ async fn a_spent_budget_ends_the_turn_after_one_more_request() {
     let error = executor(
         &upstream,
         dir.path(),
-        Arc::new(RecordingMeter::stopping_after(1)),
+        Arc::new(RecordingMeter {
+            stop_after: Some(1),
+            ..RecordingMeter::default()
+        }),
         8,
     )
     .execute(input(8), &Journal::default())

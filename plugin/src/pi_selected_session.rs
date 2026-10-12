@@ -1,13 +1,6 @@
 //! Selected workspace controls dispatched under the original caller's owner.
 use super::*;
-use acyclic_harness::{filesystem::{TaskCommandHost, TaskCommandProgress}, workflow::WorkflowCommand};
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RootSourceAcknowledgement {
-    root_key: String,
-    snapshot: acyclic_fs::LazySnapshotRef,
-}
+use acyclic_harness::{filesystem::TaskCommandProgress, workflow::WorkflowCommand};
 
 impl PiSession {
     pub(super) async fn selected_control(
@@ -72,38 +65,35 @@ impl PiSession {
         } else {
             native.invocation_work(caller).await?
         };
-        let original = pi_fork::original_operation_with_native_work(owner.policy().root_task, caller, &sdk_operation, &work)?;
-        let operation = pi_fork::derived_with_native_work(original, if event == "TaskWriteback" && approval_digest.is_some() {
+        let original = pi_fork::original_operation(owner.policy().root_task, caller, &sdk_operation, &work)?;
+        let operation = pi_fork::derived(original, if event == "TaskWriteback" && approval_digest.is_some() {
             "selected-writeback-publish"
         } else { match event {
             "TaskInspect" => "selected-inspect", "TaskDiff" => "selected-diff",
             "TaskImport" => "selected-import", _ => "selected-writeback",
         }}, &work)?;
         let cancellation = work.cancellation();
-        let mut root_cut = None;
         let mut root_cut_custody = None;
+        let mut root_cut = None;
         if source == owner.policy().root_task && caller != source {
             let observer = pi_fork_host::PiObserveSourceCommand {
                 caller, sdk_operation: sdk_operation.clone(), root_key: root_key.clone(),
             };
-            let observe_operation = pi_fork::derived_with_native_work(original, "observe-root-source", &work)?;
-            let fork = pi_fork_host::PiForkHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-                &self.resources, native.original_owner(), &self.state, &self.roots, native.clone());
-            let selected = pi_selected_host::PiSelectedHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
+            let observe_operation = pi_fork::derived(original, "observe-root-source", &work)?;
+            let selected = pi_selected_host::PiControlHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
                 &self.resources, native.original_owner(), &self.state, &self.roots, native.clone(), &work)?;
             let workflow = pi_workflow::PiWorkflowHost::new(&self.relative_directory, self.runtime.clone(), self.filesystem.clone(),
-                self.stream.clone(), &self.resources, &self.state, work.clone()).with_controls(&fork, &selected);
+                self.stream.clone(), &self.resources, &self.state, work.clone()).with_controls(&selected);
             let (input, mut input_custody) = pi_root_provider::guarded_pi_value(
                 &observer, owner.policy().maximum_payload_bytes, &work)?;
             let input = input;
             let (observed, custody) = workflow.control_with_native_work(
                 observe_operation, pi_fork_host::PI_OBSERVE_SOURCE_COMMAND_KIND, &input).await?;
             drop(input);
-            let observed: RootSourceAcknowledgement = serde_json::from_value(observed).map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
+            let observed: pi_fork_host::PiRootSource = serde_json::from_value(observed).map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
             if observed.root_key != root_key { return Err(acyclic_harness::Error::Invalid("Root source acknowledgement selected another root".to_owned())); }
-            root_cut = Some(pi_selected_host::PiRootSourceCut { snapshots: BTreeMap::from([(root_key.clone(), observed.snapshot)]) });
+            root_cut = Some(observed);
             let mut custody = custody;
-            drop(observed);
             if let Err(cause) = custody.absorb(&mut input_custody) {
                 drop(root_cut);
                 return Err(native_error(cause));
@@ -117,21 +107,19 @@ impl PiSession {
         let (reference, mut reference_custody) = pi_root_provider::stage_pi_input(
             owner, &self.filesystem, operation, "command", &payload, &work).await?;
         let command = WorkflowCommand { operation_id: operation, kind: kind.to_owned(), payload: reference };
-        let fork = pi_fork_host::PiForkHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            &self.resources, native.original_owner(), &self.state, &self.roots, native.clone());
-        let selected = pi_selected_host::PiSelectedHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-            &self.resources, native.original_owner(), &self.state, &self.roots, native.clone(), &work)?
-            .with_root_source_cut(root_cut.as_ref());
+        let mut selected = pi_selected_host::PiControlHost::new(self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
+            &self.resources, native.original_owner(), &self.state, &self.roots, native.clone(), &work)?;
+        selected.root_source = root_cut.as_ref();
         let (value, mut custody) = if caller == owner.policy().root_task {
             pi_workflow::PiWorkflowHost::new(&self.relative_directory, self.runtime.clone(), self.filesystem.clone(), self.stream.clone(),
-                &self.resources, &self.state, work.clone()).with_controls(&fork, &selected)
+                &self.resources, &self.state, work.clone()).with_controls(&selected)
                 .control_command_with_native_work(command).await?
         } else {
             let live = native.live_source(caller, &work).await?.ok_or_else(|| acyclic_harness::Error::Invalid("selected caller has no current native owner".to_owned()))?;
             let fence = live.context.context().owned_task_fence()?;
             let (input, mut input_custody) = pi_root_provider::guarded_pi_value(
                 &payload, owner.policy().maximum_payload_bytes, &work)?;
-            let progress = selected.execute_with_native_work(live.context, fence, command, input, &work)?.await?;
+            let progress = selected.run(live.context, fence, command, input, false, &work).await?;
             match progress {
                 TaskCommandProgress::ReadyWithNativeCustody { value, mut custody } => {
                     if let Err(cause) = custody.absorb(&mut input_custody) {

@@ -81,8 +81,8 @@ pub struct OperationControlRequest {
 impl OperationControlRequest {
     /// Verifies the signed scope against the host-selected owner trust root.
     pub fn authenticate(&self, verifier: &crate::core::AuthorityVerifier) -> Result<()> {
-        verifier.verify_audience(&self.owner)?;
-        verifier.verify(&self.scope)
+        verifier.verify_audience(&self.owner, &mut None)?;
+        verifier.verify(&self.scope, &mut None)
     }
 }
 
@@ -181,7 +181,7 @@ fn decode_control(
         owner.ok_or_else(|| Error::Invalid("operation owner is missing".into()))?,
         Error::Invalid,
     )?;
-    owner.stream_path()?;
+    owner.stream_path(&mut None)?;
     let operation_id = OperationId::parse(operation_id)?;
     let scope = decode_scope(
         scope.ok_or_else(|| Error::Invalid("operation control scope is missing".into()))?,
@@ -303,7 +303,7 @@ mod tests {
             cancellation_requested: false,
             revision: 3,
         };
-        validate_operation_status(&observe, &status)?;
+        validate_operation_status(&observe.operation_id, observe.owner.as_ref(), &status)?;
 
         let mut mismatched_error = status.clone();
         mismatched_error.error = Some(wire::Error {
@@ -312,7 +312,7 @@ mod tests {
             operation_id: OperationId::from_bytes([9; 16]).to_string(),
         });
         assert!(matches!(
-            validate_operation_status(&observe, &mismatched_error),
+            validate_operation_status(&observe.operation_id, observe.owner.as_ref(), &mismatched_error),
             Err(Error::Conflict(_))
         ));
 

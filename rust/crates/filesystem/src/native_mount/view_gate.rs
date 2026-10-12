@@ -1,4 +1,4 @@
-use super::{MountSourceError, MountViewLease};
+use super::MountSourceError;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::cell::Cell;
@@ -314,8 +314,6 @@ struct WaitingWriter {
     registered: bool,
 }
 
-impl MountViewLease for ViewReadLease {}
-
 impl ViewReadLease {
     /// Transfers an already admitted visible owner payload to this original lease.
     pub(super) fn attach_owned_payload(&mut self, bytes: u64) -> Result<(), MountSourceError> {
@@ -434,7 +432,7 @@ impl ViewGate {
     pub(super) fn new_with_native_work(
         original: &crate::NativeMaterializationWork,
     ) -> Result<Arc<Self>, MountSourceError> {
-        let allocation = original.claim_allocation(std::mem::size_of::<Self>() as u64, 1)
+        let allocation = original.claim_allocation(std::mem::size_of::<Self>() as u64, 1, crate::WorkCounters::UNCHARGED)
             .map_err(MountSourceError::NativeWork)?;
         let mut value = Self::new();
         value._native_allocation = Some(allocation);
@@ -584,7 +582,7 @@ impl ViewGate {
                 result
             })?;
             if let Some(lease) = admitted { return Ok(lease); }
-            super::adapter::await_measured_lock_with_carrier(
+            super::adapter::await_lock(
                 notified, carrier, cancellation, lifetime,
             ).await?;
         }
@@ -726,7 +724,7 @@ impl ViewGate {
         cancellation: &crate::CancellationToken, lifetime: Option<&crate::CancellationToken>,
     ) -> Result<ViewWriteLease, MountSourceError> {
         carrier.with_work(|work| work.check()).map_err(super::lazy::mount_demand_error)?;
-        super::adapter::await_measured_lock_with_carrier(
+        super::adapter::await_lock(
             self.write_stable(expected), carrier, cancellation, lifetime,
         ).await?
     }

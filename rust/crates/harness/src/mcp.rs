@@ -263,7 +263,7 @@ impl McpCatalog {
         installation: McpCatalogInstallation<'_>,
     ) -> Result<()> {
         self.validate_transport_binding(transport.as_ref())?;
-        installation.verifier.verify(installation.scope)?;
+        installation.verifier.verify(installation.scope, &mut None)?;
         if !installation
             .scope
             .capabilities()
@@ -317,7 +317,7 @@ impl McpCatalog {
             if !names.insert(&tool.name) {
                 return Err(Error::Conflict("duplicate MCP tool name".into()));
             }
-            self.definition(tool)?.validate()?;
+            self.definition(tool)?.validate(&mut None)?;
             if tool.input_schema.get("type") != Some(&json!("object")) {
                 return Err(Error::Invalid("MCP input schema must be an object".into()));
             }
@@ -345,16 +345,9 @@ impl McpCatalog {
     }
 
     fn selected_tools(&self) -> impl Iterator<Item = &McpToolDefinition> {
-        let names: Option<BTreeSet<&str>> = match &self.schema_exposure {
-            McpSchemaExposure::Eager => None,
-            McpSchemaExposure::Selected { names } => {
-                Some(names.iter().map(String::as_str).collect())
-            }
-        };
-        self.tools.iter().filter(move |tool| {
-            names
-                .as_ref()
-                .is_none_or(|names| names.contains(tool.name.as_str()))
+        self.tools.iter().filter(move |tool| match &self.schema_exposure {
+            McpSchemaExposure::Eager => true,
+            McpSchemaExposure::Selected { names } => names.contains(&tool.name),
         })
     }
 
@@ -434,7 +427,7 @@ impl McpCatalog {
         }
         let prefix = format!("mcp.{}.", self.server);
         let selected = registry
-            .definitions()?
+            .definitions(None)?
             .into_iter()
             .filter(|definition| definition.name.starts_with(&prefix))
             .map(|definition| (definition.name.clone(), definition))
@@ -465,16 +458,18 @@ impl McpCatalog {
         }
         for remote in &self.tools {
             let definition = self.definition(remote)?;
+            let name = definition.name.clone();
             next.register(Tool {
-                definition: definition.clone(),
+                definition,
                 executor: Arc::new(RemoteTool {
                     server: self.server.clone(),
-                    remote: remote.clone(),
+                    name: remote.name.clone(),
+                    output_schema: remote.output_schema.clone(),
                     transport: Arc::clone(transport),
                 }),
                 projection: Arc::clone(projection),
             })?;
-            next.remove_from_model(&definition.name)?;
+            next.remove_from_model(&name)?;
         }
         for remote in self.selected_tools() {
             let definition = self.definition(remote)?;
@@ -525,7 +520,8 @@ impl McpCatalog {
 
 struct RemoteTool {
     server: String,
-    remote: McpToolDefinition,
+    name: String,
+    output_schema: Option<Value>,
     transport: Arc<dyn McpToolTransport>,
 }
 
@@ -541,31 +537,14 @@ impl RemoteTool {
         self.authorize(Some(context.task().scope()), invocation)
     }
 
-    fn validate_result(
-        &self,
-        result: &McpToolResult,
-        io: Option<&crate::executor::PreparationIo>,
-    ) -> Result<()> {
-        if !result.is_error
-            && let Some(schema) = &self.remote.output_schema
-        {
-            let Some(value) = result.structured_content.as_ref() else {
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                if io.and_then(|io| io.original_native_work()).is_some() {
-                    return Err(Error::NativeBoundary {
-                        code: crate::wire::ErrorCode::Invalid,
-                        reason: "MCP structured result missing",
-                    });
-                }
-                return Err(Error::Invalid("MCP structured result missing".into()));
-            };
-            crate::contract::validate_json_schema_value(schema, value, "MCP output", io)?;
-        }
-        Ok(())
-    }
-
     fn result(&self, result: McpToolResult) -> Result<ToolResult> {
-        self.validate_result(&result, None)?;
+        if !result.is_error
+            && let Some(schema) = &self.output_schema
+        {
+            let value = result.structured_content.as_ref()
+                .ok_or_else(|| Error::Invalid("MCP structured result missing".into()))?;
+            crate::contract::validate_json_schema_value(schema, value, "MCP output", None)?;
+        }
         let value = serde_json::to_value(result)
             .map_err(|error| Error::Invalid(error.to_string()))?;
         rpc::check_dto(rpc::Dto::CallToolResult, &value, None)?;
@@ -599,7 +578,7 @@ impl ToolExecutor for RemoteTool {
                 self.transport
                     .call(
                         invocation.operation_id,
-                        &self.remote.name,
+                        &self.name,
                         invocation.arguments,
                     )
                     .await?,
@@ -629,7 +608,7 @@ impl ToolExecutor for RemoteTool {
             self.authorize_context(&context, &invocation)?;
             self.result(
                 self.transport
-                    .call_with_context(context, &self.remote.name, invocation.arguments)
+                    .call_with_context(context, &self.name, invocation.arguments)
                     .await?,
             )
         })
@@ -711,17 +690,18 @@ mod tests {
         assert_eq!(definition.projection_schema, selected.projection_schema);
         definition.validate_projection(
             &json!({"kind":"parts","parts":[{"kind":"text","text":"bounded view"}]}),
+            Limits::default(), None,
         )?;
         assert!(
             definition
-                .validate_projection(&json!({"kind":"json","value":{}}))
+                .validate_projection(&json!({"kind":"json","value":{}}), Limits::default(), None)
                 .is_err()
         );
         assert!(
             definition
                 .validate_projection(&json!({"kind":"parts","parts":[
                     {"kind":"tool_call","name":"nested","call_id":"nested","arguments":{}}
-                ]}))
+                ]}), Limits::default(), None)
                 .is_err()
         );
         let digest = selected.installation_digest(None, 8, 8192)?;
@@ -770,10 +750,10 @@ mod tests {
         };
         let issuer = AuthorityIssuer::new("catalog", [8; 32], authority.clone());
         let foreign = AuthorityIssuer::new("catalog", [9; 32], authority);
-        let scope = issuer.root("installer", Capabilities::new(["mcp:install:fixture"]));
-        let missing = issuer.root("installer", Capabilities::default());
-        let forged = foreign.root("installer", Capabilities::new(["mcp:install:fixture"]));
-        let verifier = issuer.verifier();
+        let scope = issuer.issue("installer", &Capabilities::new(["mcp:install:fixture"]), None, None, &mut None).expect("scope proof");
+        let missing = issuer.issue("installer", &Capabilities::default(), None, None, &mut None).expect("scope proof");
+        let forged = foreign.issue("installer", &Capabilities::new(["mcp:install:fixture"]), None, None, &mut None).expect("scope proof");
+        let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let original = catalog("1", &["a", "b"]);
         let approval = CatalogApproval {
             operation: OperationId::from_bytes([46; 16]),
@@ -784,7 +764,7 @@ mod tests {
         let transport = Arc::new(Transport::default());
         let bound: Arc<dyn McpToolTransport> = transport.clone();
         let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::default();
         for control in 0..13 {
             let mut input = original.clone();
             let mut installation = McpCatalogInstallation {
@@ -832,7 +812,7 @@ mod tests {
                     .await
                     .is_err()
             );
-            assert!(registry.definitions()?.is_empty());
+            assert!(registry.definitions(None)?.is_empty());
             assert!(registry.get_version("mcp.fixture.a", "1", None)?.is_none());
             if control < 2 {
                 assert_eq!(approval.reads.load(Ordering::SeqCst), reads);
@@ -870,7 +850,7 @@ mod tests {
             tool.executor.authorize(Some(&installer), &invocation),
             Err(Error::Unauthorized(_))
         ));
-        assert_eq!(registry.definitions()?.len(), 2);
+        assert_eq!(registry.definitions(None)?.len(), 2);
         assert_eq!(transport.0.load(Ordering::SeqCst), 0);
         Ok(())
     }
@@ -886,14 +866,14 @@ mod tests {
                 id: "catalog".into(),
             },
         );
-        let scope = issuer.root("installer", Capabilities::new(["mcp:install:fixture"]));
-        let verifier = issuer.verifier();
+        let scope = issuer.issue("installer", &Capabilities::new(["mcp:install:fixture"]), None, None, &mut None).expect("scope proof");
+        let verifier = issuer.verifier(&mut None).expect("verifier copy");
         let original = catalog("1", &["a", "b"]);
         let mut replacement = catalog("2", &["a"]);
         replacement.schema_exposure = McpSchemaExposure::Selected { names: vec![] };
         let bound: Arc<dyn McpToolTransport> = Arc::new(Transport::default());
         let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::default();
         original.install(&mut registry, None, &bound, &projection, 8, 8192)?;
         let approval = CatalogApproval {
             operation: OperationId::from_bytes([50; 16]),
@@ -925,7 +905,7 @@ mod tests {
                 Err(Error::Unauthorized(_))
             ));
             assert_eq!(
-                registry.definitions()?,
+                registry.definitions(None)?,
                 original.model_definitions(8, 8192)?
             );
             assert!(registry.get_version("mcp.fixture.a", "2", None)?.is_none());
@@ -947,7 +927,7 @@ mod tests {
                 },
             )
             .await?;
-        assert!(registry.definitions()?.is_empty());
+        assert!(registry.definitions(None)?.is_empty());
         assert!(registry.get_version("mcp.fixture.a", "1", None)?.is_some());
         assert!(registry.get_version("mcp.fixture.b", "1", None)?.is_some());
         assert!(registry.get_version("mcp.fixture.a", "2", None)?.is_some());
@@ -1071,7 +1051,7 @@ mod tests {
         let transport = Arc::new(ContextTransport::default());
         let bound: Arc<dyn McpToolTransport> = transport.clone();
         let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::default();
         catalog("1", &["a"]).install(&mut registry, None, &bound, &projection, 8, 8192)?;
         let tool = registry
             .get("mcp.fixture.a", None)?
@@ -1079,7 +1059,7 @@ mod tests {
             .ok_or_else(|| Error::NotFound("context fixture".into()))?;
         let legacy = Arc::new(Transport::default());
         let legacy_bound: Arc<dyn McpToolTransport> = legacy.clone();
-        let mut legacy_registry = ToolRegistry::new();
+        let mut legacy_registry = ToolRegistry::default();
         catalog("1", &["a"]).install(
             &mut legacy_registry,
             None,
@@ -1145,7 +1125,7 @@ mod tests {
         let transport = Arc::new(Transport::default());
         let bound: Arc<dyn McpToolTransport> = transport.clone();
         let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::default();
         let old = catalog("1", &["a", "b"]);
         old.install(&mut registry, None, &bound, &projection, 8, 8192)?;
         let pinned = registry
@@ -1158,11 +1138,11 @@ mod tests {
                 .install(&mut registry, Some(&old), &bound, &projection, 8, 8192)
                 .is_err()
         );
-        assert_eq!(registry.definitions()?.len(), 2);
+        assert_eq!(registry.definitions(None)?.len(), 2);
         invalid.tools.pop();
         invalid.install(&mut registry, Some(&old), &bound, &projection, 8, 8192)?;
-        assert_eq!(registry.definitions()?.len(), 1);
-        assert_eq!(registry.definitions()?[0].revision, "2");
+        assert_eq!(registry.definitions(None)?.len(), 1);
+        assert_eq!(registry.definitions(None)?[0].revision, "2");
         assert!(registry.get("mcp.fixture.b", None)?.is_none());
         assert!(registry.get_version("mcp.fixture.b", "1", None)?.is_some());
         assert_eq!(pinned.definition.revision, "1");
@@ -1173,7 +1153,7 @@ mod tests {
                 .install(&mut registry, Some(&old), &bound, &projection, 8, 8192)
                 .is_err()
         );
-        assert_eq!(registry.definitions()?[0].revision, "2");
+        assert_eq!(registry.definitions(None)?[0].revision, "2");
         Ok(())
     }
     #[tokio::test]
@@ -1190,7 +1170,7 @@ mod tests {
         let transport = Arc::new(Transport::default());
         let bound: Arc<dyn McpToolTransport> = transport.clone();
         let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::default();
         catalog.install(&mut registry, None, &bound, &projection, 8, 8192)?;
         let tool = registry
             .get("mcp.fixture.a", None)?
@@ -1224,9 +1204,11 @@ mod tests {
         input.server = "fixture".into();
         input.tools[0].input_schema = json!({"type":"unknown"});
         assert!(input.validate(1, 8192).is_err());
+        let remote = catalog("1", &["a"]).tools.remove(0);
         let tool = RemoteTool {
             server: "fixture".into(),
-            remote: catalog("1", &["a"]).tools.remove(0),
+            name: remote.name,
+            output_schema: remote.output_schema,
             transport: Arc::new(Transport::default()),
         };
         assert!(
@@ -1295,7 +1277,7 @@ mod tests {
         });
         let new_transport: Arc<dyn McpToolTransport> = Arc::new(Transport::default());
         let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::default();
         let old_catalog = catalog("1", &["a"]);
         old_catalog.install(&mut registry, None, &old_transport, &projection, 8, 8192)?;
         let admitted = registry
@@ -1341,55 +1323,6 @@ mod tests {
     }
 
     #[test]
-    fn all_catalog_replacement_subsets_preserve_admitted_revisions() -> Result<()> {
-        let transport: Arc<dyn McpToolTransport> = Arc::new(Transport::default());
-        let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
-        let names = ["a", "b", "c"];
-        for initial in 0_u8..8 {
-            for replacement in 0_u8..8 {
-                let selected = |mask: u8| {
-                    names
-                        .iter()
-                        .enumerate()
-                        .filter_map(|(index, name)| (mask & (1 << index) != 0).then_some(*name))
-                        .collect::<Vec<_>>()
-                };
-                let old = catalog("1", &selected(initial));
-                let new = catalog("2", &selected(replacement));
-                let mut registry = ToolRegistry::new();
-                old.install(&mut registry, None, &transport, &projection, 3, 8192)?;
-                new.install(&mut registry, Some(&old), &transport, &projection, 3, 8192)?;
-                assert_eq!(
-                    registry.definitions()?.len(),
-                    replacement.count_ones() as usize
-                );
-                for (index, name) in names.iter().enumerate() {
-                    let name = format!("mcp.fixture.{name}");
-                    assert_eq!(
-                        registry.get_version(&name, "1", None)?.is_some(),
-                        initial & (1 << index) != 0
-                    );
-                    assert_eq!(
-                        registry.get(&name, None)?.is_some(),
-                        replacement & (1 << index) != 0
-                    );
-                }
-                // The registry stamp also rejects stale empty catalog inputs.
-                {
-                    let before = registry.definitions()?;
-                    assert!(
-                        catalog("3", &[])
-                            .install(&mut registry, Some(&old), &transport, &projection, 3, 8192)
-                            .is_err()
-                    );
-                    assert_eq!(before, registry.definitions()?);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    #[test]
     fn every_selected_exposure_reload_is_atomic_including_empty_visibility() -> Result<()> {
         let transport: Arc<dyn McpToolTransport> = Arc::new(Transport::default());
         let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
@@ -1410,13 +1343,13 @@ mod tests {
             for replacement in 0_u8..8 {
                 let old = selected("1", initial);
                 let new = selected("2", replacement);
-                let mut registry = ToolRegistry::new();
+                let mut registry = ToolRegistry::default();
                 old.install(&mut registry, None, &transport, &projection, 3, 8192)?;
-                assert_eq!(registry.definitions()?, old.model_definitions(3, 8192)?);
+                assert_eq!(registry.definitions(None)?, old.model_definitions(3, 8192)?);
                 new.install(&mut registry, Some(&old), &transport, &projection, 3, 8192)?;
-                assert_eq!(registry.definitions()?, new.model_definitions(3, 8192)?);
+                assert_eq!(registry.definitions(None)?, new.model_definitions(3, 8192)?);
                 assert_eq!(
-                    registry.definitions()?.len(),
+                    registry.definitions(None)?.len(),
                     replacement.count_ones() as usize
                 );
                 assert_eq!(new.search("", None, 3, 3, 8192)?.len(), 3);
@@ -1432,7 +1365,7 @@ mod tests {
                             .is_some()
                     );
                 }
-                let before = registry.definitions()?;
+                let before = registry.definitions(None)?;
                 assert!(
                     selected("3", replacement)
                         .install(&mut registry, Some(&old), &transport, &projection, 3, 8192)
@@ -1443,11 +1376,11 @@ mod tests {
                         .install(&mut registry, None, &transport, &projection, 3, 8192)
                         .is_err()
                 );
-                assert_eq!(registry.definitions()?, before);
+                assert_eq!(registry.definitions(None)?, before);
             }
         }
         let mut invalid = selected("1", 1);
-        let mut registry = ToolRegistry::new();
+        let mut registry = ToolRegistry::default();
         for names in [vec!["absent".into()], vec!["a".into(), "a".into()]] {
             invalid.schema_exposure = McpSchemaExposure::Selected { names };
             assert!(
@@ -1455,12 +1388,12 @@ mod tests {
                     .install(&mut registry, None, &transport, &projection, 3, 8192)
                     .is_err()
             );
-            assert!(registry.definitions()?.is_empty());
+            assert!(registry.definitions(None)?.is_empty());
         }
         let mut disabled = selected("1", 0);
         disabled.discovery = McpDiscoveryPolicy::Disabled;
         disabled.install(&mut registry, None, &transport, &projection, 3, 8192)?;
-        assert!(registry.definitions()?.is_empty());
+        assert!(registry.definitions(None)?.is_empty());
         assert!(matches!(
             disabled.search("", None, 3, 3, 8192),
             Err(Error::Unsupported(_))

@@ -1,6 +1,7 @@
 //! The original v3 atomic mail engine with optional original SDK observation.
 
 use super::*;
+use crate::runtime::TaskStateProvider;
 use crate::distributed::{sdk_error, sdk_source};
 use crate::executor::PreparationIo;
 #[cfg(feature = "filesystem")]
@@ -65,24 +66,30 @@ fn encode<T: Serialize + ?Sized>(value: &T, maximum: u64, io: Option<&Preparatio
 fn decode<T: MailRecord>(bytes: &[u8], io: Option<&PreparationIo>) -> Result<T> {
     require_original(io)?;
     #[cfg(feature = "filesystem")]
-    if let Some(io) = io { return Ok(io.decode_preparation::<T>(bytes)?.into_retained()); }
+    if let Some(io) = io { return Ok(crate::filesystem::retain_decoded(io.decode(std::marker::PhantomData::<T>, bytes, crate::wire::ErrorCode::Storage)?)); }
     crate::contract::json_from_slice(bytes).map_err(|error| Error::Storage(error.to_string()))
 }
 
 fn validate_file(file: &FileRef, limits: crate::conversation::Limits, io: Option<&PreparationIo>) -> Result<()> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io {
-        let work = io.original_native_work().ok_or_else(|| boundary(Some(io),
-            crate::wire::ErrorCode::Unsupported, "mail file validation requires original native work"))?;
-        file.validate_with_native_work(work)?;
-        if file.path().len() > limits.path_bytes || file.descriptor().byte_length() > limits.file_bytes {
-            return Err(boundary(Some(io), crate::wire::ErrorCode::Invalid,
-                "mail file exceeds original admission limits"));
-        }
-        return Ok(());
+    require_original(io)?;
+    #[cfg(feature = "filesystem")]
+    let mut observer = io.map(PreparationIo::history_io);
+    #[cfg(feature = "filesystem")]
+    let mut work = observer.as_mut().map(|io| io as &mut dyn HistoryIo);
+    #[cfg(not(feature = "filesystem"))]
+    let mut work: Observer<'_> = None;
+    limits.validate_file(file, &mut work)
+}
+
+pub(super) fn authorize_route(sender: TaskId, sender_admission: &TaskAdmissionRecord,
+    recipient: TaskId, recipient_admission: &TaskAdmissionRecord, io: Option<&PreparationIo>) -> Result<bool> {
+    let direct = sender_admission.parent == Some(recipient) || recipient_admission.parent == Some(sender);
+    if !direct && (!sender_admission.grants.contains(capability::MAIL_SEND)
+        || !recipient_admission.grants.contains(capability::MAIL_READ)) {
+        return Err(boundary(io, crate::wire::ErrorCode::Unauthorized,
+            "custom mail route requires original sender and recipient grants"));
     }
-    file.validate()?;
-    limits.validate_file(file)
+    Ok(direct)
 }
 
 fn reserve<T>(items: &mut Vec<T>, maximum: usize, io: Option<&PreparationIo>) -> Result<()> {
@@ -141,12 +148,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         require_original(io)?;
         let sender_admission = self.mail_admission(sender, io).await?;
         let recipient_admission = self.mail_admission(recipient, io).await?;
-        let direct = sender_admission.parent == Some(recipient) || recipient_admission.parent == Some(sender);
-        if !direct && (!sender_admission.grants.contains(capability::MAIL_SEND)
-            || !recipient_admission.grants.contains(capability::MAIL_READ)) {
-            return Err(boundary(io, crate::wire::ErrorCode::Unauthorized,
-                "custom mail route requires original sender and recipient grants"));
-        }
+        let direct = authorize_route(sender, &sender_admission, recipient, &recipient_admission, io)?;
         validate_file(&payload, sender_admission.limits, io)?;
         validate_file(&payload, recipient_admission.limits, io)?;
         #[cfg(feature = "filesystem")]
@@ -183,7 +185,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         #[cfg(not(feature = "filesystem"))]
         let mut work: Observer<'_> = None;
         let mut text = [0; 80];
-        let mailbox = operations::stream_text_with_work(&self.stream, recipient_path(task, &mut text), &mut work)?;
+        let mailbox = operations::stream(&self.stream, recipient_path(task, &mut text), &mut work)?;
         let bounds = match operations::bounds_with_work(&self.stream, mailbox.stream.path(), &mut work).await? {
             Ok(bounds) => bounds,
             Err(error) if *sdk_source(&error) == StreamError::NotFound => return Ok(Vec::new()),
@@ -216,10 +218,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             drop(canonical);
             validate_file(&event.payload, recipient.limits, io)?;
             let sender = self.mail_admission(event.sender, io).await?;
-            let direct = sender.parent == Some(task) || recipient.parent == Some(event.sender);
-            if !direct && (!sender.grants.contains(capability::MAIL_SEND) || !recipient.grants.contains(capability::MAIL_READ)) {
-                return Err(boundary(io, crate::wire::ErrorCode::Unauthorized, "custom inbox route lacks original send/read grants"));
-            }
+            let direct = authorize_route(event.sender, &sender, task, &recipient, io)?;
             validate_file(&event.payload, sender.limits, io)?;
             if !crate::runtime::read_granted_with_work(&sender.grants, &event.payload, &mut work)?
                 || (!direct && !crate::runtime::read_granted_with_work(&recipient.grants, &event.payload, &mut work)?) {
@@ -344,11 +343,9 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         #[cfg(not(feature = "filesystem"))]
         let mut work: Observer<'_> = None;
         let mut recipient_text = [0; 80];
-        let mailbox = operations::stream_text_with_work(&self.stream,
-            recipient_path(recipient, &mut recipient_text), &mut work)?;
+        let mailbox = operations::stream(&self.stream, recipient_path(recipient, &mut recipient_text), &mut work)?;
         let mut intent_text = [0; 112];
-        let intent = operations::stream_text_with_work(&self.stream,
-            intent_path(sender, message, &mut intent_text), &mut work)?;
+        let intent = operations::stream(&self.stream, intent_path(sender, message, &mut intent_text), &mut work)?;
         let mut source_verified = false;
         loop {
             self.verify_mail_owner(sender, fence, owner, false, &mut work).await?;
@@ -383,7 +380,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             let owner_condition = match (owner, fence) {
                 (Some(owner), _) => Some(owner.condition(crate::distributed::JournalWrite::Fresh, &mut work).await?),
                 (None, Some(fence)) => Some(self.coordinator.lock().await.journal_condition(
-                    &self.owner, &self.owner_scope, &self.verifier, OperationId::from_bytes(sender.into_bytes()),
+                    self.verifier.audience(), &self.owner_scope, &self.verifier, OperationId::from_bytes(sender.into_bytes()),
                     fence, crate::distributed::JournalWrite::Fresh, &mut work).await?),
                 (None, None) => None,
             };
@@ -410,13 +407,13 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             let digest = *hash.finalize().as_bytes();
             drop(physical);
             let (key, held) = crate::distributed::digest_key(&digest, &mut work)?;
-            let mut request = crate::distributed::PreparedCommitRequest::new(key, held, &mut work);
-            request.push_condition(target)?;
-            request.push_condition(absent)?;
-            if let Some(condition) = owner_condition { request.push_condition(condition)?; }
-            request.append(mailbox.stream.path().clone(), bytes.clone())?;
-            request.append(intent.stream.path().clone(), location_bytes)?;
-            let (outcome, retained) = request.commit(&self.stream, Some(message), None, None, None).await?;
+            let mut request = crate::distributed::commit_request(key, held, &mut work);
+            crate::distributed::add_condition(&mut request, target)?;
+            crate::distributed::add_condition(&mut request, absent)?;
+            if let Some(condition) = owner_condition { crate::distributed::add_condition(&mut request, condition)?; }
+            crate::distributed::add_record(&mut request, mailbox.stream.path().clone(), bytes.clone())?;
+            crate::distributed::add_record(&mut request, intent.stream.path().clone(), location_bytes)?;
+            let (outcome, retained) = crate::distributed::commit(request, &self.stream, Some(message), None, None, None).await?;
             let committed = matches!(&outcome, CommitOutcome::Committed(_));
             drop(outcome);
             if let Some(observer) = work.as_deref_mut() { observer.release_owned(retained)?; }
@@ -443,7 +440,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             }
             return owner.verify(settlement, work).await;
         }
-        if let Some(fence) = fence { return self.verify_owner_with_work(sender, fence, settlement, &mut None).await; }
+        if let Some(fence) = fence { return self.verify_owner(sender, fence, settlement, &mut None).await; }
         Ok(())
     }
 
@@ -458,7 +455,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
         #[cfg(not(feature = "filesystem"))]
         let mut work: Observer<'_> = None;
         let mut text = [0; 112];
-        let location = operations::stream_text_with_work(&self.stream, intent_path(sender, message, &mut text), &mut work)?;
+        let location = operations::stream(&self.stream, intent_path(sender, message, &mut text), &mut work)?;
         let mut records = match operations::read_records_with_work(&self.stream, &location.stream, 0, 2, &mut work).await? {
             Ok(records) => records,
             Err(error) if *sdk_source(&error) == StreamError::NotFound => return Ok(false),
@@ -480,7 +477,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             return Err(boundary(io, crate::wire::ErrorCode::Storage, "inbox record differs from its atomic location"));
         }
         let mut text = [0; 80];
-        let mailbox = operations::stream_text_with_work(&self.stream, recipient_path(retained.recipient, &mut text), &mut work)?;
+        let mailbox = operations::stream(&self.stream, recipient_path(retained.recipient, &mut text), &mut work)?;
         let mut originals = match operations::read_records_with_work(&self.stream, &mailbox.stream,
             retained.sequence, 1, &mut work).await? {
             Ok(records) => records,

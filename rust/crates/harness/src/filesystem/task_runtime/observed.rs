@@ -61,10 +61,10 @@ pub(in crate::filesystem) fn boundary(io: Option<&PreparationIo>, code: crate::w
     }
 }
 
-pub(super) fn digest<T: serde::Serialize>(value: &T, io: Option<&PreparationIo>) -> Result<[u8; 32]> {
+pub(in crate::filesystem) fn digest<T: serde::Serialize>(value: &T, io: Option<&PreparationIo>, maximum_bytes: u64) -> Result<[u8; 32]> {
     let Some(io) = io else { return crate::contract::canonical_json_digest(value); };
     let hold;
-    let bytes = io.encode(value, acyclic_stream::MAX_RECORD_BYTES as u64, true)?;
+    let bytes = io.encode(value, maximum_bytes, true)?;
     hold = io.guard_bytes(&bytes)?;
     let hash = acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64, ..Default::default() };
     io.preflight(hash)?;
@@ -73,6 +73,18 @@ pub(super) fn digest<T: serde::Serialize>(value: &T, io: Option<&PreparationIo>)
     drop(bytes);
     drop(hold);
     Ok(digest)
+}
+
+pub(super) fn history<'a>(io: Option<&'a PreparationIo>) -> Result<Option<impl crate::store::HistoryIo + 'a>> {
+    #[cfg(not(target_arch = "wasm32"))]
+    let history = io.map(|io| {
+        let work = io.original_native_work().ok_or_else(|| boundary(Some(io),
+            crate::wire::ErrorCode::Unsupported, "worker observation requires original native work"))?;
+        crate::store::native_work_io(work).map_err(Error::from)
+    }).transpose()?;
+    #[cfg(target_arch = "wasm32")]
+    let history = { let _ = io; None::<&PreparationIo> };
+    Ok(history)
 }
 
 impl<P, A, O> FilesystemTaskRuntime<P, A, O>
@@ -123,27 +135,4 @@ where
         else { self.host.verify_dispatch_owner(task, fence.clone()).await }
     }
 
-    pub(super) async fn settle_observed(&self, task: TaskId, fence: &LeaseFence, outcome: Outcome<Value>, io: Option<&PreparationIo>) -> Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(io) = io {
-            let work = io.original_native_work().ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "worker settlement requires original native work",
-            })?;
-            return self.host.settle_task(task, clone_fence(fence, Some(io))?, outcome, &mut Some(&mut crate::store::history::native_work_io(work)?)).await;
-        }
-        self.host.settle_task(task, fence.clone(), outcome, &mut None).await
-    }
-
-    pub(super) async fn suspend_observed(&self, task: TaskId, fence: &LeaseFence, revision: u64, io: Option<&PreparationIo>) -> Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(io) = io {
-            let work = io.original_native_work().ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unsupported,
-                reason: "worker suspension requires original native work",
-            })?;
-            return self.host.suspend_workflow(task, fence, revision, None, None, None, &mut Some(&mut crate::store::history::native_work_io(work)?)).await;
-        }
-        self.host.suspend_workflow(task, &fence, revision, None, None, None, &mut None).await
-    }
 }

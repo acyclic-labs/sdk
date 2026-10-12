@@ -2,27 +2,10 @@
 
 use crate::wire;
 use prost::Message;
-use std::sync::Arc;
-use tonic::{
-    Request, Status,
-    metadata::{Ascii, MetadataValue},
-    service::Interceptor,
-    transport::{Certificate, Channel, ClientTlsConfig, Endpoint},
-};
+use tonic::{Status, transport::Channel};
 use tracing::field::Empty;
-
-/// Bearer metadata applied to every generated RPC.
-#[derive(Clone)]
-pub struct BearerAuth(MetadataValue<Ascii>);
-
-impl Interceptor for BearerAuth {
-    fn call(&mut self, mut request: Request<()>) -> Result<Request<()>, Status> {
-        request
-            .metadata_mut()
-            .insert("authorization", self.0.clone());
-        Ok(request)
-    }
-}
+use acyclic_workers::BearerAuth;
+pub use acyclic_workers::grpc::ConnectError;
 
 /// Generated client with account authentication on every request.
 pub type Client = wire::actors_service_client::ActorsServiceClient<
@@ -30,94 +13,30 @@ pub type Client = wire::actors_service_client::ActorsServiceClient<
 >;
 
 /// Shared transport-status channel retaining the originating trace context.
-pub type TracedChannel = acyclic_grpc_observability::TracedChannel<Channel, CallSpan>;
+pub type TracedChannel = acyclic_grpc_observability::TracedChannel<Channel>;
 
 /// Statically named actors RPC span factory.
-#[derive(Clone, Debug)]
-pub struct CallSpan;
-
-impl acyclic_grpc_observability::CallSpan for CallSpan {
-    fn span(rpc: Option<&str>) -> tracing::Span {
-        tracing::trace_span!(
-            "acyclic.actors.grpc.transport",
-            rpc,
-            rpc.code = Empty,
-            outcome = Empty,
-            outcome.scope = "grpc_transport",
-            error.kind = Empty
-        )
-    }
+pub(crate) fn transport_span(rpc: Option<&str>) -> tracing::Span {
+    tracing::trace_span!(
+        "acyclic.actors.grpc.transport",
+        rpc,
+        rpc.code = Empty,
+        outcome = Empty,
+        outcome.scope = "grpc_transport",
+        error.kind = Empty
+    )
 }
-/// Client configuration error.
-#[derive(Debug, thiserror::Error)]
-pub enum ConnectError {
-    /// Endpoint must use authenticated TLS.
-    #[error("Actors endpoints must use https")]
-    InsecureEndpoint,
-    /// Credential must be valid nonempty HTTP metadata.
-    #[error("invalid Actors bearer credential")]
-    InvalidCredential,
-    /// Private CA must contain between one byte and 64 KiB.
-    #[error("invalid Actors private CA")]
-    InvalidCaCertificate,
-    /// The platform certificate verifier could not be initialized.
-    #[error("Actors platform certificate verifier: {0}")]
-    PlatformVerifier(#[source] rustls::Error),
-    /// URI or TLS connection failed.
-    #[error(transparent)]
-    Transport(#[from] tonic::transport::Error),
-}
-
-/// Connect trusting the operating system's roots with account-bound bearer metadata.
-pub async fn connect(endpoint: &str, token: &str) -> Result<Client, ConnectError> {
-    connect_with_ca_certificate(endpoint, token, None).await
-}
-
 /// Connect trusting exactly `ca` when supplied, otherwise the platform's roots.
-pub async fn connect_with_ca_certificate(
+pub async fn connect(
     endpoint: &str,
     token: &str,
     ca: Option<&[u8]>,
 ) -> Result<Client, ConnectError> {
-    let valid_endpoint = reqwest::Url::parse(endpoint).is_ok_and(|url| {
-        url.scheme() == "https"
-            && url.username().is_empty()
-            && url.password().is_none()
-            && url.query().is_none()
-            && url.fragment().is_none()
-    });
-    if !valid_endpoint {
-        return Err(ConnectError::InsecureEndpoint);
-    }
-    if !crate::valid_token(token) {
-        return Err(ConnectError::InvalidCredential);
-    }
-    let mut authorization: MetadataValue<Ascii> = format!("Bearer {token}")
-        .parse()
-        .map_err(|_| ConnectError::InvalidCredential)?;
-    authorization.set_sensitive(true);
-    let endpoint = Endpoint::from_shared(endpoint.to_owned())?
-        .http2_max_header_list_size(tonic_web_wasm_client::limits::HEADER_LIST_BYTES);
-    let endpoint = match ca {
-        Some(ca) => {
-            if ca.is_empty() || ca.len() > 64 * 1024 {
-                return Err(ConnectError::InvalidCaCertificate);
-            }
-            endpoint.tls_config(ClientTlsConfig::new().ca_certificate(Certificate::from_pem(ca)))?
-        }
-        None => {
-            let verifier = rustls_platform_verifier::Verifier::new(Arc::new(
-                rustls::crypto::ring::default_provider(),
-            ))
-            .map_err(ConnectError::PlatformVerifier)?;
-            endpoint.tls_config_with_verifier(ClientTlsConfig::new(), Arc::new(verifier))?
-        }
-    };
-    let channel = endpoint.connect().await?;
+    let (channel, authorization) = acyclic_workers::grpc::connect_channel(endpoint, token, ca).await?;
     Ok(
         wire::actors_service_client::ActorsServiceClient::with_interceptor(
-            TracedChannel::new(channel),
-            BearerAuth(authorization),
+            TracedChannel::new(channel, transport_span),
+            authorization,
         )
         .max_decoding_message_size(16 * 1024 * 1024)
         .max_encoding_message_size(16 * 1024 * 1024),

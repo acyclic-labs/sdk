@@ -49,9 +49,7 @@ fn root_repository_workspace_id(control: &ControlPlane) -> [u8; 16] {
 
 async fn active_root_workspace_id(control: &ControlPlane) -> acyclic_fs::WorkspaceId {
     let root_id = WorkspaceRootId::from_bytes(control.state.root_id);
-    control
-        .distributed
-        .contexts()
+    WorkspaceContextRegistry::new(control.store.clone())
         .resolve(WorkspaceContextId::from_bytes(
             control.state.root_context_id,
         ))
@@ -66,9 +64,7 @@ async fn root_has_file_contents(
     portable_name: &str,
     expected: &[u8],
 ) -> bool {
-    let Ok(workspace) = control
-        .distributed
-        .workspace(active_root_workspace_id(control).await)
+    let Ok(workspace) = WorkspaceGraph::new(control.store.clone()).workspace(&control.fs, active_root_workspace_id(control).await, WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
     else {
         return false;
@@ -627,7 +623,7 @@ fn shared_root_observations_publish_monotonic_source_epochs() {
 }
 
 async fn shared_root_observations_case() {
-    use acyclic_fs::{WatchEpoch, WatchInvalidationReason, WatchSequence};
+    use acyclic_fs::WatchInvalidationReason;
     use std::sync::mpsc;
 
     let temporary = tempfile::tempdir().expect("temporary directory");
@@ -647,7 +643,7 @@ async fn shared_root_observations_case() {
                 .expect("first observation entered");
             release_rx.recv().expect("release first observation");
             Ok(WatchBatch::RescanRequired {
-                epoch: WatchEpoch::from_u64(1),
+                epoch: 1,
                 reason: WatchInvalidationReason::NativeRescanRequired,
             })
         })
@@ -665,10 +661,11 @@ async fn shared_root_observations_case() {
                 .send(())
                 .expect("second observation entered");
             Ok(WatchBatch::Changes {
-                epoch: WatchEpoch::from_u64(1),
-                first_sequence: WatchSequence::from_u64(1),
-                next_sequence: WatchSequence::from_u64(1),
+                epoch: 1,
+                first_sequence: 1,
+                next_sequence: 1,
                 changes: Vec::new(),
+                original: Default::default(),
             })
         })
     });
@@ -776,17 +773,13 @@ async fn shared_service_case() {
     }, &mut None)
         .await
         .expect("second session on same root");
-    let first_context = service.sessions["a"]
-        .distributed
-        .contexts()
+    let first_context = WorkspaceContextRegistry::new(service.sessions["a"].store.clone())
         .resolve(WorkspaceContextId::from_bytes(
             service.sessions["a"].state.root_context_id,
         ))
         .await
         .expect("first root context");
-    let second_context = service.sessions["same-root"]
-        .distributed
-        .contexts()
+    let second_context = WorkspaceContextRegistry::new(service.sessions["same-root"].store.clone())
         .resolve(WorkspaceContextId::from_bytes(
             service.sessions["same-root"].state.root_context_id,
         ))
@@ -931,7 +924,7 @@ async fn shared_service_case() {
     service.sessions["a"].physical_roots[&root_a_key]
         .source
         .inner()
-        .invalidate();
+        .invalidate(&mut acyclic_fs::demand::DemandWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).expect("invalidate source");
     for session_id in ["a", "same-root"] {
         let root_agent = service.sessions[session_id].state.root_agent_id.clone();
         let mut observed = false;
@@ -966,7 +959,7 @@ async fn shared_service_case() {
     service.sessions["a"].physical_roots[&root_a_key]
         .source
         .inner()
-        .invalidate();
+        .invalidate(&mut acyclic_fs::demand::DemandWork::new(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).expect("invalidate source");
     service
         .sessions
         .get_mut("a")
@@ -2972,8 +2965,8 @@ async fn publication_history_recovery_case() {
         .await
         .expect("ignored child file");
     transaction
-        .create_dir_all("/sub")
-        .await
+        .create_dir_all("/sub", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         .expect("nested ignore directory");
     transaction
         .write_text("/sub/.gitignore", "*.tmp\n")
@@ -3082,9 +3075,7 @@ async fn publication_history_recovery_case() {
         panic!("show must return the recovered publication commit");
     };
     let commit = commits.first().expect("publication commit");
-    let published_workspace = reopened
-        .distributed
-        .workspace(commit.tree.workspace_id())
+    let published_workspace = WorkspaceGraph::new(reopened.store.clone()).workspace(&reopened.fs, commit.tree.workspace_id(), WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
         .expect("published history workspace");
     let published_generation = published_workspace
@@ -4930,9 +4921,7 @@ async fn authenticated_control_protocol_case() {
         .expect("open authenticated command");
     let child_context_id = WorkspaceContextId::from_bytes(control.state.routes["child"].context_id);
     let child_root_id = WorkspaceRootId::from_bytes(control.state.routes["child"].root_id);
-    let original_workspace = control
-        .distributed
-        .contexts()
+    let original_workspace = WorkspaceContextRegistry::new(control.store.clone())
         .resolve(child_context_id)
         .await
         .expect("child context")
@@ -5025,11 +5014,9 @@ async fn authenticated_control_protocol_case() {
         .expect("Git dispatch observation")
         .expect("the authenticated Git switch must succeed");
     assert!(result.is_object());
-    let current = shared
+    let current = WorkspaceContextRegistry::new(shared
         .lock()
-        .await
-        .distributed
-        .contexts()
+        .await.store.clone())
         .resolve(child_context_id)
         .await
         .expect("switched child context")
@@ -5204,9 +5191,7 @@ async fn recursive_publication_case() {
         .workspace(&control.state.routes["child"])
         .await
         .expect("child workspace");
-    let snapshot = control
-        .distributed
-        .operations()
+    let snapshot = OperationWindowCoordinator::new(control.fs.operation_window_store())
         .snapshot(child_workspace.id())
         .await
         .expect("operation window");
@@ -5470,17 +5455,13 @@ async fn multi_root_publication_case() {
     let last_key = root_keys.last().expect("last ordered root").clone();
     let child_context_id = WorkspaceContextId::from_bytes(route.context_id);
     let last_root_id = WorkspaceRootId::from_bytes(route.roots[&last_key].root_id);
-    let original_root = control
-        .distributed
-        .contexts()
+    let original_root = WorkspaceContextRegistry::new(control.store.clone())
         .resolve(child_context_id)
         .await
         .expect("child context")
         .roots[&last_root_id]
         .clone();
-    control
-        .distributed
-        .contexts()
+    WorkspaceContextRegistry::new(control.store.clone())
         .set_workspace(
             child_context_id,
             last_root_id,
@@ -5509,18 +5490,14 @@ async fn multi_root_publication_case() {
         .await
         .expect("first child root");
     assert!(matches!(
-        control
-            .distributed
-            .operations()
+        OperationWindowCoordinator::new(control.fs.operation_window_store())
             .snapshot(first_workspace.id())
             .await
             .expect("rolled-back window")
             .phase,
         acyclic_fs::OperationWindowPhase::Idle
     ));
-    control
-        .distributed
-        .contexts()
+    WorkspaceContextRegistry::new(control.store.clone())
         .set_workspace(
             child_context_id,
             last_root_id,

@@ -60,7 +60,7 @@ impl ContentResidencyVerifier for ReaderSpy {
     reason = "one actual admitted live task retains positive and pre-I/O negative controls"
 )]
 async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity() -> Result<()> {
-    let provider = ProviderRef::new("text-variants", "filesystem", "1")?;
+    let provider = ProviderRef::new("text-variants".into(), "filesystem".into(), "1".into(), &mut None)?;
     let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
     let agent = AgentId::new();
     let volume = VolumeRef::new(
@@ -80,17 +80,13 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
     );
     let read = volume.capability(VolumeOperation::Read)?;
     let write = volume.capability(VolumeOperation::Write)?;
-    let owner = issuer.root_for_agent(
-        agent,
-        "owner",
-        Capabilities::new([read.clone(), write.clone()]),
-    );
+    let owner = issuer.issue("owner", &Capabilities::new([read.clone(), write.clone()]), Some(agent), None, &mut None).expect("scope proof");
     let writer = Arc::new(FilesystemContentPublisher::new(
         host.clone(),
-        volume,
-        &issuer.verifier(),
+        &volume,
+        &issuer.verifier(&mut None).expect("verifier copy"),
         &owner,
-        4096,
+        4096, None,
     )?);
     let source = writer
         .stage(
@@ -114,9 +110,9 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
     let reader = Arc::new(ReaderSpy {
         inner: Arc::new(FilesystemContentVerifier::new(
             host.clone(),
-            issuer.verifier(),
-            owner,
-            4096,
+            &issuer.verifier(&mut None).expect("verifier copy"),
+            &owner,
+            4096, None,
         )?),
         reads: AtomicUsize::new(0),
         corrupt: AtomicBool::new(false),
@@ -143,7 +139,7 @@ async fn admitted_live_task_reads_pinned_text_and_preserves_projection_identity(
     let read_projector = read_tool.projection.clone();
     let read_definition = read_tool.definition.clone();
     let search_projector = search_tool.projection.clone();
-    let mut tools = ToolRegistry::new();
+    let mut tools = ToolRegistry::default();
     tools.register(read_tool)?;
     tools.register(search_tool)?;
     tools.register(files::read_file()?)?;

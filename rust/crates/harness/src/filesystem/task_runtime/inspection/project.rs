@@ -4,10 +4,8 @@ use crate::durable_host::TaskJournalOwner;
 use crate::filesystem::{FilesystemHost, PreparationIo};
 use crate::filesystem::fork_preparer::bounded_io;
 use crate::source_authorization::{ProjectSourceAuthorization, ProjectSourceReadHandle};
-use acyclic_fs::{Generation, LazySnapshotRef, LazyWorkspace, LazyWorkspaceStore, OperationFailure, OperationReceipt, WorkBudget, WorkCounters};
-use acyclic_fs::demand::DemandSource;
+use acyclic_fs::{Generation, LazySnapshotRef, WorkCounters};
 use acyclic_fs::kernel::{FileKind, LogicalName, NameEncoding};
-use serde::Deserialize;
 
 /// One transient reader over an existing owner and immutable allocation.
 pub(super) struct ProjectSourceReader<P, A, O> {
@@ -15,7 +13,6 @@ pub(super) struct ProjectSourceReader<P, A, O> {
     owner: Arc<TaskJournalOwner<P>>,
     handle: ProjectSourceReadHandle,
     generation: Generation<A, O>,
-    workspace_id: acyclic_fs::WorkspaceId,
     limits: Limits,
     pub(super) io: PreparationIo,
     pub(super) serial: tokio::sync::Mutex<()>,
@@ -27,9 +24,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         host: Arc<FilesystemHost<A, O>>, owner: Arc<TaskJournalOwner<P>>,
         handle: ProjectSourceReadHandle, limits: Limits, io: PreparationIo,
     ) -> Result<Self> {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         let authorization = handle.authorization();
-        Self::require_directory_with_io(&host, &handle, "", &io)?;
+        host.require_private_directory(&handle.authorization().project, handle.grant(), "", Some(&io))?;
         let reference = bounded_io::content_workspace(&host.provider, &authorization.project, Some(&io))?;
         Self::verify_owner(&owner, &io).await?;
         let workspace = bounded_io::open(&host, &reference, &io).await?;
@@ -37,30 +34,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         io.retain_owned(workspace.name().as_str().len() as u64)?;
         let generation = bounded_io::generation(&host, &workspace, &authorization.generation, &io).await?;
         Self::verify_owner(&owner, &io).await?;
-        Ok(Self { host, owner, handle, generation, workspace_id: workspace.id(), limits, io,
+        Ok(Self { host, owner, handle, generation, limits, io,
             serial: tokio::sync::Mutex::new(()) })
-    }
-
-    fn require_directory_with_io(
-        host: &FilesystemHost<A, O>, handle: &ProjectSourceReadHandle,
-        path: &str, io: &PreparationIo,
-    ) -> Result<()> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
-            work.remaining()?;
-            let project = &handle.authorization().project;
-            if project.provider() != &host.provider {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid,
-                    reason: "private directory belongs to another provider or class",
-                });
-            }
-            if !path.is_empty() {
-                crate::conversation::validate_content_path_with_native_work(path, work)?;
-            }
-            return handle.grant().require_directory_path_with_native_work(project, path, work);
-        }
-        host.require_private_directory(&handle.authorization().project, handle.grant(), path)
     }
 
     pub(super) fn authorization(&self) -> &ProjectSourceAuthorization { self.handle.authorization() }
@@ -81,18 +56,15 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 reason: "native source selection belongs to another original ledger" });
         }
         original.remaining()?;
-        self.io.cancellation.check()
+        self.io.cancellation().check()
             .map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
         let selected = self.authorization();
-        self.handle.require_selection_with_native_work(
-            selected.operation_id, source, project, generation,
-            selected.native_snapshot.as_ref(), work,
-        )?;
+        self.handle.require_selection(selected.operation_id, source, project, generation, selected.native_snapshot.as_ref(), Some(work))?;
         self.owner.verify_project_source_read_with_native_work(&self.handle, work).await?;
         let io = PreparationIo::from_native_work(work)?;
-        Self::require_directory_with_io(&self.host, &self.handle, "", &io)?;
+        self.host.require_private_directory(&self.handle.authorization().project, self.handle.grant(), "", Some(&io))?;
         if let Some(frozen) = frozen {
-            if frozen.workspace_id != self.workspace_id || frozen.authored_generation != self.generation.id() {
+            if frozen.workspace_id != self.generation.workspace_id() || frozen.authored_generation != self.generation.id() {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
                     reason: "native source snapshot differs from the protected immutable project" });
             }
@@ -113,14 +85,10 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
         self.owner.verify_project_source_read_with_native_work(&self.handle, work).await?;
         original.remaining()?;
-        self.io.cancellation.check()
+        self.io.cancellation().check()
             .map_err(|_| Error::from(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
         work.remaining()?;
         Ok(())
-    }
-
-    pub(super) async fn guard(&self) -> Result<()> {
-        Self::verify_owner(&self.owner, &self.io).await
     }
 
     async fn verify_owner(owner: &TaskJournalOwner<P>, io: &PreparationIo) -> Result<()> {
@@ -130,19 +98,19 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "selected source has no original invocation token",
             })?;
-            if cancellation.is_cancelled() || io.cancellation.is_cancelled() {
+            if cancellation.is_cancelled() || io.cancellation().is_cancelled() {
                 return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
             }
             work.remaining()?;
             owner.verify_with_native_work(false, work).await?;
-            if cancellation.is_cancelled() || io.cancellation.is_cancelled() {
+            if cancellation.is_cancelled() || io.cancellation().is_cancelled() {
                 return Err(acyclic_fs::NativeTreeMaterializationError::Cancelled.into());
             }
             return Ok(());
         }
-        io.cancellation.check().map_err(|_| Error::Unauthorized("selected source invocation cancelled".into()))?;
+        io.cancellation().check().map_err(|_| Error::Unauthorized("selected source invocation cancelled".into()))?;
         owner.verify(false, &mut None).await?;
-        io.cancellation.check().map_err(|_| Error::Unauthorized("selected source invocation cancelled".into()))
+        io.cancellation().check().map_err(|_| Error::Unauthorized("selected source invocation cancelled".into()))
     }
 
     fn path(&self, volume: &VolumeRef, prefix: &str, path: &str, generation: &GenerationRef) -> Result<()> {
@@ -153,8 +121,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         if prefix.len() > self.limits.path_bytes || path.len() > self.limits.path_bytes {
             return Err(Error::Invalid("selected path exceeds original caller limits".into()));
         }
-        self.host.require_private_directory(volume, self.handle.grant(), prefix)?;
-        self.host.require_private_directory(volume, self.handle.grant(), path)?;
+        self.host.require_private_directory(volume, self.handle.grant(), prefix, Some(&self.io))?;
+        self.host.require_private_directory(volume, self.handle.grant(), path, Some(&self.io))?;
         if !prefix.is_empty() && path != prefix
             && !path.strip_prefix(prefix).is_some_and(|rest| rest.starts_with('/')) {
             return Err(Error::Unauthorized("selected path leaves its requested directory boundary".into()));
@@ -163,8 +131,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     fn file(&self, file: &FileRef) -> Result<()> {
-        self.limits.validate_file(file)?;
-        self.handle.grant().require_file_read(file)?;
+        crate::executor::with_history_io(Some(&self.io), |work| self.limits.validate_file(file, work))?;
+        self.handle.grant().require_file_read(file, Some(&self.io))?;
         self.path(file.volume(), "", file.path(), &self.authorization().generation)?;
         let mut generation = [0_u8; 32];
         hex::decode_to_slice(file.version(), &mut generation)
@@ -176,18 +144,15 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     }
 
     async fn file_bytes(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
-        self.file(file)?;
-        self.guard().await?;
-        let result = self.host.read_content_measured(file, self.handle.grant(), self.limits.file_bytes,
-            self.io.remaining()?, &self.io.cancellation).await;
-        let result = self.io.receive_content(result);
-        self.guard().await?;
+        Self::verify_owner(&self.owner, &self.io).await?;
+        let result = self.host.read_pinned_io(file, self.limits.file_bytes, Some(&self.io)).await;
+        Self::verify_owner(&self.owner, &self.io).await?;
         result
     }
 
     pub(super) async fn read_file(&self, file: &FileRef) -> Result<acyclic_stream::OwnedBytes> {
         self.file(file)?;
-        self.guard().await?;
+        Self::verify_owner(&self.owner, &self.io).await?;
         let _serial = self.serial.lock().await;
         self.file_bytes(file).await
     }
@@ -195,11 +160,10 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     pub(super) async fn diff(&self, before: &FileRef, after: &FileRef) -> Result<bool> {
         self.file(before)?;
         self.file(after)?;
-        self.guard().await?;
+        Self::verify_owner(&self.owner, &self.io).await?;
         let _serial = self.serial.lock().await;
         let _before_hold;
         let before_bytes = self.file_bytes(before).await?;
-        self.io.retain_owned(before_bytes.retained_capacity().unwrap_or(0) as u64)?;
         _before_hold = self.io.guard_bytes(&before_bytes)?;
         let after_bytes = self.file_bytes(after).await?;
         Ok(before_bytes != after_bytes)
@@ -208,30 +172,30 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     pub(super) async fn read_path(&self, volume: &VolumeRef, prefix: &str, path: &str,
         generation: &GenerationRef) -> Result<(FileRef, acyclic_stream::OwnedBytes)> {
         self.path(volume, prefix, path, generation)?;
-        crate::conversation::validate_content_path(path)?;
+        crate::conversation::validate_content_path(path, &mut None)?;
         if self.authorization().native_snapshot.is_some() {
             return Err(Error::Invalid("native selection requires its actual lazy snapshot reader".into()));
         }
-        self.guard().await?;
+        Self::verify_owner(&self.owner, &self.io).await?;
         let _serial = self.serial.lock().await;
-        self.io.claim(path.len() as u64 + 1)?;
+        self.io.retain_owned(path.len() as u64 + 1)?;
         self.io.allocation_attempt(path.len() as u64 + 1)?;
         let requested = format!("/{path}");
         let _requested_hold = self.io.guard_owned(requested.len() as u64)?;
-        self.guard().await?;
+        Self::verify_owner(&self.owner, &self.io).await?;
         let result = self.generation.read(&requested, self.limits.file_bytes,
-            self.io.remaining()?, &self.io.cancellation).await;
+            self.io.remaining()?, self.io.cancellation()).await;
         let bytes = self.io.receive(result);
-        self.guard().await?;
+        Self::verify_owner(&self.owner, &self.io).await?;
         let bytes = bytes?;
         self.io.retain_owned(bytes.retained_capacity().unwrap_or(0) as u64)?;
         let metadata_path = crate::filesystem::content_metadata_path_io(path, true, Some(&self.io))?;
         let _metadata_path_hold = self.io.guard_owned(metadata_path.len() as u64)?;
-        self.guard().await?;
+        Self::verify_owner(&self.owner, &self.io).await?;
         let metadata = self.generation.read(&metadata_path, self.io.remaining()?.source_bytes_read,
-            self.io.remaining()?, &self.io.cancellation).await;
+            self.io.remaining()?, self.io.cancellation()).await;
         let metadata = self.io.receive(metadata);
-        self.guard().await?;
+        Self::verify_owner(&self.owner, &self.io).await?;
         let display_name = path.rsplit('/').next().unwrap_or(path);
         let staged = match metadata {
             Ok(metadata) => Some(self.io.decode_json::<FileRef>(&metadata)?),
@@ -245,22 +209,27 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             if staged.volume() != volume || staged.path() != path || staged.version() != "pending" {
                 return Err(Error::Storage("selected file metadata does not match immutable data".into()));
             }
-            staged.descriptor().verify(&bytes)?;
+            staged.descriptor().verify(&bytes, &mut None)?;
             _descriptor_hold = None;
             (staged.descriptor(), staged.display_name())
         } else {
             const MEDIA_TYPE: &str = "application/octet-stream";
-            self.io.claim(MEDIA_TYPE.len() as u64)?;
+            self.io.retain_owned(MEDIA_TYPE.len() as u64)?;
             self.io.allocation_attempt(MEDIA_TYPE.len() as u64)?;
             _descriptor_hold = Some(self.io.guard_owned(MEDIA_TYPE.len() as u64)?);
-            raw_descriptor = FileDescriptor::from_bytes(&bytes, MEDIA_TYPE)?;
+            raw_descriptor = FileDescriptor::from_bytes(&bytes, MEDIA_TYPE, &mut None)?;
             (&raw_descriptor, display_name)
         };
-        self.io.claim(64)?;
+        self.io.retain_owned(64)?;
         self.io.allocation_attempt(64)?;
         let version = hex::encode(generation.as_resource().key());
         let _version_hold = self.io.guard_owned(version.len() as u64)?;
-        let reference = crate::conversation::FileRef::new_with_io(volume, path, &version, descriptor, display_name, Some(&self.io))?;
+        let reference = crate::executor::with_history_io(Some(&self.io), |work| FileRef::new(
+            volume.copy(work)?, bounded_io::clone_text(path, Some(&self.io))?,
+            bounded_io::clone_text(&version, Some(&self.io))?,
+            FileDescriptor::new(*descriptor.sha256(), descriptor.byte_length(),
+                bounded_io::clone_text(descriptor.media_type(), Some(&self.io))?)?,
+            bounded_io::clone_text(display_name, Some(&self.io))?, work))?;
         self.file(&reference)?;
         Ok((reference, bytes))
     }
@@ -272,30 +241,30 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             return Err(Error::Invalid("native selection requires its actual lazy directory reader".into()));
         }
         if maximum == 0 { return Err(Error::Invalid("selected directory page must be finite and positive".into())); }
-        self.guard().await?;
+        Self::verify_owner(&self.owner, &self.io).await?;
         let _serial = self.serial.lock().await;
         let after = after.map(|name| {
             if name.len() > self.limits.path_bytes { return Err(Error::Invalid("selected cursor exceeds original path limits".into())); }
-            self.io.claim(name.len() as u64)?;
+            self.io.retain_owned(name.len() as u64)?;
             self.io.allocation_attempt(name.len() as u64)?;
             LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), u32::MAX)
                 .map_err(|error| Error::Invalid(error.to_string()))
         }).transpose()?;
-        self.io.claim(path.len() as u64 + 1)?;
+        self.io.retain_owned(path.len() as u64 + 1)?;
         self.io.allocation_attempt(path.len() as u64 + 1)?;
         let requested = if path.is_empty() { "/".to_owned() } else { format!("/{path}") };
         let _requested_hold = self.io.guard_owned(requested.len() as u64)?;
         let engine_maximum = maximum.checked_add(u32::from(path.is_empty()))
             .ok_or_else(|| Error::Invalid("selected root page limit overflows".into()))?;
-        self.guard().await?;
+        Self::verify_owner(&self.owner, &self.io).await?;
         let result = self.generation.list_directory(&requested, after.as_ref(), engine_maximum,
-            self.io.remaining()?, &self.io.cancellation).await;
+            self.io.remaining()?, self.io.cancellation()).await;
         let page = self.io.receive(result);
-        self.guard().await?;
+        Self::verify_owner(&self.owner, &self.io).await?;
         let page = page?;
         let slots = (page.entries.len() as u64).checked_mul(std::mem::size_of::<PrivateDirectoryEntry>() as u64)
             .ok_or_else(|| Error::Invalid("selected directory ownership overflows".into()))?;
-        self.io.claim(slots)?;
+        self.io.retain_owned(slots)?;
         self.io.allocation_attempt(slots)?;
         let mut entries = Vec::with_capacity(page.entries.len());
         let mut has_more = page.has_more;
@@ -307,7 +276,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 .map_err(|_| Error::Storage("selected portable directory name is invalid UTF-8".into()))?;
             if path.is_empty() && name == ".system" { continue; }
             if entries.len() == maximum as usize { has_more = true; break; }
-            self.io.claim(name.len() as u64)?;
+            self.io.retain_owned(name.len() as u64)?;
             self.io.allocation_attempt(name.len() as u64)?;
             self.io.charge(WorkCounters { bytes_copied: name.len() as u64, ..WorkCounters::default() })?;
             let kind = match entry.kind {
@@ -321,49 +290,5 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         result.validate()?;
         Ok(result)
     }
-
-    /// The backend argument is the trusted host's actual configured lazy binding, never a workspace reconstructed from public selector metadata.
-    pub(super) fn native_binding<D, S>(&self, lazy: &LazyWorkspace<A, O, D, S>, frozen: LazySnapshotRef,
-        path: &str) -> Result<()>
-    where D: DemandSource + 'static, S: LazyWorkspaceStore {
-        let selected = self.authorization();
-        let native = selected.native_snapshot.as_ref().ok_or_else(|| Error::Unauthorized("selection has no native source proof".into()))?;
-        let expected = LazySnapshotRef::deserialize(native)
-            .map_err(|_| Error::Unauthorized("selected native proof is not an actual SDK snapshot".into()))?;
-        if frozen != expected || lazy.workspace().id() != self.workspace_id
-            || frozen.workspace_id != self.workspace_id
-            || frozen.authored_generation != self.generation.id() {
-            return Err(Error::Unauthorized("native backend or frozen source selection differs".into()));
-        }
-        let relative = path.strip_prefix('/').ok_or_else(|| Error::Invalid("native selected path must be absolute".into()))?;
-        self.path(&selected.project, "", relative, &selected.generation)
-    }
-
-    pub(super) async fn finish_native<T>(&self,
-        result: acyclic_fs::MeasuredResult<OperationReceipt<T>, acyclic_fs::LazyWorkspaceError>,
-    ) -> acyclic_fs::MeasuredResult<OperationReceipt<T>, Error> {
-        let work = match &result { Ok(receipt) => receipt.work, Err(failure) => *failure.work };
-        let accounted = match &result { Ok(_) => self.io.charge(work), Err(_) => self.io.spent(work) };
-        if let Err(error) = accounted { return Err(OperationFailure::new(error, work)); }
-        if let Err(error) = self.guard().await { return Err(OperationFailure::new(error, work)); }
-        result.map_err(|failure| {
-            let error = match failure.error.semantic_error() {
-                acyclic_fs::LazyWorkspaceError::NotFound => Error::NotFound("selected native path".into()),
-                _ => Error::Storage(failure.error.to_string()),
-            };
-            OperationFailure::new(error, *failure.work)
-        })
-    }
-
-    fn native_budget(&self, budget: WorkBudget) -> Result<WorkBudget> {
-        if !budget.has_finite_allowances() {
-            return Err(Error::Invalid("native selected caller budget must be finite".into()));
-        }
-        Ok(self.io.remaining()?.intersect_budget(budget))
-    }
-}
-
-impl<P, A, O> TaskSourceInspection<P, A, O>
-where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static {
 
 }

@@ -1,6 +1,7 @@
 //! Pi controls borrow the original task mailbox, never a service-local inbox.
 use super::{pi_owner::PiOwnerConfig, pi_root_provider::{
     stage_pi_input, guarded_pi_decode, guarded_pi_value}};
+use acyclic_harness::runtime::TaskStateProvider;
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore, LocalAuthorityBackend, LocalObjectBackend,
     NativeAllocation, NativeMaterializationWork, NativeTreeMaterializationError, WorkCounters};
 use acyclic_harness::{Error, OperationId, Outcome, Result, TaskId,
@@ -37,13 +38,9 @@ pub(crate) struct PiMailboxReceive {
 }
 
 #[derive(Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum PiWaitState { Pending, Completed }
-
-#[derive(Serialize)]
 pub(crate) struct PiWaitObservation {
     pub(crate) task: TaskId,
-    pub(crate) state: PiWaitState,
+    pub(crate) state: &'static str,
     pub(crate) outcome: Option<Outcome<Value>>,
     pub(crate) mail: Option<PiMailboxReceive>,
 }
@@ -151,16 +148,11 @@ const MAIL_DIAGNOSTIC_LABEL_BYTES: u64 =
         "recipient", "payload",
     ]);
 
-trait NativeMailboxDto: serde::de::DeserializeOwned {}
-impl NativeMailboxDto for PiMailEnvelope {}
-impl NativeMailboxDto for PiMailPayload {}
-impl NativeMailboxDto for MailSendTaskCommand {}
-
-fn decode<T: NativeMailboxDto>(
+fn decode<T: serde::de::DeserializeOwned>(
     bytes: &[u8], work: &NativeMaterializationWork,
 ) -> Result<(T, NativeAllocation)> {
     guarded_pi_decode(bytes, MAXIMUM_PI_MAIL_BYTES, std::mem::size_of::<T>() as u64,
-        acyclic_harness::JsonValueSchema::None, MAIL_DIAGNOSTIC_LABEL_BYTES, work)
+        acyclic_harness::wire::ErrorCode::Invalid, acyclic_harness::JsonValueSchema::None, MAIL_DIAGNOSTIC_LABEL_BYTES, work)
 }
 
 /// Passive polling acquires no reservation and charges no workflow task steps.
@@ -206,8 +198,8 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     let mut mail = receive(runtime, caller, after, 1, work).await?;
     let mut outcome = runtime.task_host().outcome_with_native_work(requested, work).await?;
     let state = match &outcome.0 {
-        None | Some(Outcome::Indeterminate { .. }) => PiWaitState::Pending,
-        Some(_) => PiWaitState::Completed,
+        None | Some(Outcome::Indeterminate { .. }) => "pending",
+        Some(_) => "completed",
     };
     if let Err(cause) = mail.1.absorb(&mut outcome.1) {
         drop(outcome);

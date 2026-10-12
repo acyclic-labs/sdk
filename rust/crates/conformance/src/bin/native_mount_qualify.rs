@@ -484,9 +484,8 @@ async fn rename_hydration_case() -> Result<(), Failure> {
             .create_file(
                 &format!("/before-{index}.txt"),
                 Bytes::from(format!("renamed-before-hydration-{index}")),
-                FileMetadata::default(),
-            )
-            .await?;
+                FileMetadata::default(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     }
     match fixture.commit(None, acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? {
         TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_) => {}
@@ -562,10 +561,10 @@ fn wait_for_child(
     let deadline = Instant::now() + timeout;
     loop {
         if captured_child_output_exceeds_limit(&child)? {
-            child.process.terminate()?;
+            child.process.terminate(None)?;
             return Err(format!("child output exceeded {MAX_CHILD_OUTPUT_BYTES} bytes").into());
         }
-        if let Some(status) = child.process.try_wait()? {
+        if let Some(status) = child.process.try_wait(None)? {
             return captured_child_output(status, &mut child.stdout, &mut child.stderr);
         }
         if Instant::now() >= deadline {
@@ -820,58 +819,51 @@ async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
         .create_workspace_with_config("native-matrix", VolumeConfig::native(Lifecycle::Durable), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
         .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut transaction = workspace.begin_transaction(acyclic_fs::IdempotencyKey::new(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
-    transaction.create_dir_all("/seed/nested").await?;
+    transaction.create_dir_all("/seed/nested", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
         .create_file(
             "/seed/nested/original.txt",
             Bytes::from_static(b"seed"),
-            FileMetadata::default(),
-        )
-        .await?;
+            FileMetadata::default(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
         .create_file(
             "/seed/nested/default-metadata.txt",
             Bytes::new(),
-            FileMetadata::default(),
-        )
-        .await?;
+            FileMetadata::default(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
         .create_file(
             "/seed/nested/default-read.txt",
             Bytes::from_static(b"read-only-observation"),
-            FileMetadata::default(),
-        )
-        .await?;
+            FileMetadata::default(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
         .create_file(
             "/seed/nested/rename-before-read.txt",
             Bytes::from_static(b"renamed-before-hydration"),
-            FileMetadata::default(),
-        )
-        .await?;
+            FileMetadata::default(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
         .hard_link(
             "/seed/nested/original.txt",
-            "/seed/nested/original-hard.txt",
-        )
-        .await?;
+            "/seed/nested/original-hard.txt", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction
         .create_symbolic_link(
             "/seed/nested/original-link.txt",
-            native_link_bytes("original.txt"),
-        )
-        .await?;
+            native_link_bytes("original.txt"), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     add_large_windows_fixture(kind, &mut transaction).await?;
     if kind == "macos-nfs" {
-        transaction.create_dir_all("/large-tree").await?;
+        transaction.create_dir_all("/large-tree", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         for index in 0..MACOS_NFS_LARGE_TREE_ENTRIES {
             transaction
                 .create_file(
                     &format!("/large-tree/entry-{index:04}.txt"),
                     Bytes::from_static(b"large-tree"),
-                    FileMetadata::default(),
-                )
-                .await?;
+                    FileMetadata::default(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         }
     }
     match transaction.commit(None, acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? {
@@ -1030,16 +1022,15 @@ async fn add_large_windows_fixture(
     if kind != "windows-projfs" {
         return Ok(());
     }
-    transaction.create_dir_all("/large").await?;
+    transaction.create_dir_all("/large", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     for ordinal in 0..300_u16 {
         let extension = if ordinal % 10 == 0 { "rs" } else { "txt" };
         transaction
             .create_file(
                 &format!("/large/entry-{ordinal:04}.{extension}"),
                 Bytes::from(format!("entry-{ordinal}")),
-                FileMetadata::default(),
-            )
-            .await?;
+                FileMetadata::default(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     }
     Ok(())
 }
@@ -1260,7 +1251,7 @@ fn run_parallel_io_children(mount: &Path, count: usize) -> Result<(), Failure> {
                 )
                 .into());
             }
-            let Some(status) = child.process.try_wait()? else {
+            let Some(status) = child.process.try_wait(None)? else {
                 continue;
             };
             let mut child = children
@@ -1295,7 +1286,7 @@ fn terminate_captured_children(children: &mut [Option<CapturedChild>]) -> String
         let Some(mut child) = child.take() else {
             continue;
         };
-        if let Err(error) = child.process.terminate() {
+        if let Err(error) = child.process.terminate(None) {
             failures.push(format!("child {index}: {error}"));
         }
     }
@@ -1538,7 +1529,7 @@ fn replace(source: &Path, destination: &Path) -> Result<(), Failure> {
     acyclic_native_runtime::durable_rename(
         source,
         destination,
-        acyclic_native_runtime::RenameMode::Replace,
+        acyclic_native_runtime::RenameMode::Replace, None,
     )?;
     Ok(())
 }
@@ -1646,12 +1637,12 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result
     let deadline = Instant::now() + Duration::from_secs(30);
     while !ready.exists() && Instant::now() < deadline {
         if captured_child_output_exceeds_limit(&child)? {
-            child.process.terminate()?;
+            child.process.terminate(None)?;
             return Err(
                 format!("crash child output exceeded {MAX_CHILD_OUTPUT_BYTES} bytes").into(),
             );
         }
-        if let Some(status) = child.process.try_wait()? {
+        if let Some(status) = child.process.try_wait(None)? {
             let output = captured_child_output(status, &mut child.stdout, &mut child.stderr)?;
             return Err(format!(
                 "crash child exited before readiness ({}): {}{}",
@@ -1664,11 +1655,11 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result
         std::thread::sleep(Duration::from_millis(10));
     }
     if !ready.exists() {
-        child.process.terminate()?;
+        child.process.terminate(None)?;
         return Err("crash child did not mount within 30 seconds".into());
     }
     eprintln!("qualification phase: crash child ready; termination starting");
-    child.process.terminate()?;
+    child.process.terminate(None)?;
     eprintln!("qualification phase: crash child terminated; recovery starting");
     #[cfg(windows)]
     {

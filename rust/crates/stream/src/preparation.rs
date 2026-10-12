@@ -4,10 +4,11 @@ use crate::OwnedBytes;
 
 use crate::{
     CommitCondition, CommitConflict, CommitId,
-    CommitMutation, CommitRequest, CommittedAppend, CommittedEnvelope,
+    CommitMutation, CommitRequest, CommittedAppend,
     CommittedFork, CommittedMutation, ForkRequest, Record, StreamError, StreamPath,
 };
-use crate::memory::{MemoryObserver, MemoryOutput, MemoryResult};
+use crate::memory::{self, MemoryOutput, MemoryResult, absorb};
+use crate::wire_codec::WireMeter;
 
 pub(crate) fn fork_cut(
     request: &ForkRequest,
@@ -25,23 +26,19 @@ pub(crate) fn fork_cut(
     Ok(cut)
 }
 
-pub(crate) fn append_fact<I>(
+pub(crate) fn append_fact(
     path: &StreamPath,
     start: u64,
-    bodies: I,
+    bodies: &[OwnedBytes],
     commit_id: CommitId,
     committed_at_micros: u64,
-    observer: &MemoryObserver,
-) -> MemoryResult<MemoryOutput<CommittedAppend>>
-where
-    I: IntoIterator<Item = OwnedBytes>,
-    I::IntoIter: ExactSizeIterator,
-{
+    observer: WireMeter<'_>,
+) -> MemoryResult<MemoryOutput<CommittedAppend>> {
     let records = records(start, bodies, commit_id, committed_at_micros, observer)?;
-    let end = start.checked_add(records.value.len() as u64).ok_or(StreamError::LimitExceeded)?;
+    let end = start + records.value.len() as u64;
     Ok(MemoryOutput {
         value: CommittedAppend {
-            path: observer.retain_path(path)?, start, end, tail: end, records: records.value,
+            path: memory::retain_path(observer, path)?, start, end, tail: end, records: records.value,
         },
         allocation: records.allocation,
     })
@@ -65,61 +62,40 @@ pub(crate) fn single_append_template(request: &CommitRequest) -> Result<(&Stream
     Ok((path, start))
 }
 
-/// Rebinds only scalar metadata and an immutable body alias in the real fact vector allocated by `mutations`.
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn fill_single_append(
-    envelope: &mut CommittedEnvelope,
-    record: &Record,
-    mut visited: impl FnMut(),
-) -> Result<(), StreamError> {
-    let [CommittedMutation::Append(append)] = envelope.mutations.as_mut_slice()
-        else { return Err(StreamError::InvalidArgument); };
-    visited();
-    let [slot] = append.records.as_mut_slice() else { return Err(StreamError::InvalidArgument); };
-    visited();
-    let end = record.sequence.checked_add(1).ok_or(StreamError::LimitExceeded)?;
-    *slot = record.clone();
-    append.start = record.sequence;
-    append.end = end;
-    append.tail = end;
-    envelope.commit_id = record.commit_id;
-    Ok(())
-}
-
 pub(crate) fn conditions(
     conditions: &[CommitCondition],
     tail: impl Fn(&StreamPath) -> Option<u64>,
-    observer: &MemoryObserver,
+    observer: WireMeter<'_>,
 ) -> MemoryResult<MemoryOutput<Vec<CommitConflict>>> {
     let mut count = 0;
     for condition in conditions {
-        observer.admit_item()?;
+        memory::admit_item(observer)?;
         count += usize::from(match condition {
             CommitCondition::Tail { path, expected } => tail(path) != Some(*expected),
             CommitCondition::Absent { path } => tail(path).is_some(),
         });
-        observer.record_item()?;
+        memory::record_item(observer)?;
     }
-    let mut output = observer.vec(count)?;
+    let mut output = memory::vec(observer, count)?;
     for condition in conditions {
-        observer.admit_item()?;
+        memory::admit_item(observer)?;
         let conflict = match condition {
             CommitCondition::Tail { path, expected } => {
                 let actual = tail(path);
                 if actual != Some(*expected) {
                     Some(CommitConflict::Tail {
-                        path: observer.retain_path(path)?, expected: *expected, actual,
+                        path: memory::retain_path(observer, path)?, expected: *expected, actual,
                     })
                 } else { None }
             }
             CommitCondition::Absent { path } => {
                 if tail(path).is_some() {
-                    Some(CommitConflict::Exists { path: observer.retain_path(path)? })
+                    Some(CommitConflict::Exists { path: memory::retain_path(observer, path)? })
                 } else { None }
             }
         };
         if let Some(conflict) = conflict { output.value.push(conflict); }
-        observer.record_item()?;
+        memory::record_item(observer)?;
     }
     Ok(output)
 }
@@ -127,10 +103,10 @@ pub(crate) fn conditions(
 pub(crate) fn authority(
     request: &CommitRequest,
     tail: impl Fn(&StreamPath) -> Option<u64>,
-    observer: &MemoryObserver,
+    observer: WireMeter<'_>,
 ) -> MemoryResult<()> {
     for mutation in &request.mutations {
-        observer.admit_item()?;
+        memory::admit_item(observer)?;
         let error = if let CommitMutation::Fork { source, at_tail, .. } = mutation {
             match tail(source) {
                 None => Some(StreamError::NotFound),
@@ -138,7 +114,7 @@ pub(crate) fn authority(
                 Some(_) => None,
             }
         } else { None };
-        observer.record_item()?;
+        memory::record_item(observer)?;
         if let Some(error) = error { return Err(error.into()); }
     }
     Ok(())
@@ -149,70 +125,58 @@ pub(crate) fn mutations(
     tail: impl Fn(&StreamPath) -> Option<u64>,
     commit_id: CommitId,
     committed_at_micros: u64,
-    observer: &MemoryObserver,
+    observer: WireMeter<'_>,
 ) -> MemoryResult<MemoryOutput<Vec<CommittedMutation>>> {
-    let mut output = observer.vec(mutations.len())?;
+    let mut output = memory::vec(observer, mutations.len())?;
     for mutation in mutations {
-        observer.admit_item()?;
+        memory::admit_item(observer)?;
         let committed = match mutation {
             CommitMutation::Append { path, records: bodies } => {
-                let start = tail(path).unwrap_or(0);
-                let records = records(
-                    start, bodies.iter().cloned(), commit_id, committed_at_micros, observer,
-                )?;
-                let end = start + records.value.len() as u64;
-                output.allocation.absorb(records.allocation)?;
-                CommittedMutation::Append(CommittedAppend {
-                    path: observer.retain_path(path)?, start, end, tail: end, records: records.value,
-                })
+                let append = append_fact(path, tail(path).unwrap_or(0), bodies, commit_id, committed_at_micros, observer)?;
+                absorb(&mut output.allocation, append.allocation)?;
+                CommittedMutation::Append(append.value)
             }
             CommitMutation::Fork { source, destination, at_tail, records: bodies } => {
                 let source_tail = tail(source).ok_or(StreamError::NotFound)?;
                 if *at_tail > source_tail { return Err(StreamError::PrefixNotRetained.into()); }
                 let records = records(
-                    *at_tail, bodies.iter().cloned(), commit_id, committed_at_micros, observer,
+                    *at_tail, bodies, commit_id, committed_at_micros, observer,
                 )?;
                 let tail = at_tail + records.value.len() as u64;
-                output.allocation.absorb(records.allocation)?;
+                absorb(&mut output.allocation, records.allocation)?;
                 CommittedMutation::Fork(CommittedFork {
-                    source: observer.retain_path(source)?, destination: observer.retain_path(destination)?,
+                    source: memory::retain_path(observer, source)?, destination: memory::retain_path(observer, destination)?,
                     forked_at: *at_tail, tail, records: records.value,
                 })
             }
         };
         output.value.push(committed);
-        observer.record_item()?;
+        memory::record_item(observer)?;
     }
     Ok(output)
 }
 
-pub(crate) fn records<I>(
+pub(crate) fn records(
     start: u64,
-    bodies: I,
+    bodies: &[OwnedBytes],
     commit_id: CommitId,
     committed_at_micros: u64,
-    observer: &MemoryObserver,
-) -> MemoryResult<MemoryOutput<Vec<Record>>>
-where
-    I: IntoIterator<Item = OwnedBytes>,
-    I::IntoIter: ExactSizeIterator,
-{
-    let mut bodies = bodies.into_iter();
+    observer: WireMeter<'_>,
+) -> MemoryResult<MemoryOutput<Vec<Record>>> {
     let count = bodies.len();
     // Reserve the exclusive tail too: a record at u64::MAX is unrepresentable.
     start.checked_add(u64::try_from(count).map_err(|_| StreamError::LimitExceeded)?)
         .ok_or(StreamError::LimitExceeded)?;
-    let mut output = observer.vec(count)?;
-    for index in 0..count {
-        observer.admit_item()?;
-        let value = bodies.next().ok_or(StreamError::Unavailable)?;
+    let mut output = memory::vec(observer, count)?;
+    for (index, value) in bodies.iter().enumerate() {
+        memory::admit_item(observer)?;
         output.value.push(Record {
             sequence: start + index as u64,
-            value,
+            value: value.clone(),
             commit_id,
             committed_at_micros,
         });
-        observer.record_item()?;
+        memory::record_item(observer)?;
     }
     Ok(output)
 }
@@ -224,8 +188,8 @@ mod tests {
     #[test]
     fn rejects_unrepresentable_exclusive_tails() {
         assert!(matches!(records(
-            u64::MAX, [OwnedBytes::from_static(b"overflow")], CommitId::default(), 0,
-            &MemoryObserver::default(),
-        ), Err(crate::memory::MemoryFailure::Provider(StreamError::LimitExceeded))));
+            u64::MAX, &[OwnedBytes::from_static(b"overflow")], CommitId::default(), 0,
+            None,
+        ), Err(memory::MemoryFailure::Provider(StreamError::LimitExceeded))));
     }
 }

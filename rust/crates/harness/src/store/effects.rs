@@ -5,7 +5,7 @@ use crate::{
     EffectId, Error, Result,
     core::{Authority, AuthorityVerifier, Event, EventPayload, Reducer},
 };
-use acyclic_stream::{Record, StreamClient, StreamPath, StreamProvider};
+use acyclic_stream::{Record, StreamPath, StreamProvider};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
@@ -19,10 +19,9 @@ fn decode_location_with_work(
     bytes: &[u8],
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<EffectLocation> {
-    if work.is_some() {
-        operations::validate_canonical_json_with_work(bytes, acyclic_stream::MAX_RECORD_BYTES as u64, work)?;
-    }
-    let Some(observer) = work.as_deref_mut() else { return crate::executor::decode_json(bytes); };
+    operations::validate_canonical_json_with_work(bytes, acyclic_stream::MAX_RECORD_BYTES as u64, work)?;
+    let Some(observer) = work.as_deref_mut() else { return crate::contract::json_from_slice(bytes)
+        .map_err(|error| Error::Storage(format!("execution journal content is invalid: {error}"))); };
     let mut reservation = 0;
     let diagnostic_bytes = crate::contract::audited_serde_diagnostic_bytes(
         bytes.len() as u64,
@@ -86,7 +85,7 @@ fn decode_location_with_work(
 }
 
 fn path(authority: &Authority, effect: EffectId) -> Result<StreamPath> {
-    let canonical = authority.stream_path()?;
+    let canonical = authority.stream_path(&mut None)?;
     let suffix = canonical
         .strip_prefix("harness/v2/")
         .ok_or_else(|| Error::Invalid("effect index authority path is invalid".into()))?;
@@ -112,7 +111,7 @@ fn canonical_path_with_work(
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(StreamPath, u64)> {
     if work.is_none() {
-        return Ok((StreamPath::new(authority.stream_path()?)?, 0));
+        return Ok((StreamPath::new(authority.stream_path(&mut None)?)?, 0));
     }
     operations::publication_path_with_work(authority, "harness/v2/", None, work)
 }
@@ -133,7 +132,7 @@ fn release_record_after_drop<T>(
 }
 
 async fn tail_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     path: &StreamPath,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<u64> {
@@ -142,7 +141,7 @@ async fn tail_with_work<P: StreamProvider>(
 }
 
 async fn verified_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     verifier: &AuthorityVerifier,
     effect: EffectId,
@@ -195,17 +194,17 @@ async fn verified_with_work<P: StreamProvider>(
 
 
 pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     reducer: &Reducer,
     event: &Event,
     publication: &mut operations::IndexedPublication,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<()> {
-    let verifier = reducer.event_verifier_with_work(work)?;
+    let verifier = reducer.event_verifier();
     let result = async {
         let Some(effect_id) = crate::core::event_effect_id(&event.payload) else {
             return effect_heads::publication_with_work(
-                client, reducer.authority(), &verifier, event, None, publication, work,
+                client, reducer.authority(), verifier, event, None, publication, work,
             ).await;
         };
         let mut path = Some(path_with_work(reducer.authority(), effect_id, work)?);
@@ -224,7 +223,7 @@ pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
                     .await?
                     .ok_or_else(|| Error::Storage("effect transition head is missing".into()))?;
                 let prior = verified_with_work(
-                    client, reducer.authority(), &verifier, effect_id, &record,
+                    client, reducer.authority(), verifier, effect_id, &record,
                     2 * acyclic_stream::MAX_RECORD_BYTES as u64, work,
                 ).await;
                 let record_bytes = operations::sdk_record_retained_bytes(&record, work);
@@ -263,7 +262,7 @@ pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
                 path.take().expect("original effect path"), expected, encoded, work);
             operations::release_owned_after_drop(appended, location_capacity, work)?;
             effect_heads::publication_with_work(
-                client, reducer.authority(), &verifier, event,
+                client, reducer.authority(), verifier, event,
                 Some((effect_id, effect_heads::Head { revision: event.revision, position: expected })),
                 publication, work,
             ).await
@@ -276,23 +275,19 @@ pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
             None => result,
         }
     }.await;
-    let verifier_capacity = verifier.logical_owned_bytes();
-    drop(verifier);
-    match verifier_capacity {
-        Ok(capacity) => operations::release_owned_after_drop(result, capacity, work),
-        Err(error) => match result { Err(original) => Err(original), Ok(()) => Err(error) },
-    }
+    result
 }
 
-pub(super) async fn read<P: StreamProvider>(
-    client: &StreamClient<P>,
+/// Reads authenticated effect events at a bounded committed cut.
+pub async fn effect_events<P: StreamProvider>(
+    client: &std::sync::Arc<P>,
     verifier: &AuthorityVerifier,
     cursor: &HistoryCursor,
     effect: EffectId,
     limits: HistoryReadLimits,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(Vec<Event>, u64)> {
-    verifier.verify_audience_with_work(&cursor.authority, work)?;
+    verifier.verify_audience(&cursor.authority, work)?;
     if limits.maximum_events == 0
         || limits.maximum_bytes == 0
         || cursor.after_revision > cursor.through_revision
@@ -313,7 +308,7 @@ pub(super) async fn read<P: StreamProvider>(
             "effect cursor exceeds committed canonical tail".into(),
         ));
     }
-    let selected = effect_heads::select_with_work(
+    let (head, consumed_bytes) = effect_heads::select_with_work(
         client,
         &cursor.authority,
         verifier,
@@ -323,7 +318,7 @@ pub(super) async fn read<P: StreamProvider>(
         work,
     )
     .await?;
-    let Some(head) = selected.head else {
+    let Some(head) = head else {
         return Ok((Vec::new(), 0));
     };
     let count = head
@@ -340,7 +335,7 @@ pub(super) async fn read<P: StreamProvider>(
     let mut event_claims = 0_u64;
     let mut staged = None;
     let result = async {
-        let mut used = selected.consumed_bytes;
+        let mut used = consumed_bytes;
         let mut previous_revision = 0;
         for position in 0..count {
             let remaining = limits
@@ -406,7 +401,7 @@ pub(super) async fn read<P: StreamProvider>(
 
 
 pub(super) async fn retirement_proof_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     event: &Event,
     canonical: &Record,
@@ -497,7 +492,7 @@ pub(super) async fn retirement_proof_with_work<P: StreamProvider>(
 
 
 pub(super) async fn retirement_proof_for_event_with_work<P: StreamProvider>(
-    client: &StreamClient<P>,
+    client: &std::sync::Arc<P>,
     authority: &Authority,
     event: &Event,
     work: &mut Option<&mut dyn HistoryIo>,
@@ -519,7 +514,7 @@ pub(super) async fn retirement_proof_for_event_with_work<P: StreamProvider>(
         .ok_or_else(|| Error::Storage("terminal canonical event is missing".into()))?;
     let result = async {
         if let Some(observer) = work.as_deref_mut() { observer.check_cancellation()?; }
-        let expected = crate::wire_codec::encode_event_with_work(authority, event, work)?;
+        let expected = crate::wire_codec::encode_event(authority, event, work)?;
         let matches = if record.value.as_ref() != expected.as_slice() {
             Err(Error::Storage("terminal canonical event differs".into()))
         } else {
@@ -528,7 +523,7 @@ pub(super) async fn retirement_proof_for_event_with_work<P: StreamProvider>(
         let capacity = expected.capacity() as u64;
         drop(expected);
         let released = match work.as_deref_mut() {
-            Some(observer) => observer.release_bytes(capacity),
+            Some(observer) => observer.release_owned(capacity),
             None => Ok(()),
         };
         matches?;
@@ -660,9 +655,9 @@ mod native_effect_paid_point_tests {
     async fn original_effect_point_returns_actual_decoder_and_vector_paid_claim() -> Result<()> {
         let authority = Authority { kind: AggregateKind::Agent, id: "paid-effect-point".into() };
         let issuer = AuthorityIssuer::new("paid-effect-point", [7; 32], authority.clone());
-        let reducer = Reducer::new(authority.clone(), issuer.verifier(), SchemaRegistry::new());
+        let reducer = Reducer::new(authority.clone(), issuer.verifier(&mut None).expect("verifier copy"), SchemaRegistry::new());
         let volume = VolumeRef::new(
-            ProviderRef::new("test", "filesystem", "2")?, "effect-volume",
+            ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?, "effect-volume",
             VolumeClass::AgentPrivate, VolumeOwner::Agent(crate::AgentId::from_bytes([8; 16])),
         )?;
         let request = FileRef::new(volume.clone(), "effects/request.json", "generation-1",
@@ -674,9 +669,9 @@ mod native_effect_paid_point_tests {
             operation_id: OperationId::from_bytes([92; 16]),
             idempotency_key: CommandKey::new("paid-effect-point")?,
             expected_revision: 0,
-            scope: issuer.root("effects", Capabilities::new([
+            scope: issuer.issue("effects", &Capabilities::new([
                 "effect:run", "effect:plan", "effect:provider:test.effects",
-            ])),
+            ]), None, None, &mut None).expect("scope proof"),
             causal_parent: None,
             action: Action::PlanEffect {
                 effect_id: effect, provider: "test.effects".into(),
@@ -687,11 +682,11 @@ mod native_effect_paid_point_tests {
         let ApplyResult::Applied { event } = reducer.plan(&command)? else {
             panic!("fresh original effect plan");
         };
-        let client = StreamClient::new(Arc::new(MemoryStream::default()));
+        let client = Arc::new(MemoryStream::default());
         let publication = checkpoints::publication_with_work(&client, &reducer, &event, &mut None).await?;
         let request = publication.request(&client,
             IdempotencyKey::new(Bytes::from_static(b"paid-effect-point"))?).await?;
-        let acyclic_stream::CommitOutcome::Committed(envelope) = client.provider.commit(request).await? else {
+        let acyclic_stream::CommitOutcome::Committed(envelope) = client.commit(request).await? else {
             panic!("original atomic effect publication");
         };
         publication.verify(&envelope)?;
@@ -710,7 +705,7 @@ mod native_effect_paid_point_tests {
         let mut io = native_work_io(&native).expect("original point decoder source custody");
         let cursor = HistoryCursor { authority, after_revision: 0, through_revision: 1 };
         let (events, paid) = read(
-            &client, &issuer.verifier(), &cursor, effect,
+            &client, &issuer.verifier(&mut None).expect("verifier copy"), &cursor, effect,
             HistoryReadLimits { maximum_events: 8, maximum_bytes: 1_048_576 },
             &mut Some(&mut io),
         ).await?;

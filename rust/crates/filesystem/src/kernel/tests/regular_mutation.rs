@@ -26,7 +26,7 @@ fn config() -> VolumeConfig {
     }
 }
 
-fn blob(store: &MemoryObjectStore, bytes: &[u8]) -> Result<ObjectId, Box<dyn std::error::Error>> {
+async fn blob(store: &MemoryObjectStore, bytes: &[u8]) -> Result<ObjectId, Box<dyn std::error::Error>> {
     let mut source = Cursor::new(bytes);
     Ok(build_blob(
         store,
@@ -38,7 +38,8 @@ fn blob(store: &MemoryObjectStore, bytes: &[u8]) -> Result<ObjectId, Box<dyn std
             maximum_blob_bytes: u64::try_from(bytes.len())?,
         },
         WorkBudget::UNBOUNDED,
-    )?
+        &CancellationToken::new(),
+    ).await?
     .root)
 }
 
@@ -125,7 +126,7 @@ fn flatten_extents(
 ) -> Result<Vec<Extent>, Box<dyn std::error::Error>> {
     let encoded = ObjectStore::read(store, root, u64::MAX, WorkBudget::UNBOUNDED)?.value;
     Ok(
-        match decode_extent_page(&encoded, DecodeLimits::for_volume(config()))? {
+        match decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))? {
             ExtentPage::Leaf(extents) => extents,
             ExtentPage::Internal(children) => {
                 let mut extents = Vec::new();
@@ -294,11 +295,11 @@ fn next_generated(seed: &mut u64) -> u64 {
     *seed
 }
 
-#[test]
-fn writes_at_sixty_three_and_sixty_four_bytes_remain_inline()
+#[tokio::test]
+async fn writes_at_sixty_three_and_sixty_four_bytes_remain_inline()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let content = blob(&store, b"xy")?;
+    let content = blob(&store, b"xy").await?;
     for (initial, offset, expected_last) in [(63_usize, 62_u64, b'x'), (63, 63, b'y')] {
         let receipt = apply(
             &store,
@@ -322,11 +323,11 @@ fn writes_at_sixty_three_and_sixty_four_bytes_remain_inline()
     Ok(())
 }
 
-#[test]
-fn sixty_fifth_byte_promotes_to_sparse_without_materializing_a_hole()
+#[tokio::test]
+async fn sixty_fifth_byte_promotes_to_sparse_without_materializing_a_hole()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let content = blob(&store, b"z")?;
+    let content = blob(&store, b"z").await?;
     let receipt = apply(
         &store,
         FilePayload::InlineRegular(InlineFileData::new(&[b'a'; 64])?),
@@ -353,7 +354,7 @@ fn sixty_fifth_byte_promotes_to_sparse_without_materializing_a_hole()
     )?
     .value;
     let ExtentPage::Leaf(values) =
-        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("promoted extent root was not a leaf".into());
     };
@@ -438,7 +439,7 @@ fn empty_inline_growth_promotes_directly_to_one_sparse_hole()
     )?
     .value;
     let ExtentPage::Leaf(values) =
-        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("empty growth extent root was not a leaf".into());
     };
@@ -473,7 +474,7 @@ fn inline_growth_within_threshold_preserves_trailing_hole() -> Result<(), Box<dy
     )?
     .value;
     let ExtentPage::Leaf(values) =
-        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("grown extent root was not a leaf".into());
     };
@@ -592,7 +593,7 @@ fn clone_promotion_matrix_preserves_dense_and_sparse_semantics()
     )?
     .value;
     let ExtentPage::Leaf(extents) =
-        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("clone destination root was not a leaf".into());
     };
@@ -620,7 +621,7 @@ fn clone_promotion_matrix_preserves_dense_and_sparse_semantics()
     )?
     .value;
     let ExtentPage::Leaf(extents) =
-        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("identity clone destination root was not a leaf".into());
     };
@@ -688,11 +689,11 @@ fn clone_budget_and_precancellation_fail_before_visible_work()
     Ok(())
 }
 
-#[test]
-fn regular_mutation_cancellation_nonregular_clone_and_inline_budget_matrix_is_total()
+#[tokio::test]
+async fn regular_mutation_cancellation_nonregular_clone_and_inline_budget_matrix_is_total()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let content = blob(&store, b"xy")?;
+    let content = blob(&store, b"xy").await?;
     let inline = FilePayload::InlineRegular(InlineFileData::new(b"abcd")?);
     let cancelled = CancellationToken::new();
     cancelled.cancel();
@@ -914,7 +915,7 @@ fn inline_zero_extension_preserves_exact_sparse_semantics() -> Result<(), Box<dy
         )?
         .value;
         let ExtentPage::Leaf(values) =
-            decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+            decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
         else {
             return Err("promoted extent root was not a leaf".into());
         };
@@ -1020,7 +1021,7 @@ fn preallocation_preserves_content_allocates_only_holes_and_handles_eof_explicit
     )?
     .value;
     let ExtentPage::Leaf(values) =
-        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("preallocated extent root was not a leaf".into());
     };
@@ -1057,7 +1058,7 @@ fn preallocation_preserves_content_allocates_only_holes_and_handles_eof_explicit
     )?
     .value;
     let ExtentPage::Leaf(values) =
-        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("extended extent root was not a leaf".into());
     };
@@ -1125,7 +1126,7 @@ fn extending_preallocation_merges_the_eof_hole_and_extension_into_one_mutation()
     )?
     .value;
     let ExtentPage::Leaf(values) =
-        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("allocated extent root was not a leaf".into());
     };
@@ -1280,10 +1281,10 @@ fn rejection_precedes_storage_work() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-#[test]
-fn dense_volume_rejects_sparse_semantics_before_work() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn dense_volume_rejects_sparse_semantics_before_work() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let content = blob(&store, b"XY")?;
+    let content = blob(&store, b"XY").await?;
     let mut dense = config();
     dense.sparse_files = false;
     let cancellation = CancellationToken::new();
@@ -1368,8 +1369,8 @@ fn dense_volume_rejects_sparse_semantics_before_work() -> Result<(), Box<dyn std
     Ok(())
 }
 
-#[test]
-fn sparse_write_rewrites_only_the_target_and_preserves_the_trailing_hole()
+#[tokio::test]
+async fn sparse_write_rewrites_only_the_target_and_preserves_the_trailing_hole()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let sparse = apply(
@@ -1377,7 +1378,7 @@ fn sparse_write_rewrites_only_the_target_and_preserves_the_trailing_hole()
         FilePayload::InlineRegular(InlineFileData::new(&[b'a'; 64])?),
         RegularMutation::Resize { logical_bytes: 128 },
     )?;
-    let replacement = blob(&store, b"WXYZWXYZ")?;
+    let replacement = blob(&store, b"WXYZWXYZ").await?;
     let written = apply(
         &store,
         sparse.payload,
@@ -1405,7 +1406,7 @@ fn sparse_write_rewrites_only_the_target_and_preserves_the_trailing_hole()
     )?
     .value;
     let ExtentPage::Leaf(values) =
-        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("sparse write root was not a leaf".into());
     };
@@ -1455,7 +1456,7 @@ fn sparse_clone_preserves_holes_and_destination_size_with_bounded_promotion_copi
     )?
     .value;
     let ExtentPage::Leaf(values) =
-        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("sparse clone root was not a leaf".into());
     };
@@ -1469,12 +1470,12 @@ fn sparse_clone_preserves_holes_and_destination_size_with_bounded_promotion_copi
     Ok(())
 }
 
-#[test]
-fn malformed_ranges_nonregular_payloads_and_semantic_noops_are_exact()
+#[tokio::test]
+async fn malformed_ranges_nonregular_payloads_and_semantic_noops_are_exact()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let cancellation = CancellationToken::new();
-    let content = blob(&store, b"x")?;
+    let content = blob(&store, b"x").await?;
     let inline = FilePayload::InlineRegular(InlineFileData::new(b"abcd")?);
     for mutation in [
         RegularMutation::Write {
@@ -1686,7 +1687,7 @@ fn inline_preallocation_handles_keep_size_and_growth() -> Result<(), Box<dyn std
     )?
     .value;
     let ExtentPage::Leaf(values) =
-        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("preallocation root was not a leaf".into());
     };
@@ -1701,8 +1702,8 @@ fn inline_preallocation_handles_keep_size_and_growth() -> Result<(), Box<dyn std
     Ok(())
 }
 
-#[test]
-fn preallocation_rejects_fragmented_ranges_at_the_configured_limit()
+#[tokio::test]
+async fn preallocation_rejects_fragmented_ranges_at_the_configured_limit()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let sparse = apply(
@@ -1710,7 +1711,7 @@ fn preallocation_rejects_fragmented_ranges_at_the_configured_limit()
         FilePayload::InlineRegular(InlineFileData::new(&[b'a'; 64])?),
         RegularMutation::Resize { logical_bytes: 256 },
     )?;
-    let content = blob(&store, b"x")?;
+    let content = blob(&store, b"x").await?;
     let fragmented = apply(
         &store,
         sparse.payload,
@@ -1746,8 +1747,8 @@ fn preallocation_rejects_fragmented_ranges_at_the_configured_limit()
     Ok(())
 }
 
-#[test]
-fn preallocation_allocates_multiple_holes_and_a_nonadjacent_extension_atomically()
+#[tokio::test]
+async fn preallocation_allocates_multiple_holes_and_a_nonadjacent_extension_atomically()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let sparse = apply(
@@ -1755,7 +1756,7 @@ fn preallocation_allocates_multiple_holes_and_a_nonadjacent_extension_atomically
         FilePayload::InlineRegular(InlineFileData::new(&[b'a'; 64])?),
         RegularMutation::Resize { logical_bytes: 129 },
     )?;
-    let tail = blob(&store, b"z")?;
+    let tail = blob(&store, b"z").await?;
     let fragmented = apply(
         &store,
         sparse.payload,
@@ -1791,7 +1792,7 @@ fn preallocation_allocates_multiple_holes_and_a_nonadjacent_extension_atomically
     )?
     .value;
     let ExtentPage::Leaf(values) =
-        decode_extent_page(&encoded, DecodeLimits::for_volume(config()))?
+        decode_extent_page(&encoded, DecodeLimits::for_volume(config()), &mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?
     else {
         return Err("multi-region preallocation root was not a leaf".into());
     };
@@ -1811,8 +1812,8 @@ fn preallocation_allocates_multiple_holes_and_a_nonadjacent_extension_atomically
     Ok(())
 }
 
-#[test]
-fn generated_regular_file_histories_match_independent_logical_and_physical_model()
+#[tokio::test]
+async fn generated_regular_file_histories_match_independent_logical_and_physical_model()
 -> Result<(), Box<dyn std::error::Error>> {
     for history in 0..192_u64 {
         let store = MemoryObjectStore::default();
@@ -1850,7 +1851,7 @@ fn generated_regular_file_histories_match_independent_logical_and_physical_model
                     let bytes = (0..length)
                         .map(|_| u8::try_from(next_generated(&mut seed) & 0xff).unwrap_or(0))
                         .collect::<Vec<_>>();
-                    let content = blob(&store, &bytes)?;
+                    let content = blob(&store, &bytes).await?;
                     payload = apply(
                         &store,
                         payload,
@@ -2128,11 +2129,11 @@ fn inline_and_validation_helpers_reject_every_malformed_shape_before_storage()
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn native_regular_copy_denial_and_written_prefix_use_original_custody()
+#[tokio::test]
+async fn native_regular_copy_denial_and_written_prefix_use_original_custody()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
-    let content = blob(&store, b"native source")?;
+    let content = blob(&store, b"native source").await?;
     let cancellation = CancellationToken::new();
     let original = crate::NativeMaterializationWork::new(
         WorkBudget { bytes_copied: 0, ..WorkBudget::UNBOUNDED }, &cancellation,

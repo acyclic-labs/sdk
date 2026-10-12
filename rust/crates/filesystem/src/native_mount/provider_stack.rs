@@ -40,8 +40,6 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::System::WindowsProgramming::FIBER_FLAG_FLOAT_SWITCH;
 
-type StopMeter = super::NativeMountMeterWork;
-
 /// Copyable custody of the exact control failure, retained by the driver even
 /// after the SDK callback can report only its distinct HRESULT.
 #[derive(Clone, Copy, Debug)]
@@ -83,14 +81,13 @@ fn materialization_failure(error: crate::NativeTreeMaterializationError) -> Prov
 /// Serializes only admission and attempt bookkeeping. The native resource
 /// call never owns the original engine's mutex or a queued-I/O waiter.
 fn native_write<T>(
-    meter: Option<&StopMeter>,
+    meter: Option<&crate::NativeMaterializationWork>,
     operation: impl FnOnce() -> windows::core::Result<T>,
 ) -> Result<(windows::core::Result<T>, Result<(), ProviderFailure>), ProviderFailure> {
     if let Some(meter) = meter {
-        let work = meter.native_materialization_work();
         let delta = crate::WorkCounters { backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED };
-        work.admit(delta).map_err(materialization_failure)?;
-        let recorded = work.record_admitted(delta).map_err(materialization_failure);
+        meter.admit(delta).map_err(materialization_failure)?;
+        let recorded = meter.record_admitted(delta).map_err(materialization_failure);
         Ok((operation(), recorded))
     } else {
         Ok((operation(), Ok(())))
@@ -137,7 +134,7 @@ impl ProviderFiber {
         };
         let recorded = match delete {
             Some(owned) => {
-                let (_, recorded) = owned.delete.attempt_recorded(operation);
+                let (_, recorded) = owned.delete.attempt(operation);
                 drop(owned.allocation);
                 recorded.map_err(materialization_failure)
             }
@@ -182,7 +179,7 @@ unsafe extern "system" fn serve(exchange: *mut c_void) {
 
 /// This same thread's fiber. Only a new stop-owned exchange carries a claim.
 fn provider_fiber(
-    meter: Option<&StopMeter>,
+    meter: Option<&crate::NativeMaterializationWork>,
 ) -> Result<(*mut c_void, *const Exchange, bool), ProviderFailure> {
     PROVIDER_FIBER.with(|slot| {
         let mut slot = slot.borrow_mut();
@@ -191,11 +188,10 @@ fn provider_fiber(
         }
         let bytes = std::mem::size_of::<Exchange>() as u64;
         let owned = if let Some(meter) = meter {
-            let work = meter.native_materialization_work();
-            let delete = work.reserve_cleanup_write().map_err(materialization_failure)?;
-            work.admit(crate::WorkCounters { backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED })
+            let delete = meter.reserve_cleanup_write().map_err(materialization_failure)?;
+            meter.admit(crate::WorkCounters { backend_write_operations: 1, ..crate::WorkCounters::UNCHARGED })
                 .map_err(materialization_failure)?;
-            let allocation = work.claim(bytes).map_err(materialization_failure)?;
+            let allocation = meter.claim(bytes).map_err(materialization_failure)?;
             Some(OwnedExchange { allocation, delete })
         } else {
             None
@@ -259,8 +255,8 @@ struct ThreadConversion {
 }
 
 impl ThreadConversion {
-    fn start(meter: Option<&StopMeter>) -> Result<Self, ProviderFailure> {
-        let cleanup = meter.map(|meter| meter.native_materialization_work().reserve_cleanup_write()
+    fn start(meter: Option<&crate::NativeMaterializationWork>) -> Result<Self, ProviderFailure> {
+        let cleanup = meter.map(|meter| meter.reserve_cleanup_write()
             .map_err(materialization_failure)).transpose()?;
         let converted = native_write(meter, || {
             // SAFETY: an ordinary thread converts once; an already-fiber thread
@@ -297,7 +293,7 @@ impl ThreadConversion {
             ConvertFiberToThread()
         };
         let (converted, recorded) = match self.cleanup.take() {
-            Some(cleanup) => cleanup.attempt_recorded(operation),
+            Some(cleanup) => cleanup.attempt(operation),
             None => (operation(), Ok(())),
         };
         let recorded = recorded.map_err(materialization_failure);
@@ -315,7 +311,7 @@ impl Drop for ThreadConversion {
 /// The SDK caller must complete source authorization before this call: the
 /// first uncached operation below allocates the actual exchange box.
 pub(super) fn run_with_meter<T>(
-    meter: Option<&StopMeter>, callback: impl FnOnce() -> T,
+    meter: Option<&crate::NativeMaterializationWork>, callback: impl FnOnce() -> T,
 ) -> Result<T, ProviderFailure> {
     let (fiber, exchange, scoped) = provider_fiber(meter)?;
     let mut fiber_scope = ScopedFiber(scoped);
@@ -441,7 +437,7 @@ mod tests {
             let budget = crate::WorkBudget { peak_allocation_bytes: payload, ..crate::WorkBudget::UNBOUNDED };
             let work = crate::NativeMaterializationWork::new(budget, &crate::CancellationToken::new())
                 .expect("the original accounting state is admitted");
-            let error = super::run_with_meter(Some(&work.native_mount_work()), || -> () {
+            let error = super::run_with_meter(Some(&work), || -> () {
                 panic!("denial must not fall back to ordinary callback execution")
             }).expect_err("the actual exchange box is not admitted");
             assert!(matches!(error, super::ProviderFailure::Work(crate::WorkError::BudgetExceeded {
@@ -468,7 +464,7 @@ mod tests {
             };
             let work = crate::NativeMaterializationWork::new(budget, &crate::CancellationToken::new())
                 .expect("the original accounting state is admitted");
-            let result = super::run_with_meter(Some(&work.native_mount_work()), || {
+            let result = super::run_with_meter(Some(&work), || {
                 // SAFETY: plain query of the currently running real fiber.
                 assert!(unsafe { IsThreadAFiber() }.as_bool());
                 42
@@ -491,7 +487,7 @@ mod tests {
             let budget = crate::WorkBudget { backend_write_operations: 3, ..crate::WorkBudget::UNBOUNDED };
             let work = crate::NativeMaterializationWork::new(budget, &crate::CancellationToken::new())
                 .expect("the original accounting state is admitted");
-            let error = super::run_with_meter(Some(&work.native_mount_work()), || {
+            let error = super::run_with_meter(Some(&work), || {
                 panic!("unadmitted conversion cannot enter the callback")
             }).expect_err("mandatory cleanup leaves too little allowance to convert");
             assert!(matches!(error, super::ProviderFailure::Work(crate::WorkError::BudgetExceeded {
@@ -512,7 +508,7 @@ mod tests {
             let cancellation = crate::CancellationToken::new();
             let work = crate::NativeMaterializationWork::new(crate::WorkBudget::UNBOUNDED, &cancellation)
                 .expect("the original accounting state is admitted");
-            super::run_with_meter(Some(&work.native_mount_work()), || cancellation.cancel())
+            super::run_with_meter(Some(&work), || cancellation.cancel())
                 .expect("the admitted callback returns after mandatory cleanup");
             assert!(matches!(work.admit(crate::WorkCounters::UNCHARGED),
                 Err(crate::NativeTreeMaterializationError::Cancelled)), "the original token remains active");
@@ -537,7 +533,7 @@ mod tests {
             };
             let work = crate::NativeMaterializationWork::new(budget, &crate::CancellationToken::new())
                 .expect("the original accounting state is admitted");
-            super::run_with_meter(Some(&work.native_mount_work()), || 2)
+            super::run_with_meter(Some(&work), || 2)
                 .expect("existing fiber is borrowed");
             assert_eq!(work.receipt().backend_write_operations, 2, "actual thread conversion and cleanup only");
             assert_eq!(work.receipt().allocation_operations, 1);
@@ -562,7 +558,7 @@ mod resource_scope_tests {
             let resource = original.native_volume_work(crate::WorkBudget {
                 allocation_operations: 0, ..crate::WorkBudget::UNBOUNDED
             }).expect("resource metadata belongs to the original");
-            let full = resource.native_mount_work();
+            let full = resource.clone();
             let before = original.receipt();
             let failure = super::run_with_meter(Some(&full), || panic!("denied exchange cannot enter callback"))
                 .expect_err("actual exchange must use the resource view");
