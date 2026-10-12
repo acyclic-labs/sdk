@@ -331,6 +331,7 @@ case "$lane" in
       --target "$target" --lib native_capture::
     ;;
   policy)
+    node scripts/static-ci.mjs
     node scripts/check-compatibility-digests.mjs
     bash scripts/test-qualify-ci-preflight.sh
     node --test scripts/wasm-size-report.test.mjs scripts/tracked-wasm-surfaces.test.mjs
@@ -353,7 +354,7 @@ case "$lane" in
     node --test scripts/test-publish-cargo-crates.mjs
     node --test scripts/test-publish-npm-packages.mjs
     node --test scripts/static-policy.test.mjs
-    node --test scripts/tiny-ci.test.mjs scripts/publish-release-assets.test.mjs scripts/release-qualification-artifacts.test.mjs scripts/release-source.test.mjs
+    node --test scripts/tiny-ci.test.mjs scripts/cargo-lock-policy.test.mjs scripts/publish-release-assets.test.mjs scripts/release-qualification-artifacts.test.mjs scripts/release-source.test.mjs
     node --test scripts/test-typescript-qualification.mjs
     node --test scripts/test-plan-qualification.mjs
     node --test scripts/test-contract-artifacts.mjs scripts/test-contract-targets.mjs

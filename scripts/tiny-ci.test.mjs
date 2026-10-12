@@ -11,7 +11,7 @@ test('PRs and main have one static job, and tags/releases cannot start heavy wor
  assert.deepEqual(automatic,[STATIC]);
  const workflow=read(STATIC);
  assert.equal((workflow.split('jobs:')[1].match(/^  [\w-]+:/gm)??[]).length,1);
- assert.match(workflow,/timeout-minutes: 5/);
+ assert.match(workflow,/timeout-minutes: 1/);
  assert.match(workflow,/cancel-in-progress: true/);
  assert.doesNotMatch(triggers(workflow),/paths(?:-ignore)?:|tags:/);
  for(const name of workflows)assert.doesNotMatch(triggers(read(name)),/^  (?:release|workflow_run):/m,name);
@@ -38,4 +38,20 @@ test('all publishers use the one qualified source and explicit artifacts',()=>{
  }
  assert.match(read('release-acyclic.yml'),/force: true/);
  assert.equal((read('release-acyclic.yml').match(/uses: \.\/\.github\/workflows\/qualification\.yml/g)??[]).length,1);
+});
+
+test('the required job only checks Cargo lock consistency',()=>{
+ const workflow=read(STATIC);
+ assert.match(workflow,/name: SDK Static/);
+ assert.match(workflow,/RUSTUP_TOOLCHAIN: stable/);
+ assert.deepEqual([...workflow.matchAll(/^        run: (.+)$/gm)].map(match=>match[1]),['cargo update --workspace --locked']);
+ assert.equal((workflow.match(/^\s+- uses:/gm)??[]).length,1);
+ assert.doesNotMatch(workflow,/setup-node|static-ci|fmt|clippy|cargo (?:build|test|check)/);
+});
+test('heavy workflows are reachable only through the release caller',()=>{
+ for(const name of workflows.filter(name=>![STATIC,'release.yml'].includes(name))){
+  assert.match(triggers(read(name)),/workflow_call:/,name);
+  assert.doesNotMatch(triggers(read(name)),/workflow_dispatch:/,name);
+ }
+ assert.match(fs.readFileSync('scripts/qualify-ci.sh','utf8'),/policy\)\s+node scripts\/static-ci\.mjs/);
 });

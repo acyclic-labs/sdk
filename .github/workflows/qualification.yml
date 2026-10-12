@@ -1,12 +1,6 @@
 name: SDK Qualification
 
 on:
-  workflow_dispatch:
-    inputs:
-      force:
-        description: Execute every lane even when its inputs already qualified
-        type: boolean
-        default: false
   workflow_call:
     inputs:
       force:
@@ -197,7 +191,7 @@ jobs:
           ref: ${{ inputs.source_ref || (github.event_name == 'release' &&
             github.event.release.tag_name || github.event.pull_request.head.sha
             || github.sha) }}
-          fetch-depth: 1
+          fetch-depth: 2
           fetch-tags: false
           persist-credentials: false
 

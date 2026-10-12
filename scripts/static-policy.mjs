@@ -30,6 +30,3 @@ export function pinnedActions(file, source) {
   }
   steps(mapping(workflow?.runs)?.steps);
 }
-
-export const rustFormatNeeded = changed => changed.some(file => file.endsWith('.rs') ||
-  /(?:^|\/)\.?rustfmt\.toml$/.test(file) || file === 'rust-toolchain.toml');

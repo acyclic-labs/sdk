@@ -1,7 +1,6 @@
 name: Agent Host Qualification
 
 on:
-  workflow_dispatch:
   workflow_call:
     inputs:
       source_ref:
