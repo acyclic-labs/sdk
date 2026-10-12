@@ -572,7 +572,7 @@ impl ViewGate {
             let admitted = carrier.with_work(|work| {
                 let (result, budget) = {
                     let (admissions, allocations, counters, mut budget) =
-                        work.view_gate_admission_parts().map_err(super::lazy::mount_demand_error)?;
+                        work.admissions(|roots| &mut roots.view_gates).map_err(super::lazy::mount_demand_error)?;
                     let result = self.try_read_for_callback_measured(
                         owner, expected, admissions, allocations, counters, &mut budget,
                     );
@@ -787,7 +787,7 @@ mod tests {
     ) -> Result<ViewReadLease, MountSourceError> {
         work.check().map_err(super::super::lazy::mount_demand_error)?;
         let (result, budget) = {
-            let (proofs, allocations, counters, mut budget) = work.view_gate_admission_parts()
+            let (proofs, allocations, counters, mut budget) = work.admissions(|roots| &mut roots.view_gates)
                 .map_err(super::super::lazy::mount_demand_error)?;
             let result = gate.try_read_for_callback_measured(
                 owner, None, proofs, allocations, counters, &mut budget,
@@ -829,11 +829,11 @@ mod tests {
         let mut queued = work.take_for_native_queue();
         assert_eq!(queued.budget.items_examined, budget.items_examined - 2);
         drop(first);
-        let _ = queued.view_gate_admission_parts().expect("first actual cleanup");
+        let _ = queued.admissions(|roots| &mut roots.view_gates).expect("first actual cleanup");
         assert_eq!(queued.work.items_examined, before + 1);
         assert_eq!(queued.budget.items_examined, budget.items_examined - 1);
         drop(second);
-        let _ = queued.view_gate_admission_parts().expect("second actual cleanup");
+        let _ = queued.admissions(|roots| &mut roots.view_gates).expect("second actual cleanup");
         assert_eq!(queued.work.items_examined, before + 2);
         assert_eq!(queued.budget.items_examined, budget.items_examined);
         queued.finish(Ok(())).expect("same original meter finishes");
@@ -883,7 +883,7 @@ mod tests {
         let generation = gate.reader_generation.load(Ordering::Acquire);
         let independent = gate.read(None).await.expect("actual independent reader grows registry");
         assert!(gate.reader_generation.load(Ordering::Acquire) > generation);
-        let _ = work.view_gate_admission_parts().expect("same root reconciles freed original backing");
+        let _ = work.admissions(|roots| &mut roots.view_gates).expect("same root reconciles freed original backing");
         assert_eq!(work.live_allocation_bytes(), 0);
         drop(independent);
         let before = work.work.items_examined;
@@ -935,7 +935,7 @@ mod tests {
         let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let mut lease = measured_read(&gate, CallbackOwner(1), &mut work).expect("actual read");
         let bytes = std::mem::size_of::<ViewReadLease>() as u64;
-        work.allocate(bytes).expect("actual Box payload admission");
+        work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED).expect("actual Box payload admission");
         lease.attach_owned_payload(bytes).expect("same original cleanup custody");
         let lease = Box::new(lease);
         let live = work.live_allocation_bytes();
@@ -962,11 +962,11 @@ mod tests {
         let mut work = DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
         let bytes = std::mem::size_of::<ViewReadLease>() as u64;
         let mut first = measured_read(&gate, CallbackOwner(1), &mut work).expect("first read");
-        work.allocate(bytes).expect("first original Box");
+        work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED).expect("first original Box");
         first.attach_owned_payload(bytes).expect("first payload custody");
         let first = Box::new(first);
         let mut second = measured_read(&gate, CallbackOwner(1), &mut work).expect("nested read");
-        work.allocate(bytes).expect("second original Box");
+        work.claim_allocation(bytes, u64::from((bytes) != 0), crate::WorkCounters::UNCHARGED).expect("second original Box");
         second.attach_owned_payload(bytes).expect("second payload custody");
         let second = Box::new(second);
         let live = work.live_allocation_bytes();

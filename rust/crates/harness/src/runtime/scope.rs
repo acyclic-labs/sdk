@@ -1,7 +1,6 @@
 use super::*;
 
 /// Task-local execution bounds pinned separately from content/render limits.
-
 #[derive(Clone, Copy, Default, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskRunLimits {
@@ -85,7 +84,6 @@ impl TaskRunLimits {
 }
 
 /// Effective runtime authority and bounds; child scopes may only narrow them.
-
 #[derive(Default)]
 pub struct RuntimeScope {
     pub(super) grants: Capabilities,

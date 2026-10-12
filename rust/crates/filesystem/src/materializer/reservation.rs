@@ -25,7 +25,7 @@ impl Reservation {
 }
 impl NativeWorkReservation {
     pub(super) fn new(mut meter: NativeMaterializationWork, remaining: WorkCounters) -> Self {
-        meter.original.capture_origin = None;
+        meter.capture_origin = None;
         Self {
             meter,
             state: parking_lot::Mutex::new(Reservation {
@@ -85,7 +85,7 @@ impl NativeWorkReservation {
         let excess = credited.remaining(actual)?;
         state.remaining = credited.remaining(state.remaining)?;
         self.meter.state(|ledger| {
-            let credited = ledger.record_native_work(credited);
+            let credited = ledger.complete(credited, credited);
             let excess = ledger.record(excess);
             credited.and(excess)
         })
@@ -121,13 +121,17 @@ impl NativeWorkReservation {
         }
         let remaining = actual.remaining(state.remaining)?;
         self.meter.state(|ledger| {
-            ledger.with_resource_scope(None, |ledger| {
-                let mut begin = || ledger.start_native_reserved_work(actual);
-                match &self.meter.original.resource {
-                    Some(resource) => resource.start_reserved_work(actual, &mut begin),
-                    None => begin(),
-                }
-            })
+            ledger.scope(
+                |work| &mut work.native_resource,
+                None,
+                |ledger| {
+                    let mut begin = || ledger.start_native_reserved_work(actual);
+                    match &self.meter.resource {
+                        Some(resource) => resource.start_reserved_work(actual, &mut begin),
+                        None => begin(),
+                    }
+                },
+            )
         })?;
         state.remaining = remaining;
         Ok(())
@@ -191,10 +195,7 @@ impl NativeWorkReservation {
         &mut self,
         other: &mut Self,
     ) -> Result<(), NativeTreeMaterializationError> {
-        let invocation = match (
-            &self.meter.original.invocation,
-            &other.meter.original.invocation,
-        ) {
+        let invocation = match (&self.meter.invocation, &other.meter.invocation) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
             (None, None) => true,
             _ => false,
@@ -250,8 +251,8 @@ impl Drop for NativeWorkReservation {
     fn drop(&mut self) {
         let unused = self.state.get_mut().remaining;
         if let Err(error) = self.meter.state(|state| {
-            let refunded = state.refund_native_work(unused);
-            let retired = state.release_native_owned(self.header_bytes, &None);
+            let refunded = state.refund(unused);
+            let retired = state.release(self.header_bytes);
             refunded.and(retired)
         }) {
             self.meter.poison(native_materialization_work_error(error));

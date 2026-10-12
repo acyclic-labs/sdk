@@ -16,7 +16,7 @@ impl NativeCleanupWrite {
         if !self.meter.shares_ledger(current) {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
-        let Some(resource) = &current.original.resource else {
+        let Some(resource) = &current.resource else {
             return Ok(());
         };
         if self
@@ -35,7 +35,7 @@ impl NativeCleanupWrite {
                 resource.reserve(
                     NativeResourceCredit::WriteOperations.delta(1),
                     0,
-                    self.meter.original.resource.as_deref(),
+                    self.meter.resource.as_deref(),
                     &mut || Ok(()),
                 )
             })
@@ -55,7 +55,7 @@ impl NativeCleanupWrite {
                     resource.complete(
                         NativeResourceCredit::WriteOperations.delta(1),
                         NativeResourceCredit::WriteOperations.delta(1),
-                        self.meter.original.resource.as_deref(),
+                        self.meter.resource.as_deref(),
                     )
                 })
             })
@@ -75,7 +75,7 @@ impl Drop for NativeCleanupWrite {
             self.meter.state(|state| {
                 if let Err(error) = resource.refund(
                     NativeResourceCredit::WriteOperations.delta(1),
-                    self.meter.original.resource.as_deref(),
+                    self.meter.resource.as_deref(),
                 ) {
                     state.record_native_io_failure(error);
                     state.poison_native_original_work();

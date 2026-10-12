@@ -1,14 +1,13 @@
-//! Authenticated checkpoints of the reducer projection.
+//! Authenticated reducer checkpoints and bounded wire decoding.
 use super::*;
 mod capture;
 mod entries;
-mod native;
 mod restoration;
 #[cfg(test)]
 mod tests;
 
 /// Versioned, issuer-authenticated accelerator; Stream events remain authoritative.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Snapshot<C = ConversationState> {
     /// Snapshot format version. Earlier replay-based formats are unsupported.
@@ -24,9 +23,6 @@ pub struct Snapshot<C = ConversationState> {
     pub state_digest: [u8; 32],
     /// Domain-separated issuer proof over the digest and aggregate identity.
     pub attestation: [u8; 32],
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[serde(skip)]
-    native_allocation: Option<acyclic_fs::NativeAllocation>,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -60,17 +56,6 @@ pub(in crate::core) struct Projection<
 
 fn is_false(value: &bool) -> bool {
     !*value
-}
-impl PartialEq for Snapshot {
-    fn eq(&self, other: &Self) -> bool {
-        self.format_version == other.format_version
-            && self.authority == other.authority
-            && self.revision == other.revision
-            && self.events == other.events
-            && self.projection == other.projection
-            && self.state_digest == other.state_digest
-            && self.attestation == other.attestation
-    }
 }
 impl Snapshot {
     pub(crate) const LOGICAL_SCHEMA_SLOT_BYTES: u64 = {

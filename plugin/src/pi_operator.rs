@@ -287,8 +287,7 @@ pub(crate) fn verify_request(
     owner.authority(work)?.verifier.verify(
         &request.operator,
         &mut Some(
-            &mut acyclic_harness::store::native_work_io(work)
-                .map_err(acyclic_harness::Error::from)?,
+            &mut acyclic_harness::store::HistoryWork::new(acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
         ),
     )?;
     let hash_custody = body_hash(&request.body, work)?;

@@ -88,7 +88,7 @@ impl NativeAllocation {
             .checked_sub(bytes)
             .ok_or(crate::WorkError::Overflow)?;
         self.meter
-            .state(|state| state.release_native_owned(bytes, &None))
+            .state(|state| state.release(bytes))
             .map_err(native_materialization_work_error)
     }
     pub(crate) fn release_deferred(&mut self, bytes: u64) {
@@ -117,7 +117,7 @@ impl NativeAllocation {
         recorded
     }
     fn root_metadata_for(&self, meter: &Arc<crate::demand::NativeDemandReadMeter>) -> bool {
-        Arc::ptr_eq(&self.meter.original.state, meter) && self.meter.original.resource.is_none()
+        Arc::ptr_eq(&self.meter.state, meter) && self.meter.resource.is_none()
     }
     pub(crate) fn is_checkout_header_for(
         &self,
@@ -145,17 +145,17 @@ impl NativeAllocation {
             .checked_sub(bytes)
             .ok_or(crate::WorkError::Overflow)?;
         Ok(NativeResourceRetirement {
-            original: self.meter.original.state.clone(),
-            resource: self.meter.original.resource.clone(),
+            original: self.meter.state.clone(),
+            resource: self.meter.resource.clone(),
             bytes,
         })
     }
     pub(crate) fn transfer_checkout_control(
         &mut self,
         owner: &Arc<crate::kernel::ProofDataCustody>,
-        scope: &crate::demand::NativeCheckoutControlWitness,
+        scope: &std::sync::Arc<crate::kernel::ProofDataCustody>,
     ) -> Result<crate::kernel::ProofDataClaim, NativeTreeMaterializationError> {
-        if !scope.owns(&self.meter.original.state, owner) {
+        if !std::sync::Arc::ptr_eq(scope, owner) || !owner.is_native_original(&self.meter.state) {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
         Ok(crate::kernel::ProofDataClaim::native_control(
@@ -167,9 +167,9 @@ impl NativeAllocation {
         &mut self,
         bytes: u64,
         owner: &Arc<crate::kernel::ProofDataCustody>,
-        scope: &crate::demand::NativeCheckoutControlWitness,
+        scope: &std::sync::Arc<crate::kernel::ProofDataCustody>,
     ) -> Result<crate::kernel::ProofDataClaim, NativeTreeMaterializationError> {
-        if !scope.owns(&self.meter.original.state, owner) {
+        if !std::sync::Arc::ptr_eq(scope, owner) || !owner.is_native_original(&self.meter.state) {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
         Ok(crate::kernel::ProofDataClaim::native_data(

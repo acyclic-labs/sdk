@@ -211,20 +211,6 @@ copy_fields!(
         owned_bytes(value)
     }
 );
-copy_fields!(
-    copy_extension_record,
-    ExtensionRecord,
-    |value: &ExtensionRecord, work| {
-        value.content.validate(work)?;
-        owned_bytes(value)
-    }
-);
-copy_fields!(copy_status, EffectStatus, |value: &EffectStatus, work| {
-    if let EffectStatus::Succeeded { result } = value {
-        result.validate(work)?;
-    }
-    owned_bytes(value)
-});
 copy_fields!(copy_effect, EffectState, |value: &EffectState, work| {
     value.request.validate(work)?;
     value.result_schema.validate(work)?;
@@ -313,12 +299,6 @@ pub(crate) fn copy_boxed<T>(
 ) -> Result<Box<T>> {
     retain_entry::<T>(quota)?;
     Ok(Box::new(copy(source, quota)?))
-}
-pub(in crate::core) fn copy_receipt(
-    source: &ProjectMergeReceipt,
-    quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
-) -> Result<ProjectMergeReceipt> {
-    source.copy(quota)
 }
 pub(in crate::core) fn copy_message(
     source: &ConversationMessage,

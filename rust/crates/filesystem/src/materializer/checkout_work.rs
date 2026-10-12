@@ -11,9 +11,9 @@ impl NativeMaterializationWork {
     pub(crate) fn checkout_control_sink(
         &self,
         producer: &Arc<crate::kernel::ProofDataCustody>,
-    ) -> Result<Arc<crate::kernel::ProofDataCustody>, NativeTreeMaterializationError> {
-        self.original
-            .state
+    ) -> Result<std::sync::Arc<crate::kernel::ProofDataCustody>, NativeTreeMaterializationError>
+    {
+        self.state
             .checkout_control_sink(producer)
             .ok_or(NativeTreeMaterializationError::InvalidLayout)
     }
@@ -21,9 +21,9 @@ impl NativeMaterializationWork {
         &self,
         producer: &Arc<crate::kernel::ProofDataCustody>,
         header: &mut NativeAllocation,
-    ) -> Result<Arc<crate::kernel::ProofDataCustody>, NativeTreeMaterializationError> {
-        self.original
-            .state
+    ) -> Result<std::sync::Arc<crate::kernel::ProofDataCustody>, NativeTreeMaterializationError>
+    {
+        self.state
             .register_native_checkout_control(self, producer, header)
     }
     pub(crate) fn transfer_capture_allocation(

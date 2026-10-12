@@ -5,7 +5,12 @@ use std::sync::Arc;
 /// Original SDK demand context with its current cancellation and resource scope.
 #[derive(Clone)]
 pub struct NativeMaterializationWork {
-    pub(crate) original: crate::demand::OriginalDemandWork,
+    pub(crate) state: Arc<crate::demand::NativeDemandReadMeter>,
+    pub(crate) resource: Option<Arc<NativeResourceAllowance>>,
+    pub(crate) capture_origin: Option<std::sync::Weak<crate::demand::CaptureTransientCustody>>,
+    pub(crate) invocation: Option<Arc<NativeInvocationView>>,
+    #[cfg(feature = "native-mount")]
+    pub(crate) execution: Option<Arc<NativeSourceExecutionView>>,
     cancellation: crate::CancellationToken,
 }
 impl std::fmt::Debug for NativeMaterializationWork {
@@ -34,27 +39,40 @@ impl NativeMaterializationWork {
     ) -> Result<Self, (NativeTreeMaterializationError, WorkCounters)> {
         let mut state = crate::demand::DemandWork::new(budget, cancellation);
         state
-            .allocate(Self::accounting_state_bytes())
+            .claim_allocation(
+                Self::accounting_state_bytes(),
+                1,
+                crate::WorkCounters::UNCHARGED,
+            )
             .map_err(|error| (native_materialization_work_error(error), state.work))?;
         Ok(Self {
             cancellation: cancellation.clone(),
-            original: crate::demand::OriginalDemandWork::from_meter(Arc::new(
-                crate::demand::NativeDemandReadMeter(std::sync::Mutex::new(state)),
-            )),
+            state: Arc::new(crate::demand::NativeDemandReadMeter(std::sync::Mutex::new(
+                state,
+            ))),
+            resource: None,
+            capture_origin: None,
+            invocation: None,
+            #[cfg(feature = "native-mount")]
+            execution: None,
         })
     }
     #[cfg(feature = "native-mount")]
     pub(crate) fn from_meter(state: Arc<crate::demand::NativeDemandReadMeter>) -> Self {
         let cancellation = state.lock().cancellation().clone();
         Self {
-            original: crate::demand::OriginalDemandWork::from_meter(state),
+            state,
+            resource: None,
+            capture_origin: None,
+            invocation: None,
+            #[cfg(feature = "native-mount")]
+            execution: None,
             cancellation,
         }
     }
     /// Current invocation cancellation.
     pub fn cancellation(&self) -> &crate::CancellationToken {
-        self.original
-            .invocation
+        self.invocation
             .as_ref()
             .map_or(&self.cancellation, |view| &view.cancellation)
     }
@@ -62,13 +80,15 @@ impl NativeMaterializationWork {
         &self,
         operation: impl FnOnce(&mut crate::demand::DemandWork) -> T,
     ) -> T {
-        self.original.state.with_original_leaf(|state| {
-            state.with_invocation_scope(
-                self.original.invocation.as_ref().map(Arc::downgrade),
+        self.state.with_original_leaf(|state| {
+            state.scope(
+                |work| &mut work.native_invocation,
+                self.invocation.as_ref().map(Arc::downgrade),
                 |state| {
-                    state.with_resource_scope(
-                        self.original.resource.as_ref().map(Arc::downgrade),
-                        |state| state.with_capture(None, operation),
+                    state.scope(
+                        |work| &mut work.native_resource,
+                        self.resource.as_ref().map(Arc::downgrade),
+                        |state| state.scope(|work| &mut work.capture_custody, None, operation),
                     )
                 },
             )
@@ -78,7 +98,13 @@ impl NativeMaterializationWork {
         &self,
         operation: impl FnOnce(&mut crate::demand::DemandWork) -> T,
     ) -> T {
-        self.state(|state| state.with_capture(self.original.capture_origin.clone(), operation))
+        self.state(|state| {
+            state.scope(
+                |work| &mut work.capture_custody,
+                self.capture_origin.clone(),
+                operation,
+            )
+        })
     }
     pub(super) fn poison(&self, error: NativeTreeMaterializationError) {
         self.state(|state| {
@@ -97,10 +123,10 @@ impl NativeMaterializationWork {
     }
     /// Whether contexts share the original ledger.
     pub fn shares_ledger(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.original.state, &other.original.state)
+        Arc::ptr_eq(&self.state, &other.state)
     }
     pub(crate) fn shares_resource_allowance(&self, other: &Self) -> bool {
-        match (&self.original.resource, &other.original.resource) {
+        match (&self.resource, &other.resource) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
             (None, None) => true,
             _ => false,
@@ -112,24 +138,14 @@ impl NativeMaterializationWork {
     }
     pub(crate) fn allocation_work(&self) -> Self {
         Self {
-            original: self.original.allocation_work(),
-            cancellation: self.cancellation.clone(),
+            #[cfg(feature = "native-mount")]
+            execution: None,
+            ..self.clone()
         }
-    }
-    pub(crate) fn original_demand_work(&self) -> crate::demand::OriginalDemandWork {
-        self.original.clone()
-    }
-    pub(crate) fn from_original_demand_work(
-        original: &crate::demand::OriginalDemandWork,
-    ) -> Result<Self, DemandError> {
-        Ok(Self {
-            original: original.clone(),
-            cancellation: original.with_original_leaf(|state| state.cancellation().clone())?,
-        })
     }
     /// Original or resource ceiling.
     pub fn budget(&self) -> WorkBudget {
-        self.original.resource.as_ref().map_or_else(
+        self.resource.as_ref().map_or_else(
             || self.state(|state| state.original_budget()),
             |resource| resource.budget,
         )
@@ -137,16 +153,16 @@ impl NativeMaterializationWork {
     /// Existing runtime meter for this context.
     pub fn runtime_meter(&self) -> Arc<dyn acyclic_native_runtime::NativeReadMeter> {
         #[cfg(feature = "native-mount")]
-        if let Some(execution) = &self.original.execution {
+        if let Some(execution) = &self.execution {
             return execution.clone();
         }
-        if let Some(invocation) = &self.original.invocation {
-            if invocation.owns_resource(self.original.resource.as_ref()) {
+        if let Some(invocation) = &self.invocation {
+            if invocation.owns_resource(self.resource.as_ref()) {
                 return invocation.clone();
             }
         }
-        self.original.resource.as_ref().map_or_else(
-            || self.original.state.clone() as Arc<dyn acyclic_native_runtime::NativeReadMeter>,
+        self.resource.as_ref().map_or_else(
+            || self.state.clone() as Arc<dyn acyclic_native_runtime::NativeReadMeter>,
             |resource| resource.clone(),
         )
     }
@@ -201,7 +217,7 @@ impl NativeMaterializationWork {
         operations: u64,
         delta: WorkCounters,
     ) -> Result<NativeAllocation, NativeTreeMaterializationError> {
-        self.state(|state| state.claim_native_owned(bytes, operations, delta, &None))
+        self.state(|state| state.claim_allocation(bytes, operations, delta))
             .map_err(native_materialization_work_error)?;
         Ok(NativeAllocation {
             meter: self.allocation_work(),
@@ -213,8 +229,8 @@ impl NativeMaterializationWork {
         bytes: u64,
     ) -> Result<NativeAllocation, NativeTreeMaterializationError> {
         let mut work = self.allocation_work();
-        work.original.resource = None;
-        work.original.capture_origin = None;
+        work.resource = None;
+        work.capture_origin = None;
         work.claim(bytes, 1, WorkCounters::UNCHARGED)
     }
     /// Withholds completion work on the same ledger.
@@ -222,7 +238,7 @@ impl NativeMaterializationWork {
         &self,
         maximum: WorkCounters,
     ) -> Result<NativeWorkReservation, NativeTreeMaterializationError> {
-        self.state(|state| state.reserve_native_work(maximum))
+        self.state(|state| state.reserve(maximum))
             .map_err(native_materialization_work_error)?;
         Ok(NativeWorkReservation::new(self.allocation_work(), maximum))
     }

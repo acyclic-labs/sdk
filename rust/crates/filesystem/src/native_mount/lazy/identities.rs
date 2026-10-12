@@ -67,6 +67,7 @@ where
     pub(super) fn detached_for_path(
         &self,
         path: &MountPath,
+        work: &crate::NativeMaterializationWork,
     ) -> Result<Option<Arc<CheckoutDetachedFile<A, O>>>, MountSourceError> {
         if self
             .detached
@@ -76,18 +77,15 @@ where
         {
             return Ok(None);
         }
-        if let Some(authored) = self.authored.lookup(path)? {
+        if let Some(authored) = self.authored.lookup_with_meter(path, work)? {
             return self.detached_by_id(authored.node.file_id);
         }
-        let text = self.path(path, None)?.0;
+        let (text, _allocation) = self.path(path, work)?;
         if self.is_removed(&text)? {
             return Err(MountSourceError::NotFound);
         }
         let file_id = self.runtime.wait(|| async {
-            let mut accounting = crate::kernel::KernelAccounting::standalone(
-                WorkBudget::UNBOUNDED,
-                self.authored.cancellation(),
-            );
+            let mut accounting = crate::kernel::KernelAccounting::native(work, work.cancellation());
             let lookup = self
                 .lazy
                 .lookup(&text, &mut accounting)
@@ -159,25 +157,31 @@ where
     pub(super) async fn dirty_detached_records(
         &self,
         work: &crate::NativeMaterializationWork,
-    ) -> Result<Vec<DirtyDetachedRecord>, MountSourceError> {
-        let detached = self
-            .detached
-            .lock()
-            .map_err(|_| MountSourceError::Stale)?
-            .values()
-            .filter(|entry| entry.ready && entry.pending_epoch.is_none())
-            .map(|entry| (Arc::clone(&entry.file), entry.published_epoch))
-            .collect::<Vec<_>>();
-        let mut dirty = Vec::new();
-        for (file, published_epoch) in detached {
+    ) -> Result<crate::kernel::Owned<Vec<DirtyDetachedRecord>>, MountSourceError> {
+        let mut accounting = crate::kernel::KernelAccounting::native(work, work.cancellation());
+        let detached = {
+            let entries = self.detached.lock().map_err(|_| MountSourceError::Stale)?;
+            let mut files = crate::kernel::Owned::allocate(entries.len(), &mut accounting)
+                .map_err(mount_engine_error)?;
+            files.value.extend(
+                entries
+                    .values()
+                    .filter(|entry| entry.ready && entry.pending_epoch.is_none())
+                    .map(|entry| (Arc::clone(&entry.file), entry.published_epoch)),
+            );
+            files
+        };
+        let mut dirty = crate::kernel::Owned::allocate(detached.value.len(), &mut accounting)
+            .map_err(mount_engine_error)?;
+        for (file, published_epoch) in &detached.value {
             let (record, metadata, epoch) = file
                 .snapshot(
                     &mut adapter::NativeDemandCarrier::Native(work),
                     work.cancellation(),
                 )
                 .await?;
-            if epoch > published_epoch {
-                dirty.push((record, metadata, epoch));
+            if epoch > *published_epoch {
+                dirty.value.push((record, metadata, epoch));
             }
         }
         Ok(dirty)
@@ -189,6 +193,8 @@ where
         dirty: &[DirtyDetachedRecord],
         work: &crate::NativeMaterializationWork,
     ) -> Result<(), MountSourceError> {
+        let owner = ViewGate::callback_owner();
+        let mut carrier = adapter::NativeDemandCarrier::Native(work);
         for (record, metadata) in records {
             let exists = self
                 .detached
@@ -198,10 +204,8 @@ where
             if !exists {
                 let file = self
                     .authored
-                    .detached_file_from_record(
-                        *record, *metadata, ViewGate::callback_owner(),
-                        &mut adapter::NativeDemandCarrier::Native(work),
-                    ).await?;
+                    .detached_file_from_record(*record, *metadata, owner, &mut carrier)
+                    .await?;
                 self.detached
                     .lock()
                     .map_err(|_| MountSourceError::Stale)?

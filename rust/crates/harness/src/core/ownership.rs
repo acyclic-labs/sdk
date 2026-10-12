@@ -87,17 +87,12 @@ pub(crate) fn owned_bytes<T: Serialize + ?Sized>(value: &T) -> Result<u64> {
         .ok_or_else(|| Error::Invalid("record ownership overflows".into()))
 }
 
-pub(in crate::core) fn owned_effect_action(effect: &EffectState) -> Result<u64> {
+pub(in crate::core) fn owned_effect(effect: &EffectState) -> Result<u64> {
     owned_sum([
         effect.provider.capacity() as u64,
         effect.effect_kind.capacity() as u64,
         effect.request.logical_owned_bytes()?,
         effect.result_schema.logical_owned_bytes()?,
-    ])
-}
-pub(in crate::core) fn owned_effect(effect: &EffectState) -> Result<u64> {
-    owned_sum([
-        owned_effect_action(effect)?,
         owned_bytes(&effect.status)?,
         owned_buffer::<EffectAttemptId>(effect.attempts.capacity())?,
     ])
@@ -147,165 +142,112 @@ pub(crate) fn event_owned_bytes(event: &Event) -> Result<u64> {
     ])
 }
 
-impl NativeComponentCustody {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub(super) fn from_reducer(
-        reducer: &Reducer,
-        data: &mut acyclic_fs::NativeAllocation,
-        holder: &mut Self,
-        work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<()> {
-        let mut count = holder.components.len();
-        reducer.projection.visit(
-            &reducer.authority,
-            reducer.events.iter(),
-            reducer.events.capacity(),
-            |_, _| {
-                count = count
-                    .checked_add(1)
-                    .ok_or_else(|| Error::Invalid("native component count overflows".into()))?;
-                Ok(())
-            },
-        )?;
-        holder.reserve(count, work)?;
-        reducer.projection.visit(
-            &reducer.authority,
-            reducer.events.iter(),
-            reducer.events.capacity(),
-            |key, bytes| {
-                let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-                let key = key.copy(&mut quota)?;
-                let produced = quota.retained();
-                let metadata = quota
-                    .work()
-                    .as_deref_mut()
-                    .expect("cold component issuer")
-                    .take_native_custody(produced)?;
-                quota.transfer();
-                let claim = match data.split_off(bytes) {
-                    Ok(claim) => claim,
-                    Err(cause) => {
-                        drop(key);
-                        return Err(Error::NativeWork {
-                            cause,
-                            custody: Some(metadata),
-                        });
-                    }
-                };
-                holder.components.push((key, claim, metadata));
-                Ok(())
-            },
-        )?;
-        Ok(())
-    }
-}
-
 impl<B> snapshot::Projection<ConversationState, B> {
-    pub(in crate::core) fn visit<'a>(
+    /// Logical bytes of the projection and event cache, excluding conversation messages.
+    pub(in crate::core) fn owned_bytes<'a>(
         &self,
         authority: &Authority,
         events: impl Iterator<Item = &'a Event>,
         event_capacity: usize,
-        mut f: impl FnMut(NativeComponentKey<'_>, u64) -> Result<()>,
-    ) -> Result<()> {
-        use NativeComponentKey as K;
-        f(K::Authority, authority.id.capacity() as u64)?;
-        for event in events {
-            f(K::Event(event.revision), event_owned_bytes(event)?)?;
-        }
-        f(K::EventBuffer, owned_buffer::<Event>(event_capacity)?)?;
-        f(
-            K::TerminalEffectBuffer,
+    ) -> Result<u64> {
+        let mut bytes = owned_sum([
+            authority.id.capacity() as u64,
+            owned_buffer::<Event>(event_capacity)?,
             owned_buffer::<EffectId>(self.indexed_terminal_effects.capacity())?,
-        )?;
-        for (id, effect) in &self.effects {
-            f(
-                K::EffectAction(*id),
-                owned_sum([
-                    std::mem::size_of::<(EffectId, EffectState)>() as u64,
-                    owned_effect_action(effect)?,
-                ])?,
-            )?;
-            f(K::EffectStatus(*id), owned_bytes(&effect.status)?)?;
-            f(
-                K::EffectAttempts(*id),
-                owned_buffer::<EffectAttemptId>(effect.attempts.capacity())?,
-            )?;
+            owned_vector(&self.active_extensions, |extension| {
+                Ok(extension.name.capacity() as u64)
+            })?,
+            owned_vector(&self.active_configurations, owned_bytes)?,
+        ])?;
+        for event in events {
+            bytes = owned_sum([bytes, event_owned_bytes(event)?])?;
+        }
+        for effect in self.effects.values() {
+            bytes = owned_sum([
+                bytes,
+                std::mem::size_of::<(EffectId, EffectState)>() as u64,
+                owned_effect(effect)?,
+            ])?;
         }
         for (key, (reference, record)) in &self.extension_states {
-            f(
-                K::ExtensionState(Cow::Borrowed(key)),
-                owned_sum([
-                    std::mem::size_of::<(String, (EventReference, ExtensionRecord))>() as u64,
-                    key.capacity() as u64,
-                    reference.authority.id.capacity() as u64,
-                    owned_bytes(record)?,
-                ])?,
-            )?;
+            bytes = owned_sum([
+                bytes,
+                std::mem::size_of::<(String, (EventReference, ExtensionRecord))>() as u64,
+                key.capacity() as u64,
+                reference.authority.id.capacity() as u64,
+                owned_bytes(record)?,
+            ])?;
         }
         for (key, record) in &self.configured_extensions {
-            f(
-                K::ExtensionConfiguration(Cow::Borrowed(key)),
-                owned_sum([
-                    std::mem::size_of::<(ExtensionDependency, ExtensionConfiguration)>() as u64,
-                    key.name.capacity() as u64,
-                    owned_bytes(record)?,
-                ])?,
-            )?;
+            bytes = owned_sum([
+                bytes,
+                std::mem::size_of::<(ExtensionDependency, ExtensionConfiguration)>() as u64,
+                key.name.capacity() as u64,
+                owned_bytes(record)?,
+            ])?;
         }
-        f(
-            K::ActiveSelection,
-            owned_sum([
-                owned_vector(&self.active_extensions, |extension| {
-                    Ok(extension.name.capacity() as u64)
-                })?,
-                owned_vector(&self.active_configurations, owned_bytes)?,
-            ])?,
-        )?;
         for (key, seed) in &self.forks {
-            f(
-                K::Fork(Cow::Borrowed(key)),
-                owned_sum([
-                    std::mem::size_of::<(Authority, ForkSeed)>() as u64,
-                    key.id.capacity() as u64,
-                    owned_bytes(seed)?,
-                ])?,
-            )?;
+            bytes = owned_sum([
+                bytes,
+                std::mem::size_of::<(Authority, ForkSeed)>() as u64,
+                key.id.capacity() as u64,
+                owned_bytes(seed)?,
+            ])?;
         }
         for (name, operation) in &self.published_merges {
-            f(
-                K::Merge(Cow::Borrowed(name), Cow::Borrowed(operation)),
-                owned_sum([
-                    std::mem::size_of::<(String, Vec<u8>)>() as u64,
-                    name.capacity() as u64,
-                    operation.capacity() as u64,
-                ])?,
-            )?;
-        }
-        for message in &self.conversation.messages {
-            f(
-                K::ConversationMessage(message.sequence),
-                owned_message(message)?,
-            )?;
+            bytes = owned_sum([
+                bytes,
+                std::mem::size_of::<(String, Vec<u8>)>() as u64,
+                name.capacity() as u64,
+                operation.capacity() as u64,
+            ])?;
         }
         if let Some(checkpoint) = &self.latest_context_checkpoint {
-            f(K::ContextCheckpoint, checkpoint.logical_owned_bytes()?)?;
+            bytes = owned_sum([bytes, checkpoint.logical_owned_bytes()?])?;
         }
-        for (id, (ticket, resolution)) in &self.interactions {
-            f(
-                K::InteractionTicket(*id),
-                owned_sum([
-                    std::mem::size_of::<(
-                        uuid::Uuid,
-                        (InteractionTicket, Option<InteractionResolution>),
-                    )>() as u64,
-                    owned_bytes(&ticket.request)?,
-                ])?,
-            )?;
-            if let Some(resolution) = resolution {
-                f(K::InteractionResolution(*id), owned_bytes(resolution)?)?;
-            }
+        for (ticket, resolution) in self.interactions.values() {
+            bytes = owned_sum([
+                bytes,
+                std::mem::size_of::<(
+                    uuid::Uuid,
+                    (InteractionTicket, Option<InteractionResolution>),
+                )>() as u64,
+                owned_bytes(&ticket.request)?,
+                resolution.as_ref().map_or(Ok(0), owned_bytes)?,
+            ])?;
         }
-        Ok(())
+        Ok(bytes)
     }
+}
+
+pub(crate) fn inspect_metadata<T: Serialize + ?Sized>(
+    source: &T,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<()> {
+    if work.is_none() {
+        return Ok(());
+    }
+    crate::contract::json_byte_length(source, u64::MAX, work).map(|_| ())
+}
+
+#[cfg(feature = "filesystem")]
+pub(crate) fn resource_creation_clone_reservation(
+    request: &crate::resource_preparation::ResourcePreparationRequest,
+    proof: &crate::resource_preparation::ResourceCreationProofRef,
+    origin: &crate::resource_preparation::ResourceCreationOrigin,
+    work: &mut Option<&mut dyn HistoryIo>,
+) -> Result<u64> {
+    inspect_metadata(&(request, proof, origin), work)?;
+    let bytes = owned_sum([
+        request.logical_owned_bytes()?,
+        proof.provider.logical_owned_bytes()?,
+        proof.resource.logical_owned_bytes()?,
+        proof.evidence.logical_owned_bytes()?,
+        origin.owner.id.capacity() as u64,
+        origin.source_grants.logical_owned_bytes()?,
+    ])?;
+    if let Some(io) = work.as_deref_mut() {
+        io.retain_owned(bytes)?;
+    }
+    Ok(bytes)
 }

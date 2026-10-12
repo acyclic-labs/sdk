@@ -19,13 +19,6 @@ use std::{
 use tokio::sync::Mutex;
 use uuid::Uuid;
 
-#[cfg(feature = "grpc")]
-mod grpc;
-#[cfg(feature = "grpc")]
-mod obs;
-#[cfg(feature = "grpc")]
-pub use grpc::{GrpcProvider, Tls};
-
 /// Generated revision-one public transport.
 #[doc(hidden)]
 pub mod wire {

@@ -16,7 +16,7 @@ impl NativeInvocationView {
         &self.cancellation
     }
     pub(crate) fn owns_resource(&self, resource: Option<&Arc<NativeResourceAllowance>>) -> bool {
-        match (&self.metadata.work().original.resource, resource) {
+        match (&self.metadata.work().resource, resource) {
             (Some(a), Some(b)) => Arc::ptr_eq(a, b),
             (None, None) => true,
             _ => false,
@@ -26,9 +26,13 @@ impl NativeInvocationView {
         &self,
         operation: impl FnOnce(&mut crate::demand::DemandWork) -> T,
     ) -> T {
-        self.metadata
-            .work()
-            .state(|state| state.with_invocation_scope(Some(self.self_ref.clone()), operation))
+        self.metadata.work().state(|state| {
+            state.scope(
+                |work| &mut work.native_invocation,
+                Some(self.self_ref.clone()),
+                operation,
+            )
+        })
     }
 }
 #[cfg(feature = "native-mount")]
@@ -65,7 +69,7 @@ impl NativeMaterializationWork {
             1,
             crate::WorkCounters::UNCHARGED,
         )?;
-        self.original.invocation = Some(Arc::new_cyclic(|self_ref| NativeInvocationView {
+        self.invocation = Some(Arc::new_cyclic(|self_ref| NativeInvocationView {
             cancellation,
             metadata,
             self_ref: self_ref.clone(),
@@ -83,12 +87,12 @@ impl NativeMaterializationWork {
             budget,
             metadata,
             self_ref: self_ref.clone(),
-            parent: self.original.resource.clone(),
+            parent: self.resource.clone(),
             state: std::sync::Mutex::new(NativeResourceState::default()),
         });
         let mut work = self.allocation_work();
-        work.original.resource = Some(resource);
-        work.original.capture_origin = None;
+        work.resource = Some(resource);
+        work.capture_origin = None;
         self.retain_source(work)
     }
     pub(crate) fn with_capture_custody(
@@ -99,12 +103,12 @@ impl NativeMaterializationWork {
             return Err(NativeTreeMaterializationError::InvalidLayout);
         }
         let mut work = self.allocation_work();
-        work.original.capture_origin = Some(Arc::downgrade(capture));
+        work.capture_origin = Some(Arc::downgrade(capture));
         self.retain_source(work)
     }
     fn retain_source(&self, work: Self) -> Result<Self, NativeTreeMaterializationError> {
         #[cfg(feature = "native-mount")]
-        if let Some(source) = &self.original.execution {
+        if let Some(source) = &self.execution {
             return work.with_source_io_lease(source.lease.clone());
         }
         Ok(work)
@@ -120,15 +124,15 @@ impl NativeMaterializationWork {
             if !work.shares_ledger(source) {
                 return Err(NativeTreeMaterializationError::InvalidLayout);
             }
-            work.original.resource = match (&work.original.resource, &source.original.resource) {
+            work.resource = match (&work.resource, &source.resource) {
                 (None, resource) | (resource, None) => resource.clone(),
                 (Some(a), Some(b)) if a.contains_scope(b) => Some(a.clone()),
                 (Some(a), Some(b)) if b.contains_scope(a) => Some(b.clone()),
                 _ => return Err(NativeTreeMaterializationError::InvalidLayout),
             };
         }
-        if let Some(view) = &work.original.invocation {
-            if !view.owns_resource(work.original.resource.as_ref()) {
+        if let Some(view) = &work.invocation {
+            if !view.owns_resource(work.resource.as_ref()) {
                 work.bind_invocation(view.cancellation.clone())?;
             }
         }
@@ -137,7 +141,7 @@ impl NativeMaterializationWork {
             1,
             crate::WorkCounters::UNCHARGED,
         )?;
-        work.original.execution = Some(Arc::new(NativeSourceExecutionView { lease, metadata }));
+        work.execution = Some(Arc::new(NativeSourceExecutionView { lease, metadata }));
         Ok(work)
     }
 }

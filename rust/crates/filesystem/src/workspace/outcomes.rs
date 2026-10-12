@@ -70,7 +70,9 @@ pub enum JoinOutcome<A, O> {
 
 /// One durable join result together with its exact conflict-resolution input.
 pub struct JoinApplication<A, O> {
+    /// The durable joined generation.
     pub generation: Generation<A, O>,
+    /// Digest of the applied conflict resolutions.
     pub resolutions_digest: crate::Digest,
 }
 

@@ -10,19 +10,13 @@ import { validateAppend } from "./client.js";
 import { StreamError, commitId, type StreamFailureCode } from "./types.js";
 import type { AppendOptions, AppendResult, ChildrenPage, ChildrenPageRequest, CommitId, CommittedEnvelope, CommitOptions, CommitResult, EncodedRecord, FollowOptions, ForkOptions, ForkReceipt, IdempotencyKey, IdempotencyObservation, ProviderCommitRequest, ReadOptions, Sequence, StreamProvider } from "./types.js";
 
-type NativeModule = typeof GeneratedNative;
-type NativeClient = InstanceType<NativeModule["NativeStreamClient"]>;
-type NativeFollow = InstanceType<NativeModule["NativeStreamFollow"]>;
-type NativeCancellation = InstanceType<NativeModule["NativeStreamCancellation"]>;
-type NativeConnectResult = Awaited<ReturnType<NativeModule["NativeStreamClient"]["connectResult"]>>;
-
-let modulePromise: Promise<NativeModule> | undefined;
+let modulePromise: Promise<typeof GeneratedNative> | undefined;
 const requireNative = createRequire(import.meta.url);
 const nativeBindingPath = fileURLToPath(new URL("../generated/native/binding.cjs", import.meta.url));
 
-async function loadNativeModule(): Promise<NativeModule> {
+async function loadNativeModule(): Promise<typeof GeneratedNative> {
   modulePromise ??= Promise.resolve().then(() => {
-    const namespace = requireNative(nativeBindingPath) as NativeModule & { readonly default?: NativeModule };
+    const namespace = requireNative(nativeBindingPath) as typeof GeneratedNative & { readonly default?: typeof GeneratedNative };
     const binding = namespace.NativeStreamClient === undefined ? namespace.default : namespace;
     if (typeof binding?.NativeStreamClient !== "function" || typeof binding.NativeStreamCancellation !== "function"
       || typeof binding.NativeStreamClient.connectResult !== "function" || typeof binding.NativeStreamClient.connectWithCaResult !== "function"
@@ -39,7 +33,7 @@ async function loadNativeModule(): Promise<NativeModule> {
 }
 
 /** Creates a cancellation handle from the generated Rust N-API binding. */
-export async function createNativeStreamCancellation(): Promise<NativeCancellation> {
+export async function createNativeStreamCancellation(): Promise<GeneratedNative.NativeStreamCancellation> {
   const module = await loadNativeModule();
   return new module.NativeStreamCancellation();
 }
@@ -103,16 +97,13 @@ export async function nativeStreamAvailable(): Promise<boolean> {
   catch (error) { if (expectedNativeAbsence(error)) return false; throw error; }
 }
 
-export interface NativeStreamProviderOptions {
-  readonly autoAcknowledge?: boolean;
-}
 /** Thin provider over the Rust-owned Stream N-API bridge. */
 export class NativeStreamProvider implements StreamProvider {
-  private constructor(private readonly client: NativeClient, private readonly module: NativeModule) {}
+  private constructor(private readonly client: GeneratedNative.NativeStreamClient, private readonly module: typeof GeneratedNative) {}
 
-  static async connect(endpoint: string, token: string, caCertificate?: Uint8Array, cancellation?: NativeCancellation, options?: NativeStreamProviderOptions): Promise<NativeStreamProvider> {
+  static async connect(endpoint: string, token: string, caCertificate?: Uint8Array, cancellation?: GeneratedNative.NativeStreamCancellation, options?: { readonly autoAcknowledge?: boolean }): Promise<NativeStreamProvider> {
     const module = await loadNativeModule();
-    const result: NativeConnectResult = caCertificate === undefined
+    const result = caCertificate === undefined
       ? await module.NativeStreamClient.connectResult(endpoint, token, cancellation)
       : await module.NativeStreamClient.connectWithCaResult(endpoint, token, Buffer.from(caCertificate), cancellation);
     if (result.error !== undefined) throw nativeError(result.error, "connect");
@@ -123,7 +114,7 @@ export class NativeStreamProvider implements StreamProvider {
 
   get transport(): string { return this.client.transport(); }
 
-  async acknowledgeDelivery(deliveryToken: Uint8Array, cancellation?: NativeCancellation): Promise<void> {
+  async acknowledgeDelivery(deliveryToken: Uint8Array, cancellation?: GeneratedNative.NativeStreamCancellation): Promise<void> {
     if (!(deliveryToken instanceof Uint8Array) || deliveryToken.byteLength !== 32) throw new StreamError("invalid_argument", "delivery token must contain exactly 32 bytes");
     const request = toBinary(wire.AcknowledgeDeliveryRequestSchema, create(wire.AcknowledgeDeliveryRequestSchema, { deliveryToken }));
     const value = await this.operation("acknowledge_delivery", this.client.acknowledgeDeliveryResult(Buffer.from(request), cancellation));
@@ -137,8 +128,9 @@ export class NativeStreamProvider implements StreamProvider {
   }
 
   async tail(path: string): Promise<Sequence> {
-    const request = await this.request("tail", path);
-    const value = await this.operation("tail", this.client.tailResult(Buffer.from(request)));
+    const request = { kind: "tail" as const, path };
+    await validateWireRequest(request);
+    const value = await this.operation("tail", this.client.tailResult(Buffer.from(wireRequest(request))));
     try { return fromBinary(wire.TailResponseSchema, value).tail; }
     catch (error) { throw invalidResponse("tail", error); }
   }
@@ -182,7 +174,7 @@ export class NativeStreamProvider implements StreamProvider {
     await validateWireRequest(request);
     if (options.signal?.aborted) return;
     const cancellation = new this.module.NativeStreamCancellation();
-    let follow: NativeFollow | undefined;
+    let follow: GeneratedNative.NativeStreamFollow | undefined;
     const abort = () => { cancellation.cancel(); if (follow !== undefined) void follow.close(); };
     options.signal?.addEventListener("abort", abort, { once: true });
     if (options.signal?.aborted) {
@@ -192,7 +184,7 @@ export class NativeStreamProvider implements StreamProvider {
     }
     let next = request.from;
     try {
-      let opened: Awaited<ReturnType<NativeClient["openFollowResult"]>>;
+      let opened: GeneratedNative.NativeStreamFollowResult;
       try {
         opened = await this.client.openFollowResult(Buffer.from(wireRequest(request)), cancellation);
       } catch (error) {
@@ -250,11 +242,6 @@ export class NativeStreamProvider implements StreamProvider {
   async readCommit(id: CommitId): Promise<CommittedEnvelope> {
     const value = await this.operation("read_commit", this.client.readCommitResult(Buffer.from(wireReadCommitRequest(id))));
     return this.project("read_commit", value) as CommittedEnvelope;
-  }
-
-  private async request(kind: "tail", path: string): Promise<Uint8Array> {
-    await validateWireRequest({ kind, path });
-    return wireRequest({ kind, path });
   }
 
   private async operation(operation: string, result: Promise<GeneratedNative.NativeStreamOperationResult>): Promise<Uint8Array> {
