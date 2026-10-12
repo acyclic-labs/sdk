@@ -97,7 +97,7 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -106,7 +106,7 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     .await?;
     assert!(matches!(
         committed.value,
-        CheckoutCommitOutcome::Committed { .. }
+        LivePublicationObservation::Committed { .. }
     ));
     assert!(!first.has_pending_mutations());
     let repeated = (retry.commit(
@@ -118,7 +118,7 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -127,7 +127,7 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     .await?;
     assert!(matches!(
         repeated.value,
-        CheckoutCommitOutcome::AlreadyCommitted { .. }
+        LivePublicationObservation::AlreadyCommitted { .. }
     ));
     assert!(!retry.has_pending_mutations());
     let conflict = (stale.commit(
@@ -139,7 +139,7 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -148,7 +148,7 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     .await?;
     assert!(matches!(
         conflict.value,
-        CheckoutCommitOutcome::Conflict { .. }
+        LivePublicationObservation::Conflict { .. }
     ));
     assert!(stale.has_pending_mutations());
 
@@ -203,7 +203,7 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
         },
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(FsReceipt {
+            crate::FsResult::Ok(OperationReceipt {
                 value: (),
                 work: WorkCounters::UNCHARGED,
             })
@@ -230,7 +230,7 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -284,7 +284,7 @@ async fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -352,7 +352,7 @@ async fn exclusive_writer_checkout_atomically_fences_every_prior_writer()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -361,7 +361,7 @@ async fn exclusive_writer_checkout_atomically_fences_every_prior_writer()
     .await?;
     assert!(matches!(
         rejected.value,
-        CheckoutCommitOutcome::Fenced { actual_epoch } if actual_epoch.get() == 3
+        LivePublicationObservation::Fenced { actual_epoch } if actual_epoch.get() == 3
     ));
     (owner.create(
         crate::AuthoredMutation::CreateFile {
@@ -382,7 +382,7 @@ async fn exclusive_writer_checkout_atomically_fences_every_prior_writer()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -391,7 +391,7 @@ async fn exclusive_writer_checkout_atomically_fences_every_prior_writer()
     .await?;
     assert!(matches!(
         committed.value,
-        CheckoutCommitOutcome::Committed { head, .. } if head.epoch.get() == 3
+        LivePublicationObservation::Committed { head, .. } if head.epoch.get() == 3
     ));
     Ok(())
 }
@@ -520,7 +520,7 @@ async fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -691,7 +691,7 @@ async fn private_candidate_rebases_more_changes_than_one_mutation_batch()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -714,7 +714,7 @@ async fn private_candidate_rebases_more_changes_than_one_mutation_batch()
             WorkBudget::UNBOUNDED,
             &cancellation,
             |_| async {
-                crate::FsResult::Ok(crate::FsReceipt {
+                crate::FsResult::Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
                 })
@@ -722,7 +722,7 @@ async fn private_candidate_rebases_more_changes_than_one_mutation_batch()
         ))
         .await?
         .value,
-        CheckoutCommitOutcome::Committed { .. }
+        LivePublicationObservation::Committed { .. }
     ));
     for index in 0..20 {
         assert!(

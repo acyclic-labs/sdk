@@ -60,7 +60,7 @@ async fn stamped_content_change_equals_the_change_then_its_stamp_in_one_mutation
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -469,7 +469,7 @@ async fn a_whole_file_rewrite_larger_than_the_read_bound_is_admitted()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -516,7 +516,7 @@ async fn a_whole_file_rewrite_larger_than_the_read_bound_is_admitted()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -619,7 +619,7 @@ async fn a_stale_whole_file_rewrite_still_conflicts() -> Result<(), Box<dyn std:
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -639,7 +639,7 @@ async fn a_stale_whole_file_rewrite_still_conflicts() -> Result<(), Box<dyn std:
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -648,7 +648,7 @@ async fn a_stale_whole_file_rewrite_still_conflicts() -> Result<(), Box<dyn std:
     .await?
     .value;
     assert!(
-        matches!(committed, CheckoutCommitOutcome::Committed { .. }),
+        matches!(committed, LivePublicationObservation::Committed { .. }),
         "{committed:?}"
     );
     rewrite(&mut stale, b"STALESTALESTALESTALESTALESTALE12").await?;
@@ -661,7 +661,7 @@ async fn a_stale_whole_file_rewrite_still_conflicts() -> Result<(), Box<dyn std:
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -670,7 +670,7 @@ async fn a_stale_whole_file_rewrite_still_conflicts() -> Result<(), Box<dyn std:
     .await?
     .value;
     assert!(
-        matches!(refused, CheckoutCommitOutcome::Conflict { .. }),
+        matches!(refused, LivePublicationObservation::Conflict { .. }),
         "{refused:?}"
     );
     Ok(())

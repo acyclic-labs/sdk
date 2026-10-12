@@ -28,7 +28,9 @@ fn native_hosts_route_children_and_reject_forged_identity() {
                     .await
                     .unwrap();
             }
-            let child = route_path(&service.sessions["session"].state.routes["child"]);
+            let child = service.sessions["session"].state.routes["child"]
+                .active_path()
+                .unwrap();
             let input = json!({"turn_id":"child-tool-turn", "agent_id":"child", "agent_type":"explorer",
                 "tool_name":"Bash", "tool_use_id":"tool", "tool_input":{"command":"pwd"}});
             let request =

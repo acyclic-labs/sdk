@@ -3083,5 +3083,5 @@ mod demand_admission_tests {
 }
 
 #[cfg(test)]
-#[path = "tests/watch.rs"]
+#[path = "tests/watch/mod.rs"]
 mod tests;

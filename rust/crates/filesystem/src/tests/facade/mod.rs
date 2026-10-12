@@ -429,15 +429,9 @@ impl crate::async_storage::AsyncObjectStore for FaultObjectStore {
                 return Err(Self::failure(false));
             }
             {
-                let __object_args = (object_id, bytes, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-                let __object_result = AsyncObjectStore::put(
-                    &self.inner,
-                    __object_args.0,
-                    __object_args.1,
-                    &mut __object_work,
-                )
-                .await;
+                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
+                let __object_result =
+                    AsyncObjectStore::put(&self.inner, object_id, bytes, &mut __object_work).await;
                 __object_work.receipt(__object_result)
             }
         }
@@ -463,11 +457,9 @@ impl crate::async_storage::AsyncObjectStore for FaultObjectStore {
                 return Err(Self::failure(false));
             }
             {
-                let __object_args = (writes, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
                 let __object_result =
-                    AsyncObjectStore::put_many(&self.inner, __object_args.0, &mut __object_work)
-                        .await;
+                    AsyncObjectStore::put_many(&self.inner, writes, &mut __object_work).await;
                 __object_work.receipt(__object_result)
             }
         }
@@ -494,12 +486,11 @@ impl crate::async_storage::AsyncObjectStore for FaultObjectStore {
                 return Err(Self::failure(true));
             }
             {
-                let __object_args = (object_id, maximum_bytes, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
                 let __object_result = AsyncObjectStore::read(
                     &self.inner,
-                    __object_args.0,
-                    __object_args.1,
+                    object_id,
+                    maximum_bytes,
                     &mut __object_work,
                 )
                 .await;
@@ -528,10 +519,9 @@ impl crate::async_storage::AsyncObjectStore for FaultObjectStore {
                 return Err(Self::failure(true));
             }
             {
-                let __object_args = (requests, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
                 let __object_result =
-                    AsyncObjectStore::read_many(&self.inner, __object_args.0, &mut __object_work)
+                    AsyncObjectStore::read_many(&self.inner, requests, &mut __object_work)
                         .await
                         .map(|(values, _allocation)| values);
                 __object_work.receipt(__object_result)
@@ -559,11 +549,9 @@ impl crate::async_storage::AsyncObjectStore for FaultObjectStore {
                 return Err(Self::failure(true));
             }
             {
-                let __object_args = (object_id, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
                 let __object_result =
-                    AsyncObjectStore::contains(&self.inner, __object_args.0, &mut __object_work)
-                        .await;
+                    AsyncObjectStore::contains(&self.inner, object_id, &mut __object_work).await;
                 __object_work.receipt(__object_result)
             }
         }
@@ -590,15 +578,9 @@ impl crate::async_storage::AsyncObjectStore for CountingObjectStore {
                 crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
             })?;
             {
-                let __object_args = (object_id, bytes, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-                let __object_result = AsyncObjectStore::put(
-                    &self.inner,
-                    __object_args.0,
-                    __object_args.1,
-                    &mut __object_work,
-                )
-                .await;
+                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
+                let __object_result =
+                    AsyncObjectStore::put(&self.inner, object_id, bytes, &mut __object_work).await;
                 __object_work.receipt(__object_result)
             }
         }
@@ -621,11 +603,9 @@ impl crate::async_storage::AsyncObjectStore for CountingObjectStore {
                 crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
             })?;
             {
-                let __object_args = (writes, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
                 let __object_result =
-                    AsyncObjectStore::put_many(&self.inner, __object_args.0, &mut __object_work)
-                        .await;
+                    AsyncObjectStore::put_many(&self.inner, writes, &mut __object_work).await;
                 __object_work.receipt(__object_result)
             }
         }
@@ -650,12 +630,11 @@ impl crate::async_storage::AsyncObjectStore for CountingObjectStore {
             })?;
             self.record(object_id)?;
             {
-                let __object_args = (object_id, maximum_bytes, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
                 let __object_result = AsyncObjectStore::read(
                     &self.inner,
-                    __object_args.0,
-                    __object_args.1,
+                    object_id,
+                    maximum_bytes,
                     &mut __object_work,
                 )
                 .await;
@@ -684,10 +663,9 @@ impl crate::async_storage::AsyncObjectStore for CountingObjectStore {
                 self.record(request.object_id)?;
             }
             {
-                let __object_args = (requests, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
                 let __object_result =
-                    AsyncObjectStore::read_many(&self.inner, __object_args.0, &mut __object_work)
+                    AsyncObjectStore::read_many(&self.inner, requests, &mut __object_work)
                         .await
                         .map(|(values, _allocation)| values);
                 __object_work.receipt(__object_result)
@@ -712,11 +690,9 @@ impl crate::async_storage::AsyncObjectStore for CountingObjectStore {
                 crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
             })?;
             {
-                let __object_args = (object_id, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
                 let __object_result =
-                    AsyncObjectStore::contains(&self.inner, __object_args.0, &mut __object_work)
-                        .await;
+                    AsyncObjectStore::contains(&self.inner, object_id, &mut __object_work).await;
                 __object_work.receipt(__object_result)
             }
         }
@@ -737,13 +713,11 @@ impl crate::async_storage::AsyncObjectStore for PostPutObjectStore {
             let cancellation = context.cancellation;
             return async {
                 {
-                    let __object_args = (object_id, bytes, original, cancellation);
-                    let mut __object_work =
-                        crate::AuthorityWork::native(__object_args.2, __object_args.3);
+                    let mut __object_work = crate::AuthorityWork::native(original, cancellation);
                     let __object_result = crate::async_storage::AsyncObjectStore::put(
                         &*self.inner,
-                        __object_args.0,
-                        __object_args.1,
+                        object_id,
+                        bytes,
                         &mut __object_work,
                     )
                     .await;
@@ -763,15 +737,9 @@ impl crate::async_storage::AsyncObjectStore for PostPutObjectStore {
                 crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
             })?;
             let receipt = {
-                let __object_args = (object_id, bytes, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
-                let __object_result = AsyncObjectStore::put(
-                    &*self.inner,
-                    __object_args.0,
-                    __object_args.1,
-                    &mut __object_work,
-                )
-                .await;
+                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
+                let __object_result =
+                    AsyncObjectStore::put(&*self.inner, object_id, bytes, &mut __object_work).await;
                 __object_work.receipt(__object_result)
             }?;
             if self.control.should_fail() {
@@ -792,12 +760,10 @@ impl crate::async_storage::AsyncObjectStore for PostPutObjectStore {
             let cancellation = context.cancellation;
             return async {
                 {
-                    let __object_args = (writes, original, cancellation);
-                    let mut __object_work =
-                        crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                    let mut __object_work = crate::AuthorityWork::native(original, cancellation);
                     let __object_result = crate::async_storage::AsyncObjectStore::put_many(
                         &*self.inner,
-                        __object_args.0,
+                        writes,
                         &mut __object_work,
                     )
                     .await;
@@ -817,11 +783,9 @@ impl crate::async_storage::AsyncObjectStore for PostPutObjectStore {
                 crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
             })?;
             let receipt = {
-                let __object_args = (writes, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
                 let __object_result =
-                    AsyncObjectStore::put_many(&*self.inner, __object_args.0, &mut __object_work)
-                        .await;
+                    AsyncObjectStore::put_many(&*self.inner, writes, &mut __object_work).await;
                 __object_work.receipt(__object_result)
             }?;
             if self.control.should_fail() {
@@ -843,13 +807,11 @@ impl crate::async_storage::AsyncObjectStore for PostPutObjectStore {
             let cancellation = context.cancellation;
             return async {
                 {
-                    let __object_args = (object_id, maximum_bytes, original, cancellation);
-                    let mut __object_work =
-                        crate::AuthorityWork::native(__object_args.2, __object_args.3);
+                    let mut __object_work = crate::AuthorityWork::native(original, cancellation);
                     let __object_result = AsyncObjectStore::read(
                         &*self.inner,
-                        __object_args.0,
-                        __object_args.1,
+                        object_id,
+                        maximum_bytes,
                         &mut __object_work,
                     )
                     .await;
@@ -865,12 +827,11 @@ impl crate::async_storage::AsyncObjectStore for PostPutObjectStore {
                 crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
             })?;
             {
-                let __object_args = (object_id, maximum_bytes, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
                 let __object_result = AsyncObjectStore::read(
                     &*self.inner,
-                    __object_args.0,
-                    __object_args.1,
+                    object_id,
+                    maximum_bytes,
                     &mut __object_work,
                 )
                 .await;
@@ -890,18 +851,13 @@ impl crate::async_storage::AsyncObjectStore for PostPutObjectStore {
             let cancellation = context.cancellation;
             return async {
                 {
-                    let __object_args = (requests, original, cancellation);
-                    let mut __object_work =
-                        crate::AuthorityWork::native(__object_args.1, __object_args.2);
-                    let __object_result = AsyncObjectStore::read_many(
-                        &*self.inner,
-                        __object_args.0,
-                        &mut __object_work,
-                    )
-                    .await
-                    .map(|(values, allocation)| {
-                        (values, allocation.expect("native batch allocation"))
-                    });
+                    let mut __object_work = crate::AuthorityWork::native(original, cancellation);
+                    let __object_result =
+                        AsyncObjectStore::read_many(&*self.inner, requests, &mut __object_work)
+                            .await
+                            .map(|(values, allocation)| {
+                                (values, allocation.expect("native batch allocation"))
+                            });
                     __object_result
                 }
             }
@@ -915,10 +871,9 @@ impl crate::async_storage::AsyncObjectStore for PostPutObjectStore {
                 crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
             })?;
             {
-                let __object_args = (requests, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
                 let __object_result =
-                    AsyncObjectStore::read_many(&*self.inner, __object_args.0, &mut __object_work)
+                    AsyncObjectStore::read_many(&*self.inner, requests, &mut __object_work)
                         .await
                         .map(|(values, _allocation)| values);
                 __object_work.receipt(__object_result)
@@ -943,11 +898,9 @@ impl crate::async_storage::AsyncObjectStore for PostPutObjectStore {
                 crate::ObjectFailure::before_work(crate::ObjectStoreError::Cancelled)
             })?;
             {
-                let __object_args = (object_id, budget, cancellation);
-                let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+                let mut __object_work = crate::AuthorityWork::new(budget, cancellation);
                 let __object_result =
-                    AsyncObjectStore::contains(&*self.inner, __object_args.0, &mut __object_work)
-                        .await;
+                    AsyncObjectStore::contains(&*self.inner, object_id, &mut __object_work).await;
                 __object_work.receipt(__object_result)
             }
         }
@@ -965,12 +918,10 @@ impl crate::async_storage::AsyncObjectStore for PostPutObjectStore {
             let cancellation = context.cancellation;
             return async {
                 {
-                    let __object_args = (object, original, cancellation);
-                    let mut __object_work =
-                        crate::AuthorityWork::native(__object_args.1, __object_args.2);
+                    let mut __object_work = crate::AuthorityWork::native(original, cancellation);
                     let __object_result = crate::async_storage::AsyncObjectStore::put_hashed(
                         &*self.inner,
-                        __object_args.0,
+                        object,
                         &mut __object_work,
                     )
                     .await;

@@ -61,7 +61,7 @@ async fn every_object_cut_preserves_sparse_rebase_retry_and_candidate_state()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -181,7 +181,7 @@ async fn every_object_cut_preserves_diff_export_and_merge_preparation()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -318,7 +318,7 @@ async fn every_object_cut_preserves_authenticated_publication_retry()
             WorkBudget::UNBOUNDED,
             &cancellation,
             |_| async {
-                crate::FsResult::Ok(crate::FsReceipt {
+                crate::FsResult::Ok(crate::OperationReceipt {
                     value: (),
                     work: crate::WorkCounters::UNCHARGED,
                 })
@@ -343,7 +343,7 @@ async fn every_object_cut_preserves_authenticated_publication_retry()
     let completed = completed.ok_or("publication never passed the complete object cut sweep")?;
     assert!(matches!(
         completed.value,
-        CheckoutCommitOutcome::Committed { .. }
+        LivePublicationObservation::Committed { .. }
     ));
     assert!(!checkout.has_pending_mutations());
     Ok(())
@@ -396,7 +396,7 @@ async fn indeterminate_post_append_retry_resolves_one_durable_publication()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -443,7 +443,7 @@ async fn indeterminate_post_append_retry_resolves_one_durable_publication()
         WorkBudget::UNBOUNDED,
         &cancellation,
         |_| async {
-            crate::FsResult::Ok(crate::FsReceipt {
+            crate::FsResult::Ok(crate::OperationReceipt {
                 value: (),
                 work: crate::WorkCounters::UNCHARGED,
             })
@@ -452,7 +452,7 @@ async fn indeterminate_post_append_retry_resolves_one_durable_publication()
     .await?;
     assert!(matches!(
         resolved.value,
-        CheckoutCommitOutcome::AlreadyCommitted { .. }
+        LivePublicationObservation::AlreadyCommitted { .. }
     ));
     assert!(!checkout.has_pending_mutations());
     let history = ({
