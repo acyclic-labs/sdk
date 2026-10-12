@@ -1,6 +1,4 @@
 use bytes::Bytes;
-
-use bytes::Bytes;
 use super::*;
 use acyclic_fs::{CancellationToken, WorkBudget};
 use acyclic_stream::StreamPath;
@@ -139,7 +137,7 @@ fn operation_locator_schema_quota_and_hostile_digest_preserve_original_decoder()
 #[cfg(feature = "filesystem")]
 struct GuardedForkFixture {
     fixture: crate::durable_host::tests::created_resource_access::CreationFixture,
-    owner: crate::durable_host::TaskJournalOwner<MemoryStream>,
+    owner: Arc<crate::durable_host::TaskJournalOwner<MemoryStream>>,
     lease: crate::distributed::WorkLease,
     parent: StreamAggregate<MemoryStream>,
     report: crate::fork::ForkReport,
@@ -180,7 +178,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     let crate::distributed::WorkPull::Claimed(lease) = fixture.host.recover_work(task, &mut None).await? else {
         return Err(Error::NotFound("measured fork original owner lease".into()));
     };
-    let owner = fixture.host.journal_owner(task, (&lease.reservation).into()).await?;
+    let owner = Arc::new(fixture.host.journal_owner(task, (&lease.reservation).into()).await?);
     let child_agent = AgentId::from_bytes([94; 16]);
     let project = VolumeRef::new(fixture.filesystem_provider.clone(), "measured-child-project".into(), VolumeClass::Project,
         VolumeOwner::Project("created-project".into()), &mut None)?;
@@ -227,7 +225,7 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     let preparation = owner.resource_preparation(request, &mut None).await?;
     let report = preparer.with_task_preparation(Arc::new(preparation))?.prepare(fork).await?;
     let child_issuer = crate::core::AuthorityIssuer::new("created-owner", [80; 32], report.request.child.clone());
-    let child_scope = child_issuer.issue("measured-fork-child", &Capabilities::new(["conversation:bind".into()]), Some(child_agent), None, &mut None).expect("scope proof");
+    let child_scope = child_issuer.issue("measured-fork-child", &Capabilities::new(["conversation:bind"]), Some(child_agent), None, &mut None).expect("scope proof");
     Ok(GuardedForkFixture { fixture, owner, lease, parent, report, parent_scope,
         parent_verifier: parent_issuer.verifier(&mut None).expect("verifier copy"), child_scope, child_verifier: child_issuer.verifier(&mut None).expect("verifier copy") })
 }
@@ -292,7 +290,7 @@ async fn guarded_fork_reopen_and_child_replay_keep_original_identity_and_owner_f
     hostile.parent_revision += 1;
     assert!(bind(&mut child, &reopened, &hostile, setup.child_scope.clone(),
         &setup.owner, budget, &cancellation).await.is_err());
-    let wrong_agent = crate::core::AuthorityIssuer::new("created-owner", [80; 32], seed.child.clone()).issue("wrong-child-agent", &Capabilities::new(["conversation:bind".into()]), Some(AgentId::from_bytes([96; 16])), None, &mut None).expect("scope proof");
+    let wrong_agent = crate::core::AuthorityIssuer::new("created-owner", [80; 32], seed.child.clone()).issue("wrong-child-agent", &Capabilities::new(["conversation:bind"]), Some(AgentId::from_bytes([96; 16])), None, &mut None).expect("scope proof");
     assert!(bind(&mut child, &reopened, &seed, wrong_agent,
         &setup.owner, budget, &cancellation).await.is_err());
     bind(&mut child, &reopened, &seed, setup.child_scope.clone(),
@@ -348,7 +346,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
         id: "original-native-root-conversation".into(),
     };
     let original_issuer = crate::core::AuthorityIssuer::new("created-owner", [80; 32], audience.clone());
-    let scope = original_issuer.issue("original-native-root-bind", &Capabilities::new(["conversation:bind".into()]), Some(agent), None, &mut None).expect("scope proof");
+    let scope = original_issuer.issue("original-native-root-bind", &Capabilities::new(["conversation:bind"]), Some(agent), None, &mut None).expect("scope proof");
     let command = Command {
         operation_id: OperationId::from_bytes([124; 16]),
         idempotency_key: IdempotencyKey::new("original-native-root-bind")?,
@@ -393,7 +391,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     let mut wrong_actor = command.clone();
     wrong_actor.action = Action::BindConversation { agent: AgentId::from_bytes([125; 16]) };
     let mut missing_grant = command.clone();
-    missing_grant.scope = original_issuer.issue("original-native-root-bind", &Capabilities::new([]), Some(agent), None, &mut None).expect("scope proof");
+    missing_grant.scope = original_issuer.issue("original-native-root-bind", &Capabilities::default(), Some(agent), None, &mut None).expect("scope proof");
     let mut causal_binding = command.clone();
     causal_binding.causal_parent = Some(EventReference { authority: audience.clone(), revision: 1 });
     for invalid in [wrong_actor, missing_grant, causal_binding] {
@@ -405,7 +403,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
 
     let wrong_issuer = crate::core::AuthorityIssuer::new("created-owner", [81; 32], audience.clone());
     let mut wrong_scope = command.clone();
-    wrong_scope.scope = wrong_issuer.issue("original-native-root-bind", &Capabilities::new(["conversation:bind".into()]), Some(agent), None, &mut None).expect("scope proof");
+    wrong_scope.scope = wrong_issuer.issue("original-native-root-bind", &Capabilities::new(["conversation:bind"]), Some(agent), None, &mut None).expect("scope proof");
     let mut wrong_scope_io = history::native_work_io(&native)?;
     let wrong_scope_error = aggregate.execute(
         wrong_scope, Some(&owner), &mut Some(&mut wrong_scope_io),

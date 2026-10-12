@@ -181,7 +181,7 @@
                 .is_err()
             );
         }
-        assert_ne!(first.version().into(), second.version());
+        assert_ne!(first.version(), second.version());
         assert_eq!(
             host.read_content(&first, &read, 16, None).await?,
             acyclic_stream::OwnedBytes::from_static(b"one")
@@ -233,7 +233,7 @@
             .list_private_directory(&volume, "messages", "messages", None, None, 10)
             .await?;
         assert_eq!(page.entries.len(), 1);
-        let erased: &dyn ContentResidencyVerifier = &delegated_reader;
+        let erased: &dyn ContentResidencyVerifier = delegated_reader.as_ref();
         let portable_page = erased
             .list_private_directory(
                 &volume,
@@ -241,8 +241,8 @@
                 "messages",
                 Some(&listed_generation),
                 None,
-                10,
-            )
+                10, None,
+            )?
             .await?;
         assert_eq!(portable_page.generation, listed_generation);
         assert_eq!(

@@ -1610,8 +1610,10 @@ mod tests {
             operation_id: OperationId::from_bytes([183; 16]), maximum_work: 1_048_576,
             maximum_bytes: 1_048_576, cancellation: work.cancellation(), created_project_authenticated: false,
         };
-        let denied = bare.verify_with_native_work(context(), &selection, &work);
-        assert!(match denied { Ok(future) => future.await.is_err(), Err(_) => true });
+        {
+            let denied = bare.verify_with_native_work(context(), &selection, &work);
+            assert!(match denied { Ok(future) => future.await.is_err(), Err(_) => true });
+        }
 
         let bound_owner = bind_genuine_original_root(&fixture, &work).await?;
         let token = creator.protect_root_bootstrap_with_native_work(&bound_owner, &birth.volume, RootBootstrapContentRole::Project,
@@ -1622,8 +1624,10 @@ mod tests {
         let initial_selection = ProjectSourceSnapshot { project: selection.project.clone(),
             generation: GenerationRef::new(fixture.filesystem_provider.clone(),
                 birth.initial_generation.digest().into_bytes().to_vec(), None)?, native_snapshot: None };
-        let denied = policy.verify_with_native_work(context(), &initial_selection, &work);
-        assert!(match denied { Ok(future) => future.await.is_err(), Err(_) => true });
+        {
+            let denied = policy.verify_with_native_work(context(), &initial_selection, &work);
+            assert!(match denied { Ok(future) => future.await.is_err(), Err(_) => true });
+        }
 
         let journal_io = PreparationIo::for_unmeasured(work.cancellation())?;
         let journal = allocation_ref(&creator.host.provider, &birth.volume, Some(&journal_io))?;

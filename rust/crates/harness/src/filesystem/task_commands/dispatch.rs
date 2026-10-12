@@ -59,9 +59,9 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                     Some(io), ErrorCode::Unsupported, "native timer requires original work"))).transpose()?;
                 #[cfg(target_arch = "wasm32")]
                 let work = None;
-                let ready = self.runtime.task_host().poll_timer(task, &fence,
+                let timer_ready = self.runtime.task_host().poll_timer(task, &fence,
                     command.operation_id, input.deadline_unix_ms, work).await?;
-                if ready { ready(Outcome::Succeeded(Value::Null), io) }
+                if timer_ready { ready(Outcome::Succeeded(Value::Null), io) }
                 else { Ok(TaskCommandProgress::Pending) }
             }
             TIMER_TASK_COMMAND_KIND | MAIL_RECEIVE_TASK_COMMAND_KIND | TASK_CANCEL_COMMAND_KIND if reconciliation_only => mail::reconciled(io),
