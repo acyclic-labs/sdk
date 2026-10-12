@@ -204,9 +204,14 @@ impl RecursiveDefaultToolSource<MemoryStream, MemoryAuthorityBackend, MemoryObje
 #[tokio::test]
 async fn actual_registry_keeps_shared_file_tools_and_refuses_contextless_recursive_execution() -> Result<()> {
     let source = Arc::new(RejectUnexpectedSource(AtomicUsize::new(0)));
-    let registry = recursive_default_tools(source.clone(), 65536)?;
+    let storage = super::super::MemoryHarnessStorage::new(AgentId::new(), 65536).await?;
+    let ordinary = storage.default_tools(crate::conversation::Limits {
+        file_bytes: 65536, ..Default::default()
+    }, Some(source.clone()))?;
+    let registry = recursive_default_tools(Some(source.clone()), 65536)?;
     for expected in ["acyclic.read_file", "acyclic.write_file", "acyclic.edit_file", "acyclic.fork", "acyclic.merge"] {
         assert!(registry.tools.get(expected).is_some());
+        assert_eq!(ordinary.get(expected).unwrap().definition, registry.tools.get(expected).unwrap().definition);
     }
     for name in ["acyclic.fork", "acyclic.merge"] {
         let tool = registry.tools.get(name).ok_or_else(|| Error::NotFound(name.into()))?;
@@ -303,10 +308,10 @@ async fn inherited_grant_preflight_reuses_real_materializer_without_child_effect
     assert_eq!(member.attachment_manifest.as_ref(), Some(&manifest));
     assert!(projected.iter().all(|grant| grant.reader == child_agent));
     let donor = Capabilities::new([manifest.read_capability()?]);
-    crate::filesystem::fork_preparer::require_reference_donor(&donor, member)?;
+    crate::filesystem::fork_preparer::require_reference_donor(&donor, member, None)?;
     let direct = projected.iter().find(|grant| grant.file == content)
         .ok_or_else(|| Error::NotFound("canonical content grant".into()))?;
-    assert!(crate::filesystem::fork_preparer::require_reference_donor(&donor, direct).is_err());
+    assert!(crate::filesystem::fork_preparer::require_reference_donor(&donor, direct, None).is_err());
     assert!(controller.inherited_reference_grants(fixture.parent.reducer(), child_agent, &[],
         1, 8, 8192, 2, reader.as_ref(), None).await.is_err());
     assert!(controller.inherited_reference_grants(fixture.parent.reducer(), child_agent, &[],

@@ -34,15 +34,12 @@ try {
       throw new Error(`registration rejection differs: ${String(error)}`);
     }
   };
-  // Invalid machine state must leave the task key vacant for the valid retry.
   rejectRegistration({ ...registration, state_schema: { type: "invalid" } }, "machine state");
   registry.registerMachine(registration,
     input => input,
     (state, input) => input === null && state.complete !== true
       ? { state, commands: [{ operation_id: state.operation, kind: "acyclic.timer.v1", payload: state.file }], status: { kind: "suspended" } }
       : { state, commands: [], status: { kind: "completed", value: 7 } });
-  // Exact task-key rejection precedes machine insertion and schema validation.
-  // The admitted task below must still execute the original machine.
   rejectRegistration({ ...registration, digest: new Array(32).fill(42) }, "already registered");
   rejectRegistration({ ...registration, digest: new Array(32).fill(43),
     state_schema: { type: "invalid" } }, "already registered");

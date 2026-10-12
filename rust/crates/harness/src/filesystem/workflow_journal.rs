@@ -328,7 +328,7 @@ where
             None => crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Storage(format!("workflow record is invalid: {error}")))?,
         };
-        record.validate_with_io(io)?;
+        record.validate(io)?;
         if let Some(owner) = &self.owner {
             if verify_machine {
                 owner.validate_workflow_record(&record, io)?;
@@ -607,7 +607,7 @@ where
                 let native_work: Option<()> = None;
                 if native_work.is_none() {
                     let _metadata;
-                    let metadata = io.encode_json(reference, io.remaining()?.bytes_encoded, false)?;
+                    let metadata = io.encode(reference, io.remaining()?.bytes_encoded, false)?;
                     _metadata = io.guard_bytes(&metadata)?;
                     reference.validate()?;
                 }
@@ -866,7 +866,7 @@ where
             None => crate::contract::json_from_slice(&bytes)
                 .map_err(|error| Error::Storage(format!("workflow admission is invalid: {error}")))?,
         };
-        admission.validate_with_io(io)?;
+        admission.validate(io)?;
         if self
             .owner
             .as_ref()
@@ -883,7 +883,7 @@ where
     ) -> Result<FileRef> {
         let _bytes;
         let bytes = match io {
-            Some(io) => io.encode_json(payload, self.maximum_payload_bytes, false)?,
+            Some(io) => io.encode(payload, self.maximum_payload_bytes, false)?,
             None => serde_json::to_vec(payload).map_err(|error| Error::Invalid(error.to_string()))?.into(),
         };
         _bytes = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
@@ -931,7 +931,7 @@ where
         let admission = path != self.path;
         let _bytes;
         let bytes = match io {
-            Some(io) => io.encode_json(reference, acyclic_stream::MAX_RECORD_BYTES as u64, false)?,
+            Some(io) => io.encode(reference, acyclic_stream::MAX_RECORD_BYTES as u64, false)?,
             None => serde_json::to_vec(reference).map_err(|error| Error::Invalid(error.to_string()))?.into(),
         };
         _bytes = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
@@ -1031,9 +1031,9 @@ where
         let (_expected_hold, _actual_hold);
         let (expected, actual);
         if let Some(io) = io {
-            expected = io.encode_json(record, self.maximum_payload_bytes, false)?;
+            expected = io.encode(record, self.maximum_payload_bytes, false)?;
             _expected_hold = io.guard_bytes(&expected)?;
-            actual = io.encode_json(&existing, self.maximum_payload_bytes, false)?;
+            actual = io.encode(&existing, self.maximum_payload_bytes, false)?;
             _actual_hold = io.guard_bytes(&actual)?;
         }
         if existing != *record {
@@ -1162,7 +1162,7 @@ where
     pub(crate) async fn admit_with_io(
         &self, admission: WorkflowAdmission, io: Option<&PreparationIo>,
     ) -> Result<WorkflowAdmission> {
-        admission.validate_with_io(io)?;
+        admission.validate(io)?;
         if let Some(owner) = &self.owner {
             if &admission != owner.workflow_admission() {
                 return Err(Error::Unauthorized("workflow differs from retained task admission".into()));
@@ -1200,7 +1200,7 @@ where
             _pinned = io.map(|io| io.guard_owned(io.owned_bytes()?.checked_sub(before)
                 .ok_or_else(|| Error::Invalid("workflow pinned admission custody underflow".into()))?))
                 .transpose()?;
-            pinned.validate_with_io(io)?;
+            pinned.validate(io)?;
             if pinned != admission {
                 return Err(Error::Conflict("staged workflow admission disagrees with its identity".into()));
             }

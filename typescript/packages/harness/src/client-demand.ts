@@ -107,8 +107,7 @@ export class DemandLoader<Key, Value> {
     const pending = this.#pending.get(key);
     if (pending === undefined) return;
     pending.controller.abort();
-    // The scheduler promise may already be settled while reader completion is
-    // still queued. Cancel the owned readers directly rather than relying on it.
+    // Cancel readers even when their scheduler promise has settled.
     this.#complete(key, pending, { ok: false, error: requestAborted() });
   }
 
@@ -120,6 +119,5 @@ export class DemandLoader<Key, Value> {
       this.#complete(key, pending, { ok: false, error: requestAborted() });
     }
     this.#cache.clear();
-    // The shared scheduler belongs to its caller.
   }
 }
