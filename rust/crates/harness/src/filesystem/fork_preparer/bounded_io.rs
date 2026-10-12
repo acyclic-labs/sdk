@@ -850,7 +850,7 @@ impl PreparationIo {
         {
             let bytes = self.encode(source, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
             let _bytes = self.guard_bytes(&bytes)?;
-            self.decode_preparation(&bytes, code)
+            self.decode(std::marker::PhantomData::<T>, &bytes, code)
         }
         #[cfg(not(target_arch = "wasm32"))]
         { self.value_decode_with_schema(

@@ -1299,7 +1299,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 let comparisons = (request.resources.len() as u64)
                     .checked_mul(request.child.resource_proofs.len() as u64)
                     .and_then(|comparisons| comparisons.checked_add(1))
-                    .ok_or_else(|| admission_boundary(&None, crate::wire::ErrorCode::Invalid,
+                    .ok_or_else(|| admission_boundary(&Some(&mut *observer), crate::wire::ErrorCode::Invalid,
                         "preparation identity comparison work overflows"))?;
                 observer.codec_charge(crate::contract::JsonCodecCharge::Work {
                     bytes: input.len() as u64, items: comparisons,
