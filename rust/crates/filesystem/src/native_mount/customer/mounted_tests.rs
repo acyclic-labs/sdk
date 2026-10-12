@@ -1,7 +1,6 @@
 use super::*;
 use crate::demand::native::NativeDemandSource;
-use crate::kernel::NamespacePath;
-use crate::lazy_workspace::LazyReadonlyNode;
+use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
 use crate::model::{FilesystemProfile, VolumeLimits};
 use crate::{CancellationToken, Fs, MemoryLazyWorkspaceStore, WorkBudget};
 use std::future::{Ready, ready};
@@ -183,15 +182,15 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
         limits,
     )?;
     let operation = crate::OperationId::new();
-    let child = lazy
-        .fork("selected-import-child", IdempotencyKey::new())
+    let (child, _) = lazy
+        .fork("selected-import-child", IdempotencyKey::new(), &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation))
         .await?;
     child
         .workspace()
         .write_text("/selected-import.txt", "selected SDK import")
         .await?;
     let child_snapshot = child
-        .snapshot(&LazyTreapWork::new(WorkBudget::UNBOUNDED, &cancellation))
+        .snapshot(&mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation))
         .await?;
     let imported_head = lazy.workspace().head(&setup, &cancellation).await?.id();
     assert!(
@@ -203,18 +202,17 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
 
     let selected_work = new_work(WorkBudget::UNBOUNDED)?;
     let prepare = || async {
-        let accounting = LazyTreapWork::native_with_work(&selected_work, &cancellation)?;
-        match child
+        let (plan, allocation) = child
             .prepare_selected_import(
                 child_snapshot,
                 std::slice::from_ref(&imported_path),
-                &accounting,
+                &mut KernelAccounting::native(&selected_work, &cancellation),
             )
-            .await?
-        {
-            LazyReadonlyNode::Native(owned) => Ok::<_, LazyWorkspaceError>(owned.into_parts()),
-            LazyReadonlyNode::Portable(_) => unreachable!("native plan retains its funding"),
-        }
+            .await?;
+        let crate::kernel::KernelOwnedAllocation::NativeOriginal(custody) = allocation else {
+            return Err(LazyWorkspaceError::NativeLedgerMismatch);
+        };
+        Ok::<_, LazyWorkspaceError>((plan, custody))
     };
     let import = async |plan,
                         custody,

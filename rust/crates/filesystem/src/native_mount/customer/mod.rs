@@ -7,7 +7,7 @@ use super::{
 };
 use crate::demand::{DemandSource, SourceNode, SourceNodeKind};
 use crate::kernel::FileKind;
-use crate::lazy_workspace::LazyTreapWork;
+use crate::kernel::KernelAccounting;
 use crate::model::{CheckoutMode, GenerationSelector};
 use crate::native_capture::NativeViewBaseline;
 use crate::workspace::{Workspace, WorkspaceError};

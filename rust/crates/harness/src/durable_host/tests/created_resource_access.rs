@@ -100,7 +100,7 @@ async fn native_stock_startup_retains_original_configuration_and_current_context
     let tool = crate::tool::files::read_file()?;
     let grant = format!("tool:{}", tool.definition.name);
     let mut tools = crate::tool::ToolRegistry::default();
-    tools.register(tool)?;
+    tools.register((tool, None), &mut None, None)?;
     let fixture = NativeCustomerFixture::new_with_grants(&[&grant], tools.clone()).await?;
     let volume = VolumeRef::new(
         fixture.creation.filesystem_provider.clone(),
@@ -601,11 +601,7 @@ impl CreationFixture {
                     .map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
                 let initial_generation = initial.id();
                 let workspace = workspace_ref(filesystem_provider.clone(), &name)?;
-                let initial_ref = GenerationRef::new(
-                    filesystem_provider.clone(),
-                    initial_generation.digest().into_bytes().to_vec(),
-                    None,
-                )?;
+                let initial_ref = GenerationRef::new(&(filesystem_provider), &(initial_generation.digest().into_bytes()), None, None)?.0;
                 let selected = filesystem
                     .apply(
                         &workspace,

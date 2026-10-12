@@ -161,7 +161,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PinnedReader<A, O> {
     }
 }
 
-pub(super) async fn read_record_metadata_to_file_root_with_accounting<
+pub(crate) async fn read_record_metadata_to_file_root_with_accounting<
     A: AsyncAuthorityStore,
     O: AsyncObjectStore,
 >(

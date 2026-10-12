@@ -677,8 +677,8 @@ async fn actual_registry_keeps_shared_file_tools_and_refuses_contextless_recursi
             .ok_or_else(|| Error::NotFound(name.into()))?;
         assert_eq!(tool.definition, durable.definition);
         assert_eq!(
-            tool.executor.resumable_machine_identity(),
-            Some(durable.machine.identity().clone())
+            tool.executor.resumable_machine_identity(None)?,
+            Some(durable.machine.identity())
         );
         let invocation = ToolInvocation {
             operation_id: OperationId::from_bytes([50; 16]),

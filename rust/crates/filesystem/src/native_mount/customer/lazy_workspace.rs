@@ -40,7 +40,7 @@ where
                     .exactify(
                         subdirectory,
                         permit,
-                        &LazyTreapWork::native_with_work(work, work.cancellation())?,
+                        &mut KernelAccounting::native(work, work.cancellation()),
                     )
                     .await?;
                 let mut mount = (
@@ -95,7 +95,7 @@ where
             .unicode_text_with_accounting(&mut accounting, cancellation)
             .map_err(WorkspaceError::from)?;
         let selected = self
-            .lookup_with_native_work(&root_text.0, work, cancellation)
+            .lookup(&root_text.0, &mut accounting)
             .await?;
         let selected_custody = selected.1;
         let selected = selected.0;
@@ -107,10 +107,10 @@ where
                     ..
                 },
                 ..
-            } | LazyLookup::Source(SourceNode {
+            } | LazyLookup::Source { node: SourceNode {
                 kind: SourceNodeKind::Directory,
                 ..
-            }) | LazyLookup::Shadow {
+            }, .. } | LazyLookup::Shadow {
                 record: crate::kernel::FileRecord {
                     kind: FileKind::Directory,
                     ..
@@ -120,7 +120,7 @@ where
         ) {
             return Err(WorkspaceError::NotDirectory.into());
         }
-        if let LazyLookup::Source(node) = &selected {
+        if let LazyLookup::Source { node, .. } = &selected {
             let expected_source = self.source_file_id(&node.file_identity, &mut accounting)?;
             work.charge(crate::WorkCounters {
                 bytes_hashed: (b"acyclic-fs-lazy-mount-root-v1\0".len()
@@ -141,7 +141,7 @@ where
                 expected_source,
                 0,
                 IdempotencyKey::from_bytes(key),
-                &LazyTreapWork::native_with_work(work, cancellation)?,
+                &mut accounting,
             )
             .await?;
         }
@@ -201,7 +201,7 @@ where
         };
         let root_text = root_text.0;
         let session_destination = work.path(&destination, None)?;
-        let lazy = self.clone().into_arc_with_native_work(work)?;
+        let lazy = self.clone().into_arc(&mut KernelAccounting::native(work, work.cancellation()))?;
         let mut source_allocation = work.claim(
             std::mem::size_of::<LazyMountSource<A, O, D, S>>() as u64,
             1,

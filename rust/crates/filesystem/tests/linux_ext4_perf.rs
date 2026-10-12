@@ -83,7 +83,19 @@ async fn mounted_workflow(
         NativeDemandSource::open(std::borrow::Cow::Owned(std::path::Path::new(source).to_path_buf()), FilesystemProfile::Portable, VolumeLimits::default(), None, None, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
             .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?,
     );
-    let lazy = LazyWorkspace::attach(fs, name, demand, MemoryLazyWorkspaceStore::default()).await?;
+    let lazy = LazyWorkspace::attach(fs, name, demand, MemoryLazyWorkspaceStore::default() ,
+        crate::VolumeConfig::portable(if (fs).capabilities().durable {
+            crate::Lifecycle::Durable
+        } else {
+            crate::Lifecycle::Ephemeral
+        }),
+        crate::OperationId::new(),
+        &mut crate::kernel::KernelAccounting::Standalone {
+            allocations: Default::default(),
+            work: crate::WorkCounters::UNCHARGED,
+            budget: crate::WorkBudget::UNBOUNDED,
+            cancellation: &crate::CancellationToken::new(),
+        }, ).await .map(|(lazy, _)| lazy) ?;
     let view = tempfile::tempdir()?;
     let mount = lazy.mount(view.path(), MountOptions::read_write()).await?;
     let mounted = (|| {
@@ -201,8 +213,19 @@ async fn qualify_linux_lazy_source_promotion() -> Result<(), Box<dyn std::error:
         "linux-source-promotion",
         demand,
         MemoryLazyWorkspaceStore::default(),
-    )
-    .await?;
+    crate::VolumeConfig::portable(if (&fs).capabilities().durable {
+            crate::Lifecycle::Durable
+        } else {
+            crate::Lifecycle::Ephemeral
+        }),
+        crate::OperationId::new(),
+        &mut crate::kernel::KernelAccounting::Standalone {
+            allocations: Default::default(),
+            work: crate::WorkCounters::UNCHARGED,
+            budget: crate::WorkBudget::UNBOUNDED,
+            cancellation: &crate::CancellationToken::new(),
+        }, )
+    .await .map(|(lazy, _)| lazy) ?;
     let view = tempfile::tempdir()?;
     let mount = lazy
         .mount(view.path(), MountOptions::read_write())
@@ -303,8 +326,19 @@ async fn qualify_linux_write_unlink_visibility() -> Result<(), Box<dyn std::erro
         "linux-write-unlink",
         demand,
         MemoryLazyWorkspaceStore::default(),
-    )
-    .await?;
+    crate::VolumeConfig::portable(if (&fs).capabilities().durable {
+            crate::Lifecycle::Durable
+        } else {
+            crate::Lifecycle::Ephemeral
+        }),
+        crate::OperationId::new(),
+        &mut crate::kernel::KernelAccounting::Standalone {
+            allocations: Default::default(),
+            work: crate::WorkCounters::UNCHARGED,
+            budget: crate::WorkBudget::UNBOUNDED,
+            cancellation: &crate::CancellationToken::new(),
+        }, )
+    .await .map(|(lazy, _)| lazy) ?;
     let view = tempfile::tempdir()?;
     let mount = lazy.mount(view.path(), MountOptions::read_write()).await?;
     let result = async {
@@ -404,8 +438,19 @@ async fn qualify_linux_open_hardlink_unlink() -> Result<(), Box<dyn std::error::
         "linux-open-hardlink-unlink",
         demand,
         MemoryLazyWorkspaceStore::default(),
-    )
-    .await?;
+    crate::VolumeConfig::portable(if (&fs).capabilities().durable {
+            crate::Lifecycle::Durable
+        } else {
+            crate::Lifecycle::Ephemeral
+        }),
+        crate::OperationId::new(),
+        &mut crate::kernel::KernelAccounting::Standalone {
+            allocations: Default::default(),
+            work: crate::WorkCounters::UNCHARGED,
+            budget: crate::WorkBudget::UNBOUNDED,
+            cancellation: &crate::CancellationToken::new(),
+        }, )
+    .await .map(|(lazy, _)| lazy) ?;
     let view = tempfile::tempdir()?;
     let mount = lazy.mount(view.path(), MountOptions::read_write()).await?;
     let result = async {
@@ -480,8 +525,19 @@ async fn qualify_linux_ancestor_whiteout() -> Result<(), Box<dyn std::error::Err
         "linux-ancestor-whiteout",
         demand,
         MemoryLazyWorkspaceStore::default(),
-    )
-    .await?;
+    crate::VolumeConfig::portable(if (&fs).capabilities().durable {
+            crate::Lifecycle::Durable
+        } else {
+            crate::Lifecycle::Ephemeral
+        }),
+        crate::OperationId::new(),
+        &mut crate::kernel::KernelAccounting::Standalone {
+            allocations: Default::default(),
+            work: crate::WorkCounters::UNCHARGED,
+            budget: crate::WorkBudget::UNBOUNDED,
+            cancellation: &crate::CancellationToken::new(),
+        }, )
+    .await .map(|(lazy, _)| lazy) ?;
     let view = tempfile::tempdir()?;
     let mount = lazy.mount(view.path(), MountOptions::read_write()).await?;
     let result = async {
@@ -541,8 +597,19 @@ async fn qualify_linux_source_rename_visibility() -> Result<(), Box<dyn std::err
         "linux-source-rename",
         demand,
         MemoryLazyWorkspaceStore::default(),
-    )
-    .await?;
+    crate::VolumeConfig::portable(if (&fs).capabilities().durable {
+            crate::Lifecycle::Durable
+        } else {
+            crate::Lifecycle::Ephemeral
+        }),
+        crate::OperationId::new(),
+        &mut crate::kernel::KernelAccounting::Standalone {
+            allocations: Default::default(),
+            work: crate::WorkCounters::UNCHARGED,
+            budget: crate::WorkBudget::UNBOUNDED,
+            cancellation: &crate::CancellationToken::new(),
+        }, )
+    .await .map(|(lazy, _)| lazy) ?;
     let view = tempfile::tempdir()?;
     let mount = lazy.mount(view.path(), MountOptions::read_write()).await?;
     let result = async {
@@ -679,8 +746,19 @@ async fn report_linux_lazy_mount_read_costs() -> Result<(), Box<dyn std::error::
         "linux-lazy-mount-costs",
         demand,
         MemoryLazyWorkspaceStore::default(),
-    )
-    .await?;
+    crate::VolumeConfig::portable(if (&fs).capabilities().durable {
+            crate::Lifecycle::Durable
+        } else {
+            crate::Lifecycle::Ephemeral
+        }),
+        crate::OperationId::new(),
+        &mut crate::kernel::KernelAccounting::Standalone {
+            allocations: Default::default(),
+            work: crate::WorkCounters::UNCHARGED,
+            budget: crate::WorkBudget::UNBOUNDED,
+            cancellation: &crate::CancellationToken::new(),
+        }, )
+    .await .map(|(lazy, _)| lazy) ?;
     let attach_us = started.elapsed().as_micros();
     let view = tempfile::tempdir()?;
     let started = Instant::now();
@@ -891,8 +969,19 @@ async fn report_linux_working_set_costs() -> Result<(), Box<dyn std::error::Erro
         "linux-native-costs",
         demand,
         MemoryLazyWorkspaceStore::default(),
-    )
-    .await?;
+    crate::VolumeConfig::portable(if (&fs).capabilities().durable {
+            crate::Lifecycle::Durable
+        } else {
+            crate::Lifecycle::Ephemeral
+        }),
+        crate::OperationId::new(),
+        &mut crate::kernel::KernelAccounting::Standalone {
+            allocations: Default::default(),
+            work: crate::WorkCounters::UNCHARGED,
+            budget: crate::WorkBudget::UNBOUNDED,
+            cancellation: &crate::CancellationToken::new(),
+        }, )
+    .await .map(|(lazy, _)| lazy) ?;
     let attach_us = started.elapsed().as_micros();
 
     let view = tempfile::tempdir()?;

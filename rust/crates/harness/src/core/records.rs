@@ -235,22 +235,13 @@ impl Event {
         &self,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<(ApplyResult, u64)> {
-        let (event, retained) = if work.as_deref().is_some_and(copying::is_native) {
-            crate::wire_codec::CodecQuota::produce(work, |copy_quota| {
-                crate::core::copy_event(self, copy_quota)
-            })?
-        } else {
-            let mut retained = 0;
-            if let Some(io) = work.as_deref_mut() {
-                retained = inventory::source_inventory(self)?;
-                if matches!(&self.payload, EventPayload::ForkPublished { .. }) {
-                    io.admit_allocation(std::mem::size_of::<ForkSeed>() as u64)?;
-                }
-                io.admit_owned(retained)?;
-                io.retain_owned(retained)?;
-            }
-            (self.clone(), retained)
-        };
+        if let Some(io) = work.as_deref_mut().filter(|io| !copying::is_native(&**io))
+            && matches!(&self.payload, EventPayload::ForkPublished { .. })
+        {
+            io.admit_allocation(std::mem::size_of::<ForkSeed>() as u64)?;
+        }
+        let (event, retained) =
+            crate::wire_codec::CodecQuota::produce(work, |quota| copying::copy_event(self, quota))?;
         Ok((ApplyResult::Replayed { event }, retained))
     }
 }
