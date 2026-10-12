@@ -332,7 +332,7 @@ pub trait ExecutionJournal: acyclic_stream::ProviderPlatform {
         &'a self, _operation_id: OperationId, _idempotency_key: &'a str,
         work: &'a acyclic_fs::NativeMaterializationWork,
     ) -> Result<crate::NativeFutureBundle<'a, (FileRef, acyclic_fs::NativeAllocation)>> {
-        work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        work.remaining()?;
         Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
             reason: "native original staged-payload observation is unavailable" })
     }
@@ -3263,7 +3263,7 @@ pub async fn load_canonical_checkpoint_at<P: acyclic_stream::StreamProvider>(
             let before = io.owned_bytes()?;
             let mut observer = crate::store::history::native_work_io(
                 io.original_native_work().expect("native branch retains original work"),
-            ).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            )?;
             let selection = history.operation_event(
                 envelope.operation_id, maximum_history_bytes, &mut Some(&mut observer),
             ).await?;
@@ -3366,7 +3366,7 @@ pub async fn load_canonical_checkpoint_through<P: acyclic_stream::StreamProvider
             let before = io.owned_bytes()?;
             let mut observer = crate::store::history::native_work_io(
                 io.original_native_work().expect("native branch retains original work"),
-            ).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            )?;
             let mut work: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut observer);
             let records = history.conversation_range(
                 cursor, after_sequence, through_sequence, range_limits, &mut work,
