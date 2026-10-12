@@ -85,8 +85,8 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             require_view_family(view.as_ref(), work)?;
             owner.verify_with_native_work(false, work).await?;
             owner.require_effect_grants(&plan.provider, false, &mut Some(&mut io.history_io()))?;
-            owner.validate_input_file_with_io(&plan.request, &io)?;
-            owner.validate_input_file_with_io(&plan.result_schema, &io)?;
+            owner.validate_input_file(&plan.request, Some(&io))?;
+            owner.validate_input_file(&plan.result_schema, Some(&io))?;
             if authority.history_limits.maximum_events == 0 || authority.history_limits.maximum_bytes == 0 {
                 return Err(validation_error(Some(&io), crate::wire::ErrorCode::Invalid,
                     "native effect history allowances must be finite and positive"));
@@ -99,7 +99,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                 return Err(validation_error(Some(&io), crate::wire::ErrorCode::Invalid, "native request must be JSON content"));
             }
             let bytes = authority.content.read_with_native_work(&plan.request, owner.input_limits().file_bytes, work)?.await?;
-            let request = io.decode_preparation_with_code::<NativeProcessRequest>(
+            let request = io.decode_preparation::<NativeProcessRequest>(
                 bytes.as_ref(), crate::wire::ErrorCode::Invalid)?.into_retained();
             drop(bytes);
             request.view.validate_with_io(Some(&io))?;
@@ -127,7 +127,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                     "effect schema must be JSON schema content"));
             }
             let schema = authority.content.read_with_native_work(&plan.result_schema, owner.input_limits().file_bytes, work)?.await?;
-            let decoded = io.decode_preparation_with_code::<serde_json::Value>(schema.as_ref(), crate::wire::ErrorCode::Invalid)?;
+            let decoded = io.decode_preparation::<serde_json::Value>(schema.as_ref(), crate::wire::ErrorCode::Invalid)?;
             crate::contract::compile_json_schema(&decoded.value, "effect result", Some(&io))?;
             let result_schema = decoded.into_retained();
             drop(schema);

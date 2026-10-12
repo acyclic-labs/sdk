@@ -2257,7 +2257,7 @@ impl SchemaRegistry {
         io: &'a crate::filesystem::PreparationIo,
     ) -> Result<crate::filesystem::ReservedDecoded<'a, ExtensionConfiguration>> {
         let _metadata;
-        let metadata = io.encode_json(&(extension, content), io.remaining()?.bytes_encoded, false)?;
+        let metadata = io.encode(&(extension, content), io.remaining()?.bytes_encoded, false)?;
         _metadata = io.guard_owned(metadata.len() as u64)?;
         extension.validate()?;
         let binding = self.pinned_binding_with_io(&extension.name, extension.version, None, Some(io))?;
@@ -2270,9 +2270,9 @@ impl SchemaRegistry {
             content: &'a FileRef,
         }
         let _bytes;
-        let bytes = io.encode_json(&Record { extension, schema_digest, content }, io.remaining()?.bytes_encoded, false)?;
+        let bytes = io.encode(&Record { extension, schema_digest, content }, io.remaining()?.bytes_encoded, false)?;
         _bytes = io.guard_owned(bytes.len() as u64)?;
-        let record = io.decode_preparation::<ExtensionConfiguration>(&bytes)?;
+        let record = io.decode_preparation::<ExtensionConfiguration>(&bytes, crate::wire::ErrorCode::Storage)?;
         record.validate()?;
         Ok(record)
     }
@@ -2308,7 +2308,7 @@ impl SchemaRegistry {
         let _metadata;
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
-            _metadata = io.encode_json(record, io.remaining()?.bytes_encoded, false)?;
+            _metadata = io.encode(record, io.remaining()?.bytes_encoded, false)?;
             _metadata_hold = io.guard_owned(_metadata.len() as u64)?;
         }
         limits.validate_file(&record.content)?;
@@ -2389,7 +2389,7 @@ impl SchemaRegistry {
         let value = match io {
             #[cfg(feature = "filesystem")]
             Some(io) => {
-                decoded = io.decode_preparation::<Value>(bytes)?;
+                decoded = io.decode_preparation::<Value>(bytes, crate::wire::ErrorCode::Storage)?;
                 &decoded.value
             }
             _ => {
@@ -7400,7 +7400,7 @@ resolve_interaction interaction_resolved interaction:resolve";
             assert!(reducer.validate_fork_reference_ownership_with_work(&seed, &mut Some(&mut work)).is_err());
 
             let prefix = InheritedConversationPrefix::select(parent.clone(), 1, 0, &[], &reducer.conversation)?;
-            let prefix_bytes = prefix.canonical_bytes()?;
+            let prefix_bytes = prefix.canonical_bytes(None)?;
             let mut materialized = seed.clone();
             materialized.inherited_context.push(FileRef::new(
                 seed.child_private_volume.clone(), ".system/inherited-conversation/prefix.json", "generation-1",

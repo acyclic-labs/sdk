@@ -1,11 +1,4 @@
-//! The whole state machine as one self-contained encoding, from which a durable provider
-//! restarts instead of replaying every command it ever ran.
-//!
-//! Native compaction observes the same encoder. Its pointer memo is a sorted
-//! vector beside the original node queue; actual insertion shifts and standard
-//! vector capacities are funded, without guessing opaque map/header capacity.
-//! Scratch guards retire only after their buffers, and the resulting raw
-//! encoding retains its original-meter guard until the consumer drops it.
+//! Canonical snapshots of the stream state machine.
 
 use std::collections::{BTreeMap, HashSet};
 use std::sync::Arc;
@@ -30,32 +23,22 @@ const RETAINS_REPLAY: u8 = 1;
 const RETAINS_COMMIT: u8 = 2;
 
 impl MemoryStream {
-    /// Encodes the whole state.
-    pub(crate) async fn encode_state(&self) -> Vec<u8> {
-        let state = self.state.read().await;
-        encode(&state)
-    }
 
-    /// Uses the same canonical snapshot codec, with the original invocation
-    /// admitted before every owned buffer, copy, and retained wire graph.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn encode_state_observed(
+
+    /// Encodes the state with optional native admission.
+    pub(crate) async fn encode_state(
         &self,
         meter: WireMeter<'_>,
     ) -> std::io::Result<ObservedWire<Vec<u8>>> {
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(meter) = meter { meter.check()?; }
         let state = self.state.read().await;
+        #[cfg(not(target_arch = "wasm32"))]
         if let Some(meter) = meter { meter.check()?; }
-        encode_observed(&state, meter)
+        encode(&state, meter)
     }
 
     /// Replaces the whole state with one [`Self::encode_state`] encoded.
-    ///
-    /// # Errors
-    ///
-    /// Fails with [`StreamError::InvalidArgument`], changing nothing, when
-    /// `encoded` is not such an encoding. Fails with [`StreamError::Capacity`],
-    /// also changing nothing, when the decoded state exceeds this provider's limits.
     pub(crate) async fn install_state(&self, encoded: &[u8]) -> Result<(), StreamError> {
         let decoded = decode(encoded).ok_or(StreamError::InvalidArgument)?;
         if decoded.paths.len() > self.limits.paths
@@ -72,12 +55,7 @@ impl MemoryStream {
     }
 }
 
-fn encode(state: &State) -> Vec<u8> {
-    encode_observed(state, None)
-        .expect("unmetered canonical snapshot encoding cannot fail").value
-}
-
-fn encode_observed(state: &State, meter: WireMeter<'_>) -> std::io::Result<ObservedWire<Vec<u8>>> {
+fn encode(state: &State, meter: WireMeter<'_>) -> std::io::Result<ObservedWire<Vec<u8>>> {
     let mut writer = SnapshotWriter { out: Vec::new(), funding: WireFunding::new(meter) };
     writer.write(MAGIC)?;
     writer.u64(state.decision)?;
@@ -151,8 +129,6 @@ fn encode_observed(state: &State, meter: WireMeter<'_>) -> std::io::Result<Obser
     let node_bytes = nodes.capacity() * std::mem::size_of::<Arc<History>>();
     drop(nodes);
     writer.funding.retire(node_bytes)?;
-    // Only the actual standard-vector capacity is claimed. Allocator
-    // bookkeeping, opaque headers, and process RSS are not inferred.
     let index_bytes = indices.capacity() * std::mem::size_of::<(*const History, usize)>();
     drop(indices);
     writer.funding.retire(index_bytes)?;
@@ -170,7 +146,7 @@ fn encode_observed(state: &State, meter: WireMeter<'_>) -> std::io::Result<Obser
             writer.message(&CanonicalWire::Observation(key, &replay.digest, &replay.result))?;
         }
         if let Some(envelope) = commit {
-            writer.message(&CanonicalWire::Envelope(envelope))?;
+            writer.message(&CanonicalWire::Envelope(envelope.envelope().expect("a commit index contains an envelope")))?;
         }
     }
     Ok(writer.funding.finish(writer.out))
@@ -239,7 +215,7 @@ impl SnapshotWriter<'_> {
     fn message(&mut self, value: &CanonicalWire<'_>) -> std::io::Result<()> {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(meter) = self.funding.meter() { meter.admit_examination(1, 0)?; }
-        let length = value.encoded_len()?;
+        let length = value.encoded_len(None, None)?;
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(meter) = self.funding.meter() {
             meter.record_examination(1, 0)?;
@@ -269,8 +245,6 @@ fn decode(encoded: &[u8]) -> Option<State> {
     let nodes = decode_nodes(&mut input)?;
     let (paths, path_bytes) = decode_paths(&mut input, &nodes.0)?;
     let mut state = State::default();
-    // A restored snapshot creates a fresh prepared-capacity identity. Existing
-    // prepared requests cannot reserve or edit a replacement state by alias.
     state.paths = paths;
     state.path_bytes = path_bytes;
     state.decision = decision;
@@ -280,9 +254,7 @@ fn decode(encoded: &[u8]) -> Option<State> {
     if !input.0.is_empty() {
         return None;
     }
-    // The first-party codec has one canonical encoding. This also rejects
-    // unknown protobuf fields, duplicate fields, reordered paths, and unused nodes.
-    if encode(&state) != encoded {
+    if encode(&state, None).expect("unmetered encoding cannot fail").value != encoded {
         return None;
     }
     for path in state.paths.keys() {
@@ -301,20 +273,14 @@ fn decode(encoded: &[u8]) -> Option<State> {
     }) {
         return None;
     }
-    // Every successful current operation retains one immutable envelope; no
-    // expiry, trim or deletion can make the decision counter diverge.
     if state.decision != u64::try_from(state.commits.len()).ok()? {
         return None;
     }
     validate_inventory(&state)?;
-    recount(&mut state);
+    recount(&mut state, &super::MemoryObserver::default()).expect("unmetered recount cannot fail");
     Some(state)
 }
 
-// Index each path's own immutable nodes once, stopping at its fork Prefix.
-// Match envelopes in retained publication order against these facts. Forks
-// capture pre-commit source heads; all destination updates publish together.
-// This checks chronology and inventory without re-executing commands.
 fn validate_inventory(state: &State) -> Option<()> {
     let mut batches = BTreeMap::new();
     let mut prefixes = BTreeMap::new();
@@ -349,7 +315,7 @@ fn validate_inventory(state: &State) -> Option<()> {
         let Some(commit) = retained.commit else {
             continue;
         };
-        let envelope = state.commits.get(&commit)?;
+        let envelope = state.commits.get(&commit)?.envelope()?;
         let mut pending = Vec::with_capacity(envelope.mutations.len());
         for mutation in &envelope.mutations {
             let (path, records, parent) = match mutation {
@@ -409,8 +375,7 @@ fn validate_inventory(state: &State) -> Option<()> {
         .then_some(())
 }
 
-/// The node an encoded reference names: 0 for none, otherwise one after
-/// its index.
+/// The node an encoded reference names: 0 for none, otherwise one after its index.
 fn reference(nodes: &[Arc<History>], index: usize) -> Option<Option<Arc<History>>> {
     match index {
         0 => Some(None),
@@ -418,8 +383,6 @@ fn reference(nodes: &[Arc<History>], index: usize) -> Option<Option<Arc<History>
     }
 }
 
-// Release decoder-owned nodes from children to parents, including on failure.
-// Otherwise a malformed long chain can recurse through Arc destruction.
 struct DecodedNodes(Vec<Arc<History>>);
 
 impl Drop for DecodedNodes {
@@ -523,13 +486,6 @@ fn decode_paths(
     Some((paths, path_bytes))
 }
 
-// A current command is bounded by MAX_COMMAND_BYTES and each protobuf bytes
-// record costs at least two command bytes. Its retained record adds fewer than
-// 96 bytes of IDs, timestamps, sequence and framing, so 64x command bytes is
-// conservative even for empty records. Each mutation/conflict additionally
-// receives two maximum paths and 128 bytes of framing/range metadata. The
-// outer observation adds its maximum key and 128 bytes of digest/framing.
-// This is a writer-derived bound, independent of configured memory capacity.
 fn retained_fact_bound() -> Option<usize> {
     crate::MAX_COMMAND_BYTES
         .checked_mul(64)?
@@ -547,44 +503,30 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
         if flags == 0 || flags & !(RETAINS_REPLAY | RETAINS_COMMIT) != 0 {
             return None;
         }
-        let replay = if flags & RETAINS_REPLAY == 0 {
-            None
-        } else {
-            let bytes = input.bytes()?;
-            let observation =
-                crate::persistence::decode_observation(bytes, retained_fact_bound()?).ok()?;
-            let key = observation.idempotency_key.0.clone();
-            if state.replays.contains_key(&key) {
-                return None;
-            }
-            state.replays.insert(
-                key.clone(),
-                Replay {
-                    digest: observation.request_digest,
-                    result: observation.outcome,
-                    _allocation: super::MemoryAllocation::default(),
-                },
-            );
-            Some(key)
+        let observation = if flags & RETAINS_REPLAY == 0 { None } else {
+            Some(crate::persistence::decode_observation(input.bytes()?, retained_fact_bound()?).ok()?)
         };
-        let commit = if flags & RETAINS_COMMIT == 0 {
-            None
-        } else {
-            let bytes = input.bytes()?;
-            let envelope =
-                crate::persistence::decode_envelope(bytes, retained_fact_bound()?).ok()?;
-            let commit_id = envelope.commit_id;
-            if state.commits.insert(commit_id, envelope).is_some() {
-                return None;
-            }
-            Some(commit_id)
+        let envelope = if flags & RETAINS_COMMIT == 0 { None } else {
+            Some(crate::persistence::decode_envelope(input.bytes()?, retained_fact_bound()?).ok()?)
         };
+        let commit = envelope.as_ref().map(|envelope| envelope.commit_id);
+        let (replay, digest, result, envelope) = match observation {
+            Some(observation) => {
+                let envelope = if let crate::IdempotencyOutcome::Commit(crate::CommitOutcome::Committed(canonical)) = &observation.outcome {
+                    if envelope.as_ref() != Some(canonical) { return None; }
+                    None
+                } else { envelope };
+                (Some(observation.idempotency_key.0), observation.request_digest, observation.outcome, envelope)
+            }
+            None => (None, [0; 32], crate::IdempotencyOutcome::Commit(crate::CommitOutcome::Committed(envelope?)), None),
+        };
+        let cached = Arc::new(Replay { digest, result, envelope, _allocation: super::MemoryAllocation::default() });
+        if let Some(commit_id) = commit {
+            if state.commits.insert(commit_id, Arc::clone(&cached)).is_some() { return None; }
+        }
         if let Some(key) = &replay {
-            let result = &state.replays.get(key)?.result;
-            let result_commit = replay_commit_id(state, result)?;
-            if result_commit != commit {
-                return None;
-            }
+            if replay_commit_id(state, &cached.result)? != commit { return None; }
+            if state.replays.insert(key.clone(), cached).is_some() { return None; }
         }
         state.retained.push_back(Retained {
             replay, commit, _allocation: super::MemoryAllocation::default(),
@@ -596,7 +538,7 @@ fn decode_retained(input: &mut Input<'_>, state: &mut State) -> Option<()> {
 fn replay_commit_id(state: &State, result: &crate::IdempotencyOutcome) -> Option<Option<CommitId>> {
     let commit = match result {
         crate::IdempotencyOutcome::Append(crate::AppendOutcome::Committed(receipt)) => {
-            let envelope = state.commits.get(&receipt.commit_id)?;
+            let envelope = state.commits.get(&receipt.commit_id)?.envelope()?;
             let [crate::CommittedMutation::Append(append)] = envelope.mutations.as_slice() else {
                 return None;
             };
@@ -607,7 +549,7 @@ fn replay_commit_id(state: &State, result: &crate::IdempotencyOutcome) -> Option
             Some(receipt.commit_id)
         }
         crate::IdempotencyOutcome::Fork(receipt) => {
-            let envelope = state.commits.get(&receipt.commit_id)?;
+            let envelope = state.commits.get(&receipt.commit_id)?.envelope()?;
             let [crate::CommittedMutation::Fork(fork)] = envelope.mutations.as_slice() else {
                 return None;
             };
@@ -622,7 +564,7 @@ fn replay_commit_id(state: &State, result: &crate::IdempotencyOutcome) -> Option
             Some(receipt.commit_id)
         }
         crate::IdempotencyOutcome::Commit(crate::CommitOutcome::Committed(envelope)) => {
-            if state.commits.get(&envelope.commit_id) != Some(envelope) {
+            if state.commits.get(&envelope.commit_id).and_then(|cached| cached.envelope()) != Some(envelope) {
                 return None;
             }
             Some(envelope.commit_id)
@@ -722,7 +664,7 @@ mod tests {
         };
         let first = stream.append(request.clone()).await?;
         let restored = MemoryStream::new(limits);
-        restored.install_state(&stream.encode_state().await).await?;
+        restored.install_state(&stream.encode_state(None).await.expect("unmetered snapshot encoding").value).await?;
         assert_eq!(restored.append(request.clone()).await?, first);
         assert_eq!(restored.tail(request.path.clone()).await?, 1);
         let mut changed = request.clone();
@@ -770,7 +712,7 @@ mod tests {
         };
         let commit_result = stream.commit(committed.clone()).await?;
         let restored = MemoryStream::default();
-        restored.install_state(&stream.encode_state().await).await?;
+        restored.install_state(&stream.encode_state(None).await.expect("unmetered snapshot encoding").value).await?;
         assert_eq!(restored.append(appended).await?, append_result);
         assert_eq!(restored.fork(forked).await?, fork_result);
         assert_eq!(restored.commit(committed).await?, commit_result);
@@ -872,7 +814,7 @@ mod tests {
         };
         let outcome = stream.commit(request.clone()).await?;
         let restored = MemoryStream::default();
-        restored.install_state(&stream.encode_state().await).await?;
+        restored.install_state(&stream.encode_state(None).await.expect("unmetered snapshot encoding").value).await?;
         assert_eq!(restored.commit(request).await?, outcome);
         assert_eq!(restored.tail(empty).await?, 0);
         assert_eq!(restored.tail(no_history).await?, 0);
@@ -918,13 +860,13 @@ mod tests {
                 idempotency_key: Some(IdempotencyKey::new(OwnedBytes::from_static(b"kept"))?),
             })
             .await?;
-        let valid = stream.encode_state().await;
+        let valid = stream.encode_state(None).await.expect("unmetered snapshot encoding").value;
         for length in 0..valid.len() {
             assert_eq!(
                 stream.install_state(&valid[..length]).await,
                 Err(StreamError::InvalidArgument)
             );
-            assert_eq!(stream.encode_state().await, valid);
+            assert_eq!(stream.encode_state(None).await.expect("unmetered snapshot encoding").value, valid);
         }
         let mut impossible_decision = valid.clone();
         impossible_decision[MAGIC.len()..MAGIC.len() + 8].copy_from_slice(&u64::MAX.to_le_bytes());
@@ -954,7 +896,7 @@ mod tests {
                 stream.install_state(&obsolete).await,
                 Err(StreamError::InvalidArgument)
             );
-            assert_eq!(stream.encode_state().await, valid);
+            assert_eq!(stream.encode_state(None).await.expect("unmetered snapshot encoding").value, valid);
         }
         for limits in [
             MemoryLimits {
@@ -983,14 +925,14 @@ mod tests {
             },
         ] {
             let constrained = MemoryStream::new(limits);
-            let empty = constrained.encode_state().await;
+            let empty = constrained.encode_state(None).await.expect("unmetered snapshot encoding").value;
             assert_eq!(
                 constrained.install_state(&valid).await,
                 Err(StreamError::Capacity)
             );
-            assert_eq!(constrained.encode_state().await, empty);
+            assert_eq!(constrained.encode_state(None).await.expect("unmetered snapshot encoding").value, empty);
         }
-        assert_eq!(stream.encode_state().await, valid);
+        assert_eq!(stream.encode_state(None).await.expect("unmetered snapshot encoding").value, valid);
         Ok(())
     }
 
@@ -1074,9 +1016,15 @@ mod tests {
             })
             .await?;
         let mut state = stream.state.write().await;
+        let cached = state.replays.get_mut(key.as_bytes()).ok_or(StreamError::Unavailable)?;
+        *cached = Arc::new(Replay {
+            digest: cached.digest, result: cached.result.clone(), envelope: cached.envelope.clone(),
+            _allocation: crate::memory::MemoryAllocation::default(),
+        });
         let replay = state
             .replays
             .get_mut(key.as_bytes())
+            .and_then(Arc::get_mut)
             .ok_or(StreamError::Unavailable)?;
         let original_result = replay.result.clone();
         let crate::IdempotencyOutcome::Append(crate::AppendOutcome::Committed(receipt)) =
@@ -1085,15 +1033,17 @@ mod tests {
             return Err(StreamError::Unavailable);
         };
         receipt.start = receipt.end;
-        assert!(decode(&encode(&state)).is_none());
+        assert!(decode(&encode(&state, None).expect("unmetered encoding cannot fail").value).is_none());
         state
             .replays
             .get_mut(key.as_bytes())
+            .and_then(Arc::get_mut)
             .ok_or(StreamError::Unavailable)?
             .result = original_result.clone();
         let replay = state
             .replays
             .get_mut(key.as_bytes())
+            .and_then(Arc::get_mut)
             .ok_or(StreamError::Unavailable)?;
         let crate::IdempotencyOutcome::Append(crate::AppendOutcome::Committed(receipt)) =
             &mut replay.result
@@ -1103,10 +1053,11 @@ mod tests {
         receipt.start = 1;
         receipt.end = 2;
         receipt.tail = 2;
-        assert!(decode(&encode(&state)).is_none());
+        assert!(decode(&encode(&state, None).expect("unmetered encoding cannot fail").value).is_none());
         state
             .replays
             .get_mut(key.as_bytes())
+            .and_then(Arc::get_mut)
             .ok_or(StreamError::Unavailable)?
             .result = original_result;
         let commit_id = *state
@@ -1117,16 +1068,18 @@ mod tests {
         let envelope = state
             .commits
             .get_mut(&commit_id)
+            .and_then(Arc::get_mut).and_then(Replay::envelope_mut)
             .ok_or(StreamError::Unavailable)?;
         let Some(crate::CommittedMutation::Append(append)) = envelope.mutations.first_mut() else {
             return Err(StreamError::Unavailable);
         };
         let record = append.records.first_mut().ok_or(StreamError::Unavailable)?;
         record.sequence = 9;
-        assert!(decode(&encode(&state)).is_none());
+        assert!(decode(&encode(&state, None).expect("unmetered encoding cannot fail").value).is_none());
         let envelope = state
             .commits
             .get_mut(&commit_id)
+            .and_then(Arc::get_mut).and_then(Replay::envelope_mut)
             .ok_or(StreamError::Unavailable)?;
         let Some(crate::CommittedMutation::Append(append)) = envelope.mutations.first_mut() else {
             return Err(StreamError::Unavailable);
@@ -1134,7 +1087,7 @@ mod tests {
         let record = append.records.first_mut().ok_or(StreamError::Unavailable)?;
         record.sequence = 0;
         record.value = OwnedBytes::from_static(b"phantom payload absent from immutable history");
-        assert!(decode(&encode(&state)).is_none());
+        assert!(decode(&encode(&state, None).expect("unmetered encoding cannot fail").value).is_none());
         Ok(())
     }
 
@@ -1169,17 +1122,18 @@ mod tests {
                 idempotency_key: None,
             })
             .await?;
-        assert!(decode(&stream.encode_state().await).is_some());
+        assert!(decode(&stream.encode_state(None).await.expect("unmetered snapshot encoding").value).is_some());
         let mut state = stream.state.write().await;
         let envelope = state
             .commits
             .get_mut(&receipt.commit_id)
+            .and_then(Arc::get_mut).and_then(Replay::envelope_mut)
             .ok_or(StreamError::Unavailable)?;
         let Some(crate::CommittedMutation::Fork(fork)) = envelope.mutations.first_mut() else {
             return Err(StreamError::Unavailable);
         };
         fork.source = later;
-        assert!(decode(&encode(&state)).is_none());
+        assert!(decode(&encode(&state, None).expect("unmetered encoding cannot fail").value).is_none());
         Ok(())
     }
 
@@ -1204,7 +1158,7 @@ mod tests {
             })
             .await?;
         stream.append(append(b"future")).await?;
-        assert!(decode(&stream.encode_state().await).is_some());
+        assert!(decode(&stream.encode_state(None).await.expect("unmetered snapshot encoding").value).is_some());
         let mut state = stream.state.write().await;
         let future = state
             .paths
@@ -1221,7 +1175,7 @@ mod tests {
             tail: 1,
             _allocation: super::super::MemoryAllocation::default(),
         }));
-        assert!(decode(&encode(&state)).is_none());
+        assert!(decode(&encode(&state, None).expect("unmetered encoding cannot fail").value).is_none());
         Ok(())
     }
 
@@ -1256,7 +1210,7 @@ mod tests {
                 idempotency_key: None,
             })
             .await?;
-        let timed = stream.encode_state().await;
+        let timed = stream.encode_state(None).await.expect("unmetered snapshot encoding").value;
         clock.0.store(90, Ordering::SeqCst);
         let restored = MemoryStream::new_with_clock(MemoryLimits::default(), clock);
         restored.install_state(&timed).await?;

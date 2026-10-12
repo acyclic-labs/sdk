@@ -30,18 +30,17 @@ impl NativePublicationSlot {
 }
 
 #[inline(never)]
-pub(super) fn execute<'a, P: StreamProvider + 'static>(
+pub(super) async fn execute<'a, P: StreamProvider + 'static>(
     owner: &'a Arc<TaskJournalOwner<P>>, view: &'a dyn NativeProcessView<P>,
     authority: &'a NativeProcessAuthority, request: &'a Arc<NativeProcessRequest>,
     dispatch: &'a EffectDispatch, schema: &'a serde_json::Value,
     supervisor: &'a Arc<NativeSupervisorControl>, original: &'a NativeMaterializationWork,
-) -> Result<crate::NativeFutureBundle<'a, (NativeExecution, NativeAllocation)>> {
+) -> Result<(NativeExecution, NativeAllocation)> {
     finite_binding::require_view_family(view, original)?;
-    crate::NativeFutureBundle::new(original, || async move {
         let mut custody = Some(original.retain_owned(0)?);
         let mut publication_slot = None;
         let result: Result<NativeExecution> = async {
-            verify(owner, original)?.await?;
+            owner.verify_with_native_work(false, original).await?;
             grants(owner, &request.view, original)?;
             {
                 view.operation_cancellation().check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
@@ -64,20 +63,17 @@ pub(super) fn execute<'a, P: StreamProvider + 'static>(
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                     reason: "native dispatch view changed after observation" });
             }
-            verify(owner, original)?.await?;
+            owner.verify_with_native_work(false, original).await?;
             let scopes = Some(view.retain_native_namespace_scopes(original)?.await?);
-            let captured = {crate::NativeFutureBundle::new(original,
-                    || capture(owner, request, supervisor, view.operation_cancellation(), original, scopes),
-                )?.await?
-    };
+            let captured = capture(owner, request, supervisor, view.operation_cancellation(), original, scopes).await?;
             let capture_custody = captured.1;
             let captured = captured.0;
             let publish = captured.stop.is_none();
             let cleanup_completed = captured.stop.as_ref().is_none_or(|stop| stop.cleanup_completed);
             let bytes = {
                 let io = crate::filesystem::PreparationIo::from_native_work(original)?;
-                let bytes = io.encode_json(&captured, u64::from(request.maximum_result_bytes), true)?;
-                let decoded = io.decode_preparation_with_code::<serde_json::Value>(
+                let bytes = io.encode(&captured, u64::from(request.maximum_result_bytes), true)?;
+                let decoded = io.decode_preparation::<serde_json::Value>(
                     &bytes, crate::wire::ErrorCode::Invalid)?;
                 crate::contract::validate_json_schema_value(schema, &decoded.value, "native process result", Some(&io))?;
                 drop(decoded);
@@ -114,7 +110,7 @@ pub(super) fn execute<'a, P: StreamProvider + 'static>(
             if publish {
                 {
                     let admitted = async {
-                        verify(owner, original)?.await?;
+                        owner.verify_with_native_work(false, original).await?;
                         grants(owner, &request.view, original)?;
                         view.publish(owner, original)
                     }.await;
@@ -127,7 +123,7 @@ pub(super) fn execute<'a, P: StreamProvider + 'static>(
                                         return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                                             reason: "native publication view changed after publication" });
                                     }
-                                    verify(owner, original)?.await
+                                    owner.verify_with_native_work(false, original).await
                                 }.await;
                                 match checked {
                                     Ok(()) => {
@@ -175,14 +171,6 @@ pub(super) fn execute<'a, P: StreamProvider + 'static>(
             Err(Error::NativeWork { cause, custody: None }) => Err(Error::NativeWork { cause, custody }),
             Err(error) => Err(error),
         }
-    })
-}
-
-#[inline(never)]
-fn verify<'a, P: StreamProvider>(
-    owner: &'a TaskJournalOwner<P>, work: &'a NativeMaterializationWork,
-) -> Result<crate::NativeFutureBundle<'a, ()>> {
-    crate::NativeFutureBundle::new(work, || owner.verify_with_native_work(false, work))
 }
 
 fn grants<P: StreamProvider>(owner: &TaskJournalOwner<P>, manifest: &NativeViewManifest,
@@ -203,7 +191,7 @@ async fn capture<P: StreamProvider + 'static>(
     original: &NativeMaterializationWork,
     scopes: Option<NativeProcessNamespaceScopes>,
 ) -> Result<(NativeProcessResult, NativeAllocation)> {
-    verify(owner, original)?.await?;
+    owner.verify_with_native_work(false, original).await?;
     let mut custody = original.retain_owned(0)?;
     let maximum = request.maximum_output_bytes as usize;
     let input = request.mcp_stdio.as_ref().map_or_else(
@@ -246,7 +234,7 @@ async fn capture<P: StreamProvider + 'static>(
             let result = runtime.block_on(tokio::time::timeout(
                 Duration::from_millis(u64::from(invocation.control_timeout_ms)), async {
                     cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
-                    verify(check_owner.as_ref(), &original)?.await
+                    check_owner.verify_with_native_work(false, &original).await
                 }));
             match result {
                 Ok(Ok(())) => Ok(()),

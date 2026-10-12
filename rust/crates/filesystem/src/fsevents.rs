@@ -232,11 +232,11 @@ impl Api {
         work.preflight(WorkCounters {
             items_examined: cleanup_records, ..WorkCounters::default()
         })?;
-        work.with_original_leaf(|work| work.reserve_pending_items(cleanup_records))?;
+        work.with_original_leaf(|work| work.reserve(crate::materializer::NativeResourceCredit::Items, cleanup_records))?;
         let mut slot_allocation = match work.claim(slots) {
             Ok(allocation) => allocation,
             Err(error) => {
-                work.with_original_leaf(|work| work.refund_pending_items(cleanup_records));
+                work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, cleanup_records).expect("original reservation is balanced"));
                 return Err(error);
             }
         };
@@ -248,7 +248,7 @@ impl Api {
         if let Err(error) = reserved.map_err(DemandError::Allocation).and(reconciled) {
             drop(strings);
             work.release(slot_allocation)?;
-            work.with_original_leaf(|work| work.refund_pending_items(cleanup_records));
+            work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, cleanup_records).expect("original reservation is balanced"));
             return Err(error);
         }
         let mut cleanup_remaining = cleanup_records;
@@ -330,10 +330,10 @@ impl Api {
             let retired = work.record(WorkCounters {
                 backend_write_operations: 1, ..WorkCounters::default()
             });
-            let visited = work.with_original_leaf(|work| work.record_pending_items(1));
+            let visited = work.with_original_leaf(|work| work.complete(crate::materializer::NativeResourceCredit::Items, 1, 1));
             if let Err(error) = retired.and(visited) { result = Err(error); }
         }
-        work.with_original_leaf(|work| work.refund_pending_items(cleanup_remaining));
+        work.with_original_leaf(|work| work.refund(crate::materializer::NativeResourceCredit::Items, cleanup_remaining).expect("original reservation is balanced"));
         drop(strings);
         work.release(slot_allocation)?;
         match result {

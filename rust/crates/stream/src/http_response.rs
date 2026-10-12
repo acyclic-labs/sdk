@@ -58,10 +58,6 @@ fn encode_base64(value: &[u8]) -> String {
 }
 
 /// Encode a generated response for one canonical HTTP route.
-/// Successful Commit includes its complete immutable envelope atomically.
-/// This projects already admitted outcomes; it does not authorize or publish them.
-/// # Errors
-/// Rejects unknown routes, malformed responses, zero bounds and oversized output.
 pub fn encode(route: &str, input: &[u8], maximum_bytes: usize) -> Result<Vec<u8>> {
     if maximum_bytes == 0 || input.len() > maximum_bytes {
         return Err("limit_exceeded");
@@ -229,10 +225,6 @@ fn commit_value(value: wire::CommitResponse) -> Result<Value> {
     let outcome = value.outcome.ok_or("invalid_response")?;
     Ok(match outcome {
         wire::commit_response::Outcome::Committed(envelope) => {
-            // Commit responses can be larger than the bounded command
-            // request that produced them. Validate the complete envelope
-            // before deriving its compact public result so nested records
-            // cannot bypass identity and width checks.
             let envelope_json = envelope_value(&envelope)?;
             validate("commits/read", &envelope_json)?;
             let mut tails = serde_json::Map::new();

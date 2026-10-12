@@ -3,13 +3,12 @@ use crate::{
     AppendRequest, CommitCondition, CommitConflict, CommitMutation, CommitRequest, ForkRequest,
     IdempotencyKey, MemoryStream, StreamProvider,
 };
-use bytes::Bytes;
 use crate::OwnedBytes;
 
 const BOUND: usize = 1024 * 1024;
 
 fn key(value: &'static [u8]) -> Result<IdempotencyKey, StreamError> {
-    IdempotencyKey::new(Bytes::from_static(value))
+    IdempotencyKey::new(OwnedBytes::from_static(value))
 }
 
 async fn round_trip(
@@ -147,7 +146,7 @@ fn bounds_and_malformed_persistence_fail_closed() -> Result<(), Box<dyn std::err
         Err(StreamError::InvalidArgument)
     );
     let mut wire = wire_codec::observation_wire(value);
-    wire.request_digest = Bytes::from_static(b"short");
+    wire.request_digest = bytes::Bytes::from_static(b"short");
     assert_eq!(
         decode_observation(&wire.encode_to_vec(), BOUND),
         Err(StreamError::InvalidArgument)
@@ -201,7 +200,7 @@ async fn invalid_record_identity_sequence_time_and_positions_are_rejected()
             encode_envelope(&broken, BOUND),
             Err(StreamError::InvalidArgument)
         );
-        let bytes = wire_codec::envelope_wire(broken).encode_to_vec();
+        let bytes = wire_codec::envelope_to_wire(broken).encode_to_vec();
         assert_eq!(
             decode_envelope(&bytes, BOUND),
             Err(StreamError::InvalidArgument)

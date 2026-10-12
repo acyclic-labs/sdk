@@ -21,7 +21,7 @@ fn workspace(runtime: &Runtime) -> (tempfile::TempDir, LocalFs, LocalWorkspace) 
         let fs = Box::pin(Fs::local(LocalOptions::new(root.path())))
             .await
             .unwrap();
-        let workspace = Box::pin(fs.create_workspace("bench")).await.unwrap();
+        let workspace = Box::pin(fs.create_workspace("bench", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())).await.map(|receipt| receipt.value).map_err(|failure| failure.error).unwrap();
         (root, fs, workspace)
     })
 }
@@ -52,7 +52,7 @@ fn transaction_publish_16(bencher: Bencher) {
     bencher.counter(ItemsCount::new(16_usize)).bench_local(|| {
         next += 1;
         runtime.block_on(async {
-            let mut transaction = Box::pin(workspace.begin_transaction(IdempotencyKey::new()))
+            let mut transaction = Box::pin(async { workspace.begin_transaction(IdempotencyKey::new(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) })
                 .await
                 .unwrap();
             for item in 0..16 {
@@ -61,7 +61,7 @@ fn transaction_publish_16(bencher: Bencher) {
                     .await
                     .unwrap();
             }
-            Box::pin(transaction.commit()).await.unwrap();
+            Box::pin(async { transaction.commit(None, acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error) }).await.unwrap();
         });
     });
 }
@@ -78,7 +78,7 @@ fn read_small(bencher: Bencher) {
         .unwrap();
     bencher.bench_local(|| {
         runtime
-            .block_on(Box::pin(workspace.read("/entry", 64)))
+            .block_on(Box::pin(async { workspace.read("/entry", 64, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) }))
             .unwrap()
     });
 }

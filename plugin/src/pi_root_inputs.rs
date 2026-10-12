@@ -1,10 +1,4 @@
 //! Immutable root-preparation inputs in the existing owner volume.
-//! Native reads use the original admitted task's content source. Every decoded
-//! artifact retains original-ledger custody through its final metadata consumer.
-//! Dispatch keeps the supplied SDK native context; cold reads obtain its genuine
-//! original metadata custody once and transfer it into the SDK shared context.
-//! Service-state preparation borrows its selection and moves the authenticated
-//! admission's original binding/root into retained input without reconstructing them.
 
 use super::{PiScratchAllocation, PiTaskBinding, pi_owner::PiOwnerConfig,
     pi_root::PiRootIntent, pi_root_allocation::PiRootAllocation};
@@ -30,8 +24,6 @@ pub(crate) struct PiRootRequest {
 
 impl PiRootRequest {
     /// Copies retained root metadata directly, not through a codec round trip.
-    /// Logical BTree entry slots are funded before insertion; opaque std map
-    /// node/allocator backing is not invented as SDK allocation operations.
     pub(crate) fn clone_with_native_work(
         &self, work: &NativeMaterializationWork,
     ) -> Result<(Self, NativeAllocation)> {
@@ -76,8 +68,6 @@ impl PiRootRequest {
             },
             root: root.0,
         }, slot, [session.1, projects.1, scratch.1, root.1]));
-        // Source results custody stays outside the data-first result tuple only
-        // until the actual transfer; no new result allocation is inferred.
         let mut owned = (combined?, results_custody);
         if let Some(custody) = &mut owned.1 {
             owned.0.1.absorb(custody).map_err(native_error)?;
@@ -122,7 +112,6 @@ fn native_error(cause: acyclic_fs::NativeTreeMaterializationError) -> Error {
 }
 
 /// Read-only preparation authenticated against the original task admission.
-/// Data fields precede custody so destruction releases data before its guard.
 pub(crate) struct PiRootPreparation {
     command: WorkflowCommand,
     plan: TaskEffectPlan,
@@ -155,8 +144,8 @@ impl PiRootPreparation {
     {
         let owner = PiOwnerConfig::load_readonly_with_native_work(private_root, session, work)?;
         runtime.verify_owner_with_native_work(&owner, work)?;
-        owner.validate_root_with_native_work(&retained.binding, work)?;
-        let admitted = super::pi_recovery::authenticate_pi_task_with_native_work(
+        owner.validate_root(&retained.binding, work)?;
+        let admitted = super::pi_recovery::authenticate_pi_task(
             &runtime.runtime, &retained.binding,
             super::pi_recovery::PiTaskOrigin::Root(&retained.root), work,
         ).await?;
@@ -187,8 +176,8 @@ impl PiRootPreparation {
     {
         let owner = PiOwnerConfig::load_readonly_with_native_work(private_root, session, work)?;
         runtime.verify_owner_with_native_work(&owner, work)?;
-        owner.validate_root_with_native_work(&retained.binding, work)?;
-        let admitted = super::pi_recovery::authenticate_pi_task_with_native_work(
+        owner.validate_root(&retained.binding, work)?;
+        let admitted = super::pi_recovery::authenticate_pi_task(
             &runtime.runtime, &retained.binding,
             super::pi_recovery::PiTaskOrigin::Root(&retained.root), work,
         ).await?;
@@ -201,8 +190,6 @@ impl PiRootPreparation {
     }
 
     /// Authenticates the borrowed service state without reminting root metadata.
-    /// A supplied current context is reused unchanged; cold reads obtain only
-    /// the genuine original SDK context and its metadata custody.
     pub(crate) async fn load_native_from_state<P, A, O>(
         private_root: &acyclic_fs::NativeHostPrivateStateRoot,
         session: &Path, runtime: &super::pi_runtime::PiTaskRuntime<P, A, O>,
@@ -220,8 +207,8 @@ impl PiRootPreparation {
         };
         let owner = PiOwnerConfig::load_readonly_with_native_work(private_root, session, work)?;
         runtime.verify_owner_with_native_work(&owner, work)?;
-        owner.validate_root_with_native_work(binding, work)?;
-        let admitted = super::pi_recovery::authenticate_pi_task_with_native_work(
+        owner.validate_root(binding, work)?;
+        let admitted = super::pi_recovery::authenticate_pi_task(
             &runtime.runtime, binding, super::pi_recovery::PiTaskOrigin::RootState(state), work,
         ).await?;
         let context = match context {
@@ -303,8 +290,6 @@ impl PiRootPreparation {
         drop(schema.1);
         drop(request.0);
         drop(request.1);
-        // The original admitted command, binding and root move together. The
-        // discarded comparison DTO drops before releasing its decoder custody.
         let super::pi_task::PiTaskInput { binding, execution } = admitted.0;
         let super::pi_task::PiTaskExecution::Host { root, preparation } = execution else {
             unreachable!();
@@ -314,24 +299,7 @@ impl PiRootPreparation {
     }
 }
 
-trait RootInputArtifact: DeserializeOwned + Serialize {
-    const VALUE_SCHEMA: JsonValueSchema;
-    const DIAGNOSTIC_LABEL_BYTES: u64;
-}
-impl RootInputArtifact for PiRootRequest {
-    const VALUE_SCHEMA: JsonValueSchema = JsonValueSchema::None;
-    const DIAGNOSTIC_LABEL_BYTES: u64 = super::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES;
-}
-impl RootInputArtifact for TaskEffectPlan {
-    const VALUE_SCHEMA: JsonValueSchema = JsonValueSchema::None;
-    const DIAGNOSTIC_LABEL_BYTES: u64 = super::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES;
-}
-impl RootInputArtifact for serde_json::Value {
-    const VALUE_SCHEMA: JsonValueSchema = JsonValueSchema::Root;
-    const DIAGNOSTIC_LABEL_BYTES: u64 = 0;
-}
-
-async fn read_input<T: RootInputArtifact>(
+async fn read_input<T: DeserializeOwned + Serialize>(
     context: &TaskContext, reference: &FileRef, name: &str, media_type: &str,
     maximum: u64, work: &NativeMaterializationWork,
 ) -> Result<(T, NativeAllocation)> {
@@ -343,19 +311,17 @@ async fn read_input<T: RootInputArtifact>(
         return Err(invalid("Pi root preparation artifact path or media type differs"));
     }
     let bytes = context.read_file_with_native_work(reference, work).await?;
-    // Fixed closed DTO headers are distinct from the SDK source shape's
-    // admitted dynamic Value/String/collection overlap.
     let owned = std::mem::size_of::<T>() as u64;
     let decoded = super::pi_root_provider::guarded_pi_decode_with_code::<T>(
-        &bytes.0, maximum, owned, acyclic_harness::wire::ErrorCode::Storage,
-        T::VALUE_SCHEMA, T::DIAGNOSTIC_LABEL_BYTES, work,
+        bytes.as_ref(), maximum, owned, acyclic_harness::wire::ErrorCode::Storage,
+        if name == "allocation-schema" { JsonValueSchema::Root } else { JsonValueSchema::None },
+        if name == "allocation-schema" { 0 } else { super::pi_root_provider::ROOT_ARTIFACT_DIAGNOSTIC_LABEL_BYTES }, work,
     )?;
     let canonical = super::pi_root_provider::guarded_pi_bytes(&decoded.0, maximum, work)?;
-    let equal = canonical.0 == bytes.0;
+    let equal = canonical.0.as_slice() == bytes.as_ref();
     drop(canonical.0);
     drop(canonical.1);
-    drop(bytes.0);
-    drop(bytes.1);
+    drop(bytes);
     if !equal {
         drop(decoded.0);
         drop(decoded.1);
@@ -424,7 +390,7 @@ pub(crate) fn preparation_operation(task: TaskId) -> OperationId {
 }
 
 fn validate_request(owner: &PiOwnerConfig, request: &PiRootRequest, work: &NativeMaterializationWork) -> Result<()> {
-    owner.validate_root_with_native_work(&request.binding, work)?;
+    owner.validate_root(&request.binding, work)?;
     request.root.validate_with_native_work(&request.binding, work)?;
     if !matches!(request.binding.scratch.allocation, PiScratchAllocation::Preparing) {
         return Err(invalid("Pi root preparation requires its original unallocated scratch intent"));

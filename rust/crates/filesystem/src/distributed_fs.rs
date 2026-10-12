@@ -41,7 +41,7 @@ impl<A, O, S> DistributedFs<A, O, S> {
         S: WorkspaceLineageStore + Clone,
     {
         let record = self.lineage().resolve(workspace_id).await?;
-        let workspace = self.fs.open_workspace(&record.workspace_name).await?;
+        let workspace = self.fs.open_workspace(&record.workspace_name, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         if workspace.id() != workspace_id {
             return Err(WorkspaceLineageError::IncompatibleState);
         }
@@ -99,31 +99,6 @@ impl<A, O, S> DistributedFs<A, O, S> {
         S: LazyWorkspaceStore + Clone,
     {
         LazyWorkspace::attach_with_config(&self.fs, name, source, self.store.clone(), config).await
-    }
-
-    /// Binds one source to its original admitted creation operation under
-    /// explicit work/cancellation limits, retaining the initial generation.
-    #[allow(clippy::too_many_arguments, reason = "explicit original creation and finite provider bounds")]
-    pub async fn attach_lazy_with_operation_measured<D: DemandSource + 'static>(
-        &self,
-        name: impl AsRef<str>,
-        source: Arc<D>,
-        config: VolumeConfig,
-        operation_id: crate::OperationId,
-        budget: crate::WorkBudget,
-        cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<
-        crate::OperationReceipt<(LazyWorkspace<A, O, D, S>, crate::Generation<A, O>)>,
-        LazyWorkspaceError,
-    >
-    where
-        A: AsyncAuthorityStore,
-        O: AsyncObjectStore,
-        S: LazyWorkspaceStore + Clone,
-    {
-        LazyWorkspace::attach_with_operation_measured(
-            &self.fs, name, source, self.store.clone(), config, operation_id, budget, cancellation,
-        ).await
     }
 
     /// Attaches the original creation operation using its unchanged native root.

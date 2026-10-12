@@ -966,7 +966,7 @@ mod native_cache {
         ).map_err(|failure| match failure.into_error() {
             acyclic_stream::PreparedOwnedBytesError::Admission(error) => work.runtime_error(error).into(),
             acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-            | acyclic_stream::PreparedOwnedBytesError::NotUnique =>
+            =>
                 ObjectStoreError::Native(NativeTreeMaterializationError::InvalidLayout),
         })?;
         prepared.writable()[..source.len()].copy_from_slice(source);

@@ -604,7 +604,7 @@ struct NativeReservationFailureSlot<A, O> {
 impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> NativeReservationFailureSlot<A, O> {
     fn new(work: &NativeMaterializationWork) -> Result<Self> {
         let custody = work.claim_allocation(
-            std::mem::size_of::<NativePublicationReservationFailure<A, O>>() as u64, 1,
+            std::mem::size_of::<NativePublicationReservationFailure<A, O>>() as u64, 1, acyclic_fs::WorkCounters::UNCHARGED,
         )?;
         Ok(Self { value: Box::new_uninit(), custody })
     }
@@ -792,7 +792,7 @@ impl NativeExistingLazyVolume {
                 .ok_or_else(|| Error::from(acyclic_fs::NativeTreeMaterializationError::InvalidLayout))?;
             let workspace = binding.host.open_volume_with_native_work(binding.volume, work).await?;
             let generation = binding.host.generation_with_native_work(&workspace, binding.generation, work).await?;
-            let actual = mount.snapshot_with_work(&work.native_mount_work(), work.cancellation()).await?;
+            let actual = mount.snapshot_with_work(&work, work.cancellation()).await?;
             if &actual != snapshot || snapshot.workspace_id != workspace.id()
                 || snapshot.authored_generation != generation.id()
             {
@@ -861,7 +861,7 @@ where P: StreamProvider + 'static,
         self.require_work(work)?;
         crate::NativeFutureBundle::new(work, || async move {
             self.check(work).await?;
-            let snapshot = self.mount.snapshot_with_work(&work.native_mount_work(), work.cancellation())
+            let snapshot = self.mount.snapshot_with_work(&work, work.cancellation())
                 .await?;
             self.check(work).await?;
             Ok(snapshot)
@@ -873,7 +873,7 @@ where P: StreamProvider + 'static,
         crate::NativeFutureBundle::new(work, || async move {
             self.check(work).await?;
             let snapshot = match self.mount.publication_snapshot_with_work(
-                &work.native_mount_work(), work.cancellation(),
+                &work, work.cancellation(),
             ).await {
                 Ok(snapshot) => snapshot,
                 Err((cause, accounting)) => return Ok(Err(NativePublicationSyncFailure {
@@ -893,7 +893,7 @@ where P: StreamProvider + 'static,
     fn begin_scope(&self, work: &NativeMaterializationWork)
         -> Result<acyclic_fs::native_mount::OwnedNativeMountOriginalWorkScope> {
         self.require_work(work)?;
-        self.mount.begin_original_work(&work.native_mount_work()).map_err(Error::from)
+        self.mount.begin_original_work(&work).map_err(Error::from)
     }
     fn read<'a>(&'a self, relative: &'a Path, maximum: usize, work: &'a NativeMaterializationWork)
         -> Result<crate::NativeFutureBundle<'a, acyclic_stream::OwnedBytes>> {
@@ -905,12 +905,12 @@ where P: StreamProvider + 'static,
                 .map_err(acyclic_fs::native_mount::MountLifecycleError::Native)?;
             let physical = work.with_source_io_lease(lease)?;
             self.check(&physical).await?;
-            self.mount.with_original_work(&physical.native_mount_work(), |scope| {
+            self.mount.with_original_work(&physical, |scope| {
                 let scope = scope.try_clone_for_io();
                 let physical = &physical;
                 async move {
                     let scope = scope.map_err(acyclic_fs::native_mount::MountLifecycleError::Native)?;
-                    let result = physical.read_working_file_guarded(self.path(), self.identity, relative, maximum,
+                    let result = physical.read_working_file(self.path(), self.identity, relative, maximum,
                         || self.check(physical)).await;
                     drop(scope);
                     result
@@ -929,12 +929,12 @@ where P: StreamProvider + 'static,
                 .map_err(acyclic_fs::native_mount::MountLifecycleError::Native)?;
             let physical = work.with_source_io_lease(lease)?;
             self.check(&physical).await?;
-            self.mount.with_original_work(&physical.native_mount_work(), |scope| {
+            self.mount.with_original_work(&physical, |scope| {
                 let scope = scope.try_clone_for_io();
                 let physical = &physical;
                 async move {
-                    let scope = scope.map_err(acyclic_fs::native_mount::MountLifecycleError::Native)?;
-                    physical.write_working_file_guarded_with_scope(scope, self.path(), self.identity, relative,
+                    let _scope = scope.map_err(acyclic_fs::native_mount::MountLifecycleError::Native)?;
+                    physical.write_working_file( self.path(), self.identity, relative,
                         content, parents, expected, || self.check(physical)).await
                 }
             }).await?
@@ -947,7 +947,7 @@ where P: StreamProvider + 'static,
             self.check(work).await?;
             let callback = Arc::clone(&self.callback);
             let result = self.mount.sync_with_permit_work_guarded(
-                permit, &work.native_mount_work(), work.cancellation(),
+                permit, &work, work.cancellation(),
                 move |actual: &NativeMaterializationWork| {
                     let callback = Arc::clone(&callback);
                     let actual = actual.clone();
@@ -1021,14 +1021,12 @@ impl NativePreparationRoot {
                 reason: "native allocation witness requires absolute paths and finite allowances" });
         }
         crate::NativeFutureBundle::new(work, || async {
-        let (root, mut custody) = work.copy_path(root)?;
-        let (operation_directory, mut operation_custody) = work.copy_path(operation_directory)?;
+        let (root, mut custody) = work.path(root, None)?;
+        let (operation_directory, mut operation_custody) = work.path(operation_directory, None)?;
         custody.absorb(&mut operation_custody)?;
         let meter = work.clone();
         acyclic_native_runtime::run_blocking_io_measured(move || {
-            let backend = acyclic_fs::NativeTreeMaterializationBackend::open(
-                root, operation_directory, Some(custody), meter.clone(),
-            )?;
+            let backend = acyclic_fs::NativeTreeMaterializationBackend::new(root, operation_directory, Some(custody), meter.clone(), false)?;
             backend.require_initial_empty()?;
             let expected_identity = acyclic_fs::NativeRootIdentity::from_bytes(
                 backend.allocation_identity().ok_or(Error::NativeBoundary {
@@ -1037,8 +1035,8 @@ impl NativePreparationRoot {
             let expected_preparation_identity = backend.preparation_identity()
                 .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                     reason: "native staging allocation is unwitnessed" })?;
-            let (root, mut custody) = meter.copy_path(backend.root_path())?;
-            let (operation_directory, mut operation_custody) = meter.copy_path(backend.operation_directory_path())?;
+            let (root, mut custody) = meter.path(backend.root_path(), None)?;
+            let (operation_directory, mut operation_custody) = meter.path(backend.operation_directory_path(), None)?;
             custody.absorb(&mut operation_custody)?;
             Ok::<_, Error>((Self { root, operation_directory, expected_identity, expected_preparation_identity }, custody))
         }, work.runtime_meter_owner())
@@ -1442,7 +1440,7 @@ where
             if options.root != allocation.root {
                 return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, reason: "native options root differs from witnessed host allocation" });
             }
-            let (root, mut output_custody) = work.copy_path(&options.root)?;
+            let (root, mut output_custody) = work.path(&options.root, None)?;
             let owned_options = NativeViewOptions {
                 root, maximum_volumes: options.maximum_volumes,
                 work_per_volume: options.work_per_volume,
@@ -1487,7 +1485,7 @@ where
                 output_custody.absorb(&mut volume_custody)?;
                 let (generation, mut generation_custody) = allocate(&work, |io| binding.generation.clone_with_io(io))?;
                 output_custody.absorb(&mut generation_custody)?;
-                let (path, mut path_custody) = work.join_path(&options.root, path)?;
+                let (path, mut path_custody) = work.path(&options.root, Some(path))?;
                 output_custody.absorb(&mut path_custody)?;
                 if let Some(lazy) = lazy {
                     let NativeVolumeNamespace::LazyMount { snapshot } = binding.namespace else { unreachable!() };
@@ -1582,7 +1580,7 @@ where
                 output_custody.absorb(&mut reservation_custody)?;
                 output_custody.absorb(&mut placement_custody)?;
                 let original_fence = crate::scheduler::LeaseFence { reservation_id, placement };
-                let (operation_directory, operation_custody) = work.copy_path(&allocation.operation_directory)?;
+                let (operation_directory, operation_custody) = work.path(&allocation.operation_directory, None)?;
                 intent_operation_custody = Some(operation_custody);
                 NativePreparationIntent { task, original_fence, operation_directory, manifest }
             };
@@ -1648,7 +1646,7 @@ where
                         path_custody,
                     );
                     generation.materialize_with_native_work(
-                        &staged.0, &volume_work.native_mount_work(), cancellation,
+                        &staged.0, &volume_work, cancellation,
                     ).await?;
                     owner.verify_with_native_work(false, work).await?;
                     verify_binding(owner, binding, volume_work)?;
@@ -1711,12 +1709,12 @@ where
                 let mount = if binding.writable {
                     acyclic_fs::MountOptions::read_write().publication(acyclic_fs::MountPublication::Manual)
                 } else { acyclic_fs::MountOptions::read_only() };
-                let (attachment_path, path_custody) = work.copy_path(&mapping.path)?;
+                let (attachment_path, path_custody) = work.path(&mapping.path, None)?;
                 let attachment = (acyclic_fs::MaterializeOptions::native(attachment_path), path_custody);
-                let native_original = Some(volume_work.native_mount_work());
+                let native_original = Some(volume_work.clone());
                 let view = generation.attach_native_working_set_with_work(
                     &mount, &attachment.0, identity, manifest.options.work_per_volume,
-                    &volume_work.native_mount_work(), cancellation, Some(sdk),
+                    &volume_work, cancellation, Some(sdk),
                     native_original,
                 ).await?;
                 owner.verify_with_native_work(false, work).await?;
@@ -1932,7 +1930,7 @@ where
                 let lease = view.native_source_io_lease()
                     .map_err(acyclic_fs::native_mount::MountLifecycleError::Native)?;
                 let physical = work.with_source_io_lease(lease)?;
-                physical.read_working_file_guarded(&mapping.path, volume.original_identity, file, maximum_bytes,
+                physical.read_working_file(&mapping.path, volume.original_identity, file, maximum_bytes,
                     || self.verify_builtin_owner(owner, mapping, VolumeOperation::Read, work)).await
             }
         }
@@ -1958,7 +1956,7 @@ where
                 let lease = view.native_source_io_lease()
                     .map_err(acyclic_fs::native_mount::MountLifecycleError::Native)?;
                 let physical = work.with_source_io_lease(lease)?;
-                physical.write_working_file_guarded(&mapping.path, volume.original_identity, file, content,
+                physical.write_working_file(&mapping.path, volume.original_identity, file, content,
                     create_parents, expected_sha256,
                     || async {
                         self.verify_builtin_owner(owner, mapping, VolumeOperation::Write, work).await?;
@@ -1969,14 +1967,6 @@ where
                     }).await
             }
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn builtin_meter_for_test(
-        &self, relative: &Path, work: &NativeMaterializationWork,
-    ) -> Result<Arc<dyn acyclic_native_runtime::NativeReadMeter>> {
-        let (_, volume, _) = self.builtin_volume(relative, VolumeOperation::Read, work)?;
-        Ok(volume._work.runtime_meter_owner())
     }
 
     fn builtin_volume<'a>(
@@ -2062,8 +2052,8 @@ where
 
     fn validate_directory_with_work(&self, cwd: &Path, work: &NativeMaterializationWork) -> Result<()> {
         if cwd == self.preparation.manifest.options.root {
-            return work.validate_working_directory(&self.preparation.manifest.options.root,
-                self.original_root_identity()?, Path::new("")).map_err(Error::from);
+            return work.open_working_directory(&self.preparation.manifest.options.root,
+                self.original_root_identity()?, Path::new("")).map(drop).map_err(Error::from);
         }
         for (mapping, volume) in self.preparation.manifest.volumes.iter().zip(&self.volumes) {
             work.charge(acyclic_fs::WorkCounters { items_examined: 1,
@@ -2073,7 +2063,7 @@ where
                     NativePreparedVolumeBackend::Materialized { .. } => work,
                     NativePreparedVolumeBackend::HeldLazy(lazy) => lazy.original_work(),
                 };
-                return physical_work.validate_working_directory(&mapping.path, volume.original_identity, relative)
+                return physical_work.open_working_directory(&mapping.path, volume.original_identity, relative).map(drop)
                     .map_err(Error::from);
             }
         }
@@ -2092,7 +2082,7 @@ where
                 ..acyclic_fs::WorkCounters::default() })?;
             match &volume.view {
                 NativePreparedVolumeBackend::Materialized { view, .. } => {
-                    let original = volume._work.native_mount_work();
+                    let original = volume._work.clone();
                     view.validate_for_presentation_with_work(&original, volume._work.cancellation()).await?;
                     view.verify_unchanged_with_work(&original, volume._work.cancellation()).await?;
                 },
@@ -2150,7 +2140,7 @@ where
                 if !mapping.writable {
                     let snapshot = match &volume.view {
                         NativePreparedVolumeBackend::Materialized { view, .. } =>
-                            view.verify_unchanged_with_work(&volume._work.native_mount_work(), volume._work.cancellation()).await?,
+                            view.verify_unchanged_with_work(&volume._work, volume._work.cancellation()).await?,
                         NativePreparedVolumeBackend::HeldLazy(lazy) => {
                             let NativeVolumeNamespace::LazyMount { snapshot } = &mapping.namespace else {
                                 return Err(Error::from(acyclic_fs::NativeTreeMaterializationError::InvalidLayout));
@@ -2193,7 +2183,7 @@ where
                     NativePreparedVolumeBackend::Materialized { view, callback } => {
                         let callback = Arc::clone(callback);
                         view.sync_with_permit_with_work(
-                            volume.publication, &volume._work.native_mount_work(), volume._work.cancellation(),
+                            volume.publication, &volume._work, volume._work.cancellation(),
                             move |actual: &NativeMaterializationWork| {
                                 let callback = Arc::clone(&callback);
                                 let actual = actual.clone();
@@ -2316,7 +2306,7 @@ fn native_preparation_operation_for_task_with_work(
 
 
 async fn checkpoint_preparation<P: StreamProvider>(
-    store: &NativePreparationStore<'_, P>, mut journal: acyclic_fs::OwnedMaterializationJournal,
+    store: &NativePreparationStore<'_, P>, mut journal: acyclic_fs::MaterializationJournal,
 ) -> Result<()> {
     let expected = journal.revision;
     journal.revision = expected.checked_add(1)
@@ -2379,12 +2369,12 @@ async fn native_backend(
     allocation: &NativePreparationRoot, work: &NativeMaterializationWork, require_original: bool,
 ) -> Result<acyclic_fs::NativeTreeMaterializationBackend> {
     use acyclic_fs::MaterializationBackend as _;
-    let (root, mut custody) = work.copy_path(&allocation.root)?;
-    let (operation_directory, mut operation_custody) = work.copy_path(&allocation.operation_directory)?;
+    let (root, mut custody) = work.path(&allocation.root, None)?;
+    let (operation_directory, mut operation_custody) = work.path(&allocation.operation_directory, None)?;
     custody.absorb(&mut operation_custody)?;
     let meter = work.clone();
     let backend = acyclic_native_runtime::run_blocking_io_measured(move || {
-        acyclic_fs::NativeTreeMaterializationBackend::open(root, operation_directory, Some(custody), meter)
+        acyclic_fs::NativeTreeMaterializationBackend::new(root, operation_directory, Some(custody), meter, false)
     }, work.runtime_meter_owner())
         .map_err(|error| Error::from(work.runtime_error(error)))?
         .await.map_err(|error| Error::from(work.runtime_error(error)))??;
@@ -2467,7 +2457,7 @@ fn preparation_receipt(
     intent: NativePreparationIntent, inspection: acyclic_fs::MaterializationInspection,
     custody: Option<acyclic_fs::NativeAllocation>,
 ) -> Result<NativePreparationReceipt> {
-    let acyclic_fs::OwnedMaterializationJournal { journal, custody: mut journal_custody } = inspection.journal;
+    let mut journal = inspection.journal; let mut journal_custody = journal.custody.take();
     let mut receipt = NativePreparationReceipt {
         task: intent.task, original_fence: intent.original_fence, manifest: intent.manifest,
         journal, root: inspection.root, preparation: inspection.preparation,
@@ -2494,7 +2484,7 @@ enum NativePreparationAuthority<'a, P: StreamProvider> {
 
 /// Authenticated pre-action packet for one accepted task-preparation completion.
 pub(crate) struct NativePreparationCompletionTemplate {
-    journal: acyclic_fs::OwnedMaterializationJournal,
+    journal: acyclic_fs::MaterializationJournal,
     intent: NativePreparationIntent,
     path: acyclic_stream::StreamPath,
     key: acyclic_stream::IdempotencyKey,
@@ -2596,7 +2586,7 @@ impl NativePreparationCompletionTemplate {
         (&self.value, self.output.writable(), self.maximum_bytes)
     }
     pub(crate) fn into_completed_parts(self)
-        -> (acyclic_fs::OwnedMaterializationJournal, acyclic_stream::PreparedOwnedBytes<acyclic_fs::NativeAllocation>, acyclic_fs::NativeAllocation)
+        -> (acyclic_fs::MaterializationJournal, acyclic_stream::PreparedOwnedBytes<acyclic_fs::NativeAllocation>, acyclic_fs::NativeAllocation)
     {
         let Self { mut journal, intent, path, key, value, output, maximum_bytes: _, custody } = self;
         journal.revision += 1;
@@ -2693,10 +2683,10 @@ pub async fn bind_original_root_conversation_with_native_work<P: StreamProvider 
 }
 
 impl acyclic_fs::MaterializationActionCompletion for crate::NativeFutureBundle<'_,
-    (acyclic_fs::OwnedMaterializationJournal, acyclic_fs::NativeAllocation)> {
+    (acyclic_fs::MaterializationJournal, acyclic_fs::NativeAllocation)> {
     type Error = Error;
 
-    async fn complete(self) -> Result<acyclic_fs::OwnedMaterializationJournal> {
+    async fn complete(self) -> Result<acyclic_fs::MaterializationJournal> {
         let (mut journal, mut output_custody) = self.await?;
         match journal.custody.as_mut() {
             Some(custody) => {
@@ -2764,7 +2754,7 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
 
     /// Authenticates the actual protected Preparing record before accepting one physical action.
     async fn completion_template(
-        &self, journal: acyclic_fs::OwnedMaterializationJournal,
+        &self, journal: acyclic_fs::MaterializationJournal,
     ) -> Result<NativePreparationCompletionTemplate> {
         let operation = journal.plan.operation_id;
         let owner = match &self.authority {
@@ -2777,7 +2767,7 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
             ?
             .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Storage,
                 reason: "native completion original preparation is missing" })?;
-        if loaded != journal.journal {
+        if loaded != journal {
             return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                 reason: "native completion original packet differs from its durable Preparing record" });
         }
@@ -2798,7 +2788,7 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
                 owner.require_volume_grant_with_native_work(&mapping.volume, VolumeOperation::Write, &self.work)?;
             }
         }
-        let (encoded, encoded_custody) = encode_record(&journal.journal, &self.work)?;
+        let (encoded, encoded_custody) = encode_record(&journal, &self.work)?;
         self.work.charge(acyclic_fs::WorkCounters { bytes_hashed: encoded.len() as u64,
             ..acyclic_fs::WorkCounters::default() })?;
         let association = *blake3::hash(&encoded).as_bytes();
@@ -2811,7 +2801,7 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
         let key = acyclic_stream::IdempotencyKey::new(key_bytes)?;
         let path = self.path(operation)?;
         let io = super::PreparationIo::from_native_work(&self.work)?;
-        let mut value = io.value_json(&journal.journal, self.work.remaining()?.bytes_encoded)?;
+        let mut value = io.value_json(&journal, self.work.remaining()?.bytes_encoded)?;
         let mut custody = self.work.retain_owned(std::mem::size_of::<NativePreparationCompletionTemplate>() as u64)?;
         custody.absorb(&mut intent_custody)?;
         let held = io.owned_bytes()?;
@@ -2900,7 +2890,7 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
                 std::mem::size_of::<acyclic_fs::MaterializationPreparationSelection>(),
                 std::mem::size_of::<acyclic_fs::MaterializationPreimage>(), std::mem::size_of::<u8>()]
                 .into_iter().max().expect("nonempty concrete journal schema"), &self.work,
-            |journal| NativeMaterializationWork::journal_control_bytes(journal).map_err(Into::into),
+            |journal| acyclic_fs::materializer::journal_owned_bytes(journal).map_err(Into::into),
         )?;
         if record.sequence != sequence || journal.revision != bounds.tail || journal.plan.operation_id != operation {
             return Err(preparation_error("materializer journal revision or operation changed"));
@@ -2919,10 +2909,10 @@ impl<P: StreamProvider> MaterializationJournalStore for NativePreparationStore<'
     type Error = Error;
 
     type ActionCompletion<'a> = crate::NativeFutureBundle<'a,
-        (acyclic_fs::OwnedMaterializationJournal, acyclic_fs::NativeAllocation)> where Self: 'a;
+        (acyclic_fs::MaterializationJournal, acyclic_fs::NativeAllocation)> where Self: 'a;
 
     async fn prepare_action<'a>(
-        &'a self, journal: acyclic_fs::OwnedMaterializationJournal,
+        &'a self, journal: acyclic_fs::MaterializationJournal,
     ) -> Result<Self::ActionCompletion<'a>> {
         let owner = match &self.authority {
             NativePreparationAuthority::Owner { owner, settlement: false } => *owner,
@@ -2964,18 +2954,16 @@ impl<P: StreamProvider> MaterializationJournalStore for NativePreparationStore<'
         Ok(future)
     }
 
-    async fn load(&self, operation: acyclic_fs::OperationId) -> Result<Option<acyclic_fs::OwnedMaterializationJournal>> {
+    async fn load(&self, operation: acyclic_fs::OperationId) -> Result<Option<acyclic_fs::MaterializationJournal>> {
         self.load_record(operation, true).await
-            .map(|record| record.map(|(journal, custody)| acyclic_fs::OwnedMaterializationJournal {
-                journal, custody: Some(custody),
-            }))
+            .map(|record| record.map(|(journal, custody)| { let mut journal = journal; journal.custody = Some(custody); journal }))
             .map_err(Error::from)
     }
 
     async fn compare_and_swap(
         &self, operation: acyclic_fs::OperationId, expected_revision: u64,
-        mut replacement: acyclic_fs::OwnedMaterializationJournal,
-    ) -> Result<(bool, acyclic_fs::OwnedMaterializationJournal)> {
+        mut replacement: acyclic_fs::MaterializationJournal,
+    ) -> Result<(bool, acyclic_fs::MaterializationJournal)> {
         let (owner, settlement) = match &self.authority {
             NativePreparationAuthority::Owner { owner, settlement } => (*owner, *settlement),
             NativePreparationAuthority::Admission(_) => return Err(Error::NativeBoundary {
@@ -2997,7 +2985,7 @@ impl<P: StreamProvider> MaterializationJournalStore for NativePreparationStore<'
             });
         }
         replacement.work = self.work.journal_work()?;
-        let (encoded, encoded_custody) = encode_record(&replacement.journal, &self.work)?;
+        let (encoded, encoded_custody) = encode_record(&replacement, &self.work)?;
         let bytes = acyclic_stream::OwnedBytes::from_vec_with_guard(
             encoded, encoded_custody, self.work.runtime_meter_owner(),
         ).map_err(|failure| native_owned_bytes_failure(failure, &self.work))?;
@@ -3015,11 +3003,12 @@ impl<P: StreamProvider> MaterializationJournalStore for NativePreparationStore<'
         ).map_err(|failure| native_owned_bytes_failure(failure, &self.work))?;
         let key = acyclic_stream::IdempotencyKey::new(key_bytes)?;
         let path = self.path(operation)?;
-        let committed = owner.append_with_native_work(
+        let mut io = crate::store::history::native_work_io(&self.work)?;
+        let committed = owner.append(
             path, expected_revision, &key, bytes,
             if settlement { crate::distributed::JournalWrite::Settlement }
             else { crate::distributed::JournalWrite::Fresh },
-            &self.work,
+            &mut Some(&mut io),
         ).await?;
         Ok((committed, replacement))
     }
@@ -3120,7 +3109,7 @@ pub(super) fn native_owned_bytes_failure(
     match failure.into_error() {
         acyclic_stream::PreparedOwnedBytesError::Admission(error) => Error::from(work.runtime_error(error)),
         acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-        | acyclic_stream::PreparedOwnedBytesError::NotUnique => Error::NativeBoundary {
+        => Error::NativeBoundary {
             code: crate::wire::ErrorCode::Storage,
             reason: "native owned byte buffer violated its fixed initialized ownership invariant",
         },
@@ -3145,7 +3134,7 @@ pub fn copy_native_mapping_with_work(
     allocate(work, |io| {
         let volume = mapping.volume.clone_with_io(io)?;
         let generation = mapping.generation.clone_with_io(io)?;
-        let (path, custody) = work.copy_path(&mapping.path)?;
+        let (path, custody) = work.path(&mapping.path, None)?;
         io.absorb_native_custody(custody)?;
         Ok(NativeVolumeMapping { volume, generation, path, writable: mapping.writable,
             namespace: mapping.namespace.clone(), authority_revision: mapping.authority_revision })

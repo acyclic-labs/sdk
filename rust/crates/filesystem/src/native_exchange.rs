@@ -110,8 +110,8 @@ where W::Error: From<NativeExchangeError> {
         {
             return Err(NativeExchangeError::IncompatibleJournal.into());
         }
-        crate::native_host::sync_directory_held_with_work(left, work)?;
-        crate::native_host::sync_directory_held_with_work(right, work)?;
+        crate::native_host::sync_directory_held(left, work)?;
+        crate::native_host::sync_directory_held(right, work)?;
         Ok(())
     }
     #[cfg(windows)]
@@ -439,7 +439,7 @@ fn with_directory_path<W: NativeHostWork, T>(
 fn parent_identity<W: NativeHostWork>(
     directory: &cap_std::fs::Dir, work: &mut W,
 ) -> Result<crate::NativeRootIdentity, W::Error> {
-    crate::native_host::directory_identity_with_work(directory, work)
+    crate::native_host::directory_identity(directory, work)
 }
 
 #[cfg(windows)]
@@ -449,8 +449,8 @@ fn rename_durable_held<W: NativeHostWork>(
 ) -> Result<(), W::Error> {
     crate::native_host::rename_no_replace_held_if_identity_with_work(from, from_name, to, to_name,
         expected, work)?;
-    crate::native_host::sync_directory_held_with_work(from, work)?;
-    crate::native_host::sync_directory_held_with_work(to, work)
+    crate::native_host::sync_directory_held(from, work)?;
+    crate::native_host::sync_directory_held(to, work)
 }
 
 #[cfg(windows)]
@@ -464,7 +464,7 @@ where W::Error: From<NativeExchangeError> {
     with_wide_leaf(name, work, |name, work|
         crate::native_host::remove_windows_leaf_if_identity_with_work(parent, name, false,
             identity, work))?;
-    crate::native_host::sync_directory_held_with_work(parent, work)
+    crate::native_host::sync_directory_held(parent, work)
 }
 
 #[cfg(windows)]
@@ -488,7 +488,7 @@ fn create_measured_entry_witness<W: NativeHostWork>(
         durability_operations: 1, ..crate::WorkCounters::UNCHARGED
     }, || file.sync_all())?;
     crate::native_host::keep_windows_created_file_with_work(&file, work)?;
-    crate::native_host::sync_directory_held_with_work(left, work)?;
+    crate::native_host::sync_directory_held(left, work)?;
     attempted(work, crate::WorkCounters {
         backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
     }, || crate::NativeRootIdentity::from_file(&file))
