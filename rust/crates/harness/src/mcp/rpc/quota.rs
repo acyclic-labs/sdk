@@ -6,16 +6,15 @@ pub(super) fn dto_quota(
     depth: u32,
 ) -> Result<u64> {
     use std::mem::size_of;
-    checkpoint(Some(work), 1, 0)?;
+    charge(Some(work), 1, 0, 0)?;
     if depth > 256 {
-        return Err(protocol_error(
+        return Err(error(
             Some(work),
             ErrorCode::Invalid,
             "MCP typed value exceeds structural depth",
         ));
     }
-    let typed_slot = size_of::<super::McpInitializeResult>()
-        + size_of::<super::super::McpToolDefinition>()
+    let typed_slot = size_of::<super::super::McpToolDefinition>()
         + size_of::<super::super::McpToolsPage>()
         + size_of::<rmcp::model::Resource>()
         + size_of::<rmcp::model::ResourceTemplate>()
@@ -30,7 +29,7 @@ pub(super) fn dto_quota(
         + size_of::<rmcp::model::GetPromptRequestParams>()
         + size_of::<rmcp::model::CallToolResult>()
         + size_of::<(String, Value)>();
-    let overflow = || protocol_error(Some(work), ErrorCode::Invalid, "MCP typed quota overflow");
+    let overflow = || error(Some(work), ErrorCode::Invalid, "MCP typed quota overflow");
     let mut quota = (typed_slot as u64)
         .checked_mul(8)
         .and_then(|bytes| bytes.checked_add(16 * size_of::<(String, Value)>() as u64))
@@ -42,20 +41,10 @@ pub(super) fn dto_quota(
                 .ok_or_else(overflow)?;
         }
         Value::Number(number) => {
-            struct Length(u64);
-            impl std::fmt::Write for Length {
-                fn write_str(&mut self, value: &str) -> std::fmt::Result {
-                    self.0 = self
-                        .0
-                        .checked_add(value.len() as u64)
-                        .ok_or(std::fmt::Error)?;
-                    Ok(())
-                }
-            }
-            let mut length = Length(0);
-            std::fmt::write(&mut length, format_args!("{number}")).map_err(|_| overflow())?;
+            let length = crate::contract::json_byte_length(number, u64::MAX, &mut None)
+                .map_err(|_| overflow())?;
             quota = quota
-                .checked_add(length.0.checked_mul(16).ok_or_else(overflow)?)
+                .checked_add(length.checked_mul(16).ok_or_else(overflow)?)
                 .ok_or_else(overflow)?;
         }
         Value::Array(values) => {
@@ -67,7 +56,7 @@ pub(super) fn dto_quota(
         }
         Value::Object(values) => {
             for (key, value) in values {
-                checkpoint(Some(work), 1, 0)?;
+                charge(Some(work), 1, 0, 0)?;
                 quota = quota
                     .checked_add((key.len() as u64).checked_mul(16).ok_or_else(overflow)?)
                     .and_then(|bytes| bytes.checked_add(8 * size_of::<(String, Value)>() as u64))

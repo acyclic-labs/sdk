@@ -2,7 +2,6 @@ use super::*;
 
 impl AgentHarness {
     /// Admits a process-local task after validating its registration and input.
-
     pub async fn spawn<I, O>(
         self: &Arc<Self>,
         definition: &Arc<TaskDefinition<I, O>>,
@@ -126,13 +125,9 @@ impl AgentHarness {
                         owned_interactions: None,
                         owned_mailbox: None,
                         output_content: None,
-                        #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-                        native_root_output: std::sync::OnceLock::new(),
                         model_steps: Arc::new((AtomicUsize::new(0), None)),
                         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                         native_metadata_source: None,
-                        #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
-                        working_view: std::sync::OnceLock::new(),
                         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                         native_custody: None,
                     },
@@ -165,7 +160,6 @@ impl AgentHarness {
     }
 
     /// Admits a pinned resumable task through a host; live futures are rejected.
-
     pub async fn admit<I, O>(
         self: &Arc<Self>,
         operation_id: OperationId,

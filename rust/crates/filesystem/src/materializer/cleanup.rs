@@ -50,7 +50,7 @@ impl NativeCleanupWrite {
         let recorded = self
             .meter
             .state(|state| {
-                let original = state.complete(NativeResourceCredit::WriteOperations, 1, 1);
+                let original = state.complete(NativeResourceCredit::WriteOperations.delta(1), NativeResourceCredit::WriteOperations.delta(1));
                 let current = self
                     .additional_resource
                     .as_ref()
@@ -71,7 +71,7 @@ impl Drop for NativeCleanupWrite {
     fn drop(&mut self) {
         if self.reserved {
             self.meter.state(|state| {
-                let original = state.refund(NativeResourceCredit::WriteOperations, 1);
+                let original = state.refund(NativeResourceCredit::WriteOperations.delta(1));
                 let current = self
                     .additional_resource
                     .as_ref()
