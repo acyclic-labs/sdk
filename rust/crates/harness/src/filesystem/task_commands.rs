@@ -840,15 +840,13 @@ where
                     let work = io.original_native_work().ok_or_else(|| super::task_runtime::observed::boundary(
                         Some(io), crate::wire::ErrorCode::Unsupported, "native timer wait requires original observer",
                     ))?;
-                    return self.runtime.task_host().timer_ready_with_native_work(
-                        task, command.operation_id, input.deadline_unix_ms, work,
-                    ).await;
+                    return self.runtime.task_host().timer_ready(task, command.operation_id, input.deadline_unix_ms, &mut Some(&mut crate::store::history::native_work_io(work)?)).await;
                 }
                 let input: TimerTaskCommand = serde_json::from_value(payload)
                     .map_err(|error| Error::Invalid(error.to_string()))?;
                 self.runtime
                     .task_host()
-                    .timer_ready(task, command.operation_id, input.deadline_unix_ms)
+                    .timer_ready(task, command.operation_id, input.deadline_unix_ms, &mut None)
                     .await
             }
             MAIL_RECEIVE_TASK_COMMAND_KIND => {

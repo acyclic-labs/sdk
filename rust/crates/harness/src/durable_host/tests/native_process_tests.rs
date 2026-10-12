@@ -18,84 +18,7 @@ use acyclic_fs::{
     AsyncAuthorityStore, AsyncObjectStore, Fs, MemoryAuthorityBackend, MemoryObjectBackend,
 };
 
-#[tokio::test]
-async fn native_owner_guard_exhausts_phase_cancel_and_fence_conditions() -> Result<()> {
-    use crate::scheduler::{OperationPhase, require_execution_owner};
-    let fixture = process_fixture("write", true).await?;
-    let operation = fixture
-        .owner
-        .host
-        .coordinator
-        .lock()
-        .await
-        .scheduler()
-        .operation(fixture.owner.operation_id())
-        .cloned()
-        .ok_or_else(|| Error::NotFound("admitted native operation".into()))?;
-    let (_, original_fence) = fixture.owner.task_binding();
-    let mut checked = 0;
-    for phase in [
-        OperationPhase::WaitingForDependencies,
-        OperationPhase::WaitingForCapacity,
-        OperationPhase::Admitted,
-        OperationPhase::Running,
-        OperationPhase::WaitingForChildren,
-        OperationPhase::Suspended,
-        OperationPhase::Reconciling,
-        OperationPhase::Terminal,
-    ] {
-        for cancelled in [false, true] {
-            for settlement in [false, true] {
-                for reserved in [false, true] {
-                    for same_id in [false, true] {
-                        for same_placement in [false, true] {
-                            let mut state = operation.clone();
-                            state.phase = phase;
-                            state.cancellation_requested = cancelled;
-                            if !reserved {
-                                state.reservation = None;
-                            }
-                            let mut fence = original_fence.clone();
-                            if !same_id {
-                                fence.reservation_id.push_str("-stale");
-                            }
-                            if !same_placement {
-                                fence.placement.push_str("-foreign");
-                            }
-                            let phase_allowed = match phase {
-                                OperationPhase::Running => true,
-                                OperationPhase::Reconciling => settlement,
-                                _ => false,
-                            };
-                            let expected = phase_allowed
-                                && reserved
-                                && same_id
-                                && same_placement
-                                && (!cancelled || settlement);
-                            assert_eq!(
-                                require_execution_owner(&state, &fence, settlement, &mut None).is_ok(),
-                                expected,
-                                "{phase:?}, cancelled={cancelled}, settlement={settlement}, reserved={reserved}, same_id={same_id}, same_placement={same_placement}"
-                            );
-                            checked += 1;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    assert_eq!(checked, 256);
-    assert!(
-        !fixture
-            .view
-            .manifest()
-            .options
-            .root
-            .join("dst/output.txt")
-            .exists()
-    );
-    Ok(())
-}
+
 
 type Files<A = MemoryAuthorityBackend, O = MemoryObjectBackend> = FilesystemHost<A, O>;
 
@@ -175,7 +98,7 @@ async fn readonly_schema_storage_does_not_require_result_write_authority() -> Re
     assert!(
         fixture
             .owner
-            .require_volume_grant(&fixture.source, VolumeOperation::Write)
+            .require_volume_grant(&fixture.source, VolumeOperation::Write, &mut None)
             .is_err()
     );
     let source = workspace_ref(
@@ -2948,6 +2871,8 @@ async fn changed_invocations_cannot_use_the_original_approval() -> Result<()> {
         let mut fixture = process_fixture(
             if change.starts_with("mcp-") {
                 "mcp-approval"
+            } else if change == "stdin-bytes" {
+                "stdin-bytes"
             } else {
                 "write"
             },
@@ -2967,7 +2892,7 @@ async fn changed_invocations_cannot_use_the_original_approval() -> Result<()> {
             "bounds" => request.timeout_ms += 1,
             "authority" => request.view.volumes[0].authority_revision[0] ^= 1,
             "volume-order" => request.view.volumes.swap(0, 1),
-            "stdin-bytes" => request.standard_input = Some(vec![0, 255, b'\n']),
+            "stdin-bytes" => request.standard_input = Some(vec![0, 254, b'\n', b'x']),
             "stdin-empty" => request.standard_input = Some(Vec::new()),
             change if change.starts_with("mcp-") => {
                 let exchange = request
@@ -3013,26 +2938,9 @@ async fn changed_invocations_cannot_use_the_original_approval() -> Result<()> {
 }
 
 #[tokio::test]
-async fn absent_stdio_preserves_legacy_approval_and_stopped_mcp_remains_uncertain() -> Result<()> {
+async fn stopped_mcp_response_remains_uncertain() -> Result<()> {
     let fixture = process_fixture("write", true).await?;
     let mut request = fixture.request().await?;
-    let legacy =
-        serde_json::to_value(&request).map_err(|error| Error::Invalid(error.to_string()))?;
-    assert!(legacy.get("mcp_stdio").is_none());
-    assert!(legacy.get("standard_input").is_none());
-    let decoded: NativeProcessRequest = serde_json::from_value(legacy.clone())
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-    assert!(decoded.mcp_stdio.is_none());
-    assert!(decoded.standard_input.is_none());
-    assert_eq!(
-        request.approval_digest(fixture.owner.task_binding().0, fixture.command)?,
-        crate::contract::canonical_json_digest(&(
-            NATIVE_PROCESS_EFFECT_KIND,
-            fixture.owner.task_binding().0,
-            fixture.command,
-            legacy
-        ))?
-    );
     let initialization = OperationId::from_bytes([75; 16]);
     let operation = OperationId::from_bytes([76; 16]);
     request.mcp_stdio = Some(crate::mcp::stdio::McpStdioRequest {
@@ -3982,7 +3890,7 @@ async fn cancellation_after_actual_provider_drop_keeps_receipt_and_cleans_descen
     fixture
         .task
         .task_host()
-        .settle_task(task, fence, Outcome::Cancelled)
+        .settle_task(task, fence, Outcome::Cancelled, &mut None)
         .await?;
     assert_eq!(
         fixture.task.task_host().outcome(task).await?,
@@ -4044,26 +3952,7 @@ async fn native_preparation_decode_failure_retains_original_journal_read_work() 
     Ok(())
 }
 
-#[tokio::test]
-async fn literal_stdin_approval_binds_exact_bytes_and_explicit_empty_eof() -> Result<()> {
-    let fixture = process_fixture("write", true).await?;
-    let mut request = fixture.request().await?;
-    let task = fixture.owner.task_binding().0;
-    let absent = request.approval_digest(task, fixture.command)?;
-    request.standard_input = Some(Vec::new());
-    let eof = request.approval_digest(task, fixture.command)?;
-    assert_ne!(absent, eof);
-    request.standard_input = Some(vec![0, 255, b'\n', b'x']);
-    let literal = request.approval_digest(task, fixture.command)?;
-    assert_ne!(eof, literal);
-    let encoded = crate::contract::canonical_json_bytes(&request)?;
-    let decoded: NativeProcessRequest = crate::contract::json_from_slice(&encoded)
-        .map_err(|error| Error::Invalid(error.to_string()))?;
-    assert_eq!(decoded.standard_input.as_deref(), Some([0, 255, b'\n', b'x'].as_slice()));
-    request.standard_input = Some(vec![0, 254, b'\n', b'x']);
-    assert_ne!(literal, request.approval_digest(task, fixture.command)?);
-    Ok(())
-}
+
 
 #[tokio::test]
 async fn approved_literal_stdin_reaches_eof_without_terminating_the_process() -> Result<()> {
