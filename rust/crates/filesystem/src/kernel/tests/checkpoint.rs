@@ -2,6 +2,7 @@ use super::*;
 use crate::foundation::{Digest, FileId, VolumeId};
 use crate::memory::MemoryObjectStore;
 use crate::AsyncObjectStore;
+use crate::kernel::decode_generation_root;
 
 fn table(byte: u8) -> ObjectId {
     ObjectId {

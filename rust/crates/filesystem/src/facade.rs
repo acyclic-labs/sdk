@@ -8321,7 +8321,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
                     base: self.root.base(), file_table: self.root.file_table, merge_parent: None,
                 },
                 DecodeLimits::for_volume(self.volume.config), &mut accounting, cancellation,
-            ).await.map(|checkpoint| checkpoint.value)
+            ).await
         };
         budget.finish(result, &accounting)
     }
@@ -8623,7 +8623,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Checkout<A, O> {
             MergeGenerationRequest {
                 base_generation: self.root.base(), base: base.0,
                 ours_generation: Some(candidate_object), ours: ours.0,
-                theirs_generation: checkpoint.value, theirs: theirs.0,
+                theirs_generation: checkpoint, theirs: theirs.0,
                 retain_theirs_parent: false, maximum_changes: u32::MAX,
                 maximum_conflicts, resolutions: BTreeMap::new(),
             },
