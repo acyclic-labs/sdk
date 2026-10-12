@@ -875,3 +875,43 @@ async fn shared_publication_fence_blocks_napi_mutation_and_reconcile_recovers()
     Box::pin(watcher.reconcile(NapiU32(64), NapiU32(64))).await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn native_materialization_writes_checkout_bytes()
+-> std::result::Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    let destination = tempfile::tempdir()?;
+    let cancellation = CancellationToken::new();
+    let fs = LocalFs::local(LocalOptions::new(root.path())).await?;
+    let volume = NativeVolume {
+        inner: fs
+            .create_volume(test_config(), WorkBudget::UNBOUNDED, &cancellation)
+            .await?
+            .value,
+        cancellation,
+        acquisition_work: Default::default(),
+    };
+    let checkout = volume
+        .checkout(NativeCheckoutOptions {
+            access: "read-write".to_owned(),
+            consistency: "pinned".to_owned(),
+            mutation_mode: "private-cow".to_owned(),
+        })
+        .await?;
+    checkout
+        .create_file("/value.bin".to_owned(), Buffer::from(vec![0, 1, 255]))
+        .await?;
+    checkout
+        .materialize(NativeMaterializeOptions {
+            destination: destination.path().to_string_lossy().into_owned(),
+            maximum_directory_entries: NapiU32(64),
+            maximum_extent_spans: NapiU32(64),
+            transfer_bytes: bigint(4096),
+        })
+        .await?;
+    assert_eq!(
+        std::fs::read(destination.path().join("value.bin"))?,
+        [0, 1, 255]
+    );
+    Ok(())
+}

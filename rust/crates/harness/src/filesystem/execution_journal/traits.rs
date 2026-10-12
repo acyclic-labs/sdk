@@ -114,14 +114,14 @@ where
         owner.require_volume_grant(
             &self.volume,
             VolumeOperation::Write,
-            &mut Some(&mut crate::store::history::native_work_io(work)?),
+            &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
         )?;
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             owner
                 .verify(
                     false,
-                    &mut Some(&mut crate::store::history::native_work_io(work)?),
+                    &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
                 )
                 .await?;
             let file = self
@@ -130,7 +130,7 @@ where
             owner
                 .verify(
                     false,
-                    &mut Some(&mut crate::store::history::native_work_io(work)?),
+                    &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
                 )
                 .await?;
             let retained = file.logical_owned_bytes()?;
@@ -154,15 +154,15 @@ where
         owner.require_volume_grant(
             &self.volume,
             VolumeOperation::Read,
-            &mut Some(&mut crate::store::history::native_work_io(work)?),
+            &mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?),
         )?;
         crate::NativeFutureBundle::new(work, || async move {
             let io = PreparationIo::from_native_work(work)?;
             let file = {
                 owner
-                    .verify_read_access(&mut Some(&mut crate::store::history::native_work_io(
+                    .verify_read_access(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(
                         work,
-                    )?))
+                    ).map(crate::store::HistoryWork::new)?))
                     .await?;
                 let _identity_hold;
                 let before = io.owned_bytes()?;
@@ -197,9 +197,9 @@ where
                         )
                     })?;
                 owner
-                    .verify_read_access(&mut Some(&mut crate::store::history::native_work_io(
+                    .verify_read_access(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(
                         work,
-                    )?))
+                    ).map(crate::store::HistoryWork::new)?))
                     .await?;
                 file
             };

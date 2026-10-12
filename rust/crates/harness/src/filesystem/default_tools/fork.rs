@@ -116,7 +116,7 @@ where
                 fork.request.maximum_work,
                 fork.request.maximum_bytes,
             );
-            let mut publication_work = crate::store::HistoryWork::new(budget, cancellation);
+            let mut publication_work = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(budget, cancellation)?);
             let published = async {
                 publication_work.preflight()?;
                 binding
@@ -173,10 +173,7 @@ where
                     .await?;
                 break 'child;
             }
-            let mut child_work = crate::store::HistoryWork::new(
-                remaining.expect("measured publication preserves its remaining allowance"),
-                cancellation,
-            );
+            let mut child_work = crate::store::HistoryWork::new(crate::filesystem::PreparationIo::from_budget(remaining.expect("measured publication preserves its remaining allowance"), cancellation)?);
             let bound = async {
                 child_work.preflight()?;
                 binding

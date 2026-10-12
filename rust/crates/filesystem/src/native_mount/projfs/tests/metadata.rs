@@ -122,28 +122,14 @@ async fn external_metadata_only_change_survives_remount() -> Result<(), Box<dyn 
 {
     let work = setup_work()?;
     let root = tempfile::tempdir()?;
-    let engine = Fs::local(LocalOptions::new(root.path().join("state"))).await?;
-    let workspace = engine
-        .create_workspace(
-            "metadata-projfs",
-            WorkBudget::UNBOUNDED,
-            work.cancellation(),
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)?;
+    let workspace = local_workspace(root.path(), "metadata-projfs", &work).await?;
     workspace
         .write("/metadata.txt", Bytes::from_static(b"unchanged contents"))
         .await?;
 
     let first = root.path().join("first-mount");
     std::fs::create_dir(&first)?;
-    let mount = workspace
-        .mount(
-            &first,
-            MountOptions::read_write().publication(MountPublication::Manual),
-        )
-        .await?;
+    let mount = workspace.mount(&first, manual_mount_options()).await?;
     let projected = first.join("metadata.txt");
     for _ in 0..3 {
         assert_eq!(std::fs::read(&projected)?, b"unchanged contents");
@@ -163,12 +149,7 @@ async fn external_metadata_only_change_survives_remount() -> Result<(), Box<dyn 
 
     let second = root.path().join("second-mount");
     std::fs::create_dir(&second)?;
-    let remount = workspace
-        .mount(
-            &second,
-            MountOptions::read_write().publication(MountPublication::Manual),
-        )
-        .await?;
+    let remount = workspace.mount(&second, manual_mount_options()).await?;
     assert!(
         std::fs::metadata(second.join("metadata.txt"))?
             .permissions()

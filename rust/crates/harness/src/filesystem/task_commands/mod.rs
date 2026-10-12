@@ -195,8 +195,6 @@ pub struct FilesystemTaskCommands<'a, P, A, O> {
     model: Option<ModelBinding>,
     effects: Option<Arc<crate::effect_host::ConversationEffectHost<P>>>,
     fork_preparer: Option<Arc<super::FilesystemForkPreparer<A, O>>>,
-    #[cfg(not(target_arch = "wasm32"))]
-    native_custody: Option<acyclic_fs::NativeAllocation>,
 }
 impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
     pub(super) const fn new(runtime: &'a FilesystemTaskRuntime<P, A, O>) -> Self {
@@ -205,8 +203,6 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
             model: None,
             effects: None,
             fork_preparer: None,
-            #[cfg(not(target_arch = "wasm32"))]
-            native_custody: None,
         }
     }
     /// Copies the selected bounded model configuration.
@@ -227,23 +223,10 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
                     "model configuration requires original native work",
                 )
             })?;
-            if self
-                .native_custody
-                .as_ref()
-                .is_some_and(|custody| !custody.work().shares_allocation_context(work))
-            {
-                return Err(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "command configuration belongs to another original work",
-                });
-            }
+            self.validate_native_configuration_work(work)?;
+            self.model = None;
             let before = io.owned_bytes()?;
-            let self_bytes = if self.native_custody.is_none() {
-                std::mem::size_of::<Self>() as u64
-            } else {
-                0
-            };
-            io.retain_owned(self_bytes)?;
+            io.retain_owned(std::mem::size_of::<Self>() as u64)?;
             io.retain_owned(std::mem::size_of::<ModelBinding>() as u64)?;
             let model = crate::model::clone_model(model, Some(io))?;
             let context = context.copy(Some(io))?;
@@ -264,14 +247,13 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
                     )
                 }
             };
-            let binding_bytes = io
-                .owned_bytes()?
-                .checked_sub(before)
-                .and_then(|bytes| bytes.checked_sub(self_bytes))
-                .ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid,
-                    reason: "native model configuration custody underflows",
-                })?;
+            let binding_bytes =
+                io.owned_bytes()?
+                    .checked_sub(before)
+                    .ok_or(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Invalid,
+                        reason: "native model configuration custody underflows",
+                    })?;
             self.model = Some(ModelBinding {
                 model,
                 provider,
@@ -279,9 +261,6 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
                 compaction,
                 native_custody: Some(io.take_native_custody(binding_bytes)?),
             });
-            if self_bytes != 0 {
-                self.native_custody = Some(io.take_native_custody(self_bytes)?);
-            }
             return Ok(self);
         }
         let _ = io;
@@ -295,6 +274,25 @@ impl<'a, P, A, O> FilesystemTaskCommands<'a, P, A, O> {
         });
         Ok(self)
     }
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(super) fn validate_native_configuration_work(
+        &self,
+        work: &acyclic_fs::NativeMaterializationWork,
+    ) -> Result<()> {
+        if self
+            .model
+            .as_ref()
+            .and_then(|binding| binding.native_custody.as_ref())
+            .is_some_and(|custody| !custody.work().shares_allocation_context(work))
+        {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Unauthorized,
+                reason: "native command configuration belongs to another original work",
+            });
+        }
+        Ok(())
+    }
+
     /// Binds the existing effect registry.
     pub fn with_effects(
         mut self,
@@ -355,7 +353,7 @@ where
     #[cfg(not(target_arch = "wasm32"))]
     fn execute_with_native_work<'a>(
         &'a self,
-        context: Arc<crate::runtime::NativeTaskContext>,
+        context: Arc<crate::runtime::TaskContext>,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,
@@ -379,7 +377,7 @@ where
     #[cfg(not(target_arch = "wasm32"))]
     fn reconcile_with_native_work<'a>(
         &'a self,
-        context: Arc<crate::runtime::NativeTaskContext>,
+        context: Arc<crate::runtime::TaskContext>,
         fence: LeaseFence,
         command: WorkflowCommand,
         payload: Value,
@@ -401,35 +399,6 @@ where
     }
 }
 
-impl<P, A, O> FilesystemTaskCommands<'_, P, A, O>
-where
-    P: StreamProvider + 'static,
-    A: AsyncAuthorityStore + 'static,
-    O: AsyncObjectStore + 'static,
-{
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn validate_native_configuration_work(
-        &self,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        if self
-            .native_custody
-            .as_ref()
-            .is_some_and(|custody| !custody.work().shares_allocation_context(work))
-            || self
-                .model
-                .as_ref()
-                .and_then(|binding| binding.native_custody.as_ref())
-                .is_some_and(|custody| !custody.work().shares_allocation_context(work))
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Unauthorized,
-                reason: "native command configuration belongs to another original work",
-            });
-        }
-        Ok(())
-    }
-}
 fn rejected(
     reason: crate::InteractionRejection,
     io: Option<&super::PreparationIo>,
@@ -456,8 +425,9 @@ fn tool_invocation(
     io: Option<&super::PreparationIo>,
 ) -> Result<ToolInvocation> {
     let grant_hold;
-    let grant =
-        crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("tool:call:{}", definition.name), work))?;
+    let grant = crate::executor::with_history_io(io, |work| {
+        crate::contract::preparation_format(format_args!("tool:call:{}", definition.name), work)
+    })?;
     grant_hold = io
         .map(|io| io.guard_owned(grant.capacity() as u64))
         .transpose()?;
@@ -470,17 +440,23 @@ fn tool_invocation(
     }
     drop(grant);
     drop(grant_hold);
-    crate::executor::with_history_io(io, |work| crate::contract::validate_json_schema_value(
-        &definition.input_schema,
-        &arguments,
-        "tool input", work))?;
+    crate::executor::with_history_io(io, |work| {
+        crate::contract::validate_json_schema_value(
+            &definition.input_schema,
+            &arguments,
+            "tool input",
+            work,
+        )
+    })?;
     if let Some(io) = io {
         io.retain_owned(std::mem::size_of::<ToolInvocation>() as u64)?;
     }
     let invocation = ToolInvocation {
         operation_id: operation,
-        call_id: crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("{operation}"), work))?,
-        name: stock_string_copy(&definition.name, io)?,
+        call_id: crate::executor::with_history_io(io, |work| {
+            crate::contract::preparation_format(format_args!("{operation}"), work)
+        })?,
+        name: crate::executor::stock_string_copy(&definition.name, io)?,
         arguments,
     };
     crate::executor::with_history_io(io, |work| {
@@ -497,16 +473,7 @@ fn ready(value: impl Serialize, io: Option<&super::PreparationIo>) -> Result<Tas
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(native) = io.original_native_work() {
         let output = super::PreparationIo::from_native_work(native)?;
-        let encoded_hold;
-        let encoded = output.encode(&value, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
-        encoded_hold = output.guard_bytes(&encoded)?;
-        let value = crate::filesystem::retain_decoded(output.decode(
-            std::marker::PhantomData::<Value>,
-            &encoded,
-            crate::wire::ErrorCode::Storage,
-        )?);
-        drop(encoded);
-        drop(encoded_hold);
+        let value = output.value_json(&value, acyclic_stream::MAX_RECORD_BYTES as u64)?;
         let retained = output.owned_bytes()?;
         let custody = output.into_native_custody(retained)?;
         return Ok(TaskCommandProgress::ReadyWithNativeCustody { value, custody });
@@ -536,5 +503,3 @@ fn child_operation(
     bytes.copy_from_slice(&digest.finalize().as_bytes()[..16]);
     Ok(OperationId::from_bytes(bytes))
 }
-
-use crate::executor::{stock_string_copy};

@@ -46,10 +46,7 @@ pub(crate) use inventory::inspect_metadata;
 use native_custody::NativeComponentCustody;
 use native_key::NativeComponentKey;
 pub(in crate::core) use ownership::*;
-pub(crate) use ownership::{
-    event_owned_bytes, owned_buffer, owned_capture, owned_revision, owned_seed, owned_sum,
-    owned_vector,
-};
+pub(crate) use ownership::{event_owned_bytes, owned_buffer, owned_bytes, owned_sum, owned_vector};
 #[cfg(feature = "filesystem")]
 pub(crate) use resource_metadata::resource_creation_clone_reservation;
 pub use snapshot::Snapshot;

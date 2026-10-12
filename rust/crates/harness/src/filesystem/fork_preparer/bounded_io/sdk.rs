@@ -426,7 +426,7 @@ fn committed<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     }
 }
 
-async fn mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+pub(in crate::filesystem) async fn mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     transaction: &mut acyclic_fs::Transaction<A, O>,
     value: &WorkspaceMutation,
     io: &PreparationIo,

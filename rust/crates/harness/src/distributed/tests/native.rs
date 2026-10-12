@@ -113,7 +113,7 @@ async fn native_refresh_keeps_original_serde_error_and_raw_record_prefix() {
     budget.items_examined = 128;
     budget.bytes_copied = 4096;
     budget.bytes_encoded = 4096;
-    budget.bytes_hashed = COORDINATOR_WIRE_CONTRACT.len() as u64 + 2;
+    budget.bytes_hashed = 2;
     let work =
         acyclic_fs::NativeMaterializationWork::new(budget, &cancellation).expect("original ledger");
     let mut observer = crate::store::history::native_work_io(&work).expect("original observer");

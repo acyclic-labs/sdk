@@ -8,7 +8,7 @@ impl PreparationIo {
     }
     pub(super) fn charged(&self, work: WorkCounters) -> Result<()> {
         self.preflight(work)?;
-        self.charge(work)
+        self.charge(work).map_err(Into::into)
     }
 
     pub(crate) async fn verify_publication_lease(
@@ -55,7 +55,7 @@ impl HistoryIo for &PreparationIo {
         self.retain_owned(bytes)
     }
     fn retain_owned(&mut self, bytes: u64) -> Result<()> {
-        PreparationIo::retain_owned(self, bytes)
+        PreparationIo::retain_owned(self, bytes).map_err(Into::into)
     }
     fn admit_owned(&self, bytes: u64) -> Result<()> {
         self.check_cancellation()?;
@@ -65,7 +65,7 @@ impl HistoryIo for &PreparationIo {
         Ok(())
     }
     fn release_owned(&mut self, bytes: u64) -> Result<()> {
-        self.release(bytes)
+        self.release(bytes).map_err(Into::into)
     }
     fn decode_json_value(&mut self, bytes: &[u8]) -> Result<(serde_json::Value, u64)> {
         let decoded = self.decode(
@@ -181,7 +181,7 @@ impl HistoryIo for &PreparationIo {
         })
     }
     fn remaining(&self) -> Result<WorkBudget> {
-        PreparationIo::remaining(self)
+        PreparationIo::remaining(self).map_err(Into::into)
     }
     fn cancellation(&self) -> &CancellationToken {
         PreparationIo::cancellation(self)
@@ -189,7 +189,7 @@ impl HistoryIo for &PreparationIo {
     fn receive_work(&mut self, mut work: WorkCounters) -> Result<()> {
         work.output_bytes = 0;
         work.items_returned = 0;
-        self.spent(work)
+        self.spent(work).map_err(Into::into)
     }
     fn verify_content<'a>(
         &'a mut self,

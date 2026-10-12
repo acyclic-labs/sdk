@@ -316,14 +316,16 @@ impl PreparationIo {
 
     pub(crate) fn codec_charge(&self, charge: Charge, encode: bool) -> Result<()> {
         let next = match charge {
-            Charge::Retain { bytes } => return self.retain_owned(bytes),
-            Charge::Release { bytes } => return self.release(bytes),
+            Charge::Retain { bytes } => return self.retain_owned(bytes).map_err(Into::into),
+            Charge::Release { bytes } => return self.release(bytes).map_err(Into::into),
             Charge::AllocationOperation { bytes } => return self.allocation_attempt(bytes),
             Charge::CopyAdmission { bytes } => {
-                return self.preflight(WorkCounters {
-                    bytes_copied: bytes,
-                    ..Default::default()
-                });
+                return self
+                    .preflight(WorkCounters {
+                        bytes_copied: bytes,
+                        ..Default::default()
+                    })
+                    .map_err(Into::into);
             }
             Charge::Admission { .. } => {
                 return Err(self.invalid("trusted decode admission requires a scoped reservation"));

@@ -474,7 +474,7 @@ if let Some(io) = io { io.retain_owned(std::mem::size_of::<((String, String), (F
         }
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-            child_private.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
+            child_private.validate(&mut Some(&mut crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?))?;
         } else {
             child_private.validate(&mut None)?;
         }

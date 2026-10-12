@@ -265,7 +265,7 @@ impl StockExecution<'_> {
         let Some((native, _)) = self.native else {
             return Ok(None);
         };
-        let context = native.context();
+        let context = native;
         let io = self.io.expect("native execution ledger");
         let work = io
             .original_native_work()

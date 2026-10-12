@@ -5,12 +5,13 @@
     reason = "drives the embedded C NFSv4 transport through FFI"
 )]
 
+use super::view_ledger::{copy_work, same_work, scan_work};
 use super::{
     ATTRIBUTE_PAGE_SIZE, DIRECTORY_PAGE_SIZE, MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES,
     MountAttributeWriteMode, MountDirectoryEntry, MountFilesystem, MountLookup, MountNodeKind,
-    MountOpenFile, MountPath, MountRangeAllocation, MountSeekTarget, MountSourceError,
-    NativeMountError, NativeMountRequest, ViewObserver, ViewOrigin, ViewStamp, create_metadata,
-    metadata_or, system_time_ns,
+    MountOpenFile, MountPath, MountRangeAllocation, MountSourceError, NativeMountError,
+    NativeMountRequest, ViewObserver, ViewOrigin, ViewStamp, create_metadata, metadata_or,
+    system_time_ns,
 };
 use crate::FileId;
 use crate::kernel::{FileMetadata, MetadataField};
@@ -26,9 +27,7 @@ use std::time::{Duration, Instant, SystemTime};
 
 const ROOT_INODE: u64 = 1;
 const MAXIMUM_LOOKUP_CACHE_ENTRIES: usize = 65_536;
-/// Most times a listing that has delivered no entry starts over in a view that keeps moving before it fails.
 const MAXIMUM_LISTING_RESTARTS: usize = 8;
-/// Most labelled objects a revalidation verifies against the source after an unconfirmed fence; with more, waiting out the attribute timeout costs less.
 const MAXIMUM_VERIFIED_LABELS: usize = 4_096;
 const MAXIMUM_CALLBACK_BYTES: usize = i32::MAX as usize;
 const RENAME_NOREPLACE: u32 = 1;
@@ -40,7 +39,6 @@ const MOUNT_VISIBILITY_TIMEOUT: Duration = Duration::from_secs(10);
 const MOUNT_LOOP_EXIT_TIMEOUT: Duration = Duration::from_secs(4);
 const DISKUTIL_VISIBILITY_TIMEOUT: Duration = Duration::from_secs(2);
 const DIRECT_UNMOUNT_TIMEOUT: Duration = Duration::from_secs(3);
-/// How soon after its callback returns a reply is assumed to reach the NFS client (see [`DarwinMountContext::revalidate`]).
 const REPLY_DELIVERY_SLACK: Duration = Duration::from_millis(100);
 const CALLBACK_DRAIN_POLL: Duration = Duration::from_millis(1);
 mod mode {
@@ -72,8 +70,6 @@ mod change_labels;
 use change_labels::*;
 mod context_ops;
 use context_ops::*;
-mod loop_events;
-use loop_events::*;
 mod session;
 use session::*;
 mod cleanup;
