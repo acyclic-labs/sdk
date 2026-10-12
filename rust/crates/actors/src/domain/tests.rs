@@ -17,7 +17,7 @@ fn typescript_export_includes_error_roots_with_esm_imports() {
     ));
     let _ = std::fs::remove_dir_all(&output);
 
-    export_typescript(&output).expect("Actors TypeScript export should succeed");
+    export::export_typescript(&output).expect("Actors TypeScript export should succeed");
 
     let service_error =
         std::fs::read_to_string(output.join("actors/ServiceError.ts")).expect("ServiceError");
