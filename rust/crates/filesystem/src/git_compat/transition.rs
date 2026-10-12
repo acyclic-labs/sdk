@@ -53,16 +53,12 @@ pub(super) fn record_captured_commit_state<E: std::error::Error + 'static>(
     state: &mut GitCompatState,
     commit: GitCommit,
 ) -> Result<GitCommandOutput, GitCompatError<E>> {
-    let current = state
-        .current()
-        .map_err(|_| GitCompatError::InvalidState)?
-        .clone();
+    let current = state.current().map_err(|_| GitCompatError::InvalidState)?;
     if commit.parents.as_slice() != current.head.as_slice() {
         return Err(GitCompatError::InvalidState);
     }
-    let head_tree = current
-        .head
-        .and_then(|id| state.commits.get(&id).map(|commit| commit.tree));
+    let previous = current.head;
+    let head_tree = previous.and_then(|id| state.commits.get(&id).map(|commit| commit.tree));
     if head_tree == Some(commit.tree) {
         return Err(GitCompatError::NothingToCommit);
     }
@@ -74,14 +70,7 @@ pub(super) fn record_captured_commit_state<E: std::error::Error + 'static>(
     ) {
         return Err(GitCompatError::WorkspaceMismatch);
     }
-    state.reflog.insert(0, current.head);
-    state.commits.insert(commit.id, commit.clone());
-    let current = state
-        .current_mut()
-        .map_err(|_| GitCompatError::InvalidState)?;
-    current.head = Some(commit.id);
-    current.tracked_paths = commit.tracked_paths.clone();
-    Ok(GitCommandOutput::Committed(commit))
+    record_commit_state(state, commit, previous)
 }
 
 #[allow(
@@ -96,9 +85,44 @@ pub(super) fn complete_pending<E: std::error::Error + 'static>(
     let resulting_tree = result.resulting_tree();
     match mutation {
         GitPendingMutation::NoOp => Ok(GitCommandOutput::NoOp),
-        mutation @ (GitPendingMutation::CaptureCommit { .. }
-        | GitPendingMutation::ForkBranch { .. }) => {
-            complete_creation_pending(state, mutation, result)
+        GitPendingMutation::CaptureCommit {
+            workspace_tree,
+            message,
+            author,
+            authored_at_seconds,
+            expected_head,
+        } => {
+            let GitFilesystemResult::Captured {
+                tree,
+                tracked_paths,
+                proof,
+            } = result
+            else {
+                return Err(GitCompatError::InvalidState);
+            };
+            record_captured_commit_state(
+                state,
+                GitCommit::new(
+                    *tree,
+                    workspace_tree,
+                    proof.clone(),
+                    tracked_paths.clone(),
+                    expected_head.into_iter().collect(),
+                    author,
+                    authored_at_seconds,
+                    message,
+                ),
+            )
+        }
+        GitPendingMutation::ForkBranch {
+            branch,
+            head,
+            switch,
+        } => {
+            let GitFilesystemResult::Forked { workspace_id } = result else {
+                return Err(GitCompatError::InvalidState);
+            };
+            register_branch_workspace_state(state, branch, *workspace_id, head, switch)
         }
         GitPendingMutation::Switch { branch } => {
             if !state.branches.contains_key(&branch) {
@@ -202,50 +226,6 @@ pub(super) fn complete_pending<E: std::error::Error + 'static>(
     }
 }
 
-pub(super) fn complete_creation_pending<E: std::error::Error + 'static>(
-    state: &mut GitCompatState,
-    mutation: GitPendingMutation,
-    result: &GitFilesystemResult,
-) -> Result<GitCommandOutput, GitCompatError<E>> {
-    match (mutation, result) {
-        (
-            GitPendingMutation::CaptureCommit {
-                workspace_tree,
-                message,
-                author,
-                authored_at_seconds,
-                expected_head,
-            },
-            GitFilesystemResult::Captured {
-                tree,
-                tracked_paths,
-                proof,
-            },
-        ) => record_captured_commit_state(
-            state,
-            GitCommit::new(
-                *tree,
-                workspace_tree,
-                proof.clone(),
-                tracked_paths.clone(),
-                expected_head.into_iter().collect(),
-                author,
-                authored_at_seconds,
-                message,
-            ),
-        ),
-        (
-            GitPendingMutation::ForkBranch {
-                branch,
-                head,
-                switch,
-            },
-            GitFilesystemResult::Forked { workspace_id },
-        ) => register_branch_workspace_state(state, branch, *workspace_id, head, switch),
-        _ => Err(GitCompatError::InvalidState),
-    }
-}
-
 pub(super) fn record_generated_commit<E: std::error::Error + 'static>(
     state: &mut GitCompatState,
     tree: GitTreeRef,
@@ -258,18 +238,26 @@ pub(super) fn record_generated_commit<E: std::error::Error + 'static>(
         tree,
         tree,
         None,
-        tracked_paths.clone(),
+        tracked_paths,
         parents,
         "git-compat",
         0,
         message,
     );
+    record_commit_state(state, commit, previous)
+}
+
+pub(super) fn record_commit_state<E: std::error::Error + 'static>(
+    state: &mut GitCompatState,
+    commit: GitCommit,
+    previous: Option<GitCommitId>,
+) -> Result<GitCommandOutput, GitCompatError<E>> {
     state.reflog.insert(0, previous);
     state.commits.insert(commit.id, commit.clone());
     let branch = state
         .current_mut()
         .map_err(|_| GitCompatError::InvalidState)?;
     branch.head = Some(commit.id);
-    branch.tracked_paths = tracked_paths;
+    branch.tracked_paths = commit.tracked_paths.clone();
     Ok(GitCommandOutput::Committed(commit))
 }
