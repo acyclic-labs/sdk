@@ -907,7 +907,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> PreparationAttempt<'_, A, O> {
 
     fn clone_revision(&self, value: &ResourceRevision) -> Result<ResourceRevision> {
         self.io.as_ref().map_or_else(|| Ok(value.clone()),
-            |io| value.clone_with_work(&mut Some(&mut io.history_io())))
+            |io| value.copy(&mut Some(&mut io.history_io())).map(|(value, _)| value))
     }
 
     fn clone_paths(&self, paths: &[String]) -> Result<Vec<String>> {
