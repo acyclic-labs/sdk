@@ -8675,7 +8675,7 @@ where
                     }
                     #[cfg(not(target_arch = "wasm32"))]
                     ExactifyCollectorWork::Native { original, .. } => {
-                        current.hard_link(alias, &path, original, cancellation)
+                        current.hard_link(alias, &path, *original, cancellation)
                             .await.map_err(native_workspace_error)?;
                     }
                 }
@@ -8979,7 +8979,7 @@ where
                     generation, key, original, cancellation,
                 ).await.map_err(native_workspace_error_pair)?;
                 if let Some(parent) = parent {
-                    transaction.create_dir_all(parent, original, cancellation)
+                    transaction.create_dir_all(parent, *original, cancellation)
                         .await.map_err(native_workspace_error)?;
                 }
                 Ok(transaction)
