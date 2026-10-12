@@ -2381,7 +2381,7 @@ impl DemandWork {
     /// Reserves the original live quota and one allocator attempt without
     pub(crate) fn reserve_native_allocation(&mut self, bytes: u64) -> Result<(), DemandError> {
         if let Some(resource) = self.resource_scope() {
-            return resource.reserve_allocation(bytes, || {
+            return resource.reserve(crate::materializer::NativeResourceCredit::AllocationOperations.delta(1), bytes, None, || {
                 self.with_resource_scope(None, |work| work.reserve_native_allocation(bytes))
             });
         }
@@ -2398,7 +2398,7 @@ impl DemandWork {
 
     pub(crate) fn cancel_reserved_native_allocation(&mut self, bytes: u64) -> Result<(), DemandError> {
         if let Some(resource) = self.resource_scope() {
-            return resource.cancel_reserved_allocation(bytes, || {
+            return resource.settle_allocation(bytes, false, || {
                 self.with_resource_scope(None, |work| work.cancel_reserved_native_allocation(bytes))
             });
         }
@@ -2414,7 +2414,7 @@ impl DemandWork {
 
     pub(crate) fn record_reserved_native_allocation(&mut self, bytes: u64) -> Result<(), DemandError> {
         if let Some(resource) = self.resource_scope() {
-            return resource.record_reserved_allocation(bytes, || {
+            return resource.settle_allocation(bytes, true, || {
                 self.with_resource_scope(None, |work| work.record_reserved_native_allocation(bytes))
             });
         }
@@ -2433,7 +2433,7 @@ impl DemandWork {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn reserve_native_cleanup_write(&mut self) -> Result<u64, DemandError> {
         if let Some(resource) = self.resource_scope() {
-            return resource.reserve_credit(crate::materializer::NativeResourceCredit::WriteOperations, 1, || {
+            return resource.reserve(crate::materializer::NativeResourceCredit::WriteOperations.delta(1), 0, None, || {
                 self.with_resource_scope(None, Self::reserve_native_cleanup_write)
             });
         }
@@ -2448,7 +2448,7 @@ impl DemandWork {
     pub(crate) fn cancel_native_cleanup_write(&mut self, reservation: u64) {
         if let Some(resource) = self.resource_scope() {
             self.with_resource_scope(None, |work| work.cancel_native_cleanup_write(reservation));
-            if let Err(error) = resource.refund_credit(crate::materializer::NativeResourceCredit::WriteOperations, reservation) {
+            if let Err(error) = resource.refund_credit(crate::materializer::NativeResourceCredit::WriteOperations, reservation, None) {
                 self.record_native_io_failure(error);
                 self.poison_native_original_work();
             }
@@ -2484,7 +2484,7 @@ impl DemandWork {
             return Err(DemandError::InvalidRequest);
         }
         if let Some(resource) = self.resource_scope() {
-            return resource.reserve_work(maximum, || self.with_resource_scope(None, |work| work.reserve_native_work(maximum)));
+            return resource.reserve(maximum, 0, None, || self.with_resource_scope(None, |work| work.reserve_native_work(maximum)));
         }
         self.admit(maximum)?;
         let budget = maximum.remaining(self.budget)?;
@@ -2917,7 +2917,7 @@ impl DemandWork {
 
     pub(crate) fn reserve_pending_outputs(&mut self, items: u64) -> Result<(), DemandError> {
         if let Some(resource) = self.resource_scope() {
-            return resource.reserve_credit(crate::materializer::NativeResourceCredit::ReturnedItems, items,
+            return resource.reserve(crate::materializer::NativeResourceCredit::ReturnedItems.delta(items), 0, None,
                 || self.with_resource_scope(None, |work| work.reserve_pending_outputs(items)));
         }
         self.admit(WorkCounters { items_returned: items, ..WorkCounters::UNCHARGED })?;
@@ -2945,12 +2945,12 @@ impl DemandWork {
         self.cancellation_wait.pending_outputs = reserved;
         self.budget.items_returned = budget;
         self.resource_scope().map_or(Ok(()), |resource| resource.refund_credit(
-            crate::materializer::NativeResourceCredit::ReturnedItems, items))
+            crate::materializer::NativeResourceCredit::ReturnedItems, items, None))
     }
 
     pub(crate) fn reserve_pending_items(&mut self, items: u64) -> Result<(), DemandError> {
         if let Some(resource) = self.resource_scope() {
-            return resource.reserve_credit(crate::materializer::NativeResourceCredit::Items, items,
+            return resource.reserve(crate::materializer::NativeResourceCredit::Items.delta(items), 0, None,
                 || self.with_resource_scope(None, |work| work.reserve_pending_items(items)));
         }
         self.admit(WorkCounters { items_examined: items, ..WorkCounters::UNCHARGED })?;
@@ -2982,7 +2982,7 @@ impl DemandWork {
     pub(crate) fn refund_pending_items(&mut self, items: u64) {
         if let Some(resource) = self.resource_scope() {
             self.with_resource_scope(None, |work| work.refund_pending_items(items));
-            if let Err(error) = resource.refund_credit(crate::materializer::NativeResourceCredit::Items, items) {
+            if let Err(error) = resource.refund_credit(crate::materializer::NativeResourceCredit::Items, items, None) {
                 self.record_native_io_failure(error);
             }
             return;
@@ -2995,7 +2995,7 @@ impl DemandWork {
 
     pub(crate) fn reserve_copy(&mut self, maximum: u64) -> Result<(), DemandError> {
         if let Some(resource) = self.resource_scope() {
-            return resource.reserve_credit(crate::materializer::NativeResourceCredit::Copy, maximum,
+            return resource.reserve(crate::materializer::NativeResourceCredit::Copy.delta(maximum), 0, None,
                 || self.with_resource_scope(None, |work| work.reserve_copy(maximum)));
         }
         self.admit(WorkCounters { bytes_copied: maximum, ..WorkCounters::UNCHARGED })?;
@@ -3007,7 +3007,7 @@ impl DemandWork {
     pub(crate) fn cancel_reserved_copy(&mut self, maximum: u64) {
         if let Some(resource) = self.resource_scope() {
             self.with_resource_scope(None, |work| work.cancel_reserved_copy(maximum));
-            if let Err(error) = resource.refund_credit(crate::materializer::NativeResourceCredit::Copy, maximum) {
+            if let Err(error) = resource.refund_credit(crate::materializer::NativeResourceCredit::Copy, maximum, None) {
                 self.record_native_io_failure(error);
             }
             return;
@@ -3058,7 +3058,7 @@ impl DemandWork {
     pub(crate) fn reserve(&mut self, kind: NativeOperationKind, maximum: u64, bytes: bool) -> std::io::Result<()> {
         if let Some(resource) = self.resource_scope() {
             let credit = Self::native_counter(kind, bytes).ok_or(std::io::ErrorKind::Unsupported)?.0;
-            let result = resource.reserve_credit(credit, maximum, || self.with_resource_scope(None,
+            let result = resource.reserve(credit.delta(maximum), 0, None, || self.with_resource_scope(None,
                 |work| work.reserve(kind, maximum, bytes).map_err(DemandError::Io)));
             return result.map_err(|error| self.record_native_io_failure(error));
         }
@@ -3078,7 +3078,7 @@ impl DemandWork {
         if let Some(resource) = self.resource_scope() {
             self.with_resource_scope(None, |work| work.refund(kind, maximum, bytes));
             if let Some((credit, _)) = Self::native_counter(kind, bytes) {
-                if let Err(error) = resource.refund_credit(credit, maximum) { self.record_native_io_failure(error); }
+                if let Err(error) = resource.refund_credit(credit, maximum, None) { self.record_native_io_failure(error); }
             }
             return;
         }

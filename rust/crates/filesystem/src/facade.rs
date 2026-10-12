@@ -926,7 +926,7 @@ impl ProofDataAdmission<'_> {
                 if pending.as_ref().is_some_and(|guard| guard.bytes() != 0) {
                     return Err(FsError::NativeKernel(NativeTreeMaterializationError::InvalidLayout));
                 }
-                let allocation = original.claim_allocation_with_work(bytes, operations, delta)?;
+                let allocation = original.claim_allocation(bytes, operations, delta)?;
                 *pending = Some(allocation);
             } else { original.charge(delta)?; }
             return Ok(());
@@ -6422,7 +6422,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         let working = (root, working_control);
         let captured_bytes = usize_to_u64(CheckoutDependencies::empty_logical_owned_bytes());
         cancellation.check()?;
-        let mut captured_guard = original.claim_allocation(captured_bytes, 1)?;
+        let mut captured_guard = original.claim_allocation(captured_bytes, 1, crate::WorkCounters::UNCHARGED)?;
         let mut captured_control = captured_guard.transfer_checkout_control(&custody, &witness)?;
         let mut captured = CheckoutDependencies::new(
             std::iter::empty(), std::iter::empty(), self.config.limits.maximum_checkout_dependencies,
@@ -6432,8 +6432,8 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Volume<A, O> {
         let proof_bytes = usize_to_u64(size_of::<Mutex<Proof>>());
         let paths_bytes = usize_to_u64(size_of::<ObservedPathMap>());
         cancellation.check()?;
-        let mut proof_guard = original.claim_allocation(proof_bytes, 1)?;
-        let mut paths_guard = original.claim_allocation(paths_bytes, 1)?;
+        let mut proof_guard = original.claim_allocation(proof_bytes, 1, crate::WorkCounters::UNCHARGED)?;
+        let mut paths_guard = original.claim_allocation(paths_bytes, 1, crate::WorkCounters::UNCHARGED)?;
         let proof_control = proof_guard.transfer_checkout_control(&custody, &witness)?;
         let paths_control = paths_guard.transfer_checkout_control(&custody, &witness)?;
         let mut dependencies = DependencyLedger::new_with_native_custody(

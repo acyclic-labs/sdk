@@ -1659,7 +1659,7 @@ where
         async {
             let original = native_work.native_materialization_work();
             super::adapter::validate_native_source_io_binding(&original, native_original)?;
-            let destination = original.copy_path(destination)
+            let destination = original.path(destination, None)
                 .map_err(|error| MountLifecycleError::Native(NativeMountError::Materialization(error)))?;
             let destination_custody = destination.1;
             let destination = destination.0;
@@ -1687,13 +1687,13 @@ where
                 }
             };
             let root_text = root_text.0;
-            let session_destination = original.copy_path(&destination)
+            let session_destination = original.path(&destination, None)
                 .map_err(|error| MountLifecycleError::Native(NativeMountError::Materialization(error)))?;
             let lazy = self.clone().into_arc_with_native_work(&original)
                 .map_err(MountLifecycleError::Lazy)?;
             // Admit the actual existing payload slot before starting its watch.
             let mut source_allocation = original.claim_allocation(
-                std::mem::size_of::<LazyMountSource<A, O, D, S>>() as u64, 1,
+                std::mem::size_of::<LazyMountSource<A, O, D, S>>() as u64, 1, crate::WorkCounters::UNCHARGED,
             ).map_err(|error| MountLifecycleError::Native(NativeMountError::Materialization(error)))?;
             let mut source = Arc::<LazyMountSource<A, O, D, S>>::new_uninit();
             // The real error-owner slot must exist before its source starts a
@@ -2044,7 +2044,7 @@ where
                     checkout.into_unpublishable_capture_candidate()
                 };
                 let config = checkout.volume_config();
-                let root = original.with_owned_allocations(
+                let root = original.allocations(
                     |allocations, work, budget, cancellation| {
                         crate::workspace::customer_path_measured(
                             &mount.subdirectory, config, allocations, work, budget, cancellation,
@@ -2067,8 +2067,8 @@ where
                         super::MaterializeMode::ReconstructibleView, meter,
                     ).await.map_err(MountLifecycleError::Materialize)?;
                 }
-                let mut source_root = original.copy_path(&options.destination)?;
-                let mut selected_root = original.with_owned_allocations(
+                let mut source_root = original.path(&options.destination, None)?;
+                let mut selected_root = original.allocations(
                     |allocations, work, budget, cancellation| {
                         preparation_selected_root_measured(
                             &root.0, allocations, work, budget, cancellation,
@@ -2427,7 +2427,7 @@ mod tests {
                 let mounted = &mount;
                 async move {
                     let scope = scope.map_err(MountLifecycleError::Native)?;
-                    let result = work.read_working_file_guarded::<MountLifecycleError, _, _>(
+                    let result = work.read_working_file::<MountLifecycleError, _, _>(
                         mounted.path(), identity, Path::new("source.txt"), 32,
                         || std::future::ready(Ok(())),
                     ).await;

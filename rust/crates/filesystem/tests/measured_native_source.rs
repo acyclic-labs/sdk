@@ -86,7 +86,7 @@ async fn original_native_root_custody_and_current_reference_are_provider_owned()
     let budget = finite_budget()?;
     let work = NativeMaterializationWork::new(budget, &CancellationToken::new()).map_err(|(error, _)| error)?;
     let before = work.live_allocation_bytes();
-    let (caller_path, caller_guard) = work.copy_path(&root)?;
+    let (caller_path, caller_guard) = work.path(&root, None)?;
     let reference = SourceReference { identity: [92; 16], epoch: 18 };
     let source = NativeDemandSource::open_with_reference_and_native_work(
         &caller_path, FilesystemProfile::Portable, VolumeLimits::default(), reference, None, &work,
