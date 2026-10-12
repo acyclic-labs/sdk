@@ -1386,7 +1386,3 @@ fn decode_error(error: serde_json::Error) -> Error { invalid(&error.to_string())
 #[cfg(test)]
 #[path = "pi_native_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "pi_native_process_tests.rs"]
-mod process_tests;

@@ -27,11 +27,26 @@ pub(super) fn run_fuse_retirement(owned: (Arc<FuseDriverControl>, crate::NativeA
         }
         state.stop_requested = false;
         drop(state);
-        let result = retire_fuse_driver(control, None);
+        let result = (|| {
+            let mut loan = FuseDriverLoan::take(control)?;
+            loan.physical
+                .as_mut()
+                .expect("physical driver loan")
+                .stop(control, None)?;
+            if let Some(retirement) = loan.retirement.as_mut() {
+                retirement.retire(None)?;
+            }
+            Ok::<_, NativeMountError>(
+                loan.retirement
+                    .as_ref()
+                    .is_none_or(crate::native_mount::NativeMountRetirement::is_retired),
+            )
+        })();
         let mut state = control.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Err(error) = result {
-            if state.failure.is_none() {
-                state.failure = Some(error);
+        match result {
+            Ok(retired) => state.retired = retired,
+            Err(error) => {
+                state.failure.get_or_insert(error);
             }
         }
         control.changed.notify_all();
@@ -145,10 +160,17 @@ impl FuseRetirementHelper {
                 {
                     return Ok(status);
                 }
-                fuse_recovery_attempt(&mut &self.credit, false, || {
-                    std::thread::sleep(Duration::from_millis(10));
-                    Ok(())
-                })?;
+                crate::native_host::NativeHostWork::attempt_io(
+                    &mut &self.credit,
+                    crate::WorkCounters {
+                        backend_read_operations: 1,
+                        ..crate::WorkCounters::UNCHARGED
+                    },
+                    || {
+                        std::thread::sleep(Duration::from_millis(10));
+                        Ok(())
+                    },
+                )?;
             }
             unreachable!("finite helper observation returns at its last admitted visit")
         })();
@@ -285,7 +307,6 @@ impl FusePhysicalSession {
         &mut self,
         control: &FuseDriverControl,
         native: Option<&crate::NativeMaterializationWork>,
-        wait: Option<&crate::CancellationToken>,
     ) -> Result<(), NativeMountError> {
         let core = &control.core;
         let Self {
@@ -297,7 +318,7 @@ impl FusePhysicalSession {
             birth_cleanup,
         } = self;
         let loan = if native.is_none() {
-            Some(birth_cleanup.loan(wait))
+            Some(birth_cleanup.loan(None))
         } else {
             None
         };
@@ -406,7 +427,7 @@ impl FusePhysicalSession {
     ) -> Result<(), NativeMountError> {
         let mut host = native;
         let (directory, identity) =
-            crate::native_host::open_root_directory_identity_with_work(destination, &mut host)?;
+            crate::native_host::open_root_directory(destination, &mut host)?;
         self.active_root = Some(directory);
         self.native_root_identity = Some(identity);
         close_fuse_root(&mut self.active_root, native)
@@ -426,27 +447,6 @@ pub(super) fn close_fuse_root(
         .expect("preadmitted root capability remains owned");
     let (_, recorded) = cleanup.attempt_recorded(|| drop(directory));
     recorded.map_err(NativeMountError::from)
-}
-
-pub(super) fn retire_fuse_driver(
-    control: &Arc<FuseDriverControl>,
-    wait: Option<&crate::CancellationToken>,
-) -> Result<(), NativeMountError> {
-    let mut loan = FuseDriverLoan::take(control)?;
-    let physical = loan.physical.as_mut().expect("physical driver loan");
-    physical.stop(control, None, wait)?;
-    if let Some(retirement) = loan.retirement.as_mut() {
-        retirement.retire(wait)?;
-    }
-    let retired = loan
-        .retirement
-        .as_ref()
-        .is_none_or(crate::native_mount::NativeMountRetirement::is_retired);
-    drop(loan);
-    let mut state = control.state.lock().unwrap_or_else(PoisonError::into_inner);
-    state.retired = retired;
-    control.changed.notify_all();
-    Ok(())
 }
 
 pub(super) fn run_fuse_sdk(

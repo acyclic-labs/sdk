@@ -94,7 +94,7 @@ fn string(value: &str, work: &Work, held: &mut NativeAllocation) -> Result<Strin
 }
 
 fn path(value: &Path, work: &Work, held: &mut NativeAllocation) -> Result<PathBuf, Error> {
-    let (value, mut allocation) = crate::native_host::clone_path_with_work(value, &mut &*work)?;
+    let (value, mut allocation) = crate::native_host::clone_path(value, &mut &*work)?;
     let result = held.absorb(&mut allocation);
     if let Err(error) = result {
         drop(value);
@@ -622,7 +622,7 @@ fn live_ids(
         &mut path_allocation,
     )?;
     let directory =
-        match crate::native_host::open_root_directory_with_work(&directory_path, &mut &*work) {
+        match crate::native_host::open_root_directory(&directory_path, &mut &*work).map(|(directory, _)| directory) {
             Ok(directory) => Some(directory),
             Err(NativeError::Io(error)) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(error.into()),
@@ -630,15 +630,15 @@ fn live_ids(
     if let Some(directory) = directory {
         let mut reader_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
         let (mut reader, mut allocation) =
-            crate::native_host::read_dir_held_with_work(&directory, &mut &*work)?;
+            crate::native_host::read_dir_held(&directory, &mut &*work)?;
         reader_allocation.absorb(&mut allocation)?;
         loop {
             check(work, cxl)?;
             let mut entry_allocation = work.claim(0, 0, crate::WorkCounters::UNCHARGED)?;
             #[cfg(unix)]
-            let next = reader.next_with_work(&mut &*work)?;
+            let next = reader.next(&mut &*work)?;
             #[cfg(windows)]
-            let next = reader.next_wide_with_work(&mut &*work)?;
+            let next = reader.next_wide(&mut &*work)?;
             let Some((entry, allocation)) = next else {
                 break;
             };

@@ -1,11 +1,11 @@
 //! Authenticated client for the generated Actors v1 service.
 
 use crate::wire;
+use acyclic_workers::BearerAuth;
+pub use acyclic_workers::grpc::ConnectError;
 use prost::Message;
 use tonic::{Status, transport::Channel};
 use tracing::field::Empty;
-use acyclic_workers::BearerAuth;
-pub use acyclic_workers::grpc::ConnectError;
 
 /// Generated client with account authentication on every request.
 pub type Client = wire::actors_service_client::ActorsServiceClient<

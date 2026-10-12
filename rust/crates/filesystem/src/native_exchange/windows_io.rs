@@ -75,9 +75,9 @@ pub(super) fn open_witness<W: NativeHostWork>(
 ) -> Result<std::fs::File, W::Error> {
     with_wide_leaf(name, work, |name, work| {
         if create {
-            crate::native_host::create_windows_provisional_file_with_work(directory, name, work)
+            crate::native_host::create_windows_wide_at(directory, name, false, false, false, true, work)
         } else {
-            crate::native_host::open_windows_leaf_with_options_with_work(directory, name,
+            crate::native_host::open_windows_leaf_with_options(directory, name,
                 &crate::native_host::NativeOpenOptions::Read, work)
         }
     })

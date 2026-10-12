@@ -19,7 +19,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> GitCapturedGeneration<A, O> {
         graph: &crate::WorkspaceGraph<S>,
     ) -> Result<Option<GitCaptureProof>, GitCaptureAuthenticationError<S::Error>> {
         let proof = self.verified_proof(operation_id).await?;
-        if let (Some(parent), Some(initial_generation)) = (&self.fork_parent, self.initial_generation) {
+        if let (Some(parent), Some(initial_generation)) =
+            (&self.fork_parent, self.initial_generation)
+        {
             graph
                 .register_existing_child_at_generation(
                     &parent.workspace(),
@@ -44,16 +46,26 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> GitCapturedGeneration<A, O> {
         };
         let child = self.generation.workspace();
         let expected_suffix = format!("-{}", hex::encode(operation_id.into_bytes()));
-        if !child.name().as_str().starts_with("git-capture-") || !child.name().as_str().ends_with(&expected_suffix) {
+        if !child.name().as_str().starts_with("git-capture-")
+            || !child.name().as_str().ends_with(&expected_suffix)
+        {
             return Err(GitCaptureError::Conflict);
         }
-        let expected_child =
-            parent.workspace().volume.fs.workspace_id(child.name().as_str()).map_err(WorkspaceError::from)?;
+        let expected_child = parent
+            .workspace()
+            .volume
+            .fs
+            .workspace_id(child.name().as_str())
+            .map_err(WorkspaceError::from)?;
         if child.id() != expected_child {
             return Err(GitCaptureError::Conflict);
         }
         let initial = child
-            .generation(initial_generation, WorkBudget::UNBOUNDED, &CancellationToken::new())
+            .generation(
+                initial_generation,
+                WorkBudget::UNBOUNDED,
+                &CancellationToken::new(),
+            )
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)?;
@@ -73,7 +85,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> GitCapturedGeneration<A, O> {
             .await
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)?;
-        if self.generation.id() != initial_generation && result_parents.as_slice() != [initial_generation] {
+        if self.generation.id() != initial_generation
+            && result_parents.as_slice() != [initial_generation]
+        {
             return Err(GitCaptureError::Conflict);
         }
         Ok(Some(GitCaptureProof {
@@ -121,15 +135,25 @@ where
     if policies.contains_key(directory) {
         return Ok(());
     }
-    let path = if directory.is_empty() { "/.gitignore".to_owned() } else { format!("/{directory}/.gitignore") };
+    let path = if directory.is_empty() {
+        "/.gitignore".to_owned()
+    } else {
+        format!("/{directory}/.gitignore")
+    };
     let policy = match generation
-        .read(&path, 1024 * 1024, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .read(
+            &path,
+            1024 * 1024,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
         .await
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)
     {
         Ok(contents) => {
-            let contents = std::str::from_utf8(&contents).map_err(|_| GitCaptureError::NonPortableName)?;
+            let contents =
+                std::str::from_utf8(&contents).map_err(|_| GitCaptureError::NonPortableName)?;
             GitIgnorePolicy::parse(contents)
         }
         Err(WorkspaceError::NotFound) => GitIgnorePolicy::default(),
@@ -153,12 +177,21 @@ where
         let mut after = None;
         loop {
             let page = live
-                .list_directory(&directory, after.as_ref(), 1_024, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                .list_directory(
+                    &directory,
+                    after.as_ref(),
+                    1_024,
+                    WorkBudget::UNBOUNDED,
+                    &CancellationToken::new(),
+                )
                 .await
                 .map(|receipt| receipt.value.0)
                 .map_err(|failure| failure.error)?;
             for entry in &page.entries {
-                let name = entry.name.unicode_text().ok_or(GitCaptureError::NonPortableName)?;
+                let name = entry
+                    .name
+                    .unicode_text()
+                    .ok_or(GitCaptureError::NonPortableName)?;
                 let path = if directory == "/" {
                     name.to_string()
                 } else {
@@ -170,13 +203,21 @@ where
                     pending.push(format!("/{path}"));
                 } else if name == ".gitignore" && directory != "/" {
                     let contents = live
-                        .read(&format!("/{path}"), 1024 * 1024, WorkBudget::UNBOUNDED, &CancellationToken::new())
+                        .read(
+                            &format!("/{path}"),
+                            1024 * 1024,
+                            WorkBudget::UNBOUNDED,
+                            &CancellationToken::new(),
+                        )
                         .await
                         .map(|receipt| receipt.value)
                         .map_err(|failure| failure.error)?;
-                    let contents = std::str::from_utf8(&contents).map_err(|_| GitCaptureError::NonPortableName)?;
-                    nested_policies
-                        .insert(directory.trim_start_matches('/').to_owned(), GitIgnorePolicy::parse(contents));
+                    let contents = std::str::from_utf8(&contents)
+                        .map_err(|_| GitCaptureError::NonPortableName)?;
+                    nested_policies.insert(
+                        directory.trim_start_matches('/').to_owned(),
+                        GitIgnorePolicy::parse(contents),
+                    );
                 }
             }
             if !page.has_more {
@@ -238,16 +279,23 @@ where
     O: AsyncObjectStore,
 {
     let (mut entries, nested_policies) = scan_git_capture_entries(&live).await?;
-    entries.sort_by(|left, right| path_depth(&left.0).cmp(&path_depth(&right.0)).then_with(|| left.0.cmp(&right.0)));
+    entries.sort_by(|left, right| {
+        path_depth(&left.0)
+            .cmp(&path_depth(&right.0))
+            .then_with(|| left.0.cmp(&right.0))
+    });
     let mut excluded = Vec::<String>::new();
     let mut tracked_paths = BTreeSet::new();
     for (path, is_directory) in &entries {
         let parent_excluded = excluded.iter().any(|parent| is_path_below(path, parent));
         let tracked = already_tracked.contains(path);
-        let tracked_descendant =
-            *is_directory && already_tracked.iter().any(|candidate| is_path_below(candidate, path));
+        let tracked_descendant = *is_directory
+            && already_tracked
+                .iter()
+                .any(|candidate| is_path_below(candidate, path));
         if parent_excluded
-            || (!git_path_eligible(policy, &nested_policies, path, *is_directory, tracked) && !tracked_descendant)
+            || (!git_path_eligible(policy, &nested_policies, path, *is_directory, tracked)
+                && !tracked_descendant)
         {
             excluded.push(path.clone());
         } else if !is_directory {
@@ -262,7 +310,15 @@ where
             fork_parent: None,
         });
     }
-    apply_git_capture(&live, Some(&live), None, &excluded, tracked_paths, operation_id).await
+    apply_git_capture(
+        &live,
+        Some(&live),
+        None,
+        &excluded,
+        tracked_paths,
+        operation_id,
+    )
+    .await
 }
 
 /// Captures eligible paths changed since the preceding live generation.
@@ -284,7 +340,12 @@ where
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
     let changes = previous_live
-        .diff_to(&live, u32::MAX, WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .diff_to(
+            &live,
+            u32::MAX,
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
         .await
         .map(|receipt| receipt.value.0)
         .map_err(|failure| failure.error)?;
@@ -297,7 +358,13 @@ where
     for change in changed {
         let path = portable_changed_path(&change.path)?;
         if path.rsplit('/').next() == Some(".gitignore") {
-            return capture_git_compatible_generation(workspace, policy, already_tracked, operation_id).await;
+            return capture_git_compatible_generation(
+                workspace,
+                policy,
+                already_tracked,
+                operation_id,
+            )
+            .await;
         }
         portable.push((path, change.before, change.after));
     }
@@ -310,12 +377,24 @@ where
         let kind = after.or(before).map(|record| record.kind);
         let is_directory = kind == Some(FileKind::Directory);
         let tracked = already_tracked.contains(&path);
-        let tracked_descendant =
-            is_directory && already_tracked.iter().any(|candidate| is_path_below(candidate, &path));
-        let (generation, policies) =
-            if after.is_some() { (&live, &mut after_policies) } else { (previous_live, &mut before_policies) };
-        let allowed =
-            git_path_eligible_with_root_at(generation, policies, policy, &path, is_directory, already_tracked).await?;
+        let tracked_descendant = is_directory
+            && already_tracked
+                .iter()
+                .any(|candidate| is_path_below(candidate, &path));
+        let (generation, policies) = if after.is_some() {
+            (&live, &mut after_policies)
+        } else {
+            (previous_live, &mut before_policies)
+        };
+        let allowed = git_path_eligible_with_root_at(
+            generation,
+            policies,
+            policy,
+            &path,
+            is_directory,
+            already_tracked,
+        )
+        .await?;
         if tracked || tracked_descendant || allowed {
             eligible.push(path.clone());
         }
@@ -336,7 +415,15 @@ where
         });
     }
 
-    apply_git_capture(previous_capture, Some(previous_live), Some(&live), &eligible, tracked_paths, operation_id).await
+    apply_git_capture(
+        previous_capture,
+        Some(previous_live),
+        Some(&live),
+        &eligible,
+        tracked_paths,
+        operation_id,
+    )
+    .await
 }
 
 async fn apply_git_capture<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -358,10 +445,12 @@ async fn apply_git_capture<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
             |_| {
-                std::future::ready(Ok::<_, crate::OperationFailure<crate::FsError>>(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
+                std::future::ready(Ok::<_, crate::OperationFailure<crate::FsError>>(
+                    crate::OperationReceipt {
+                        value: (),
+                        work: crate::WorkCounters::UNCHARGED,
+                    },
+                ))
             },
         )
         .await
@@ -392,7 +481,14 @@ async fn apply_git_capture<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             .map(|receipt| receipt.value)
             .map_err(|failure| failure.error)?;
         match capture
-            .apply_paths_from(base, source, paths, head.id(), apply_key, crate::PublicationPermit::Unrestricted)
+            .apply_paths_from(
+                base,
+                source,
+                paths,
+                head.id(),
+                apply_key,
+                crate::PublicationPermit::Unrestricted,
+            )
             .await?
         {
             crate::WorkspacePathApply::Applied(generation) => (generation, head.id()),
@@ -411,11 +507,17 @@ async fn apply_git_capture<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             crate::WorkspacePathApply::Conflicted(_)
             | crate::WorkspacePathApply::Stale(_)
             | crate::WorkspacePathApply::Fenced
-            | crate::WorkspacePathApply::IdempotencyConflict => return Err(GitCaptureError::Conflict),
+            | crate::WorkspacePathApply::IdempotencyConflict => {
+                return Err(GitCaptureError::Conflict);
+            }
         }
     };
     generation
-        .pin(format!("capture-{}", hex::encode(bytes)), WorkBudget::UNBOUNDED, &CancellationToken::new())
+        .pin(
+            format!("capture-{}", hex::encode(bytes)),
+            WorkBudget::UNBOUNDED,
+            &CancellationToken::new(),
+        )
         .await
         .map(|receipt| receipt.value)
         .map_err(|failure| failure.error)?;
@@ -427,13 +529,19 @@ async fn apply_git_capture<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     })
 }
 
-pub(super) fn portable_changed_path(path: &crate::kernel::NamespacePath) -> Result<String, GitCaptureError> {
+pub(super) fn portable_changed_path(
+    path: &crate::kernel::NamespacePath,
+) -> Result<String, GitCaptureError> {
     let mut portable = String::new();
     for component in path.components() {
         if !portable.is_empty() {
             portable.push('/');
         }
-        portable.push_str(&component.unicode_text().ok_or(GitCaptureError::NonPortableName)?);
+        portable.push_str(
+            &component
+                .unicode_text()
+                .ok_or(GitCaptureError::NonPortableName)?,
+        );
     }
     Ok(portable)
 }
@@ -443,5 +551,7 @@ pub(super) fn path_depth(path: &str) -> usize {
 }
 
 pub(super) fn is_path_below(candidate: &str, parent: &str) -> bool {
-    candidate.strip_prefix(parent).is_some_and(|suffix| suffix.starts_with('/'))
+    candidate
+        .strip_prefix(parent)
+        .is_some_and(|suffix| suffix.starts_with('/'))
 }

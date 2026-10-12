@@ -34,8 +34,6 @@ pub(crate) enum NativeJob {
 
 pub(crate) enum NativeUnitOperation {
     Write(Vec<OwnedWrite>),
-    SetLen(u64),
-    Sync(Durability),
     Control {
         operation: Box<dyn FnOnce(&File, Option<&dyn NativeReadMeter>) -> io::Result<()> + Send>,
         _allocation: Option<ReadAllocation>,
@@ -206,13 +204,6 @@ impl NativeJob {
                             #[cfg(any(windows, target_os = "linux"))]
                             NativeUnitOperation::Write(_) => {
                                 unreachable!("native writes are dispatched before bounded controls")
-                            }
-                            NativeUnitOperation::SetLen(size) => match &meter {
-                                Some(meter) => set_len(&file, size, meter.as_ref()),
-                                None => file.set_len(size),
-                            },
-                            NativeUnitOperation::Sync(durability) => {
-                                sync_file(&file, durability, meter.as_deref())
                             }
                             NativeUnitOperation::Control {
                                 operation,

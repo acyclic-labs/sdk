@@ -338,7 +338,7 @@ impl CaptureInputScratch for CaptureScratchAllocation<'_> {
         Self::release(self, bytes).map_err(super::lazy::mount_demand_error)
     }
     fn clone_path(&mut self, path: &Path) -> Result<std::path::PathBuf, MountSourceError> {
-        crate::native_host::clone_path_with_work(path, self).map(|(path, _)| path)
+        crate::native_host::clone_path(path, self).map(|(path, _)| path)
             .map_err(super::lazy::mount_demand_error)
     }
 }
@@ -420,7 +420,7 @@ impl CaptureInputScratch for NativeCaptureScratchAllocation<'_> {
     fn clone_path(&mut self, path: &Path) -> Result<std::path::PathBuf, MountSourceError> {
         let allocation;
         let cloned;
-        (cloned, allocation) = crate::native_host::clone_path_with_work(path, &mut self.work)
+        (cloned, allocation) = crate::native_host::clone_path(path, &mut self.work)
             .map_err(MountSourceError::NativeWork)?;
         self.absorb(allocation);
         Ok(cloned)

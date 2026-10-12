@@ -20,9 +20,9 @@ impl NativeFile {
     /// Imports an authorized handle, returning it unchanged when admission fails.
     pub fn from_file(
         file: File,
-        meter: Option<NativeFileMeter<'_>>,
+        accounting: Option<NativeFileMeter<'_>>,
     ) -> Result<Self, (io::Error, File)> {
-        let (meter, owner) = match &meter {
+        let (meter, owner) = match &accounting {
             Some(NativeFileMeter::Borrowed(meter)) => (Some(*meter), None),
             Some(NativeFileMeter::Owned(meter)) => (Some(meter.as_ref()), Some(meter)),
             None => (None, None),
@@ -124,7 +124,13 @@ impl NativeFile {
         size: u64,
         meter: Option<Arc<dyn NativeReadMeter>>,
     ) -> io::Result<NativeCompletion<()>> {
-        self.submit_unit(NativeUnitOperation::SetLen(size), meter)
+        self.control_async(
+            move |file, meter| match meter {
+                Some(meter) => set_len(file, size, meter),
+                None => file.set_len(size),
+            },
+            meter,
+        )
     }
 
     /// Runs a platform-specific handle control in this file's operation order.
@@ -277,7 +283,7 @@ impl NativeFile {
         durability: Durability,
         meter: Option<Arc<dyn NativeReadMeter>>,
     ) -> io::Result<NativeCompletion<()>> {
-        self.submit_unit(NativeUnitOperation::Sync(durability), meter)
+        self.control_async(move |file, meter| sync_file(file, durability, meter), meter)
     }
 
     /// Writes a caller-accounted payload on this same ordered native driver.
@@ -336,8 +342,6 @@ impl NativeFile {
                             writes.iter().map(|write| write.bytes.len()).sum()
                         })
                 }
-                NativeUnitOperation::SetLen(_) => obs::file_span!(DEBUG, "acyclic.runtime.set_len"),
-                NativeUnitOperation::Sync(_) => obs::file_span!(DEBUG, "acyclic.runtime.sync"),
                 _ => obs::file_span!(DEBUG, "acyclic.runtime.control"),
             }
         };
