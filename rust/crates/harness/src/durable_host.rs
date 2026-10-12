@@ -3641,7 +3641,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         };
         let (scope, _) = self.authenticated_scope_with_work(&admission, work).await?;
         let input_is_root = admission.parent.is_none() && admission.resource_proofs.is_empty();
-        let input_agent = match scope.current_created_agent()? {
+        let input_agent = match scope.current_created_agent(work)? {
             Some(agent) => Some(agent),
             None if input_is_root => {
                 if declared_agent != self.owner_scope.agent() {
@@ -4109,7 +4109,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             return Err(admission_boundary(work, crate::wire::ErrorCode::Invalid,
                 "task and machine identities disagree"));
         }
-        self.tasks.validate_durable_admission_with_work(
+        self.tasks.validate_durable_admission(
             &admission.task, &admission.machine, Some(&admission.input_schema),
             &admission.output_schema, Some(&admission.input), work,
         )?;
@@ -4763,7 +4763,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
                 "durable task admission disagrees with its declaration",
             ));
         }
-        self.tasks.validate_durable_admission_with_work(
+        self.tasks.validate_durable_admission(
             &admission.task,
             &admission.machine,
             Some(&admission.input_schema),
@@ -5004,7 +5004,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             Some(&request.input_schema),
             &request.output_schema,
             None,
-        )?;
+         &mut None,)?;
         if request.scope.resource_proofs().is_empty() {
             self.root_scope.narrow(request.scope.grants().clone(), request.scope.limits())?
                 .with_run_limits(request.scope.run_limits(), &mut None)?;
@@ -7050,6 +7050,7 @@ pub(crate) mod tests {
             SchemaRegistry::new(),
             payloads.clone(),
             providers,
+            None, None,
         )?;
         let command = OperationId::from_bytes([55; 16]);
         let (first, second) = tokio::join!(

@@ -664,6 +664,7 @@ where
             SchemaRegistry::new(),
             self.content.clone(),
             registry,
+            None, None,
         )
     }
 }
@@ -2379,6 +2380,7 @@ async fn reopen_native(
         SchemaRegistry::new(),
         content,
         registry,
+        None, None,
     )?;
     Ok(LocalNativeRecovery {
         files,

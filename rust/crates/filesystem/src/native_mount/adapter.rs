@@ -10228,7 +10228,7 @@ mod tests {
         let meter = job.runtime_meter_owner();
         let data_guard = ReadAllocation::new(&meter, 8)?;
         let data = Box::new(*b"retained");
-        let demand = crate::demand::OriginalDemandWork::from_native_materialization_work(&job)
+        let demand = crate::demand::NativeSourceWork::from_native_materialization_work(&job).original_demand_work()
             .allocation_work();
         assert!(demand.source_execution_view().is_none());
         let credit = crate::materializer::NativeOwnedCleanupCredit::from_reserved(

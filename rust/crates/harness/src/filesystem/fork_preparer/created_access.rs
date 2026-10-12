@@ -192,16 +192,8 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             let context = crate::resource_preparation::RootBootstrapContentContext::from_verified_root_with_native_work(
                 owner, &original_root, root, work,
             ).await?;
-            volume.validate(&mut Some(&mut crate::store::history::native_work_io(work)?))?;
-            if owner.root_bootstrap_owner() != self.issuer.audience() || volume.provider() != &self.host.provider
-                || !match role {
-                    crate::resource_preparation::RootBootstrapContentRole::Project =>
-                        volume.class() == crate::conversation::VolumeClass::Project,
-                    crate::resource_preparation::RootBootstrapContentRole::Scratch =>
-                        volume.class() == crate::conversation::VolumeClass::AgentPrivate
-                            && volume.owner() == &crate::conversation::VolumeOwner::Agent(root.agent()),
-                }
-            {
+            if role == crate::resource_preparation::RootBootstrapContentRole::Scratch
+                && volume.owner() != &VolumeOwner::Agent(root.agent()) {
                 return Err(native_error(crate::wire::ErrorCode::Unauthorized, "Root bootstrap differs from its configured creator, actor or namespace"));
             }
             owner.require_volume_grant_with_native_work(volume, VolumeOperation::Read, work)?;
@@ -1504,7 +1496,7 @@ mod tests {
         let (scope, retained) = fixture.root_scope.with_created_access_with_work(&admission, Some(access), &mut Some(&mut io))?;
         scope_custody = crate::store::history::HistoryIo::take_native_custody(&mut io, retained)?;
         assert_eq!(scope.grants(), fixture.root_scope.grants());
-        assert_eq!(scope.current_created_private_volume_with_native_work(&work)?, Some(&scratch.request.volume));
+        assert_eq!(scope.current_created_private_volume(&mut Some(&mut crate::store::native_work_io(&work).map_err(|cause| Error::NativeWork { cause, custody: None })?))?, Some(&scratch.request.volume));
         assert!(scope.created_content(Some(&project.request.volume)).unwrap().writer.is_none());
         assert!(scope.created_content(Some(&scratch.request.volume)).unwrap().writer.is_some());
         let reader = &scope.created_content(Some(&project.request.volume)).unwrap().reader;

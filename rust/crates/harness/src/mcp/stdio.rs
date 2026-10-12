@@ -5,7 +5,7 @@ use super::{
     rpc::{initialization, notification,
         rpc_result},
 };
-use crate::{Error, NativeWork, OperationId, Result};
+use crate::{Error, NativeCustody, NativeWork, OperationId, Result};
 use bytes::BytesMut;
 use rmcp::transport::async_rw::JsonRpcMessageCodec;
 use serde::{Deserialize, Serialize};
@@ -149,11 +149,6 @@ pub struct McpStdioExchange {
     // LAST: all parser/control storage is physically dropped before custody.
     custody: NativeCustody,
 }
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-type NativeCustody = Option<acyclic_fs::NativeAllocation>;
-#[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-type NativeCustody = Option<()>;
 
 impl McpStdioExchange {
 

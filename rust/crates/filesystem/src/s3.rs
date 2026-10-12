@@ -639,9 +639,9 @@ async fn list_objects_lazy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     .min(options.maximum_keys.saturating_add(1));
                 let page = if inclusive {
                     checkout
-                        .list_directory_records_at_or_after(
+                        .list_directory_records(
                             &path,
-                            after.as_ref().ok_or(S3Error::InvalidContinuation)?,
+                            std::ops::Bound::Included(after.as_ref().ok_or(S3Error::InvalidContinuation)?),
                             page_limit,
                             WorkBudget::UNBOUNDED,
                             &CancellationToken::new(),
@@ -651,7 +651,7 @@ async fn list_objects_lazy<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     checkout
                         .list_directory_records(
                             &path,
-                            after.as_ref(),
+                            after.as_ref().map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
                             page_limit,
                             WorkBudget::UNBOUNDED,
                             &CancellationToken::new(),
