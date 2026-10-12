@@ -4092,7 +4092,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_readlink(
         if length == 0 {
             return Err(libc::ERANGE);
         }
-        let chunk = context.source.read_link_with_meter(&*mount_path(path, work)?, work.native)
+        let chunk = context.source.read_link(&*mount_path(path, work)?, work.native)
             .map_err(|error| work.native_error(error.into()))?;
         let target = work.source_chunk(chunk);
         if target.len() >= length {
@@ -4229,7 +4229,7 @@ unsafe extern "C" fn acyclic_fs_darwin_mount_getxattr(
         if !context.may_have_named_attributes(&path, work)? {
             return Err(libc::ENOATTR);
         }
-        let chunk = context.source.read_attribute_with_meter(&path, c_bytes(name, work)?, work.native)
+        let chunk = context.source.read_attribute(&path, c_bytes(name, work)?, work.native)
             .map_err(|error| work.native_error(error.into()))?
             .ok_or(libc::ENOATTR)?;
         let bytes = work.source_chunk(chunk);
