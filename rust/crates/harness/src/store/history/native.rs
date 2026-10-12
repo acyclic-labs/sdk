@@ -273,7 +273,7 @@ impl HistoryIo for NativeHistoryIo<'_> {
         let io = crate::filesystem::PreparationIo::from_native_work(self.work)?;
         let decoded = io.decode_preparation::<serde_json::Value>(bytes, crate::wire::ErrorCode::Storage)?;
         let retained = io.owned_bytes()?;
-        let value = decoded.into_retained();
+        let value = crate::filesystem::retain_decoded(decoded);
         let incoming = io.into_native_custody(retained)?;
         let held = incoming.bytes();
         self.absorb_native_custody(incoming)?;

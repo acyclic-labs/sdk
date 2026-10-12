@@ -92,7 +92,7 @@ pub(super) fn execute<'a, P: StreamProvider + 'static>(
                 let bytes = io.encode(&captured, u64::from(request.maximum_result_bytes), true)?;
                 let decoded = io.decode_preparation::<serde_json::Value>(
                     &bytes, crate::wire::ErrorCode::Invalid)?;
-                crate::contract::validate_json_schema_value(schema, &decoded.value, "native process result", Some(&io))?;
+                crate::contract::validate_json_schema_value(schema, &decoded.0, "native process result", Some(&io))?;
                 drop(decoded);
                 bytes
 

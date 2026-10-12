@@ -718,7 +718,7 @@ impl ForkPreparationMachine {
             digest: preparation_implementation_digest(Some(&io))?,
         };
         let schema;
-        (schema, custody) = io.decode_preparation::<Value>(PREPARATION_STATE_SCHEMA, crate::wire::ErrorCode::Storage)?.into_native_parts()?;
+        (schema, custody) = crate::filesystem::native_decoded(io.decode_preparation::<Value>(PREPARATION_STATE_SCHEMA, crate::wire::ErrorCode::Storage)?)?;
         metadata = io.take_native_custody(io.owned_bytes()?)?;
         custody.absorb(&mut metadata).map_err(Error::from)?;
         Ok(Arc::new(Self { identity, schema, _native_custody: Some(custody) }))

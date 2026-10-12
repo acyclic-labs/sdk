@@ -211,7 +211,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         }
         self.guard().await?;
         let _serial = self.serial.lock().await;
-        self.io.claim(path.len() as u64 + 1)?;
+        self.io.retain_owned(path.len() as u64 + 1)?;
         self.io.allocation_attempt(path.len() as u64 + 1)?;
         let requested = format!("/{path}");
         let _requested_hold = self.io.guard_owned(requested.len() as u64)?;
@@ -247,13 +247,13 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             (staged.descriptor(), staged.display_name())
         } else {
             const MEDIA_TYPE: &str = "application/octet-stream";
-            self.io.claim(MEDIA_TYPE.len() as u64)?;
+            self.io.retain_owned(MEDIA_TYPE.len() as u64)?;
             self.io.allocation_attempt(MEDIA_TYPE.len() as u64)?;
             _descriptor_hold = Some(self.io.guard_owned(MEDIA_TYPE.len() as u64)?);
             raw_descriptor = FileDescriptor::from_bytes(&bytes, MEDIA_TYPE)?;
             (&raw_descriptor, display_name)
         };
-        self.io.claim(64)?;
+        self.io.retain_owned(64)?;
         self.io.allocation_attempt(64)?;
         let version = hex::encode(generation.as_resource().key());
         let _version_hold = self.io.guard_owned(version.len() as u64)?;
@@ -273,12 +273,12 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let _serial = self.serial.lock().await;
         let after = after.map(|name| {
             if name.len() > self.limits.path_bytes { return Err(Error::Invalid("selected cursor exceeds original path limits".into())); }
-            self.io.claim(name.len() as u64)?;
+            self.io.retain_owned(name.len() as u64)?;
             self.io.allocation_attempt(name.len() as u64)?;
             LogicalName::new(NameEncoding::Utf8, name.as_bytes().to_vec(), u32::MAX)
                 .map_err(|error| Error::Invalid(error.to_string()))
         }).transpose()?;
-        self.io.claim(path.len() as u64 + 1)?;
+        self.io.retain_owned(path.len() as u64 + 1)?;
         self.io.allocation_attempt(path.len() as u64 + 1)?;
         let requested = if path.is_empty() { "/".to_owned() } else { format!("/{path}") };
         let _requested_hold = self.io.guard_owned(requested.len() as u64)?;
@@ -292,7 +292,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
         let page = page?;
         let slots = (page.entries.len() as u64).checked_mul(std::mem::size_of::<PrivateDirectoryEntry>() as u64)
             .ok_or_else(|| Error::Invalid("selected directory ownership overflows".into()))?;
-        self.io.claim(slots)?;
+        self.io.retain_owned(slots)?;
         self.io.allocation_attempt(slots)?;
         let mut entries = Vec::with_capacity(page.entries.len());
         let mut has_more = page.has_more;
@@ -304,7 +304,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
                 .map_err(|_| Error::Storage("selected portable directory name is invalid UTF-8".into()))?;
             if path.is_empty() && name == ".system" { continue; }
             if entries.len() == maximum as usize { has_more = true; break; }
-            self.io.claim(name.len() as u64)?;
+            self.io.retain_owned(name.len() as u64)?;
             self.io.allocation_attempt(name.len() as u64)?;
             self.io.charge(WorkCounters { bytes_copied: name.len() as u64, ..WorkCounters::default() })?;
             let kind = match entry.kind {

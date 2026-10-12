@@ -93,8 +93,8 @@ pub(super) async fn bind<P: StreamProvider + 'static>(
         return Err(validation_error(Some(&io), crate::wire::ErrorCode::Invalid, "native request must be JSON content"));
     }
     let bytes = authority.content.read_with_native_work(&plan.request, owner.input_limits().file_bytes, work)?.await?;
-    let request = io.decode_preparation::<NativeProcessRequest>(
-        bytes.as_ref(), crate::wire::ErrorCode::Invalid)?.into_retained();
+    let request = crate::filesystem::retain_decoded(io.decode_preparation::<NativeProcessRequest>(
+        bytes.as_ref(), crate::wire::ErrorCode::Invalid)?);
     drop(bytes);
     request.view.validate_with_io(Some(&io))?;
     for mapping in &request.view.volumes {
@@ -122,8 +122,8 @@ pub(super) async fn bind<P: StreamProvider + 'static>(
     }
     let schema = authority.content.read_with_native_work(&plan.result_schema, owner.input_limits().file_bytes, work)?.await?;
     let decoded = io.decode_preparation::<serde_json::Value>(schema.as_ref(), crate::wire::ErrorCode::Invalid)?;
-    crate::contract::compile_json_schema(&decoded.value, "effect result", Some(&io))?;
-    let result_schema = decoded.into_retained();
+    crate::contract::compile_json_schema(&decoded.0, "effect result", Some(&io))?;
+    let result_schema = crate::filesystem::retain_decoded(decoded);
     drop(schema);
     for operation in [crate::conversation::VolumeOperation::Write, crate::conversation::VolumeOperation::Read] {
         owner.require_volume_grant_with_native_work(authority.results.volume(), operation, work)?;

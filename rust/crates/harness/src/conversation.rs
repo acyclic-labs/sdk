@@ -2391,18 +2391,18 @@ pub(crate) fn decode_manifest_bounded(
         }
     };
     let actual = (std::mem::size_of::<Vec<Attachment>>() as u64)
-        .checked_add(manifest_owned_bytes(&decoded, decoded.capacity())?)
+        .checked_add(manifest_owned_bytes(&decoded.0, decoded.0.capacity())?)
         .ok_or_else(|| io.invalid("manifest ownership overflow"))?;
-    decoded.substitute_owned(actual)?;
+    decoded.1.substitute(actual)?;
     let encoded_hold;
-    let encoded = io.encode(&decoded.value, io.remaining()?.bytes_encoded, false)?;
+    let encoded = io.encode(&decoded.0, io.remaining()?.bytes_encoded, false)?;
     encoded_hold = io.guard_bytes(&encoded)?;
     if encoded.as_ref() != bytes {
         return Err(io.invalid("attachment manifest is not canonical or complete"));
     }
     drop(encoded);
     drop(encoded_hold);
-    Ok(decoded.into_retained())
+    Ok(crate::filesystem::retain_decoded(decoded))
 }
 
 /// The core admission boundary checks actual owner-resolved bytes, rather than trusting a provider's metadata-only residency assertion.

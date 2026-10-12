@@ -2095,7 +2095,7 @@ impl SchemaRegistry {
                 ..Default::default()
             };
             io.preflight(work)?;
-            io.claim(name.len() as u64)?;
+            io.retain_owned(name.len() as u64)?;
             let hold = io.guard_owned(name.len() as u64)?;
             io.allocation_attempt(name.len() as u64)?;
             io.charge(work)?;
@@ -2255,7 +2255,7 @@ impl SchemaRegistry {
     fn configuration_record_with_io<'a>(
         &self, extension: &ExtensionDependency, content: &FileRef,
         io: &'a crate::filesystem::PreparationIo,
-    ) -> Result<crate::filesystem::ReservedDecoded<'a, ExtensionConfiguration>> {
+    ) -> Result<(ExtensionConfiguration, crate::filesystem::DecodeReservation<'a>)> {
         let _metadata;
         let metadata = io.encode(&(extension, content), io.remaining()?.bytes_encoded, false)?;
         _metadata = io.guard_owned(metadata.len() as u64)?;
@@ -2273,7 +2273,7 @@ impl SchemaRegistry {
         let bytes = io.encode(&Record { extension, schema_digest, content }, io.remaining()?.bytes_encoded, false)?;
         _bytes = io.guard_owned(bytes.len() as u64)?;
         let record = io.decode_preparation::<ExtensionConfiguration>(&bytes, crate::wire::ErrorCode::Storage)?;
-        record.validate()?;
+        record.0.validate()?;
         Ok(record)
     }
 
@@ -2329,7 +2329,7 @@ impl SchemaRegistry {
             #[cfg(feature = "filesystem")]
             Some(io) => {
                 reserved = self.configuration_record_with_io(&record.extension, &record.content, io)?;
-                &reserved.value
+                &reserved.0
             }
             _ => {
                 expected = self.configuration_record(&record.extension, &record.content)?;
@@ -2371,7 +2371,7 @@ impl SchemaRegistry {
             #[cfg(feature = "filesystem")]
             Some(io) => {
                 reserved = self.configuration_record_with_io(extension, content, io)?;
-                &reserved.value
+                &reserved.0
             }
             _ => {
                 record = self.configuration_record(extension, content)?;
@@ -2390,7 +2390,7 @@ impl SchemaRegistry {
             #[cfg(feature = "filesystem")]
             Some(io) => {
                 decoded = io.decode_preparation::<Value>(bytes, crate::wire::ErrorCode::Storage)?;
-                &decoded.value
+                &decoded.0
             }
             _ => {
                 value = crate::contract::json_from_slice(bytes).map_err(|error| {
