@@ -455,18 +455,9 @@ machine_mutations! {
                 }
                 let operation = decode_operation(value.operation.as_ref())?;
                 wait(self, key, operation).await?;
-                let mut seen = BTreeSet::new();
-                let mut children = Vec::with_capacity(value.children.len());
-                for child in value.children {
-                    let child = decode_machine(Some(&child))?;
-                    if !seen.insert(child) {
-                        return Err(ProviderError::Rejected(
-                            "fork returned duplicate children".into(),
-                        ));
-                    }
-                    children.push(MachinesProvider::inspect_machine(self, child).await?);
-                }
-                Ok(MutationOutcome::Forked(children))
+                Ok(MutationOutcome::Forked(
+                    inspect_children(self, fork_children(&value.children, None)?).await?,
+                ))
             }
             .await,
         )
@@ -498,9 +489,9 @@ machine_mutations! {
                     .await
                     .map_err(|error| mutation_error(key, &error))?
                     .into_inner();
-                let admitted = decode_fork_machine_admission(&value)?;
-                if admitted.source != machine
-                    || admitted.children.len()
+                let (source, fidelity, children, operation) = decode_fork_machine_admission(&value)?;
+                if source != machine
+                    || children.len()
                         != usize::try_from(count.get())
                             .map_err(|_| ProviderError::Invalid("invalid fork count".into()))?
                 {
@@ -508,8 +499,10 @@ machine_mutations! {
                         "fork result was substituted".into(),
                     ));
                 }
-                wait(self, key, admitted.operation).await?;
-                admitted.observe(self).await
+                wait(self, key, operation).await?;
+                Ok(MutationOutcome::MachineForked {
+                    source, fidelity, children: inspect_children(self, children).await?,
+                })
             }
             .await,
         )
@@ -883,36 +876,15 @@ async fn decode_recovered(
             .await
             .map(MutationOutcome::Checkpointed),
         ResultKind::Fork(value) => {
-            if value.children.is_empty()
-                || value.children.len()
-                    > usize::try_from(MAX_FORK_CHILDREN)
-                        .map_err(|_| ProviderError::Invalid("invalid fork bound".into()))?
-            {
-                return Err(ProviderError::Rejected(
-                    "recovered fork child set is outside the public bound".into(),
-                ));
-            }
-            let mut seen = BTreeSet::new();
-            let mut children = Vec::with_capacity(value.children.len());
-            for item in value.children {
-                let child = decode_machine(Some(&item))?;
-                if !seen.insert(child) {
-                    return Err(ProviderError::Rejected(
-                        "recovered fork returned duplicate children".into(),
-                    ));
-                }
-                children.push(child);
-            }
-            let mut result = Vec::with_capacity(children.len());
-            for child in children {
-                result.push(MachinesProvider::inspect_machine(provider, child).await?);
-            }
-            Ok(MutationOutcome::Forked(result))
+            Ok(MutationOutcome::Forked(
+                inspect_children(provider, fork_children(&value.children, None)?).await?,
+            ))
         }
         ResultKind::ForkMachine(value) => {
-            decode_fork_machine_admission(&value)?
-                .observe(provider)
-                .await
+            let (source, fidelity, children, _) = decode_fork_machine_admission(&value)?;
+            Ok(MutationOutcome::MachineForked {
+                source, fidelity, children: inspect_children(provider, children).await?,
+            })
         }
         ResultKind::Suspend(value) => {
             decode_machine(value.machine.as_ref()).map(MutationOutcome::Suspended)
@@ -933,31 +905,19 @@ async fn decode_recovered(
     }
 }
 
-/// Checked [`wire::ForkMachineAdmission`] before its operation is awaited.
-struct ForkMachineAdmitted {
-    source: MachineId,
-    fidelity: ForkFidelity,
-    children: Vec<MachineId>,
-    operation: OperationId,
-}
-
-impl ForkMachineAdmitted {
-    async fn observe(self, provider: &GrpcProvider) -> Result<MutationOutcome, ProviderError> {
-        let mut children = Vec::with_capacity(self.children.len());
-        for child in self.children {
-            children.push(MachinesProvider::inspect_machine(provider, child).await?);
-        }
-        Ok(MutationOutcome::MachineForked {
-            source: self.source,
-            fidelity: self.fidelity,
-            children,
-        })
+async fn inspect_children(
+    provider: &GrpcProvider, children: Vec<MachineId>,
+) -> Result<Vec<MachineObservation>, ProviderError> {
+    let mut result = Vec::with_capacity(children.len());
+    for child in children {
+        result.push(MachinesProvider::inspect_machine(provider, child).await?);
     }
+    Ok(result)
 }
 
 fn decode_fork_machine_admission(
     value: &wire::ForkMachineAdmission,
-) -> Result<ForkMachineAdmitted, ProviderError> {
+) -> Result<(MachineId, ForkFidelity, Vec<MachineId>, OperationId), ProviderError> {
     let source = decode_machine(value.source.as_ref())?;
     let operation = decode_operation(value.operation.as_ref())?;
     let contract = decode_contract(value.contract.as_ref())?;
@@ -977,8 +937,14 @@ fn decode_fork_machine_admission(
             "fork fidelity contradicts the source contract".into(),
         ));
     }
-    if value.children.is_empty()
-        || value.children.len()
+    Ok((source, fidelity, fork_children(&value.children, Some(source))?, operation))
+}
+
+fn fork_children(
+    values: &[wire::MachineId], source: Option<MachineId>,
+) -> Result<Vec<MachineId>, ProviderError> {
+    if values.is_empty()
+        || values.len()
             > usize::try_from(MAX_FORK_CHILDREN)
                 .map_err(|_| ProviderError::Invalid("invalid fork bound".into()))?
     {
@@ -987,22 +953,17 @@ fn decode_fork_machine_admission(
         ));
     }
     let mut seen = BTreeSet::new();
-    let mut children = Vec::with_capacity(value.children.len());
-    for item in &value.children {
+    let mut children = Vec::with_capacity(values.len());
+    for item in values {
         let child = decode_machine(Some(item))?;
-        if child == source || !seen.insert(child) {
+        if Some(child) == source || !seen.insert(child) {
             return Err(ProviderError::Rejected(
                 "fork returned duplicate children".into(),
             ));
         }
         children.push(child);
     }
-    Ok(ForkMachineAdmitted {
-        source,
-        fidelity,
-        children,
-        operation,
-    })
+    Ok(children)
 }
 
 fn validate_recovered_admission(
@@ -2865,20 +2826,20 @@ mod tests {
         let live = [wire::Capability::LiveFork, wire::Capability::DiskFork];
         let disk = [wire::Capability::DiskFork];
 
-        let checked = decode_fork_machine_admission(&admission(
+        let (_, fidelity, children, _) = decode_fork_machine_admission(&admission(
             &live,
             wire::ForkFidelity::MemoryAndDisk,
             vec![child, other],
         ))?;
-        assert_eq!(checked.fidelity, ForkFidelity::MemoryAndDisk);
-        assert_eq!(checked.children, vec![child, other]);
+        assert_eq!(fidelity, ForkFidelity::MemoryAndDisk);
+        assert_eq!(children, vec![child, other]);
         assert_eq!(
             decode_fork_machine_admission(&admission(
                 &disk,
                 wire::ForkFidelity::DiskOnly,
                 vec![child]
             ))?
-            .fidelity,
+            .1,
             ForkFidelity::DiskOnly
         );
         for rejected in [

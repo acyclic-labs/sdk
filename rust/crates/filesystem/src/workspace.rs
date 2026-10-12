@@ -1502,7 +1502,7 @@ async fn read_checkout_whole_with_accounting<A: AsyncAuthorityStore, O: AsyncObj
     let retained = path.retained_bytes();
     let path = crate::kernel::Owned::new(path, allocation, retained);
     let (lookup, allocation) = checkout.lookup_no_follow_with_accounting(
-        &path.value, accounting, cancellation,
+        &path.value, accounting, cancellation, true
     ).await.map_err(WorkspaceError::from)?;
     drop(allocation);
     let record = lookup.record.ok_or(WorkspaceError::NotFound)?;
@@ -1826,7 +1826,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         for end in path.match_indices('/').skip(1).map(|(index, _)| index)
             .chain(std::iter::once(path.len())) {
             let path = self.mutation_path_with_accounting(&path[..end], accounting, cancellation)?;
-            match self.checkout.lookup_no_follow_with_accounting(&path.value, accounting, cancellation).await?.0.record {
+            match self.checkout.lookup_no_follow_with_accounting(&path.value, accounting, cancellation, true).await?.0.record {
                 Some(record) if record.kind == FileKind::Directory => { path.retire(accounting)?; }
                 Some(_) => { path.retire(accounting)?; return Err(WorkspaceError::NotDirectory); }
                 None => {
@@ -2136,7 +2136,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             if let Some(record) = entry.record {
                 if selected_subtrees && record.kind == FileKind::Directory {
                     let destination = self.checkout.lookup_no_follow_with_accounting(
-                        &path.value, accounting, cancellation,
+                        &path.value, accounting, cancellation, true
                     ).await?.0.record;
                     let absolute = Workspace::<A, O>::restore_absolute_path_with_accounting(
                         relative, accounting, cancellation,
@@ -2222,7 +2222,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         cancellation: &crate::CancellationToken,
     ) -> Result<(), WorkspaceError> {
         let path = self.mutation_path_with_accounting(path, accounting, cancellation)?;
-        let existing = self.checkout.lookup_no_follow_with_accounting(&path.value, accounting, cancellation).await?.0.record;
+        let existing = self.checkout.lookup_no_follow_with_accounting(&path.value, accounting, cancellation, true).await?.0.record;
         let operations = match existing {
             None => {
                 let operation = crate::kernel::Owned::new(
@@ -2318,7 +2318,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
     ) -> Result<(), WorkspaceError> {
         let path = self.mutation_path_with_accounting(path, accounting, cancellation)?;
         let existing = self.checkout.lookup_no_follow_with_accounting(
-            &path.value, accounting, cancellation,
+            &path.value, accounting, cancellation, true
         ).await?.0.record.ok_or(WorkspaceError::NotFound)?;
         let operation = crate::kernel::Owned::new(
             AuthoredMutation::Remove { path: path.value, expected_file_id: Some(existing.file_id) },

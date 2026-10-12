@@ -5878,6 +5878,18 @@ async fn create_retry_is_idempotent_and_exact_selector_matches_head()
         &cancellation,
     )).await?;
     assert_eq!(exact.value.generation_id(), head.value.generation_id());
+    let authority = volume_authority_id(volume_id);
+    let header = AsyncAuthorityStore::head(&fs.inner.authority, authority, WorkBudget::UNBOUNDED, &cancellation).await?;
+    let replay = AsyncAuthorityStore::replay(
+        &fs.inner.authority, authority, Sequence::new(header.value.sequence.get() - 1),
+        ReplayLimit { records: 1, payload_bytes: MAXIMUM_VOLUME_EVENT_BYTES }, WorkBudget::UNBOUNDED, &cancellation,
+    ).await?;
+    let without_record_decode = exact.work.checked_add(header.work)?.checked_add(replay.work)?;
+    let denied = opened.checkout(
+        GenerationSelector::Head, pinned(),
+        WorkBudget { items_examined: without_record_decode.items_examined, ..WorkBudget::UNBOUNDED }, &cancellation,
+    ).await.err().ok_or("head record decoding escaped the checkout item budget")?;
+    assert!(matches!(denied.error, FsError::Work(WorkError::BudgetExceeded { counter: "items_examined", .. })));
     assert_eq!(head.value.volume_id(), volume_id);
     assert!(head.value.root().parents.is_empty());
     assert!(head.work.object_bytes_read <= MAXIMUM_GENERATION_ROOT_BYTES);
@@ -6720,7 +6732,7 @@ fn local_root_lifecycle_outlives_provider_destruction() -> Result<(), Box<dyn st
         objects: (),
         capabilities: EmbeddedCapabilities::MEMORY,
         workspace_namespace: [0; 16],
-        path_index: Arc::new(crate::path_index::MemoryGenerationPathIndex::default()),
+        path_index: crate::path_index::MemoryGenerationPathIndex::default(),
         _local_root_lifecycle: Some(acyclic_native_runtime::OwnershipAnchor::new(ownership)),
     };
     let dropping = std::thread::spawn(move || drop(inner));
@@ -8147,11 +8159,8 @@ async fn assert_authority_volume_identity_fails_closed() -> Result<(), Box<dyn s
         }, |_| Ok::<_, crate::kernel::VolumeCreatedError>(()), |_| crate::kernel::VolumeCreatedError::Decode(crate::kernel::CanonicalDecodeError::AllocationFailed))?),
     };
     assert!(matches!(
-        generation_from_record(&creation, expected_volume, WorkCounters::default()),
-        Err(OperationFailure {
-            error: FsError::VolumeMismatch,
-            ..
-        })
+        generation_from_record(&creation, expected_volume, &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &CancellationToken::new())),
+        Err(FsError::VolumeMismatch)
     ));
     let publication = DurableCommit {
         sequence: Sequence::new(2),
@@ -8167,11 +8176,8 @@ async fn assert_authority_volume_identity_fails_closed() -> Result<(), Box<dyn s
         ..creation
     };
     assert!(matches!(
-        generation_from_record(&publication, expected_volume, WorkCounters::default()),
-        Err(OperationFailure {
-            error: FsError::VolumeMismatch,
-            ..
-        })
+        generation_from_record(&publication, expected_volume, &mut KernelAccounting::standalone(WorkBudget::UNBOUNDED, &CancellationToken::new())),
+        Err(FsError::VolumeMismatch)
     ));
 
     let authority = Arc::new(crate::memory::MemoryAuthorityStore::default());
