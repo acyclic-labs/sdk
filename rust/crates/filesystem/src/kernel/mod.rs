@@ -135,7 +135,7 @@ pub(crate) use file_table::{
 pub(crate) use file_table::{
     lookup_file_record_async_with_accounting, lookup_file_records_async_with_accounting};
 pub use file_table_mutation::{
-    FileTableMutation, FileTableMutationError, FileTableMutationFailure, FileTableMutationReceipt, FileTableSemanticError, apply_file_table_mutations};
+    FileTableMutation, FileTableMutationError, FileTableMutationFailure, FileTableMutationReceipt, apply_file_table_mutations};
 pub(crate) use file_table_mutation::apply_file_table_mutations_with_accounting;
 pub(crate) use generation::{
     read_generation_root_with_accounting, read_generation_root_with_limits_and_accounting};
