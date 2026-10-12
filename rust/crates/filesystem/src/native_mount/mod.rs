@@ -2293,8 +2293,6 @@ pub struct NativeMountRecoveryCleanupState<'a> {
     pub destination_removed: bool,
     /// Last actual measured action failed.
     pub measured_cleanup_failed: bool,
-    /// Native controls and the original destination fence were released.
-    pub cleanup_complete: bool,
 }
 
 #[cfg(target_os = "linux")]
@@ -2468,7 +2466,6 @@ impl NativeMountRecoveryOwner {
             namespace_detach_confirmed: state.namespace_detach_confirmed,
             destination_removed: state.destination_removed,
             measured_cleanup_failed: state.measured_cleanup_failed,
-            cleanup_complete: !state.destination_fence_retained && !state.controls_pending,
         }
     }
     /// Recovers through the same engine with an explicit unbounded allowance.
@@ -4550,7 +4547,8 @@ mod tests {
         assert!(receipt.value);
         assert!(receipt.work.backend_read_operations > 0);
         assert_eq!(owner.cleanup_state().fence_identity, identity);
-        assert!(owner.cleanup_state().cleanup_complete);
+        let state = owner.cleanup_state();
+        assert!(!state.destination_fence_retained && !state.controls_pending);
         let thread = owner.worker.take().expect("same original worker");
         drop(owner);
         await_recovery_worker(thread)?;
@@ -4629,7 +4627,8 @@ mod tests {
 
         recovery.recover()?;
         assert_eq!(recovery.cleanup_state().fence_identity, original_fence);
-        assert!(recovery.cleanup_state().cleanup_complete);
+        let state = recovery.cleanup_state();
+        assert!(!state.destination_fence_retained && !state.controls_pending);
         assert!(!destination.exists());
         let residue = std::fs::read_dir(parent.path())?
             .filter_map(Result::ok)
