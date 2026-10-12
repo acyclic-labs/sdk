@@ -24,7 +24,10 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }
         if let Some(state) = self.reducer.effect(effect) {
             crate::contract::json_byte_length(state, limits.maximum_bytes, work).map(|_| ())?;
-            return crate::wire_codec::CodecQuota::produce(work, |quota| crate::core::copy_effect(state, quota)).map(Some);
+            return crate::wire_codec::CodecQuota::produce(work, |quota| {
+                crate::core::copy_effect(state, quota)
+            })
+            .map(Some);
         }
         let reader = HistoryReader::new(
             &self.client,
@@ -173,7 +176,9 @@ impl<P: StreamProvider> StreamAggregate<P> {
             )
             .await?;
             let (cloned, returned_owned) =
-                crate::wire_codec::CodecQuota::produce(owned.work(), |quota| crate::core::copy_event(&event, quota))?;
+                crate::wire_codec::CodecQuota::produce(owned.work(), |quota| {
+                    crate::core::copy_event(&event, quota)
+                })?;
             owned.adopt(returned_owned)?;
             let result = self.reducer.apply_committed(cloned, owned.work())?;
             if indexed {
@@ -206,74 +211,56 @@ impl<P: StreamProvider> StreamAggregate<P> {
         revision: u64,
         work: &mut Option<&mut dyn history::HistoryIo>,
     ) -> Result<(crate::core::Event, u64)> {
-        let after_revision = revision.checked_sub(1).ok_or_else(|| {
+        let sequence = revision.checked_sub(1).ok_or_else(|| {
             guarded_boundary(
                 work,
                 crate::wire::ErrorCode::Invalid,
                 "event revision must be positive",
             )
         })?;
-        let mut owned = crate::wire_codec::CodecQuota::from_retained(work, 0);
-        let cursor = HistoryCursor {
-            authority: match owned.work().as_deref_mut() {
-                Some(work) => work.clone_authority(self.reducer.authority())?,
-                None => self.reducer.authority().clone(),
-            },
-            after_revision,
-            through_revision: self.reducer.revision(),
-        };
-        let cursor_bytes = if owned.work().is_some() {
-            cursor.authority.id.capacity() as u64
-        } else {
-            0
-        };
-        owned.adopt(cursor_bytes)?;
-        let reader = HistoryReader::new(
-            &self.client,
-            self.reducer.authority(),
-            self.reducer.event_verifier(),
-            owned.work(),
-        )?;
-        if owned.work().is_some() {
-            let reader_bytes = reader.logical_owned_bytes(owned.work())?;
-            owned.adopt(reader_bytes)?;
+        if sequence > self.reducer.revision() {
+            return Err(guarded_boundary(
+                work,
+                crate::wire::ErrorCode::Invalid,
+                "history read bounds or cursor are invalid",
+            ));
         }
-        let (page, _, _, retained) = reader
-            .read_page_with_work(
-                &cursor,
-                HistoryReadLimits {
-                    maximum_events: 1,
-                    maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
-                },
-                false,
-                owned
-                    .work()
-                    .as_mut()
-                    .map(|work| &mut **work as &mut dyn history::HistoryIo),
-            )
-            .await?;
-        if owned.work().is_some() {
-            owned.adopt(
-                retained
-                    + page.cursor.authority.id.capacity() as u64
-                    + (page.events.capacity() * std::mem::size_of::<crate::core::Event>()) as u64,
-            )?;
-        }
-        let event = page.events.into_iter().next();
-        drop(page.cursor);
-        drop(cursor);
-        drop(reader);
-        let event = event.ok_or_else(|| {
-            guarded_boundary(
-                owned.work(),
+        if sequence == self.reducer.revision() {
+            return Err(guarded_boundary(
+                work,
                 crate::wire::ErrorCode::NotFound,
                 "committed event is unavailable",
-            )
-        })?;
-        let temporary = owned.retained() - retained;
-        owned.relinquish(temporary)?;
-        owned.transfer();
-        Ok((event, retained))
+            ));
+        }
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let record = operations::one_record(&self.client, &self.path, sequence, quota.work())
+            .await?
+            .ok_or_else(|| {
+                guarded_boundary(
+                    quota.work(),
+                    crate::wire::ErrorCode::NotFound,
+                    "committed event is unavailable",
+                )
+            })?;
+        let raw = operations::sdk_record_retained_bytes(&record, quota.work());
+        quota.adopt(raw)?;
+        let bytes = record.value.len() as u64;
+        let (event, held) = history::verify_history_record_with_retained_quota(
+            self.reducer.event_verifier(),
+            self.reducer.authority(),
+            sequence,
+            &record,
+            quota.work(),
+        )?;
+        quota.adopt(held)?;
+        drop(record);
+        quota.relinquish(raw)?;
+        if let Some(io) = quota.work().as_deref_mut() {
+            io.check_cancellation()?;
+            io.stage_output(bytes, 1)?;
+        }
+        quota.transfer();
+        Ok((event, held))
     }
 
     /// Captures the authoritative tail for a finite incremental refresh.
@@ -316,7 +303,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
                     "aggregate refresh page is not contiguous".into(),
                 ));
             }
-            let ((authority, event), _) = crate::wire_codec::decode_event(&record.value, &mut None)?;
+            let ((authority, event), _) =
+                crate::wire_codec::decode_event(&record.value, &mut None)?;
             if &authority != self.reducer.authority()
                 || event.revision
                     != record.sequence.checked_add(1).ok_or_else(|| {
