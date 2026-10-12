@@ -380,7 +380,7 @@ where
                         let mut accounting =
                             crate::kernel::KernelAccounting::native(work, work.cancellation());
                         self.lazy
-                            .read_unauthored(&lookup, &text, None, u64::MAX, &mut accounting)
+                            .read_resolved(&lookup, &text, None, u64::MAX, crate::model::GenerationSelector::Head, &mut accounting)
                             .await
                             .map_err(lazy_error)
                     }
