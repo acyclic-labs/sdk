@@ -425,7 +425,7 @@ fn coordinator_stream<P: StreamProvider>(
         work.admit_allocation(path.len() as u64)?;
         work.copy_bytes(path.len() as u64)?;
     }
-    let stream = operations::stream_text_with_work(client, path, work)?;
+    let stream = operations::stream(client, path, work)?;
     if portable {
         work.as_deref_mut().expect("portable observer").retain_owned(path.len() as u64)?;
     }

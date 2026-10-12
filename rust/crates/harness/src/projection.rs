@@ -12,7 +12,6 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use serde::de::DeserializeOwned;
-use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -184,7 +183,6 @@ fn validate_selected_tool_pairs(
     current: &ConversationMessage,
     ids: &[Uuid],
 ) -> Result<()> {
-    let included = ids.iter().copied().collect::<HashSet<_>>();
     for id in ids {
         let message = if *id == current.id {
             Some(current)
@@ -195,7 +193,7 @@ fn validate_selected_tool_pairs(
             message.kind == MessageKind::ToolResult
                 && !message
                     .reply_to
-                    .is_some_and(|call| included.contains(&call))
+                    .is_some_and(|call| ids.contains(&call))
         }) {
             return Err(Error::Invalid(
                 "context budget splits a tool exchange; compact or change selection".into(),
@@ -241,40 +239,25 @@ impl SelectedModelContext {
         if let Some(work) = native {
             work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
         }
-        let matches = if self.messages.len() == self.selection.message_ids.len() {
-            match self.messages.last().filter(|last| last.role == ModelRole::User) {
-                Some(last) => {
-                    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                    if let Some(work) = native {
-                        // One bounded logical DTO comparison, not invented byte reads or another Value walk.
-                        work.charge(acyclic_fs::WorkCounters { items_examined: 1,
-                            ..acyclic_fs::WorkCounters::default() })
-                            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                        let matches = &last.content == input;
-                        work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
-                        matches
-                    } else {
-                        &last.content == input
-                    }
-                    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-                    { &last.content == input }
-                }
-                None => false,
-            }
-        } else {
-            false
-        };
-        if !matches {
+        let mut matches = false;
+        if let Some(last) = self.messages.last().filter(|last|
+            self.messages.len() == self.selection.message_ids.len() && last.role == ModelRole::User)
+        {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if native.is_some() {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "selected context must end with the current user input" });
+            if let Some(work) = native {
+                work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })
+                    .map_err(|cause| Error::NativeWork { cause, custody: None })?;
             }
-            return Err(Error::Invalid(
-                "selected context must end with the current user input".into(),
-            ));
+            matches = &last.content == input;
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            if let Some(work) = native {
+                work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?;
+            }
         }
-        let _ = io;
+        if !matches {
+            return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Invalid,
+                "selected context must end with the current user input"));
+        }
         Ok(())
     }
 }
@@ -304,7 +287,6 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
         return Err(projection_invalid(io, "selected message count exceeds projection limit"));
     }
     let mut messages = crate::model::vec_with_capacity::<ModelMessage>(selection.message_ids.len(), io)?;
-    let mut tool_calls = ProjectionIndex::new(io);
     for id in &selection.message_ids {
         crate::model::charge_items(io, 1)?;
         let message = conversation
@@ -317,7 +299,6 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
             if message.tool_call_id.as_deref() != Some(invocation.call_id.as_str()) {
                 return Err(projection_invalid(io, "tool call artifact identity does not match its record"));
             }
-            tool_calls.insert(&message.id, messages.len())?;
             messages.push(ModelMessage {
                 role: ModelRole::Assistant,
                 content: ModelContent::Part(ModelContentPart::ToolCall {
@@ -336,9 +317,14 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
                 .tool_call_id
                 .as_deref()
                 .ok_or_else(|| projection_invalid(io, "tool result lacks call identity"))?;
-            let linked = message.reply_to.map(|id| tool_calls.get(&id)).transpose()?
-                .flatten().and_then(|position| messages.get(*position))
-                .ok_or_else(|| projection_invalid(io, "selected tool result lacks its call"))?;
+            let mut linked = None;
+            if let Some(reply) = message.reply_to {
+                for (id, projected) in selection.message_ids[..messages.len()].iter().zip(&messages).rev() {
+                    crate::model::charge_items(io, 1)?;
+                    if *id == reply { linked = Some(projected); break; }
+                }
+            }
+            let linked = linked.ok_or_else(|| projection_invalid(io, "selected tool result lacks its call"))?;
             let ModelContent::Part(ModelContentPart::ToolCall {
                 call_id: linked_call_id, name, ..
             }) = &linked.content else {
@@ -407,8 +393,6 @@ pub async fn select_model_context<R: ContentResidencyVerifier + ?Sized>(
             content: ModelContent::Parts(parts),
         });
     }
-    drop(tool_calls);
-
     Ok(SelectedModelContext {
         selection,
         messages,
@@ -428,60 +412,53 @@ pub fn validate_model_context_selection(
     }
     if let Some(checkpoint) = &selection.checkpoint { checkpoint.validate(work)?; }
     let mut previous_sequence = 0;
-    let mut quota = crate::wire_codec::CodecQuota::from_retained(work, 0);
-    let mut tool_calls = HashMap::<Uuid, &ConversationMessage>::new();
-    for id in &selection.message_ids {
-        if let Some(observer) = quota.work().as_deref_mut() {
+    for (index, id) in selection.message_ids.iter().enumerate() {
+        if let Some(observer) = work.as_deref_mut() {
             observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
         }
         let message = conversation.message(*id).ok_or_else(||
-            crate::scheduler::diagnostic(quota.work(), Invalid, "selected conversation message is missing"))?;
+            crate::scheduler::diagnostic(work, Invalid, "selected conversation message is missing"))?;
         if message.sequence <= previous_sequence || message.sequence > conversation_revision {
-            return Err(crate::scheduler::diagnostic(quota.work(), Invalid,
+            return Err(crate::scheduler::diagnostic(work, Invalid,
                 "model context selection is not ordered and unique"));
         }
         previous_sequence = message.sequence;
-        message.validate(quota.work())?;
+        message.validate(work)?;
         match message.kind {
             MessageKind::ToolCall => {
                 if message.content.descriptor().media_type() != "application/json" {
-                    return Err(crate::scheduler::diagnostic(quota.work(), Invalid,
+                    return Err(crate::scheduler::diagnostic(work, Invalid,
                         "tool artifact type or rendering limit is invalid"));
                 }
-                if let Some(observer) = quota.work().as_deref_mut() {
-                    observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
-                }
-                let bytes = tool_calls.len().checked_add(1)
-                    .and_then(|count| count.checked_mul(std::mem::size_of::<(Uuid, &ConversationMessage)>()))
-                    .ok_or_else(|| crate::scheduler::diagnostic(quota.work(), Invalid,
-                        "projection index ownership overflows"))?;
-                quota.replace(bytes as u64)?;
-                if let Some(observer) = quota.work().as_deref_mut() {
-                    observer.admit_copy(16)?;
-                    observer.copy_bytes(16)?;
-                }
-                tool_calls.insert(*id, message);
             }
             MessageKind::ToolResult => {
                 if message.content.descriptor().media_type() != "application/json" {
-                    return Err(crate::scheduler::diagnostic(quota.work(), Invalid,
+                    return Err(crate::scheduler::diagnostic(work, Invalid,
                         "tool result artifact type is invalid"));
                 }
                 let call_id = message.tool_call_id.as_deref().ok_or_else(||
-                    crate::scheduler::diagnostic(quota.work(), Invalid, "tool result lacks call identity"))?;
-                let linked_call_id = if let Some(id) = message.reply_to {
-                    if let Some(observer) = quota.work().as_deref_mut() {
-                        observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                    crate::scheduler::diagnostic(work, Invalid, "tool result lacks call identity"))?;
+                let mut linked_call_id = None;
+                if let Some(reply) = message.reply_to {
+                    for id in selection.message_ids[..index].iter().rev() {
+                        if let Some(observer) = work.as_deref_mut() {
+                            observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
+                        }
+                        if *id == reply {
+                            linked_call_id = conversation.message(reply)
+                                .filter(|call| call.kind == MessageKind::ToolCall)
+                                .and_then(|call| call.tool_call_id.as_deref());
+                            break;
+                        }
                     }
-                    tool_calls.get(&id).and_then(|call| call.tool_call_id.as_deref())
-                } else { None };
+                }
                 if linked_call_id != Some(call_id) {
-                    return Err(crate::scheduler::diagnostic(quota.work(), Invalid,
+                    return Err(crate::scheduler::diagnostic(work, Invalid,
                         "selected tool result lacks its call"));
                 }
             }
             MessageKind::System | MessageKind::User | MessageKind::Assistant => {}
-            _ => return Err(crate::scheduler::diagnostic(quota.work(), Unsupported,
+            _ => return Err(crate::scheduler::diagnostic(work, Unsupported,
                 "message kind requires a specialized model projection")),
         }
     }
@@ -566,55 +543,6 @@ fn validate_projection_tool_identity(
     }
     let _ = io;
     ToolInvocation::validate_identity(call_id, Some(name), &mut None)
-}
-
-struct ProjectionIndex<'a> {
-    values: HashMap<Uuid, usize>,
-    io: Option<&'a crate::executor::PreparationIo>,
-}
-
-impl Drop for ProjectionIndex<'_> {
-    fn drop(&mut self) {
-        #[cfg(feature = "filesystem")]
-        let bytes = self.values.len() * std::mem::size_of::<(Uuid, usize)>();
-        drop(std::mem::take(&mut self.values));
-        #[cfg(feature = "filesystem")]
-        if let Some(io) = self.io {
-            io.release(bytes as u64).expect("projection index owns its live logical slots");
-        }
-    }
-}
-
-impl<'a> ProjectionIndex<'a> {
-    fn new(io: Option<&'a crate::executor::PreparationIo>) -> Self {
-        Self { values: HashMap::new(), io }
-    }
-
-    // Callers validate unique ordered message ids before insertion.
-    fn insert(&mut self, id: &Uuid, value: usize) -> Result<()> {
-        crate::model::charge_items(self.io, 1)?;
-        #[cfg(feature = "filesystem")]
-        if let Some(io) = self.io {
-            let bytes = std::mem::size_of::<(Uuid, usize)>() as u64;
-            self.values.len().checked_add(1)
-                .and_then(|count| count.checked_mul(std::mem::size_of::<(Uuid, usize)>()))
-                .ok_or_else(|| projection_invalid(Some(io), "projection index ownership overflows"))?;
-            let slot = io.reserve_decode(bytes)?;
-            let copied = acyclic_fs::WorkCounters {
-                bytes_copied: 16, ..Default::default()
-            };
-            io.preflight(copied)?;
-            io.charge(copied)?;
-            slot.into_retained();
-        }
-        self.values.insert(*id, value);
-        Ok(())
-    }
-
-    fn get(&self, id: &Uuid) -> Result<Option<&usize>> {
-        crate::model::charge_items(self.io, 1)?;
-        Ok(self.values.get(id))
-    }
 }
 
 enum ProjectionAttachments<'a> {

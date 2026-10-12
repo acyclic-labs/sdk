@@ -253,8 +253,8 @@ impl Fixture {
         authorization.1.absorb(&mut issuer.1).map_err(native_error)?;
         authorization.1.absorb(&mut scope.1).map_err(native_error)?;
         let ((audience, issuer, scope), custody) = authorization;
-        ConversationEffectHost::new_with_native_work(self.stream.clone(), audience, issuer, scope,
-            SchemaRegistry::new(), self.content.clone(), registry, custody, work)
+        ConversationEffectHost::new(self.stream.clone(), audience, issuer, scope,
+            SchemaRegistry::new(), self.content.clone(), registry, Some(custody), Some(work))
     }
     async fn wait_started(&self) -> Result<()> {
         for _ in 0..6000 {
@@ -358,7 +358,7 @@ async fn required_pinned_pi_native_cancellation_records_actual_cleanup_without_p
     let work = fixture.work.clone();
     let launched = tokio::spawn(async move { launched_effects.run_task_effect_with_native_work(&owner, command, &plan, &work).await });
     fixture.wait_started().await?;
-    fixture.runtime.task_host().cancel_with_native_work(fixture.binding.task_id, &fixture.work).await?;
+    fixture.runtime.task_host().cancel(fixture.binding.task_id, Some(&fixture.work)).await?;
     let _ = effects.reconcile_task_effect_with_native_work(&fixture.owner, fixture.command, &fixture.plan.0, &fixture.work).await?;
     let _ = launched.await.map_err(|error| invalid(&error.to_string()))??;
     let receipt = provider.receipt(provider.original_attempt(), &fixture.work, None).await?.ok_or_else(|| invalid("cancelled native receipt absent"))?;

@@ -718,7 +718,7 @@ impl NativeExistingLazyVolume {
             {
                 return Err(Error::from(acyclic_fs::NativeTreeMaterializationError::InvalidLayout));
             }
-            let callback = guard.for_volume(owner, binding.volume, binding.writable, work)?.publication;
+            let callback = guard.for_volume(owner, binding.volume, binding.writable, work)?.1;
             let custody = work.retain_owned(std::mem::size_of::<Self>() as u64)?;
             let mut holder_custody = work.retain_owned(std::mem::size_of::<HeldLazyVolume<P, A, O, D, S>>() as u64)?;
             let (volume, mut volume_custody) = allocate(work, |io| binding.volume.clone_with_io(io))?;
@@ -1607,7 +1607,7 @@ where
                 }
                 let callback_guard = guards[index]
                     .for_volume(owner, binding.volume, binding.writable, &volume_work)?;
-                let crate::runtime::NativeVolumeCallbackPorts { sdk, publication } = callback_guard;
+                let (sdk, publication) = callback_guard;
                 let identity = materializer.backend().mapping_root_identity(binding.path)?;
                 if identities.contains(&identity) {
                     return Err(boundary(crate::wire::ErrorCode::Conflict, "native volume directory aliases changed"));
@@ -2677,7 +2677,7 @@ impl<'a, P: StreamProvider> NativePreparationStore<'a, P> {
             None => return Err(boundary(crate::wire::ErrorCode::Storage, "empty materializer journal")),
         };
         self.verify_read_owner().await?;
-        let stream = crate::store::operations::stream_with_work(self.read_client(), &path, &mut observer)?;
+        let stream = crate::store::operations::stream(self.read_client(), (&path).as_str(), &mut observer)?;
         let mut records = crate::store::operations::read_records_with_work(
             self.read_client(), &stream.stream, sequence, 1, &mut observer,
         ).await?.map_err(|error| crate::distributed::sdk_error(error, &observer))?;

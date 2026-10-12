@@ -2889,20 +2889,6 @@ fn exact_nonnegative_u64(value: f64, field: &str) -> Result<u64, JsValue> {
         .map_err(|_| JsValue::from_str(&format!("{field} is outside the supported range")))
 }
 
-#[derive(Serialize)]
-struct WasmContentEntry {
-    name: String,
-    kind: &'static str,
-}
-
-#[derive(Serialize)]
-struct WasmContentPage {
-    generation: u64,
-    entries: Vec<WasmContentEntry>,
-    #[serde(rename = "hasMore")]
-    has_more: bool,
-}
-
 /// Bounded Rust-owned content state for the WASM `MemoryConversation` adapter.
 #[wasm_bindgen]
 pub struct WasmContentStore {
@@ -2981,21 +2967,6 @@ impl WasmContentStore {
             .store
             .list(&path, Some(generation), after.as_deref(), maximum)
             .map_err(js_error)?;
-        let page = WasmContentPage {
-            generation: page.generation,
-            entries: page
-                .entries
-                .into_iter()
-                .map(|entry| WasmContentEntry {
-                    name: entry.name,
-                    kind: match entry.kind {
-                        crate::memory_store::MemoryStoreEntryKind::File => "file",
-                        crate::memory_store::MemoryStoreEntryKind::Directory => "directory",
-                    },
-                })
-                .collect(),
-            has_more: page.has_more,
-        };
         to_js_admitted(&page)
     }
 

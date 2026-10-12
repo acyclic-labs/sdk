@@ -1018,7 +1018,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 cancellation.cancel();
             }
             if work.is_none() {
-                self.host.expire_task_deadline(self.task_id, Some(self.fence.clone())).await?;
+                self.host.expire_task_deadline(self.task_id, Some(&self.fence), &mut None).await?;
             }
             return Err(Error::Indeterminate(self.operation_id()));
         }
@@ -2027,11 +2027,19 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
 }
 
 impl<P: StreamProvider> CoordinatorTaskHost<P> {
-    async fn cancel_with_work(
+    /// Cancels under the original owner and retained retry identity.
+    pub async fn cancel(
         &self,
         task_id: TaskId,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
+        native: crate::NativeWork<'_>,
     ) -> Result<()> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut io = native.map(crate::store::native_work_io).transpose()?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut work = io.as_mut().map(|io| io as &mut dyn crate::store::HistoryIo);
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let mut work: Option<&mut dyn crate::store::HistoryIo> = None;
+        let _ = native;
         if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
         let operation_id = OperationId::from_bytes(task_id.into_bytes());
         let mut key = String::new();
@@ -2044,21 +2052,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         write!(&mut key, "task-cancel:{operation_id}").expect("writing into String");
         self.coordinator.lock().await.cancel_operation(
             self.verifier.audience(), &self.owner_scope, &self.verifier, operation_id,
-            IdempotencyKey::new(key)?, true, work,
+            IdempotencyKey::new(key)?, true, &mut work,
         ).await?;
         Ok(())
     }
 
-    /// Requests cancellation using the original signed owner and retained retry identity on the existing native ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub async fn cancel_with_native_work(
-        &self,
-        task_id: TaskId,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        let mut io = crate::store::history::native_work_io(work)?;
-        self.cancel_with_work(task_id, &mut Some(&mut io)).await
-    }
+
 
     /// Authenticates operation controls against this task owner's trust root.
     pub async fn authorize_operation_control(
@@ -2988,53 +2987,45 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(())
     }
 
-    /// Owner-authorized delivery into one exact durable workflow resume slot.
+
+
+
+
+    /// Delivers input into the exact owner-authorized workflow resume slot.
     pub async fn resume_workflow(
-        &self,
-        task: TaskId,
-        revision: u64,
-        input: FileRef,
-        key: IdempotencyKey,
-    ) -> Result<()> {
-        self.resume_workflow_with_work(task, revision, input, key, &mut None).await
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub async fn resume_workflow_with_native_work(
         &self, task: TaskId, revision: u64, input: FileRef, key: IdempotencyKey,
-        work: &acyclic_fs::NativeMaterializationWork,
+        native: crate::NativeWork<'_>,
     ) -> Result<()> {
-        let mut io = crate::store::history::native_work_io(work)?;
-        self.resume_workflow_with_work(task, revision, input, key, &mut Some(&mut io)).await
-    }
-
-    async fn resume_workflow_with_work(
-        &self, task: TaskId, revision: u64, input: FileRef, key: IdempotencyKey,
-        work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
-    ) -> Result<()> {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut io = native.map(crate::store::native_work_io).transpose()?;
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        let mut work = io.as_mut().map(|io| io as &mut dyn crate::store::HistoryIo);
+        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
+        let mut work: Option<&mut dyn crate::store::HistoryIo> = None;
+        let _ = native;
         let operation_id = OperationId::from_bytes(task.into_bytes());
-        let admission = self.admission_with_work(operation_id, work).await?;
+        let admission = self.admission_with_work(operation_id, &mut work).await?;
         if let Some(io) = work.as_deref_mut() {
             io.check_cancellation()?;
             if input.path().len() > admission.limits.path_bytes
                 || input.descriptor().byte_length() > admission.limits.file_bytes
             {
-                return Err(admission_boundary(work, crate::wire::ErrorCode::Invalid,
+                return Err(admission_boundary(&mut work, crate::wire::ErrorCode::Invalid,
                     "workflow resume input exceeds original task limits"));
             }
         }
         admission.limits.validate_file(&input, &mut None)?;
-        if !crate::runtime::read_granted_with_work(&admission.grants, &input, work)? {
-            return Err(admission_boundary(work, crate::wire::ErrorCode::Unauthorized,
+        if !crate::runtime::read_granted_with_work(&admission.grants, &input, &mut work)? {
+            return Err(admission_boundary(&mut work, crate::wire::ErrorCode::Unauthorized,
                 "task cannot read its workflow resume input"));
         }
-        let (value, owned) = self.read_json_with_work(&input, work).await?;
+        let (value, owned) = self.read_json_with_work(&input, &mut work).await?;
         drop(value);
         if let Some(io) = work.as_deref_mut() { io.release_owned(owned)?; }
         self.coordinator
             .lock()
             .await
-            .resume_workflow(self.verifier.audience(), &self.owner_scope, &self.verifier, operation_id, revision, input, key, None, work)
+            .resume_workflow(self.verifier.audience(), &self.owner_scope, &self.verifier, operation_id, revision, input, key, None, &mut work)
             .await?;
         Ok(())
     }
@@ -3197,7 +3188,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             let admitted = self.read_retained_admission_counted(operation, work).await.map(|(record, _)| record)?;
             if let Some(io) = work.as_deref_mut() { io.check_cancellation()?; }
             if admitted.run_limits.deadline_epoch_ms.is_some_and(|deadline| self.clock.now_unix_millis() >= deadline) {
-                self.expire_task_deadline_with_work(task_id, Some(fence), work).await?;
+                self.expire_task_deadline(task_id, Some(fence), work).await?;
                 return Err(Error::Indeterminate(operation));
             }
         }
@@ -3650,7 +3641,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         };
         let (scope, _) = self.authenticated_scope_with_work(&admission, work).await?;
         let input_is_root = admission.parent.is_none() && admission.resource_proofs.is_empty();
-        let input_agent = match scope.current_created_agent()? {
+        let input_agent = match scope.current_created_agent(work)? {
             Some(agent) => Some(agent),
             None if input_is_root => {
                 if declared_agent != self.owner_scope.agent() {
@@ -3903,25 +3894,12 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(operation.cancellation_requested)
     }
 
-    /// Cancels only when the original admitted absolute deadline has elapsed.
+
+
+
+
+    /// Cancels when the original admitted deadline has elapsed.
     pub async fn expire_task_deadline(
-        &self,
-        task: TaskId,
-        fence: Option<crate::scheduler::LeaseFence>,
-    ) -> Result<()> {
-        self.expire_task_deadline_with_work(task, fence.as_ref(), &mut None).await
-    }
-
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub async fn expire_task_deadline_with_native_work(
-        &self, task: TaskId, fence: Option<crate::scheduler::LeaseFence>,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        let mut io = crate::store::history::native_work_io(work)?;
-        self.expire_task_deadline_with_work(task, fence.as_ref(), &mut Some(&mut io)).await
-    }
-
-    async fn expire_task_deadline_with_work(
         &self, task: TaskId, fence: Option<&crate::scheduler::LeaseFence>,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
@@ -5586,7 +5564,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                             .is_some()
                             && let Admission::Accepted(task_id) = &admitted
                         {
-                            self.cancel(*task_id).await?;
+                            self.cancel(*task_id, None).await?;
                             entries.push(admitted);
                             continue;
                         }
@@ -5617,7 +5595,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             let mut entries = Vec::with_capacity(admissions.len());
             for (index, admission) in admissions.into_iter().enumerate() {
                 let status = match admission {
-                    Admission::Accepted(task_id) => match self.cancel(task_id).await {
+                    Admission::Accepted(task_id) => match self.cancel(task_id, None).await {
                         Ok(()) => BatchCancellationStatus::Requested,
                         Err(Error::Indeterminate(operation_id)) => {
                             BatchCancellationStatus::Indeterminate { operation_id }
@@ -5792,7 +5770,7 @@ impl<P: StreamProvider> crate::runtime::TaskStateProvider for CoordinatorTaskHos
     }
 
     fn cancel<'a>(&'a self, task_id: TaskId) -> BoxFuture<'a, Result<()>> {
-        Box::pin(async move { self.cancel_with_work(task_id, &mut None).await })
+        Box::pin(async move { self.cancel(task_id, None).await })
     }
 
     fn send<'a>(
@@ -6039,7 +6017,7 @@ pub(crate) mod tests {
             }
             let key = IdempotencyKey::new(key_io.clone_text("native-existing-resume-key")?)?;
             let key_guard = key_io.into_custody();
-            fixture.host.resume_workflow_with_native_work(fixture.root, 1, input, key, &work).await?;
+            fixture.host.resume_workflow(fixture.root, 1, input, key, Some(&work)).await?;
             drop(key_guard);
             drop(input_guard);
         }
@@ -6829,7 +6807,7 @@ pub(crate) mod tests {
                                     fenced = true;
                                 }
                                 _ => {
-                                    host.cancel(task).await?;
+                                    host.cancel(task, None).await?;
                                     fenced = true;
                                 }
                             }
@@ -6937,7 +6915,7 @@ pub(crate) mod tests {
             provider.forbid_writes.store(false, Ordering::SeqCst);
             reopened.start_task(&recovered, None).await?;
             assert!(reopened.start_task(&previous, None).await.is_err());
-            reopened.cancel(task).await?;
+            reopened.cancel(task, None).await?;
             let tail = journal.tail().await?;
             provider.forbid_writes.store(true, Ordering::SeqCst);
             let WorkPull::Unresolved { lease, .. } = reopened.recover_work(task).await? else {
@@ -7073,6 +7051,7 @@ pub(crate) mod tests {
             SchemaRegistry::new(),
             payloads.clone(),
             providers,
+            None, None,
         )?;
         let command = OperationId::from_bytes([55; 16]);
         let (first, second) = tokio::join!(
@@ -7098,7 +7077,7 @@ pub(crate) mod tests {
                 .await,
             Err(Error::Conflict(_))
         ));
-        host.cancel(task).await?;
+        host.cancel(task, None).await?;
         assert!(
             effects
                 .run_task_effect(&binding, command, plan.clone())

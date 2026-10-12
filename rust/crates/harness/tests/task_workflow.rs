@@ -1175,7 +1175,7 @@ async fn worker_restart_with_options(
             }
             clock.0.store(200, Ordering::SeqCst);
             if cancel_wait {
-                runtime.task_host().cancel(task).await?;
+                runtime.task_host().cancel(task, None).await?;
                 assert!(!runtime.poll_task_wake(task, None).await?);
                 assert!(discover_wakes(&runtime, None).await?.is_empty());
                 assert_eq!(
@@ -1258,12 +1258,7 @@ async fn worker_restart_with_options(
             assert!(
                 runtime
                     .task_host()
-                    .resume_workflow(
-                        task,
-                        2,
-                        input.clone(),
-                        IdempotencyKey::new("wrong-revision")?
-                    )
+                    .resume_workflow(task, 2, input.clone(), IdempotencyKey::new("wrong-revision")?, None)
                     .await
                     .is_err()
             );
@@ -1326,11 +1321,11 @@ async fn worker_restart_with_options(
             } else {
                 runtime
                     .task_host()
-                    .resume_workflow(task, 1, input.clone(), IdempotencyKey::new("wake-seven")?)
+                    .resume_workflow(task, 1, input.clone(), IdempotencyKey::new("wake-seven")?, None)
                     .await?;
                 runtime
                     .task_host()
-                    .resume_workflow(task, 1, input, IdempotencyKey::new("wake-seven")?)
+                    .resume_workflow(task, 1, input, IdempotencyKey::new("wake-seven")?, None)
                     .await?;
             }
         }

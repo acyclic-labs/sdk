@@ -2184,7 +2184,7 @@ where
         if self.run_limits.deadline_epoch_ms.is_some_and(|deadline| {
             self.host.now_unix_millis() >= deadline
         }) {
-            self.host.expire_task_deadline(self.task, Some(self.fence.clone())).await?;
+            self.host.expire_task_deadline(self.task, Some(&self.fence), &mut None).await?;
         }
         self.executor = self.executor.into_reconciliation();
         self.executor.execute_progress(input, &self.journal).await

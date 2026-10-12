@@ -160,7 +160,7 @@ impl LineageRegistrationWork<'_> {
             Self::Ordinary(_) => Ok(lineage_shape_is_valid(record)),
             #[cfg(not(target_arch = "wasm32"))]
             Self::Native { original, cancellation } => {
-                let valid_name = |name: &str| match crate::WorkspaceName::new(name, original, cancellation) {
+                let valid_name = |name: &str| match crate::WorkspaceName::new(name, *original, cancellation) {
                     Ok(_) => Ok(true),
                     Err(WorkspaceError::Name(crate::WorkspaceNameError::Empty
                         | crate::WorkspaceNameError::Reserved | crate::WorkspaceNameError::TooLong

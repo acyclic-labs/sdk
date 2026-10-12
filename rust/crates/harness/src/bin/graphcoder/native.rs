@@ -367,7 +367,7 @@ impl NativeSession {
 
     pub async fn cancel_task(&self, task: TaskId) -> Result<String> {
         let admission = self.runtime.task_host().observe_admission(task).await?;
-        self.runtime.task_host().cancel(task).await?;
+        self.runtime.task_host().cancel(task, None).await?;
         Ok(format!("cancellation requested task={task} admission-operation={}; completion requires authoritative observation\n", admission.operation_id))
     }
 

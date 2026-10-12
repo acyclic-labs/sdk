@@ -204,20 +204,9 @@ pub(crate) fn source_metadata_inspection_with_work<T: Serialize + ?Sized>(
     };
     match failure {
         Some(error) => Err(error),
-        None => Err(preparation_inventory_error(work, "closed admission metadata inspection rejected")),
+        None => Err(crate::fork::boundary_error(work, crate::wire::ErrorCode::Invalid, "closed admission metadata inspection rejected")),
     }
 }
-fn preparation_inventory_error(
-    work: &Option<&mut dyn HistoryIo>, reason: &'static str,
-) -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work.as_ref().is_some_and(|work| work.original_native_work().is_some()) {
-        return Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason };
-    }
-    let _ = work;
-    Error::Invalid(reason.into())
-}
-
 /// Closed logical ownership allowance, not allocator/copy counters or a new claim.
 pub(crate) fn resource_preparation_owned_bytes(
     request: &crate::resource_preparation::ResourcePreparationRequest,
@@ -233,8 +222,8 @@ pub(crate) fn resource_preparation_owned_bytes(
         let mut bytes = 0u64;
         macro_rules! owned_add {
             ($owned:expr) => {
-                bytes = bytes.checked_add($owned).ok_or_else(|| preparation_inventory_error(
-                    work, "resource preparation ownership inventory overflows"))?;
+                bytes = bytes.checked_add($owned).ok_or_else(|| crate::fork::boundary_error(
+                    work, crate::wire::ErrorCode::Invalid, "resource preparation ownership inventory overflows"))?;
             };
         }
         owned_add!(request.provider.logical_owned_bytes()?);
@@ -267,8 +256,8 @@ pub(crate) fn resource_preparation_owned_bytes(
         }
         owned_add!((request.resources.capacity() as u64)
             .checked_mul(std::mem::size_of::<crate::resources::ResourceRef>() as u64)
-            .ok_or_else(|| preparation_inventory_error(
-                work, "resource preparation ownership inventory overflows"))?);
+            .ok_or_else(|| crate::fork::boundary_error(
+                work, crate::wire::ErrorCode::Invalid, "resource preparation ownership inventory overflows"))?);
         for reference in &request.resources {
             if let Some(observer) = work.as_deref_mut() {
                 observer.check_cancellation()?;
@@ -278,8 +267,8 @@ pub(crate) fn resource_preparation_owned_bytes(
         }
         owned_add!((child.resource_proofs.capacity() as u64)
             .checked_mul(std::mem::size_of::<crate::resource_preparation::ResourceCreationProofRef>() as u64)
-            .ok_or_else(|| preparation_inventory_error(
-                work, "resource preparation ownership inventory overflows"))?);
+            .ok_or_else(|| crate::fork::boundary_error(
+                work, crate::wire::ErrorCode::Invalid, "resource preparation ownership inventory overflows"))?);
         for proof in &child.resource_proofs {
             if let Some(observer) = work.as_deref_mut() {
                 observer.check_cancellation()?;
@@ -296,14 +285,14 @@ pub(crate) fn resource_preparation_owned_bytes(
         .max(std::mem::size_of::<crate::resource_preparation::ResourcePreparationRequest>() as u64)
         .max(std::mem::size_of::<crate::resource_preparation::ResourceCreationProofRef>() as u64);
     let mut inventory = CloneInventory { bytes: Some(0), slot_bytes: Some(slot), ..Default::default() };
-    request.serialize(&mut inventory).map_err(|_| preparation_inventory_error(
-        work, "resource preparation ownership inventory overflows"))?;
+    request.serialize(&mut inventory).map_err(|_| crate::fork::boundary_error(
+        work, crate::wire::ErrorCode::Invalid, "resource preparation ownership inventory overflows"))?;
     if let Some(observer) = work.as_deref_mut() {
         observer.check_cancellation()?;
         observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: inventory.slots })?;
     }
-    inventory.bytes.expect("size inventory").checked_mul(4).ok_or_else(|| preparation_inventory_error(
-        work, "resource preparation ownership inventory overflows"))
+    inventory.bytes.expect("size inventory").checked_mul(4).ok_or_else(|| crate::fork::boundary_error(
+        work, crate::wire::ErrorCode::Invalid, "resource preparation ownership inventory overflows"))
 }
 
 /// Copies the concrete proof fields physically; the caller owns its Vec shell.
@@ -407,22 +396,13 @@ struct Projection<C = ConversationState> {
     bindings: Vec<(ExtensionDependency, [u8; 32])>,
 }
 
-fn snapshot_map_entry<T>(quota: &mut crate::wire_codec::CodecQuota<'_, '_>) -> Result<()> {
-    if quota.work().is_none() { return Ok(()); }
-    let bytes = std::mem::size_of::<T>() as u64;
-    let observer = quota.work().as_deref_mut().expect("snapshot component observer");
-    observer.admit_owned(bytes)?;
-    observer.retain_owned(bytes)?;
-    quota.adopt(bytes)
-}
-
 fn copy_snapshot_states(
     source: &BTreeMap<String, (EventReference, ExtensionRecord)>,
     quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<BTreeMap<String, (EventReference, ExtensionRecord)>> {
     let mut output = BTreeMap::new();
     for (name, (reference, record)) in source {
-        snapshot_map_entry::<(String, (EventReference, ExtensionRecord))>(quota)?;
+        super::native_custody::retain_entry::<(String, (EventReference, ExtensionRecord))>(quota)?;
         let name = super::native_custody::copy_text(name, quota)?;
         let reference = super::native_custody::copy_reference(reference, quota)?;
         let record = super::native_custody::copy_extension_record(record, quota)?;
@@ -437,7 +417,7 @@ fn copy_snapshot_effects(
 ) -> Result<BTreeMap<EffectId, EffectState>> {
     let mut output = BTreeMap::new();
     for (id, effect) in source {
-        snapshot_map_entry::<(EffectId, EffectState)>(quota)?;
+        super::native_custody::retain_entry::<(EffectId, EffectState)>(quota)?;
         let (effect, retained) = super::native_effect_clone_with_custody(effect, quota.work())?;
         quota.adopt(retained)?;
         output.insert(*id, effect);
@@ -451,7 +431,7 @@ fn copy_snapshot_merges(
 ) -> Result<BTreeSet<(String, Vec<u8>)>> {
     let mut output = BTreeSet::new();
     for (name, operation) in source {
-        snapshot_map_entry::<(String, Vec<u8>)>(quota)?;
+        super::native_custody::retain_entry::<(String, Vec<u8>)>(quota)?;
         let name = super::native_custody::copy_text(name, quota)?;
         let operation = super::copy_copy_vector(operation, quota)?;
         output.insert((name, operation));
@@ -465,7 +445,7 @@ fn copy_snapshot_interactions(
 ) -> Result<BTreeMap<uuid::Uuid, (InteractionTicket, Option<InteractionResolution>)>> {
     let mut output = BTreeMap::new();
     for (id, (ticket, resolution)) in source {
-        snapshot_map_entry::<(uuid::Uuid, (InteractionTicket, Option<InteractionResolution>))>(quota)?;
+        super::native_custody::retain_entry::<(uuid::Uuid, (InteractionTicket, Option<InteractionResolution>))>(quota)?;
         let (ticket, retained) = super::native_interaction_ticket_clone_with_custody(ticket, quota.work())?;
         quota.adopt(retained)?;
         let resolution = match resolution {
@@ -487,7 +467,7 @@ fn copy_snapshot_terminal_effects(
 ) -> Result<VecDeque<EffectId>> {
     if quota.work().is_none() { return Ok(source.clone()); }
     let bytes = source.len().checked_mul(std::mem::size_of::<EffectId>())
-        .ok_or_else(|| preparation_inventory_error(quota.work(), "terminal effect copy size overflows"))? as u64;
+        .ok_or_else(|| crate::fork::boundary_error(quota.work(), crate::wire::ErrorCode::Invalid, "terminal effect copy size overflows"))? as u64;
     quota.work().as_deref().expect("snapshot terminal copy observer").admit_copy(bytes)?;
     let mut output = super::reserve_copy_vector::<EffectId>(source.len(), quota)?;
     for slice in [source.as_slices().0, source.as_slices().1] {
@@ -800,13 +780,13 @@ impl Reducer {
         let inventory = source_inventory(&(
             &self.authority, &self.authority_verifier.id, &self.authority_verifier.audience,
             &self.active_extensions, &self.extension_states, &self.configured_extensions,
-            &self.active_configurations, &self.events, &self.operation_positions,
+            &self.active_configurations, &self.events,
             &self.effects, &self.indexed_terminal_effects, &self.forks, &self.published_merges,
             &self.conversation, &self.latest_context_checkpoint, &self.interactions,
         ))?;
         let cache = self.conversation.clone_cache_logical_bytes()?;
-        // The tuple's sixteen field slots replace one reducer slot.
-        inventory.checked_sub(15 * CloneInventory::SLOT)
+        // The tuple's fifteen field slots replace one reducer slot.
+        inventory.checked_sub(14 * CloneInventory::SLOT)
             .and_then(|bytes| bytes.checked_add(cache))
             .ok_or_else(|| Error::Invalid("reducer clone reservation overflows".into()))
     }
@@ -844,15 +824,7 @@ impl Reducer {
         maximum_events: usize,
         work: &mut Option<&mut dyn HistoryIo>,
     ) -> Result<(Snapshot, u64)> {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if self.native_custody.original_work().is_some()
-            && !work.as_deref().is_some_and(|work| work.original_native_work().is_some())
-        {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "native snapshot capture requires explicit native work",
-            });
-        }
+        self.native_custody.require_work(work, "native snapshot capture requires explicit native work")?;
         if maximum_events == 0 && self.revision != 0 {
             return Err(Error::Invalid("snapshot must retain its head event".into()));
         }
@@ -949,7 +921,7 @@ impl Reducer {
                 selection, slots.work(), Some(&mut |sequence, produced, work| {
                     while next < prepared.len() && prepared[next].0 < sequence { next += 1; }
                     if next == prepared.len() || prepared[next].0 != sequence {
-                        return Err(preparation_inventory_error(work, "conversation copied component identity is invalid"));
+                        return Err(crate::fork::boundary_error(work, crate::wire::ErrorCode::Invalid, "conversation copied component identity is invalid"));
                     }
                     let allocation = work.as_deref_mut().expect("native retirement observer")
                         .take_native_custody(produced)?;
@@ -1069,11 +1041,6 @@ impl Reducer {
                 Err(cause) => return Err(Error::NativeWork { cause, custody: allocation.take() }),
             }
         } else { None };
-        let operation_positions = snapshot
-            .events
-            .iter()
-            .map(|event| (event.operation_id, event.revision))
-            .collect();
         let projection = snapshot.projection;
         let mut reducer = Self {
             authority: snapshot.authority,
@@ -1088,7 +1055,6 @@ impl Reducer {
             active_configurations: projection.active_configurations,
             events: snapshot.events.into(),
             resident_event_limit: usize::MAX,
-            operation_positions,
             effects: projection.effects,
             indexed_terminal_effects: projection.indexed_terminal_effects,
             effects_archived: projection.effects_archived,
@@ -1116,7 +1082,6 @@ impl Snapshot {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     fn restoration_metadata_reservation(&self) -> Result<u64> {
         super::native_custody::owned_sum([
-            super::native_custody::owned_buffer::<(crate::OperationId, u64)>(self.events.len())?,
             super::native_custody::owned_buffer::<(ExtensionDependency, ExtensionConfiguration)>(
                 self.projection.configured_extensions.len())?,
             super::native_custody::owned_buffer::<(Authority, ForkSeed)>(self.projection.forks.len())?,
@@ -1309,7 +1274,7 @@ impl AuthorityVerifier {
         let attestation = *hasher.finalize().as_bytes();
         let capacity = canonical.capacity() as u64;
         drop(canonical);
-        if let Some(work) = work.as_deref_mut() { work.release_bytes(capacity)?; }
+        if let Some(work) = work.as_deref_mut() { work.release_owned(capacity)?; }
         Ok(attestation)
     }
 }
