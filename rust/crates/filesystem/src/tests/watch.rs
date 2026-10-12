@@ -754,7 +754,7 @@ fn capabilities_never_misrepresent_process_local_sequences_as_restart_cursors() 
     assert!(!capabilities.persistent_restart);
     assert_eq!(
         capabilities.recursive,
-        capabilities.backend != NativeWatchBackend::Unsupported
+        capabilities.backend != "unsupported"
     );
     assert_eq!(capabilities.root_identity_fencing, cfg!(any(unix, windows)));
     let expected = if cfg!(target_os = "windows") {
@@ -766,7 +766,7 @@ fn capabilities_never_misrepresent_process_local_sequences_as_restart_cursors() 
     } else {
         "unsupported"
     };
-    assert_eq!(capabilities.backend.as_str(), expected);
+    assert_eq!(capabilities.backend, expected);
 }
 
 #[cfg(any(target_os = "windows", target_os = "linux", target_os = "macos"))]

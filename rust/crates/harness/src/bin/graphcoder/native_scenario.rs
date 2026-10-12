@@ -2,6 +2,7 @@
 #![allow(missing_docs, reason = "private installed-binary scenario boundary")]
 
 use super::native::{AuthorityBinding, Config, ForkSourceConfig};
+use acyclic_harness::runtime::TaskStateProvider;
 use super::native_tools::{NativeToolCaller, NativeToolFork, NativeToolMerge};
 use super::native_writeback::NativePublicationConfig;
 use acyclic_fs::{LocalAuthorityBackend, LocalObjectBackend};
@@ -683,7 +684,7 @@ async fn aggregate(stream: &std::sync::Arc<LocalStream>, files: Arc<Files>,
         Arc::new(FilesystemForkVerifier::new(files.clone(), PAYLOAD_BYTES)?),
         Arc::new(StreamHistoryForkVerifier::new(&config.stream_provider, &mut None)?),
     ], &mut None)?);
-    StreamAggregate::open(stream, owner.authority.clone(), verifier, SchemaRegistry::new(), None, crate::store::default_projection_read_limits(), crate::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?
+    StreamAggregate::open(stream, owner.authority.clone(), verifier, SchemaRegistry::new(), None, acyclic_harness::store::default_projection_read_limits(), acyclic_harness::store::DEFAULT_TERMINAL_EFFECTS, None, &mut None).await?
         .with_content_verifier(content).with_fork_verifier(forks)
         .with_merge_verifier(Arc::new(FilesystemProjectMergeVerifier::new(files)))
         .with_limits(config.limits)

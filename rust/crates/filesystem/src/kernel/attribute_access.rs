@@ -8,7 +8,6 @@ use super::codec::DecodedPageKind;
 use super::persistent_batch;
 use super::persistent_btree::within_bounds;
 use super::persistent_point::{Owned, retire_allocation, split_allocation};
-use super::search::{counted_binary_search, counted_partition_point};
 use super::{
     AttributeEntry, AttributeName, AttributePage, CanonicalDecodeError,
     DecodeLimits, decode_attribute_page,
@@ -16,28 +15,10 @@ use super::{
 use crate::async_storage::AsyncObjectStore;
 use crate::cancellation::CancellationToken;
 use crate::foundation::usize_to_u64;
-use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
+use crate::performance::{OperationFailure, OperationReceipt, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectKind, ObjectReadRetention, ObjectStoreError};
 use std::mem::size_of;
 use thiserror::Error;
-
-/// Exact authenticated named-attribute lookup result.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AttributeLookup {
-    /// Matching complete entry, or authenticated absence.
-    pub entry: Option<AttributeEntry>,
-    /// Exact backend, traversal, and logical allocation work.
-    pub work: WorkCounters,
-}
-
-/// Original-order named attributes from one shared authenticated frontier batch.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct AttributeBatchLookup {
-    /// One explicit present/absent result per requested attribute name.
-    pub entries: Vec<Option<AttributeEntry>>,
-    /// Exact shared traversal, backend, copy, and allocation work.
-    pub work: WorkCounters,
-}
 
 /// Looks up named attributes while reading each distinct frontier once.
 pub async fn lookup_attributes<S: AsyncObjectStore>(
@@ -48,7 +29,7 @@ pub async fn lookup_attributes<S: AsyncObjectStore>(
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &CancellationToken,
-) -> Result<AttributeBatchLookup, AttributeLookupFailure> {
+) -> Result<OperationReceipt<Vec<Option<AttributeEntry>>>, AttributeLookupFailure> {
     persistent_batch::lookup_async::<S, AttributeFormat>(
         store,
         root,
@@ -59,15 +40,7 @@ pub async fn lookup_attributes<S: AsyncObjectStore>(
         cancellation,
     )
     .await
-    .map(to_batch)
     .map_err(map_batch_failure)
-}
-
-fn to_batch(receipt: crate::OperationReceipt<Vec<Option<AttributeEntry>>>) -> AttributeBatchLookup {
-    AttributeBatchLookup {
-        entries: receipt.value,
-        work: receipt.work,
-    }
 }
 
 fn map_batch_failure(failure: persistent_batch::Failure) -> AttributeLookupFailure {
@@ -106,7 +79,7 @@ pub async fn lookup_attribute<S: AsyncObjectStore>(
     limits: DecodeLimits,
     budget: WorkBudget,
     cancellation: &CancellationToken,
-) -> Result<AttributeLookup, AttributeLookupFailure> {
+) -> Result<OperationReceipt<Option<AttributeEntry>>, AttributeLookupFailure> {
     let mut accounting = KernelAccounting::standalone(budget, cancellation);
     lookup_attribute_async_with_accounting(store, root, name, limits, &mut accounting, cancellation)
         .await
@@ -121,7 +94,7 @@ pub(crate) async fn lookup_attribute_async_with_accounting<S: AsyncObjectStore>(
     limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>,
     cancellation: &CancellationToken,
-) -> Result<(AttributeLookup, KernelOwnedAllocation), crate::FsError> {
+) -> Result<(OperationReceipt<Option<AttributeEntry>>, KernelOwnedAllocation), crate::FsError> {
     cancellation.check()?;
     accounting.check()?;
     if root.kind != ObjectKind::AttributePage {
@@ -155,7 +128,7 @@ pub(crate) async fn lookup_attribute_async_with_accounting<S: AsyncObjectStore>(
                         if !within_bounds(first, last, routing.lower.as_ref().map(|bound| &bound.value), routing.upper.as_ref().map(|bound| &bound.value)) {
                             return Err(AttributeLookupError::ChildBoundsMismatch.into());
                         }
-                        let position = search_entries_with_accounting(&entries, name, accounting)?;
+                        let position = super::search::binary_search_with_accounting(&entries, accounting, |entry| entry.name.cmp(name))?;
                         accounting.charge(WorkCounters { items_returned: u64::from(position.is_ok()), ..WorkCounters::default() })?;
                         let entry_bytes = position.ok().map_or(0, |index| {
                             entries.get(index).map_or(0, |entry| owned_name_bytes(&entry.name, &allocation))
@@ -180,7 +153,7 @@ pub(crate) async fn lookup_attribute_async_with_accounting<S: AsyncObjectStore>(
     }.await;
     routing.retire(accounting)?;
     visited.retire(accounting).map_err(map_visited_error)?;
-    result.map(|(entry, allocation)| (AttributeLookup { entry, work: accounting.spent() }, allocation))
+    result.map(|(value, allocation)| (OperationReceipt { value, work: accounting.spent() }, allocation))
 }
 
 #[derive(Default)]
@@ -211,7 +184,7 @@ fn advance_internal(
         if !within_bounds(first, last, routing.lower.as_ref().map(|bound| &bound.value), routing.upper.as_ref().map(|bound| &bound.value)) {
             return Err(AttributeLookupError::ChildBoundsMismatch.into());
         }
-        let partition = upper_bound_children_with_accounting(&children, name, accounting)?;
+        let partition = super::search::partition_point_with_accounting(&children, accounting, |child| child.first <= *name)?;
         let selected = partition.saturating_sub(1);
         let child = children.get(selected).ok_or(AttributeLookupError::InvalidRouting)?;
         let lower_bytes = routing_name_bytes(&child.first, &allocation);
@@ -420,38 +393,6 @@ fn map_visited_error(error: crate::FsError) -> crate::FsError {
         crate::FsError::PendingMutationAllocationFailed => AttributeLookupError::AllocationFailed.into(),
         error => error,
     }
-}
-
-fn search_entries(entries: &[AttributeEntry], name: &AttributeName) -> (Result<usize, usize>, u64) {
-    counted_binary_search(entries, |entry| entry.name.cmp(name))
-}
-
-fn upper_bound_children(children: &[Child<AttributeName>], name: &AttributeName) -> (usize, u64) {
-    counted_partition_point(children, |child| child.first <= *name)
-}
-
-fn search_entries_with_accounting(
-    entries: &[AttributeEntry], name: &AttributeName, accounting: &mut KernelAccounting<'_>,
-) -> Result<Result<usize, usize>, crate::FsError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if accounting.native_work().is_some() {
-        return super::search::binary_search_with_accounting(entries, accounting, |entry| entry.name.cmp(name));
-    }
-    let (position, comparisons) = search_entries(entries, name);
-    accounting.charge(WorkCounters { items_examined: comparisons, ..WorkCounters::UNCHARGED })?;
-    Ok(position)
-}
-
-fn upper_bound_children_with_accounting(
-    children: &[Child<AttributeName>], name: &AttributeName, accounting: &mut KernelAccounting<'_>,
-) -> Result<usize, crate::FsError> {
-    #[cfg(not(target_arch = "wasm32"))]
-    if accounting.native_work().is_some() {
-        return super::search::partition_point_with_accounting(children, accounting, |child| child.first <= *name);
-    }
-    let (partition, comparisons) = upper_bound_children(children, name);
-    accounting.charge(WorkCounters { items_examined: comparisons, ..WorkCounters::UNCHARGED })?;
-    Ok(partition)
 }
 
 fn charge_items(

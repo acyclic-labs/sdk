@@ -1045,11 +1045,11 @@ impl Reducer {
                 work.as_deref_mut().expect("native restore observer").take_native_custody(bytes)?, None))
         } else {
             super::native_custody::NativeComponentCustody::prepare(
-                super::native_custody::NativeComponentRef::Base, 0, work)?
+                &super::native_custody::NativeComponentKey::Base, 0, work)?
         };
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let base = super::native_custody::NativeComponentCustody::prepare(
-            super::native_custody::NativeComponentRef::Base, 0, work)?;
+            &super::native_custody::NativeComponentKey::Base, 0, work)?;
         drop(restored_custody.install(base, work)?);
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         let retired_vector_bytes = if intrinsic {

@@ -201,7 +201,7 @@ pub(super) async fn run<P: StreamProvider>(
     });
     let bound: Arc<dyn McpToolTransport> = transport.clone();
     let projection: Arc<dyn ToolProjection> = Arc::new(Projection);
-    let mut tools = ToolRegistry::new();
+    let mut tools = ToolRegistry::default();
     catalog().install(&mut tools, None, &bound, &projection, 1, 8192)?;
     let definition = tools
         .get("mcp.example.echo")

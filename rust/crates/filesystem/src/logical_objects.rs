@@ -57,16 +57,11 @@ fn put_request(
 
 fn record_write_completion(accounting: &mut KernelAccounting<'_>, bytes: u64) -> Result<(), crate::FsError> {
     let delta = WorkCounters { object_bytes_written: bytes, ..WorkCounters::UNCHARGED };
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(work) = accounting.native_work() {
-        work.record_admitted(delta)?;
-        return Ok(());
-    }
     match accounting {
         KernelAccounting::Standalone { work, .. } => { *work = work.checked_add(delta)?; Ok(()) }
         KernelAccounting::BorrowedStandalone { work, .. } => { **work = work.checked_add(delta)?; Ok(()) }
         #[cfg(not(target_arch = "wasm32"))]
-        KernelAccounting::NativeOriginal { .. } => unreachable!(),
+        KernelAccounting::NativeOriginal { work, .. } => work.record_admitted(delta).map_err(Into::into),
     }
 }
 
@@ -284,21 +279,24 @@ impl LogicalReadResults {
             Self::Native(values) => validate(values.results(), requests, object_limit, quota),
         }
     }
+}
 
-    fn for_each(
-        self, mut visit: impl FnMut(Result<Object, ObjectStoreError>) -> Result<(), crate::FsError>,
-    ) -> Result<(), crate::FsError> {
-        match self {
-            Self::Ordinary(values) => {
-                for value in values { visit(value.map_err(service_read_error))?; }
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            Self::Native(values) => {
-                for value in values { visit(value.map_err(native_objects_error))?; }
-            }
-        }
-        Ok(())
+fn finish_reads(
+    results: impl IntoIterator<Item = Result<Object, ObjectStoreError>>, requests: &[ObjectReadRequest],
+    accounting: &mut KernelAccounting<'_>, values: &mut Vec<ObjectRead>,
+) -> Result<(), crate::FsError> {
+    for (result, request) in results.into_iter().zip(requests) {
+        let value = result?;
+        let observed = value.body().len() as u64;
+        let hash_work = WorkCounters { bytes_hashed: observed, ..WorkCounters::UNCHARGED };
+        accounting.admit(hash_work)?;
+        let digest = object_digest(request.object_id.kind, value.body());
+        accounting.record_completed(hash_work)?;
+        if digest != request.object_id.digest { return Err(ObjectStoreError::Corrupt.into()); }
+        let body = value.into_body();
+        values.push(ObjectRead { retention: read_retention(&body, accounting), bytes: body });
     }
+    Ok(())
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -375,29 +373,6 @@ impl LogicalPutResults {
 }
 
 impl<P: ObjectsProvider> LogicalObjectStore<P> {
-    async fn fetch(
-        &self, request: GetRequest, custody: KernelOwnedAllocation,
-        accounting: &mut KernelAccounting<'_>,
-    ) -> Result<Result<Object, ObjectStoreError>, crate::FsError> {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = accounting.native_work() {
-            let maximum = request.1;
-            let packet = native_request(request.0, custody, work)?;
-            let future = self.provider.get_native(packet, maximum, work.runtime_meter_owner())
-                .map_err(native_objects_error)?;
-            accounting.charge(WorkCounters { object_probes: 1, ..WorkCounters::UNCHARGED })?;
-            return Ok(future.await.map_err(native_objects_error));
-        }
-        let request_bytes = request.0.object_key.capacity() as u64
-            + request.0.bucket.as_ref().map_or(0, |bucket| bucket.name.capacity() as u64);
-        accounting.charge(WorkCounters {
-            object_probes: 1, backend_read_operations: 1, ..WorkCounters::UNCHARGED
-        })?;
-        let result = self.provider.get(request.0, request.1.min(self.maximum_object_bytes)).await.map_err(service_read_error);
-        release_read_custody(accounting, custody, request_bytes)?;
-        Ok(result)
-    }
-
     async fn read_accounted(
         &self, object_id: ObjectId, maximum_bytes: u64,
         accounting: &mut KernelAccounting<'_>,
@@ -416,7 +391,27 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
             accounting.claim_owned(maximum, 0)?
         };
         let header_custody;
-        let result = self.fetch(request, request_custody, accounting).await?;
+        let result = match accounting {
+            #[cfg(not(target_arch = "wasm32"))]
+            KernelAccounting::NativeOriginal { work, .. } => {
+                let work = *work;
+                let packet = native_request(request.0, request_custody, work)?;
+                let future = self.provider.get_native(packet, request.1, work.runtime_meter_owner())
+                    .map_err(native_objects_error)?;
+                accounting.charge(WorkCounters { object_probes: 1, ..WorkCounters::UNCHARGED })?;
+                future.await.map_err(native_objects_error)
+            }
+            _ => {
+                let request_bytes = request.0.object_key.capacity() as u64
+                    + request.0.bucket.as_ref().map_or(0, |bucket| bucket.name.capacity() as u64);
+                accounting.charge(WorkCounters {
+                    object_probes: 1, backend_read_operations: 1, ..WorkCounters::UNCHARGED
+                })?;
+                let result = self.provider.get(request.0, request.1.min(self.maximum_object_bytes)).await.map_err(service_read_error);
+                release_read_custody(accounting, request_custody, request_bytes)?;
+                result
+            }
+        };
         let observed = completed_read_bytes(&result)?;
         let read_completion = accounting.record_completed(WorkCounters {
             object_bytes_read: observed, ..WorkCounters::UNCHARGED
@@ -511,27 +506,24 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
             left -= request.1;
         }
         let header_custody;
-        let results;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = accounting.native_work() {
-            let packet = native_request(provider_requests, request_custody, work)?;
-            let future = self.provider.get_batch_native(packet, work.runtime_meter_owner())
-                .map_err(native_objects_error)?;
-            accounting.charge(WorkCounters { object_probes: requests.len() as u64, ..WorkCounters::UNCHARGED })?;
-            results = LogicalReadResults::Native(future.await.map_err(native_objects_error)?);
-        } else {
-            accounting.charge(WorkCounters { backend_read_operations: 1,
-                object_probes: requests.len() as u64, ..WorkCounters::UNCHARGED })?;
-            results = LogicalReadResults::Ordinary(self.provider.get_batch(provider_requests).await);
-            release_read_custody(accounting, request_custody, request_bytes)?;
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            accounting.charge(WorkCounters { backend_read_operations: 1,
-                object_probes: requests.len() as u64, ..WorkCounters::UNCHARGED })?;
-            results = LogicalReadResults::Ordinary(self.provider.get_batch(provider_requests).await);
-            release_read_custody(accounting, request_custody, request_bytes)?;
-        }
+        let results = match accounting {
+            #[cfg(not(target_arch = "wasm32"))]
+            KernelAccounting::NativeOriginal { work, .. } => {
+                let work = *work;
+                let packet = native_request(provider_requests, request_custody, work)?;
+                let future = self.provider.get_batch_native(packet, work.runtime_meter_owner())
+                    .map_err(native_objects_error)?;
+                accounting.charge(WorkCounters { object_probes: requests.len() as u64, ..WorkCounters::UNCHARGED })?;
+                LogicalReadResults::Native(future.await.map_err(native_objects_error)?)
+            }
+            _ => {
+                accounting.charge(WorkCounters { backend_read_operations: 1,
+                    object_probes: requests.len() as u64, ..WorkCounters::UNCHARGED })?;
+                let results = self.provider.get_batch(provider_requests).await;
+                release_read_custody(accounting, request_custody, request_bytes)?;
+                LogicalReadResults::Ordinary(results)
+            }
+        };
         let observed = results.completed_bytes()?;
         let read_completion = accounting.record_completed(WorkCounters {
             object_bytes_read: observed, ..WorkCounters::UNCHARGED
@@ -555,21 +547,15 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
             if observed > quota { return Err(ObjectStoreError::TooLarge { observed, maximum: quota }.into()); }
             accounting.release_owned(&mut body_custody, quota - observed)?;
         }
-        let mut request_index = 0;
-        results.for_each(|result| {
-            let request = &requests[request_index];
-            request_index += 1;
-            let value = result?;
-            let observed = value.body().len() as u64;
-            let hash_work = WorkCounters { bytes_hashed: observed, ..WorkCounters::UNCHARGED };
-            accounting.admit(hash_work)?;
-            let digest = object_digest(request.object_id.kind, value.body());
-            accounting.record_completed(hash_work)?;
-            if digest != request.object_id.digest { return Err(ObjectStoreError::Corrupt.into()); }
-            let body = value.into_body();
-            values.push(ObjectRead { retention: read_retention(&body, accounting), bytes: body });
-            Ok(())
-        })?;
+        match results {
+            LogicalReadResults::Ordinary(results) => finish_reads(
+                results.into_iter().map(|result| result.map_err(service_read_error)), requests, accounting, &mut values,
+            )?,
+            #[cfg(not(target_arch = "wasm32"))]
+            LogicalReadResults::Native(results) => finish_reads(
+                results.map(|result| result.map_err(native_objects_error)), requests, accounting, &mut values,
+            )?,
+        }
         if !native {
             release_read_custody(accounting, result_custody, result_bytes)?;
             release_read_custody(accounting, header_custody, header_bytes)?;
@@ -704,24 +690,21 @@ impl<P: ObjectsProvider> LogicalObjectStore<P> {
         accounting.admit(WorkCounters { object_bytes_written: total, ..WorkCounters::UNCHARGED })?;
         let native = accounting.standalone_parts().is_none();
         let response_custody;
-        let results;
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = accounting.native_work() {
-            let packet = native_request(requests, request_custody, work)?;
-            let future = self.provider.put_batch_native(packet, work.runtime_meter_owner())
-                .map_err(native_objects_error)?;
-            results = LogicalPutResults::Native(future.await.map_err(native_objects_error)?);
-        } else {
-            accounting.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED })?;
-            results = LogicalPutResults::Ordinary(self.provider.put_batch(requests).await);
-            release_write_custody(accounting, request_custody, request_bytes)?;
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            accounting.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED })?;
-            results = LogicalPutResults::Ordinary(self.provider.put_batch(requests).await);
-            release_write_custody(accounting, request_custody, request_bytes)?;
-        }
+        let results = match accounting {
+            #[cfg(not(target_arch = "wasm32"))]
+            KernelAccounting::NativeOriginal { work, .. } => {
+                let packet = native_request(requests, request_custody, work)?;
+                let future = self.provider.put_batch_native(packet, work.runtime_meter_owner())
+                    .map_err(native_objects_error)?;
+                LogicalPutResults::Native(future.await.map_err(native_objects_error)?)
+            }
+            _ => {
+                accounting.charge(WorkCounters { backend_write_operations: 1, ..WorkCounters::UNCHARGED })?;
+                let results = self.provider.put_batch(requests).await;
+                release_write_custody(accounting, request_custody, request_bytes)?;
+                LogicalPutResults::Ordinary(results)
+            }
+        };
         // Account every reported ACK, even beyond an earlier failed item.
         record_write_completion(accounting, results.completed_bytes(&unique, writes)?)?;
         let response_bytes;
@@ -805,7 +788,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         match self.put_accounted(object_id, bytes, false, &mut accounting).await {
             Ok(()) => Ok(ObjectReceipt { value: (), work: accounting.spent() }),
-            Err(error) => Err(OperationFailure::new(read_accounting_error(error), accounting.spent())),
+            Err(error) => Err(OperationFailure::new(crate::async_storage::object_error(error), accounting.spent())),
         }
     }
 
@@ -817,7 +800,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         match self.put_accounted(object_id, bytes, true, &mut accounting).await {
             Ok(()) => Ok(ObjectReceipt { value: (), work: accounting.spent() }),
-            Err(error) => Err(OperationFailure::new(read_accounting_error(error), accounting.spent())),
+            Err(error) => Err(OperationFailure::new(crate::async_storage::object_error(error), accounting.spent())),
         }
     }
 
@@ -830,7 +813,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         match self.put_many_accounted(writes, &mut accounting).await {
             Ok(()) => Ok(ObjectReceipt { value: (), work: accounting.spent() }),
-            Err(error) => Err(OperationFailure::new(read_accounting_error(error), accounting.spent())),
+            Err(error) => Err(OperationFailure::new(crate::async_storage::object_error(error), accounting.spent())),
         }
     }
 
@@ -840,7 +823,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         cancellation: &CancellationToken,
     ) -> Result<(), ObjectStoreError> {
         self.put_accounted(object_id, bytes, false, &mut KernelAccounting::native(work, cancellation))
-            .await.map_err(read_accounting_error)
+            .await.map_err(crate::async_storage::object_error)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -850,7 +833,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
     ) -> Result<(), ObjectStoreError> {
         let (object_id, bytes) = object.into_parts();
         self.put_accounted(object_id, bytes, true, &mut KernelAccounting::native(work, cancellation))
-            .await.map_err(read_accounting_error)
+            .await.map_err(crate::async_storage::object_error)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -859,7 +842,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         cancellation: &CancellationToken,
     ) -> Result<(), ObjectStoreError> {
         self.put_many_accounted(writes, &mut KernelAccounting::native(work, cancellation))
-            .await.map_err(read_accounting_error)
+            .await.map_err(crate::async_storage::object_error)
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -895,7 +878,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         match self.read_accounted(object_id, maximum_bytes, &mut accounting).await {
             Ok((value, _custody)) => Ok(ObjectReceipt { value, work: accounting.spent() }),
-            Err(error) => Err(OperationFailure::new(read_accounting_error(error), accounting.spent())),
+            Err(error) => Err(OperationFailure::new(crate::async_storage::object_error(error), accounting.spent())),
         }
     }
 
@@ -909,7 +892,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
     ) -> Result<crate::storage::ObjectRead, ObjectStoreError> {
         let mut accounting = KernelAccounting::native(work, cancellation);
         let (read, _custody) = self.read_accounted(object_id, maximum_bytes, &mut accounting)
-            .await.map_err(read_accounting_error)?;
+            .await.map_err(crate::async_storage::object_error)?;
         match read.retention {
             ObjectReadRetention::Shared => Ok(read),
             ObjectReadRetention::Owned { .. } => crate::async_storage::owned_read(read, work),
@@ -925,7 +908,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         let mut accounting = KernelAccounting::standalone(budget, cancellation);
         match self.read_many_accounted(requests, &mut accounting).await {
             Ok((value, _custody)) => Ok(ObjectReceipt { value, work: accounting.spent() }),
-            Err(error) => Err(OperationFailure::new(read_accounting_error(error), accounting.spent())),
+            Err(error) => Err(OperationFailure::new(crate::async_storage::object_error(error), accounting.spent())),
         }
     }
 
@@ -938,7 +921,7 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
     ) -> Result<(Vec<crate::storage::ObjectRead>, crate::materializer::NativeAllocation), ObjectStoreError> {
         let mut accounting = KernelAccounting::native(work, cancellation);
         let (reads, custody) = self.read_many_accounted(requests, &mut accounting)
-            .await.map_err(read_accounting_error)?;
+            .await.map_err(crate::async_storage::object_error)?;
         match custody {
             KernelOwnedAllocation::NativeOriginal(custody) =>
                 crate::async_storage::native_read_batch(reads, custody),
@@ -957,18 +940,6 @@ impl<P: ObjectsProvider> AsyncObjectStore for LogicalObjectStore<P> {
         }
     }
 
-}
-
-fn read_accounting_error(error: crate::FsError) -> ObjectStoreError {
-    match error {
-        crate::FsError::Object(error) => error,
-        crate::FsError::Work(error) => ObjectStoreError::Work(error),
-        crate::FsError::Cancelled(_) => ObjectStoreError::Cancelled,
-        #[cfg(not(target_arch = "wasm32"))]
-        crate::FsError::NativeKernel(error) => ObjectStoreError::Native(error),
-        crate::FsError::HandleAllocationFailed => ObjectStoreError::SdkAllocationFailed,
-        _ => ObjectStoreError::Corrupt,
-    }
 }
 
 fn release_read_custody(

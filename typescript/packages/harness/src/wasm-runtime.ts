@@ -26,9 +26,7 @@ export const REQUIRED_HARNESS_WASM_EXPORTS = [
   "encodeCanonicalJson", "digestCanonicalJson",
 ] as const satisfies readonly (keyof typeof import("../generated/wasm/acyclic_harness_wasm.js"))[];
 
-// `initWasm()` resolves to the raw instance exports. The generated JS module
-// exposes WasmContentStore as a wrapper class, but its methods call these ABI
-// symbols on the raw instance.
+// Check raw WASM symbols used by generated wrapper methods.
 const REQUIRED_WASM_CONTENT_EXPORTS = [
   "__wbg_wasmcontentstore_free", "wasmcontentstore_generation",
   "wasmcontentstore_has", "wasmcontentstore_list", "wasmcontentstore_new",

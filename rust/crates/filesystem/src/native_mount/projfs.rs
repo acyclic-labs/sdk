@@ -8,7 +8,7 @@
 
 use super::provider_stack;
 use super::{
-    DIRECTORY_PAGE_SIZE, DriverStartFailure, MountContentPin, MountFilesystem, MountLookup,
+    DIRECTORY_PAGE_SIZE, MountContentPin, MountFilesystem, MountLookup,
     MountNode, MountNodeKind, MountPath, MountSourceError, NativeMountError, NativeMountRequest,
     ViewObserver, ViewOrigin, ViewStamp,
 };
@@ -2947,7 +2947,7 @@ impl<'a> ProjectedNativeWriter<'a> {
         drop(loan);
         drop(capability);
         if let Err(error) = owner.identify(work) {
-            let _ = cleanup.attempt_recorded(|| drop(writer_file));
+            let _ = cleanup.attempt(|| drop(writer_file));
             return Err(error);
         }
         // SAFETY: the existing raw native creator set asynchronous I/O and this transfer is the handle's sole positional I/O owner.
@@ -2959,7 +2959,7 @@ impl<'a> ProjectedNativeWriter<'a> {
             Ok(file) => file,
             Err((error, returned_file)) => {
                 // A denied import returns its actual original descriptor.
-                let _ = cleanup.attempt_recorded(|| drop(returned_file));
+                let _ = cleanup.attempt(|| drop(returned_file));
                 return Err(detach_work_error(work.runtime_error(error)));
             }
         };
@@ -2974,7 +2974,7 @@ impl<'a> ProjectedNativeWriter<'a> {
         let Some(file) = self.file.take() else { return Ok(()); };
         let cleanup = self.cleanup.take().expect("created writer has cleanup custody");
         let allocation = file.logical_owned_bytes();
-        let recorded = cleanup.attempt_recorded(|| drop(file)).1;
+        let recorded = cleanup.attempt(|| drop(file)).1;
         self.work.runtime_meter().release(allocation);
         recorded.map_err(detach_work_error)
     }
@@ -3046,7 +3046,7 @@ impl Drop for ProjectionParentDescriptor {
     fn drop(&mut self) {
         if let Some(file) = self.file.take() {
             let close = self.close.take().expect("parent duplicate close reserved before duplication");
-            let _ = close.attempt_recorded(|| drop(file));
+            let _ = close.attempt(|| drop(file));
         }
     }
 }
@@ -3788,7 +3788,7 @@ impl ProjFsSession {
         request: &NativeMountRequest, source: Arc<dyn MountFilesystem>,
         work: &crate::NativeMaterializationWork, out: &mut Option<Self>,
         retirement: &mut Option<super::NativeMountRetirement>, prepare: F,
-    ) -> Result<(), DriverStartFailure>
+    ) -> Result<(), NativeMountError>
     where F: FnOnce(&mut super::NativeMountRetirement) -> Result<(), NativeMountError> {
         if out.is_some() {
             return Err(NativeMountError::Lifecycle("startup already retains a ProjFS driver").into());
@@ -3991,7 +3991,7 @@ impl ProjFsSession {
         let physical = session.take_physical_owner();
         lock_recover(&ingress.state).owner = Some(physical);
         ingress.wake.notify_all();
-        entered.map_err(DriverStartFailure::from)
+        entered
     }
 
     pub(super) fn stop(

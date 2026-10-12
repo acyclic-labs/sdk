@@ -264,12 +264,12 @@ fn attribute_name(value: &str) -> Result<AttributeName, Box<dyn std::error::Erro
     )?)
 }
 
-#[test]
-fn minimal_generation_has_a_complete_authenticated_closure()
+#[tokio::test]
+async fn minimal_generation_has_a_complete_authenticated_closure()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, _, _) = minimal_generation(&store, None)?;
-    let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED)?;
+    let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     assert_eq!(proof.file_count, 1);
     assert_eq!(proof.logical_file_bytes, 0);
     assert_eq!(proof.object_count, 4);
@@ -277,19 +277,19 @@ fn minimal_generation_has_a_complete_authenticated_closure()
     Ok(())
 }
 
-#[test]
-fn authenticated_generation_counts_sparse_logical_bytes() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn authenticated_generation_counts_sparse_logical_bytes() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
     let generation = generation_with_regular_extent(&store, ExtentKind::Hole, 4096)?;
-    let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED)?;
+    let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     assert_eq!(proof.file_count, 2);
     assert_eq!(proof.logical_file_bytes, 4096);
     Ok(())
 }
 
-#[test]
-fn authenticated_generation_counts_hardlinked_inline_file_once()
+#[tokio::test]
+async fn authenticated_generation_counts_hardlinked_inline_file_once()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let metadata_id = put(
@@ -329,13 +329,13 @@ fn authenticated_generation_counts_hardlinked_inline_file_once()
             },
         ],
     )?;
-    let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED)?;
+    let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     assert_eq!(proof.logical_file_bytes, 5);
     Ok(())
 }
 
-#[test]
-fn metadata_attributes_and_internal_blobs_are_fully_authenticated()
+#[tokio::test]
+async fn metadata_attributes_and_internal_blobs_are_fully_authenticated()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let value = internal_blob(&store)?;
@@ -391,7 +391,7 @@ fn metadata_attributes_and_internal_blobs_are_fully_authenticated()
         root_id,
         vec![directory_record(root_id, 1, metadata_id, tree)],
     )?;
-    let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED)?;
+    let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     assert_eq!(proof.file_count, 1);
     assert!(proof.object_count >= 12);
     assert_eq!(
@@ -412,7 +412,7 @@ fn metadata_attributes_and_internal_blobs_are_fully_authenticated()
         },
     )?;
     let cancellation = CancellationToken::new();
-    let cached_proof = async_storage::poll_ready(prove_generation_closure_async(
+    let cached_proof = async_storage::poll_ready(prove_generation_closure(
         &cached,
         generation,
         limits(),
@@ -421,7 +421,7 @@ fn metadata_attributes_and_internal_blobs_are_fully_authenticated()
     ))
     .ok_or("cache-backed closure proof suspended")??;
     assert_eq!(cached_proof.objects, proof.objects);
-    let warm = async_storage::poll_ready(prove_generation_closure_async(
+    let warm = async_storage::poll_ready(prove_generation_closure(
         &cached,
         generation,
         limits(),
@@ -457,7 +457,7 @@ fn cached_closure_proves_sparse_extent_and_blob_without_duplicate_backend_reads(
         },
     )?;
     let cancellation = CancellationToken::new();
-    let cold = async_storage::poll_ready(prove_generation_closure_async(
+    let cold = async_storage::poll_ready(prove_generation_closure(
         &cached,
         generation,
         limits(),
@@ -467,7 +467,7 @@ fn cached_closure_proves_sparse_extent_and_blob_without_duplicate_backend_reads(
     .ok_or("cache-backed sparse closure proof suspended")??;
     assert_eq!(cold.file_count, 2);
     assert!(cold.work.backend_read_operations > 0);
-    let warm = async_storage::poll_ready(prove_generation_closure_async(
+    let warm = async_storage::poll_ready(prove_generation_closure(
         &cached,
         generation,
         limits(),
@@ -481,8 +481,8 @@ fn cached_closure_proves_sparse_extent_and_blob_without_duplicate_backend_reads(
     Ok(())
 }
 
-#[test]
-fn attribute_value_length_mismatch_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn attribute_value_length_mismatch_fails_closed() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let value = blob_with_bytes(&store, b"data")?;
     let attributes = put(
@@ -513,7 +513,7 @@ fn attribute_value_length_mismatch_fails_closed() -> Result<(), Box<dyn std::err
         vec![directory_record(root_id, 1, metadata_id, tree)],
     )?;
     assert!(matches!(
-        prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED),
+        prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await,
         Err(OperationFailure {
             error: ClosureError::BlobLengthMismatch,
             ..
@@ -522,8 +522,8 @@ fn attribute_value_length_mismatch_fails_closed() -> Result<(), Box<dyn std::err
     Ok(())
 }
 
-#[test]
-fn symbolic_link_and_reparse_payloads_are_fully_proved_and_length_fenced()
+#[tokio::test]
+async fn symbolic_link_and_reparse_payloads_are_fully_proved_and_length_fenced()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let metadata_id = put(
@@ -579,7 +579,7 @@ fn symbolic_link_and_reparse_payloads_are_fully_proved_and_length_fenced()
     let generation = generation_with_records(&store, root_id, records(4, 4))?;
     let mut windows = limits();
     windows.profile = FilesystemProfile::Windows;
-    let proof = prove_generation_closure(&store, generation, windows, WorkBudget::UNBOUNDED)?;
+    let proof = prove_generation_closure(&store, generation, windows, WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     assert_eq!(proof.file_count, 3);
     assert_eq!(
         proof
@@ -591,21 +591,21 @@ fn symbolic_link_and_reparse_payloads_are_fully_proved_and_length_fenced()
     );
 
     let mismatch = generation_with_records(&store, root_id, records(5, 4))?;
-    let failure = prove_generation_closure(&store, mismatch, windows, WorkBudget::UNBOUNDED)
+    let failure = prove_generation_closure(&store, mismatch, windows, WorkBudget::UNBOUNDED, &CancellationToken::new()).await
         .err()
         .ok_or("wrong-length symbolic link closure succeeded")?;
     assert!(matches!(failure.error, ClosureError::BlobLengthMismatch));
 
     let mismatch = generation_with_records(&store, root_id, records(4, 5))?;
-    let failure = prove_generation_closure(&store, mismatch, windows, WorkBudget::UNBOUNDED)
+    let failure = prove_generation_closure(&store, mismatch, windows, WorkBudget::UNBOUNDED, &CancellationToken::new()).await
         .err()
         .ok_or("wrong-length reparse-point closure succeeded")?;
     assert!(matches!(failure.error, ClosureError::BlobLengthMismatch));
     Ok(())
 }
 
-#[test]
-fn blob_page_aliases_cannot_enter_a_generation_closure() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn blob_page_aliases_cannot_enter_a_generation_closure() -> Result<(), Box<dyn std::error::Error>> {
     let blob_store = MemoryObjectStore::default();
     let chunk = put(&blob_store, ObjectKind::BlobChunk, b"ab".to_vec())?;
     let leaf = put(
@@ -660,7 +660,7 @@ fn blob_page_aliases_cannot_enter_a_generation_closure() -> Result<(), Box<dyn s
         vec![directory_record(root_id, 1, metadata_id, empty_tree)],
     )?;
     assert!(matches!(
-        prove_generation_closure(&blob_store, generation, limits(), WorkBudget::UNBOUNDED,),
+        prove_generation_closure(&blob_store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await,
         Err(OperationFailure {
             error: ClosureError::RoutingAlias,
             ..
@@ -669,8 +669,8 @@ fn blob_page_aliases_cannot_enter_a_generation_closure() -> Result<(), Box<dyn s
     Ok(())
 }
 
-#[test]
-fn attribute_page_aliases_cannot_enter_a_generation_closure()
+#[tokio::test]
+async fn attribute_page_aliases_cannot_enter_a_generation_closure()
 -> Result<(), Box<dyn std::error::Error>> {
     let attribute_store = MemoryObjectStore::default();
     let value = blob_with_bytes(&attribute_store, b"x")?;
@@ -721,7 +721,8 @@ fn attribute_page_aliases_cannot_enter_a_generation_closure()
             generation,
             limits(),
             WorkBudget::UNBOUNDED,
-        ),
+            &CancellationToken::new(),
+        ).await,
         Err(OperationFailure {
             error: ClosureError::RoutingAlias,
             ..
@@ -730,8 +731,8 @@ fn attribute_page_aliases_cannot_enter_a_generation_closure()
     Ok(())
 }
 
-#[test]
-fn file_table_page_aliases_cannot_enter_a_generation_closure()
+#[tokio::test]
+async fn file_table_page_aliases_cannot_enter_a_generation_closure()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let metadata_id = put(
@@ -766,7 +767,7 @@ fn file_table_page_aliases_cannot_enter_a_generation_closure()
     )?;
     let generation = minimal_generation(&store, Some(table))?.0;
     assert!(matches!(
-        prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED),
+        prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await,
         Err(OperationFailure {
             error: ClosureError::RoutingAlias,
             ..
@@ -775,8 +776,8 @@ fn file_table_page_aliases_cannot_enter_a_generation_closure()
     Ok(())
 }
 
-#[test]
-fn directory_page_aliases_cannot_enter_a_generation_closure()
+#[tokio::test]
+async fn directory_page_aliases_cannot_enter_a_generation_closure()
 -> Result<(), Box<dyn std::error::Error>> {
     let tree_store = MemoryObjectStore::default();
     let metadata_id = put(
@@ -824,7 +825,7 @@ fn directory_page_aliases_cannot_enter_a_generation_closure()
         ],
     )?;
     assert!(matches!(
-        prove_generation_closure(&tree_store, generation, limits(), WorkBudget::UNBOUNDED),
+        prove_generation_closure(&tree_store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await,
         Err(OperationFailure {
             error: ClosureError::RoutingAlias,
             ..
@@ -833,8 +834,8 @@ fn directory_page_aliases_cannot_enter_a_generation_closure()
     Ok(())
 }
 
-#[test]
-fn extent_page_aliases_cannot_enter_a_generation_closure() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn extent_page_aliases_cannot_enter_a_generation_closure() -> Result<(), Box<dyn std::error::Error>>
 {
     let extent_store = MemoryObjectStore::default();
     let metadata_id = put(
@@ -896,7 +897,7 @@ fn extent_page_aliases_cannot_enter_a_generation_closure() -> Result<(), Box<dyn
         ],
     )?;
     assert!(matches!(
-        prove_generation_closure(&extent_store, generation, limits(), WorkBudget::UNBOUNDED,),
+        prove_generation_closure(&extent_store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await,
         Err(OperationFailure {
             error: ClosureError::RoutingAlias,
             ..
@@ -905,8 +906,8 @@ fn extent_page_aliases_cannot_enter_a_generation_closure() -> Result<(), Box<dyn
     Ok(())
 }
 
-#[test]
-fn internal_namespace_file_table_and_extent_pages_prove_without_scanning_unrelated_data()
+#[tokio::test]
+async fn internal_namespace_file_table_and_extent_pages_prove_without_scanning_unrelated_data()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let metadata_id = put(
@@ -1038,18 +1039,18 @@ fn internal_namespace_file_table_and_extent_pages_prove_without_scanning_unrelat
             required_features: 0,
         }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
-    let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED)?;
+    let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     assert_eq!(proof.file_count, 3);
     assert!(proof.work.page_reads >= 8);
     Ok(())
 }
 
-#[test]
-fn closure_limits_and_typed_root_are_enforced_at_the_exact_boundary()
+#[tokio::test]
+async fn closure_limits_and_typed_root_are_enforced_at_the_exact_boundary()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, _, metadata) = minimal_generation(&store, None)?;
-    let wrong_kind = prove_generation_closure(&store, metadata, limits(), WorkBudget::UNBOUNDED)
+    let wrong_kind = prove_generation_closure(&store, metadata, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await
         .err()
         .ok_or("metadata object was admitted as a generation")?;
     assert!(matches!(wrong_kind.error, ClosureError::WrongObjectKind));
@@ -1058,7 +1059,7 @@ fn closure_limits_and_typed_root_are_enforced_at_the_exact_boundary()
     let mut object_limited = limits();
     object_limited.maximum_objects = 0;
     let too_many_objects =
-        prove_generation_closure(&store, generation, object_limited, WorkBudget::UNBOUNDED)
+        prove_generation_closure(&store, generation, object_limited, WorkBudget::UNBOUNDED, &CancellationToken::new()).await
             .err()
             .ok_or("zero-object closure limit succeeded")?;
     assert!(matches!(
@@ -1073,7 +1074,7 @@ fn closure_limits_and_typed_root_are_enforced_at_the_exact_boundary()
     let mut byte_limited = limits();
     byte_limited.maximum_object_bytes = 0;
     let too_many_bytes =
-        prove_generation_closure(&store, generation, byte_limited, WorkBudget::UNBOUNDED)
+        prove_generation_closure(&store, generation, byte_limited, WorkBudget::UNBOUNDED, &CancellationToken::new()).await
             .err()
             .ok_or("zero-byte closure limit succeeded")?;
     assert!(matches!(
@@ -1085,7 +1086,7 @@ fn closure_limits_and_typed_root_are_enforced_at_the_exact_boundary()
     let mut file_limited = limits();
     file_limited.maximum_files = 0;
     let too_many_files =
-        prove_generation_closure(&store, generation, file_limited, WorkBudget::UNBOUNDED)
+        prove_generation_closure(&store, generation, file_limited, WorkBudget::UNBOUNDED, &CancellationToken::new()).await
             .err()
             .ok_or("zero-file closure limit succeeded")?;
     assert!(matches!(
@@ -1099,8 +1100,8 @@ fn closure_limits_and_typed_root_are_enforced_at_the_exact_boundary()
     Ok(())
 }
 
-#[test]
-fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identities()
+#[tokio::test]
+async fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identities()
 -> Result<(), Box<dyn std::error::Error>> {
     let root_file_id = FileId::from_bytes([1; 16]);
     let child_file_id = FileId::from_bytes([2; 16]);
@@ -1135,7 +1136,8 @@ fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identities()
             missing_root,
             limits(),
             WorkBudget::UNBOUNDED,
-        ),
+            &CancellationToken::new(),
+        ).await,
         Err(OperationFailure {
             error: ClosureError::MissingRootFile,
             ..
@@ -1165,7 +1167,8 @@ fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identities()
             non_directory,
             limits(),
             WorkBudget::UNBOUNDED,
-        ),
+            &CancellationToken::new(),
+        ).await,
         Err(OperationFailure {
             error: ClosureError::RootIsNotDirectory,
             ..
@@ -1207,7 +1210,8 @@ fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identities()
             absent_child,
             limits(),
             WorkBudget::UNBOUNDED,
-        ),
+            &CancellationToken::new(),
+        ).await,
         Err(OperationFailure {
             error: ClosureError::MissingFileRecord(actual),
             ..
@@ -1257,7 +1261,8 @@ fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identities()
             mismatched,
             limits(),
             WorkBudget::UNBOUNDED,
-        ),
+            &CancellationToken::new(),
+        ).await,
         Err(OperationFailure {
             error: ClosureError::NamespaceKindMismatch(actual),
             ..
@@ -1266,8 +1271,8 @@ fn namespace_proof_rejects_missing_mismatched_and_multiply_linked_identities()
     Ok(())
 }
 
-#[test]
-fn closure_rejects_kinds_outside_the_declared_volume_profile()
+#[tokio::test]
+async fn closure_rejects_kinds_outside_the_declared_volume_profile()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let metadata = put(
@@ -1317,7 +1322,7 @@ fn closure_rejects_kinds_outside_the_declared_volume_profile()
             required_features: 0,
         }, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
-    let failure = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED)
+    let failure = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await
         .err()
         .ok_or("portable FIFO closure unexpectedly proved")?;
     assert!(matches!(
@@ -1327,8 +1332,8 @@ fn closure_rejects_kinds_outside_the_declared_volume_profile()
     Ok(())
 }
 
-#[test]
-fn extent_closure_rejects_missing_out_of_bounds_and_unavailable_storage()
+#[tokio::test]
+async fn extent_closure_rejects_missing_out_of_bounds_and_unavailable_storage()
 -> Result<(), Box<dyn std::error::Error>> {
     let missing_store = MemoryObjectStore::default();
     let missing_blob = ObjectId {
@@ -1348,7 +1353,8 @@ fn extent_closure_rejects_missing_out_of_bounds_and_unavailable_storage()
         missing_generation,
         limits(),
         WorkBudget::UNBOUNDED,
-    )
+        &CancellationToken::new(),
+    ).await
     .err()
     .ok_or("missing extent blob unexpectedly proved")?;
     assert!(matches!(
@@ -1373,7 +1379,8 @@ fn extent_closure_rejects_missing_out_of_bounds_and_unavailable_storage()
             outside_generation,
             limits(),
             WorkBudget::UNBOUNDED,
-        ),
+            &CancellationToken::new(),
+        ).await,
         Err(OperationFailure {
             error: ClosureError::BlobSpanOutsideObject,
             ..
@@ -1391,7 +1398,8 @@ fn extent_closure_rejects_missing_out_of_bounds_and_unavailable_storage()
                 sparse_generation,
                 dense_limits,
                 WorkBudget::UNBOUNDED,
-            ),
+                &CancellationToken::new(),
+            ).await,
             Err(OperationFailure {
                 error: ClosureError::UnsupportedVolumeSemantics,
                 ..
@@ -1402,25 +1410,13 @@ fn extent_closure_rejects_missing_out_of_bounds_and_unavailable_storage()
 }
 
 #[test]
-fn async_and_sync_closure_proofs_are_identical_and_cancellable()
+fn pre_cancelled_closure_does_no_work()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let (generation, _, _) = minimal_generation(&store, None)?;
-    let synchronous =
-        prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED)?;
-    let asynchronous = async_storage::poll_ready(prove_generation_closure_async(
-        &store,
-        generation,
-        limits(),
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ))
-    .ok_or("memory-backed asynchronous closure unexpectedly blocked")??;
-    assert_eq!(asynchronous, synchronous);
-
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let failure = async_storage::poll_ready(prove_generation_closure_async(
+    let failure = async_storage::poll_ready(prove_generation_closure(
         &store,
         generation,
         limits(),
@@ -1443,7 +1439,7 @@ fn owned_generation_closure_reads_release_all_retained_backend_bytes()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = OwnedReadObjectStore::default();
     let (generation, _, _) = minimal_generation(&store.inner, None)?;
-    let proof = async_storage::poll_ready(prove_generation_closure_async(
+    let proof = async_storage::poll_ready(prove_generation_closure(
         &store,
         generation,
         limits(),
@@ -1458,8 +1454,8 @@ fn owned_generation_closure_reads_release_all_retained_backend_bytes()
     Ok(())
 }
 
-#[test]
-fn forged_file_table_lower_bound_fails_before_publication() -> Result<(), Box<dyn std::error::Error>>
+#[tokio::test]
+async fn forged_file_table_lower_bound_fails_before_publication() -> Result<(), Box<dyn std::error::Error>>
 {
     let store = MemoryObjectStore::default();
     let metadata_id = put(
@@ -1493,7 +1489,7 @@ fn forged_file_table_lower_bound_fails_before_publication() -> Result<(), Box<dy
     )?;
     let (generation, _, _) = minimal_generation(&store, Some(forged))?;
     assert!(matches!(
-        prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED),
+        prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await,
         Err(OperationFailure {
             error: ClosureError::RoutingBoundsMismatch,
             ..
@@ -1502,8 +1498,8 @@ fn forged_file_table_lower_bound_fails_before_publication() -> Result<(), Box<dy
     Ok(())
 }
 
-#[test]
-fn missing_metadata_preserves_backend_failure_work() -> Result<(), Box<dyn std::error::Error>> {
+#[tokio::test]
+async fn missing_metadata_preserves_backend_failure_work() -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let missing = ObjectId {
         kind: ObjectKind::Metadata,
@@ -1526,7 +1522,7 @@ fn missing_metadata_preserves_backend_failure_work() -> Result<(), Box<dyn std::
             }]), 8, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?,
     )?;
     let (generation, _, _) = minimal_generation(&store, Some(table))?;
-    let failure = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED)
+    let failure = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await
         .err()
         .ok_or("missing metadata unexpectedly proved")?;
     assert!(matches!(
@@ -1537,8 +1533,8 @@ fn missing_metadata_preserves_backend_failure_work() -> Result<(), Box<dyn std::
     Ok(())
 }
 
-#[test]
-fn shared_regular_data_and_metadata_are_authenticated_once()
+#[tokio::test]
+async fn shared_regular_data_and_metadata_are_authenticated_once()
 -> Result<(), Box<dyn std::error::Error>> {
     let store = MemoryObjectStore::default();
     let metadata_id = put(
@@ -1591,7 +1587,7 @@ fn shared_regular_data_and_metadata_are_authenticated_once()
         });
     }
     let generation = generation_with_records(&store, root_id, records.clone())?;
-    let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED)?;
+    let proof = prove_generation_closure(&store, generation, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await?;
     assert_eq!(proof.file_count, 3);
     assert_eq!(proof.object_count, 7);
     assert_eq!(proof.work.object_probes, 7);
@@ -1604,14 +1600,14 @@ fn shared_regular_data_and_metadata_are_authenticated_once()
     };
     let conflicting = generation_with_records(&store, root_id, records)?;
     assert!(matches!(
-        prove_generation_closure(&store, conflicting, limits(), WorkBudget::UNBOUNDED),
+        prove_generation_closure(&store, conflicting, limits(), WorkBudget::UNBOUNDED, &CancellationToken::new()).await,
         Err(failure) if matches!(failure.error, ClosureError::RoutingBoundsMismatch)
     ));
     Ok(())
 }
 
-#[test]
-fn namespace_proof_rejects_link_counts_directory_links_and_disconnected_cycles()
+#[tokio::test]
+async fn namespace_proof_rejects_link_counts_directory_links_and_disconnected_cycles()
 -> Result<(), Box<dyn std::error::Error>> {
     let root_id = FileId::from_bytes([1; 16]);
     let child_id = FileId::from_bytes([2; 16]);
@@ -1651,7 +1647,8 @@ fn namespace_proof_rejects_link_counts_directory_links_and_disconnected_cycles()
             mismatch,
             limits(),
             WorkBudget::UNBOUNDED,
-        ),
+            &CancellationToken::new(),
+        ).await,
         Err(OperationFailure {
             error: ClosureError::LinkCountMismatch(actual),
             ..
@@ -1699,7 +1696,8 @@ fn namespace_proof_rejects_link_counts_directory_links_and_disconnected_cycles()
             hard_link,
             limits(),
             WorkBudget::UNBOUNDED,
-        ),
+            &CancellationToken::new(),
+        ).await,
         Err(OperationFailure {
             error: ClosureError::DirectoryHardLink(actual),
             ..
@@ -1752,7 +1750,8 @@ fn namespace_proof_rejects_link_counts_directory_links_and_disconnected_cycles()
             disconnected,
             limits(),
             WorkBudget::UNBOUNDED,
-        ),
+            &CancellationToken::new(),
+        ).await,
         Err(OperationFailure {
             error: ClosureError::UnreachableFileRecords,
             ..
