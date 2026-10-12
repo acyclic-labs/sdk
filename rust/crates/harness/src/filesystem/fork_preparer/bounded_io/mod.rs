@@ -25,7 +25,7 @@ use records::{decode_allowance_error, decode_allowance_with_code};
 pub(in crate::filesystem) use sdk::publish_native;
 pub(in crate::filesystem) use sdk::{
     apply_generation, apply_generation_task_guarded, create, fork, generation, generation_ref,
-    open, operation_generation, publish_generation, read, resolve, retain,
+    mutation, open, operation_generation, publish_generation, read, resolve, retain,
 };
 
 /// Work and retained ownership for one preparation attempt.

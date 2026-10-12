@@ -243,7 +243,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
             );
             self.host
                 .filesystem
-                .create_workspace_with_operation::<_, (), WorkspaceError>(
+                .create_workspace_with_operation::<_, (), acyclic_fs::WorkspaceError>(
                     name,
                     acyclic_fs::VolumeConfig::portable(lifecycle),
                     operation,

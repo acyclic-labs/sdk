@@ -1090,7 +1090,7 @@ where
                         call_id,
                         name,
                         arguments,
-                        io.original_native_work().expect("native approval IO"),
+                        Some(io.original_native_work().expect("native approval IO")),
                     )?,
                     _ => crate::tool::ToolInvocation::for_model_call(
                         operation, step, call_id, name, arguments, None,

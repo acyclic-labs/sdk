@@ -428,7 +428,8 @@ where
         accept_receipt(receipt, accounting)
             .map(|generation| generation.map(|generation| generation.id()))
     }
-    pub(crate) async fn checkout(
+    /// Opens an accounted readonly checkout of the selected generation.
+    pub async fn checkout(
         &self,
         selector: crate::model::GenerationSelector,
         accounting: &mut crate::kernel::KernelAccounting<'_>,

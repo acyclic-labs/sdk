@@ -22,24 +22,6 @@ fn root_source_error(source: acyclic_fs::LazyWorkspaceError) -> Error {
         Error::Storage(source.to_string())
     }
 }
-#[cfg(not(target_arch = "wasm32"))]
-fn root_lazy_mutations(
-    mutations: &[crate::filesystem::WorkspaceMutation],
-) -> impl Iterator<Item = acyclic_fs::lazy_workspace::LazyWriteMutation<'_>> + Send {
-    mutations.iter().filter_map(|mutation| match mutation {
-        crate::filesystem::WorkspaceMutation::CreateDirectory { path } => {
-            Some(acyclic_fs::lazy_workspace::LazyWriteMutation::CreateDirectory { path })
-        }
-        crate::filesystem::WorkspaceMutation::PutFile { path, bytes } => {
-            Some(acyclic_fs::lazy_workspace::LazyWriteMutation::PutFile {
-                path,
-                bytes: bytes.clone(),
-            })
-        }
-        crate::filesystem::WorkspaceMutation::Remove { .. } => None,
-    })
-}
-
 pub(crate) trait RootLazyBacking<A, O>: acyclic_stream::ProviderPlatform {
     fn workspace_id(&self) -> acyclic_fs::WorkspaceId;
     #[cfg(not(target_arch = "wasm32"))]
@@ -170,17 +152,24 @@ where
         >,
     > {
         Box::pin(async move {
-            self.lazy
-                .list_directory_at_snapshot(
-                    snapshot,
-                    path,
-                    cursor,
-                    maximum,
-                    budget,
-                    cancellation,
-                    None,
-                )
-                .await
+            use acyclic_fs::facade::FsWork;
+            let mut accounting = budget.accounting(cancellation);
+            let result = async {
+                self.lazy.validate_snapshot(snapshot, &mut accounting)?;
+                let state = acyclic_fs::LazyWorkspaceState::new(
+                    snapshot.workspace_id, snapshot.source, snapshot.overlay, snapshot.shadows,
+                );
+                let mut checkout = self.lazy.checkout(
+                    acyclic_fs::model::GenerationSelector::Exact(snapshot.authored_generation),
+                    &mut accounting,
+                ).await?;
+                let result = self.lazy.list_directory_at(
+                    &state, &mut checkout.value, path, cursor, maximum, None, &mut accounting,
+                ).await;
+                checkout.retire(&mut accounting)?;
+                result.map(|(page, _, allocation)| { drop(allocation); page })
+            }.await;
+            budget.finish(result, &accounting)
                 .map_err(|failure| failure.map_error(root_source_error))
         })
     }
@@ -232,73 +221,83 @@ where
                 ))
             }
         };
-        if let Some(original) = io.original_native_work() {
-            return crate::NativeFutureBundle::new(original, || async move {
+        let publish = || async move {
+            use acyclic_fs::facade::FsWork;
+            use crate::filesystem::WorkspaceMutation;
+            io.verify_publication_lease(lease.as_ref()).await?;
+            let mut accounting = (&io).accounting(io.cancellation());
+            let result = self.lazy.validate_snapshot(snapshot, &mut accounting);
+            let (result, recorded) = (&io).finish(result, &accounting);
+            recorded?;
+            result.map_err(root_source_error)?;
+            let workspace = self.lazy.workspace();
+            let pinned = io.sdk(workspace.generation(snapshot.authored_generation, io, io.cancellation()).await)?;
+            let mut transaction = io.sdk(workspace.begin_pinned_transaction(&pinned, key, io, io.cancellation()).await)?;
+            for mutation in mutations {
+                io.verify_publication_lease(lease.as_ref()).await?;
+                let mut identity = None;
+                if let WorkspaceMutation::PutFile { path, .. } = mutation {
+                    if let Some((parent, _)) = path.rsplit_once('/') {
+                        let parent = if parent.is_empty() { "/" } else { parent };
+                        io.sdk(transaction.create_dir_all(parent, io, io.cancellation()).await)?;
+                    }
+                    let mut accounting = (&io).accounting(io.cancellation());
+                    let result = async {
+                        let (lookup, _, allocation) = self.lazy.lookup_at_snapshot(snapshot, path, &mut accounting).await?;
+                        if let Some(lookup) = lookup {
+                            let result = async {
+                                match &lookup {
+                                    acyclic_fs::LazyLookup::Source { node, .. } => {
+                                        identity = Some(self.lazy.source_file_id(&node.file_identity, &mut accounting)?);
+                                    }
+                                    _ => { self.lazy.apply_resolved_promotion(&mut transaction, path, &lookup, u64::MAX, &mut accounting).await?; }
+                                }
+                                Ok::<_, acyclic_fs::LazyWorkspaceError>(())
+                            }.await;
+                            self.lazy.retire_lookup((lookup, allocation), &mut accounting)?;
+                            result?;
+                        }
+                        Ok::<_, acyclic_fs::LazyWorkspaceError>(())
+                    }.await;
+                    let (result, recorded) = (&io).finish(result, &accounting);
+                    recorded?;
+                    result.map_err(root_source_error)?;
+                }
+                crate::filesystem::fork_preparer_io::mutation(&mut transaction, mutation, io).await?;
+                if let (WorkspaceMutation::PutFile { path, .. }, Some(identity)) = (mutation, identity) {
+                    io.sdk(transaction.preserve_file_identity(path, identity, io, io.cancellation()).await)?;
+                }
+            }
+            let commit = if let Some(original) = io.original_native_work() {
                 let lease = Arc::clone(lease);
-                let mut before_mutation = move |work: &acyclic_fs::NativeMaterializationWork| {
-                    let original = acyclic_fs::NativeMaterializationWork::clone(work);
+                let mut before = move |work: &acyclic_fs::NativeMaterializationWork| {
+                    let original = work.clone();
                     let lease = Arc::clone(&lease);
                     async move { lease.verify_with_native_work(&original)?.await }
                 };
-                let (commit, snapshot) = (async {
-                    let cancellation = io.cancellation();
-                    let accounting = acyclic_fs::lazy_workspace::LazyTreapWork::native_with_work(
-                        original,
-                        cancellation,
-                    )?;
-                    let mut guard = self
-                        .lazy
-                        .native_write_guard(&mut before_mutation, &accounting)?;
-                    self.lazy
-                        .write_at_snapshot(
-                            snapshot,
-                            root_lazy_mutations(mutations),
-                            key,
-                            permit,
-                            &accounting,
-                            &mut guard,
-                        )
-                        .await
-                })
-                .await?;
-                Ok((generation(commit)?, snapshot))
-            })
-            .map(crate::store::history::HistoryContentFuture::Native);
-        }
-        io.history_future(|| async move {
-            let allowance = io.remaining()?;
-            let mut before_mutation = |budget| async move {
-                let callback =
-                    crate::filesystem::PreparationIo::from_budget(budget, io.cancellation())
+                transaction.commit_with_native_work(None, permit, original, io.cancellation(), &mut before).await?
+            } else {
+                let before = |budget| async move {
+                    let callback = crate::filesystem::PreparationIo::from_budget(budget, io.cancellation())
                         .map_err(acyclic_fs::OperationFailure::before_work)?;
-                let verified = callback.verify_publication_lease(lease.as_ref()).await;
-                match verified {
-                    Ok(()) => Ok(acyclic_fs::OperationReceipt {
-                        value: (),
-                        work: callback.receipt(),
-                    }),
-                    Err(error) => Err(acyclic_fs::OperationFailure::new(error, callback.receipt())),
-                }
+                    let result = callback.verify_publication_lease(lease.as_ref()).await;
+                    result.map(|value| acyclic_fs::OperationReceipt { value, work: callback.receipt() })
+                        .map_err(|error| acyclic_fs::OperationFailure::new(error, callback.receipt()))
+                };
+                io.receive_content(transaction.commit(None, permit, io.remaining()?, io.cancellation(), before).await)?
             };
-            let accounting =
-                acyclic_fs::lazy_workspace::LazyTreapWork::new(allowance, io.cancellation());
-            let result = self
-                .lazy
-                .write_at_snapshot(
-                    snapshot,
-                    root_lazy_mutations(mutations),
-                    key,
-                    permit,
-                    &accounting,
-                    &mut before_mutation,
-                )
-                .await;
-            let (commit, snapshot) =
-                io.receive_content(accounting.measured(result, |error, spent| {
-                    acyclic_fs::OperationFailure::new(error, spent)
-                }))?;
-            Ok((generation(commit)?, snapshot))
-        })
+            let generation = generation(commit)?;
+            let updated = io.charge(WorkCounters {
+                bytes_hashed: acyclic_fs::lazy_workspace::LAZY_SNAPSHOT_DOMAIN.len() as u64 + 136,
+                ..WorkCounters::default()
+            }).map(|()| LazySnapshotRef::new(snapshot.workspace_id, generation.id(), snapshot.source, snapshot.overlay, snapshot.shadows));
+            Ok((generation, updated))
+        };
+        if let Some(original) = io.original_native_work() {
+            return crate::NativeFutureBundle::new(original, publish)
+                .map(crate::store::history::HistoryContentFuture::Native);
+        }
+        io.history_future(publish)
     }
 }
 

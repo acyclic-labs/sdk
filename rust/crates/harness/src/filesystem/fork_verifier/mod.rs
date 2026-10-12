@@ -470,7 +470,7 @@ where
                 Ok(reservation) => reservation,
                 Err((source, custody)) => {
                     let primary = Error::NativeWorkspace { source, custody };
-                    if let Ok(Some(reservation)) = guard.workspace.publication_reservation_with_native_work(
+                    if let Ok(Some(reservation)) = guard.workspace.publication_reservation(
                         operation, work, work.cancellation()).await
                     {
                         guard.reservation = Some(reservation);

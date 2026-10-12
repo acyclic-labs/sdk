@@ -244,8 +244,8 @@ pub(super) fn validate_task_dependencies(
         }
         task_requirements.insert(
             (
-                native_startup::text(&key.0, io)?,
-                native_startup::text(&key.1, io)?,
+                native_startup::text(&entry.identity().name, io)?,
+                native_startup::text(&entry.identity().version, io)?,
             ),
             requirements,
         );
