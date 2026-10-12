@@ -7492,7 +7492,7 @@ pub(crate) mod tests {
                 .tail().await?;
             workflow_host.step(
                 OperationId::from_bytes([58; 16]), IdempotencyKey::new("native-next-suspended-step")?,
-                serde_json::json!(0),
+                serde_json::json!(0), |_| Ok(())
             ).await?;
             assert!(matches!(
                 owner.release_quiescent_execution_with_native_work(
@@ -7857,7 +7857,7 @@ pub(crate) mod tests {
                 .step(
                     OperationId::from_bytes([85; 16]),
                     IdempotencyKey::new("owned-step")?,
-                    serde_json::json!(0),
+                    serde_json::json!(0), |_| Ok(())
                 )
                 .await?;
             let release_io = crate::filesystem::PreparationIo::from_budget(

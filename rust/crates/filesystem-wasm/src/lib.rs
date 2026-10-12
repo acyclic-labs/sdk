@@ -1241,15 +1241,30 @@ mod bindings {
         /// Creates every absent directory on one canonical path.
         #[wasm_bindgen(js_name = createDirAll)]
         pub async fn create_dir_all(&mut self, path: String) -> Result<(), JsValue> {
-            Box::pin(self.engine.create_dir_all(&path))
-                .await
-                .map_err(js_error)
+            Box::pin(self.engine.create_dir_all(
+                &path,
+                acyclic_fs::WorkBudget::UNBOUNDED,
+                &acyclic_fs::CancellationToken::new(),
+            ))
+            .await
+            .map(|receipt| receipt.value)
+            .map_err(|failure| failure.error)
+            .map_err(js_error)
         }
 
         /// Creates exactly one empty directory.
         #[wasm_bindgen(js_name = createDirectory)]
         pub async fn create_directory(&mut self, path: String) -> Result<(), JsValue> {
-            self.engine.create_directory(&path).await.map_err(js_error)
+            self.engine
+                .create_directory(
+                    &path,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
+                .map_err(js_error)
         }
 
         /// Creates one symbolic link with an opaque target.
@@ -1261,8 +1276,15 @@ mod bindings {
         ) -> Result<(), JsValue> {
             let target = bytes::Bytes::from(target);
             self.engine
-                .create_symbolic_link(&path, target)
+                .create_symbolic_link(
+                    &path,
+                    target,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
                 .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
                 .map_err(js_error)
         }
 
@@ -1305,8 +1327,15 @@ mod bindings {
             destination: String,
         ) -> Result<(), JsValue> {
             self.engine
-                .hard_link(&source, &destination)
+                .hard_link(
+                    &source,
+                    &destination,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
                 .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
                 .map_err(js_error)
         }
 
@@ -1320,8 +1349,16 @@ mod bindings {
         ) -> Result<(), JsValue> {
             let bytes = bytes::Bytes::from(bytes);
             self.engine
-                .write_range(&path, offset, bytes)
+                .write_range(
+                    &path,
+                    offset,
+                    bytes,
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
+                )
                 .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
                 .map_err(js_error)
         }
 

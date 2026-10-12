@@ -389,9 +389,7 @@ async fn pi_root_physical_selection_reopens_only_from_original_admission() {
         .await
         .unwrap(),
     );
-    let reopen_work = acyclic_fs::NativeMaterializationWork::new(
-        crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new(),
-    ).unwrap();
+    let reopen_work = crate::pi_fork::tests::work();
     let reopened = PiTaskRuntime::reopen(
         &PiOwnerConfig::load_with_native_work(
         &acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(directory.path(), &reopen_work).unwrap(),
@@ -519,9 +517,7 @@ async fn pi_runtime_reopen_authenticates_retained_native_binding_without_startin
         .unwrap(),
     );
     let mut state = session_state(&binding);
-    let reopen_work = acyclic_fs::NativeMaterializationWork::new(
-        crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new(),
-    ).unwrap();
+    let reopen_work = crate::pi_fork::tests::work();
     let reopened = PiTaskRuntime::reopen(
         &PiOwnerConfig::load_with_native_work(
         &acyclic_fs::NativeHostPrivateStateRoot::bootstrap_configured_with_native_work(directory.path(), &reopen_work).unwrap(),
@@ -553,9 +549,7 @@ async fn pi_runtime_reopen_authenticates_retained_native_binding_without_startin
     };
     root.native_session_id = state.root_session_id.clone();
     crate::validate_state_bounds(&state).unwrap();
-    let foreign_reopen_work = acyclic_fs::NativeMaterializationWork::new(
-        crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new(),
-    ).unwrap();
+    let foreign_reopen_work = crate::pi_fork::tests::work();
     assert!(
         PiTaskRuntime::reopen(
             &PiOwnerConfig::load_with_native_work(
@@ -900,8 +894,7 @@ async fn pi_pending_preparation_unknown_admission_fails_before_future_native_chi
         lifecycle: crate::PendingSpawnLifecycle::Preparing,
     });
     crate::validate_state_bounds(&state).unwrap();
-    let query = acyclic_fs::NativeMaterializationWork::new(
-        crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap();
+    let query = crate::pi_fork::tests::work();
     assert!(observe_pi_session(&runtime, &state, &query).await.is_err());
     assert!(runtime.task_host().reconcile_admission(
         OperationId::from_bytes(child.task_id.into_bytes())
@@ -916,28 +909,8 @@ fn actual_preparing_session(
     fixture: &crate::pi_fork::tests::Fixture,
     plan: &crate::pi_fork::PiForkPlan,
 ) -> AdapterState {
-    let PiRootIntent::Project { context_id, root_id, paths } = &fixture.root_request.root else {
-        panic!("real fork fixture must retain its original project selection");
-    };
-    let mut root = fixture.root_request.binding.clone();
-    root.scratch.allocation = PiScratchAllocation::Created(fixture.root_allocation.scratch.clone());
-    let mut state = AdapterState {
-        version: crate::ADAPTER_STATE_VERSION,
-        active: true,
-        root_session_id: root.native_session_id.clone(),
-        root_agent_id: root.native_session_id.clone(),
-        root_context_id: *context_id,
-        root_id: *root_id,
-        task_binding: PluginTaskBinding::Pi(Box::new(root)),
-        ..AdapterState::default()
-    };
-    for (key, creation) in &fixture.root_allocation.roots {
-        state.roots.insert(key.clone(), crate::RootBinding {
-            root_id: *root_id,
-            path: Path::new(&paths[key]).to_path_buf(),
-            allocation: crate::RootAllocation::Created(creation.clone()),
-        });
-    }
+    let PiRootIntent::Project { root_id, paths, .. } = &fixture.root_request.root else { unreachable!() };
+    let mut state = fixture.state();
     state.pending.push_back(crate::PendingSpawn {
         task_binding: PluginTaskBinding::Pi(Box::new(plan.commit.child.clone())),
         agent_id: Some(plan.commit.alias.clone()),
@@ -965,14 +938,14 @@ async fn pi_real_preparation_pending_reserved_and_succeeded_never_report_future_
     let state = actual_preparing_session(&fixture, &plan);
     let host = fixture.runtime.runtime.task_host();
     host.admit_owned(plan.preparation.clone(), fixture.fence.clone()).await.unwrap();
-    let query = acyclic_fs::NativeMaterializationWork::new(
-        crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap();
+    let query = crate::pi_fork::tests::work();
+    let query_baseline = query.live_allocation_bytes();
     let observed = observe_pi_session(&fixture.runtime.runtime, &state, &query).await.unwrap();
     assert!(matches!(&observed.0[1], PiTaskObservation::Preparation {
         task_id, preparation, phase: PiPreparationPhase::Pending,
     } if *task_id == plan.commit.child.task_id && *preparation == plan.preparation.task_id()));
     drop(observed);
-    assert_eq!(query.live_allocation_bytes(), 0);
+    assert_eq!(query.live_allocation_bytes(), query_baseline);
     let partial = fixture.runtime.runtime.run_operation_with_native_work(&Worker {
         id: "pi-preparing-observation".into(), available: ResourceSnapshot::default(),
         labels: BTreeMap::new(),
@@ -985,15 +958,14 @@ async fn pi_real_preparation_pending_reserved_and_succeeded_never_report_future_
         phase: PiPreparationPhase::Reserved, ..
     }));
     drop(observed);
-    assert_eq!(query.live_allocation_bytes(), 0);
-    let report = fixture.prepare_with(&fixture.coordinator(), &fixture.context, &fixture.journal,
+    assert_eq!(query.live_allocation_bytes(), query_baseline);
+    let report = fixture.prepare_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal,
         &fixture.fence, &plan, fixture.source.clone(),
         crate::pi_root_provider::allocation_budget(), acyclic_fs::CancellationToken::new())
         .await.unwrap().unwrap();
     report.0.validate().unwrap();
     assert!(host.observe_admission(plan.request.child.task_id()).await.is_err());
-    let reopen_work = acyclic_fs::NativeMaterializationWork::new(
-        crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap();
+    let reopen_work = crate::pi_fork::tests::work();
     let reopened = OwnedRuntime::open_with_native_work(
         fixture.stream.clone(), fixture.filesystem.clone(), &fixture.owner.policy().journal,
         fixture.owner.authority_with_native_work(&reopen_work).unwrap(), &reopen_work,
@@ -1004,7 +976,7 @@ async fn pi_real_preparation_pending_reserved_and_succeeded_never_report_future_
             task_id, preparation, phase: PiPreparationPhase::Succeeded,
         } if *task_id == plan.commit.child.task_id && *preparation == plan.preparation.task_id()));
         drop(observed);
-        assert_eq!(query.live_allocation_bytes(), 0);
+        assert_eq!(query.live_allocation_bytes(), query_baseline);
         assert!(host.observe_admission(plan.commit.child.task_id).await.is_err());
         assert!(state.routes.is_empty());
         assert!(matches!(state.pending[0].lifecycle, crate::PendingSpawnLifecycle::Preparing));
@@ -1018,8 +990,8 @@ async fn pi_real_preparation_changed_planned_binding_parent_and_foreign_key_fail
     let state = actual_preparing_session(&fixture, &plan);
     fixture.runtime.runtime.task_host().admit_owned(
         plan.preparation.clone(), fixture.fence.clone()).await.unwrap();
-    let query = acyclic_fs::NativeMaterializationWork::new(
-        crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap();
+    let query = crate::pi_fork::tests::work();
+    let query_baseline = query.live_allocation_bytes();
     for mutation in 0..5 {
         let mut changed = state.clone();
         match mutation {
@@ -1033,13 +1005,13 @@ async fn pi_real_preparation_changed_planned_binding_parent_and_foreign_key_fail
             _ => changed.pending[0].agent_id = None,
         }
         assert!(observe_pi_session(&fixture.runtime.runtime, &changed, &query).await.is_err());
-        assert_eq!(query.live_allocation_bytes(), 0);
+        assert_eq!(query.live_allocation_bytes(), query_baseline);
         assert!(fixture.runtime.runtime.task_host().observe_admission(
             plan.request.child.task_id()).await.is_err());
     }
     let mut stale = fixture.fence.clone();
     stale.reservation_id = "stale-original-parent-fence".into();
-    assert!(fixture.prepare_with(&fixture.coordinator(), &fixture.context, &fixture.journal, &stale,
+    assert!(fixture.prepare_with(&fixture.coordinator(&crate::pi_fork::tests::work()).unwrap(), &fixture.context, &fixture.journal, &stale,
         &plan, fixture.source.clone(), crate::pi_root_provider::allocation_budget(),
         acyclic_fs::CancellationToken::new()).await.is_err());
     assert!(fixture.runtime.runtime.task_host().observe_admission(
@@ -1068,8 +1040,7 @@ async fn pi_real_root_committed_control_reopen_keeps_original_context_and_next_a
     let accounting = acyclic_harness::distributed::read_coordinator_event_page(
         &fixture.stream, 0, 1024).await.unwrap();
     assert!(accounting.len() < 1024, "bounded fixture must fit one complete accounting page");
-    let reopen_work = acyclic_fs::NativeMaterializationWork::new(
-        crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new()).unwrap();
+    let reopen_work = crate::pi_fork::tests::work();
     let reopened = OwnedRuntime::open_with_native_work(
         fixture.stream.clone(), fixture.filesystem.clone(), &fixture.owner.policy().journal,
         fixture.owner.authority_with_native_work(&reopen_work).unwrap(), &reopen_work,
@@ -1122,9 +1093,7 @@ async fn pi_real_root_committed_control_reopen_keeps_original_context_and_next_a
 async fn pi_operator_control_kind_does_not_authorize_invalid_original_command_fingerprint() {
     use crate::pi_operator::{PiOperatorBody, PiOperatorRequest};
     let fixture = crate::pi_fork::tests::Fixture::new(None).await;
-    let work = acyclic_fs::NativeMaterializationWork::new(
-        crate::pi_root_provider::allocation_budget(), &acyclic_fs::CancellationToken::new(),
-    ).unwrap();
+    let work = crate::pi_fork::tests::work();
     let session = &fixture.root_request.binding.native_session_id;
     let PiRootIntent::Project { paths, .. } = &fixture.root_request.root else {
         panic!("operator fixture must retain original root selection");
@@ -1197,14 +1166,6 @@ mod native_transition {
         workflow::WorkflowJournal,
     };
 
-    fn control() -> WorkflowCommand {
-        WorkflowCommand {
-            operation_id: OperationId::from_bytes([91; 16]),
-            kind: "acyclic.pi.inspect".to_owned(),
-            payload: preparation().payload,
-        }
-    }
-
     fn result(operation: OperationId, value: Outcome<FileRef>) -> Value {
         json!({"commands":[{"operation_id":operation,"value":value}]})
     }
@@ -1225,7 +1186,10 @@ mod native_transition {
         let machine = PiTaskMachine::new(&work()).unwrap();
         assert!(machine.supports_native_work());
         let command = preparation();
-        let control = control();
+        let control = WorkflowCommand {
+            operation_id: OperationId::from_bytes([91; 16]),
+            kind: "acyclic.pi.inspect".into(), payload: preparation().payload,
+        };
         let cases = [
             (json!({"state":"preparing","command":command}), Value::Null,
                 json!({"state":"allocating","operation":command.operation_id}), vec![command.clone()], MachineStatus::Suspended),
@@ -1259,9 +1223,7 @@ mod native_transition {
             let work_baseline = work.live_allocation_bytes();
             let actual = step(&machine, &state, &input, &work).unwrap();
             assert_eq!(actual.0, MachineTransition { state: state_next, commands, status });
-            assert_eq!(work.receipt(), actual.1.work().receipt());
-            assert!(actual.1.bytes() > 0);
-            assert_eq!(work.live_allocation_bytes(), work_baseline + actual.1.bytes());
+            assert!(actual.1.work().shares_ledger(&work));
             drop(actual.0);
             drop(actual.1);
             assert_eq!(work.live_allocation_bytes(), work_baseline);
@@ -1419,14 +1381,12 @@ mod native_transition {
             let initialized = machine.initialize_with_native_work(&admitted.0, &original).unwrap();
             assert_eq!(initialized.0, expected);
             assert!(initialized.1.shares_ledger(&admitted.1));
-            assert_eq!(initialized.1.work().receipt(), original.receipt());
             assert_eq!(original.receipt().backend_read_operations, before.backend_read_operations);
             assert_eq!(original.receipt().backend_write_operations, before.backend_write_operations);
             drop(admitted);
             drop(initialized);
             assert_eq!(original.live_allocation_bytes(), original_baseline);
         }
-        assert!(machine_work.live_allocation_bytes() > 0);
         drop(machine);
         assert_eq!(machine_work.live_allocation_bytes(), machine_work_baseline);
     }

@@ -1,6 +1,6 @@
 use super::*;
 use crate::foundation::{Digest, FileId};
-use crate::kernel::tree_mutation::{TreeFormat, TreeMutation, TreeSemanticError};
+use crate::kernel::tree_mutation::{TreeFormat, TreeMutation, TreeMutationError};
 use crate::kernel::{FileKind, LogicalName, NameEncoding, TreeEntry};
 use crate::storage::ObjectKind;
 
@@ -113,7 +113,7 @@ fn pages_clone_without_changing_authenticated_frontiers() -> Result<(), Box<dyn 
 fn page_sizes(
     lengths: &[usize],
     limits: DecodeLimits,
-) -> Result<Vec<usize>, Error<TreeSemanticError>> {
+) -> Result<Vec<usize>, Error<TreeMutationError>> {
     let (mut chunks, examined) = PageChunks::new(lengths, limits, |length| Ok(*length))?;
     assert_eq!(examined, u64::try_from(lengths.len()).unwrap_or(u64::MAX));
     let mut sizes = Vec::new();
@@ -156,7 +156,7 @@ fn chunking_is_bounded_by_items_bytes_and_encoder_contracts()
     assert!(matches!(
         PageChunks::new(&[1_u8], limits, |_| Err(CanonicalDecodeError::Truncated))
             .map(|(chunks, _)| chunks.start),
-        Err(Error::<TreeSemanticError>::Decode(
+        Err(Error::<TreeMutationError>::Decode(
             CanonicalDecodeError::Truncated
         ))
     ));

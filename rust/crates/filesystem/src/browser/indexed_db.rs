@@ -525,9 +525,7 @@ impl IndexedDbAuthorityStore {
         }
         let copy_work = WorkCounters {
             bytes_copied: length,
-            // Conservatively admit JSON containers, strings and map nodes
-            // before parsing. An input byte can introduce at most one value;
-            // the retained control state and temporary copy fit this envelope.
+            // Admit a conservative envelope for JSON values, map nodes and the input copy.
             allocation_operations: length.saturating_add(1),
             peak_allocation_bytes: length.saturating_mul(128),
             items_examined: length,
