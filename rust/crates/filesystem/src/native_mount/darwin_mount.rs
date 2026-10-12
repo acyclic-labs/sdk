@@ -1758,8 +1758,7 @@ impl DarwinMountSession {
             materialization.record_admitted(read)?;
             cleanup
         };
-        let path = self.resources()?.startup.as_ref().expect("native inputs retained")
-            .destination.as_ref().expect("native destination retained");
+        let path = &self.resources()?.startup.as_ref().expect("native inputs retained").destination;
         let fd = unsafe { libc::open(path.as_ptr(), libc::O_RDONLY | libc::O_CLOEXEC) };
         if fd < 0 {
             let error = std::io::Error::last_os_error();
@@ -2696,7 +2695,7 @@ impl DirectUnmountPath {
     fn as_ptr(&self) -> *const c_char {
         match self {
             Self::Driver(resources) => resources.startup.as_ref().expect("retained native startup")
-                .destination.as_ref().expect("retained native destination").as_ptr(),
+                .destination.as_ptr(),
             Self::Recovery(path) => path.path.as_ptr(),
         }
     }
