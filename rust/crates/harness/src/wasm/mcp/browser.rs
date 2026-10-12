@@ -255,9 +255,11 @@ impl WasmMcpHttpTransport {
     ) -> std::result::Result<Vec<u8>, JsValue> {
         let page = self
             .0
-            .list_tools(
+            .rpc(
                 OperationId::parse(&operation).map_err(js_error)?,
-                cursor.as_deref(),
+                "tools/list",
+                cursor.as_deref().map_or_else(|| serde_json::json!({}), |cursor| serde_json::json!({"cursor":cursor})),
+                None,
             )
             .await
             .map_err(js_error)?;
@@ -273,9 +275,7 @@ impl WasmMcpHttpTransport {
     ) -> std::result::Result<Vec<u8>, JsValue> {
         let operation = OperationId::parse(&operation).map_err(js_error)?;
         let params = from_js(params)?;
-        crate::mcp::services::validate_params(&method, &params, None).map_err(js_error)?;
         let result = self.0.rpc(operation, &method, params, None).await.map_err(js_error)?;
-        let result = crate::mcp::services::validate_result(&method, result, None).map_err(js_error)?;
         serde_json::to_vec(&result).map_err(|error| JsValue::from_str(&error.to_string()))
     }
     /// Calls an already admitted operation.

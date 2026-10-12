@@ -134,7 +134,7 @@ impl Snapshot {
         maximum as u64
     };
     fn digest_with_work(&self, work: &mut Option<&mut dyn HistoryIo>) -> Result<[u8; 32]> {
-        crate::contract::canonical_json_digest_with_work(
+        crate::contract::canonical_json_digest(
             &(
                 self.format_version,
                 &self.authority,
@@ -226,7 +226,7 @@ impl Snapshot {
         }
         for (extension, expected) in &self.projection.bindings {
             let binding = schemas.pinned_binding(&extension.name, extension.version, None, work)?;
-            if crate::contract::canonical_json_digest_with_work(
+            if crate::contract::canonical_json_digest(
                 binding,
                 crate::store::default_projection_read_limits().maximum_bytes,
                 work,
@@ -469,7 +469,7 @@ impl Snapshot {
                         .expect("native decoder observer")
                         .take_native_custody(bytes)?;
                     quota.transfer();
-                    return Err(Error::NativeDecode {
+                    return Err(Error::NativeJson {
                         code: crate::wire::ErrorCode::Storage,
                         source,
                         custody: Some(custody),

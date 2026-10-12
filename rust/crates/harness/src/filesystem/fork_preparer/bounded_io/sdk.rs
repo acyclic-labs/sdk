@@ -6,28 +6,41 @@ use acyclic_fs::{Generation, GenerationId, TransactionCommit, Workspace};
 impl acyclic_fs::facade::FsWork for &PreparationIo {
     type Output<T, E> = (
         std::result::Result<T, E>,
-        std::result::Result<(), WorkspaceError>,
+        std::result::Result<(), acyclic_fs::FsError>,
     );
-    type OwnedOutput<T> = Self::Output<T, WorkspaceError>;
+    type OwnedOutput<T> = Self::Output<T, acyclic_fs::FsError>;
     fn finish_owned<T>(
         &self,
-        result: std::result::Result<(T, acyclic_fs::kernel::KernelOwnedAllocation), acyclic_fs::FsError>,
+        result: std::result::Result<
+            (T, acyclic_fs::kernel::KernelOwnedAllocation),
+            acyclic_fs::FsError,
+        >,
         accounting: &acyclic_fs::kernel::KernelAccounting<'_>,
     ) -> Self::OwnedOutput<T> {
         let result = result.and_then(|(value, allocation)| {
+            #[cfg(target_arch = "wasm32")]
+            let _ = allocation;
             #[cfg(not(target_arch = "wasm32"))]
-            if let acyclic_fs::kernel::KernelOwnedAllocation::NativeOriginal(mut incoming) = allocation {
+            if let acyclic_fs::kernel::KernelOwnedAllocation::NativeOriginal(mut allocation) =
+                allocation
+            {
                 let PreparationIo::Native { custody, .. } = self else {
                     drop(value);
-                    return Err(acyclic_fs::NativeTreeMaterializationError::InvalidLayout.into());
+                    return Err(acyclic_fs::FsError::NativeKernel(
+                        acyclic_fs::NativeTreeMaterializationError::InvalidLayout,
+                    ));
                 };
-                if let Err(cause) = custody.lock().unwrap_or_else(std::sync::PoisonError::into_inner).absorb(&mut incoming) {
+                if let Err(cause) = custody
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .absorb(&mut allocation)
+                {
                     drop(value);
                     return Err(cause.into());
                 }
             }
             Ok(value)
-        }).map_err(WorkspaceError::from);
+        });
         self.finish(result, accounting)
     }
     fn accounting<'a>(
@@ -63,7 +76,7 @@ impl acyclic_fs::facade::FsWork for &PreparationIo {
             KernelAccounting::NativeOriginal { .. } => return (result, Ok(())),
         };
         let recorded = self
-            .spent_workspace(work)
+            .spent(work)
             .and_then(|()| match (result.is_ok(), self) {
                 (true, PreparationIo::Owned { budget, .. }) => {
                     self.receipt().verify(*budget).map_err(Into::into)
@@ -75,15 +88,15 @@ impl acyclic_fs::facade::FsWork for &PreparationIo {
 }
 
 impl PreparationIo {
-    pub(crate) fn sdk<T>(
+    pub(crate) fn sdk<T, E: Into<Error>>(
         &self,
         (result, recorded): (
-            std::result::Result<T, WorkspaceError>,
-            std::result::Result<(), WorkspaceError>,
+            std::result::Result<T, E>,
+            std::result::Result<(), acyclic_fs::FsError>,
         ),
     ) -> Result<T> {
         recorded?;
-        result.map_err(Error::from)
+        result.map_err(Into::into)
     }
 }
 
@@ -196,14 +209,7 @@ pub(in crate::filesystem) async fn resolve<A: AsyncAuthorityStore, O: AsyncObjec
     let head = io.sdk(workspace.head(io, io.cancellation()).await)?;
     let copied = crate::executor::with_history_io(Some(io), |work| {
         let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
-        let source = reference.as_resource();
-        let provider = crate::core::copy_provider(source.provider(), &mut quota)?;
-        let key = crate::core::copy_copy_vector(source.key(), &mut quota)?;
-        let version = source
-            .version()
-            .map(|text| crate::core::copy_text(text, &mut quota))
-            .transpose()?;
-        let copied = ResourceRef::new(source.kind(), provider, key, version, quota.work())?;
+        let copied = crate::core::copy_resource(reference.as_resource(), &mut quota)?;
         let copied = WorkspaceRef::from_resource_with_work(copied, quota.work())?;
         quota.transfer();
         Ok::<_, Error>(copied)
@@ -256,13 +262,13 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
             reason: "native creation requires its original issued task guard",
         })?);
         guard
-            .verify_creation_with_native_work(io.original_native_work().unwrap())?
+            .verify(false, Some(io))?
             .await?;
         let mut before = acyclic_fs::NativeAuthorityGuard(
             move |work: &acyclic_fs::NativeMaterializationWork| {
                 let work = work.clone();
                 let guard = Arc::clone(&guard);
-                async move { guard.verify_creation_with_native_work(&work)?.await }
+                async move { guard.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(&work)?))?.await }
             },
         );
         let (result, recorded) = host
@@ -281,7 +287,7 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
         return Ok(());
     }
     if let Some(task) = preparation {
-        task.verify_creation().await?;
+        task.verify(false, io)?.await?;
     }
     if let Some(io) = io {
         io.sdk(
@@ -303,7 +309,7 @@ pub(in crate::filesystem) async fn create<A: AsyncAuthorityStore, O: AsyncObject
             .map_err(|failure| map_error(failure.error))?;
     }
     if let Some(task) = preparation {
-        task.verify_creation().await?;
+        task.verify(false, io)?.await?;
     }
     Ok(())
 }
@@ -330,7 +336,7 @@ pub(in crate::filesystem) async fn apply_generation_task_guarded<
         let mut before = move |work: &acyclic_fs::NativeMaterializationWork| {
             let work = work.clone();
             let guard = Arc::clone(&guard);
-            async move { guard.verify_creation_with_native_work(&work)?.await }
+            async move { guard.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(&work)?))?.await }
         };
         return publish_native(host, reference, expected, mutations, key, io, &mut before).await;
     }
@@ -343,7 +349,7 @@ pub(in crate::filesystem) async fn apply_generation_task_guarded<
         io,
         &mut |_| async move {
             let result = match preparation {
-                Some(task) => task.verify_creation().await,
+                Some(task) => task.verify(false, io).map_err(OperationFailure::before_work)?.await,
                 None => Ok(()),
             };
             result
@@ -402,17 +408,17 @@ fn committed<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     use TransactionCommit::*;
     match outcome {
         Committed(generation) | AlreadyCommitted(generation) => Ok(generation),
-        Conflict { .. } => Err(failure(
+        Conflict { .. } => Err(stock_boundary(
             Some(io),
             crate::wire::ErrorCode::Conflict,
             "workspace generation changed",
         )),
-        Fenced => Err(failure(
+        Fenced => Err(stock_boundary(
             Some(io),
             crate::wire::ErrorCode::Conflict,
             "workspace writer was fenced",
         )),
-        IdempotencyConflict => Err(failure(
+        IdempotencyConflict => Err(stock_boundary(
             Some(io),
             crate::wire::ErrorCode::Conflict,
             "filesystem idempotency key belongs to another mutation",
@@ -437,7 +443,7 @@ pub(in crate::filesystem) async fn mutation<A: AsyncAuthorityStore, O: AsyncObje
                 .write(path, bytes.clone(), io, io.cancellation())
                 .await,
         ),
-        WorkspaceMutation::Remove { .. } => Err(failure(
+        WorkspaceMutation::Remove { .. } => Err(stock_boundary(
             Some(io),
             crate::wire::ErrorCode::Unsupported,
             "bounded publication does not remove content",
@@ -563,16 +569,7 @@ pub(in crate::filesystem) async fn retain<A: AsyncAuthorityStore, O: AsyncObject
         ..Default::default()
     };
     if let Some(io) = io {
-        #[cfg(not(target_arch = "wasm32"))]
-        if let Some(work) = io.original_native_work() {
-            work.admit(encoding)?;
-        } else {
-            io.preflight_workspace(encoding)
-                .map_err(LazyError::WorkspaceCause)?;
-        }
-        #[cfg(target_arch = "wasm32")]
-        io.preflight_workspace(encoding)
-            .map_err(LazyError::WorkspaceCause)?;
+        io.preflight(encoding).map_err(LazyError::Filesystem)?;
     }
     let hex = blake3::Hash::from_bytes(generation.id().digest().into_bytes()).to_hex();
     let mut label = [0_u8; 83];
@@ -586,25 +583,13 @@ pub(in crate::filesystem) async fn retain<A: AsyncAuthorityStore, O: AsyncObject
             .map(|_| ())
             .map_err(|failure| LazyError::WorkspaceCause(failure.error));
     };
-    #[cfg(not(target_arch = "wasm32"))]
-    if let Some(work) = io.original_native_work() {
-        work.spent(encoding)?;
-    } else {
-        io.spent_workspace(encoding)
-            .map_err(LazyError::WorkspaceCause)?;
-        io.remaining_workspace()
-            .map_err(LazyError::WorkspaceCause)?;
-    }
-    #[cfg(target_arch = "wasm32")]
-    {
-        io.spent_workspace(encoding)
-            .map_err(LazyError::WorkspaceCause)?;
-        io.remaining_workspace()
-            .map_err(LazyError::WorkspaceCause)?;
-    }
+    io.spent(encoding).map_err(LazyError::Filesystem)?;
+    io.remaining().map_err(LazyError::Filesystem)?;
     let (result, recorded) = generation.pin(label, io, io.cancellation()).await;
-    recorded.map_err(LazyError::WorkspaceCause)?;
-    result.map(|_| ()).map_err(LazyError::WorkspaceCause)
+    match result {
+        Err(source) => Err(LazyError::WorkspaceCause(source)),
+        Ok(_) => recorded.map_err(LazyError::Filesystem),
+    }
 }
 
 pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectStore>(
@@ -616,24 +601,23 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
     paths: Option<Vec<String>>,
     key: &IdempotencyKey,
     io: Option<&PreparationIo>,
-    preparation: Option<&TaskResourcePreparation>,
-    #[cfg(not(target_arch = "wasm32"))] native_guard: Option<&Arc<TaskResourcePreparation>>,
+    preparation: Option<&Arc<TaskResourcePreparation>>,
 ) -> Result<WorkspaceObservation> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(work) = io.and_then(PreparationIo::original_native_work) {
-        native_guard
+        preparation
             .ok_or(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "task-bound native fork requires its original issued creation guard",
             })?
-            .verify_creation_with_native_work(work)?
+            .verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?
             .await?;
     } else if let Some(task) = preparation {
-        task.verify_creation().await?;
+        task.verify(false, io)?.await?;
     }
     #[cfg(target_arch = "wasm32")]
     if let Some(task) = preparation {
-        task.verify_creation().await?;
+        task.verify(false, io)?.await?;
     }
     grant.require(source, VolumeOperation::Read, io)?;
     let Some(io) = io else {
@@ -641,7 +625,7 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
             .fork_volume_pinned(source, selected, child, paths, key)
             .await?;
         if let Some(task) = preparation {
-            task.verify_creation().await?;
+            task.verify(false, io)?.await?;
         }
         return Ok(observed);
     };
@@ -665,32 +649,32 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
     let forked = 'forked: {
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.original_native_work() {
-            let guard = Arc::clone(native_guard.expect("native creation guard was verified"));
+            let guard = Arc::clone(preparation.expect("native creation guard was verified"));
             let mut before = move |work: &acyclic_fs::NativeMaterializationWork| {
                 let work = work.clone();
                 let guard = Arc::clone(&guard);
-                async move { guard.verify_creation_with_native_work(&work)?.await }
+                async move { guard.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(&work)?))?.await }
             };
             break 'forked workspace
-                .fork_with_native_work(
+                .fork::<_, _, crate::Error>(
                     &name,
                     options,
                     acyclic_fs::PublicationPermit::Unrestricted,
                     work,
                     io.cancellation(),
-                    &mut before,
+                    acyclic_fs::NativeAuthorityGuard(before.clone()),
                 )
                 .await?;
         }
         io.receive(
             workspace
-                .fork(
+                .fork::<_, _, acyclic_fs::WorkspaceError>(
                     &name,
                     options,
                     acyclic_fs::PublicationPermit::Unrestricted,
                     io.remaining()?,
                     io.cancellation(),
-                    |_| {
+                    &mut |_| {
                         std::future::ready(Ok(OperationReceipt {
                             value: (),
                             work: WorkCounters::default(),
@@ -708,7 +692,7 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
                 .await,
         )?
         .ok_or_else(|| {
-            failure(
+            stock_boundary(
                 Some(io),
                 crate::wire::ErrorCode::Storage,
                 "fork creation has no durable original generation",
@@ -722,7 +706,48 @@ pub(in crate::filesystem) async fn fork<A: AsyncAuthorityStore, O: AsyncObjectSt
     if io.original_native_work().is_none()
         && let Some(task) = preparation
     {
-        task.verify_creation().await?;
+        task.verify(false, Some(io))?.await?;
     }
     Ok(observed)
 }
+
+pub(in crate::filesystem) fn operation_key(
+    key: &IdempotencyKey,
+    io: Option<&PreparationIo>,
+) -> Result<acyclic_fs::IdempotencyKey> {
+    let hashed = WorkCounters {
+        bytes_hashed: key.as_str().len() as u64,
+        ..Default::default()
+    };
+    if let Some(io) = io {
+        io.preflight(hashed)?;
+    }
+    let key = crate::filesystem::filesystem_key(key);
+    if let Some(io) = io {
+        io.charge(hashed)?;
+    }
+    Ok(key)
+}
+pub(in crate::filesystem) fn content_workspace(
+    provider: &ProviderRef,
+    volume: &VolumeRef,
+    io: Option<&PreparationIo>,
+) -> Result<WorkspaceRef> {
+    let name = volume_storage_name(volume, io)?;
+    let provider = match io {
+        Some(io) => provider.clone_with_io(io)?,
+        None => provider.clone(),
+    };
+    WorkspaceRef::new(provider, name.into_bytes(), None)
+}
+pub(in crate::filesystem) fn volume_storage_name(
+    volume: &VolumeRef,
+    io: Option<&PreparationIo>,
+) -> Result<String> {
+    match io {
+        Some(io) => io.capability(volume, "harness-"),
+        None => volume.storage_name(&mut None),
+    }
+}
+
+use crate::executor::stock_boundary;

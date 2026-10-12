@@ -82,57 +82,6 @@ pub(super) fn reserve_slots<T>(
     )
     .map_err(Into::into)
 }
-pub(super) fn sort_records<T>(
-    values: &mut [T],
-    work: &crate::materializer::NativeMaterializationWork,
-    compare: impl Fn(&T, &T) -> std::cmp::Ordering,
-) -> Result<(), LocalCoreStateStoreError> {
-    for index in 1..values.len() {
-        let mut position = index;
-        while position != 0 {
-            work.charge(crate::WorkCounters {
-                items_examined: 1,
-                ..Default::default()
-            })?;
-            if !compare(&values[position - 1], &values[position]).is_gt() {
-                break;
-            }
-            work.charge(crate::WorkCounters {
-                bytes_copied: (3 * std::mem::size_of::<T>()) as u64,
-                ..Default::default()
-            })?;
-            values.swap(position - 1, position);
-            position -= 1;
-        }
-    }
-    Ok(())
-}
-
-pub(super) fn canonical_records<T>(
-    values: &mut Vec<T>,
-    work: &crate::materializer::NativeMaterializationWork,
-    compare: impl Fn(&T, &T) -> std::cmp::Ordering,
-) -> Result<(), LocalCoreStateStoreError> {
-    // Keep the last equal entry, matching BTreeMap insertion.
-    sort_records(values, work, &compare)?;
-    let mut index = 1;
-    while index < values.len() {
-        work.charge(crate::WorkCounters {
-            items_examined: 1,
-            ..Default::default()
-        })?;
-        if compare(&values[index - 1], &values[index]).is_eq() {
-            work.charge(crate::WorkCounters {
-                bytes_copied: ((values.len() - index) * std::mem::size_of::<T>()) as u64,
-                ..Default::default()
-            })?;
-            values.remove(index - 1);
-        } else {
-            index += 1;
-        }
-    }
-    Ok(())
-}
 
 impl RecordValue {
     pub(super) fn write_bare<W: Write>(
@@ -147,21 +96,18 @@ impl RecordValue {
             Some(Self::ChildIndex(value)) => serde_json::to_writer(writer, value),
             Some(Self::Lineage(value)) => serde_json::to_writer(writer, value),
             Some(Self::LazyWorkspace(value)) => serde_json::to_writer(writer, value),
-            Some(Self::FlatContext(value)) => serde_json::to_writer(writer, value),
-            Some(Self::FlatChildren(value)) => serde_json::to_writer(writer, value),
         }
     }
 }
 
 /// In-memory encoding is admitted at every actual Vec growth, before serde writes.
-pub(super) struct LogBuffer<'a> {
+pub(super) struct LogBuffer {
     pub(super) bytes: Vec<u8>,
     pub(super) allocation: Option<crate::materializer::NativeAllocation>,
-    pub(super) work: Option<&'a crate::materializer::NativeMaterializationWork>,
     pub(super) failure: Option<LocalCoreStateStoreError>,
 }
 
-impl Write for LogBuffer<'_> {
+impl Write for LogBuffer {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
         let result = (|| {
             let needed = self.bytes.len().checked_add(bytes.len()).ok_or(
@@ -169,13 +115,9 @@ impl Write for LogBuffer<'_> {
                     crate::WorkError::Overflow,
                 ),
             )?;
-            if let Some(work) = self.work {
-                reserve(
-                    &mut self.bytes,
-                    needed,
-                    work,
-                    self.allocation.as_mut().expect("encoded buffer"),
-                )?;
+            if let Some(allocation) = &mut self.allocation {
+                let work = allocation.work().clone();
+                reserve(&mut self.bytes, needed, &work, allocation)?;
                 work.charge(crate::WorkCounters {
                     bytes_encoded: bytes.len() as u64,
                     bytes_copied: bytes.len() as u64,
@@ -211,7 +153,7 @@ pub(super) fn measured_record_path(
 }
 
 pub(super) struct MaterializationReader<'a> {
-    pub(super) file: File,
+    pub(super) file: &'a File,
     pub(super) work: &'a crate::materializer::NativeMaterializationWork,
     pub(super) remaining_file_bytes: u64,
     pub(super) original_length: u64,
@@ -237,6 +179,7 @@ impl Read for MaterializationReader<'_> {
         let remaining = self.work.remaining().map_err(std::io::Error::other)?;
         let length = buffer
             .len()
+            .min(64 * 1024)
             .min(
                 usize::try_from(remaining.source_bytes_read.min(remaining.bytes_copied))
                     .unwrap_or(usize::MAX),
@@ -251,11 +194,12 @@ impl Read for MaterializationReader<'_> {
                 })
                 .map_err(std::io::Error::other)?;
         }
-        let count = crate::native_host::builtin_io(acyclic_native_runtime::NativeOperationKind::Read, (buffer
-                .get_mut(..length)
-                .ok_or_else(|| std::io::Error::other("invalid journal read bound"))?).len(), self.work, || std::io::Read::read(&mut &*(&self.file), buffer
-                .get_mut(..length)
-                .ok_or_else(|| std::io::Error::other("invalid journal read bound"))?))
+        let count = crate::native_host::builtin_io(
+            acyclic_native_runtime::NativeOperationKind::Read,
+            length,
+            self.work,
+            || self.file.read(&mut buffer[..length]),
+        )
         .map_err(std::io::Error::other)?;
         self.remaining_file_bytes -= count as u64;
         Ok(count)
@@ -291,7 +235,7 @@ pub(super) fn measured_read_file<T: DeserializeOwned>(
     let reader = std::io::BufReader::with_capacity(
         64 * 1024,
         MaterializationReader {
-            file,
+            file: &file,
             work,
             remaining_file_bytes: length,
             original_length: length,
@@ -300,31 +244,7 @@ pub(super) fn measured_read_file<T: DeserializeOwned>(
     measured_decode_reader(reader, length, work).map(Some)
 }
 
-pub(super) fn measured_json_error(error: serde_json::Error) -> LocalCoreStateStoreError {
-    if !error.is_io() {
-        return LocalCoreStateStoreError::Json(error);
-    }
-    let error = std::io::Error::from(error);
-    if !error
-        .get_ref()
-        .is_some_and(|cause| cause.is::<crate::materializer::NativeTreeMaterializationError>())
-    {
-        return LocalCoreStateStoreError::Io(error);
-    }
-    let kind = error.kind();
-    match error.into_inner() {
-        Some(inner) => {
-            match inner.downcast::<crate::materializer::NativeTreeMaterializationError>() {
-                Ok(error) => LocalCoreStateStoreError::from(*error),
-                Err(error) => LocalCoreStateStoreError::Io(std::io::Error::new(kind, error)),
-            }
-        }
-        None => LocalCoreStateStoreError::Io(kind.into()),
-    }
-}
-
-// Inputs are flat DTOs: scalars/arrays, owned Vec/String, or explicitly marked
-// CoreStateFlatMap Vec pairs. Tree/Box/Arc reconstruction is separately metered.
+// SDK payloads are funded before decode; std tree backing remains opaque.
 pub(super) fn measured_decode_reader<T: DeserializeOwned>(
     reader: impl Read,
     encoded_bytes: u64,
@@ -353,22 +273,15 @@ pub(super) fn measured_decode_reader<T: DeserializeOwned>(
     let result = T::deserialize(MaterializationDeserializer {
         inner: &mut deserializer,
         decode: &decode,
-        flat_map: false,
+        tree_set: false,
     })
     .and_then(|value| deserializer.end().map(|()| value));
     if let Some(error) = decode.failure.borrow_mut().take() {
         return Err(LocalCoreStateStoreError::from(error));
     }
-    let value = result.map_err(measured_json_error)?;
+    let value = result?;
     drop(deserializer);
     Ok((value, decode.allocation.into_inner()))
-}
-
-pub(super) fn measured_decode_slice<T: DeserializeOwned>(
-    bytes: &[u8],
-    work: &crate::materializer::NativeMaterializationWork,
-) -> Result<(T, crate::materializer::NativeAllocation), LocalCoreStateStoreError> {
-    measured_decode_reader(std::io::Cursor::new(bytes), bytes.len() as u64, work)
 }
 
 pub(super) struct MaterializationWriter<'a> {

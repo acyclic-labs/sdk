@@ -76,8 +76,6 @@ pub(super) struct NativeRecoveryState {
     pub(super) driver_step_complete: bool,
     pub(super) destination_removed: bool,
     pub(super) measured_cleanup_failed: bool,
-    pub(super) panic: Option<Box<dyn std::any::Any + Send>>,
-    pub(super) retirement_error: Option<NativeMountError>,
 }
 
 pub(super) enum NativeRecoveryCommand {
@@ -107,7 +105,6 @@ pub(super) struct NativeRecoveryShared {
 pub(super) struct NativeRecoveryWorker {
     pub(super) shared: Arc<NativeRecoveryShared>,
     pub(super) state: NativeRecoveryState,
-    pub(super) original: crate::NativeMaterializationWork,
     pub(super) final_close: crate::NativeWorkReservation,
     pub(super) _closure_custody: crate::NativeAllocation,
 }
@@ -185,17 +182,14 @@ impl NativeMountRecoveryOwner {
                 driver_step_complete: false,
                 destination_removed: false,
                 measured_cleanup_failed: false,
-                panic: None,
-                retirement_error: None,
             },
-            original,
             final_close,
             _closure_custody: closure_custody,
         };
         // std's scheduler, native thread stack, Arc headers, and JoinHandle
         // internals are opaque; known SDK closure/slot/path DATA are funded.
         crate::native_host::NativeHostWork::started_io(
-            &mut &worker.original,
+            &mut worker._closure_custody.work(),
             crate::WorkCounters {
                 backend_write_operations: 1,
                 ..crate::WorkCounters::UNCHARGED
@@ -393,7 +387,7 @@ impl NativeRecoveryWorker {
         MountDestinationGuard::acquire_with_work(
             &self.shared.destination,
             true,
-            &self.original,
+            self._closure_custody.work(),
             &mut self.state.guard,
             true,
         )?;
@@ -405,13 +399,13 @@ impl NativeRecoveryWorker {
                 .as_ref()
                 .and_then(|guard| guard.file.as_ref())
                 .ok_or(NativeMountError::InvalidDestination)?,
-            &mut &self.original,
+            &mut self._closure_custody.work(),
         )?;
         #[cfg(windows)]
         {
             self.state.destination_identity = match crate::native_host::root_path_identity(
                 &self.shared.destination,
-                &mut &self.original,
+                &mut self._closure_custody.work(),
             ) {
                 Ok(identity) => Some(identity),
                 Err(crate::NativeTreeMaterializationError::Io(error))
@@ -435,7 +429,9 @@ impl NativeRecoveryWorker {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 {
-                    self.state.control.retire_controls(&self.original)
+                    self.state
+                        .control
+                        .retire_controls(self._closure_custody.work())
                 }
                 #[cfg(windows)]
                 {
@@ -443,17 +439,13 @@ impl NativeRecoveryWorker {
                 }
                 #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
                 {
-                    self.state.control.retire_controls_with_work(&self.original)
+                    self.state
+                        .control
+                        .retire_controls_with_work(self._closure_custody.work())
                 }
             })) {
                 Ok(Ok(())) if !self.state.control.controls_pending() => break,
-                Ok(Err(error)) => {
-                    if self.state.retirement_error.is_none() {
-                        self.state.retirement_error = Some(error);
-                    }
-                }
-                Ok(Ok(())) => {}
-                Err(panic) => self.state.panic = Some(panic),
+                _ => {}
             }
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
@@ -468,12 +460,10 @@ impl NativeRecoveryWorker {
         let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.acquire()))
         {
             Ok(result) => result,
-            Err(panic) => {
-                self.state.panic = Some(panic);
-                Err(NativeMountError::Lifecycle(
-                    "administrative acquisition panicked",
-                ))
-            }
+            Err(panic) => Err(NativeMountError::DriverPanicked {
+                operation: "administrative acquisition",
+                panic: std::sync::Mutex::new(panic),
+            }),
         };
         let identity = match result {
             Ok(identity) => identity,
@@ -535,11 +525,11 @@ impl NativeRecoveryWorker {
                     match result {
                         Ok(result) => result,
                         Err(panic) => {
-                            self.state.panic = Some(panic);
                             self.state.measured_cleanup_failed = true;
-                            Err(NativeMountError::Lifecycle(
-                                "administrative action panicked",
-                            ))
+                            Err(NativeMountError::DriverPanicked {
+                                operation: "administrative action",
+                                panic: std::sync::Mutex::new(panic),
+                            })
                         }
                     }
                 }

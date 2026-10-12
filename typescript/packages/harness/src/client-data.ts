@@ -58,23 +58,17 @@ export async function assertOutboxSafe(command: ClientCommand): Promise<ClientCo
     throw new TypeError("offline outbox authority contains an unsafe identity");
   }
   const forbidden = /(?:token|authorization|credential|secret|password|api[_-]?key|(?:^|[_-])(?:scope|proof|body|text|bytes|base64|data)(?:$|[_-]))/i;
-  const visit = (value: unknown, ancestors: Set<object>): void => {
+  const visit = (value: unknown): void => {
     if (value === null || typeof value !== "object") return;
     if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
       throw new TypeError("offline outbox cannot persist inline bytes or credentials");
     }
-    if (ancestors.has(value)) throw new TypeError("command contains a cycle");
-    ancestors.add(value);
-    try {
-      for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
-        if (!descriptor.enumerable) continue;
-        if (!("value" in descriptor)) throw new TypeError("command contains an accessor");
-        if (forbidden.test(key)) throw new TypeError("offline outbox cannot persist inline bytes or credentials");
-        visit(descriptor.value, ancestors);
-      }
-    } finally { ancestors.delete(value); }
+    for (const [key, item] of Object.entries(value)) {
+      if (forbidden.test(key)) throw new TypeError("offline outbox cannot persist inline bytes or credentials");
+      visit(item);
+    }
   };
-  visit(admitted, new Set());
+  visit(admitted);
   const payload = admitted.payload;
   if (payload === null || typeof payload !== "object" || Array.isArray(payload) ||
       Object.getPrototypeOf(payload) !== Object.prototype) {

@@ -1270,18 +1270,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
         context.accept(result)
     }
 
-    async fn prepare_generation_publication(
-        &self,
-        request: &crate::kernel::PublishGenerationRequest,
-        proof: &crate::kernel::GenerationProof,
-        append: &crate::GuardedAppend,
-        scope: crate::PublicationScope<'_>,
-        context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(), crate::ObjectStoreError> {
-        self.inner
-            .prepare_generation_publication(request, proof, append, scope, context)
-            .await
-    }
+
 
     fn collection(&self) -> Option<&Arc<crate::Collection>> {
         Some(&self.collection)
@@ -1345,7 +1334,7 @@ impl<S: AsyncObjectStore> AsyncObjectStore for StagedObjects<S> {
     }
             .await;
         }
-        let budget = context.work.remaining(context.budget)?;
+        let budget = context.read_budget()?;
         let cancellation = context.cancellation;
         let result = async {
         self.read_engine(object_id, maximum_bytes, budget, cancellation, None)
@@ -2591,7 +2580,7 @@ mod tests {
             if context.original.is_some() {
                 return Err(crate::ObjectStoreError::NativeUnavailable);
             }
-            let budget = context.work.remaining(context.budget)?;
+            let budget = context.read_budget()?;
             let cancellation = context.cancellation;
             let result = async {
                 {

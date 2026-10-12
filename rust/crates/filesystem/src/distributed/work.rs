@@ -189,99 +189,82 @@ impl<'a> AuthorityWork<'a> {
         &mut self,
         capacity: usize,
     ) -> Result<(Vec<T>, AuthorityAllocation), AuthorityStoreError> {
+        use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
         self.check()?;
         let bytes = capacity
             .checked_mul(std::mem::size_of::<T>())
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or(crate::WorkError::Overflow)?;
+        if self.opaque_live_upper_bytes != 0 {
+            self.admit(WorkCounters {
+                peak_allocation_bytes: self
+                    .allocations
+                    .live_bytes()
+                    .checked_add(bytes)
+                    .ok_or(crate::WorkError::Overflow)?,
+                ..WorkCounters::UNCHARGED
+            })?;
+        }
+        let allocation_error = |error| match error {
+            crate::FsError::PendingMutationAllocationFailed => {
+                AuthorityStoreError::RejectedStatic("fork allocation failed")
+            }
+            error => authority_error(error),
+        };
+        let baseline = self.allocations.live_bytes();
+        let mut accounting = KernelAccounting::borrowed_standalone(
+            &mut self.allocations,
+            &mut self.work,
+            self.budget,
+            self.cancellation,
+        );
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(original) = self.original {
-            original.admit(WorkCounters::UNCHARGED)?;
-            self.cancellation
-                .check()
-                .map_err(|_| AuthorityStoreError::Cancelled)?;
-            let buffer =
-                crate::native_host::buffer::<T, _>(capacity, &mut &*original).map_err(|error| {
-                    match error {
-                        crate::NativeTreeMaterializationError::AllocationFailed(_) => {
-                            AuthorityStoreError::RejectedStatic("fork allocation failed")
-                        }
-                        error => error.into(),
-                    }
-                })?;
-            self.cancellation
-                .check()
-                .map_err(|_| AuthorityStoreError::Cancelled)?;
-            return Ok((buffer.0, Some(buffer.1)));
+            accounting = KernelAccounting::native(original, self.cancellation);
         }
-        if self.opaque_live_upper_bytes != 0 {
-            let peak = self
-                .allocations
-                .live_bytes()
-                .checked_add(bytes)
-                .and_then(|live| live.checked_add(self.opaque_live_upper_bytes))
-                .ok_or(crate::WorkError::Overflow)?;
-            self.work.admit(
-                &WorkCounters {
-                    peak_allocation_bytes: peak,
-                    ..WorkCounters::default()
-                },
-                &self.budget,
-            )?;
-        }
-        self.allocations
-            .claim_bytes(bytes, u64::from(bytes != 0), &mut self.work, self.budget)
-            .map_err(|error| {
-                error.into_work_or(AuthorityStoreError::RejectedStatic(
-                    "fork allocation failed",
-                ))
-            })?;
-        let mut value = Vec::<T>::new();
-        if value.try_reserve_exact(capacity).is_err() {
-            drop(value);
-            self.release(bytes)?;
+        let mut allocation = accounting
+            .claim_owned(bytes, u64::from(bytes != 0))
+            .map_err(allocation_error)?;
+        let mut values = Vec::new();
+        if values.try_reserve_exact(capacity).is_err() {
+            drop(values);
+            accounting
+                .release_owned(&mut allocation, bytes)
+                .map_err(allocation_error)?;
             return Err(AuthorityStoreError::RejectedStatic(
                 "fork allocation failed",
             ));
         }
-        let actual = value
+        let actual = values
             .capacity()
             .checked_mul(std::mem::size_of::<T>())
             .and_then(|bytes| u64::try_from(bytes).ok())
             .ok_or(crate::WorkError::Overflow)?;
-        let excess = actual
-            .checked_sub(bytes)
-            .ok_or(crate::WorkError::Overflow)?;
-        self.allocations
-            .record_owned_bytes(excess, &mut self.work)
-            .map_err(|error| {
-                error.into_work_or(AuthorityStoreError::RejectedStatic(
-                    "fork allocation failed",
-                ))
-            })?;
-        let verified = self.work.verify(self.budget).and_then(|()| {
-            if self.opaque_live_upper_bytes == 0 {
-                return Ok(());
+        let result = accounting
+            .reconcile_owned(&mut allocation, bytes, actual)
+            .map_err(allocation_error);
+        drop(accounting);
+        let result = result.and_then(|()| self.check());
+        if let Err(error) = result {
+            drop(values);
+            #[cfg(not(target_arch = "wasm32"))]
+            if matches!(allocation, KernelOwnedAllocation::NativeOriginal(_)) {
+                drop(allocation);
+                return Err(error);
             }
-            let peak = self
-                .allocations
-                .live_bytes()
-                .checked_add(self.opaque_live_upper_bytes)
-                .ok_or(crate::WorkError::Overflow)?;
-            self.work.admit(
-                &WorkCounters {
-                    peak_allocation_bytes: peak,
-                    ..WorkCounters::default()
-                },
-                &self.budget,
-            )
-        });
-        if let Err(error) = verified {
-            drop(value);
-            self.release(actual)?;
-            return Err(error.into());
+            self.release(
+                self.allocations
+                    .live_bytes()
+                    .checked_sub(baseline)
+                    .ok_or(crate::WorkError::Overflow)?,
+            )?;
+            return Err(error);
         }
-        Ok((value, None))
+        match allocation {
+            #[cfg(not(target_arch = "wasm32"))]
+            KernelOwnedAllocation::NativeOriginal(allocation) => Ok((values, Some(allocation))),
+            KernelOwnedAllocation::Standalone => Ok((values, None)),
+        }
     }
 
     pub(super) fn bytes(
@@ -577,14 +560,16 @@ impl<'a> AuthorityWork<'a> {
         self.charge(delta)
     }
 
-    pub(super) fn append_record(
+    pub(super) fn append_record<const N: usize>(
         &mut self,
         mutations: &mut Vec<acyclic_stream::CommitMutation>,
         path: acyclic_stream::StreamPath,
-        value: acyclic_stream::OwnedBytes,
+        values: [acyclic_stream::OwnedBytes; N],
     ) -> Result<(), AuthorityStoreError> {
-        let mut records = self.vec(1)?;
-        self.push(&mut records, value)?;
+        let mut records = self.vec(N)?;
+        for value in values {
+            self.push(&mut records, value)?;
+        }
         self.push(
             mutations,
             acyclic_stream::CommitMutation::Append { path, records },
@@ -596,21 +581,28 @@ impl<'a> AuthorityWork<'a> {
         bytes: &[u8],
         domain: &[u8],
     ) -> Result<Epoch, AuthorityStoreError> {
-        if !self.is_native() {
-            return decode_epoch(bytes, domain, false);
-        }
-        let copies = if bytes.len() == domain.len().saturating_add(8) && bytes.starts_with(domain) {
-            8
-        } else {
-            0
-        };
+        let bytes = record_bytes::<8>(bytes, domain);
         let delta = WorkCounters {
-            bytes_copied: copies,
+            bytes_copied: if bytes.is_some() { 8 } else { 0 },
             ..WorkCounters::default()
         };
-        self.admit(delta)?;
-        let result = decode_epoch(bytes, domain, true);
-        self.charge(delta)?;
+        if self.is_native() {
+            self.admit(delta)?;
+        }
+        let result = bytes
+            .ok_or_else(|| authority_corrupt("invalid Stream epoch record", self))
+            .and_then(|bytes| {
+                Epoch::new(u64::from_le_bytes(*bytes)).map_err(|error| {
+                    if self.is_native() {
+                        AuthorityStoreError::CorruptStatic("zero Stream epoch")
+                    } else {
+                        AuthorityStoreError::Corrupt(error.to_string())
+                    }
+                })
+            });
+        if self.is_native() {
+            self.charge(delta)?;
+        }
         result
     }
 

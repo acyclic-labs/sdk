@@ -1,6 +1,6 @@
 //! The preparation context at the existing history boundary.
 use super::*;
-use crate::store::history::{HistoryContentFuture, HistoryIo};
+use crate::store::history::HistoryIo;
 
 impl PreparationIo {
     pub(crate) fn history_io(&self) -> &Self {
@@ -8,41 +8,7 @@ impl PreparationIo {
     }
     pub(super) fn charged(&self, work: WorkCounters) -> Result<()> {
         self.preflight(work)?;
-        self.charge(work)
-    }
-    
-    pub(crate) fn history_future<'a, T, F>(
-        &'a self,
-        build: impl FnOnce() -> F,
-    ) -> Result<HistoryContentFuture<'a, T>>
-    where
-        F: Future<Output = Result<T>> + acyclic_stream::ProviderTask + 'a,
-    {
-        let bytes = std::mem::size_of::<F>() as u64;
-        self.retain_owned(bytes)?;
-        self.allocation_attempt(bytes)?;
-        Ok(HistoryContentFuture::Ordinary {
-            future: Box::pin(build()),
-            frame_bytes: bytes,
-        })
-    }
-    pub(crate) async fn finish_future<T>(&self, future: HistoryContentFuture<'_, T>) -> Result<T> {
-        let held = match &future {
-            HistoryContentFuture::Ordinary { frame_bytes, .. } => {
-                Some(self.guard_owned(*frame_bytes)?)
-            }
-            #[cfg(not(target_arch = "wasm32"))]
-            HistoryContentFuture::Native(_) => None,
-        };
-        let result = future.await;
-        drop(held);
-        result
-    }
-    pub(crate) async fn verify_publication_lease(
-        &self,
-        lease: &dyn crate::resource_preparation::CreatedTaskLease,
-    ) -> Result<()> {
-        self.finish_future(lease.verify_with_io(self)?).await
+        self.charge(work).map_err(Into::into)
     }
 }
 
@@ -79,10 +45,10 @@ impl HistoryIo for &PreparationIo {
             ..Default::default()
         })?;
         self.remaining()?;
-        self.retain_owned(bytes)
+        self.retain_owned(bytes).map_err(Into::into)
     }
     fn retain_owned(&mut self, bytes: u64) -> Result<()> {
-        PreparationIo::retain_owned(self, bytes)
+        PreparationIo::retain_owned(self, bytes).map_err(Into::into)
     }
     fn admit_owned(&self, bytes: u64) -> Result<()> {
         self.check_cancellation()?;
@@ -92,7 +58,7 @@ impl HistoryIo for &PreparationIo {
         Ok(())
     }
     fn release_owned(&mut self, bytes: u64) -> Result<()> {
-        self.release(bytes)
+        self.release(bytes).map_err(Into::into)
     }
     fn decode_json_value(&mut self, bytes: &[u8]) -> Result<(serde_json::Value, u64)> {
         let decoded = self.decode(
@@ -113,15 +79,14 @@ impl HistoryIo for &PreparationIo {
         })
     }
     fn clone_text(&mut self, text: &str) -> Result<String> {
-        clone_text(text, Some(self))
+        stock_string_copy(text, Some(self))
     }
-    
-    
-    
-    
-    
+
     fn allocation_attempt(&mut self, bytes: u64) -> Result<()> {
         PreparationIo::allocation_attempt(self, bytes)
+    }
+    fn allocation_failure(&self, cause: std::collections::TryReserveError) -> Error {
+        Error::Allocation(cause)
     }
     fn reserve_text(&mut self, text: &mut String, capacity: usize) -> Result<()> {
         if capacity <= text.capacity() {
@@ -134,12 +99,12 @@ impl HistoryIo for &PreparationIo {
             .map_err(Error::Allocation)?;
         self.retain_owned((text.capacity() - capacity) as u64)
     }
-    
+
     fn admit_copy(&self, bytes: u64) -> Result<()> {
         self.preflight(WorkCounters {
             bytes_copied: bytes,
             ..Default::default()
-        })
+        }).map_err(Into::into)
     }
     fn copy_bytes(&mut self, bytes: u64) -> Result<()> {
         self.charged(WorkCounters {
@@ -151,13 +116,13 @@ impl HistoryIo for &PreparationIo {
         self.charge(WorkCounters {
             bytes_encoded: bytes,
             ..Default::default()
-        })
+        }).map_err(Into::into)
     }
     fn admit_encoding(&self, bytes: u64) -> Result<()> {
         self.preflight(WorkCounters {
             bytes_encoded: bytes,
             ..Default::default()
-        })
+        }).map_err(Into::into)
     }
     fn codec_charge(&mut self, charge: crate::contract::JsonCodecCharge) -> Result<()> {
         match charge {
@@ -167,7 +132,7 @@ impl HistoryIo for &PreparationIo {
             } => self.retain_owned(
                 maximum_owned_bytes
                     .max(crate::contract::json_value_decode_owned_bytes(value_shape)?),
-            ),
+            ).map_err(Into::into),
             charge => PreparationIo::codec_charge(self, charge, true),
         }
     }
@@ -182,21 +147,21 @@ impl HistoryIo for &PreparationIo {
             authority_bytes_written: bytes,
             authority_records_appended: count,
             ..Default::default()
-        })
+        }).map_err(Into::into)
     }
     fn acknowledged(&mut self, bytes: u64, count: u64) -> Result<()> {
         self.charge(WorkCounters {
             authority_bytes_written: bytes,
             authority_records_appended: count,
             ..Default::default()
-        })
+        }).map_err(Into::into)
     }
     fn admit_output(&self, bytes: u64, count: u64) -> Result<()> {
         self.preflight(WorkCounters {
             output_bytes: bytes,
             items_returned: count,
             ..Default::default()
-        })
+        }).map_err(Into::into)
     }
     fn stage_output(&mut self, bytes: u64, count: u64) -> Result<()> {
         self.admit_output(bytes, count)
@@ -209,7 +174,7 @@ impl HistoryIo for &PreparationIo {
         })
     }
     fn remaining(&self) -> Result<WorkBudget> {
-        PreparationIo::remaining(self)
+        PreparationIo::remaining(self).map_err(Into::into)
     }
     fn cancellation(&self) -> &CancellationToken {
         PreparationIo::cancellation(self)
@@ -217,7 +182,7 @@ impl HistoryIo for &PreparationIo {
     fn receive_work(&mut self, mut work: WorkCounters) -> Result<()> {
         work.output_bytes = 0;
         work.items_returned = 0;
-        self.spent(work)
+        self.spent(work).map_err(Into::into)
     }
     fn verify_content<'a>(
         &'a mut self,
@@ -234,3 +199,5 @@ impl HistoryIo for &PreparationIo {
         verifier.read(file, file.descriptor().byte_length(), Some(*self))
     }
 }
+
+use crate::executor::stock_string_copy;

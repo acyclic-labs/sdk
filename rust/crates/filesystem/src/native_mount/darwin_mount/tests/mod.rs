@@ -91,25 +91,30 @@ fn checkout_context(
 > {
     let (shared, config) = checkout(publication)?;
     let source = Arc::new(MemorySource::new(shared, config)?);
-    let root_id = source
-        .lookup(&MountPath::root())?
-        .ok_or("root absent")?
-        .node
-        .file_id;
     let work = work(
         crate::WorkBudget::UNBOUNDED,
         &crate::CancellationToken::new(),
     )?;
+    let context = test_context(&source, &work)?;
+    Ok((source, context, work))
+}
+
+fn test_context(
+    source: &Arc<MemorySource>,
+    original: &crate::NativeMaterializationWork,
+) -> Result<DarwinMountContext, Box<dyn std::error::Error>> {
+    let root = source
+        .lookup_with_meter(&MountPath::root(), original)?
+        .ok_or("root absent")?;
     let metadata = std::fs::metadata(".")?;
-    let context = DarwinMountContext::new(
-        Arc::clone(&source) as Arc<dyn MountFilesystem>,
+    Ok(DarwinMountContext::new(
+        Arc::clone(source) as Arc<dyn MountFilesystem>,
         true,
         metadata.uid(),
         metadata.gid(),
-        root_id,
-        &work,
-    )?;
-    Ok((source, context, work))
+        root.node.file_id,
+        original,
+    )?)
 }
 
 fn os(error: i32) -> std::io::Error {

@@ -397,6 +397,7 @@ impl Reducer {
                     .insert(ticket.id, (ticket, None));
             }
             EventPayload::InteractionResolved { resolution } => {
+                let id = resolution.id;
                 let (ticket, prior) = self
                     .projection
                     .interactions
@@ -410,7 +411,7 @@ impl Reducer {
                 )?;
                 self.projection
                     .interactions
-                    .get_mut(&resolution.id)
+                    .get_mut(&id)
                     .expect("validated interaction")
                     .1 = Some(resolution);
             }

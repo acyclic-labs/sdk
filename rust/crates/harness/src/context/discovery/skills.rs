@@ -312,7 +312,7 @@ pub(super) fn skill_text_native(
                 custody: Some(diagnostic),
             });
         }
-        return Err(Error::NativeEncode {
+        return Err(Error::NativeJson {
             code: crate::wire::ErrorCode::Invalid,
             source,
             custody: Some(diagnostic),

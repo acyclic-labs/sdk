@@ -16,15 +16,14 @@ fn build_path<'a>(
     let slots = count
         .checked_mul(std::mem::size_of::<Vec<u8>>())
         .ok_or(crate::WorkError::Overflow)? as u64;
-    let mut path = owned(
-        work,
+    let mut path = DarwinOwned::empty(MountPath {
+        components: Vec::new(),
+    });
+    path.claim_more(
         bytes.checked_add(slots).ok_or(crate::WorkError::Overflow)?,
-        || {
-            let mut components = Vec::new();
-            components.try_reserve_exact(count)?;
-            Ok(MountPath { components })
-        },
+        work,
     )?;
+    path.components.try_reserve_exact(count)?;
     let actual_slots = path
         .components
         .capacity()
@@ -86,7 +85,11 @@ pub(super) fn native_name(
     work.charge(copy_work(bytes))?;
     value.extend_from_slice(name);
     value.push(0);
-    Ok(value.map(|value| CString::from_vec_with_nul(value).expect("validated native name")))
+    let DarwinOwned { value, allocation } = value;
+    Ok(DarwinOwned {
+        value: CString::from_vec_with_nul(value).expect("validated native name"),
+        allocation,
+    })
 }
 
 pub(super) fn mount_path(

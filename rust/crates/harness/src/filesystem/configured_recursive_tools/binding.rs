@@ -13,7 +13,7 @@ where
         project_read: bool,
         io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<&'a ConfiguredRecursiveCaller> {
-        use crate::filesystem::fork_preparer_io::failure;
+        use crate::executor::stock_boundary as failure;
         use crate::wire::ErrorCode;
         #[cfg(not(target_arch = "wasm32"))]
         let scratch = io
@@ -149,7 +149,7 @@ where
             }
             ordinary = runtime.inspect_source(caller.task, caller.task).await?;
             if ordinary.project()?.volume != caller.project {
-                return Err(crate::filesystem::fork_preparer_io::failure(
+                return Err(crate::executor::stock_boundary(
                     io,
                     crate::wire::ErrorCode::Unauthorized,
                     "configured source is not its admitted Project",
@@ -170,7 +170,7 @@ where
             result += usize::from(caller.result_volume.as_ref() == Some(&snapshot.volume));
         }
         if project != 1 || private != 1 || (caller.result_volume.is_some() && result != 1) {
-            return Err(crate::filesystem::fork_preparer_io::failure(
+            return Err(crate::executor::stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unauthorized,
                 "configured source differs from its admitted allocation",
@@ -277,7 +277,7 @@ where
             .is_some()
         {
             let context = context.native_task().ok_or_else(|| {
-                crate::filesystem::fork_preparer_io::failure(
+                crate::executor::stock_boundary(
                     io,
                     crate::wire::ErrorCode::Unauthorized,
                     "native source requires its original shared task context",

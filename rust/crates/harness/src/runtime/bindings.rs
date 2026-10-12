@@ -308,7 +308,7 @@ impl Bindings {
         }
         for definition in resumable_tools.definitions() {
             native_startup::item(startup, 0)?;
-            let adapter = tools.get_version(&definition.name, &definition.revision, startup)?;
+            let adapter = tools.get(&definition.name, Some(&definition.revision), startup)?;
             if let Some(adapter) = adapter {
                 let pinned = crate::executor::with_history_io(startup, |work| {
                     resumable_tools.get(&definition.name, &definition.revision, work)

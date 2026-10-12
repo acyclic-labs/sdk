@@ -3,19 +3,23 @@ use super::*;
 pub(super) fn admit(
     context: &crate::AuthorityWork<'_>,
     delta: WorkCounters,
-) -> Result<WorkCounters, AuthorityStoreError> {
+) -> Result<(), AuthorityStoreError> {
     context.check()?;
-    let work = context.work.checked_add(delta)?;
-    work.verify(context.budget)?;
-    Ok(work)
+    context
+        .work
+        .admit(&delta, &context.budget)
+        .map_err(Into::into)
 }
 
 pub(super) fn charge(
     context: &mut crate::AuthorityWork<'_>,
     delta: WorkCounters,
 ) -> Result<(), AuthorityStoreError> {
-    context.work = admit(context, delta)?;
-    Ok(())
+    context.check()?;
+    context
+        .work
+        .charge(&delta, &context.budget)
+        .map_err(Into::into)
 }
 
 impl crate::AuthorityWork<'_> {

@@ -38,7 +38,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> VolumeImportPlan<A, O> {
                 ApplyOptions {
                     if_target: self.plan.target_head(),
                     idempotency_key: filesystem_key(key),
-                },
+                }, std::collections::BTreeMap::new(),
                 acyclic_fs::PublicationPermit::Unrestricted,
             )
             .await
@@ -83,7 +83,7 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
         if parent.authority().kind != crate::core::AggregateKind::Conversation {
-            return Err(fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "project controller requires a parent conversation",
@@ -98,7 +98,7 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
         if parent.conversation().and_then(|state| state.agent) != scope.agent()
             || scope.agent().is_none()
         {
-            return Err(fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Unauthorized,
                 "project controller requires the bound parent agent",
@@ -106,7 +106,7 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
         }
         project.validate(&mut work)?;
         if project.provider() != &host.provider {
-            return Err(fork_preparer_io::failure(
+            return Err(stock_boundary(
                 io,
                 crate::wire::ErrorCode::Invalid,
                 "parent project belongs to another provider",
@@ -203,3 +203,5 @@ impl<'a, A, O> ParentProjectController<'a, A, O> {
 
 mod inherited;
 mod project;
+
+use crate::executor::{stock_boundary};

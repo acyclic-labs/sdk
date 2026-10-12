@@ -29,7 +29,7 @@ use acyclic_harness::{
     fork::{ForkReport, ForkRequest},
     resource_preparation::ResourcePreparationRequest,
     runtime::{DurableTaskHost, TaskAdmissionRecord, task_id_for_admission},
-    scheduler::{LeaseFence, ResourceSnapshot},
+    scheduler::{LeaseFence, ResourceRequest},
     source_authorization::{
         ProjectSourceSnapshot, RootProjectSourceContext, RootProjectSourceProvider,
     },
@@ -375,9 +375,7 @@ fn native_workspace_error(
         Option<acyclic_fs::NativeAllocation>,
     ),
 ) -> Error {
-    crate::pi_fork_host::native_lazy_error(acyclic_fs::LazyWorkspaceError::NativeWorkspaceCause(
-        acyclic_fs::lazy_workspace::NativeLazyWorkspaceCause { source, custody },
-    ))
+    crate::pi_fork_host::native_lazy_error(acyclic_fs::LazyWorkspaceError::NativeWorkspace(source, custody))
 }
 
 fn task_id_text_matches(task: TaskId, expected: &str) -> bool {

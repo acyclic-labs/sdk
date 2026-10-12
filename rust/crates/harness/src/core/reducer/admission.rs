@@ -1,6 +1,6 @@
 //! Command admission and committed-event application.
 use super::*;
-use crate::contract::canonical_json_digest_with_work as digest;
+use crate::contract::canonical_json_digest as digest;
 use crate::store::default_projection_read_limits;
 use crate::wire::ErrorCode;
 

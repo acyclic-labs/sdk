@@ -250,8 +250,7 @@ impl Reducer {
                     .conversation
                     .validate_append(&receipt.notice, &mut None)?;
                 copying::retain_entry::<ProjectMergeReceipt>(quota)?;
-                let (receipt, bytes) = receipt.clone_with_work_and_custody(quota.work())?;
-                quota.adopt(bytes)?;
+                let receipt = receipt.copy(quota)?;
                 Ok(EventPayload::ProjectMergePublished {
                     receipt: Box::new(receipt),
                 })

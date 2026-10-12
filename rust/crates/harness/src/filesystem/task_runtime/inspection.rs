@@ -448,7 +448,7 @@ where
         &self,
         input: &TurnInput,
         step: u32,
-    ) -> Result<crate::executor::ModelToolsProgress> {
+    ) -> Result<crate::executor::ExecutionProgress<Vec<crate::model::ModelMessage>>> {
         self.validate_input(input)?;
         deadline::run(
             &self.host,

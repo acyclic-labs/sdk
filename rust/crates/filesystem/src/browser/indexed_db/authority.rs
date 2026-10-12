@@ -217,7 +217,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         request: GuardedAppend,
         context: &mut crate::AuthorityWork<'_>,
         mut guard: Option<&mut G>,
-    ) -> Result<(AppendOutcome, crate::AuthorityAllocation), crate::AuthorityError<G::Error>> {
+    ) -> Result<AppendOutcome, crate::AuthorityError<G::Error>> {
         crate::async_storage::seal(guard.as_deref_mut(), context).await?;
 
         let GuardedAppend {
@@ -234,12 +234,9 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             .map_err(backend)?;
         let actual = io.head(&tx, authority).await?;
         if epoch != actual.epoch {
-            return Ok((
-                AppendOutcome::Fenced {
+            return Ok(AppendOutcome::Fenced {
                     actual_epoch: actual.epoch,
-                },
-                None,
-            ));
+                });
         }
         if let Some(bytes) = io
             .fixed(
@@ -252,12 +249,9 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         {
             let op = decode_operation(&bytes).map_err(corrupt)?;
             if op.fingerprint != commit.fingerprint {
-                return Ok((
-                    AppendOutcome::IdempotencyConflict {
+                return Ok(AppendOutcome::IdempotencyConflict {
                         committed_fingerprint: op.fingerprint,
-                    },
-                    None,
-                ));
+                    });
             }
             work::charge(io, authority_fixed_read_work(0))?;
             let blob = io
@@ -271,10 +265,10 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             {
                 return Err(corrupt("operation index does not match commit").into());
             }
-            return Ok((AppendOutcome::AlreadyCommitted(durable), None));
+            return Ok(AppendOutcome::AlreadyCommitted(durable));
         }
         if expected != actual {
-            return Ok((AppendOutcome::Conflict { actual }, None));
+            return Ok(AppendOutcome::Conflict { actual });
         }
         let gate = io.gate(&tx, authority).await?;
         let admitted = match permit {
@@ -317,17 +311,14 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             }
         };
         if !admitted {
-            return Ok((
-                AppendOutcome::Fenced {
+            return Ok(AppendOutcome::Fenced {
                     actual_epoch: actual.epoch,
-                },
-                None,
-            ));
+                });
         }
         let (durable, bytes) = self.prepare(io, authority, actual, commit)?;
         self.write(&io, &tx, authority, &durable, &bytes).await?;
         io.commit(tx).await?;
-        Ok((AppendOutcome::Committed(durable), None))
+        Ok(AppendOutcome::Committed(durable))
     }
     async fn reserve_publication(
         &self,
@@ -468,7 +459,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         authority: AuthorityId,
         operation: OperationId,
         context: &mut crate::AuthorityWork<'_>,
-    ) -> Result<(Option<DurableCommit>, crate::AuthorityAllocation), AuthorityStoreError> {
+    ) -> Result<Option<DurableCommit>, AuthorityStoreError> {
         let io = &mut *context;
         io.check()?;
         let tx = transaction(&self.database, AUTHORITY_STORES, TransactionMode::Readonly)
@@ -483,7 +474,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
             )
             .await?
         else {
-            return Ok((None, None));
+            return Ok(None);
         };
         let op = decode_operation(&bytes).map_err(corrupt)?;
         work::charge(io, authority_fixed_read_work(0))?;
@@ -498,7 +489,7 @@ impl AsyncAuthorityStore for IndexedDbAuthorityStore {
         {
             return Err(corrupt("operation index does not match commit"));
         }
-        Ok((Some(durable), None))
+        Ok(Some(durable))
     }
     async fn replay(
         &self,

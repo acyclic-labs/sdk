@@ -3,7 +3,7 @@ use super::*;
 /// Deterministic capability set.
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[cfg_attr(feature = "wasm", derive(tsify::Tsify))]
-pub struct Capabilities(BTreeSet<String>);
+pub struct Capabilities(pub(crate) BTreeSet<String>);
 
 impl Capabilities {
     /// Builds a capability set.
@@ -18,25 +18,30 @@ impl Capabilities {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> crate::Result<(Self, acyclic_fs::NativeAllocation)> {
         use crate::store::history::HistoryIo as _;
-        let mut io = crate::filesystem::PreparationIo::from_native_work(work).map(crate::store::HistoryWork::new)?;
+        let mut io = crate::filesystem::PreparationIo::from_native_work(work)
+            .map(crate::store::HistoryWork::new)?;
         let mut target = BTreeSet::new();
         for value in values {
             work.charge(acyclic_fs::WorkCounters {
                 items_examined: 1,
                 ..Default::default()
-            }).map_err(|cause| crate::Error::NativeWork { cause, custody: None })?;
+            })
+            .map_err(|cause| crate::Error::NativeWork {
+                cause,
+                custody: None,
+            })?;
             if target.contains(value) {
                 continue;
             }
             let slot = std::mem::size_of::<String>() as u64;
-            let bytes = slot.checked_add(value.len() as u64).ok_or_else(|| {
-                crate::Error::NativeWork {
-                    cause: acyclic_fs::NativeTreeMaterializationError::Work(
-                        acyclic_fs::WorkError::Overflow,
-                    ),
-                    custody: None,
-                }
-            })?;
+            let bytes =
+                slot.checked_add(value.len() as u64)
+                    .ok_or_else(|| crate::Error::NativeWork {
+                        cause: acyclic_fs::NativeTreeMaterializationError::Work(
+                            acyclic_fs::WorkError::Overflow,
+                        ),
+                        custody: None,
+                    })?;
             io.admit_owned(bytes)?;
             io.retain_owned(slot)?;
             let copy = io.clone_text(value)?;
@@ -55,9 +60,6 @@ impl Capabilities {
         Self::new_with_native_work(self.iter(), work)
     }
 
-    pub(crate) fn from_owned_set(values: BTreeSet<String>) -> Self {
-        Self(values)
-    }
     /// Returns whether a capability is present.
     #[must_use]
     pub fn contains(&self, value: &str) -> bool {
@@ -77,7 +79,8 @@ impl Capabilities {
 
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         self.0.iter().try_fold(0_u64, |bytes, capability| {
-            bytes.checked_add(std::mem::size_of::<String>() as u64)
+            bytes
+                .checked_add(std::mem::size_of::<String>() as u64)
                 .and_then(|bytes| bytes.checked_add(capability.capacity() as u64))
                 .ok_or_else(|| Error::Invalid("capability owned byte count overflows".into()))
         })
@@ -171,4 +174,3 @@ pub fn resolve_policy_layers(layers: &[PolicyLayer]) -> Result<Capabilities> {
             .collect::<Vec<_>>(),
     ))
 }
-

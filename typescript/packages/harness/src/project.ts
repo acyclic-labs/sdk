@@ -5,8 +5,8 @@ import { NativeContracts } from "./native-contracts.js";
 import type { Authority, OperationId, Scope } from "./index.js";
 import type { ToolJsonValue } from "./model.js";
 
-const providerOperationBrand: unique symbol = Symbol("harness.provider-operation-id");
-export type ProviderOperationId = readonly number[] & Readonly<{ readonly [providerOperationBrand]: true }>;
+declare const providerOperationBrand: unique symbol;
+export type ProviderOperationId = readonly number[] & { readonly [providerOperationBrand]: true };
 
 export function providerOperationId(value: Uint8Array | readonly number[]): ProviderOperationId {
   if (value.length === 0 || value.every(byte => byte === 0)
