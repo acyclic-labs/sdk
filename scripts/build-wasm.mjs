@@ -37,16 +37,15 @@ const narrowMachinesDecoder = output => {
 const packages = {
   workers: { family: true },
   actors: { family: true },
-  filesystem: { cargo: ["-p", "acyclic-fs-wasm"], artifact: "acyclic_fs_wasm", outName: "acyclic_fs_wasm" },
+  filesystem: { cargo: ["-p", "acyclic-fs-wasm"], artifact: "acyclic_fs_wasm" },
   stream: { family: true },
-  objects: { cargo: ["-p", "acyclic-objects-wasm"], artifact: "acyclic_objects_wasm", outName: "acyclic_objects_wasm" },
+  objects: { cargo: ["-p", "acyclic-objects-wasm"], artifact: "acyclic_objects_wasm" },
   machines: {
     cargo: ["-p", "acyclic-machines-wasm"],
     artifact: "acyclic_machines_wasm",
-    outName: "acyclic_machines_wasm",
     postprocess: narrowMachinesDecoder,
   },
-  inference: { cargo: ["-p", "acyclic-inference-wasm"], artifact: "acyclic_inference_wasm", outName: "acyclic_inference_wasm" },
+  inference: { cargo: ["-p", "acyclic-inference-wasm"], artifact: "acyclic_inference_wasm" },
   harness: {
     cargo: ["-p", "acyclic-harness", "--features", "browser"],
     artifact: "acyclic_harness",
@@ -96,7 +95,7 @@ const targetRoot = JSON.parse(metadata).target_directory;
 const script = readFileSync(fileURLToPath(import.meta.url));
 
 for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) {
-  let { cargo: selection, artifact, outName, postprocess, targetDirectory } = packages[name];
+  let { cargo: selection, artifact, outName = artifact, postprocess, targetDirectory } = packages[name];
   let family, producer, source, revision;
   if (packages[name].family) {
     const { nativeFamily } = await import("./native-family.mjs");

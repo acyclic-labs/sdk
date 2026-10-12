@@ -74,7 +74,33 @@ pub(crate) fn open_leaf<W: NativeHostWork>(
     #[cfg(windows)]
     {
         with_wide_path(name, work, |name, work| {
-            open_windows_leaf_with_options(parent, name, options, work)
+            use windows::{Wdk::Storage::FileSystem as nt, Win32::Storage::FileSystem as fs};
+            let disposition = match options {
+                NativeOpenOptions::Read | NativeOpenOptions::ReadWrite => nt::FILE_OPEN,
+                NativeOpenOptions::ReadWriteCreate => nt::FILE_OPEN_IF,
+                _ => nt::FILE_CREATE,
+            };
+            let access = fs::FILE_GENERIC_READ
+                | if matches!(options, NativeOpenOptions::Read) {
+                    fs::FILE_ACCESS_RIGHTS(0)
+                } else {
+                    fs::FILE_GENERIC_WRITE
+                };
+            let file = open_windows_at(
+                parent,
+                name,
+                access,
+                disposition,
+                nt::FILE_NON_DIRECTORY_FILE | nt::FILE_SYNCHRONOUS_IO_NONALERT,
+                work,
+            )?;
+            if windows_stat_information(&file, work)?.FileAttributes
+                & fs::FILE_ATTRIBUTE_REPARSE_POINT.0
+                != 0
+            {
+                return Err(W::invalid_request());
+            }
+            Ok(file)
         })
     }
     #[cfg(unix)]

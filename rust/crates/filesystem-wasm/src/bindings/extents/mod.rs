@@ -42,7 +42,6 @@ pub enum BrowserExtentPlanResult {
 
 #[wasm_bindgen]
 impl BrowserCheckout {
-    /// Plans one bounded sparse range without reading file content blobs.
     #[wasm_bindgen(js_name = planFileExtents)]
     pub async fn plan_file_extents(
         &mut self,
@@ -75,7 +74,6 @@ impl BrowserCheckout {
         ts(result)
     }
 
-    /// Plans one bounded sparse range by stable file identity.
     #[wasm_bindgen(js_name = planFileExtentsById)]
     pub async fn plan_file_extents_by_id(
         &mut self,
@@ -108,7 +106,6 @@ impl BrowserCheckout {
         ts(result)
     }
 
-    /// Finds the next sparse data or hole boundary without reading file bodies.
     #[wasm_bindgen(js_name = seekFileExtent)]
     pub async fn seek_file_extent(
         &mut self,
@@ -125,7 +122,6 @@ impl BrowserCheckout {
         })
     }
 
-    /// Finds the next sparse boundary by stable file identity.
     #[wasm_bindgen(js_name = seekFileExtentById)]
     pub async fn seek_file_extent_by_id(
         &mut self,

@@ -7,14 +7,7 @@ pub(crate) fn read_link_held_wide<W: NativeHostWork>(
     maximum: u64,
     work: &mut W,
 ) -> Result<(Vec<u16>, W::Allocation), W::Error> {
-    let invalid_request = || {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "native link exceeds its bounded buffer",
-        )
-        .into()
-    };
-    let file = open_windows_link(parent, name, work, &invalid_request)?;
+    let file = open_windows_link(parent, name, work)?;
     let size = maximum.saturating_mul(4).saturating_add(32).min(16 * 1024);
     work.admit(WorkCounters {
         source_bytes_read: size,
@@ -23,9 +16,8 @@ pub(crate) fn read_link_held_wide<W: NativeHostWork>(
     let (mut buffer, allocation) = buffer(size as usize, work)?;
     buffer.resize(size as usize, 0u8);
     let result = (|| {
-        let returned = read_windows_link_record(&file, &mut buffer, work, &invalid_request)?;
-        let target =
-            windows_link_target_range::<W>(&buffer[..returned], maximum, &invalid_request)?;
+        let returned = read_windows_link_record(&file, &mut buffer, work)?;
+        let target = windows_link_target_range::<W>(&buffer[..returned], maximum)?;
         let target = &buffer[target];
         let length = target.len();
         let copied = copy_work(length as u64);
@@ -53,20 +45,17 @@ pub(super) fn open_windows_link<W: NativeHostWork>(
     parent: &Dir,
     name: &[u16],
     work: &mut W,
-    invalid_request: impl Fn() -> W::Error,
 ) -> Result<cap_std::fs::File, W::Error> {
-    use windows::Wdk::Storage::FileSystem::{
-        FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
-    };
-    use windows::Win32::Storage::FileSystem::{FILE_READ_ATTRIBUTES, SYNCHRONIZE};
-    open_windows_wide_at(
+    use windows::{Wdk::Storage::FileSystem as nt, Win32::Storage::FileSystem as fs};
+    let file = open_windows_at(
         parent,
         name,
-        FILE_READ_ATTRIBUTES | SYNCHRONIZE,
-        FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+        fs::FILE_READ_ATTRIBUTES | fs::SYNCHRONIZE,
+        nt::FILE_OPEN,
+        nt::FILE_SYNCHRONOUS_IO_NONALERT,
         work,
-    )?
-    .ok_or_else(invalid_request)
+    )?;
+    Ok(cap_std::fs::File::from_std(file))
 }
 
 #[cfg(windows)]
@@ -74,7 +63,6 @@ pub(super) fn read_windows_link_record<W: NativeHostWork>(
     file: &cap_std::fs::File,
     buffer: &mut [u8],
     work: &mut W,
-    invalid_request: impl Fn() -> W::Error,
 ) -> Result<usize, W::Error> {
     use std::os::windows::io::AsRawHandle as _;
     use windows::Win32::Foundation::HANDLE;
@@ -106,7 +94,7 @@ pub(super) fn read_windows_link_record<W: NativeHostWork>(
     if let Err(error) = read {
         let code = error.code().0 & 0xffff;
         if code == 122 || code == 234 {
-            return Err(invalid_request());
+            return Err(W::invalid_request());
         }
         return Err(io::Error::from_raw_os_error(code).into());
     }
@@ -121,7 +109,6 @@ pub(super) fn read_windows_link_record<W: NativeHostWork>(
 pub(super) fn windows_link_target_range<W: NativeHostWork>(
     bytes: &[u8],
     maximum: u64,
-    invalid_request: impl Fn() -> W::Error,
 ) -> Result<std::ops::Range<usize>, W::Error> {
     let malformed = || W::Error::from(io::Error::from(io::ErrorKind::InvalidData));
     let u16_at = |offset| -> Result<u16, W::Error> {
@@ -133,7 +120,7 @@ pub(super) fn windows_link_target_range<W: NativeHostWork>(
     let header = match tag {
         0xA000_000C => 20,
         0xA000_0003 => 16,
-        _ => return Err(invalid_request()),
+        _ => return Err(W::invalid_request()),
     };
     let offset = usize::from(u16_at(8)?);
     let length = usize::from(u16_at(10)?);
@@ -148,167 +135,53 @@ pub(super) fn windows_link_target_range<W: NativeHostWork>(
         start += 8;
     }
     if (end - start) as u64 > maximum {
-        return Err(invalid_request());
+        return Err(W::invalid_request());
     }
     Ok(start..end)
-}
-
-pub(super) fn prepare_source_link_buffer<W: SourceDemandReadWork>(
-    size: u64,
-    work: &mut W,
-) -> Result<acyclic_stream::PreparedOwnedBytes<crate::demand::SourcePayloadOwnership>, DemandError>
-{
-    let original = work
-        .native_source_work()
-        .ok_or(DemandError::NativeWorkUnavailable)?;
-    crate::native_host::NativeHostWork::check(&original)?;
-    let ownership = crate::demand::SourcePayloadOwnership::new(work)?;
-    let (mut buffer, allocation) = buffer(size as usize, work)?;
-    if let Err(error) = ownership.retain(allocation, work) {
-        drop(buffer);
-        let _cleanup = work.release(allocation);
-        return Err(error);
-    }
-    let copied = original
-        .reserve_work(copy_work(allocation))
-        .map_err(crate::native_name::original_name_error)?;
-    buffer.resize(buffer.capacity(), 0);
-    copied
-        .record_completed(copy_work(allocation))
-        .map_err(crate::native_name::original_name_error)?;
-    acyclic_stream::PreparedOwnedBytes::new(buffer, ownership, original.runtime_meter()).map_err(
-        |failure| match failure.into_error() {
-            acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
-                crate::native_name::original_name_error(original.runtime_error(error))
-            }
-            acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
-                DemandError::InvalidRequest
-            }
-        },
-    )
-}
-
-#[cfg(windows)]
-pub(super) fn read_source_link_held_wide<W: SourceDemandReadWork>(
-    parent: &Dir,
-    name: &[u16],
-    maximum_bytes: u64,
-    work: &mut W,
-) -> Result<acyclic_stream::OwnedBytes, DemandError> {
-    let file = open_windows_link(parent, name, work, W::invalid_request)?;
-    let size = maximum_bytes
-        .saturating_mul(4)
-        .saturating_add(32)
-        .min(16 * 1024);
-    work.admit(WorkCounters {
-        source_bytes_read: size,
-        ..WorkCounters::UNCHARGED
-    })?;
-    let mut prepared = prepare_source_link_buffer(size, work)?;
-    let returned = read_windows_link_record(
-        &file,
-        &mut prepared.writable()[..size as usize],
-        work,
-        W::invalid_request,
-    )?;
-    let target = windows_link_target_range::<W>(
-        &prepared.writable()[..returned],
-        maximum_bytes,
-        W::invalid_request,
-    )?;
-    work.check()?;
-    let bytes = prepared.freeze(returned).map_err(|failed| {
-        drop(failed);
-        DemandError::InvalidRequest
-    })?;
-    Ok(bytes.slice(target))
-}
-
-#[cfg(unix)]
-pub(crate) fn read_source_link_held<W: SourceDemandReadWork>(
-    parent: &Dir,
-    name: &Path,
-    maximum_bytes: u64,
-    work: &mut W,
-) -> Result<acyclic_stream::OwnedBytes, DemandError> {
-    require_leaf(name)?;
-    let maximum = maximum_bytes.saturating_add(1).min(isize::MAX as u64);
-    let mut size = maximum.min(256);
-    work.admit(WorkCounters {
-        source_bytes_read: size,
-        ..WorkCounters::UNCHARGED
-    })?;
-    unix_name(name.as_os_str(), work, |name, work| {
-        loop {
-            work.admit(WorkCounters {
-                source_bytes_read: size,
-                ..WorkCounters::UNCHARGED
-            })?;
-            let mut prepared = prepare_source_link_buffer(size, work)?;
-            let count = read_unix_link_into(
-                parent,
-                name,
-                &mut prepared.writable()[..size as usize],
-                work,
-            )?;
-            if count < size as usize && count as u64 <= maximum_bytes {
-                work.check()?;
-                return prepared.freeze(count).map_err(|failed| {
-                    drop(failed);
-                    DemandError::InvalidRequest
-                });
-            }
-            drop(prepared);
-            if size == maximum {
-                return Err(DemandError::InvalidRequest);
-            }
-            size = size.saturating_mul(2).min(maximum);
-        }
-    })
 }
 
 #[cfg(unix)]
 pub(super) fn read_unix_link<W: NativeHostWork>(
     parent: &Dir,
-    name: &OsStr,
+    name: &std::ffi::CStr,
     maximum_bytes: u64,
     work: &mut W,
-) -> Result<(Vec<u8>, W::Allocation), W::Error> {
+) -> Result<(Vec<u8>, usize, W::Allocation), W::Error> {
     let maximum = maximum_bytes.saturating_add(1).min(isize::MAX as u64);
     let mut size = maximum.min(256);
     work.admit(WorkCounters {
         source_bytes_read: size,
         ..WorkCounters::UNCHARGED
     })?;
-    unix_name(name, work, |name, work| {
-        loop {
-            work.admit(WorkCounters {
-                source_bytes_read: size,
-                ..WorkCounters::UNCHARGED
-            })?;
-            let (mut output, allocation) = buffer(size as usize, work)?;
-            output.resize(size as usize, 0);
-            let result = read_unix_link_into(parent, name, &mut output, work);
-            if let Ok(count) = result.as_ref() {
-                if *count < output.len() && *count as u64 <= maximum_bytes {
-                    if let Err(error) = work.check() {
-                        drop(output);
-                        work.release(allocation)?;
-                        return Err(error);
-                    }
-                    output.truncate(*count);
-                    return Ok((output, allocation));
+    loop {
+        work.admit(WorkCounters {
+            source_bytes_read: size,
+            ..WorkCounters::UNCHARGED
+        })?;
+        let (mut output, allocation) = buffer(size as usize, work)?;
+        let result = (|| {
+            work.started_io(copy_work(output.capacity() as u64))?;
+            output.resize(output.capacity(), 0);
+            read_unix_link_into(parent, name, &mut output[..size as usize], work)
+        })();
+        if let Ok(count) = result.as_ref() {
+            if *count < size as usize && *count as u64 <= maximum_bytes {
+                if let Err(error) = work.check() {
+                    drop(output);
+                    work.release(allocation)?;
+                    return Err(error);
                 }
+                return Ok((output, *count, allocation));
             }
-            drop(output);
-            work.release(allocation)?;
-            result?;
-            if size == maximum {
-                return Err(W::invalid_request());
-            }
-            size = size.saturating_mul(2).min(maximum);
         }
-    })
+        drop(output);
+        work.release(allocation)?;
+        result?;
+        if size == maximum {
+            return Err(W::invalid_request());
+        }
+        size = size.saturating_mul(2).min(maximum);
+    }
 }
 
 #[cfg(unix)]
@@ -346,4 +219,111 @@ pub(super) fn read_unix_link_into<W: NativeHostWork>(
         ..WorkCounters::UNCHARGED
     })?;
     Ok(count)
+}
+
+#[cfg(windows)]
+impl HostRoot {
+    pub(crate) fn read_link<W: NativeHostWork>(
+        &self,
+        path: &[u16],
+        maximum: u64,
+        work: &mut W,
+    ) -> Result<(Vec<u16>, W::Allocation), W::Error> {
+        let (parent, leaf) = wide_parent_leaf(path).map_err(|_| W::invalid_request())?;
+        read_link_held_wide(&self.open_dir_held(parent, work)?, leaf, maximum, work)
+    }
+}
+
+impl HostRoot {
+    pub(crate) fn read_source_link<W: SourceDemandReadWork>(
+        &self,
+        #[cfg(unix)] path: &Path,
+        #[cfg(windows)] path: &[u16],
+        maximum: u64,
+        work: &mut W,
+    ) -> Result<acyclic_stream::OwnedBytes, DemandError> {
+        #[cfg(unix)]
+        let (parent, leaf) = (
+            path.parent().ok_or(DemandError::InvalidRequest)?,
+            path.file_name().ok_or(DemandError::InvalidRequest)?,
+        );
+        #[cfg(windows)]
+        let (parent, leaf) = wide_parent_leaf(path)?;
+        read_source_link_held(
+            &self.open_dir_held(parent, work)?,
+            #[cfg(unix)]
+            Path::new(leaf),
+            #[cfg(windows)]
+            leaf,
+            maximum,
+            work,
+        )
+    }
+}
+
+pub(crate) fn read_source_link_held<W: SourceDemandReadWork>(
+    parent: &Dir,
+    #[cfg(unix)] name: &Path,
+    #[cfg(windows)] name: &[u16],
+    maximum: u64,
+    work: &mut W,
+) -> Result<acyclic_stream::OwnedBytes, DemandError> {
+    let original = work
+        .native_source_work()
+        .ok_or(DemandError::NativeWorkUnavailable)?;
+    NativeHostWork::check(&original)?;
+    let ownership = crate::demand::SourcePayloadOwnership::new(work)?;
+    #[cfg(unix)]
+    require_leaf(name)?;
+    #[cfg(unix)]
+    let (bytes, count, allocation) = unix_name(name.as_os_str(), work, |name, work| {
+        read_unix_link(parent, name, maximum, work)
+    })?;
+    #[cfg(unix)]
+    let target = 0..count;
+    #[cfg(windows)]
+    let (bytes, allocation, target) = {
+        let file = open_windows_link(parent, name, work)?;
+        let size = maximum.saturating_mul(4).saturating_add(32).min(16 * 1024) as usize;
+        work.admit(WorkCounters {
+            source_bytes_read: size as u64,
+            ..WorkCounters::UNCHARGED
+        })?;
+        let (mut bytes, allocation) = buffer(size, work)?;
+        let result = (|| {
+            work.started_io(copy_work(allocation))?;
+            bytes.resize(bytes.capacity(), 0);
+            let count = read_windows_link_record(&file, &mut bytes[..size], work)?;
+            windows_link_target_range::<W>(&bytes[..count], maximum)
+        })();
+        match result {
+            Ok(target) => (bytes, allocation, target),
+            Err(error) => {
+                drop(bytes);
+                work.release(allocation)?;
+                return Err(error);
+            }
+        }
+    };
+    if let Err(error) = ownership.retain(allocation, work) {
+        drop(bytes);
+        work.release(allocation)?;
+        return Err(error);
+    }
+    let prepared =
+        acyclic_stream::PreparedOwnedBytes::new(bytes, ownership, original.runtime_meter())
+            .map_err(|failure| match failure.into_error() {
+                acyclic_stream::PreparedOwnedBytesError::Admission(error) => {
+                    crate::native_name::original_name_error(original.runtime_error(error))
+                }
+                acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized => {
+                    DemandError::InvalidRequest
+                }
+            })?;
+    work.check()?;
+    let bytes = prepared.freeze(target.end).map_err(|failed| {
+        drop(failed);
+        DemandError::InvalidRequest
+    })?;
+    Ok(bytes.slice(target))
 }

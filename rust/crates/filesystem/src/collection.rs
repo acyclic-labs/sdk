@@ -517,11 +517,6 @@ impl CheckoutRoots {
             + self.hold.as_ref().map_or(0, Hold::logical_owned_bytes)
     }
 
-    #[cfg(test)]
-    pub(crate) const fn has_hold(&self) -> bool {
-        self.hold.is_some()
-    }
-
     /// Only freshly cloned, measured root buffers receive these exact tags.
     /// Collection slot capacity is cached shared storage, not handle custody.
     pub(crate) fn attach_control_custody(&mut self, owner: &Arc<crate::kernel::ProofDataCustody>) {

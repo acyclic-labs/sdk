@@ -77,7 +77,7 @@ impl MountProbe {
         destination: &Path,
         work: &ProbeWork<'_, '_>,
     ) -> Result<bool, NativeMountError> {
-        let mut path = [MaybeUninit::<u8>::uninit(); libc::PATH_MAX as usize];
+        let mut path = [0_u8; libc::PATH_MAX as usize];
         let mut close = match work {
             ProbeWork::Cleanup(loan) => loan.admit_completed(WRITE_WORK)?,
             ProbeWork::Live(original) => original.reserve_work(WRITE_WORK)?,
@@ -94,23 +94,16 @@ impl MountProbe {
             if unsafe { libc::fcntl(fd, libc::F_GETPATH, path.as_mut_ptr()) } < 0 {
                 return Err(std::io::Error::last_os_error().into());
             }
-            let mut length = 0;
-            for byte in &path {
-                work.check()?;
-                if unsafe { byte.assume_init() } == 0 {
-                    break;
-                }
-                length += 1;
-            }
-            if length == path.len() {
-                return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
-            }
+            let mut length = CStr::from_bytes_until_nul(&path)
+                .map_err(|_| crate::NativeTreeMaterializationError::InvalidLayout)?
+                .to_bytes()
+                .len();
+            work.check()?;
             let name = destination
                 .file_name()
                 .ok_or(NativeMountError::InvalidDestination)?
                 .as_bytes();
-            let separator =
-                usize::from(length != 0 && unsafe { path[length - 1].assume_init() } != b'/');
+            let separator = usize::from(length != 0 && path[length - 1] != b'/');
             let end = length
                 .checked_add(separator)
                 .and_then(|n| n.checked_add(name.len()))
@@ -120,12 +113,10 @@ impl MountProbe {
             }
             work.copy(name.len() as u64)?;
             if separator != 0 {
-                path[length].write(b'/');
+                path[length] = b'/';
                 length += 1;
             }
-            for (slot, byte) in path[length..end].iter_mut().zip(name) {
-                slot.write(*byte);
-            }
+            path[length..end].copy_from_slice(name);
 
             Ok::<_, NativeMountError>(end)
         })();
@@ -137,8 +128,7 @@ impl MountProbe {
         if let Some(error) = close_error {
             return Err(error.into());
         }
-        // SAFETY: the prefix contains the initialized parent and appended name.
-        let normalized = unsafe { std::slice::from_raw_parts(path.as_ptr().cast::<u8>(), end) };
+        let normalized = &path[..end];
         if self.mounts.capacity() == 0 {
             self.preallocate(work.original())?;
         }
