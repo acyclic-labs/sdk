@@ -152,8 +152,12 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static,
                     let lease = Arc::clone(&lease);
                     async move { lease.verify_with_native_work(&original)?.await }
                 };
+                let _mutations_hold;
+                let mut selected = super::fork_preparer_io::vector(mutations.len(), Some(io))?;
+                selected.extend(root_lazy_mutations(mutations));
+                _mutations_hold = io.guard_owned((selected.capacity() * std::mem::size_of::<acyclic_fs::lazy_workspace::LazyWriteMutation<'_>>()) as u64)?;
                 let (commit, snapshot) = lazy.write_at_snapshot_with_native_work_guarded(
-                    snapshot, root_lazy_mutations(mutations), key, permit, original,
+                    snapshot, selected, key, permit, original,
                     io.cancellation(), &mut before_mutation,
                 ).await?;
                 Ok((generation(commit)?, snapshot))

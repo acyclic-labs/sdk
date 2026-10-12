@@ -55,7 +55,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
             if !path.is_empty() {
                 crate::conversation::validate_content_path(path, &mut Some(&mut crate::store::history::native_work_io(work)?))?;
             }
-            return handle.grant().require_directory_path(project, path, Some(&super::super::PreparationIo::from_native_work(work)?));
+            return handle.grant().require_directory_path(project, path, Some(&crate::filesystem::PreparationIo::from_native_work(work)?));
         }
         host.require_private_directory(&handle.authorization().project, handle.grant(), path)
     }
