@@ -226,7 +226,7 @@ async fn execute_in_heap<P: StreamProvider + 'static>(
             let bytes = io.encode_json(&captured, u64::from(request.maximum_result_bytes), true)?;
             let decoded = io.decode_preparation_with_code::<serde_json::Value>(
                 &bytes, crate::wire::ErrorCode::Invalid)?;
-            crate::contract::validate_json_schema_value_with_io(schema, &decoded.value, "native process result", Some(&io))?;
+            crate::contract::validate_json_schema_value(schema, &decoded.value, "native process result", Some(&io))?;
             drop(decoded);
             let guard = io.into_native_custody(bytes.capacity() as u64)?;
             (bytes, Some(guard))
@@ -236,7 +236,7 @@ async fn execute_in_heap<P: StreamProvider + 'static>(
                 return Ok(invocation_failure(Error::Invalid("native result exceeded its admitted byte allowance".into()), spent));
             }
             crate::contract::validate_json_schema_value(schema,
-                &serde_json::to_value(&captured).map_err(|error| Error::Invalid(error.to_string()))?, "native process result")?;
+                &serde_json::to_value(&captured).map_err(|error| Error::Invalid(error.to_string()))?, "native process result", None)?;
             (bytes, None)
         };
         let bytes_custody = bytes_custody;

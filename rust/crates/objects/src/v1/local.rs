@@ -51,11 +51,10 @@ pub type LocalOptions = crate::LocalObjectsLimits;
 /// Private physical storage reclamation counters; no public Objects history.
 pub type GarbageCollection = crate::LocalObjectsGarbageCollection;
 
-/// Runs `work` on a native blocking worker inside the caller's span, so its
-/// spans keep their parent.
+/// Runs `work` on a native blocking worker inside the caller's span, so its spans keep their parent.
 fn blocking<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
-) -> acyclic_native_runtime::BlockingIoTask<T> {
+) -> acyclic_native_runtime::NativeCompletion<T> {
     let span = tracing::Span::current();
     acyclic_native_runtime::run_blocking_io(move || span.in_scope(work))
 }
@@ -63,7 +62,7 @@ fn blocking<T: Send + 'static>(
 fn blocking_with_meter<T: Send + 'static>(
     work: impl FnOnce() -> T + Send + 'static,
     meter: Option<Arc<dyn NativeReadMeter>>,
-) -> Result<acyclic_native_runtime::BlockingIoTask<T>, NativeObjectsError> {
+) -> Result<acyclic_native_runtime::NativeCompletion<T>, NativeObjectsError> {
     match meter {
         None => Ok(blocking(work)),
         Some(meter) => {
@@ -81,8 +80,6 @@ pub struct LocalObjects {
 }
 impl LocalObjects {
     /// Opens a v1 store and validates every replayed record and referenced segment.
-    ///
-    /// The v1 journal is not silently converted or overwritten.
     pub async fn open(
         root: impl AsRef<Path>,
         options: LocalOptions,
@@ -154,9 +151,6 @@ impl LocalObjects {
     }
 
     /// Authenticates retained bodies and reclaims unreachable private segments.
-    ///
-    /// Collection waits for admitted physical reads and mutations. Cancellation
-    /// detaches observation while the owned worker keeps the lease and root.
     pub async fn collect_garbage(
         &self,
         maximum_candidates: u64,

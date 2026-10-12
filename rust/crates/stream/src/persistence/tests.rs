@@ -3,13 +3,12 @@ use crate::{
     AppendRequest, CommitCondition, CommitConflict, CommitMutation, CommitRequest, ForkRequest,
     IdempotencyKey, MemoryStream, StreamProvider,
 };
-use bytes::Bytes;
 use crate::OwnedBytes;
 
 const BOUND: usize = 1024 * 1024;
 
 fn key(value: &'static [u8]) -> Result<IdempotencyKey, StreamError> {
-    IdempotencyKey::new(Bytes::from_static(value))
+    IdempotencyKey::new(OwnedBytes::from_static(value))
 }
 
 async fn round_trip(
@@ -147,7 +146,7 @@ fn bounds_and_malformed_persistence_fail_closed() -> Result<(), Box<dyn std::err
         Err(StreamError::InvalidArgument)
     );
     let mut wire = wire_codec::observation_wire(value);
-    wire.request_digest = Bytes::from_static(b"short");
+    wire.request_digest = bytes::Bytes::from_static(b"short");
     assert_eq!(
         decode_observation(&wire.encode_to_vec(), BOUND),
         Err(StreamError::InvalidArgument)

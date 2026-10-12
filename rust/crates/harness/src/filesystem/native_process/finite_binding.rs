@@ -271,7 +271,7 @@ async fn bind_body<P: StreamProvider + 'static>(
         Some(io) => {
             let decoded = io.decode_preparation_with_code::<serde_json::Value>(
                 schema.as_ref(), crate::wire::ErrorCode::Invalid)?;
-            crate::contract::compile_json_schema_with_io(&decoded.value, "effect result", Some(io))?;
+            crate::contract::compile_json_schema(&decoded.value, "effect result", Some(io))?;
             decoded.into_retained()
         }
         None => crate::effects::validate_schema_bytes(&plan.result_schema, schema.as_ref())?,

@@ -428,7 +428,7 @@ async fn append_receipt_original<P: StreamProvider>(
             crate::contract::canonical_json_bytes_bounded(receipt,
                 JsonBounds { maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64,
                     maximum_items: remaining.items_examined, maximum_depth: 256 },
-                &mut |charge| {
+                None, &mut |charge| {
                     let result = match charge {
                         JsonCodecCharge::Work { bytes, items } => work.charge(WorkCounters {
                             bytes_encoded: bytes, items_examined: items, ..WorkCounters::default() }),

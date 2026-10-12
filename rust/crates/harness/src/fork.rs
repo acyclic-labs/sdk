@@ -1159,7 +1159,7 @@ fn decode_fork_manifest(
     for item in &items {
         item.validate()?;
     }
-    let canonical = crate::contract::json_bytes_bounded_trusted(&items, bounds, &mut |charge| {
+    let canonical = crate::contract::json_bytes_bounded(&items, bounds, None, &mut |charge| {
         match charge {
             crate::contract::JsonCodecCharge::Retain { bytes } => owned.retain(bytes),
             crate::contract::JsonCodecCharge::Release { bytes } => owned.release(bytes),
