@@ -1973,7 +1973,7 @@ impl NativeRecoveryState {
             }
             if remove_destination && !self.destination_removed {
                 #[cfg(windows)]
-                projfs::remove_empty_recovery_destination_measured(
+                projfs::remove_empty_recovery_destination(
                     destination, self.destination_identity, &mut &*work,
                 )?;
                 #[cfg(not(windows))]
@@ -2034,7 +2034,9 @@ impl NativeRecoveryWorker {
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 #[cfg(any(target_os = "linux", target_os = "macos"))]
                 { self.state.control.retire_controls(&self.original) }
-                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                #[cfg(windows)]
+                { self.state.control.retire_controls() }
+                #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
                 { self.state.control.retire_controls_with_work(&self.original) }
             })) {
                 Ok(Ok(())) if !self.state.control.controls_pending() => break,
@@ -2139,7 +2141,7 @@ fn recover_driver_with_work(
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     { let _ = disposable; control.recover(destination, work) }
     #[cfg(target_os = "windows")]
-    { control.recover_measured(destination, disposable, &mut &*work) }
+    { control.recover(destination, disposable, &mut &*work) }
     #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
     { let _ = (control, destination, disposable, work); Err(NativeMountError::UnsupportedTarget) }
 }

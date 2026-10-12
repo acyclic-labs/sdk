@@ -119,39 +119,27 @@ async fn lazy_mount_preserves_guarded_publication_import_and_retirement()
         .ok_or("mount lost its root identity")?;
     let io_work = new_work(WorkBudget::UNBOUNDED)?;
     let foreign = new_work(WorkBudget::UNBOUNDED)?;
-    let bytes = mount
-        .with_original_work(&io_work, |_scope| async {
-            assert!(matches!(
-                mount
-                    .with_original_work(&foreign, |_| std::future::ready(()))
-                    .await,
-                Err(MountLifecycleError::Native(
-                    NativeMountError::ControlPending
-                ))
-            ));
-            mount
-                .with_original_work(&io_work, |scope| {
-                    let scope = scope.try_clone_for_io();
-                    let mount = &mount;
-                    let work = &io_work;
-                    async move {
-                        let scope = scope.map_err(MountLifecycleError::Native)?;
-                        let result = work
-                            .read_working_file::<MountLifecycleError, _, _>(
-                                mount.path(),
-                                identity,
-                                Path::new("source.txt"),
-                                32,
-                                || std::future::ready(Ok(())),
-                            )
-                            .await;
-                        drop(scope);
-                        result
-                    }
-                })
-                .await?
-        })
-        .await??;
+    let original_scope = mount.begin_original_work(&io_work)?;
+    assert!(matches!(
+        mount.begin_original_work(&foreign),
+        Err(MountLifecycleError::Native(
+            NativeMountError::ControlPending
+        ))
+    ));
+    let nested_scope = mount.begin_original_work(&io_work)?;
+    let io_scope = nested_scope.try_clone_for_io()?;
+    let bytes = io_work
+        .read_working_file::<MountLifecycleError, _, _>(
+            mount.path(),
+            identity,
+            Path::new("source.txt"),
+            32,
+            || std::future::ready(Ok(())),
+        )
+        .await?;
+    drop(io_scope);
+    drop(nested_scope);
+    drop(original_scope);
     assert_eq!(bytes.as_ref(), b"source");
     assert_eq!(foreign.receipt().source_bytes_read, 0);
     drop(bytes);

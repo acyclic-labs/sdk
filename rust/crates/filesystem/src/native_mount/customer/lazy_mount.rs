@@ -69,23 +69,6 @@ where
             .map_err(Into::into)
     }
 
-    /// Keeps actual callback custody through the caller's physical operation.
-    pub async fn with_original_work<T, F, Fut>(
-        &self,
-        work: &NativeMaterializationWork,
-        operation: F,
-    ) -> Result<T, MountLifecycleError>
-    where
-        T: Send,
-        F: FnOnce(&super::super::OwnedNativeMountOriginalWorkScope) -> Fut + Send,
-        Fut: Future<Output = T> + Send,
-    {
-        let scope = self.begin_original_work(work)?;
-        let result = operation(&scope).await;
-        drop(scope);
-        Ok(result)
-    }
-
     /// Publishes pending authored effects with an unrestricted permit.
     pub async fn sync(&self) -> Result<(), MountLifecycleError> {
         let work = NativeMaterializationWork::new(
