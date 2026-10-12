@@ -126,9 +126,10 @@ fn direct_checkout_view_lease_excludes_concurrent_mutation()
     let lease = source.acquire_view_lease()?;
     let writer = Arc::clone(&source);
     let (completed, receive) = std::sync::mpsc::sync_channel(1);
+    let write_work = capture_meter(boundary_budget(), &CancellationToken::new())?;
     let task = std::thread::spawn(move || {
         let result =
-            writer.create_directory(&MountPath::root().child(b"leased".to_vec()), metadata(), &capture_meter(boundary_budget(), &CancellationToken::new())?);
+            writer.create_directory(&MountPath::root().child(b"leased".to_vec()), metadata(), &write_work);
         assert!(completed.send(result).is_ok(), "mutation result receiver");
     });
     assert!(
@@ -154,7 +155,7 @@ fn callback_reads_overlap_a_held_observation() -> Result<(), Box<dyn std::error:
     source.create_file(&path, metadata(), None, &capture_meter(boundary_budget(), &CancellationToken::new())?)?;
     source.write_range(&path, 0, Bytes::from_static(b"shared"))?;
     let owner = ViewGate::callback_owner();
-    let held = source.runtime.wait(|| {
+    let held = source.runtime.wait(|| async {
         source.checkout.observe(
             owner,
             &mut NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(
@@ -163,7 +164,7 @@ fn callback_reads_overlap_a_held_observation() -> Result<(), Box<dyn std::error:
             )),
             &source.cancellation,
             None,
-        )
+        ).await
     })?;
     let reader = Arc::clone(&source);
     let (completed, receive) = std::sync::mpsc::sync_channel(1);
@@ -266,7 +267,7 @@ fn concurrent_observations_never_see_a_mutation_half_applied()
                 let mut checkout = source.checkout.lock().await;
                 for path in &pair {
                     checkout
-                        .apply_authored_transaction(vec![crate::AuthoredMutation::Write { path: path.clone(), offset: 0, bytes: acyclic_stream::OwnedBytes::from_vec((Bytes::from(vec![round])).to_vec()) }], boundary_budget(), &source.cancellation)
+                        .apply_authored_transaction(vec![crate::AuthoredMutation::Write { path: path.clone(), offset: 0, bytes: acyclic_stream::OwnedBytes::from(Bytes::from(vec![round])) }], boundary_budget(), &source.cancellation)
                         .await
                         .map_err(engine_error)?;
                     tokio::task::yield_now().await;
@@ -314,7 +315,7 @@ fn observers_cannot_mutate_or_advance_their_checkout() -> Result<(), Box<dyn std
             .map_err(facade_error)?
             .value;
         let write = observer
-            .apply_authored_transaction(vec![crate::AuthoredMutation::Write { path: path, offset: 0, bytes: acyclic_stream::OwnedBytes::from_vec((Bytes::from_static(b"lost")).to_vec()) }], boundary_budget(), &source.cancellation)
+            .apply_authored_transaction(vec![crate::AuthoredMutation::Write { path: path, offset: 0, bytes: acyclic_stream::OwnedBytes::from(Bytes::from_static(b"lost")) }], boundary_budget(), &source.cancellation)
             .await;
         let refresh = observer
             .refresh_head(boundary_budget(), &source.cancellation)

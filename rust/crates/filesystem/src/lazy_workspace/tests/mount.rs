@@ -409,7 +409,7 @@ async fn a_shadowed_identity_keeps_256k_of_content_across_restart() {
     }
     let fs = Fs::local(crate::LocalOptions::new(&fs_path)).await.unwrap();
     let root = LazyWorkspace::open(
-        fs.open_workspace("root", accounting!(), &CancellationToken::new()).await.unwrap(),
+        fs.open_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).unwrap(),
         Arc::new(CountingSource::new(Bytes::from_static(b"source"))),
         crate::core_state::LocalCoreStateStore::new(&state_path),
         accounting!(),

@@ -376,7 +376,7 @@ async fn promotion_and_attribute_reads_leave_cached_lookups_current()
     let stamp = view.view_stamp().ok_or("lazy view has no stamp")?;
 
     // Reading attributes of a source file answers from the source.
-    assert!(view.read_attribute(&file, b"user.absent", 1024)?.is_none());
+    assert!(view.read_attribute(&file, b"user.absent", &crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &CancellationToken::new()).map_err(|(error, _)| error)?)?.is_none());
     assert!(view.list_attributes(&file, None, 8)?.names.is_empty());
     assert!(view.authored.lookup(&file)?.is_none());
 

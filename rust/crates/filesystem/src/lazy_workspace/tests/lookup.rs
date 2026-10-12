@@ -150,7 +150,7 @@ async fn last_alias_removal_keeps_the_identity_shadow_after_reopen() {
     assert_eq!(source.counts.ranges.load(Ordering::Relaxed), 0);
     root.remove("/a", None, accounting!()).await.unwrap();
     let reopened = LazyWorkspace::open(
-        fs.open_workspace("root", accounting!(), &CancellationToken::new()).await.unwrap(),
+        fs.open_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).unwrap(),
         source,
         store,
         accounting!(),

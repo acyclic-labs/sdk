@@ -188,7 +188,7 @@ async fn open_recovers_remove_intent_from_authored_state() {
     );
 
     let reopened = LazyWorkspace::open(
-        fs.open_workspace("root", accounting!(), &CancellationToken::new()).await.expect("workspace"),
+        fs.open_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).expect("workspace"),
         Arc::clone(&source),
         store.clone(),
         accounting!(),
@@ -260,7 +260,7 @@ async fn open_recovers_remove_intent_from_authored_state() {
     ));
 
     let finalized = LazyWorkspace::open(
-        fs.open_workspace("root", accounting!(), &CancellationToken::new()).await.expect("workspace"),
+        fs.open_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).expect("workspace"),
         Arc::clone(&source),
         store,
         accounting!(),
@@ -325,7 +325,7 @@ async fn source_only_remove_recovery_keeps_tombstone_across_a_competing_create()
         .expect("competing authored create");
 
     let reopened = LazyWorkspace::open(
-        fs.open_workspace("root", accounting!(), &CancellationToken::new()).await.expect("workspace"),
+        fs.open_workspace("root", WorkBudget::UNBOUNDED, &CancellationToken::new()).await.map(|receipt| receipt.value).expect("workspace"),
         Arc::clone(&source),
         store,
         accounting!(),

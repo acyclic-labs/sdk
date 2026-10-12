@@ -27,7 +27,7 @@ fn a_detached_write_that_cannot_stamp_changes_nothing() -> Result<(), Box<dyn st
             )
             .await
             .map(|receipt| receipt.value)
-    }, None).expect("callback future")?;
+    })?;
     let source = CheckoutMountSource::new(Arc::new(SharedCheckout::new(checkout)), config)?;
     let path = native_test_path("stamped.bin");
     let timed = FileMetadata {
@@ -464,7 +464,7 @@ fn writable_projfs_captures_closes_renames_links_and_deletes()
             .env("ACYCLIC_FS_TEST_PATH", destination.join(first_name)), std::time::Duration::from_secs(120))?;
     assert!(write_status.success());
     // Captures of external operations are deferred until callbacks flush.
-    session.flush_callbacks()?;
+    session.flush_callbacks(&capture_meter(boundary_budget(), &CancellationToken::new())?)?;
     let first = windows_path(first_name);
     assert_eq!(source.read_range(&first, 0, 9)?.as_ref(), b"projected");
 
@@ -481,7 +481,7 @@ fn writable_projfs_captures_closes_renames_links_and_deletes()
         std::time::Duration::from_secs(120),
     )?;
     assert!(rename_status.success());
-    session.flush_callbacks()?;
+    session.flush_callbacks(&capture_meter(boundary_budget(), &CancellationToken::new())?)?;
     let second = windows_path(second_name);
     assert_eq!(source.lookup(&first)?, None);
     assert!(source.lookup(&second)?.is_some());
@@ -496,7 +496,7 @@ fn writable_projfs_captures_closes_renames_links_and_deletes()
             .env("ACYCLIC_FS_TEST_SOURCE", destination.join(second_name))
             .env("ACYCLIC_FS_TEST_DESTINATION", destination.join(linked_name)), std::time::Duration::from_secs(120))?;
     assert!(link_status.success());
-    session.flush_callbacks()?;
+    session.flush_callbacks(&capture_meter(boundary_budget(), &CancellationToken::new())?)?;
     let linked = windows_path(linked_name);
     let second_id = source
         .lookup(&second)?
@@ -524,7 +524,7 @@ fn writable_projfs_captures_closes_renames_links_and_deletes()
         std::time::Duration::from_secs(120),
     )?;
     assert!(delete_status.success());
-    session.flush_callbacks()?;
+    session.flush_callbacks(&capture_meter(boundary_budget(), &CancellationToken::new())?)?;
     assert_eq!(source.lookup(&second)?, None);
     assert!(source.lookup(&linked)?.is_some());
     assert!(session.stop()?);
