@@ -214,51 +214,36 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                     let bytes = std::mem::size_of::<LazyWorkspaceError>() as u64;
                     let cleanup_allocation = accounting.claim_owned(bytes, 1)?;
                     let cleanup_slot = Box::<LazyWorkspaceError>::new_uninit();
-                    let answer = {
+                    let answer = 'accounted: {
                         #[cfg(not(target_arch = "wasm32"))]
                         if let Some(original) = accounting.native_work() {
+                            break 'accounted {
+                                self.source
+                                    .list_page(
+                                        state.source,
+                                        &directory.value,
+                                        source_cursor,
+                                        maximum,
+                                        original,
+                                        cancellation,
+                                    )
+                                    .await
+                                    .map_err(LazyWorkspaceError::from)
+                            };
+                        }
+                        accept_receipt(
                             self.source
                                 .list_page(
                                     state.source,
                                     &directory.value,
                                     source_cursor,
                                     maximum,
-                                    original,
+                                    accounting.remaining()?,
                                     cancellation,
                                 )
-                                .await
-                                .map_err(LazyWorkspaceError::from)
-                        } else {
-                            accept_receipt(
-                                self.source
-                                    .list_page(
-                                        state.source,
-                                        &directory.value,
-                                        source_cursor,
-                                        maximum,
-                                        accounting.remaining()?,
-                                        cancellation,
-                                    )
-                                    .await,
-                                accounting,
-                            )
-                        }
-                        #[cfg(target_arch = "wasm32")]
-                        {
-                            accept_receipt(
-                                self.source
-                                    .list_page(
-                                        state.source,
-                                        &directory.value,
-                                        source_cursor,
-                                        maximum,
-                                        accounting.remaining()?,
-                                        cancellation,
-                                    )
-                                    .await,
-                                accounting,
-                            )
-                        }
+                                .await,
+                            accounting,
+                        )
                     };
                     let mut page = match answer {
                         Ok(page) => page,

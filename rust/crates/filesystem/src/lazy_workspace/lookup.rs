@@ -272,26 +272,14 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         };
         if node.kind != SourceNodeKind::Directory && node.link_count != Some(1) {
             let id = self.source_file_id(&node.file_identity, accounting)?;
-            let record = {
+            let record = 'accounted: {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(original) = accounting.native_work() {
-                    Some(
-                        checkout
-                            .read_file_record_by_id(id, original, cancellation)
-                            .await
-                            .map_err(LazyWorkspaceError::from),
-                    )
-                } else {
-                    None
+                    break 'accounted checkout
+                        .read_file_record_by_id(id, original, cancellation)
+                        .await
+                        .map_err(LazyWorkspaceError::from);
                 }
-                #[cfg(target_arch = "wasm32")]
-                {
-                    None::<Result<FileRecord, LazyWorkspaceError>>
-                }
-            };
-            let record = if let Some(record) = record {
-                record
-            } else {
                 let receipt = checkout
                     .read_file_record_by_id(id, accounting.remaining()?, cancellation)
                     .await;

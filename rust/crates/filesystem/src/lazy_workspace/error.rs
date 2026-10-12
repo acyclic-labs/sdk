@@ -71,9 +71,6 @@ pub enum LazyWorkspaceError {
     /// Original logical cut cannot be authenticated.
     #[error("original snapshot is unavailable")]
     OriginalSnapshotUnavailable,
-    /// Original publication did not commit.
-    #[error("publication was not committed: {0:?}")]
-    SelectedPublication(crate::CheckoutCommitOutcome),
     /// Original native denial.
     #[cfg(not(target_arch = "wasm32"))]
     #[error(transparent)]

@@ -660,8 +660,7 @@ impl MountSourceError {
             | Self::NativeRecordContextTransaction(_, allocation) | Self::NativeRecordCorrupt(_, allocation) =>
                 Some(allocation),
             Self::MutationFinalization { custody, .. } => Some(custody),
-            Self::NativeWorkspaceCause( _, allocation ) => Some( allocation ),
-            Self::NativeWork(error) => error.native_failure_allocation_mut(),
+            Self::NativeWorkspaceCause(_, allocation) => Some(allocation),
             _ => None,
         }
     }
@@ -748,7 +747,7 @@ pub(crate) fn native_materialization_failure_is_fatal(
             | crate::NativeTreeMaterializationError::Cancelled
             | crate::NativeTreeMaterializationError::AllocationFailed(_)
             | crate::NativeTreeMaterializationError::IndeterminatePreparation
-            | crate::NativeTreeMaterializationError::ExternalMutation(..)
+            | crate::NativeTreeMaterializationError::ExternalMutation
             | crate::NativeTreeMaterializationError::AllocationChanged { .. }
     )
 }

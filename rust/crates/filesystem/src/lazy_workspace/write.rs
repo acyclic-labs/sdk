@@ -21,7 +21,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         let result = async {
             let checkout = self
                 .workspace
-                .checkout_with_accounting(
+                .checkout_accounted(
                     crate::model::GenerationSelector::Head,
                     crate::model::CheckoutMode::tracking_transaction(),
                     accounting,
@@ -32,7 +32,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 crate::Transaction::from_checkout(&self.workspace, checkout, operation, false);
             if let Some(parent) = parent_path(path) {
                 transaction
-                    .create_dir_all_with_accounting(parent, accounting, cancellation(accounting))
+                    .create_dirs(parent, accounting, cancellation(accounting))
                     .await?;
             }
             if let Some((lookup, _)) = &lookup
@@ -44,19 +44,46 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 self.apply_resolved_promotion(&mut transaction, path, lookup, u64::MAX, accounting)
                     .await?;
             }
-            transaction
-                .write_with_accounting(path, bytes, accounting, cancellation(accounting))
-                .await?;
+            'accounted: {
+                let cancellation = cancellation(accounting);
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(original) = accounting.native_work() {
+                    break 'accounted transaction
+                        .write(path, bytes, original, cancellation)
+                        .await
+                        .map_err(LazyWorkspaceError::from);
+                }
+                accept_receipt(
+                    transaction
+                        .write(path, bytes, accounting.remaining()?, cancellation)
+                        .await,
+                    accounting,
+                )
+            }?;
             if let Some((LazyLookup::Source { node, .. }, _)) = &lookup {
                 let file_id = self.source_file_id(&node.file_identity, accounting)?;
-                transaction
-                    .apply_workspace_path_with_accounting(
-                        path,
-                        |path| AuthoredMutation::Reidentify { path, file_id },
+                'accounted: {
+                    let cancellation = cancellation(accounting);
+                    let build = |path| AuthoredMutation::Reidentify { path, file_id };
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(original) = accounting.native_work() {
+                        break 'accounted transaction
+                            .mutate(path, |path| Ok(build(path)), original, cancellation)
+                            .await
+                            .map_err(LazyWorkspaceError::from);
+                    }
+                    accept_receipt(
+                        transaction
+                            .mutate(
+                                path,
+                                |path| Ok(build(path)),
+                                accounting.remaining()?,
+                                cancellation,
+                            )
+                            .await,
                         accounting,
-                        cancellation(accounting),
                     )
-                    .await?;
+                }?;
             }
             self.commit(&mut transaction, permit, accounting).await
         }

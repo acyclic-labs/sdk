@@ -88,7 +88,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 return Err(LazyWorkspaceError::UnsupportedNode);
             }
         };
-        crate::Transaction::<A, O>::push_workspace_mutation(
+        crate::Transaction::<A, O>::push_mutation(
             &mut mutations,
             Owned::new(mutation, namespace.allocation, namespace.bytes),
             accounting,
@@ -102,7 +102,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 path: namespace.value,
                 file_id: self.source_file_id(&node.file_identity, accounting)?,
             };
-            crate::Transaction::<A, O>::push_workspace_mutation(
+            crate::Transaction::<A, O>::push_mutation(
                 &mut mutations,
                 Owned::new(mutation, namespace.allocation, namespace.bytes),
                 accounting,

@@ -258,12 +258,9 @@ pub(super) fn crash_step(store: &LocalCoreStateStore, step: usize) {
             }
             4 => {
                 store
-                    .compare_and_swap_lazy_workspace(
-                        CRASH_WORKSPACE,
-                        0,
-                        lazy_state(CRASH_WORKSPACE, 1),
-                    )
+                    .compare_and_swap_lazy_workspace(CRASH_WORKSPACE, 0, lazy_state(CRASH_WORKSPACE, 1), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
                     .await
+                    .map_err(LocalCoreStateStoreError::LazyWork)
             }
             5 => {
                 child.revision = 2;
@@ -274,12 +271,9 @@ pub(super) fn crash_step(store: &LocalCoreStateStore, step: usize) {
             }
             6 => {
                 store
-                    .compare_and_swap_lazy_workspace(
-                        CRASH_WORKSPACE,
-                        1,
-                        lazy_state(CRASH_WORKSPACE, 2),
-                    )
+                    .compare_and_swap_lazy_workspace(CRASH_WORKSPACE, 1, lazy_state(CRASH_WORKSPACE, 2), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
                     .await
+                    .map_err(LocalCoreStateStoreError::LazyWork)
             }
             _ => WorkspaceContextStore::discard_subtree(store, CRASH_PARENT, CRASH_CHILD, 8)
                 .await

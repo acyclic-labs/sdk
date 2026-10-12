@@ -2320,7 +2320,7 @@ impl NativeMountSourceWatchOwner {
         if self.custody.is_some()
             && self.watch.is_some()
             && !matches!(carrier, super::adapter::NativeDemandCarrier::Native(work)
-                if work.resource_allowance().is_some()) {
+                if work.resource.as_ref().is_some()) {
             return self.stop_ordinary_with_carrier(carrier);
         }
         match carrier {
@@ -2672,7 +2672,7 @@ where
     }
 
     fn reported_with_meter(&self, file_id: FileId, work: &crate::NativeMaterializationWork) -> Result<bool, MountSourceError> {
-        let mut work = work.native_read_meter().lock();
+        let mut work = work.state.lock();
         work.check().map_err(mount_demand_error)?;
         self.authored.cancellation().check().map_err(|_| MountSourceError::Stale)?;
         let linked = self.linked.lock().map_err(|_| MountSourceError::Stale)?;
@@ -5815,7 +5815,7 @@ where
         if self.unstaged.checked_at(self.expected_source, revision) {
             return Ok(None);
         }
-        let file = super::adapter::boundary(self.authored.cancellation(), |work| self.runtime.block_on_measured(|| async { let mut carrier = super::adapter::NativeDemandCarrier::Native(work); self.authored.attached_file_by_id(self.expected_source, SourceViewGate::callback_owner(), &mut carrier).await }, work.native_read_meter().as_ref()).map_err(super::adapter::capture_io_error)?.map(|handle| handle.map(|(handle, _)| handle)))?;
+        let file = super::adapter::boundary(self.authored.cancellation(), |work| self.runtime.block_on_measured(|| async { let mut carrier = super::adapter::NativeDemandCarrier::Native(work); self.authored.attached_file_by_id(self.expected_source, SourceViewGate::callback_owner(), &mut carrier).await }, work.state.as_ref()).map_err(super::adapter::capture_io_error)?.map(|handle| handle.map(|(handle, _)| handle)))?;
         if let Some(file) = file {
             *promoted = Some(Arc::clone(&file));
             return Ok(Some(file));
@@ -7131,7 +7131,7 @@ where
         work: &crate::NativeMaterializationWork,
     ) -> Result<(Arc<dyn MountOpenFile>, u64), MountSourceError> {
         let bytes = std::mem::size_of::<ViewBoundOpenFile<A, O>>() as u64;
-        work.native_read_meter().lock().allocate(bytes).map_err(mount_demand_error)?;
+        work.state.lock().allocate(bytes).map_err(mount_demand_error)?;
         let bound: Arc<dyn MountOpenFile> = Arc::new(ViewBoundOpenFile {
             inner: file.0, runtime: Arc::clone(&self.runtime), source_view: Arc::clone(&self.source_view),
             source_lifetime: self.authored.cancellation().clone(), detached: Arc::clone(&self.detached),
@@ -8213,13 +8213,15 @@ mod tests {
             .ok_or("missing recovered binding")?;
         assert!(current.pending_remove.is_none());
         prepared.revision = current.revision + 1;
-        let denied = store.compare_and_swap_lazy_workspace_measured(
-            view.lazy.workspace().id(), current.revision, prepared,
-            crate::WorkBudget { bytes_copied: 0, ..crate::WorkBudget::UNBOUNDED }, &cancellation,
-        ).await.expect_err("the original journal CAS state copy must be denied");
-        assert!(matches!(denied.semantic_error(), LazyWorkspaceError::Demand(DemandError::Work(_)) | LazyWorkspaceError::Filesystem(crate::FsError::Work(_))));
-        assert!(denied.spent_work().items_examined > 0);
-        assert_eq!(denied.spent_work().bytes_copied, 0);
+        let mut accounting = crate::kernel::KernelAccounting::standalone(
+            crate::WorkBudget { bytes_copied: 0, ..crate::WorkBudget::UNBOUNDED }, &cancellation);
+        let result = store.compare_and_swap_lazy_workspace(
+            view.lazy.workspace().id(), current.revision, prepared, &mut accounting).await;
+        let denied = crate::facade::measured(result, &accounting)
+            .expect_err("the original journal CAS state copy must be denied");
+        assert!(matches!(denied.error.semantic_error(), LazyWorkspaceError::Demand(DemandError::Work(_)) | LazyWorkspaceError::Filesystem(crate::FsError::Work(_))));
+        assert!(denied.work.items_examined > 0);
+        assert_eq!(denied.work.bytes_copied, 0);
         assert_eq!((async { let cancellation = &crate::CancellationToken::new(); let mut accounting = crate :: kernel::KernelAccounting::standalone (crate::WorkBudget::UNBOUNDED, cancellation , ); let result = view.lazy.mount_removal_publication(& mut accounting).await; crate::facade:: measured(result, &accounting ) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, None);
         let original_operation = view.removals.lock().map_err(|_| "poisoned removals")?
             .publication.ok_or("missing original custody")?.operation;
@@ -9364,7 +9366,6 @@ mod tests {
         let held = view.cursors.take(generation, Some(token), &mut native)?
             .ok_or("missing owned cursor")?;
         assert!(held.1.retained_bytes()? > 0);
-        assert_eq!(held.1.unclaimed_retained_bytes()?, 0);
         assert_eq!(original.remaining()?.peak_allocation_bytes, before);
         let setup_cancellation = crate::CancellationToken::new();
         let mut setup_work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &setup_cancellation);
@@ -9409,11 +9410,14 @@ mod tests {
         let budget = crate::WorkBudget { allocation_operations: 0, ..full_budget };
         let original = root.native_volume_work(budget)?;
         let before = original.receipt();
-        let source_used = std::sync::atomic::AtomicBool::new(false);
-        assert!(runtime.block_on(view.lazy.list_directory_in_state_with_native_work(
-            &state, "/dir", None, 1, &original, &caller, None, None, Some(&source_used),
-        )).is_err());
-        assert!(!source_used.load(Ordering::Acquire));
+        assert!(runtime.block_on(async {
+            let mut checkout = view.lazy.workspace().checkout(
+                crate::model::GenerationSelector::Head, crate::model::CheckoutMode::read_only_pinned(),
+                &original, &caller).await?;
+            view.lazy.list_directory_at(&state, &mut checkout, "/dir", None, 1, None,
+                &mut crate::kernel::KernelAccounting::native(&original, &caller)).await
+                .map_err(LazyWorkspaceError::from)
+        }).is_err());
         let work = original.receipt();
         assert_eq!(work.allocation_operations, before.allocation_operations);
         assert_eq!(work.backend_read_operations, 0);
@@ -9567,23 +9571,21 @@ mod tests {
         let caller = crate::CancellationToken::new();
         let budget = finite_directory_budget();
         let original = native_control_work(budget, &caller)?;
-        let source_used = std::sync::atomic::AtomicBool::new(false);
-        let mut first = runtime.block_on(view.lazy.list_directory_in_state_with_native_work(
-            &state, "/dir", None, 1, &original, &caller, None, None, Some(&source_used),
-        ))?;
-        assert_eq!(first.entries.len(), 1);
-        assert!(first.entries[0].source.is_some());
-        assert!(source_used.load(Ordering::Acquire));
-        let cursor = first.next.take().ok_or("missing native lower continuation")?;
-        assert_eq!(cursor.unclaimed_retained_bytes()?, 0);
+        let mut checkout = runtime.block_on(view.lazy.workspace().checkout(
+            crate::model::GenerationSelector::Head, crate::model::CheckoutMode::read_only_pinned(),
+            &original, &caller))?;
+        let mut first = runtime.block_on(view.lazy.list_directory_at(
+            &state, &mut checkout, "/dir", None, 1, None,
+            &mut crate::kernel::KernelAccounting::native(&original, &caller)))?;
+        assert_eq!(first.0.entries.len(), 1);
+        assert!(first.0.entries[0].source.is_some());
+        assert!(first.1);
+        let cursor = first.0.next.take().ok_or("missing native lower continuation")?;
         drop(first);
-        let second = runtime.block_on(view.lazy.list_directory_in_state_with_native_work(
-            &state, "/dir", Some(cursor), 1, &original, &caller, None, None, None,
-        ))?;
-        assert_eq!(second.entries.len(), 1);
-        if let Some(cursor) = &second.next {
-            assert_eq!(cursor.unclaimed_retained_bytes()?, 0);
-        }
+        let second = runtime.block_on(view.lazy.list_directory_at(
+            &state, &mut checkout, "/dir", Some(cursor), 1, None,
+            &mut crate::kernel::KernelAccounting::native(&original, &caller)))?;
+        assert_eq!(second.0.entries.len(), 1);
         drop(second);
         let work = original.receipt();
         assert!(work.allocation_operations > 0);

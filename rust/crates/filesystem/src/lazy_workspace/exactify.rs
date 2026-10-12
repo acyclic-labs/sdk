@@ -80,7 +80,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             let mut generation = capture.authored_generation;
             for (batch, chunk) in paths.value.chunks(maximum).enumerate() {
                 accounting.check()?;
-                let checkout = self.workspace.checkout_with_accounting(
+                let checkout = self.workspace.checkout_accounted(
                     crate::model::GenerationSelector::Exact(generation),
                     crate::model::CheckoutMode::tracking_transaction(),
                     accounting,
@@ -115,7 +115,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                             })?;
                         }
                         if let Some(parent) = parent_path(path) {
-                            transaction.create_dir_all_with_accounting(
+                            transaction.create_dirs(
                                 parent, accounting, cancellation(accounting),
                             ).await?;
                         }
@@ -161,7 +161,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
     ) -> Result<(Owned<Vec<String>>, bool), LazyWorkspaceError> {
         let root = self.canonical_path(root, accounting)?;
         let mut paths = Owned::allocate(1, accounting)?;
-        crate::Transaction::<A, O>::push_workspace_mutation(&mut paths, root, accounting)?;
+        crate::Transaction::<A, O>::push_mutation(&mut paths, root, accounting)?;
         let mut directories = Owned::allocate(1, accounting)?;
         let mut source_used = false;
         let mut checkout = self
@@ -231,7 +231,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                                     .ok_or(LazyWorkspaceError::UnsupportedNode)?;
                                 paths.ensure_for_push(usize::MAX, accounting)?;
                                 let index = paths.value.len();
-                                crate::Transaction::<A, O>::push_workspace_mutation(
+                                crate::Transaction::<A, O>::push_mutation(
                                     &mut paths, path, accounting,
                                 )?;
                                 if entry.kind == SourceNodeKind::Directory {

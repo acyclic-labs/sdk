@@ -33,7 +33,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             .await?;
         let baseline_checkout = self
             .workspace
-            .checkout_with_accounting(
+            .checkout_accounted(
                 crate::model::GenerationSelector::Exact(destination.authored_generation),
                 crate::model::CheckoutMode::tracking_transaction(),
                 accounting,
@@ -157,24 +157,34 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                     .await?
                     .is_some()
                 {
-                    transaction
-                        .apply_workspace_path_with_accounting(
+                    'accounted: {
+                        let cancellation = cancellation(accounting);
+                        let build = |path| AuthoredMutation::Remove {
                             path,
-                            |path| AuthoredMutation::Remove {
-                                path,
-                                expected_file_id: None,
-                            },
+                            expected_file_id: None,
+                        };
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if let Some(original) = accounting.native_work() {
+                            break 'accounted transaction
+                                .mutate(path, |path| Ok(build(path)), original, cancellation)
+                                .await
+                                .map_err(LazyWorkspaceError::from);
+                        }
+                        accept_receipt(
+                            transaction
+                                .mutate(
+                                    path,
+                                    |path| Ok(build(path)),
+                                    accounting.remaining()?,
+                                    cancellation,
+                                )
+                                .await,
                             accounting,
-                            cancellation(accounting),
                         )
-                        .await?;
+                    }?;
                 }
                 let namespace = self.namespace_path(path, accounting)?;
-                crate::Transaction::<A, O>::push_workspace_mutation(
-                    &mut changes,
-                    namespace,
-                    accounting,
-                )?;
+                crate::Transaction::<A, O>::push_mutation(&mut changes, namespace, accounting)?;
             }
             for (index, entry) in plan.entries.iter().enumerate() {
                 let Some((record, _)) = entry.record else {
@@ -190,19 +200,27 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                     None
                 };
                 if let Some(alias) = alias {
-                    let operations = transaction.prepare_hard_link(
-                        &alias.path,
-                        &entry.path,
-                        accounting,
-                        cancellation(accounting),
-                    )?;
-                    transaction
-                        .apply_workspace_authored_with_accounting(
-                            operations,
+                    'accounted: {
+                        let cancellation = cancellation(accounting);
+                        #[cfg(not(target_arch = "wasm32"))]
+                        if let Some(original) = accounting.native_work() {
+                            transaction
+                                .hard_link(&alias.path, &entry.path, original, cancellation)
+                                .await?;
+                            break 'accounted;
+                        }
+                        accept_receipt(
+                            transaction
+                                .hard_link(
+                                    &alias.path,
+                                    &entry.path,
+                                    accounting.remaining()?,
+                                    cancellation,
+                                )
+                                .await,
                             accounting,
-                            cancellation(accounting),
-                        )
-                        .await?;
+                        )?;
+                    }
                 } else {
                     let namespace = self.namespace_path(&entry.path, accounting)?;
                     let compiled = transaction
@@ -217,7 +235,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                     let operation =
                         Owned::new(compiled.value.0, compiled.allocation, compiled.bytes);
                     let mut operations = Owned::allocate(1, accounting)?;
-                    crate::Transaction::<A, O>::push_workspace_mutation(
+                    crate::Transaction::<A, O>::push_mutation(
                         &mut operations,
                         operation,
                         accounting,
@@ -232,19 +250,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                         .await?;
                 }
                 let namespace = self.namespace_path(&entry.path, accounting)?;
-                crate::Transaction::<A, O>::push_workspace_mutation(
-                    &mut changes,
-                    namespace,
-                    accounting,
-                )?;
+                crate::Transaction::<A, O>::push_mutation(&mut changes, namespace, accounting)?;
             }
             for root in &plan.roots {
                 if !paths.value.iter().any(|path| path == root) {
                     let path = self.canonical_path(root, accounting)?;
                     paths.ensure_for_push(usize::MAX, accounting)?;
-                    crate::Transaction::<A, O>::push_workspace_mutation(
-                        &mut paths, path, accounting,
-                    )?;
+                    crate::Transaction::<A, O>::push_mutation(&mut paths, path, accounting)?;
                 }
             }
             if plan.source_used && plan.source.source != self.source.reference() {

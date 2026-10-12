@@ -77,7 +77,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 let (text, allocation) =
                     path.unicode_text_with_accounting(accounting, cancellation(accounting))?;
                 let bytes = text.capacity() as u64;
-                crate::Transaction::<A, O>::push_workspace_mutation(
+                crate::Transaction::<A, O>::push_mutation(
                     &mut roots,
                     Owned::new(text, allocation, bytes),
                     accounting,

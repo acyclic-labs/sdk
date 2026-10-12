@@ -46,7 +46,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         }
         let checkout = self
             .workspace
-            .checkout_with_accounting(
+            .checkout_accounted(
                 crate::model::GenerationSelector::Head,
                 crate::model::CheckoutMode::tracking_transaction(),
                 accounting,
@@ -57,7 +57,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             crate::Transaction::from_checkout(&self.workspace, checkout, operation, false);
         if let Some(parent) = parent_path(requested) {
             transaction
-                .create_dir_all_with_accounting(parent, accounting, cancellation(accounting))
+                .create_dirs(parent, accounting, cancellation(accounting))
                 .await?;
         }
         self.apply_resolved_promotion(
@@ -93,17 +93,43 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 .await?;
             }
             LazyLookup::Authored { path, .. } if path == requested => return Ok(false),
-            LazyLookup::Authored { path, .. } => {
-                let operations =
-                    transaction.prepare_hard_link(path, requested, accounting, cancellation)?;
-                transaction
-                    .apply_workspace_authored_with_accounting(operations, accounting, cancellation)
-                    .await?;
+            LazyLookup::Authored { path, .. } => 'accounted: {
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(original) = accounting.native_work() {
+                    transaction
+                        .hard_link(path, requested, original, cancellation)
+                        .await?;
+                    break 'accounted;
+                }
+                accept_receipt(
+                    transaction
+                        .hard_link(path, requested, accounting.remaining()?, cancellation)
+                        .await,
+                    accounting,
+                )?;
             }
             LazyLookup::Shadow { record, .. } => {
-                transaction
-                    .restore_record_with_accounting(requested, *record, accounting, cancellation)
-                    .await?;
+                'accounted: {
+                    let cancellation = cancellation;
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if let Some(original) = accounting.native_work() {
+                        break 'accounted transaction
+                            .restore_record(requested, *record, original, cancellation)
+                            .await
+                            .map_err(LazyWorkspaceError::from);
+                    }
+                    accept_receipt(
+                        transaction
+                            .restore_record(
+                                requested,
+                                *record,
+                                accounting.remaining()?,
+                                cancellation,
+                            )
+                            .await,
+                        accounting,
+                    )
+                }?;
             }
         }
         Ok(true)
@@ -199,38 +225,29 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             }
             let candidate =
                 checkout.private_candidate_with_accounting(accounting, cancellation(accounting))?;
-            let mut transaction = {
+            let mut transaction = 'accounted: {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(original) = accounting.native_work() {
-                    crate::Transaction::for_checkout_candidate(
-                        &self.workspace,
-                        candidate,
-                        original,
-                        cancellation(accounting),
-                    )?
-                } else {
-                    let result = crate::Transaction::for_checkout_candidate(
-                        &self.workspace,
-                        candidate,
-                        accounting.remaining()?,
-                        cancellation(accounting),
-                    );
-                    accept_receipt(result, accounting)?
+                    break 'accounted {
+                        crate::Transaction::for_checkout_candidate(
+                            &self.workspace,
+                            candidate,
+                            original,
+                            cancellation(accounting),
+                        )?
+                    };
                 }
-                #[cfg(target_arch = "wasm32")]
-                {
-                    let result = crate::Transaction::for_checkout_candidate(
-                        &self.workspace,
-                        candidate,
-                        accounting.remaining()?,
-                        cancellation(accounting),
-                    );
-                    accept_receipt(result, accounting)?
-                }
+                let result = crate::Transaction::for_checkout_candidate(
+                    &self.workspace,
+                    candidate,
+                    accounting.remaining()?,
+                    cancellation(accounting),
+                );
+                accept_receipt(result, accounting)?
             };
             if let Some(parent) = parent_path(path) {
                 transaction
-                    .create_dir_all_with_accounting(parent, accounting, cancellation(accounting))
+                    .create_dirs(parent, accounting, cancellation(accounting))
                     .await?;
             }
             let changed = self

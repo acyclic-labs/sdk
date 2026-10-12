@@ -301,7 +301,7 @@ async fn intact_mismatched_frame_cannot_checkpoint_or_hide_context() {
         let writer = LocalCoreStateStore::open_owned(directory.path()).expect("writer");
         assert!(
             writer
-                .compare_and_swap_lazy_workspace(workspace(), 0, lazy_state(workspace(), 1))
+                .compare_and_swap_lazy_workspace(workspace(), 0, lazy_state(workspace(), 1), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
                 .await
                 .expect("commit lazy workspace frame")
         );

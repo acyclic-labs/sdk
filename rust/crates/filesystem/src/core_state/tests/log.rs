@@ -78,7 +78,7 @@ async fn intact_undecodable_frame_fails_closed_and_is_kept() {
         let owner = LocalCoreStateStore::open_owned(directory.path()).expect("owner");
         assert!(
             owner
-                .compare_and_swap_lazy_workspace(workspace(), 0, lazy_state(workspace(), 1))
+                .compare_and_swap_lazy_workspace(workspace(), 0, lazy_state(workspace(), 1), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
                 .await
                 .expect("commit")
         );
@@ -88,8 +88,8 @@ async fn intact_undecodable_frame_fails_closed_and_is_kept() {
         let store = LocalCoreStateStore::new(directory.path());
         assert!(
             matches!(
-                store.load_lazy_workspace(workspace()).await,
-                Err(LocalCoreStateStoreError::Corrupt(_))
+                store.load_lazy_workspace(workspace(), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())).await,
+                Err(crate::LazyWorkspaceError::NativeRecordCorrupt(_, _))
             ),
             "{case}: an intact frame that does not decode is corruption"
         );
@@ -115,13 +115,13 @@ async fn deferred_commits_are_visible_at_once_and_durable_on_commit() {
     let (deferred, durability) = owner.defer_durability();
     assert!(
         deferred
-            .compare_and_swap_lazy_workspace(workspace(), 0, lazy_state(workspace(), 1))
+            .compare_and_swap_lazy_workspace(workspace(), 0, lazy_state(workspace(), 1), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
             .await
             .expect("deferred commit")
     );
     assert_eq!(
         owner
-            .load_lazy_workspace(workspace())
+            .load_lazy_workspace(workspace(), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
             .await
             .expect("visible deferred commit"),
         Some(lazy_state(workspace(), 1))
@@ -129,7 +129,7 @@ async fn deferred_commits_are_visible_at_once_and_durable_on_commit() {
     durability.commit().await.expect("flush deferred commits");
     assert!(
         deferred
-            .compare_and_swap_lazy_workspace(workspace(), 1, lazy_state(workspace(), 2))
+            .compare_and_swap_lazy_workspace(workspace(), 1, lazy_state(workspace(), 2), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
             .await
             .expect("commit after the scope ended")
     );
@@ -149,7 +149,7 @@ async fn deferred_commits_are_visible_at_once_and_durable_on_commit() {
     drop((owner, deferred));
     assert_eq!(
         LocalCoreStateStore::new(directory.path())
-            .load_lazy_workspace(workspace())
+            .load_lazy_workspace(workspace(), &mut crate::kernel::KernelAccounting::standalone(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))
             .await
             .expect("durable binding"),
         Some(lazy_state(workspace(), 2))

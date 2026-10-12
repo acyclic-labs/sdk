@@ -13,38 +13,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         accounting: &mut KernelAccounting<'_>,
     ) -> Result<LazySnapshotRef, LazyWorkspaceError> {
         let cancellation = cancellation(accounting);
-        let (name, id) = {
-            #[cfg(not(target_arch = "wasm32"))]
-            if let Some(original) = accounting.native_work() {
-                self.workspace
-                    .volume
-                    .fs
-                    .workspace_name_identity_with_native_work(destination, original, cancellation)
-                    .map_err(|(error, allocation)| {
-                        LazyWorkspaceError::NativeWorkspace(error, allocation)
-                    })?
-            } else {
-                accept_receipt(
-                    self.workspace.volume.fs.workspace_name_identity(
-                        destination,
-                        accounting.remaining()?,
-                        cancellation,
-                    ),
-                    accounting,
-                )?
-            }
-            #[cfg(target_arch = "wasm32")]
-            {
-                accept_receipt(
-                    self.workspace.volume.fs.workspace_name_identity(
-                        destination,
-                        accounting.remaining()?,
-                        cancellation,
-                    ),
-                    accounting,
-                )?
-            }
-        };
+        let (name, id) =
+            self.workspace
+                .volume
+                .fs
+                .workspace_name(destination, accounting, cancellation)?;
         drop(name);
         self.prepare_fork_at(id, frozen, operation, accounting)
             .await
@@ -99,53 +72,36 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 };
             }
             let cancellation = cancellation(accounting);
-            let hold = {
+            let hold = 'accounted: {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(original) = accounting.native_work() {
+                    break 'accounted {
+                        self.workspace
+                            .volume
+                            .fs
+                            .make_generation_durable(
+                                &self.workspace.volume,
+                                frozen.authored_generation,
+                                original,
+                                cancellation,
+                            )
+                            .await
+                            .map_err(LazyWorkspaceError::from)?
+                    };
+                }
+                accept_receipt(
                     self.workspace
                         .volume
                         .fs
-                        .make_generation_durable_with_native_work(
+                        .make_generation_durable(
                             &self.workspace.volume,
                             frozen.authored_generation,
-                            original,
+                            accounting.remaining()?,
                             cancellation,
                         )
-                        .await
-                        .map_err(|(error, allocation)| {
-                            LazyWorkspaceError::NativeWorkspace(error, allocation)
-                        })?
-                } else {
-                    accept_receipt(
-                        self.workspace
-                            .volume
-                            .fs
-                            .make_generation_durable(
-                                &self.workspace.volume,
-                                frozen.authored_generation,
-                                accounting.remaining()?,
-                                cancellation,
-                            )
-                            .await,
-                        accounting,
-                    )?
-                }
-                #[cfg(target_arch = "wasm32")]
-                {
-                    accept_receipt(
-                        self.workspace
-                            .volume
-                            .fs
-                            .make_generation_durable(
-                                &self.workspace.volume,
-                                frozen.authored_generation,
-                                accounting.remaining()?,
-                                cancellation,
-                            )
-                            .await,
-                        accounting,
-                    )?
-                }
+                        .await,
+                    accounting,
+                )?
             };
             let state = LazyWorkspaceState {
                 parent_workspace_id: Some(self.workspace.id()),
@@ -184,56 +140,38 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
             return Err(WorkspaceError::ForeignGeneration.into());
         }
         let cancellation = cancellation(accounting);
-        let observed = {
+        let observed = 'accounted: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
+                break 'accounted {
+                    self.workspace
+                        .volume
+                        .fs
+                        .workspace_for_creation_operation(
+                            child.name.as_str(),
+                            child.volume.config,
+                            operation,
+                            original,
+                            cancellation,
+                        )
+                        .await
+                        .map_err(LazyWorkspaceError::from)?
+                };
+            }
+            accept_receipt(
                 self.workspace
                     .volume
                     .fs
-                    .workspace_for_creation_operation_with_native_work(
+                    .workspace_for_creation_operation(
                         child.name.as_str(),
                         child.volume.config,
                         operation,
-                        original,
+                        accounting.remaining()?,
                         cancellation,
                     )
-                    .await
-                    .map_err(|(error, allocation)| {
-                        LazyWorkspaceError::NativeWorkspace(error, allocation)
-                    })?
-            } else {
-                accept_receipt(
-                    self.workspace
-                        .volume
-                        .fs
-                        .workspace_for_creation_operation(
-                            child.name.as_str(),
-                            child.volume.config,
-                            operation,
-                            accounting.remaining()?,
-                            cancellation,
-                        )
-                        .await,
-                    accounting,
-                )?
-            }
-            #[cfg(target_arch = "wasm32")]
-            {
-                accept_receipt(
-                    self.workspace
-                        .volume
-                        .fs
-                        .workspace_for_creation_operation(
-                            child.name.as_str(),
-                            child.volume.config,
-                            operation,
-                            accounting.remaining()?,
-                            cancellation,
-                        )
-                        .await,
-                    accounting,
-                )?
-            }
+                    .await,
+                accounting,
+            )?
         }
         .ok_or(LazyWorkspaceError::Concurrent)?;
         if observed.id() != original_generation || observed.workspace_id() != child.id() {

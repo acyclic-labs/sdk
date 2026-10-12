@@ -211,7 +211,7 @@ where
         };
         let root_text = root_text.0;
         let session_destination = work.path(&destination, None)?;
-        let lazy = self.clone().into_arc(&mut accounting)?;
+        let lazy = self.clone().into_arc(&mut KernelAccounting::native(work, work.cancellation()))?;
         let mut source_allocation = work.claim(
             std::mem::size_of::<LazyMountSource<A, O, D, S>>() as u64,
             1,

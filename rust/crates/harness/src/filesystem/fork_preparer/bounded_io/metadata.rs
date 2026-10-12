@@ -21,35 +21,7 @@ pub(in crate::filesystem) fn failure(
 }
 
 pub(in crate::filesystem) fn clone_text(text: &str, io: Option<&PreparationIo>) -> Result<String> {
-    match io {
-        Some(io) => join_text("", text, io),
-        None => Ok(text.to_owned()),
-    }
-}
-
-pub(in crate::filesystem) fn join_text(
-    prefix: &str,
-    suffix: &str,
-    io: &PreparationIo,
-) -> Result<String> {
-    let bytes = prefix
-        .len()
-        .checked_add(suffix.len())
-        .ok_or_else(|| io.invalid("text size overflow"))?;
-    let copied = WorkCounters {
-        bytes_copied: bytes as u64,
-        ..Default::default()
-    };
-    io.preflight(copied)?;
-    io.retain_owned(bytes as u64)?;
-    io.allocation_attempt(bytes as u64)?;
-    let mut text = String::new();
-    text.try_reserve_exact(bytes).map_err(Error::Allocation)?;
-    text.push_str(prefix);
-    text.push_str(suffix);
-    io.charge(copied)?;
-    io.retain_owned((text.capacity() - bytes) as u64)?;
-    Ok(text)
+    crate::contract::preparation_format(format_args!("{text}"), io)
 }
 
 pub(in crate::filesystem) fn hex_key(bytes: &[u8], io: Option<&PreparationIo>) -> Result<String> {
@@ -129,18 +101,12 @@ pub(in crate::filesystem) fn clone_bytes(
     bytes: &[u8],
     io: Option<&PreparationIo>,
 ) -> Result<acyclic_stream::OwnedBytes> {
-    let copied = WorkCounters {
-        bytes_copied: bytes.len() as u64,
-        ..Default::default()
-    };
-    if let Some(io) = io {
-        io.preflight(copied)?;
-    }
-    let mut output = vector(bytes.len(), io)?;
-    output.extend_from_slice(bytes);
-    if let Some(io) = io {
-        io.charge(copied)?;
-    }
+    let output = crate::executor::with_history_io(io, |work| {
+        let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
+        let output = crate::core::copy_copy_vector(bytes, &mut quota)?;
+        quota.transfer();
+        Ok::<_, Error>(output)
+    })?;
     source_bytes_from_vec(output, io)
 }
 
@@ -287,7 +253,7 @@ impl PreparationIo {
         let encoded = self.encode(value, self.remaining()?.bytes_encoded, true)?;
         _hold = self.guard_bytes(&encoded)?;
         let hash = digest(&encoded, Some(self))?;
-        join_text(prefix, hash.to_hex().as_str(), self)
+        crate::contract::preparation_format(format_args!("{prefix}{}", hash.to_hex()), Some(self))
     }
     pub(crate) fn contains_capability<T: Serialize>(
         &self,

@@ -109,7 +109,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 None => Ok(true),
             }
         };
-        let mut history = io.map(PreparationIo::history_io);
+        let mut history = io;
         let mut observer = history
             .as_mut()
             .map(|history| history as &mut dyn crate::store::history::HistoryIo);
@@ -140,7 +140,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                 "fork child must have a distinct agent identity",
             ));
         }
-        for (volume, _) in creation_volumes(request) {
+        for volume in creation_volumes(request) {
             if volume.provider() != &self.host.provider {
                 return Err(reject(
                     crate::wire::ErrorCode::Invalid,
@@ -241,7 +241,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
             drop(payload_hold);
             drop(encoded);
             drop(request_hold);
-            for (resource, (volume, _)) in bound.resources.iter().zip(creation_volumes(request)) {
+            for (resource, volume) in bound.resources.iter().zip(creation_volumes(request)) {
                 let before = io.owned_bytes()?;
                 let resource_hold;
                 let actual = bounded_io::content_workspace(&self.host.provider, volume, Some(io))?

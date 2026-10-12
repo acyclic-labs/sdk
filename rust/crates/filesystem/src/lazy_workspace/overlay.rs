@@ -157,29 +157,13 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         let fs = &self.workspace.volume.fs;
         let config = self.workspace.volume.config;
         let cancellation = cancellation(accounting);
-        let hold = {
+        let hold = 'accounted: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
-                Some(
-                    fs.make_records_durable_with_native_work(
-                        config,
-                        &[record],
-                        original,
-                        cancellation,
-                    )
-                    .await?,
-                )
-            } else {
-                None
+                break 'accounted fs
+                    .make_records_durable(config, &[record], original, cancellation)
+                    .await?;
             }
-            #[cfg(target_arch = "wasm32")]
-            {
-                None::<crate::PublicationHold>
-            }
-        };
-        let hold = if let Some(hold) = hold {
-            hold
-        } else {
             accept_receipt(
                 fs.make_records_durable(config, &[record], accounting.remaining()?, cancellation)
                     .await,

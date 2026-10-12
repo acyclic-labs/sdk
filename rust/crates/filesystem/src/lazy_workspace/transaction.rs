@@ -166,7 +166,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         if let PendingLazyRemoveKind::Authored { idempotency_key } = kind {
             let checkout = self
                 .workspace
-                .checkout_with_accounting(
+                .checkout_accounted(
                     crate::model::GenerationSelector::Head,
                     crate::model::CheckoutMode::tracking_transaction(),
                     accounting,
@@ -179,18 +179,31 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
                 idempotency_key,
                 false,
             );
-            if let Err(error) = transaction
-                .apply_workspace_path_with_accounting(
+            if let Err(error) = 'accounted: {
+                let cancellation = cancellation(accounting);
+                let build = |path| AuthoredMutation::Remove {
                     path,
-                    |path| AuthoredMutation::Remove {
-                        path,
-                        expected_file_id: Some(actual),
-                    },
+                    expected_file_id: Some(actual),
+                };
+                #[cfg(not(target_arch = "wasm32"))]
+                if let Some(original) = accounting.native_work() {
+                    break 'accounted transaction
+                        .mutate(path, |path| Ok(build(path)), original, cancellation)
+                        .await
+                        .map_err(LazyWorkspaceError::from);
+                }
+                accept_receipt(
+                    transaction
+                        .mutate(
+                            path,
+                            |path| Ok(build(path)),
+                            accounting.remaining()?,
+                            cancellation,
+                        )
+                        .await,
                     accounting,
-                    cancellation(accounting),
                 )
-                .await
-            {
+            } {
                 self.recover_pending_remove(accounting).await?;
                 return Err(error.into());
             }

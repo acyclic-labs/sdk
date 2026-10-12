@@ -639,7 +639,7 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         let mut value = value;
         let allocation = match &mut value.1 {
             crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
-                if !allocation.matches_work(&work) {
+                if !allocation.work().shares_allocation_context(&work) {
                     return Err(crate::LazyWorkspaceError::NativeLedgerMismatch);
                 }
                 allocation.split_off(allocation.bytes())?
@@ -691,7 +691,7 @@ impl LazyWorkspaceStore for LocalCoreStateStore {
         let mut value = value;
         let allocation = match &mut value.1 {
             crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) => {
-                if !allocation.matches_work(&work) {
+                if !allocation.work().shares_allocation_context(&work) {
                     return Err(crate::LazyWorkspaceError::NativeLedgerMismatch);
                 }
                 allocation.split_off(allocation.bytes())?

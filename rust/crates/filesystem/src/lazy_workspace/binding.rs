@@ -20,40 +20,29 @@ where
         accounting.check()?;
         let reference = source.reference();
         let cancellation = cancellation(accounting);
-        let generation = {
+        let generation = 'accounted: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
-                Some(
-                    fs.create_workspace_with_operation_with_native_work(
-                        name,
-                        config,
-                        operation,
-                        original,
-                        cancellation,
+                break 'accounted fs
+                    .create_workspace_with_operation::<_, crate::NativeAuthorityGuard<
+                        fn(
+                            &crate::NativeMaterializationWork,
+                        )
+                            -> std::future::Ready<Result<(), WorkspaceError>>,
+                    >, WorkspaceError>(
+                        name, config, operation, original, cancellation, None
                     )
                     .await
-                    .map_err(|(error, allocation)| {
-                        LazyWorkspaceError::NativeWorkspace(error, allocation)
-                    }),
-                )
-            } else {
-                None
+                    .map_err(LazyWorkspaceError::from)?;
             }
-            #[cfg(target_arch = "wasm32")]
-            {
-                None::<Result<crate::Generation<A, O>, LazyWorkspaceError>>
-            }
-        };
-        let generation = if let Some(generation) = generation {
-            generation?
-        } else {
             accept_receipt(
-                fs.create_workspace_with_operation(
+                fs.create_workspace_with_operation::<_, &mut fn(WorkBudget) -> std::future::Ready<crate::FsResult<()>>, WorkspaceError>(
                     name,
                     config,
                     operation,
                     accounting.remaining()?,
                     cancellation,
+                    None,
                 )
                 .await,
                 accounting,
@@ -373,26 +362,15 @@ where
     ) -> Result<Option<SourceNode>, LazyWorkspaceError> {
         let namespace = self.namespace_path(path, accounting)?;
         let cancellation = cancellation(accounting);
-        let result = {
+        let result = 'accounted: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
-                Some(
-                    self.source
-                        .lookup(source, &namespace.value, original, cancellation)
-                        .await
-                        .map_err(LazyWorkspaceError::from),
-                )
-            } else {
-                None
+                break 'accounted self
+                    .source
+                    .lookup(source, &namespace.value, original, cancellation)
+                    .await
+                    .map_err(LazyWorkspaceError::from);
             }
-            #[cfg(target_arch = "wasm32")]
-            {
-                None::<Result<Option<SourceNode>, LazyWorkspaceError>>
-            }
-        };
-        let result = if let Some(result) = result {
-            result
-        } else {
             let receipt = self
                 .source
                 .lookup(
@@ -461,7 +439,7 @@ where
             let value = self
                 .workspace
                 .volume
-                .checkout_with_native_work(
+                .checkout(
                     selector,
                     crate::model::CheckoutMode::read_only_pinned(),
                     original,

@@ -217,10 +217,12 @@ async fn mounted_promotion_stays_in_the_dirty_candidate_until_one_publication() 
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),
             |_| {
-                std::future::ready(Ok::<_, crate::OperationFailure<crate::FsError>>(crate::OperationReceipt {
-                    value: (),
-                    work: WorkCounters::UNCHARGED,
-                }))
+                std::future::ready(Ok::<_, crate::OperationFailure<crate::FsError>>(
+                    crate::OperationReceipt {
+                        value: (),
+                        work: WorkCounters::UNCHARGED,
+                    },
+                ))
             },
         )
         .await
@@ -569,16 +571,18 @@ async fn mounted_whiteout_follows_the_checkout_publication_decision() {
                 crate::PublicationPermit::Unrestricted,
                 WorkBudget::UNBOUNDED,
                 &CancellationToken::new(),
-                &mut (|_| std::future::ready(Ok::<_, crate::OperationFailure<crate::FsError>>(crate::OperationReceipt {
-                    value: (),
-                    work: WorkCounters::UNCHARGED
-                }))),
+                &mut (|_| std::future::ready(Ok::<_, crate::OperationFailure<crate::FsError>>(
+                    crate::OperationReceipt {
+                        value: (),
+                        work: WorkCounters::UNCHARGED
+                    }
+                ))),
                 None
             )
             .await
             .expect("publish unchanged authored root")
             .value,
-        crate::CheckoutCommitOutcome::Committed { .. }
+        crate::LivePublicationObservation::Committed { .. }
     ));
     assert!(
         root.finish_mount_removals(accounting!())
@@ -682,10 +686,12 @@ async fn a_shadowed_identity_keeps_its_content_across_power_loss() {
                 WorkBudget::UNBOUNDED,
                 &cancellation,
                 &mut (|_| {
-                    std::future::ready(Ok::<_, crate::OperationFailure<crate::FsError>>(crate::OperationReceipt {
-                        value: (),
-                        work: WorkCounters::UNCHARGED,
-                    }))
+                    std::future::ready(Ok::<_, crate::OperationFailure<crate::FsError>>(
+                        crate::OperationReceipt {
+                            value: (),
+                            work: WorkCounters::UNCHARGED,
+                        },
+                    ))
                 }),
                 None,
             )

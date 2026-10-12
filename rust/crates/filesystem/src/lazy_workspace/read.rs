@@ -144,47 +144,35 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
         match lookup {
             LazyLookup::Source { source, node } => {
                 let namespace = self.namespace_path(path, accounting)?;
-                let result = {
+                let result = 'accounted: {
                     #[cfg(not(target_arch = "wasm32"))]
                     if let Some(original) = accounting.native_work() {
-                        Some(
-                            if let Some(range) = range {
-                                self.source
-                                    .read_range(
-                                        *source,
-                                        &namespace.value,
-                                        node.version,
-                                        range.offset,
-                                        range.length,
-                                        original,
-                                        cancellation,
-                                    )
-                                    .await
-                            } else {
-                                self.source
-                                    .read_link(
-                                        *source,
-                                        &namespace.value,
-                                        node.version,
-                                        maximum_bytes,
-                                        original,
-                                        cancellation,
-                                    )
-                                    .await
-                            }
-                            .map_err(LazyWorkspaceError::from),
-                        )
-                    } else {
-                        None
+                        break 'accounted if let Some(range) = range {
+                            self.source
+                                .read_range(
+                                    *source,
+                                    &namespace.value,
+                                    node.version,
+                                    range.offset,
+                                    range.length,
+                                    original,
+                                    cancellation,
+                                )
+                                .await
+                        } else {
+                            self.source
+                                .read_link(
+                                    *source,
+                                    &namespace.value,
+                                    node.version,
+                                    maximum_bytes,
+                                    original,
+                                    cancellation,
+                                )
+                                .await
+                        }
+                        .map_err(LazyWorkspaceError::from);
                     }
-                    #[cfg(target_arch = "wasm32")]
-                    {
-                        None::<Result<OwnedSourceChunk, LazyWorkspaceError>>
-                    }
-                };
-                let result = if let Some(result) = result {
-                    result
-                } else {
                     let budget = accounting.remaining()?;
                     let result = if let Some(range) = range {
                         self.source
@@ -381,32 +369,21 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore, D: DemandSource + 'static, S: 
     ) -> Result<Box<dyn crate::demand::DemandFile>, LazyWorkspaceError> {
         let namespace = self.namespace_path(path, accounting)?;
         let cancellation = cancellation(accounting);
-        let result = {
+        let result = 'accounted: {
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(original) = accounting.native_work() {
-                Some(
-                    self.source
-                        .open_file(
-                            source,
-                            &namespace.value,
-                            node.version,
-                            original,
-                            cancellation,
-                        )
-                        .await
-                        .map_err(LazyWorkspaceError::from),
-                )
-            } else {
-                None
+                break 'accounted self
+                    .source
+                    .open_file(
+                        source,
+                        &namespace.value,
+                        node.version,
+                        original,
+                        cancellation,
+                    )
+                    .await
+                    .map_err(LazyWorkspaceError::from);
             }
-            #[cfg(target_arch = "wasm32")]
-            {
-                None::<Result<Box<dyn crate::demand::DemandFile>, LazyWorkspaceError>>
-            }
-        };
-        let result = if let Some(result) = result {
-            result
-        } else {
             accept_receipt(
                 self.source
                     .open_file(
