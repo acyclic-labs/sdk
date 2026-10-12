@@ -161,7 +161,7 @@ pub(crate) fn validate_result_bytes(schema: &Value, result: &FileRef, bytes: &[u
     result.descriptor().verify(bytes)?;
     let value: Value = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Invalid(format!("effect result is not JSON: {error}")))?;
-    crate::contract::validate_json_schema_value(schema, &value, "effect result")?;
+    crate::contract::validate_json_schema_value(schema, &value, "effect result", None)?;
     Ok(())
 }
 
@@ -176,7 +176,7 @@ pub(crate) fn validate_schema_bytes(reference: &FileRef, bytes: &[u8]) -> Result
     reference.descriptor().verify(bytes)?;
     let schema: Value = crate::contract::json_from_slice(bytes)
         .map_err(|error| Error::Invalid(format!("effect result schema is not JSON: {error}")))?;
-    crate::contract::compile_json_schema(&schema, "effect result")?;
+    crate::contract::compile_json_schema(&schema, "effect result", None)?;
     Ok(schema)
 }
 
@@ -211,7 +211,7 @@ pub(crate) fn validate_effect_schema_bytes_with_work(
             .ok_or_else(|| Error::Unsupported("effect schema observer has no original native ledger".into()))?;
         let decode = crate::filesystem::PreparationIo::from_native_work(original)?;
         let schema = decode.decode_preparation::<Value>(bytes)?;
-        drop(crate::contract::compile_json_schema_with_io(
+        drop(crate::contract::compile_json_schema(
             &schema, "effect result", Some(&decode))?);
         return Ok(());
     }
@@ -242,7 +242,7 @@ pub(crate) fn validate_effect_result_bytes_with_work(
         let decode = crate::filesystem::PreparationIo::from_native_work(original)?;
         let schema = decode.decode_preparation::<Value>(schema_bytes)?;
         // Preserve schema admission before result parsing/allocation, as in the original validate_schema_bytes + validate_result_bytes sequence.
-        drop(crate::contract::compile_json_schema_with_io(
+        drop(crate::contract::compile_json_schema(
             &schema, "effect result", Some(&decode))?);
         if result.descriptor().media_type() != "application/json" {
             return Err(Error::NativeBoundary {
@@ -252,7 +252,7 @@ pub(crate) fn validate_effect_result_bytes_with_work(
         }
         result.descriptor().verify_with_native_work(bytes, original)?;
         let value = decode.decode_preparation::<Value>(bytes)?;
-        return crate::contract::validate_json_schema_value_with_io(
+        return crate::contract::validate_json_schema_value(
             &schema, &value, "effect result", Some(&decode));
     }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
@@ -440,7 +440,8 @@ impl EffectRegistry {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<&Arc<dyn EffectProvider>> {
         self.require_native_metadata(work)?;
-        work.visit(1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })
+            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         let provider = self.providers.get(provider_name).ok_or_else(|| Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unsupported,
             reason: "effect provider is not registered",

@@ -1,16 +1,4 @@
 //! Measures how one local Stream root behaves under concurrent writers on
-//! distinct paths while another writer publishes large commits.
-//!
-//! ```text
-//! cargo run --release -p acyclic-stream --features local --example local-contention -- \
-//!     [--workers N] [--writers N] [--ops N] [--small-bytes N] [--large-bytes N] [--durability full|barrier]
-//! ```
-//!
-//! Every small writer commits one small record per operation to its own
-//! authority (`agents/<i>/memory`); one large writer commits a large record per
-//! operation to `publish/blob` until the small writers finish; one reader polls
-//! the tail of a small writer's path. Per-operation latencies are reported as
-//! p50/p95/max together with throughput.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -93,9 +81,7 @@ fn summary(label: &str, mut samples: Vec<Duration>, elapsed: Duration) {
     );
 }
 
-/// One append of `bytes` to `path`, split into records of at most
-/// [`MAX_RECORD_BYTES`].
-/// The path's tail advances by the record count.
+/// One append of `bytes` to `path`, split into records of at most [`MAX_RECORD_BYTES`].
 fn commit(
     path: &StreamPath,
     tail: &mut u64,

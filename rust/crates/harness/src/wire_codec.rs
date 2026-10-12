@@ -166,9 +166,9 @@ pub(crate) fn decode_event_with_work_and_custody(
             crate::contract::JsonValueSchema::EventPayload, &mut |charge| {
                 match charge {
                     crate::contract::JsonCodecCharge::Admission { value_shape, .. } => {
-                        let witness = crate::contract::event_payload_ownership(
-                            value_shape, bounds.maximum_depth, Some(wire::ErrorCode::Storage))?;
-                        let retained = admitted.checked_add(witness.maximum_owned_bytes)
+                        let witness = crate::contract::json_decode_owned_bytes(
+                            value_shape, false, Some(wire::ErrorCode::Storage))?;
+                        let retained = admitted.checked_add(witness.0)
                             .ok_or_else(|| event_boundary(native, wire::ErrorCode::Storage,
                                 "event payload custody overflows"))?;
                         payload_quota.replace(retained)

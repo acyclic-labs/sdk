@@ -41,7 +41,7 @@ pub(super) fn decode_command<T: PreparationRecord>(payload: Value, io: Option<&P
 pub(super) fn decode_borrowed_command<T: PreparationRecord>(payload: &Value, io: &PreparationIo) -> Result<T> {
     let encoded_hold;
     let encoded = io.encode_json(payload, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
-    encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
+    encoded_hold = io.guard_bytes(&encoded)?;
     let decoded = io.decode_preparation::<T>(&encoded)?.into_retained();
     drop(encoded);
     drop(encoded_hold);
@@ -64,7 +64,7 @@ pub(super) fn mail_ready(value: impl Serialize, io: Option<&PreparationIo>) -> R
         let output = PreparationIo::from_native_work(native)?;
         let encoded_hold;
         let encoded = output.encode_json(&value, acyclic_stream::MAX_RECORD_BYTES as u64, false)?;
-        encoded_hold = output.guard_owned(encoded.capacity() as u64)?;
+        encoded_hold = output.guard_bytes(&encoded)?;
         let value = output.decode_preparation::<Value>(&encoded)?.into_retained();
         drop(encoded);
         drop(encoded_hold);
@@ -124,7 +124,7 @@ where
         if command.kind == MAIL_SEND_TASK_COMMAND_KIND {
             let input: MailSendTaskCommand = decode_command(payload, io)?;
             let message = message_identity(task, command.operation_id, io)?;
-            self.runtime.task_host().reconcile_sent_mail_with_io(task, fence, input.recipient, message, input.payload, io).await?;
+            self.runtime.task_host().reconcile_sent_mail(task, fence, input.recipient, message, input.payload, io).await?;
         }
         reconciled(io)
     }

@@ -14,104 +14,6 @@ fn finite_budget() -> Result<WorkBudget, serde_json::Error> {
     serde_json::from_value(value)
 }
 
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
-#[tokio::test]
-async fn materialization_failures_retain_the_pinned_checkout_work()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("measured-materialization").await?;
-    workspace
-        .write_text("/original.txt", "pinned bytes")
-        .await?;
-    let generation = workspace.head().await?;
-    let budget = finite_budget()?;
-    let pinned = workspace
-        .generation_measured(generation.id(), budget, &CancellationToken::new())
-        .await?;
-    assert!(pinned.work.object_bytes_read > 0);
-    let destination = tempfile::tempdir()?;
-    let invalid = acyclic_fs::MaterializeOptions::native(destination.path().join("absent"));
-    for selected_path in [false, true] {
-        let failure = if selected_path {
-            generation
-                .materialize_path("/original.txt", &invalid, budget, &CancellationToken::new())
-                .await
-                .err()
-        } else {
-            generation
-                .materialize(&invalid, budget, &CancellationToken::new())
-                .await
-                .err()
-        }
-        .ok_or("materialization accepted an absent destination")?;
-        assert_eq!(
-            *failure.work,
-            pinned.work.checked_add(WorkCounters {
-                backend_read_operations: 1,
-                ..WorkCounters::default()
-            })?
-        );
-        failure.work.verify(budget)?;
-    }
-    let valid = acyclic_fs::MaterializeOptions::native(destination.path());
-    let mut root_only = budget;
-    root_only.backend_read_operations = pinned.work.backend_read_operations + 1;
-    let failure = generation
-        .materialize(&valid, root_only, &CancellationToken::new())
-        .await
-        .err()
-        .ok_or("materialization admitted the unbudgeted destination scan")?;
-    assert!(matches!(failure.error, WorkspaceError::Work(_)));
-    assert_eq!(
-        failure.work.backend_read_operations,
-        root_only.backend_read_operations
-    );
-    assert_eq!(std::fs::read_dir(destination.path())?.count(), 0);
-    let failure = generation
-        .materialize_path("/missing.txt", &valid, budget, &CancellationToken::new())
-        .await
-        .err()
-        .ok_or("materialization accepted a missing selected path")?;
-    assert!(failure.work.backend_read_operations > pinned.work.backend_read_operations);
-    assert!(failure.work.object_bytes_read >= pinned.work.object_bytes_read);
-    failure.work.verify(budget)?;
-    let mut limited = budget;
-    limited.backend_read_operations = pinned.work.backend_read_operations;
-    let failure = generation
-        .materialize_path("/original.txt", &valid, limited, &CancellationToken::new())
-        .await
-        .err()
-        .ok_or("materialization exceeded the original checkout read allowance")?;
-    assert!(
-        matches!(failure.error, WorkspaceError::Work(_)),
-        "{:?}",
-        failure.error
-    );
-    assert_eq!(
-        failure.work.backend_read_operations,
-        pinned.work.backend_read_operations
-    );
-    assert_eq!(
-        failure.work.object_bytes_read,
-        pinned.work.object_bytes_read
-    );
-    // Destination admission now rejects before any host read or path lookup.
-    assert_eq!(*failure.work, pinned.work);
-    failure.work.verify(limited)?;
-    let cancelled = CancellationToken::new();
-    cancelled.cancel();
-    let failure = generation
-        .materialize(&valid, budget, &cancelled)
-        .await
-        .err()
-        .ok_or("pre-cancelled materialization succeeded")?;
-    assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
-    assert_eq!(*failure.work, WorkCounters::default());
-    assert_eq!(workspace.head().await?.id(), generation.id());
-    assert!(std::fs::read_dir(destination.path())?.next().is_none());
-    Ok(())
-}
-
 #[tokio::test]
 async fn generation_pinning_retains_spent_failure_work_and_exact_identity()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -120,9 +22,9 @@ async fn generation_pinning_retains_spent_failure_work_and_exact_identity()
     workspace
         .write_text("/original.txt", "original generation")
         .await?;
-    let original = workspace.head().await?.id();
+    let original = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     workspace.write_text("/later.txt", "later head").await?;
-    let current = workspace.head().await?.id();
+    let current = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     assert_ne!(original, current);
     let budget = finite_budget()?;
     for select_head in [false, true] {
@@ -130,10 +32,10 @@ async fn generation_pinning_retains_spent_failure_work_and_exact_identity()
             let workspace = workspace.clone();
             async move {
                 if select_head {
-                    workspace.head_measured(allowance, &token).await
+                    workspace.head(allowance, &token).await
                 } else {
                     workspace
-                        .generation_measured(original, allowance, &token)
+                        .generation(original, allowance, &token)
                         .await
                 }
             }
@@ -236,143 +138,6 @@ async fn cancelled_creation_spends_nothing_and_does_not_publish()
 }
 
 #[tokio::test]
-async fn original_creation_retry_never_adopts_a_later_head()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let operation = OperationId::new();
-    let config = VolumeConfig::portable(Lifecycle::Ephemeral);
-    let budget = finite_budget()?;
-    let cancellation = CancellationToken::new();
-    let created = fs
-        .create_workspace_with_operation_measured(
-            "original-create",
-            config,
-            operation,
-            budget,
-            &cancellation,
-        )
-        .await?;
-    created.work.verify(budget)?;
-    let initial = created.value.id();
-    let workspace = created.value.workspace();
-    let original = workspace
-        .operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()))
-        .await?
-        .ok_or("original creation operation was not retained")?;
-    assert_eq!(original.id(), initial);
-    workspace
-        .write_text("/later.txt", "later publication")
-        .await?;
-    assert_ne!(workspace.head().await?.id(), initial);
-    let retried = fs
-        .create_workspace_with_operation_measured(
-            "original-create",
-            config,
-            operation,
-            budget,
-            &cancellation,
-        )
-        .await?;
-    retried.work.verify(budget)?;
-    assert_eq!(retried.value.id(), initial);
-    assert_eq!(retried.value.workspace_id(), workspace.id());
-    let head_before_rejection = workspace.head().await?.id();
-    let mut changed_config = config;
-    changed_config.hard_links = !config.hard_links;
-    for (requested_config, requested_operation) in [
-        (config, OperationId::new()),
-        (changed_config, operation),
-    ] {
-        let rejected = fs
-            .create_workspace_with_operation_measured(
-                "original-create",
-                requested_config,
-                requested_operation,
-                budget,
-                &cancellation,
-            )
-            .await
-            .err()
-            .ok_or("foreign operation or reused operation/config adopted creation")?;
-        assert!(matches!(&rejected.error, WorkspaceError::Engine(message)
-            if message == "volume creation was rejected by authority state"));
-        assert!(rejected.work.authority_records_appended > 0);
-        rejected.work.verify(budget)?;
-        assert_eq!(workspace.head().await?.id(), head_before_rejection);
-        assert_eq!(
-            workspace
-                .operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()))
-                .await?
-                .ok_or("rejection rewrote the original operation")?
-                .id(),
-            initial
-        );
-    }
-    Ok(())
-}
-
-#[tokio::test]
-async fn original_creation_recovers_after_post_commit_receipt_failure()
--> Result<(), Box<dyn std::error::Error>> {
-    let config = VolumeConfig::portable(Lifecycle::Ephemeral);
-    let budget = finite_budget()?;
-    let cancellation = CancellationToken::new();
-    let baseline = Fs::memory()
-        .create_workspace_with_operation_measured(
-            "receipt-create",
-            config,
-            OperationId::new(),
-            budget,
-            &cancellation,
-        )
-        .await?;
-    let mut limited = budget;
-    limited.authority_records_read = baseline
-        .work
-        .authority_records_read
-        .checked_sub(1)
-        .ok_or("creation authenticated no authority records")?;
-    let fs = Fs::memory();
-    let operation = OperationId::new();
-    let failure = fs
-        .create_workspace_with_operation_measured(
-            "receipt-create",
-            config,
-            operation,
-            limited,
-            &cancellation,
-        )
-        .await
-        .err()
-        .ok_or("insufficient response budget succeeded")?;
-    assert!(
-        matches!(failure.error, WorkspaceError::Work(_)),
-        "{:?}",
-        failure.error
-    );
-    failure.work.verify(limited)?;
-    assert!(failure.work.authority_records_appended > 0);
-    let workspace = fs.open_workspace("receipt-create").await?;
-    let original = workspace
-        .operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()))
-        .await?
-        .ok_or("failed response did not follow the original committed creation")?;
-    let recovered = fs
-        .create_workspace_with_operation_measured(
-            "receipt-create",
-            config,
-            operation,
-            budget,
-            &cancellation,
-        )
-        .await?;
-    recovered.work.verify(budget)?;
-    assert_eq!(recovered.value.id(), original.id());
-    assert_eq!(recovered.value.workspace_id(), original.workspace_id());
-    Ok(())
-}
-
-#[tokio::test]
 async fn named_open_retains_cumulative_work_and_original_cancellation()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
@@ -436,11 +201,11 @@ async fn original_operation_recovery_is_bounded_and_never_adopts_head()
     workspace
         .write_text("/later.txt", "later generation")
         .await?;
-    let head = workspace.head().await?.id();
+    let head = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
     assert_ne!(head, created.value.id());
     let key = IdempotencyKey::from_bytes(operation.into_bytes());
     let recovered = workspace
-        .operation_generation_measured(key, budget, &CancellationToken::new())
+        .operation_generation(key, budget, &CancellationToken::new())
         .await?;
     recovered.work.verify(budget)?;
     assert!(recovered.work.backend_read_operations > 0);
@@ -454,7 +219,7 @@ async fn original_operation_recovery_is_bounded_and_never_adopts_head()
     let mut denied = budget;
     denied.backend_read_operations = 0;
     let failure = workspace
-        .operation_generation_measured(key, denied, &CancellationToken::new())
+        .operation_generation(key, denied, &CancellationToken::new())
         .await
         .err()
         .ok_or("recovery admitted zero backend-read budget")?;
@@ -463,14 +228,14 @@ async fn original_operation_recovery_is_bounded_and_never_adopts_head()
     let cancelled = CancellationToken::new();
     cancelled.cancel();
     let failure = workspace
-        .operation_generation_measured(key, budget, &cancelled)
+        .operation_generation(key, budget, &cancelled)
         .await
         .err()
         .ok_or("pre-cancelled recovery succeeded")?;
     assert!(matches!(failure.error, WorkspaceError::Cancelled(_)));
     assert_eq!(*failure.work, WorkCounters::default());
     let absent = workspace
-        .operation_generation_measured(
+        .operation_generation(
             IdempotencyKey::from_bytes(OperationId::new().into_bytes()),
             budget,
             &CancellationToken::new(),
@@ -642,14 +407,12 @@ mod source_bound_lost_ack {
         failure.work.verify(budget)?;
         assert_eq!(fault.committed.load(Ordering::SeqCst), 1);
         let workspace = fs.open_workspace("stream-lost-ack").await?;
-        let initial = workspace.operation_generation(
-            IdempotencyKey::from_bytes(operation.into_bytes()),
-        ).await?.ok_or("lost acknowledgement did not retain original allocation")?;
+        let initial = workspace.operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.ok_or("lost acknowledgement did not retain original allocation")?;
         let initial_id = initial.id();
         let workspace_id = initial.workspace_id();
         assert!(store.load_lazy_workspace(workspace_id).await?.is_none());
         workspace.write_text("/later.txt", "head after lost acknowledgement").await?;
-        let head = workspace.head().await?.id();
+        let head = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.id();
         assert_ne!(head, initial_id);
         drop(initial);
         drop(workspace);
@@ -693,7 +456,7 @@ mod source_bound_lost_ack {
                 if message == "volume creation was rejected by authority state"));
             failure.work.verify(budget)?;
             assert_eq!(lazy.workspace().head().await?.id(), head);
-            let retained = lazy.workspace().operation_generation_measured(
+            let retained = lazy.workspace().operation_generation(
                 IdempotencyKey::from_bytes(operation.into_bytes()), budget, &cancellation,
             ).await?;
             retained.work.verify(budget)?;

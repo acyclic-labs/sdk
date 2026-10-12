@@ -295,7 +295,7 @@ async fn prepare_case(root: &Path, total_tasks: u64, negative_control: Option<Pa
     let config_path = root.join("native-config.json");
     let target_workspace = filesystem.open_workspace(logical_root.project.storage_name()?).await
         .map_err(|error| Error::Storage(error.to_string()))?;
-    let target_generation = target_workspace.head().await.map_err(|error| Error::Storage(error.to_string()))?;
+    let target_generation = target_workspace.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(|error| Error::Storage(error.to_string()))?;
     target_generation.pin("graphcoder-native-exact-approved-target").await
         .map_err(|error| Error::Storage(error.to_string()))?;
     let publication_operation = OperationId::new();
@@ -477,7 +477,7 @@ impl Producer {
                 history_limits: HistoryReadLimits { maximum_events: 256, maximum_bytes: 4 * 1024 * 1024 } },
             source_read, &self.cancellation,
         ).await?;
-        let projected_reference_grants = binding.preparer.required_reference_grants(&binding.request).await?;
+        let projected_reference_grants = binding.preparer.required_reference_grants(&binding.request, None).await?;
         let checkpoint = ForkSourceConfig { caller: parent.task, owner: parent.binding.clone(),
             project: parent.project.clone(), snapshot: parent.aggregate.reducer().snapshot()?,
             request: binding.request.clone() };

@@ -58,10 +58,6 @@ fn encode_base64(value: &[u8]) -> String {
 }
 
 /// Encode a generated response for one canonical HTTP route.
-/// Successful Commit includes its complete immutable envelope atomically.
-/// This projects already admitted outcomes; it does not authorize or publish them.
-/// # Errors
-/// Rejects unknown routes, malformed responses, zero bounds and oversized output.
 pub fn encode(route: &str, input: &[u8], maximum_bytes: usize) -> Result<Vec<u8>> {
     if maximum_bytes == 0 || input.len() > maximum_bytes {
         return Err("limit_exceeded");

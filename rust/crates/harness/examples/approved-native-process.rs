@@ -749,7 +749,7 @@ where
         stream,
         files,
         volume.clone(),
-        issuer.verifier(),
+        issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
         scope.clone(),
         1_000_000,
     )?))

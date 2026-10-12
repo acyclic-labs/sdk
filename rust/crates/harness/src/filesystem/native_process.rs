@@ -2,7 +2,7 @@
 
 use super::{
     NATIVE_PROCESS_EFFECT_KIND, NativeProcessRequest, NativeProcessResult, NativeProcessStop,
-    NativeProcessStopKind, NativeProcessView, NativePublicationFailure, NativeViewManifest, NativeViewOwner,
+    NativeProcessStopKind, NativeProcessView, NativePublicationFailure, NativeViewManifest,
 };
 use crate::{
     Error, InteractionId, OperationId, Result,
@@ -10,13 +10,12 @@ use crate::{
     core::{AuthorityVerifier, EffectGuarantee, EffectStatus},
     distributed::JournalWrite,
     durable_host::TaskJournalOwner,
-    effect_host::{TaskEffectPlan, task_effect_id},
+    effect_host::TaskEffectPlan,
     effects::{EffectDispatch, EffectObservation, EffectProvider},
     store::{HistoryReadLimits, HistoryReader},
     tool::ToolApprovalVerifier,
 };
 use acyclic_stream::{BoxProviderFuture, StreamError, StreamPath, StreamProvider};
-use bytes::Bytes;
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -35,32 +34,20 @@ mod publication_observation;
 pub use drain::NativeProcessDrainProof;
 use drain::NativeCleanupControl;
 use finite_execution::execute;
-#[cfg(test)]
-mod receipt_observation_tests;
 
 impl NativeProcessRequest {
-    fn validate(&self) -> Result<()> {
-        self.validate_with_io(None)
-    }
-
-    fn validate_with_io(&self, io: Option<&super::PreparationIo>) -> Result<()> {
+    fn validate(&self, io: &super::PreparationIo) -> Result<()> {
         use super::native_contract::validation_error;
         if self.standard_input.is_some() && self.mcp_stdio.is_some() {
-            return Err(validation_error(io, crate::wire::ErrorCode::Invalid,
+            return Err(validation_error(Some(io), crate::wire::ErrorCode::Invalid,
                 "literal stdin and MCP exchange are mutually exclusive"));
         }
         if let Some(exchange) = &self.mcp_stdio {
-            match io.and_then(super::PreparationIo::original_native_work) {
-                Some(work) => {
-                    let (exchange, first, custody) = exchange.exchange_with_native_work(work)?;
-                    drop(exchange);
-                    drop(first);
-                    drop(custody);
-                }
-                None => exchange.validate()?,
-            }
+            let work = io.original_native_work().ok_or(receipt_error("native invocation requires its original work ledger"))?;
+            let (exchange, first, custody) = exchange.exchange_with_native_work(work)?;
+            drop((exchange, first, custody));
         }
-        if let Some(io) = io {
+        {
             let items = self.environment.len().checked_add(self.argv.len())
                 .and_then(|items| items.checked_add(self.cwd.components().count()))
                 .ok_or_else(|| validation_error(Some(io), crate::wire::ErrorCode::Invalid,
@@ -81,18 +68,18 @@ impl NativeProcessRequest {
             })
             || self.argv.iter().any(|arg| arg.contains('\0'))
         {
-            return Err(validation_error(io, crate::wire::ErrorCode::Invalid,
+            return Err(validation_error(Some(io), crate::wire::ErrorCode::Invalid,
                 "invalid or changed native process invocation"));
         }
         #[cfg(windows)]
         for (index, key) in self.environment.keys().enumerate() {
             for prior in self.environment.keys().take(index) {
-                if let Some(io) = io {
+                {
                     io.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
                 }
                 if key.chars().flat_map(char::to_uppercase)
                     .eq(prior.chars().flat_map(char::to_uppercase)) {
-                    return Err(validation_error(io, crate::wire::ErrorCode::Invalid,
+                    return Err(validation_error(Some(io), crate::wire::ErrorCode::Invalid,
                         "duplicate native environment key under Windows case folding"));
                 }
             }
@@ -100,24 +87,20 @@ impl NativeProcessRequest {
         Ok(())
     }
 
-    fn validate_native_paths(&self, view: &NativeViewManifest) -> Result<()> {
-        self.validate_native_paths_with_io(view, None)
-    }
-
-    fn validate_native_paths_with_io(
-        &self, view: &NativeViewManifest, io: Option<&super::PreparationIo>,
+    fn validate_native_paths(
+        &self, view: &NativeViewManifest, io: &super::PreparationIo,
     ) -> Result<()> {
         use super::native_contract::validation_error;
-        self.validate_with_io(io)?;
+        self.validate(io)?;
         if &self.view != view {
-            return Err(validation_error(io, crate::wire::ErrorCode::Conflict,
+            return Err(validation_error(Some(io), crate::wire::ErrorCode::Conflict,
                 "native command view changed"));
         }
         let relative = self.cwd.strip_prefix(&view.options.root)
-            .map_err(|_| validation_error(io, crate::wire::ErrorCode::Conflict,
+            .map_err(|_| validation_error(Some(io), crate::wire::ErrorCode::Conflict,
                 "native cwd is outside the selected locator"))?;
         if relative.components().any(|part| !matches!(part, std::path::Component::Normal(_))) {
-            return Err(validation_error(io, crate::wire::ErrorCode::Invalid,
+            return Err(validation_error(Some(io), crate::wire::ErrorCode::Invalid,
                 "native cwd has a non-relative component"));
         }
         Ok(())
@@ -154,8 +137,8 @@ pub struct NativeProcessProvider<P: StreamProvider> {
     supervisor: Arc<NativeSupervisorControl>,
     effect_id: crate::EffectId,
     history: Arc<HistoryReader<P>>,
-    _native_work: Option<acyclic_fs::NativeMaterializationWork>,
-    _custody: Option<Arc<Mutex<acyclic_fs::NativeAllocation>>>,
+    _native_work: acyclic_fs::NativeMaterializationWork,
+    _custody: Arc<Mutex<acyclic_fs::NativeAllocation>>,
 }
 
 enum NativeAdmission {
@@ -203,7 +186,7 @@ impl NativeSupervisorControl {
             process: Mutex::new(None) }
     }
 
-    fn settle_process_with_native_work(
+    fn settle_process(
         &self, work: &acyclic_fs::NativeMaterializationWork,
         cleanup: Option<&NativeCleanupControl<'_>>,
     ) -> Result<()> {
@@ -230,11 +213,11 @@ impl NativeSupervisorControl {
             .map_err(|error| Error::NativeWork { cause: error.into(), custody: None })
     }
 
-    fn begin(&self, attempt: crate::EffectAttemptId) -> std::result::Result<(), NativeReceiptError> {
+    fn begin(&self, attempt: crate::EffectAttemptId) -> std::result::Result<(), Error> {
         let mut active = self.active.lock()
-            .map_err(|_| NativeReceiptError::Record("native supervisor control was poisoned"))?;
+            .map_err(|_| receipt_error("native supervisor control was poisoned"))?;
         if active.is_some() {
-            return Err(NativeReceiptError::Record("native provider already owns an original supervisor"));
+            return Err(receipt_error("native provider already owns an original supervisor"));
         }
         *active = Some(NativeActiveAttempt {
             attempt, stop_requested: AtomicBool::new(false),
@@ -245,13 +228,13 @@ impl NativeSupervisorControl {
 
     fn snapshot(
         &self, attempt: crate::EffectAttemptId,
-    ) -> std::result::Result<(bool, NativeCapturePhase), NativeReceiptError> {
+    ) -> std::result::Result<(bool, NativeCapturePhase), Error> {
         let active = self.active.lock()
-            .map_err(|_| NativeReceiptError::Record("original supervisor control is poisoned"))?;
+            .map_err(|_| receipt_error("original supervisor control is poisoned"))?;
         let active = active.as_ref()
-            .ok_or(NativeReceiptError::Record("original owned supervisor is unavailable; launch intent cannot hydrate process control"))?;
+            .ok_or(receipt_error("original owned supervisor is unavailable; launch intent cannot hydrate process control"))?;
         if active.attempt != attempt {
-            return Err(NativeReceiptError::Record("stop attempt differs from the original owned supervisor"));
+            return Err(receipt_error("stop attempt differs from the original owned supervisor"));
         }
         Ok((active.completed, active.capture))
     }
@@ -322,105 +305,16 @@ struct NativeObservation {
 struct NativeExecution {
     status: EffectStatus,
     diagnostic: Option<crate::conversation::FileRef>,
-    publication_failure: Option<NativePublicationFailure>,
-    invocation_failure: Option<String>,
     published: Vec<NativeProcessPublishedVolume>,
     work: acyclic_fs::WorkCounters,
 }
 
-/// Original native receipt failure without allocating a quota diagnostic.
-#[derive(Debug, thiserror::Error)]
-pub enum NativeReceiptError {
-    /// An already owned policy or authoritative journal error.
-    #[error(transparent)]
-    Owner(#[from] Error),
-    /// Original native admission or cancellation failure.
-    #[error(transparent)]
-    Native(#[from] acyclic_fs::NativeTreeMaterializationError),
-    /// Original typed Stream provider failure.
-    #[error(transparent)]
-    Backend(#[from] StreamError),
-    /// Original typed JSON failure, retaining its admitted diagnostic storage.
-    #[error("{source}")]
-    Decode {
-        /// Original deserializer failure.
-        source: serde_json::Error,
-        /// Original logical diagnostic admission until the cause is dropped.
-        custody: Option<acyclic_fs::NativeAllocation>,
-    },
-    /// Original canonical codec cause in its preadmitted owned error slot.
-    #[error("{source}")]
-    Codec {
-        /// Original cause classification.
-        code: crate::wire::ErrorCode,
-        /// Original canonical codec failure, including intrinsic custody.
-        source: Box<dyn std::error::Error + Send + Sync>,
-        /// Original allocation covering the error box until physical deallocation.
-        custody: Option<acyclic_fs::NativeAllocation>,
-    },
-    /// A malformed or unavailable original receipt.
-    #[error("{0}")]
-    Record(&'static str),
-    /// The original owned supervisor task failed to finish.
-    #[error(transparent)]
-    Supervisor(tokio::task::JoinError),
+fn receipt_error(reason: &'static str) -> Error {
+    Error::NativeBoundary { code: crate::wire::ErrorCode::Storage, reason }
 }
 
-#[derive(Debug)]
-struct NativeReceiptCodecCause {
-    cause: Option<Error>,
-    _custody: Option<acyclic_fs::NativeAllocation>,
-}
-
-impl std::fmt::Display for NativeReceiptCodecCause {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        std::fmt::Display::fmt(
-            self.cause.as_ref().expect("native codec slot contains its original cause"),
-            formatter,
-        )
-    }
-}
-
-impl std::error::Error for NativeReceiptCodecCause {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.cause.as_ref().map(|cause| cause as &(dyn std::error::Error + 'static))
-    }
-}
-
-struct NativeReceiptCodecSlot {
-    source: Box<NativeReceiptCodecCause>,
-    custody: acyclic_fs::NativeAllocation,
-}
-
-impl NativeReceiptCodecSlot {
-    fn new(work: &acyclic_fs::NativeMaterializationWork) -> Result<Self> {
-        let custody = work.claim(std::mem::size_of::<NativeReceiptCodecCause>() as u64)
-            .map_err(Error::from)?;
-        Ok(Self {
-            source: Box::new(NativeReceiptCodecCause { cause: None, _custody: None }),
-            custody,
-        })
-    }
-
-    fn retain(
-        self,
-        cause: Error,
-        custody: Option<acyclic_fs::NativeAllocation>,
-    ) -> NativeReceiptError {
-        let code = cause.code();
-        let Self { mut source, custody: box_custody } = self;
-        source.cause = Some(cause);
-        source._custody = custody;
-        NativeReceiptError::Codec { code, source, custody: Some(box_custody) }
-    }
-}
-
-impl NativeReceiptError {
-    /// Transfers the original typed cause and its already admitted custody to the canonical Harness error without formatting or copying diagnostics.
-    #[must_use]
-    pub fn into_root_error(self) -> Error {
-        finite_dispatch::root_error(self)
-    }
+fn receipt_backend(source: StreamError) -> Error {
+    Error::NativeStream { code: crate::wire::ErrorCode::Storage, source, custody: None }
 }
 
 /// Actual SDK-issued final snapshot data for one original approved mapping.
@@ -434,7 +328,7 @@ pub struct NativeProcessPublishedVolume {
 }
 
 /// Authenticated original attempt and its durable native diagnostic.
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NativeProcessReceipt {
     /// Original task, never reconstructed from native paths.
@@ -466,32 +360,13 @@ impl NativeProcessReceipt {
     /// Moves the observed effect together with its original measured payload custody.
     pub fn into_effect(
         self,
-    ) -> std::result::Result<(EffectObservation, acyclic_fs::NativeAllocation), NativeReceiptError> {
-        let Self {
-            task: _, command: _, original_fence, effect, observed: _,
-            diagnostic, publication_failure, invocation_failure, published, work, _custody,
-        } = self;
-        drop(original_fence);
-        let (effect, custody) = finite_dispatch::into_observed_effect(
-            NativeObservation { effect, diagnostic, publication_failure, invocation_failure, published, work },
-            _custody,
-        )?;
-        let custody = custody
-            .ok_or(NativeReceiptError::Record("native receipt has no original measured custody"))?;
+    ) -> std::result::Result<(EffectObservation, acyclic_fs::NativeAllocation), Error> {
+        let Self { original_fence, effect, diagnostic, publication_failure,
+            invocation_failure, published, _custody, .. } = self;
+        drop((original_fence, diagnostic, publication_failure, invocation_failure, published));
+        let mut custody = _custody.ok_or(receipt_error("native receipt has no original measured custody"))?;
+        custody.substitute(receipt_observation::effect_bytes(&effect)?)?;
         Ok((effect, custody))
-    }
-}
-
-impl std::fmt::Debug for NativeProcessReceipt {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("NativeProcessReceipt")
-            .field("task", &self.task).field("command", &self.command)
-            .field("original_fence", &self.original_fence).field("effect", &self.effect)
-            .field("observed", &self.observed).field("diagnostic", &self.diagnostic)
-            .field("publication_failure", &self.publication_failure)
-            .field("invocation_failure", &self.invocation_failure).field("work", &self.work)
-            .field("published", &self.published)
-            .finish()
     }
 }
 
@@ -522,13 +397,12 @@ where
         &self, attempt: crate::EffectAttemptId,
         work: &acyclic_fs::NativeMaterializationWork,
         cleanup_cancellation: &acyclic_fs::CancellationToken,
-    ) -> std::result::Result<(), NativeReceiptError> {
-        if !work.remaining().map_err(NativeReceiptError::Native)?.has_finite_allowances() {
-            return Err(NativeReceiptError::Record("native stop requires a finite original work allowance"));
+    ) -> std::result::Result<(), Error> {
+        if !work.remaining()?.has_finite_allowances() {
+            return Err(receipt_error("native stop requires a finite original work allowance"));
         }
-        crate::NativeFutureBundle::new(work, || async {
-            Ok(self.signal_stop_original(attempt, work, cleanup_cancellation, None).await)
-        }).map_err(NativeReceiptError::Owner)?.await.map_err(NativeReceiptError::Owner)?
+        crate::NativeFutureBundle::new(work, ||
+            self.signal_stop_original(attempt, work, cleanup_cancellation, None))?.await
     }
 
     async fn signal_stop_original(
@@ -536,29 +410,27 @@ where
         work: &acyclic_fs::NativeMaterializationWork,
         cleanup_cancellation: &acyclic_fs::CancellationToken,
         cleanup: Option<&NativeCleanupControl<'_>>,
-    ) -> std::result::Result<(), NativeReceiptError> {
-        cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)
-            .map_err(NativeReceiptError::Native)?;
+    ) -> std::result::Result<(), Error> {
+        cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
         work.charge(acyclic_fs::WorkCounters {
             items_examined: 1, ..acyclic_fs::WorkCounters::default()
-        }).map_err(NativeReceiptError::Native)?;
+        })?;
         let (completed, _) = self.supervisor.snapshot(attempt)?;
         self.authenticate_cleanup_owner(work).await?;
-        cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)
-            .map_err(NativeReceiptError::Native)?;
+        cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
         if completed {
-            self.supervisor.settle_process_with_native_work(work, cleanup)?;
+            self.supervisor.settle_process(work, cleanup)?;
             return Ok(());
         }
         work.charge(acyclic_fs::WorkCounters {
             items_examined: 1, ..acyclic_fs::WorkCounters::default()
-        }).map_err(NativeReceiptError::Native)?;
+        })?;
         let active = self.supervisor.active.lock()
-            .map_err(|_| NativeReceiptError::Record("original supervisor control is poisoned"))?;
+            .map_err(|_| receipt_error("original supervisor control is poisoned"))?;
         let active = active.as_ref()
-            .ok_or(NativeReceiptError::Record("original owned supervisor disappeared"))?;
+            .ok_or(receipt_error("original owned supervisor disappeared"))?;
         if active.attempt != attempt {
-            return Err(NativeReceiptError::Record("stop attempt differs from the original owned supervisor"));
+            return Err(receipt_error("stop attempt differs from the original owned supervisor"));
         }
         if !active.completed { active.stop_requested.store(true, Ordering::Release); }
         Ok(())
@@ -569,22 +441,22 @@ where
         &self, attempt: crate::EffectAttemptId,
         work: &acyclic_fs::NativeMaterializationWork,
         cleanup_cancellation: &acyclic_fs::CancellationToken,
-    ) -> std::result::Result<NativeProcessReceipt, NativeReceiptError> {
-        if !work.remaining().map_err(NativeReceiptError::Native)?.has_finite_allowances() {
-            return Err(NativeReceiptError::Record("native stop wait requires a finite original work allowance"));
+    ) -> std::result::Result<NativeProcessReceipt, Error> {
+        if !work.remaining()?.has_finite_allowances() {
+            return Err(receipt_error("native stop wait requires a finite original work allowance"));
         }
-        crate::NativeFutureBundle::new(work, || async { Ok(async {
+        crate::NativeFutureBundle::new(work, || async {
             let phase = self.wait_for_original_collection(attempt, work, cleanup_cancellation, None).await?;
-            let receipt = self.receipt_with_native_work(attempt, work).await?
-                .ok_or(NativeReceiptError::Record("original supervisor completed without a retained launch receipt"))?;
+            let receipt = self.receipt(attempt, work, None).await?
+                .ok_or(receipt_error("original supervisor completed without a retained launch receipt"))?;
             if !receipt.observed {
-                return Err(NativeReceiptError::Record("original supervisor completion has no durable observed receipt"));
+                return Err(receipt_error("original supervisor completion has no durable observed receipt"));
             }
             if !matches!(phase, NativeCapturePhase::Pending | NativeCapturePhase::Drained | NativeCapturePhase::Recorded) {
-                return Err(NativeReceiptError::Record("original physical process collection remains uncertain"));
+                return Err(receipt_error("original physical process collection remains uncertain"));
             }
             Ok(receipt)
-        }.await) }).map_err(NativeReceiptError::Owner)?.await.map_err(NativeReceiptError::Owner)?
+        })?.await
     }
 
     async fn wait_for_original_collection(
@@ -593,11 +465,11 @@ where
         work: &acyclic_fs::NativeMaterializationWork,
         cleanup_cancellation: &acyclic_fs::CancellationToken,
         cleanup: Option<&NativeCleanupControl<'_>>,
-    ) -> std::result::Result<NativeCapturePhase, NativeReceiptError> {
+    ) -> std::result::Result<NativeCapturePhase, Error> {
         self.signal_stop_original(attempt, work, cleanup_cancellation, cleanup).await?;
         let poll_ms = match &self.admission {
             NativeAdmission::Executable { request, .. } => request.cancellation_poll_ms,
-            NativeAdmission::ReceiptOnly => return Err(NativeReceiptError::Record(
+            NativeAdmission::ReceiptOnly => return Err(receipt_error(
                 "receipt-only recovery owns no original supervisor",
             )),
         };
@@ -605,16 +477,15 @@ where
             let notified = self.supervisor.completion.notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
-            cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)
-                .map_err(NativeReceiptError::Native)?;
+            cleanup_cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
             work.charge(acyclic_fs::WorkCounters {
                 items_examined: 1, ..acyclic_fs::WorkCounters::default()
-            }).map_err(NativeReceiptError::Native)?;
+            })?;
             let (completed, phase) = self.supervisor.snapshot(attempt)?;
             if completed {
                 if !matches!(phase, NativeCapturePhase::Pending | NativeCapturePhase::Drained | NativeCapturePhase::Recorded) {
                     self.authenticate_cleanup_owner(work).await?;
-                    self.supervisor.settle_process_with_native_work(work, cleanup)?;
+                    self.supervisor.settle_process(work, cleanup)?;
                 }
                 return Ok(self.supervisor.snapshot(attempt)?.1);
             }
@@ -625,75 +496,39 @@ where
         }
     }
 
-    /// Queries the same fenced launch/observation journal used by reconciliation.
-    pub async fn receipt(
-        &self,
-        attempt: crate::EffectAttemptId,
-    ) -> Result<Option<NativeProcessReceipt>> {
-        self.receipt_original(attempt, None, None).await.map_err(receipt_observation::ordinary_error)
-    }
-
     /// Reads retained output after authenticating this exact attempt.
     pub async fn output(
         &self,
-        attempt: crate::EffectAttemptId,
+        attempt: crate::EffectAttemptId, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Option<crate::conversation::FileRef>> {
         let (request, result_schema, _) = self.executable_admission()?;
-        let Some(receipt) = self.receipt(attempt).await? else { return Ok(None); };
+        let Some(receipt) = self.receipt(attempt, work, None).await? else { return Ok(None); };
         if !receipt.observed { return Ok(None); }
         let reference = match receipt.effect.status {
             EffectStatus::Succeeded { result } => Some(result),
             _ => receipt.diagnostic,
         };
         if let Some(reference) = &reference {
-            self.owner.validate_input_file(reference)?;
+            self.owner.validate_input_file_with_native_work(reference, work)?;
             if reference.volume() != self.authority.results.volume()
                 || reference.descriptor().byte_length()
                     > u64::from(request.maximum_result_bytes)
             {
-                return Err(Error::Unauthorized(
-                    "native output differs from admitted result owner or bound".into(),
-                ));
+                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
+                    reason: "native output differs from admitted result owner or bound" });
             }
-            crate::effects::validate_result_bytes(
-                result_schema,
-                reference,
-                &self.authority.result_content.read(reference).await?,
-            )?;
+            let bytes = self.authority.result_content.read_with_native_work(
+                reference, u64::from(request.maximum_result_bytes), work)?.await?;
+            let io = super::PreparationIo::from_native_work(work)?;
+            let value = io.decode_preparation_with_code::<serde_json::Value>(&bytes, crate::wire::ErrorCode::Invalid)?;
+            crate::contract::validate_json_schema_value(result_schema, &value.value,
+                "native process result", Some(&io))?;
         }
         Ok(reference)
     }
 
-    /// Loads the pinned request/schema and verifies exact approval and task grants.
-    pub async fn new(
-        owner: Arc<TaskJournalOwner<P>>,
-        command: OperationId,
-        plan: TaskEffectPlan,
-        view: Arc<dyn NativeProcessView<P>>,
-        approval: InteractionId,
-        authority: NativeProcessAuthority,
-    ) -> Result<Self> {
-        owner.verify(false).await?;
-        finite_binding::bind_original(
-            owner, command, Cow::Owned(plan), Some(view), approval, authority, None,
-        ).await
-    }
-
-    /// Reopens receipt observation after provider drop or host restart, including cancellation.
-    pub async fn recover(
-        owner: Arc<TaskJournalOwner<P>>,
-        command: OperationId,
-        plan: TaskEffectPlan,
-        approval: InteractionId,
-        authority: NativeProcessAuthority,
-    ) -> Result<Self> {
-        finite_binding::bind_original(
-            owner, command, Cow::Owned(plan), None, approval, authority, None,
-        ).await
-    }
-
     /// Binds this exact prepared namespace to its original finite work family.
-    pub fn new_with_native_work<'a>(
+    pub fn new<'a>(
         owner: Arc<TaskJournalOwner<P>>, command: OperationId, plan: &'a TaskEffectPlan,
         view: Arc<dyn NativeProcessView<P>>, approval: InteractionId,
         authority: NativeProcessAuthority, work: &'a acyclic_fs::NativeMaterializationWork,
@@ -701,8 +536,8 @@ where
         finite_dispatch::require_finite(work)?;
         finite_binding::require_view_family(view.as_ref(), work)?;
         crate::NativeFutureBundle::new(work, || async move {
-            finite_binding::bind_original(
-                owner, command, Cow::Borrowed(plan), Some(view), approval, authority, Some(work),
+            finite_binding::bind(
+                owner, command, plan, view, approval, authority, work,
             ).await
         })
     }
@@ -712,21 +547,21 @@ where
         self, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Arc<Self>> {
         self.require_work_family(work)?;
-        let custody = work.claim(std::mem::size_of::<Self>() as u64)
-            .map_err(Error::from)?;
+        let custody = work.claim(std::mem::size_of::<Self>() as u64)?;
         finite_binding::absorb_shared(&self._custody, custody)?;
         Ok(Arc::new(self))
     }
 
     fn require_work_family(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<()> {
-        finite_binding::require_family(self._native_work.as_ref(), work)
+        finite_binding::require_family(Some(&self._native_work), work)
     }
 
     fn executable_admission(&self) -> Result<(&Arc<NativeProcessRequest>, &Arc<serde_json::Value>, [u8; 32])> {
         match &self.admission {
             NativeAdmission::Executable { request, result_schema, approval_digest } =>
                 Ok((request, result_schema, *approval_digest)),
-            NativeAdmission::ReceiptOnly => Err(Error::Unsupported("receipt-only native recovery has no dispatch or result-loading capability".into())),
+            NativeAdmission::ReceiptOnly => Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unsupported,
+                reason: "receipt-only native recovery has no dispatch or result-loading capability" }),
         }
     }
 
@@ -751,34 +586,17 @@ where
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<bool> {
         self.require_work_family(work)?;
-        work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })
-            .map_err(Error::from)?;
+        work.charge(acyclic_fs::WorkCounters { items_examined: 1, ..Default::default() })?;
         Ok(kind == NATIVE_PROCESS_EFFECT_KIND && guarantee == EffectGuarantee::AtMostOnce)
     }
     fn linearizable_reconciliation(&self) -> bool {
         false
     }
-    fn dispatch<'a>(
-        &'a self,
-        request: EffectDispatch,
-    ) -> BoxProviderFuture<'a, Result<EffectObservation>> {
-        Box::pin(async move {
-            let payload = finite_dispatch::dispatch_payload(request, None)
-                .map_err(receipt_observation::ordinary_error)?;
-            self.launch_original(payload, None).await
-                .map(|(effect, _)| effect)
-                .map_err(receipt_observation::ordinary_error)
-        })
+    fn dispatch<'a>(&'a self, _request: EffectDispatch) -> BoxProviderFuture<'a, Result<EffectObservation>> {
+        Box::pin(std::future::ready(Err(receipt_error("native dispatch requires its original work ledger"))))
     }
-    fn reconcile<'a>(
-        &'a self,
-        attempt: crate::EffectAttemptId,
-    ) -> BoxProviderFuture<'a, Result<Option<EffectObservation>>> {
-        Box::pin(async move {
-            self.receipt_original(attempt, None, None).await
-                .map(|receipt| receipt.map(|receipt| receipt.effect))
-                .map_err(receipt_observation::ordinary_error)
-        })
+    fn reconcile<'a>(&'a self, _attempt: crate::EffectAttemptId) -> BoxProviderFuture<'a, Result<Option<EffectObservation>>> {
+        Box::pin(std::future::ready(Err(receipt_error("native reconciliation requires its original work ledger"))))
     }
     fn dispatch_with_native_work<'a>(
         &'a self, request: EffectDispatch,
@@ -791,19 +609,9 @@ where
             reason: "receipt-only native recovery has no dispatch capability",
         })?;
         view.operation_cancellation().check()
-            .map_err(acyclic_fs::NativeTreeMaterializationError::from)
-            .map_err(Error::from)?;
-        let payload = finite_dispatch::dispatch_payload(request, Some(work))
-            .map_err(finite_dispatch::root_error)?;
-        crate::NativeFutureBundle::new(work, || async move {
-            let (effect, custody) = self.launch_original(payload, Some(work)).await
-                .map_err(finite_dispatch::root_error)?;
-            let custody = custody.ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Storage,
-                reason: "finite native dispatch lost original effect custody",
-            })?;
-            Ok((effect, custody))
-        })
+            .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
+        let payload = finite_dispatch::dispatch_payload(request, work)?;
+        crate::NativeFutureBundle::new(work, || self.launch(payload, work))
     }
 
     fn reconcile_with_native_work<'a>(
@@ -813,200 +621,10 @@ where
         finite_dispatch::require_finite(work)?;
         self.require_work_family(work)?;
         crate::NativeFutureBundle::new(work, || async move {
-            self.receipt_original(attempt, Some(work), None).await
-                .map_err(finite_dispatch::root_error)?
+            self.receipt(attempt, work, None).await?
                 .map(NativeProcessReceipt::into_effect)
-                .transpose().map_err(finite_dispatch::root_error)
+                .transpose()
         })
     }
 }
 
-fn require_view_grants<P: StreamProvider>(
-    owner: &TaskJournalOwner<P>,
-    manifest: &NativeViewManifest,
-) -> Result<()> {
-    manifest.validate()?;
-    for mapping in &manifest.volumes {
-        owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Read)?;
-        if mapping.writable {
-            owner.require_volume_grant(&mapping.volume, crate::conversation::VolumeOperation::Write)?;
-        }
-    }
-    Ok(())
-}
-
-async fn publish_view<P: StreamProvider>(
-    owner: &TaskJournalOwner<P>,
-    view: &dyn NativeProcessView<P>,
-    admitted: &NativeViewManifest,
-    slot: &mut finite_execution::NativePublicationSlot,
-) -> std::result::Result<
-    super::native_execution::NativeViewPublicationReceipt,
-    super::native_execution::NativeViewPublicationError,
-> {
-    owner.verify(false).await
-        .map_err(|cause| slot.original_failure(cause, acyclic_fs::WorkCounters::UNCHARGED))?;
-    if view.manifest() != admitted {
-        return Err(slot.original_failure(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Conflict, reason: "native publication view changed",
-        }, acyclic_fs::WorkCounters::UNCHARGED));
-    }
-    require_view_grants(owner, admitted)
-        .map_err(|cause| slot.original_failure(cause, acyclic_fs::WorkCounters::UNCHARGED))?;
-    let future = view.publish(NativeViewOwner::new(owner))
-        .map_err(|(cause, work)| slot.original_failure(cause, work))?;
-    let meter = future.work().clone();
-    slot.retain_failure_work(&meter)
-        .map_err(|cause| slot.original_failure(cause, meter.receipt()))?;
-    let receipt = future.await
-        .map_err(|cause| slot.original_failure(cause, meter.receipt()))??;
-    let checked = async {
-        if view.manifest() != admitted {
-            return Err(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Conflict,
-                reason: "native publication view changed after publication",
-            });
-        }
-        owner.verify(false).await
-    }.await;
-    match checked {
-        Ok(()) => Ok(receipt),
-        Err(cause) => Err(super::native_execution::NativeViewPublicationError {
-            cause, accounting_failure: None, work: receipt.work,
-            destination: None, completed: receipt.completed, published: receipt.published,
-            diagnostic: None, rendering_failure: None, custody: Some(receipt.custody),
-        }),
-    }
-}
-
-fn native_work_error(error: acyclic_fs::WorkError) -> Error {
-    Error::NativeWork {
-        cause: acyclic_fs::NativeTreeMaterializationError::Work(error), custody: None,
-    }
-}
-
-fn retain_validation_result<T>(
-    result: std::result::Result<acyclic_fs::OperationReceipt<T>, (Error, acyclic_fs::WorkCounters)>,
-    work: &mut acyclic_fs::WorkCounters,
-    frame_bytes: u64,
-) -> Result<T> {
-    let (value, spent) = match result {
-        Ok(receipt) => (Ok(receipt.value), receipt.work),
-        Err((error, work)) => (Err(error), work),
-    };
-    merge_execution_work(work, spent, frame_bytes)?;
-    value
-}
-
-fn merge_execution_work(
-    work: &mut acyclic_fs::WorkCounters,
-    spent: acyclic_fs::WorkCounters,
-    frame_bytes: u64,
-) -> Result<()> {
-    let overlap = frame_bytes.checked_add(spent.peak_allocation_bytes)
-        .ok_or(acyclic_fs::WorkError::Overflow).map_err(native_work_error)?;
-    *work = work.checked_add(spent).map_err(native_work_error)?;
-    work.peak_allocation_bytes = work.peak_allocation_bytes.max(overlap);
-    Ok(())
-}
-
-fn execution_remaining(
-    work: acyclic_fs::WorkCounters,
-    budget: acyclic_fs::WorkBudget,
-    frame_bytes: u64,
-) -> Result<acyclic_fs::WorkBudget> {
-    let mut remaining = work.remaining(budget).map_err(native_work_error)?;
-    remaining.peak_allocation_bytes = budget.peak_allocation_bytes.checked_sub(frame_bytes)
-        .ok_or(acyclic_fs::WorkError::Overflow).map_err(native_work_error)?;
-    Ok(remaining)
-}
-
-fn invocation_failure(error: Error, work: acyclic_fs::WorkCounters) -> NativeExecution {
-    NativeExecution {
-        status: EffectStatus::Indeterminate,
-        diagnostic: None,
-        publication_failure: None,
-        invocation_failure: Some(error.to_string()),
-        published: Vec::new(),
-        work,
-    }
-}
-
-#[inline(never)]
-fn box_execution<F: Future>(
-    build: impl FnOnce(acyclic_fs::WorkCounters) -> F,
-    budget: acyclic_fs::WorkBudget,
-    cancellation: &acyclic_fs::CancellationToken,
-) -> std::result::Result<std::pin::Pin<Box<F>>, NativeExecution> {
-    let mut work = acyclic_fs::WorkCounters::default();
-    if let Err(error) = cancellation.check() {
-        return Err(invocation_failure(Error::Storage(error.to_string()), work));
-    }
-    let bytes = std::mem::size_of::<F>() as u64;
-    if let Err(error) = work.charge_allocation(u64::from(bytes != 0), bytes, &budget) {
-        return Err(invocation_failure(native_work_error(error), work));
-    }
-    Ok(Box::pin(build(work)))
-}
-
-fn receipt_path(attempt: crate::EffectAttemptId) -> Result<StreamPath> {
-    use std::fmt::Write as _;
-    let mut path = String::new();
-    path.try_reserve_exact("harness/v2/native-process/".len() + 36)
-        .map_err(acyclic_fs::NativeTreeMaterializationError::AllocationFailed)
-        .map_err(Error::from)?;
-    write!(&mut path, "harness/v2/native-process/{attempt}")
-        .map_err(|_| Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Storage, reason: "native receipt path formatting failed",
-        })?;
-    StreamPath::new(path).map_err(|source| Error::NativeStream {
-        code: crate::wire::ErrorCode::Storage, source, custody: None,
-    })
-}
-
-#[cfg(test)]
-mod execution_admission_tests {
-    use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    #[test]
-    fn installed_execution_frame_is_admitted_before_constructing_its_future() {
-        let constructed = AtomicBool::new(false);
-        let cancellation = acyclic_fs::CancellationToken::new();
-        let failure = box_execution(
-            |_| {
-                constructed.store(true, Ordering::SeqCst);
-                std::future::ready(invocation_failure(
-                    Error::Storage("unreachable execution".into()),
-                    acyclic_fs::WorkCounters::default(),
-                ))
-            },
-            acyclic_fs::WorkBudget::UNCHARGED,
-            &cancellation,
-        ).err().expect("the real execution frame requires owned storage");
-        assert!(!constructed.load(Ordering::SeqCst));
-        assert_eq!(failure.work, acyclic_fs::WorkCounters::default());
-        assert!(failure.invocation_failure.is_some());
-    }
-
-    #[test]
-    fn original_execution_cancellation_prevents_future_construction() {
-        let constructed = AtomicBool::new(false);
-        let cancellation = acyclic_fs::CancellationToken::new();
-        cancellation.cancel();
-        let failure = box_execution(
-            |_| {
-                constructed.store(true, Ordering::SeqCst);
-                std::future::ready(invocation_failure(
-                    Error::Storage("unreachable execution".into()),
-                    acyclic_fs::WorkCounters::default(),
-                ))
-            },
-            acyclic_fs::WorkBudget::UNBOUNDED,
-            &cancellation,
-        ).err().expect("original cancellation must reject execution admission");
-        assert!(!constructed.load(Ordering::SeqCst));
-        assert_eq!(failure.work, acyclic_fs::WorkCounters::default());
-        assert!(failure.invocation_failure.is_some());
-    }
-}

@@ -120,37 +120,13 @@ fn fork_command_key_with_work(
     result.map(|key| (key, held))
 }
 
-/// Native, deterministic migration implementation selected by the exact installed target digest.
-pub trait ExtensionMigrationProvider: Send + Sync {
-    /// Transforms verified prior state into the candidate target state.
-    fn migrate(
-        &self,
-        name: &str,
-        from_version: u32,
-        to_version: u32,
-        target_implementation_digest: [u8; 32],
-        previous: &Value,
-    ) -> Result<Value>;
-}
-
-/// Deterministic, side-effect-free native migration callable.
-pub type ExtensionMigrationFn = dyn Fn(&Value) -> Result<Value> + Send + Sync;
-
 /// Exact-version native migration registry for local and customer-hosted runs.
 #[derive(Default)]
 pub struct NativeExtensionMigrations {
-    implementations: BTreeMap<(String, u32, u32, [u8; 32]), Arc<ExtensionMigrationFn>>,
+    implementations: BTreeMap<(String, u32, u32, [u8; 32]), Arc<dyn Fn(&Value) -> Result<Value> + Send + Sync>>,
 }
 
 impl NativeExtensionMigrations {
-    /// Starts an empty registry that rejects unsupported migrations.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            implementations: BTreeMap::new(),
-        }
-    }
-
     /// Pins one installed target implementation to a pure state transformation.
     pub fn register(
         &mut self,
@@ -158,7 +134,7 @@ impl NativeExtensionMigrations {
         from_version: u32,
         to_version: u32,
         target_implementation_digest: [u8; 32],
-        migration: Arc<ExtensionMigrationFn>,
+        migration: Arc<dyn Fn(&Value) -> Result<Value> + Send + Sync>,
     ) -> Result<()> {
         let name = name.into();
         ExtensionDependency {
@@ -185,9 +161,7 @@ impl NativeExtensionMigrations {
         self.implementations.insert(key, migration);
         Ok(())
     }
-}
 
-impl ExtensionMigrationProvider for NativeExtensionMigrations {
     fn migrate(
         &self,
         name: &str,
@@ -277,7 +251,7 @@ pub struct StreamAggregate<P> {
     content_verifier: Option<Arc<dyn ContentResidencyVerifier>>,
     fork_verifier: Option<Arc<CompositeForkVerifier>>,
     merge_verifier: Option<Arc<dyn ProjectMergeVerifier>>,
-    extension_migrations: Option<Arc<dyn ExtensionMigrationProvider>>,
+    extension_migrations: Option<Arc<NativeExtensionMigrations>>,
     limits: Limits,
     effect_history_limits: HistoryReadLimits,
 }
@@ -648,7 +622,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
                 && event.causal_parent.as_ref() == Some(&causal_parent)
                 && matches!(event.payload, crate::core::EventPayload::ConversationBound { agent } if agent == seed.child_agent) {
                 #[cfg(feature = "filesystem")]
-                if let Some(owner) = owner { owner.verify_dispatch_with_work(custody.work()).await?; }
+                if let Some(owner) = owner { owner.verify(false, custody.work()).await?; }
                 drop(event);
                 custody.release(event_owned)?;
                 drop(fork_event);
@@ -1196,7 +1170,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             return Err(Error::Invalid("effect read bounds must be positive".into()));
         }
         if let Some(state) = self.reducer.effect(effect) {
-            crate::contract::validate_effect_json_byte_bound_with_work(state, limits.maximum_bytes, work)?;
+            crate::contract::validate_trusted_json_byte_bound(state, limits.maximum_bytes, work)?;
             return crate::core::native_effect_clone_with_custody(state, work).map(Some);
         }
         let reader = if work.is_some() {
@@ -1288,7 +1262,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
     #[must_use]
     pub fn with_extension_migrations(
         mut self,
-        migrations: Arc<dyn ExtensionMigrationProvider>,
+        migrations: Arc<NativeExtensionMigrations>,
     ) -> Self {
         self.extension_migrations = Some(migrations);
         self
@@ -3120,7 +3094,7 @@ mod tests {
                     private.capability(crate::conversation::VolumeOperation::Write)?,
                 ]),
             );
-            let journal = crate::filesystem::FilesystemExecutionJournal::new_with_schemas(
+            let journal = crate::filesystem::FilesystemExecutionJournal::new(
                 client.clone(),
                 host,
                 private,
@@ -3682,7 +3656,7 @@ mod tests {
             [10; 32],
             ExtensionForkPolicy::Reset,
         )?;
-        let mut migrations = NativeExtensionMigrations::new();
+        let mut migrations = NativeExtensionMigrations::default();
         migrations.register(
             "example.message",
             1,
@@ -3768,7 +3742,7 @@ mod tests {
             Err(Error::Unsupported(_))
         ));
         assert_eq!(missing_executor.reducer().revision(), 1);
-        let mut wrong_migrations = NativeExtensionMigrations::new();
+        let mut wrong_migrations = NativeExtensionMigrations::default();
         wrong_migrations.register(
             "example.message",
             1,
@@ -3829,7 +3803,7 @@ mod tests {
             [10; 32],
             ExtensionForkPolicy::Reset,
         )?;
-        let mut migrations = NativeExtensionMigrations::new();
+        let mut migrations = NativeExtensionMigrations::default();
         migrations.register(
             "example.message",
             1,

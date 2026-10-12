@@ -106,7 +106,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         write: crate::distributed::JournalWrite, return_event: bool,
         work: &mut Option<&mut dyn history::HistoryIo>,
     ) -> Result<(ApplyResult, u64)> {
-        if let Some(owner) = owner { owner.verify_with_work(write.settlement(), work).await?; }
+        if let Some(owner) = owner { owner.verify(write.settlement(), work).await?; }
         if let Some(result) = self.replay(&command, return_event, default_projection_read_limits().maximum_bytes, work).await? {
             let returned_owned = result.1;
             let mut returned_custody = crate::wire_codec::CodecQuota::from_retained(work, returned_owned);
@@ -170,8 +170,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let mut append_phase = crate::distributed::CommitPhase::NotCalled;
         let appended = async {
             if let Some(owner) = owner {
-                return owner.append_conversation_with_work_and_phase(
-                    &publication, key.as_ref().expect("publication key"), write, transient.work(), &mut append_phase).await;
+                return owner.append_conversation(
+                    &publication, key.as_ref().expect("publication key"), write, transient.work(), Some(&mut append_phase)).await;
             }
             let request = publication.request_with_work(
                 &self.client, key.take().expect("publication key"), transient.work()).await?;

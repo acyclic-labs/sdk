@@ -10,7 +10,6 @@ use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
 
 mod clone_owned;
-pub(crate) use clone_owned::json_value_owned_bytes;
 
 /// Versioned resumable entrypoint for durable work.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

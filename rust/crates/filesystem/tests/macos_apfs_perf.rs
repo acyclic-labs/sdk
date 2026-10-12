@@ -178,7 +178,7 @@ async fn report_apfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
         NativeDemandSource::open(
             source.path(),
             FilesystemProfile::Portable,
-            VolumeLimits::default(),
+            VolumeLimits::default(), None, None,
         )
         .await?,
     );
@@ -193,7 +193,7 @@ async fn report_apfs_working_set_costs() -> Result<(), Box<dyn std::error::Error
 
     let started = Instant::now();
     let exact = lazy
-        .exactify_subtree_with_permit(
+        .exactify(
             "/hot",
             WorkBudget::UNBOUNDED,
             &CancellationToken::new(),

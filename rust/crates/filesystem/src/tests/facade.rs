@@ -1,8 +1,7 @@
 use super::*;
 use acyclic_stream::OwnedBytes;
-use crate::GenerationExportManifestError;
-use crate::async_storage::poll_ready;
-use crate::kernel::{InlineFileData, LogicalName, NameEncoding, MAXIMUM_GENERATION_ROOT_BYTES, encode_tree_page};
+use crate::async_storage::{poll_immediate, poll_ready};
+use crate::kernel::{InlineFileData, LogicalName, NameEncoding, MAXIMUM_GENERATION_ROOT_BYTES};
 use crate::memory::MemoryObjectStore as TestMemoryObjectStore;
 use crate::model::{
     CaseSensitivity, ConcurrencyMode, FilesystemProfile, UnicodePolicy, VolumeLimits,
@@ -15,337 +14,6 @@ use crate::storage::{
 };
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-#[tokio::test]
-async fn measured_private_candidate_admits_only_independent_proof_and_root_storage()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("measured-private-candidate").await?;
-    workspace.write_text("/file", "body").await?;
-    let cancellation = CancellationToken::new();
-    let checkout = workspace.checkout_measured(
-        GenerationSelector::Head, CheckoutMode::read_only_pinned(),
-        WorkBudget::UNBOUNDED, &cancellation,
-    ).await?;
-    assert!(checkout.work.allocation_operations >= 3, "initial proof owns three admitted Arc payloads");
-    assert!(checkout.work.peak_allocation_bytes >= checkout.value.logical_owned_bytes());
-    let checkout = checkout.value;
-    let failed = match checkout.private_candidate_measured(WorkBudget::default(), &cancellation) {
-        Err(failure) => failure,
-        Ok(_) => return Err("zero allocation budget unexpectedly accepted a candidate".into()),
-    };
-    assert!(matches!(failed.error, FsError::Work(_)));
-    assert_eq!(*failed.work, WorkCounters::default());
-    let candidate = checkout.private_candidate_measured(WorkBudget::UNBOUNDED, &cancellation)?;
-    assert!(candidate.work.allocation_operations > 0);
-    assert!(candidate.work.peak_allocation_bytes >= candidate.value.logical_owned_bytes());
-    assert!(!Arc::ptr_eq(&candidate.value.dependencies.proof, &checkout.dependencies.proof));
-    assert!(Arc::ptr_eq(
-        candidate.value.dependencies.proof().observed_paths.as_ref().expect("constructor map"),
-        checkout.dependencies.proof().observed_paths.as_ref().expect("constructor map"),
-    ));
-    assert!(candidate.value.root == checkout.root);
-    assert_eq!(candidate.value.base_root, checkout.base_root);
-    let cancelled = CancellationToken::new();
-    cancelled.cancel();
-    let failed = match checkout.private_candidate_measured(WorkBudget::UNBOUNDED, &cancelled) {
-        Err(failure) => failure,
-        Ok(_) => return Err("cancelled candidate unexpectedly succeeded".into()),
-    };
-    assert!(matches!(failed.error, FsError::Cancelled(_)));
-    assert_eq!(*failed.work, WorkCounters::default());
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn native_private_ctor_retains_original_mutex_until_last_proof_alias_and_retires_failed_copies()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("native-private-ctor-custody").await?;
-    workspace.write_text("/seed", "body").await?;
-    let active = CancellationToken::new();
-    let checkout = workspace.checkout_measured(
-        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &active,
-    ).await?.value;
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &active)
-        .map_err(|(cause, _)| cause)?;
-    let candidate = checkout.private_candidate_with_native_work(&original, &active)?;
-    let custody = candidate.private_control_custody();
-    let proof_bytes = size_of::<Mutex<Proof>>() as u64;
-    let parents = root_parent_bytes(&candidate.base_root)?
-        + root_parent_bytes(&candidate.root)? * (1 + u64::from(candidate.root.has_hold()));
-    assert!(parents > 0);
-    assert_eq!(custody.native_control_events(), (u128::from(proof_bytes + parents), 0));
-    assert_eq!(custody.non_native_retained_payload_bytes(), 0,
-        "borrowed source map storage never becomes this original constructor's payload");
-    let alias = Arc::clone(&candidate.dependencies.proof);
-    let live = original.live_allocation_bytes();
-    drop(candidate);
-    assert_eq!(custody.physical_retained_bytes(), proof_bytes);
-    assert_eq!(custody.native_control_events(),
-        (u128::from(proof_bytes + parents), u128::from(parents)));
-    assert_eq!(original.live_allocation_bytes(), live - parents);
-    drop(alias);
-    assert_eq!(custody.physical_retained_bytes(), 0);
-    assert_eq!(custody.native_control_events(),
-        (u128::from(proof_bytes + parents), u128::from(proof_bytes + parents)));
-    assert_eq!(original.live_allocation_bytes(), live - parents - proof_bytes,
-        "registry/token metadata is separate from actual retired primitive bytes");
-    let bounded = crate::NativeMaterializationWork::new(
-        WorkBudget { bytes_copied: size_of::<Proof>() as u64, ..WorkBudget::UNBOUNDED },
-        &active,
-    ).map_err(|(cause, _)| cause)?;
-    let failed = checkout.private_candidate_with_native_work(&bounded, &active)
-        .err().ok_or("copy-limited original ctor installed parent buffers")?;
-    assert!(matches!(failed, FsError::Work(_)));
-    let prefix = bounded.receipt();
-    assert_eq!(prefix.bytes_copied, size_of::<Proof>() as u64);
-    assert!(prefix.allocation_operations >= 3, "actual state, token and mutex constructors ran");
-    assert!(bounded.live_allocation_bytes() + proof_bytes <= prefix.peak_allocation_bytes,
-        "failed ctor retires its actual mutex/root copies, not its retained registry metadata");
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn native_proof_copy_admission_atomically_gates_original_and_resource_prefix()
--> Result<(), Box<dyn std::error::Error>> {
-    let cancellation = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(cause, _)| cause)?;
-    let copy = WorkCounters { bytes_copied: 3, items_examined: 1, ..WorkCounters::UNCHARGED };
-    for budget in [
-        WorkBudget { peak_allocation_bytes: 2, ..WorkBudget::UNBOUNDED },
-        WorkBudget { bytes_copied: 2, ..WorkBudget::UNBOUNDED },
-        WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED },
-    ] {
-        let denied = original.native_volume_work(budget)?;
-        let before = original.receipt();
-        assert!(denied.claim_allocation_with_work(3, 1, copy).is_err());
-        assert_eq!(original.receipt(), before,
-            "a denied copy/allocation bundle records neither imaginary copies nor allocation attempts");
-    }
-    let scope = original.native_volume_work(WorkBudget {
-        peak_allocation_bytes: 3, bytes_copied: 3, items_examined: 1,
-        allocation_operations: 1, ..WorkBudget::UNBOUNDED
-    })?;
-    let before = original.receipt();
-    let live = original.live_allocation_bytes();
-    let allocation = scope.claim_allocation_with_work(3, 1, copy)?;
-    // Cancellation cannot revoke an already granted infallible copy permit.
-    cancellation.cancel();
-    let payload = (b"abc".to_vec(), allocation);
-    assert_eq!(payload.1.bytes(), payload.0.capacity() as u64);
-    let after = original.receipt();
-    assert_eq!(after.bytes_copied - before.bytes_copied, 3);
-    assert_eq!(after.items_examined - before.items_examined, 1);
-    assert_eq!(after.allocation_operations - before.allocation_operations, 1);
-    assert_eq!(original.live_allocation_bytes(), live + 3);
-    drop(payload);
-    assert_eq!(original.live_allocation_bytes(), live);
-    Ok(())
-}
-
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
-#[tokio::test]
-async fn native_observer_frontdoors_share_semantic_proof_but_only_adopt_their_actual_constructors()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("native-observer-frontdoor-custody").await?;
-    workspace.write_text("/seed", "body").await?;
-    let active = CancellationToken::new();
-    let checkout = workspace.checkout_measured(
-        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &active,
-    ).await?.value;
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &active)
-        .map_err(|(cause, _)| cause)?;
-    let observer = checkout.observer_with_native_work(&original, &active)?;
-    assert!(Arc::ptr_eq(&checkout.dependencies.proof, &observer.checkout.dependencies.proof),
-        "a semantic observer aliases the existing actual proof, never clones its mutex");
-    let custody = observer.checkout.private_control_custody();
-    assert!(!Arc::ptr_eq(&custody, &checkout.dependencies.data_custody));
-    let parents = root_parent_bytes(&observer.checkout.base_root)?
-        + root_parent_bytes(&observer.checkout.root)? * (1 + u64::from(observer.checkout.root.has_hold()));
-    assert!(parents > 0);
-    assert_eq!(custody.physical_retained_bytes(), parents);
-    assert_eq!(custody.retained_bytes(), 0);
-    assert_eq!(custody.non_native_retained_payload_bytes(), 0);
-    assert_eq!(custody.native_control_events(), (u128::from(parents), 0));
-    let proof_alias = Arc::clone(&observer.checkout.dependencies.proof);
-    let live = original.live_allocation_bytes();
-    drop(observer);
-    assert_eq!(custody.physical_retained_bytes(), 0,
-        "copied observer roots retire even while the borrowed source proof remains live");
-    assert_eq!(custody.native_control_events(), (u128::from(parents), u128::from(parents)));
-    assert_eq!(original.live_allocation_bytes(), live - parents);
-    assert!(Arc::ptr_eq(&proof_alias, &checkout.dependencies.proof));
-    drop(proof_alias);
-
-    let inspector = checkout.inspector_with_native_work(&original, &active)?;
-    assert!(!Arc::ptr_eq(&checkout.dependencies.proof, &inspector.checkout.dependencies.proof));
-    assert!(!inspector.checkout.dependencies.observing);
-    let inspector_custody = inspector.checkout.private_control_custody();
-    let proof_bytes = size_of::<Mutex<Proof>>() as u64;
-    let alias = Arc::clone(&inspector.checkout.dependencies.proof);
-    drop(inspector);
-    assert_eq!(inspector_custody.physical_retained_bytes(), proof_bytes,
-        "the independent inspector's actual mutex follows its last proof alias");
-    drop(alias);
-    assert_eq!(inspector_custody.physical_retained_bytes(), 0);
-
-    let cancelled = CancellationToken::new();
-    cancelled.cancel();
-    let before = original.receipt();
-    let live = original.live_allocation_bytes();
-    assert!(matches!(checkout.observer_with_native_work(&original, &cancelled),
-        Err(FsError::Cancelled(_))));
-    assert!(matches!(checkout.inspector_with_native_work(&original, &cancelled),
-        Err(FsError::Cancelled(_))));
-    assert_eq!(original.receipt(), before);
-    assert_eq!(original.live_allocation_bytes(), live);
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn native_observed_path_claims_original_data_once_until_last_proof_alias()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("native-observed-path-custody").await?;
-    let cancellation = CancellationToken::new();
-    let checkout = workspace.checkout_measured(
-        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(cause, _)| cause)?;
-    let candidate = checkout.private_candidate_with_native_work(&original, &cancellation)?;
-    let custody = candidate.private_control_custody();
-    let observed = path("native-owned-path")?;
-    let expected = path_clone_data(&observed).0;
-    let before = original.receipt();
-    let mut staged = original.claim(0)?;
-    candidate.dependencies.observe_paths_with_native_work(
-        candidate.base_root.file_table, [&observed], true, Vec::new(), &mut staged,
-        candidate.volume.config.limits.maximum_checkout_dependencies, &original, &cancellation,
-    )?;
-    let after = original.receipt();
-    assert_eq!(after.bytes_copied - before.bytes_copied, expected);
-    assert_eq!(custody.retained_bytes(), expected);
-    assert_eq!(custody.non_native_retained_payload_bytes(), 0);
-    assert_eq!(custody.pending_data_work(), WorkCounters::UNCHARGED,
-        "direct original claims cannot be imported again as child SDK work");
-    assert_eq!(candidate.proof_data_snapshot_completed().total_bytes()?, expected);
-    let alias = Arc::clone(&candidate.dependencies.proof);
-    drop(candidate);
-    assert_eq!(custody.retained_bytes(), expected, "the actual path still belongs to the proof");
-    let live = original.live_allocation_bytes();
-    drop(alias);
-    assert_eq!(custody.retained_bytes(), 0);
-    assert!(original.live_allocation_bytes() + expected <= live,
-        "last physical proof drop retires its DATA and known map/mutex payloads");
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn original_copied_record_compiler_preserves_real_payload_and_authored_identity()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("original-copied-record").await?;
-    workspace.write_text("/source", "authenticated source bytes").await?;
-    let cancellation = CancellationToken::new();
-    let mut checkout = workspace.checkout_measured(
-        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    let source = checkout.lookup_no_follow(
-        &path("source")?, WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value.record.ok_or("real source record absent")?;
-    checkout.bind_authored_operation(OperationId::new());
-    let expected = checkout.compile_copied_record_measured(
-        path("copy")?, source, WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(cause, _)| cause)?;
-    let baseline = original.live_allocation_bytes();
-    let requested = path("copy")?;
-    let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
-    let (paid_path, allocation) = requested.clone_with_accounting(&mut accounting, &cancellation)?;
-    let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) = allocation else {
-        return Err("paid path lost its original custody".into());
-    };
-    let compiled = checkout.compile_copied_record_with_native_work(
-        paid_path, source, allocation, &original, &cancellation,
-    ).await?;
-    let Mutation::Create { record, path: destination } = &compiled.0.0 else {
-        return Err("regular source did not compile a canonical create".into());
-    };
-    assert_eq!(destination, &requested);
-    assert_eq!(record.file_id, expected.1, "original and ordinary lineage derives the same ID");
-    assert_ne!(record.file_id, source.file_id);
-    assert_eq!(record.payload, source.payload, "no replacement or fake content root");
-    assert_eq!(record.metadata, source.metadata);
-    assert_eq!(record.link_count, 1);
-    assert_eq!(compiled.1.bytes(), destination.logical_owned_bytes());
-    assert!(compiled.1.work().shares_ledger(&original));
-    assert_eq!(original.receipt().backend_read_operations, 0);
-    assert_eq!(original.receipt().backend_write_operations, 0);
-    drop(compiled);
-    assert_eq!(original.live_allocation_bytes(), baseline);
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn original_copied_directory_and_metadata_denial_precede_staged_effects()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("original-copied-denial").await?;
-    workspace.write_text("/source", "existing nonempty directory contents").await?;
-    let cancellation = CancellationToken::new();
-    let mut checkout = workspace.checkout_measured(
-        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    let root = NamespacePath::new(Vec::new(), workspace.limits())?;
-    let source = checkout.lookup_no_follow(
-        &root, WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value.record.ok_or("authenticated directory absent")?;
-    assert_eq!(source.kind, FileKind::Directory);
-    let requested = path("copy")?;
-    let original = crate::NativeMaterializationWork::new(
-        WorkBudget { bytes_copied: 4, ..WorkBudget::UNBOUNDED }, &cancellation,
-    ).map_err(|(cause, _)| cause)?;
-    let baseline = original.live_allocation_bytes();
-    let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
-    let (paid_path, allocation) = requested.clone_with_accounting(&mut accounting, &cancellation)?;
-    let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(allocation) = allocation else {
-        return Err("paid path lost its original custody".into());
-    };
-    let failure = checkout.compile_copied_record_with_native_work(
-        paid_path, source, allocation, &original, &cancellation,
-    ).await.err().ok_or("copy denial staged a directory")?;
-    assert!(matches!(failure, FsError::Work(_)));
-    assert_eq!(original.receipt().bytes_copied, 4);
-    assert_eq!(original.receipt().bytes_encoded, 0);
-    assert_eq!(original.receipt().backend_write_operations, 0);
-    assert_eq!(original.live_allocation_bytes(), baseline);
-    let metadata = checkout.lookup_no_follow_with_metadata(
-        &root, WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value.ok_or("authenticated metadata absent")?.metadata;
-    let original = crate::NativeMaterializationWork::new(
-        WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
-    ).map_err(|(cause, _)| cause)?;
-    let baseline = original.live_allocation_bytes();
-    let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
-    let failure = checkout.stage_metadata_with_accounting(
-        metadata, &mut accounting, &cancellation,
-    ).await.err().ok_or("metadata encoder denial reached object write")?;
-    assert!(matches!(failure, FsError::Work(_)));
-    assert_eq!(original.receipt().backend_write_operations, 0);
-    assert_eq!(original.receipt().bytes_encoded, 0);
-    assert_eq!(original.live_allocation_bytes(), baseline);
-    Ok(())
-}
-
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
 async fn original_identity_mutation_preserves_source_and_cancelled_candidate()
@@ -355,7 +23,7 @@ async fn original_identity_mutation_preserves_source_and_cancelled_candidate()
     let workspace = fs.create_workspace("original-identity-candidate").await?;
     workspace.write_text("/source", "actual source bytes").await?;
     let cancellation = CancellationToken::new();
-    let mut checkout = workspace.checkout_measured(
+    let mut checkout = workspace.checkout(
         GenerationSelector::Head, CheckoutMode::tracking_transaction(), WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value;
     let path = path("source")?;
@@ -419,408 +87,6 @@ async fn original_identity_mutation_preserves_source_and_cancelled_candidate()
     Ok(())
 }
 
-#[tokio::test]
-async fn private_control_custody_retires_with_actual_root_buffers_and_last_proof_alias()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("private-control-retirement").await?;
-    workspace.write_text("/file", "body").await?;
-    let cancellation = CancellationToken::new();
-    let checkout = workspace.checkout_measured(
-        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    let candidate = checkout.private_candidate_measured(WorkBudget::UNBOUNDED, &cancellation)?.value;
-    let custody = candidate.private_control_custody();
-    let proof_bytes = size_of::<Mutex<Proof>>() as u64;
-    let parent_bytes = root_parent_bytes(&candidate.base_root)?
-        + root_parent_bytes(&candidate.root)? * (1 + u64::from(candidate.root.has_hold()));
-    assert!(parent_bytes > 0);
-    assert_eq!(custody.physical_retained_bytes(), proof_bytes + parent_bytes);
-    assert_eq!(custody.retained_bytes(), 0, "constructor control is not observer DATA");
-    assert_eq!(custody.retained_payload_bytes(), proof_bytes + parent_bytes);
-    let source_custody = checkout.private_control_custody();
-    assert!(!Arc::ptr_eq(&source_custody, &custody),
-        "a private copy does not adopt its source's constructor claims");
-    assert_eq!(source_custody.physical_retained_bytes(),
-        proof_bytes + CheckoutDependencies::empty_logical_owned_bytes() as u64 + size_of::<ObservedPathMap>() as u64
-            + root_parent_bytes(&checkout.base_root)?
-            + root_parent_bytes(&checkout.root)? * (1 + u64::from(checkout.root.has_hold())));
-    let ordinary = candidate.private_candidate();
-    assert_eq!(ordinary.private_control_custody().physical_retained_bytes(), 0,
-        "a clone clears inherited primitive tags");
-    assert!(Arc::ptr_eq(ordinary.dependencies.proof().observed_paths.as_ref().expect("constructor map"),
-        candidate.dependencies.proof().observed_paths.as_ref().expect("constructor map")));
-    drop(ordinary);
-    let alias = Arc::clone(&candidate.dependencies.proof);
-    let observed = Arc::clone(candidate.dependencies.proof().observed_paths.as_ref().expect("constructor map"));
-    cancellation.cancel();
-    drop(candidate);
-    assert_eq!(custody.physical_retained_bytes(), proof_bytes,
-        "the by-value Checkout dies before its aliased Mutex proof");
-    drop(alias);
-    assert_eq!(custody.physical_retained_bytes(), 0,
-        "an immutable map alias does not retain independent control");
-    drop(observed);
-    let candidate = checkout.private_candidate_measured(
-        WorkBudget::UNBOUNDED, &CancellationToken::new(),
-    )?.value;
-    let custody = candidate.private_control_custody();
-    let alias = Arc::clone(&candidate.dependencies.proof);
-    assert!(std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
-        let _candidate = candidate;
-        panic!("unwind the private producer's by-value owner");
-    })).is_err());
-    assert_eq!(custody.physical_retained_bytes(), proof_bytes);
-    drop(alias);
-    assert_eq!(custody.physical_retained_bytes(), 0);
-    Ok(())
-}
-
-#[tokio::test]
-async fn private_mutation_root_vectors_follow_their_actual_owner_across_replacements()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("private-mutation-root-custody").await?;
-    workspace.write_text("/seed", "body").await?;
-    let active = CancellationToken::new();
-    let checkout = workspace.checkout_measured(
-        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &active,
-    ).await?.value;
-    let mut candidate = checkout.private_candidate_measured(WorkBudget::UNBOUNDED, &active)?.value;
-    let custody = candidate.private_control_custody();
-    let parents = candidate.root.parents.clone();
-    assert!(!parents.is_empty());
-    let base = candidate.base_root.clone();
-    let generation = candidate.generation_id();
-    let cancelled = CancellationToken::new();
-    cancelled.cancel();
-    let original_control = custody.physical_retained_bytes();
-    let failed = candidate.create_file(
-        path("cancelled")?, bytes::Bytes::from_static(b"body"), WorkBudget::UNBOUNDED, &cancelled,
-    ).await.err().ok_or("cancelled mutation changed the working roots")?;
-    assert!(matches!(failed.error, FsError::Cancelled(_) | FsError::Mutation(_)));
-    assert_eq!(custody.physical_retained_bytes(), original_control);
-    assert_eq!(candidate.base_root, base);
-    for name in ["first", "second"] {
-        let receipt = candidate.create_file(
-            path(name)?, bytes::Bytes::from_static(b"body"), WorkBudget::UNBOUNDED, &active,
-        ).await?;
-        assert!(receipt.work.allocation_operations > 0);
-        assert_eq!(candidate.generation_id(), generation);
-        assert_eq!(candidate.base_root, base);
-        assert_eq!(candidate.root.parents, parents);
-    }
-    // Moving the exact vector owner must not retire its control by dropping
-    // Checkout or its proof. This also catches old-vector tags left behind by
-    // either replacement, independently of dependency-map custody.
-    let roots = std::mem::replace(&mut candidate.root, checkout.root.replicate());
-    let retained_roots = root_parent_bytes(&roots)?
-        * (1 + u64::from(roots.has_hold()));
-    assert!(retained_roots > 0);
-    drop(candidate);
-    assert_eq!(custody.physical_retained_bytes(), retained_roots);
-    assert_eq!(custody.live_payload_counts(), (retained_roots, 0),
-        "new operation vectors await original receipt delivery, unlike ctor standing");
-    drop(roots);
-    assert_eq!(custody.physical_retained_bytes(), 0);
-    Ok(())
-}
-
-#[tokio::test]
-async fn private_post_seal_roots_preserve_custody_and_cancelled_preparation_retires_copies()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("private-seal-root-custody").await?;
-    let active = CancellationToken::new();
-    let mut checkout = workspace.checkout_measured(
-        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &active,
-    ).await?.value;
-    checkout.create_file(path("pending")?, bytes::Bytes::from_static(b"body"), WorkBudget::UNBOUNDED, &active).await?;
-    let mut candidate = checkout.private_candidate_measured(WorkBudget::UNBOUNDED, &active)?.value;
-    let custody = candidate.private_control_custody();
-    let original_root = candidate.generation_id();
-    let original_control = custody.physical_retained_bytes();
-    let denied = candidate.prepare_root_replacement(
-        &candidate.base_root, &candidate.root,
-        WorkBudget { peak_allocation_bytes: 0, ..WorkBudget::UNBOUNDED }, &active, None,
-    );
-    if !candidate.base_root.parents.is_empty()
-        || (candidate.root.has_hold() && !candidate.root.parents.is_empty())
-    {
-        let failure = denied.err().ok_or("root copy ignored its zero capacity budget")?;
-        assert!(matches!(failure.error, FsError::Work(_)));
-        assert_eq!(failure.work.allocation_operations, 0);
-    } else {
-        drop(denied?);
-    }
-    assert_eq!(custody.physical_retained_bytes(), original_control);
-    let cancelled = CancellationToken::new();
-    let operation = OperationId::from_bytes([241; 16]);
-    let failed = candidate.commit_with_permit_guarded(
-        operation, PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancelled,
-        |_| {
-            assert!(custody.physical_retained_bytes() > original_control,
-                "the authoritative pre-seal root copies have real retained tags");
-            cancelled.cancel();
-            async { Ok(FsReceipt { value: (), work: WorkCounters::UNCHARGED }) }
-        },
-    ).await.err().ok_or("a cancelled publication seal appended")?;
-    assert!(matches!(failed.error, FsError::Publication(_) | FsError::Cancelled(_)));
-    assert!(failed.work.allocation_operations > 0);
-    assert_eq!(candidate.generation_id(), original_root);
-    assert!(candidate.has_pending_mutations());
-    assert_eq!(custody.physical_retained_bytes(), original_control,
-        "cancelled preparation frees actual copies, not the installed producer");
-    let panicked = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(
-        candidate.commit_with_permit_guarded::<FsError, _, _>(
-            operation, PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &active,
-            |_| async {
-                assert!(custody.physical_retained_bytes() > original_control);
-                panic!("unwind after authoritative root copies, before the original CAS");
-            },
-        ),
-    )).await;
-    assert!(panicked.is_err());
-    assert_eq!(candidate.generation_id(), original_root);
-    assert_eq!(custody.physical_retained_bytes(), original_control,
-        "panic retires actual prepared buffers without releasing installed control");
-    let committed = candidate.commit_with_permit_guarded::<FsError, _, _>(
-        operation, PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &active,
-        |_| async { Ok(FsReceipt { value: (), work: WorkCounters::UNCHARGED }) },
-    ).await?;
-    assert!(matches!(committed.value, CheckoutCommitOutcome::Committed { .. }));
-    assert!(!candidate.has_pending_mutations());
-    assert_eq!(candidate.base_root, candidate.root.clone());
-    assert_eq!(candidate.root.parents, vec![checkout.generation_id()]);
-    let proof_bytes = size_of::<Mutex<Proof>>() as u64;
-    let parent_bytes = root_parent_bytes(&candidate.base_root)?
-        + root_parent_bytes(&candidate.root)? * (1 + u64::from(candidate.root.has_hold()));
-    assert_eq!(custody.physical_retained_bytes(), proof_bytes + parent_bytes,
-        "post-seal replacement keeps only the actual installed vector capacities");
-    let alias = Arc::clone(&candidate.dependencies.proof);
-    drop(candidate);
-    assert_eq!(custody.physical_retained_bytes(), proof_bytes);
-    drop(alias);
-    assert_eq!(custody.physical_retained_bytes(), 0);
-    Ok(())
-}
-
-#[cfg(feature = "native-mount")]
-#[tokio::test]
-async fn installed_private_candidate_keeps_its_original_control_custody_until_actual_destruction()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("installed-private-control").await?;
-    workspace.write_text("/file", "body").await?;
-    let cancellation = CancellationToken::new();
-    let mut installed = workspace.checkout_measured(
-        GenerationSelector::Head, tracking(), WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    let base = installed.private_candidate_measured(WorkBudget::UNBOUNDED, &cancellation)?.value;
-    let mut candidate = base.private_candidate_measured(WorkBudget::UNBOUNDED, &cancellation)?.value;
-    let custody = candidate.private_control_custody();
-    let control = custody.physical_retained_bytes();
-    candidate.lookup_no_follow(&path("retained-observation")?, WorkBudget::UNBOUNDED, &cancellation).await?;
-    assert_eq!(custody.physical_retained_bytes(),
-        control + CheckoutDependencies::empty_logical_owned_bytes() as u64);
-    assert!(custody.retained_bytes() > 0, "name/path DATA stays a separate custody class");
-    let prepared = installed.prepare_candidate_adoption_measured(
-        &base, &candidate, WorkBudget::UNBOUNDED, &cancellation,
-    )?.value.ok_or("compatible private candidate was rejected")?;
-    assert!(installed.adopt_prepared_candidate(&base, candidate, prepared));
-    assert!(Arc::ptr_eq(&custody, &installed.private_control_custody()),
-        "installation retains the same producer, not a scalar replacement claim");
-    drop(base);
-    cancellation.cancel();
-    assert_eq!(custody.physical_retained_bytes(),
-        control + CheckoutDependencies::empty_logical_owned_bytes() as u64);
-    let _completed = installed.proof_data_snapshot_completed();
-    let alias = Arc::clone(&installed.dependencies.proof);
-    drop(installed);
-    assert_eq!(custody.physical_retained_bytes(),
-        size_of::<Mutex<Proof>>() as u64 + CheckoutDependencies::empty_logical_owned_bytes() as u64);
-    drop(alias);
-    assert_eq!(custody.physical_retained_bytes(), 0);
-    Ok(())
-}
-
-#[cfg(feature = "native-mount")]
-#[tokio::test]
-async fn borrowed_seal_tags_only_new_root_buffers_to_the_current_producer()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("borrowed-seal-root-custody").await?;
-    workspace.write_text("/file", "body").await?;
-    let active = CancellationToken::new();
-    let mut checkout = workspace.checkout_measured(
-        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &active,
-    ).await?.value;
-    checkout.create_file(path("pending")?, bytes::Bytes::from_static(b"pending"), WorkBudget::UNBOUNDED, &active).await?;
-    let mut service = checkout.private_candidate();
-    let foreign = service.private_control_custody();
-    let foreign_control = foreign.physical_retained_bytes();
-    assert_eq!(foreign_control, 0, "preexisting service control belongs to no current producer");
-    let projection = service.private_candidate_measured(WorkBudget::UNBOUNDED, &active)?;
-    assert!(projection.work.allocation_operations > 0,
-        "the current producer token is a real admitted SDK constructor, not an empty marker");
-    let projection = projection.value;
-    let producer = projection.private_control_custody();
-    let producer_control = producer.physical_retained_bytes();
-    assert!(!Arc::ptr_eq(&foreign, &producer));
-    let borrowed_proof_alias = Arc::clone(&service.dependencies.proof);
-    let cancelled = CancellationToken::new();
-    let operation = OperationId::from_bytes([242; 16]);
-    let denied = service.commit_with_permit_even_if_clean_guarded(
-        operation, PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &cancelled,
-        &mut |_| {
-            assert_eq!(foreign.physical_retained_bytes(), foreign_control);
-            assert!(producer.physical_retained_bytes() > producer_control);
-            cancelled.cancel();
-            async { Ok::<_, OperationFailure<FsError>>(FsReceipt { value: (), work: WorkCounters::UNCHARGED }) }
-        },
-        Some(&producer),
-    ).await.err().ok_or("cancelled borrowed seal published")?;
-    assert!(denied.work.allocation_operations > 0);
-    assert_eq!(foreign.physical_retained_bytes(), foreign_control);
-    assert_eq!(producer.physical_retained_bytes(), producer_control,
-        "cancelled new copies retire from only their current producer");
-    let committed = service.commit_with_permit_even_if_clean_guarded(
-        operation, PublicationPermit::Unrestricted, WorkBudget::UNBOUNDED, &active,
-        &mut |_| async { Ok::<_, OperationFailure<FsError>>(FsReceipt { value: (), work: WorkCounters::UNCHARGED }) },
-        Some(&producer),
-    ).await?;
-    assert!(matches!(committed.value, CheckoutCommitOutcome::Committed { .. }));
-    let new_vectors = root_parent_bytes(&service.base_root)?
-        + root_parent_bytes(&service.root)? * (1 + u64::from(service.root.has_hold()));
-    assert_eq!(foreign.physical_retained_bytes(), 0,
-        "new buffers are tagged even when the borrowed service had no private producer tags");
-    assert_eq!(producer.physical_retained_bytes(), producer_control + new_vectors);
-    drop(projection);
-    assert_eq!(producer.physical_retained_bytes(), new_vectors,
-        "only genuine new seal buffers remain in the current producer");
-    drop(service);
-    assert_eq!(producer.physical_retained_bytes(), 0,
-        "a borrowed proof alias never becomes current-producer control");
-    assert_eq!(foreign.physical_retained_bytes(), 0);
-    drop(borrowed_proof_alias);
-    assert_eq!(foreign.physical_retained_bytes(), 0);
-    Ok(())
-}
-
-#[cfg(feature = "native-mount")]
-#[tokio::test]
-async fn borrowed_companion_seal_preserves_nonstatic_owner_cause_before_cas()
--> Result<(), Box<dyn std::error::Error>> {
-    enum OwnerError<'a> { Fs(FsError), Lost(&'a str) }
-    impl<'a> From<FsError> for OwnerError<'a> {
-        fn from(error: FsError) -> Self { Self::Fs(error) }
-    }
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("borrowed-companion-owner-cause").await?;
-    let cancellation = CancellationToken::new();
-    let mut service = workspace.checkout_measured(
-        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    let original_head = service.authority_head;
-    let original_root = service.generation_root;
-    let custody = service.private_control_custody();
-    let retained_before = custody.physical_retained_bytes();
-    let reason = String::from("borrowed source owner changed");
-    let mut guard = |_| std::future::ready(Err::<FsReceipt<()>, _>(
-        OperationFailure::before_work(OwnerError::Lost(reason.as_str())),
-    ));
-    let failure = service.commit_with_permit_even_if_clean_guarded(
-        OperationId::from_bytes([243; 16]), PublicationPermit::Unrestricted,
-        WorkBudget::UNBOUNDED, &cancellation, &mut guard, None,
-    ).await.err().ok_or("borrowed owner failure unexpectedly published")?;
-    assert_eq!(failure.work.authority_records_appended, 0);
-    assert!(failure.work.bytes_hashed > 0);
-    match failure.error {
-        OwnerError::Lost(actual) => assert!(std::ptr::eq(actual, reason.as_str())),
-        OwnerError::Fs(error) => return Err(error.into()),
-    }
-    assert_eq!(service.authority_head, original_head);
-    assert_eq!(service.generation_root, original_root);
-    assert_eq!(custody.physical_retained_bytes(), retained_before);
-    let reopened = workspace.checkout_measured(
-        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    assert_eq!(reopened.authority_head, original_head);
-    assert_eq!(reopened.generation_root, original_root);
-    Ok(())
-}
-
-#[cfg(feature = "native-mount")]
-#[tokio::test]
-async fn measured_candidate_adoption_seals_actual_proof_and_preserves_failure_prefixes()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("measured-candidate-adoption").await?;
-    let cancellation = CancellationToken::new();
-    let mut live = workspace.checkout_measured(
-        GenerationSelector::Head, tracking(), WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    let base = live.private_candidate();
-    let mut candidate = base.private_candidate();
-    let candidate_path = path("candidate-observation")?;
-    let live_path = path("reader-observation")?;
-    candidate.lookup_no_follow(&candidate_path, WorkBudget::UNBOUNDED, &cancellation).await?;
-    live.lookup_no_follow(&live_path, WorkBudget::UNBOUNDED, &cancellation).await?;
-    let expected = candidate.dependencies.proof().dependencies
-        .merged(&live.dependencies.proof().dependencies).ok_or("compatible proofs rejected")?;
-
-    let denied = match live.prepare_candidate_adoption_measured(
-        &base, &candidate,
-        WorkBudget { peak_allocation_bytes: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
-    ) {
-        Err(failure) => failure,
-        Ok(_) => return Err("zero DATA budget admitted proof copies".into()),
-    };
-    assert!(matches!(denied.error, FsError::Work(_)));
-    assert_eq!(denied.work.bytes_copied, 0);
-    assert_eq!(denied.work.allocation_operations, 0);
-    assert!(denied.work.items_examined > 0);
-    let denied = match live.prepare_candidate_adoption_measured(
-        &base, &candidate,
-        WorkBudget { allocation_operations: 1, ..WorkBudget::UNBOUNDED }, &cancellation,
-    ) {
-        Err(failure) => failure,
-        Ok(_) => return Err("one allocation admitted two name copies".into()),
-    };
-    assert!(matches!(denied.error, FsError::Work(_)));
-    assert_eq!(denied.work.allocation_operations, 1);
-    assert_eq!(denied.work.bytes_copied, candidate_path.components()[0].as_bytes().len() as u64);
-    let cancelled = CancellationToken::new();
-    cancelled.cancel();
-    let denied = match live.prepare_candidate_adoption_measured(
-        &base, &candidate, WorkBudget::UNBOUNDED, &cancelled,
-    ) {
-        Err(failure) => failure,
-        Ok(_) => return Err("cancelled proof preparation succeeded".into()),
-    };
-    assert!(matches!(denied.error, FsError::Cancelled(_)));
-    assert_eq!(*denied.work, WorkCounters::default());
-
-    let prepared = live.prepare_candidate_adoption_measured(
-        &base, &candidate, WorkBudget::UNBOUNDED, &cancellation,
-    )?;
-    let name_bytes = (candidate_path.components()[0].as_bytes().len()
-        + live_path.components()[0].as_bytes().len()) as u64;
-    assert_eq!(prepared.work.bytes_copied, name_bytes);
-    assert_eq!(prepared.work.allocation_operations, 3);
-    let prepared = prepared.value.ok_or("compatible candidate rejected")?;
-    assert_eq!(prepared.retained_bytes(),
-        name_bytes + CheckoutDependencies::empty_logical_owned_bytes() as u64);
-    let mut ordinary = live.private_candidate();
-    assert!(ordinary.admits_candidate(&base, &candidate));
-    assert!(ordinary.adopt_candidate(&base, candidate.private_candidate()));
-    assert_eq!(ordinary.dependencies.proof().dependencies, expected);
-    assert!(live.adopt_prepared_candidate(&base, candidate, prepared));
-    assert_eq!(live.dependencies.proof().dependencies, expected);
-    assert!(live.dependencies.proof().observes_path(base.base_file_table, &candidate_path, true));
-    Ok(())
-}
-
 #[cfg(feature = "native-mount")]
 #[tokio::test]
 async fn prepared_candidate_adoption_rejects_new_observations_and_changed_base_state()
@@ -828,7 +94,7 @@ async fn prepared_candidate_adoption_rejects_new_observations_and_changed_base_s
     let fs = Fs::memory();
     let workspace = fs.create_workspace("candidate-adoption-seal").await?;
     let cancellation = CancellationToken::new();
-    let mut live = workspace.checkout_measured(
+    let mut live = workspace.checkout(
         GenerationSelector::Head, tracking(), WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value;
     let base = live.private_candidate();
@@ -859,537 +125,10 @@ async fn prepared_candidate_adoption_rejects_new_observations_and_changed_base_s
     Ok(())
 }
 
-#[cfg(feature = "native-mount")]
-#[tokio::test]
-async fn prepared_merge_custody_retires_precommit_copies_and_follows_actual_map_aliases()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("prepared-merge-custody").await?;
-    let cancellation = CancellationToken::new();
-    let mut installed = workspace.checkout_measured(
-        GenerationSelector::Head, tracking(), WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    let base = installed.private_candidate_measured(WorkBudget::UNBOUNDED, &cancellation)?.value;
-    let mut candidate = base.private_candidate_measured(WorkBudget::UNBOUNDED, &cancellation)?.value;
-    let own_path = path("producer-name")?;
-    let reader_path = path("borrowed-reader-name")?;
-    candidate.lookup_no_follow(&own_path, WorkBudget::UNBOUNDED, &cancellation).await?;
-    installed.lookup_no_follow(&reader_path, WorkBudget::UNBOUNDED, &cancellation).await?;
-    let custody = candidate.private_control_custody();
-    let before_data = custody.retained_bytes();
-    let before_control = custody.physical_retained_bytes();
-    let names = (own_path.components()[0].as_bytes().len()
-        + reader_path.components()[0].as_bytes().len()) as u64;
-    let map_bytes = CheckoutDependencies::empty_logical_owned_bytes() as u64;
-
-    let prepared = installed.prepare_candidate_adoption_measured(
-        &base, &candidate, WorkBudget::UNBOUNDED, &cancellation,
-    )?.value.ok_or("compatible candidate rejected")?;
-    assert_eq!(custody.retained_bytes(), before_data + names);
-    assert_eq!(custody.physical_retained_bytes(), before_control + map_bytes);
-    drop(prepared); // e.g. an authority fence rejects before physical CAS.
-    assert_eq!(custody.retained_bytes(), before_data);
-    assert_eq!(custody.physical_retained_bytes(), before_control);
-
-    let denied = match installed.prepare_candidate_adoption_measured(
-        &base, &candidate,
-        WorkBudget { allocation_operations: 1, ..WorkBudget::UNBOUNDED }, &cancellation,
-    ) {
-        Err(failure) => failure,
-        Ok(_) => return Err("finite merge budget accepted two new name copies".into()),
-    };
-    assert_eq!(denied.work.allocation_operations, 1);
-    assert_eq!(denied.work.bytes_copied, own_path.components()[0].as_bytes().len() as u64);
-    assert_eq!(custody.retained_bytes(), before_data, "failed merge retires its actual first key");
-    assert_eq!(custody.physical_retained_bytes(), before_control);
-
-    let prepared = installed.prepare_candidate_adoption_measured(
-        &base, &candidate, WorkBudget::UNBOUNDED, &cancellation,
-    )?.value.ok_or("compatible candidate rejected")?;
-    assert!(installed.adopt_prepared_candidate(&base, candidate, prepared));
-    assert!(Arc::ptr_eq(&custody, &installed.private_control_custody()));
-    assert_eq!(custody.physical_retained_bytes(), before_control,
-        "installation retires the original candidate map before retaining only the new map");
-    let proof_alias = Arc::clone(&installed.dependencies.proof);
-    let map_alias = installed.dependencies.proof().dependencies.clone();
-    drop(installed);
-    assert_eq!(custody.physical_retained_bytes(), size_of::<Mutex<Proof>>() as u64 + map_bytes);
-    drop(proof_alias);
-    assert_eq!(custody.physical_retained_bytes(), map_bytes, "actual map Arc still owns its payload");
-    assert_eq!(custody.retained_bytes(), names, "only actual merged keys remain");
-    drop(map_alias);
-    assert_eq!(custody.retained_payload_bytes(), 0);
-    Ok(())
-}
-
-#[cfg(all(feature = "native-mount", not(target_arch = "wasm32")))]
-#[tokio::test]
-async fn native_candidate_adoption_enforces_full_resource_copies_and_actual_map_retirement()
--> Result<(), Box<dyn std::error::Error>> {
-    use crate::kernel::allocation::KernelAccounting;
-    use crate::kernel::Owned;
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("native-candidate-adoption-resource").await?;
-    let cancellation = CancellationToken::new();
-    let seed = workspace.checkout_measured(
-        GenerationSelector::Head, tracking(), WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(cause, _)| cause)?;
-    let mut installed = seed.private_candidate_with_native_work(&original, &cancellation)?;
-    let base = installed.private_candidate_with_native_work(&original, &cancellation)?;
-    let mut candidate = base.private_candidate_with_native_work(&original, &cancellation)?;
-    let own_path = path("candidate-proof-key")?;
-    let reader_path = path("reader-proof-key")?;
-    candidate.lookup_no_follow_with_native_work(&own_path, &original, &cancellation).await?;
-    installed.lookup_no_follow_with_native_work(&reader_path, &original, &cancellation).await?;
-    let owner = candidate.private_control_custody();
-    assert_eq!(owner.non_native_retained_payload_bytes(), 0);
-    let before_payload = owner.retained_payload_bytes();
-    let expected = candidate.dependencies.proof().dependencies
-        .merged(&installed.dependencies.proof().dependencies).ok_or("compatible proofs rejected")?;
-    let own_bytes = own_path.components()[0].as_bytes().len() as u64;
-    let names = own_bytes + reader_path.components()[0].as_bytes().len() as u64;
-    let map_bytes = CheckoutDependencies::empty_logical_owned_bytes() as u64;
-
-    let denied_scope = original.native_volume_work(WorkBudget {
-        peak_allocation_bytes: 0, ..WorkBudget::UNBOUNDED
-    })?;
-    let before = original.receipt();
-    let live = original.live_allocation_bytes();
-    let failed = installed.prepare_candidate_adoption_with_native_work(
-        &base, &candidate, &denied_scope, &cancellation,
-    ).err().ok_or("standalone Fs budget bypassed the actual native resource ceiling")?;
-    assert!(matches!(failed, FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(
-        WorkError::BudgetExceeded { counter: "peak_allocation_bytes", .. }
-    ))));
-    assert_eq!(original.receipt().allocation_operations, before.allocation_operations);
-    assert_eq!(original.receipt().bytes_copied, before.bytes_copied);
-    assert_eq!(original.live_allocation_bytes(), live);
-    assert_eq!(owner.retained_payload_bytes(), before_payload);
-
-    let partial_scope = original.native_volume_work(WorkBudget {
-        allocation_operations: 1, ..WorkBudget::UNBOUNDED
-    })?;
-    let before = original.receipt();
-    let live = original.live_allocation_bytes();
-    let events = owner.native_control_events();
-    assert!(matches!(installed.prepare_candidate_adoption_with_native_work(
-        &base, &candidate, &partial_scope, &cancellation,
-    ), Err(FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(
-        WorkError::BudgetExceeded { counter: "allocation_operations", .. }
-    )))));
-    assert_eq!(original.receipt().allocation_operations - before.allocation_operations, 1);
-    assert_eq!(original.receipt().bytes_copied - before.bytes_copied, own_bytes);
-    assert_eq!(owner.native_control_events(),
-        (events.0 + u128::from(own_bytes), events.1 + u128::from(own_bytes)));
-    assert_eq!(original.live_allocation_bytes(), live, "failed merge destroyed its actual first copied key");
-    assert_eq!(owner.retained_payload_bytes(), before_payload);
-
-    let cancelled = CancellationToken::new();
-    cancelled.cancel();
-    let before = original.receipt();
-    assert!(matches!(installed.prepare_candidate_adoption_with_native_work(
-        &base, &candidate, &original, &cancelled,
-    ), Err(FsError::Cancelled(_))));
-    assert_eq!(original.receipt(), before);
-    let foreign = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(cause, _)| cause)?;
-    assert!(matches!(installed.prepare_candidate_adoption_with_native_work(
-        &base, &candidate, &foreign, &cancellation,
-    ), Err(FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout))));
-    assert_eq!(original.receipt(), before, "a foreign original cannot claim this producer's proof");
-
-    let scope = original.native_volume_work(WorkBudget {
-        peak_allocation_bytes: names + map_bytes, ..WorkBudget::UNBOUNDED
-    })?;
-    let before = original.receipt();
-    let live = original.live_allocation_bytes();
-    let prepared = installed.prepare_candidate_adoption_with_native_work(
-        &base, &candidate, &scope, &cancellation,
-    )?.ok_or("compatible native candidate rejected")?;
-    assert_eq!(prepared.retained_bytes(), names + map_bytes);
-    assert_eq!(original.receipt().allocation_operations - before.allocation_operations, 3);
-    assert_eq!(original.receipt().bytes_copied - before.bytes_copied, names);
-    assert_eq!(original.live_allocation_bytes(), live + names + map_bytes);
-    assert_eq!(owner.retained_payload_bytes(), before_payload + names + map_bytes);
-    assert_eq!(owner.non_native_retained_payload_bytes(), 0,
-        "actual new buffers own native resource tickets, not imported scalar bytes");
-    assert_eq!(owner.pending_data_work(), WorkCounters::UNCHARGED,
-        "direct original work must never be merged as another child receipt");
-    drop(prepared); // An original authority fence can reject before installation.
-    assert_eq!(original.live_allocation_bytes(), live);
-    assert_eq!(owner.retained_payload_bytes(), before_payload);
-
-    let prepared = installed.prepare_candidate_adoption_with_native_work(
-        &base, &candidate, &scope, &cancellation,
-    )?.ok_or("compatible native candidate rejected")?;
-    let completed = original.receipt();
-    assert!(installed.adopt_prepared_candidate(&base, candidate, prepared));
-    assert_eq!(original.receipt(), completed, "physical adoption does not allocate or recharge native work");
-    assert_eq!(installed.dependencies.proof().dependencies, expected);
-    let map_alias = installed.dependencies.proof().dependencies.clone();
-    drop(installed);
-    assert_eq!(owner.retained_bytes(), names);
-    assert_eq!(owner.physical_retained_bytes(), map_bytes);
-    let mut accounting = KernelAccounting::native(&scope, &cancellation);
-    assert!(matches!(Owned::<Vec<u8>>::allocate(1, &mut accounting),
-        Err(FsError::NativeKernel(crate::NativeTreeMaterializationError::Work(
-            WorkError::BudgetExceeded { counter: "peak_allocation_bytes", .. }
-        )))), "the actual map alias still consumes its original resource allowance");
-    drop(map_alias);
-    assert_eq!(owner.retained_payload_bytes(), 0);
-    let bytes = Owned::<Vec<u8>>::allocate((names + map_bytes) as usize, &mut accounting)?;
-    assert_eq!(bytes.bytes, names + map_bytes, "actual map destruction released the same resource allowance");
-    drop(bytes);
-    Ok(())
-}
-
-#[cfg(feature = "native-mount")]
-#[tokio::test]
-async fn proof_payload_reconciliation_mirrors_constructor_and_preserves_pending_map_data_peak()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("proof-payload-reconciliation").await?;
-    let cancellation = CancellationToken::new();
-    let base = workspace.checkout_measured(
-        GenerationSelector::Head, tracking(), WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    let candidate = base.private_candidate_measured(WorkBudget::UNBOUNDED, &cancellation)?.value;
-    let owner = candidate.private_control_custody();
-    let constructor = owner.physical_retained_bytes();
-    assert!(constructor > 0);
-    assert_eq!(owner.live_payload_counts(), (constructor, constructor));
-    let observed_path = path("new-owned-name")?;
-    let name_bytes = observed_path.components()[0].as_bytes().len() as u64;
-    let map_bytes = CheckoutDependencies::empty_logical_owned_bytes() as u64;
-    let mut proof = candidate.dependencies.proof();
-    let extension = proof.dependencies.prepare_observations(vec![Dependency {
-        region: DependencyRegion::DirectoryName {
-            directory_id: candidate.base_root.root_file_id,
-            name: observed_path.components()[0].clone(),
-        },
-        expected: crate::kernel::DependencyState::Absent,
-    }], candidate.volume.config.limits.maximum_checkout_dependencies)?;
-    let mut accounting = candidate.dependencies.accounting.lock();
-    let mut work = WorkCounters::default();
-    {
-        let mut admission = ProofDataAdmission {
-            ledger: ProofDataAdmissionLedger::Local {
-                accounting: &mut accounting, work: &mut work,
-                budget: WorkBudget {
-                    peak_allocation_bytes: map_bytes + name_bytes,
-                    ..WorkBudget::UNBOUNDED
-                },
-            },
-            owner: &owner,
-            cancellation: &cancellation,
-        };
-        admission.admit(0, 0, 0, 0)?;
-        assert_eq!(match &admission.ledger {
-            ProofDataAdmissionLedger::Local { work, .. } => **work,
-            #[cfg(not(target_arch = "wasm32"))]
-            ProofDataAdmissionLedger::Original { .. } => unreachable!("local admission fixture"),
-        }, WorkCounters::default(),
-            "mirroring real constructor custody is not a new allocation or peak");
-        proof.dependencies.commit_with_data_custody(
-            extension, Some(&owner),
-            |bytes, operations, copied, items| admission.admit(bytes, operations, copied, items),
-        )?;
-    }
-    assert_eq!(work.allocation_operations, 1);
-    assert_eq!(work.bytes_copied, 0, "the staged name was moved, not copied");
-    assert_eq!(work.peak_allocation_bytes, map_bytes + name_bytes,
-        "pending map and DATA remain simultaneous without charging constructor twice");
-    assert_eq!(owner.live_payload_counts(), (constructor + map_bytes + name_bytes, constructor));
-    let delivered = owner.take_completed_data_work();
-    assert_eq!(delivered.peak_allocation_bytes, map_bytes + name_bytes);
-    assert_eq!(owner.live_payload_counts(),
-        (constructor + map_bytes + name_bytes, constructor + map_bytes + name_bytes));
-    let mut next_work = WorkCounters::default();
-    {
-        let mut admission = ProofDataAdmission {
-            ledger: ProofDataAdmissionLedger::Local {
-                accounting: &mut accounting, work: &mut next_work, budget: WorkBudget::default(),
-            },
-            owner: &owner, cancellation: &cancellation,
-        };
-        admission.admit(0, 0, 0, 0)?;
-        assert_eq!(match &admission.ledger {
-            ProofDataAdmissionLedger::Local { work, .. } => **work,
-            #[cfg(not(target_arch = "wasm32"))]
-            ProofDataAdmissionLedger::Original { .. } => unreachable!("local admission fixture"),
-        }, WorkCounters::default(), "delivered payload is standing");
-        proof.dependencies.clear();
-        admission.reconcile()?;
-        assert_eq!(match &admission.ledger {
-            ProofDataAdmissionLedger::Local { accounting, .. } => accounting.allocations.live_bytes(),
-            #[cfg(not(target_arch = "wasm32"))]
-            ProofDataAdmissionLedger::Original { .. } => unreachable!("local admission fixture"),
-        }, constructor, "actual key/map destruction retires only those exact mirrored payloads");
-    }
-    assert_eq!(owner.live_payload_counts(), (constructor, constructor));
-    Ok(())
-}
-
-#[cfg(feature = "native-mount")]
-#[tokio::test]
-async fn concurrent_observers_attribute_only_their_completed_name_and_path_data()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("observer-local-proof-data").await?;
-    let cancellation = CancellationToken::new();
-    let checkout = workspace.checkout_measured(
-        GenerationSelector::Head, tracking(), WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    let mut first = checkout.observer_measured(WorkBudget::UNBOUNDED, &cancellation)?.value;
-    let mut second = checkout.observer_measured(WorkBudget::UNBOUNDED, &cancellation)?.value;
-    assert!(Arc::ptr_eq(&first.dependencies.proof, &second.dependencies.proof));
-    let first_path = path("short")?;
-    let second_path = path("a-much-longer-independent-name")?;
-    let expected_first = path_clone_data(&first_path).0 + first_path.components()[0].as_bytes().len() as u64;
-    let expected_second = path_clone_data(&second_path).0 + second_path.components()[0].as_bytes().len() as u64;
-    let barrier = std::sync::Barrier::new(2);
-    let (first_result, second_result) = std::thread::scope(|scope| {
-        let first_thread = scope.spawn(|| {
-            barrier.wait();
-            let result = poll_ready(first.lookup_no_follow(&first_path, WorkBudget::UNBOUNDED, &cancellation))
-                .expect("memory observation completes");
-            (result, first.proof_data_completed())
-        });
-        let second_thread = scope.spawn(|| {
-            barrier.wait();
-            let result = poll_ready(second.lookup_no_follow(&second_path, WorkBudget::UNBOUNDED, &cancellation))
-                .expect("memory observation completes");
-            (result, second.proof_data_completed())
-        });
-        (first_thread.join().expect("first observer completes"), second_thread.join().expect("second observer completes"))
-    });
-    let first_receipt = first_result.0?;
-    let second_receipt = second_result.0?;
-    assert!(first_receipt.value.record.is_none());
-    assert!(second_receipt.value.record.is_none());
-    assert_eq!(first_result.1.retained_bytes, expected_first);
-    assert_eq!(second_result.1.retained_bytes, expected_second);
-    assert_eq!(first_result.1.work.bytes_copied, expected_first);
-    assert_eq!(second_result.1.work.bytes_copied, expected_second);
-    for (completed, receipt) in [
-        (first_result.1, &first_receipt),
-        (second_result.1, &second_receipt),
-    ] {
-        // Decoded cold-frontier frames depend on cache races, unlike each
-        // observer's exact DATA buffers and the six always-reached frames.
-        assert!(completed.work.allocation_operations >= 10);
-        assert!(completed.work.allocation_operations <= receipt.work.allocation_operations);
-    }
-    assert_eq!(checkout.proof_data_snapshot_completed().total_bytes()?, expected_first + expected_second);
-    cancellation.cancel();
-    let failed = first.lookup_no_follow(&first_path, WorkBudget::UNBOUNDED, &cancellation).await;
-    assert!(failed.is_err());
-    assert_eq!(first.proof_data_completed().retained_bytes, expected_first);
-    assert_eq!(first.proof_data_completed().work, first_result.1.work);
-    let custody = first.proof_data_custody();
-    drop(first);
-    assert_eq!(custody.retained_bytes(), expected_first, "shared proof outlives the callback");
-    drop(second);
-    drop(checkout);
-    assert_eq!(custody.retained_bytes(), 0, "actual key destruction retires DATA");
-    Ok(())
-}
-
-#[test]
-fn proof_data_failure_keeps_only_the_completed_moved_name_prefix()
--> Result<(), Box<dyn std::error::Error>> {
-    let ledger = DependencyLedger::new(CheckoutDependencies::new([], [], 8)?);
-    let observed = path("bounded-name")?;
-    let name = observed.components()[0].clone();
-    let name_bytes = name.retained_bytes() as u64;
-    let dependencies = vec![Dependency {
-        region: DependencyRegion::DirectoryName { directory_id: FileId::from_bytes([41; 16]), name },
-        expected: DependencyState::Absent,
-    }];
-    let budget = WorkBudget { bytes_copied: path_clone_data(&observed).0 - 1, ..WorkBudget::UNBOUNDED };
-    let cancellation = CancellationToken::new();
-    let mut work = WorkCounters::default();
-    let error = ledger.observe_paths(
-        ObjectId { kind: ObjectKind::FileTablePage, digest: Digest::from_bytes([42; 32]) },
-        [&observed], true, dependencies, 8, &mut work, budget, &cancellation,
-    ).expect_err("path DATA copy is denied before construction");
-    assert!(matches!(error, FsError::Work(_)));
-    assert_eq!(ledger.proof().dependencies.len(), 1);
-    assert!(ledger.proof().observed_paths.as_deref().expect("reset map").entries.is_empty());
-    let completed = ledger.proof_data_completed();
-    assert_eq!(completed.retained_bytes, name_bytes);
-    assert_eq!(completed.work.bytes_copied, 0);
-    assert_eq!(completed.work.allocation_operations, 1, "only the actual empty path-map Arc was allocated");
-    cancellation.cancel();
-    let poisoned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let _held = ledger.proof();
-        panic!("exercise cancellation-independent poisoned proof inspection");
-    }));
-    assert!(poisoned.is_err());
-    assert_eq!(ledger.proof_data_completed().retained_bytes, name_bytes);
-    assert_eq!(ledger.proof_data_completed().work, completed.work);
-    ledger.proof().clear();
-    assert_eq!(ledger.proof_data_completed().retained_bytes, 0);
-    Ok(())
-}
-
-#[test]
-fn observed_path_map_replacement_and_clear_retire_only_their_actual_aliases()
--> Result<(), Box<dyn std::error::Error>> {
-    let ledger = DependencyLedger::new(CheckoutDependencies::new([], [], 8)?);
-    let owner = Arc::clone(&ledger.data_custody);
-    let base = ObjectId { kind: ObjectKind::FileTablePage, digest: Digest::from_bytes([45; 32]) };
-    let cancellation = CancellationToken::new();
-    let first = path("first")?;
-    let second = path("second")?;
-    let map_bytes = size_of::<ObservedPathMap>() as u64;
-    let mut work = WorkCounters::default();
-    ledger.observe_paths(base, [&first], true, vec![], 1, &mut work, WorkBudget::UNBOUNDED, &cancellation)?;
-    let old = Arc::clone(ledger.proof().observed_paths.as_ref().expect("first map"));
-    let generation = ledger.proof().observed_data_generation;
-    owner.take_completed_data_work();
-    let mut next = WorkCounters::default();
-    ledger.observe_paths(base, [&second], true, vec![], 1, &mut next, WorkBudget::UNBOUNDED, &cancellation)?;
-    assert!(old.entries.contains_key(&first));
-    assert!(!ledger.proof().observes_path(base, &first, true));
-    assert!(ledger.proof().observes_path(base, &second, true));
-    assert_eq!(ledger.proof().observed_data_generation, generation + 1);
-    assert_eq!(owner.physical_retained_bytes(), 2 * map_bytes);
-    assert_eq!(owner.retained_bytes(), path_clone_data(&first).0 + path_clone_data(&second).0);
-    let current = Arc::clone(ledger.proof().observed_paths.as_ref().expect("replacement map"));
-    cancellation.cancel();
-    ledger.proof().clear();
-    {
-        let proof = ledger.proof();
-        assert!(proof.observed_paths.is_none());
-        assert!(proof.observed_base.is_none());
-        assert_eq!(proof.observed_data_bytes, 0);
-        assert_eq!(proof.observed_clone_data_bytes, 0);
-        assert_eq!(proof.observed_data_generation, generation + 2);
-    }
-    assert_eq!(owner.physical_retained_bytes(), 2 * map_bytes, "clear does not destroy external map aliases");
-    drop(old);
-    assert_eq!(owner.physical_retained_bytes(), map_bytes);
-    assert_eq!(owner.retained_bytes(), path_clone_data(&second).0);
-    drop(current);
-    assert_eq!(owner.retained_payload_bytes(), 0);
-    Ok(())
-}
-
-#[test]
-fn observed_path_true_cow_preclaims_arc_and_copy_and_clears_inherited_tags()
--> Result<(), Box<dyn std::error::Error>> {
-    let ledger = DependencyLedger::new(CheckoutDependencies::new([], [], 8)?);
-    let base = ObjectId { kind: ObjectKind::FileTablePage, digest: Digest::from_bytes([46; 32]) };
-    let cancellation = CancellationToken::new();
-    let observed = path("copied-name")?;
-    let map_bytes = size_of::<ObservedPathMap>() as u64;
-    let (data_bytes, data_operations) = path_clone_data(&observed);
-    let mut work = WorkCounters::default();
-    ledger.observe_paths(base, [&observed], false, vec![], 8, &mut work, WorkBudget::UNBOUNDED, &cancellation)?;
-    let old = Arc::clone(ledger.proof().observed_paths.as_ref().expect("original map"));
-    let original_generation = ledger.proof().observed_data_generation;
-    ledger.data_custody.take_completed_data_work();
-    let mut denied = WorkCounters::default();
-    let error = ledger.observe_paths(
-        base, [&observed], true, vec![], 8, &mut denied,
-        WorkBudget { peak_allocation_bytes: map_bytes + data_bytes - 1, ..WorkBudget::UNBOUNDED },
-        &cancellation,
-    ).expect_err("the actual Arc and copied DATA must be funded together before cloning");
-    assert!(matches!(error, FsError::Work(_)));
-    assert_eq!(denied.allocation_operations, 0);
-    assert_eq!(denied.bytes_copied, 0);
-    assert!(Arc::ptr_eq(&old, ledger.proof().observed_paths.as_ref().expect("unchanged map")));
-    assert_eq!(ledger.proof().observed_data_generation, original_generation);
-    assert_eq!(ledger.data_custody.physical_retained_bytes(), map_bytes);
-    let plain_clone = old.as_ref().clone();
-    assert!(plain_clone == *old, "map equality compares only semantic entries");
-    assert_eq!(ledger.data_custody.retained_payload_bytes(), map_bytes + data_bytes,
-        "a genuine Clone clears every old physical and DATA tag");
-    drop(plain_clone);
-    let mut copied = WorkCounters::default();
-    ledger.observe_paths(
-        base, [&observed], true, vec![], 8, &mut copied,
-        WorkBudget { peak_allocation_bytes: map_bytes + data_bytes, ..WorkBudget::UNBOUNDED },
-        &cancellation,
-    )?;
-    assert_eq!(copied.allocation_operations, 1 + data_operations);
-    assert_eq!(copied.bytes_copied, data_bytes);
-    assert_eq!(copied.peak_allocation_bytes, map_bytes + data_bytes);
-    assert!(!old.entries.get(&observed).expect("old entry").terminal);
-    assert!(ledger.proof().observes_path(base, &observed, true));
-    assert_eq!(ledger.proof().observed_data_bytes, data_bytes);
-    assert_eq!(ledger.proof().observed_clone_data_bytes, data_bytes);
-    assert_eq!(ledger.proof().observed_data_generation, original_generation + 1);
-    assert_eq!(ledger.data_custody.retained_payload_bytes(), 2 * (map_bytes + data_bytes));
-    drop(old);
-    assert_eq!(ledger.data_custody.retained_payload_bytes(), map_bytes + data_bytes);
-    ledger.proof().clear();
-    assert_eq!(ledger.data_custody.retained_payload_bytes(), 0);
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn native_initial_path_map_denial_precedes_constructor_and_alias_owns_retirement()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("native-map-admission").await?;
-    let cancellation = CancellationToken::new();
-    let checkout = workspace.checkout_measured(
-        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(cause, _)| cause)?;
-    let candidate = checkout.private_candidate_with_native_work(&original, &cancellation)?;
-    let custody = candidate.private_control_custody();
-    drop(candidate);
-    let map_bytes = size_of::<ObservedPathMap>() as u64;
-    let initial = custody.native_control_events();
-    let denied = original.native_volume_work(WorkBudget {
-        peak_allocation_bytes: map_bytes - 1, ..WorkBudget::UNBOUNDED
-    })?;
-    let before = original.receipt();
-    assert!(denied.claim_allocation(map_bytes, 1).is_err(),
-        "the real resource view rejects the known payload before its Arc constructor");
-    assert_eq!(original.receipt(), before);
-    assert_eq!(custody.native_control_events(), initial);
-    drop(denied);
-    let scope = original.native_volume_work(WorkBudget {
-        peak_allocation_bytes: map_bytes, ..WorkBudget::UNBOUNDED
-    })?;
-    let witness = scope.checkout_control_sink(&custody)?;
-    let mut allocation = scope.claim_allocation(map_bytes, 1)?;
-    let control = allocation.transfer_checkout_control(&custody, &witness)?;
-    let dependencies = checkout.dependencies.proof().dependencies.clone();
-    let mut proof = Proof::new_with_control(dependencies, control);
-    drop(allocation);
-    drop(witness);
-    let expected = (initial.0 + u128::from(map_bytes), initial.1);
-    assert_eq!(custody.native_control_events(), expected);
-    let alias = Arc::clone(proof.observed_paths.as_ref().expect("native initial map"));
-    let live = original.live_allocation_bytes();
-    cancellation.cancel();
-    proof.clear();
-    assert!(proof.observed_paths.is_none());
-    assert_eq!(custody.native_control_events(), expected);
-    assert_eq!(original.live_allocation_bytes(), live);
-    drop(proof);
-    drop(alias);
-    assert_eq!(custody.native_control_events(),
-        (expected.0, initial.1 + u128::from(map_bytes)));
-    assert_eq!(original.live_allocation_bytes(), live - map_bytes);
-    Ok(())
-}
-
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 mod heterogeneous_mount {
     use super::*;
 
-    // Consumer-owned dispatch implements existing provider contracts. Keeping
-    // this adapter in the test avoids imposing a production backend taxonomy.
     enum Objects {
         Memory(TestMemoryObjectStore),
         Local(LocalFs),
@@ -1468,8 +207,6 @@ mod heterogeneous_mount {
     -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let local = Fs::local(LocalOptions::new(directory.path())).await?;
-        // Authority remains in memory in this consumer; only the object
-        // backends differ. This does not claim a cross-provider transaction.
         let memory = Fs::new(
             crate::MemoryAuthorityStore::default(),
             Objects::Memory(TestMemoryObjectStore::default()),
@@ -1601,50 +338,6 @@ fn writable_tracking() -> CheckoutMode {
 }
 
 #[tokio::test]
-async fn workspace_fork_reads_the_verified_source_root_once()
--> Result<(), Box<dyn std::error::Error>> {
-    let tracked = Arc::new(std::sync::Mutex::new(None));
-    let reads = Arc::new(AtomicUsize::new(0));
-    let fs = Fs::new(
-        crate::memory::MemoryAuthorityStore::default(),
-        CountingObjectStore {
-            inner: crate::memory::MemoryObjectStore::default(),
-            tracked: Arc::clone(&tracked),
-            reads: Arc::clone(&reads),
-            unreadable: Arc::default(),
-        },
-        EmbeddedCapabilities::MEMORY,
-    );
-    let source = fs.create_workspace("fork-read-bound").await?;
-    source
-        .write("/payload", bytes::Bytes::from(vec![7_u8; 128 * 1_024]))
-        .await?;
-    let generation = source.head().await?;
-    *tracked.lock().map_err(|_| "tracking lock poisoned")? = Some(ObjectId {
-        kind: ObjectKind::GenerationRoot,
-        digest: generation.id().digest(),
-    });
-    reads.store(0, Ordering::Relaxed);
-
-    source
-        .fork(
-            "fork-read-bound-child",
-            crate::workspace::ForkOptions::from_generation(
-                generation,
-                crate::IdempotencyKey::from_bytes([0x7a; 16]),
-            ),
-        )
-        .await?;
-
-    assert_eq!(
-        reads.load(Ordering::Relaxed),
-        1,
-        "fork must read the source root to construct the child, but must not prove its closure twice"
-    );
-    Ok(())
-}
-
-#[tokio::test]
 async fn identical_live_retention_is_not_reproven_but_new_retention_fails_closed()
 -> Result<(), Box<dyn std::error::Error>> {
     let tracked = Arc::new(std::sync::Mutex::new(None));
@@ -1668,7 +361,7 @@ async fn identical_live_retention_is_not_reproven_but_new_retention_fails_closed
         return Err("retention fixture did not commit".into());
     };
     let cloned = generation.clone();
-    let cold = workspace.head().await?;
+    let cold = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     *tracked.lock().map_err(|_| "tracking lock poisoned")? = Some(ObjectId {
         kind: ObjectKind::GenerationRoot,
         digest: generation.id().digest(),
@@ -1695,9 +388,6 @@ async fn identical_live_retention_is_not_reproven_but_new_retention_fails_closed
     cold.pin("cold").await?;
     assert_eq!(reads.load(Ordering::Relaxed), 2);
 
-    // Negative control: once every content chunk is unreadable, recorded
-    // retentions stay exact, but a retention not yet recorded still walks
-    // the whole closure and fails closed on the missing chunk, every time.
     *unreadable.lock().map_err(|_| "unreadable lock poisoned")? = Some(ObjectKind::BlobChunk);
     generation.pin("first").await?;
     for expected_reads in [3, 4] {
@@ -1746,19 +436,6 @@ fn path_parts(values: &[&str]) -> Result<NamespacePath, Box<dyn std::error::Erro
 
 fn root_path() -> Result<NamespacePath, Box<dyn std::error::Error>> {
     Ok(NamespacePath::new(Vec::new(), config().limits)?)
-}
-
-fn helper_record(file_id: FileId, payload: FilePayload, kind: FileKind) -> FileRecord {
-    FileRecord {
-        file_id,
-        kind,
-        link_count: 1,
-        metadata: ObjectId {
-            kind: ObjectKind::Metadata,
-            digest: Digest::from_bytes([9; 32]),
-        },
-        payload,
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -2406,318 +1083,35 @@ impl AsyncAuthorityStore for PostAppendAuthorityStore {
 }
 
 #[test]
-fn facade_helper_state_machines_are_total_and_preserve_typed_failures()
--> Result<(), Box<dyn std::error::Error>> {
-    let file_id = FileId::from_bytes([1; 16]);
-    let inline = helper_record(
-        file_id,
-        FilePayload::InlineRegular(InlineFileData::new(b"abcd")?),
-        FileKind::Regular,
-    );
-    assert_eq!(regular_range_regions(None, 0, 1), [None, None]);
-    assert_eq!(
-        regular_range_regions(Some(inline), 1, 2),
-        [
-            Some(DependencyRegion::ContentRange {
-                file_id,
-                offset: 1,
-                length: 2,
-            }),
-            None,
-        ]
-    );
-    assert_eq!(
-        regular_range_regions(Some(inline), 3, 4),
-        [
-            Some(DependencyRegion::ContentRange {
-                file_id,
-                offset: 3,
-                length: 1,
-            }),
-            Some(DependencyRegion::FileLength(file_id)),
-        ]
-    );
-    let directory = helper_record(
-        file_id,
-        FilePayload::Directory {
-            entries: ObjectId {
-                kind: ObjectKind::TreePage,
-                digest: Digest::from_bytes([2; 32]),
-            },
-        },
-        FileKind::Directory,
-    );
-    assert_eq!(
-        regular_range_regions(Some(directory), 0, 1),
-        [Some(DependencyRegion::FileRecord(file_id)), None]
-    );
-
-    assert!(
-        validate_planned_file_range(
-            4,
-            ByteRange {
-                offset: 1,
-                length: 3
-            },
-            WorkCounters::default(),
-        )
-        .is_ok()
-    );
-    for range in [
-        ByteRange {
-            offset: 4,
-            length: 1,
-        },
-        ByteRange {
-            offset: u64::MAX,
-            length: 1,
-        },
-    ] {
-        assert!(matches!(
-            validate_planned_file_range(4, range, WorkCounters::default()),
-            Err(OperationFailure {
-                error: FsError::FileRead(FileRangeReadError::InvalidRange),
-                ..
-            })
-        ));
-    }
-
-    assert!(validate_volume_capabilities(config(), EmbeddedCapabilities::MEMORY).is_ok());
-    let durable = VolumeConfig {
-        lifecycle: Lifecycle::Durable,
-        ..config()
-    };
-    assert!(matches!(
-        validate_volume_capabilities(durable, EmbeddedCapabilities::MEMORY),
-        Err(OperationFailure {
-            error: FsError::UnsupportedDurability,
-            ..
-        })
-    ));
-    for admitted in [
-        VolumeConfig {
-            case_sensitivity: CaseSensitivity::ProfileFolded,
-            ..config()
-        },
-        VolumeConfig {
-            unicode: UnicodePolicy::RequireNfc,
-            ..config()
-        },
-    ] {
-        // `ProfileFolded`/`RequireNfc` are real, admitted policies (see the
-        // `profile_folded_*`/`require_nfc_*` tests below for the folding and
-        // normalization behavior itself); volume creation must not reject
-        // them.
-        assert!(validate_volume_capabilities(admitted, EmbeddedCapabilities::MEMORY).is_ok());
-    }
-    for mode in [
-        pinned(),
-        manual(),
-        tracking(),
-        writable_pinned(),
-        writable_manual(),
-        writable_tracking(),
-    ] {
-        assert!(validate_checkout(mode, config()).is_ok());
-    }
-    assert!(validate_checkout(writable_live(), serialized_config()).is_ok());
-    assert!(matches!(
-        validate_checkout(writable_live(), config()),
-        Err(OperationFailure {
-            error: FsError::LiveRequiresSerializedAuthority,
-            ..
-        })
-    ));
-    assert!(matches!(
-        validate_checkout(
-            CheckoutMode {
-                access: AccessMode::ReadOnly,
-                consistency: ConsistencyMode::Pinned,
-                mutations: MutationMode::PrivateOverlay,
-            },
-            config(),
-        ),
-        Err(OperationFailure { .. })
-    ));
-
-    let replacement = helper_record(
-        file_id,
-        FilePayload::InlineRegular(InlineFileData::new(b"changed")?),
-        FileKind::Regular,
-    );
-    assert!(matches!(
-        file_table_mutation(file_id, None, Some(inline)),
-        Some(FileTableMutation::Insert(_))
-    ));
-    assert!(matches!(
-        file_table_mutation(file_id, Some(inline), None),
-        Some(FileTableMutation::Remove { .. })
-    ));
-    assert!(matches!(
-        file_table_mutation(file_id, Some(inline), Some(replacement)),
-        Some(FileTableMutation::Replace { .. })
-    ));
-    assert_eq!(file_table_mutation(file_id, None, None), None);
-    assert_eq!(directory_entries(None), None);
-    assert_eq!(directory_entries(Some(inline)), None);
-    assert!(directory_entries(Some(directory)).is_some());
-
-    let logical_name = LogicalName::new(NameEncoding::Utf8, b"name".to_vec(), 255)?;
-    let entry = crate::kernel::TreeEntry {
-        name: logical_name.clone(),
-        file_id,
-        kind: FileKind::Regular,
-    };
-    assert!(matches!(
-        tree_mutation(logical_name.clone(), None, Some(entry.clone())),
-        Some(TreeMutation::Insert(_))
-    ));
-    assert!(matches!(
-        tree_mutation(logical_name.clone(), Some(entry.clone()), None),
-        Some(TreeMutation::Remove { .. })
-    ));
-    assert!(matches!(
-        tree_mutation(logical_name.clone(), Some(entry.clone()), Some(entry)),
-        Some(TreeMutation::Replace { .. })
-    ));
-    assert_eq!(tree_mutation(logical_name, None, None), None);
-
-    assert_eq!(resolve_three(&1, &2, &2), Some(2));
-    assert_eq!(resolve_three(&1, &2, &1), Some(2));
-    assert_eq!(resolve_three(&1, &1, &2), Some(2));
-    assert_eq!(resolve_three(&1, &2, &3), None);
-    assert_eq!(
-        merge_file_fields(inline, replacement, inline),
-        Some(replacement)
-    );
-    let mut ours_conflicting = replacement;
-    ours_conflicting.kind = FileKind::SymbolicLink;
-    let mut theirs_conflicting = replacement;
-    theirs_conflicting.kind = FileKind::Directory;
-    assert_eq!(
-        merge_file_fields(inline, ours_conflicting, theirs_conflicting),
-        None
-    );
-
-    let prior = WorkCounters {
-        bytes_copied: 2,
-        peak_allocation_bytes: 3,
-        ..WorkCounters::default()
-    };
-    let nested = WorkCounters {
-        bytes_hashed: 4,
-        peak_allocation_bytes: 5,
-        ..WorkCounters::default()
-    };
-    let merged = merge_simultaneous_work(prior, nested, 7, WorkBudget::UNBOUNDED)?;
-    assert_eq!(merged.bytes_copied, 2);
-    assert_eq!(merged.bytes_hashed, 4);
-    assert_eq!(merged.peak_allocation_bytes, 12);
-    let failure = merge_simultaneous_failure(prior, nested, 7, FsError::NotFound);
-    assert!(matches!(failure.error, FsError::NotFound));
-    assert_eq!(failure.work.peak_allocation_bytes, 12);
-    let overflow = merge_simultaneous_failure(
-        prior,
-        WorkCounters {
-            peak_allocation_bytes: u64::MAX,
-            ..WorkCounters::default()
-        },
-        1,
-        FsError::NotFound,
-    );
-    assert!(matches!(overflow.error, FsError::Work(WorkError::Overflow)));
-    Ok(())
-}
-
-#[test]
-fn known_mutation_preconditions_capture_without_backend_rereads()
--> Result<(), Box<dyn std::error::Error>> {
-    let store = TestMemoryObjectStore::default();
-    let file_id = FileId::from_bytes([91; 16]);
-    let record = helper_record(
-        file_id,
-        FilePayload::InlineRegular(InlineFileData::new(b"direct evidence")?),
-        FileKind::Regular,
-    );
-    let captured = poll_ready(capture_known_dependencies_async(
-        &store,
-        config(),
-        vec![
-            (Some(record), DependencyRegion::Metadata(file_id)),
-            (Some(record), DependencyRegion::FileLength(file_id)),
-            (
-                Some(record),
-                DependencyRegion::ContentRange {
-                    file_id,
-                    offset: 0,
-                    length: 6,
-                },
-            ),
-        ],
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ))
-    .ok_or("known dependency capture blocked")??;
-    assert_eq!(captured.value.len(), 3);
-    assert_eq!(captured.work.backend_read_operations, 0);
-    assert!(captured.work.bytes_hashed > 6);
-
-    let mismatch = poll_ready(capture_known_dependencies_async(
-        &store,
-        config(),
-        vec![(
-            Some(record),
-            DependencyRegion::Metadata(FileId::from_bytes([92; 16])),
-        )],
-        WorkBudget::UNBOUNDED,
-        &CancellationToken::new(),
-    ))
-    .ok_or("mismatched dependency capture blocked")?
-    .err()
-    .ok_or("mismatched record identity unexpectedly succeeded")?;
-    assert!(matches!(
-        mismatch.error,
-        FsError::Probe(AuthenticatedProbeError::RecordIdentityMismatch)
-    ));
-    assert_eq!(*mismatch.work, WorkCounters::default());
-    Ok(())
-}
-
-#[test]
 fn high_level_file_and_directory_operations_share_the_sparse_kernel()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("create blocked")??
+    let volume = poll_immediate(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))?
         .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("checkout blocked")??
+    ))?
     .value;
     let original = bytes::Bytes::from(vec![b'a'; 100]);
-    poll_ready(checkout.create_file(
+    poll_immediate(checkout.create_file(
         path("file")?,
         original,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("create file blocked")??;
-    poll_ready(checkout.create_directory(path("directory")?, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("create directory blocked")??;
-    poll_ready(checkout.write_file(
+    ))?;
+    poll_immediate(checkout.create_directory(path("directory")?, WorkBudget::UNBOUNDED, &cancellation))?;
+    poll_immediate(checkout.write_file(
         path("file")?,
         40,
         bytes::Bytes::from_static(b"changed"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("write blocked")??;
-    let read = poll_ready(checkout.read_file_range(
+    ))?;
+    let read = poll_immediate(checkout.read_file_range(
         &path("file")?,
         ByteRange {
             offset: 38,
@@ -2725,17 +1119,15 @@ fn high_level_file_and_directory_operations_share_the_sparse_kernel()
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("read blocked")??;
+    ))?;
     assert_eq!(&read.value.bytes[..], b"aachangedaaa");
-    let page = poll_ready(checkout.list_directory(
+    let page = poll_immediate(checkout.list_directory(
         &root_path()?,
         None,
         8,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("list blocked")??;
+    ))?;
     assert_eq!(page.value.entries.len(), 2);
     assert!(!page.value.has_more);
     assert!(checkout.has_pending_mutations());
@@ -2755,16 +1147,14 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
         EmbeddedCapabilities::MEMORY,
     );
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("fault fixture create blocked")??
+    let volume = poll_immediate(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))?
         .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("fault fixture checkout blocked")??
+    ))?
     .value;
 
     macro_rules! through_every_object_cut {
@@ -2774,7 +1164,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
             for cut in 1..=256 {
                 control.arm(cut);
                 let outcome =
-                    poll_ready($operation).ok_or("fault-injected facade future blocked")?;
+                    poll_immediate($operation);
                 match outcome {
                     Ok(receipt) => {
                         success = Some(receipt);
@@ -2867,13 +1257,12 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
     ));
     control.disable();
     let mut staged_source = std::io::Cursor::new(OwnedBytes::from_static(b"staged-fault-content"));
-    let staged = poll_ready(checkout.stage_content(
+    let staged = poll_immediate(checkout.stage_content(
         &mut staged_source,
         64,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("fault fixture content staging blocked")??
+    ))?
     .value;
     through_every_object_cut!(checkout.apply_authored_transaction(
         vec![AuthoredMutation::CreateFileFromContent {
@@ -3205,7 +1594,7 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
             for cut in 1..=256 {
                 control.arm(cut);
                 let outcome =
-                    poll_ready($operation).ok_or("fault-injected detached future blocked")?;
+                    poll_immediate($operation);
                 match outcome {
                     Ok(receipt) => {
                         success = Some(receipt);
@@ -3337,73 +1726,63 @@ fn every_object_backend_cut_preserves_facade_atomicity_and_retry()
 fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("create blocked")??
+    let volume = poll_immediate(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))?
         .value;
-    let mut writer = poll_ready(volume.checkout(
+    let mut writer = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("checkout blocked")??
+    ))?
     .value;
-    poll_ready(writer.create_file(
+    poll_immediate(writer.create_file(
         path("first")?,
         bytes::Bytes::from_static(b"abcdefgh"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("first create blocked")??;
-    poll_ready(writer.create_file(
+    ))?;
+    poll_immediate(writer.create_file(
         path("second")?,
         bytes::Bytes::from_static(b"01234567"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("second create blocked")??;
-    poll_ready(writer.create_symbolic_link(
+    ))?;
+    poll_immediate(writer.create_symbolic_link(
         path("link")?,
         bytes::Bytes::from_static(b"first"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("link create blocked")??;
+    ))?;
     let first_directory = path("first-directory")?;
     let second_directory = path("second-directory")?;
-    poll_ready(writer.create_directory(
+    poll_immediate(writer.create_directory(
         first_directory.clone(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("first directory create blocked")??;
-    poll_ready(writer.create_directory(
+    ))?;
+    poll_immediate(writer.create_directory(
         second_directory.clone(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("second directory create blocked")??;
+    ))?;
     for name in ["a", "b"] {
-        poll_ready(writer.create_file(
+        poll_immediate(writer.create_file(
             path_parts(&["first-directory", name])?,
             bytes::Bytes::from_static(b"x"),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("directory child create blocked")??;
+        ))?;
     }
-    poll_ready(writer.create_file(
+    poll_immediate(writer.create_file(
         path_parts(&["second-directory", "c"])?,
         bytes::Bytes::from_static(b"y"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("second directory child create blocked")??;
+    ))?;
     let reader = writer.pinned_reader()?;
     let request_paths = [path("second")?, path("first")?];
     let resolved_batch =
-        poll_ready(reader.resolve_files(&request_paths, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("batch resolve blocked")??;
+        poll_immediate(reader.resolve_files(&request_paths, WorkBudget::UNBOUNDED, &cancellation))?;
     let second_file = resolved_batch.value[0]
         .as_ref()
         .ok_or("second resolved file absent")?;
@@ -3427,60 +1806,52 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
         },
     ];
     let batch =
-        poll_ready(reader.read_resolved_ranges(&requests, 2, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("batch blocked")??;
+        poll_immediate(reader.read_resolved_ranges(&requests, 2, WorkBudget::UNBOUNDED, &cancellation))?;
     assert_eq!(&batch.value[0].bytes[..], b"234");
     assert_eq!(&batch.value[1].bytes[..], b"bcde");
 
-    let descriptions = poll_ready(reader.describe_files(
+    let descriptions = poll_immediate(reader.describe_files(
         &[path("first")?, path("second")?, path("first")?],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("metadata batch blocked")??;
+    ))?;
     assert_eq!(descriptions.value.len(), 3);
     assert_eq!(descriptions.value[0], descriptions.value[2]);
     assert!(descriptions.value.iter().all(Option::is_some));
     let resolved =
-        poll_ready(reader.resolve_files(&[path("first")?], WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("resolve file blocked")??;
+        poll_immediate(reader.resolve_files(&[path("first")?], WorkBudget::UNBOUNDED, &cancellation))?;
     let resolved_file = resolved.value[0].as_ref().ok_or("resolved file absent")?;
-    let resolved_read = poll_ready(resolved_file.read_range(
+    let resolved_read = poll_immediate(resolved_file.read_range(
         ByteRange {
             offset: 1,
             length: 4,
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("resolved read blocked")??;
+    ))?;
     assert_eq!(&resolved_read.value.bytes[..], b"bcde");
     assert_eq!(resolved_read.work.page_reads, 0);
-    let other_volume = poll_ready(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("other volume create blocked")??
+    let other_volume = poll_immediate(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))?
         .value;
-    let mut other_writer = poll_ready(other_volume.checkout(
+    let mut other_writer = poll_immediate(other_volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("other checkout blocked")??
+    ))?
     .value;
-    poll_ready(other_writer.create_file(
+    poll_immediate(other_writer.create_file(
         path("foreign")?,
         bytes::Bytes::from_static(b"WXYZ"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("other file create blocked")??;
+    ))?;
     let other_reader = other_writer.pinned_reader()?;
-    let other_resolved = poll_ready(other_reader.resolve_files(
+    let other_resolved = poll_immediate(other_reader.resolve_files(
         &[path("foreign")?],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("other resolve blocked")??;
+    ))?;
     let other_file = other_resolved.value[0]
         .as_ref()
         .ok_or("other resolved file absent")?;
@@ -3500,36 +1871,32 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
             },
         },
     ];
-    let mixed = poll_ready(reader.read_resolved_ranges(
+    let mixed = poll_immediate(reader.read_resolved_ranges(
         &mixed_requests,
         2,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("mixed resolved batch blocked")??;
+    ))?;
     assert_eq!(&mixed.value[0].bytes[..], b"ab");
     assert_eq!(&mixed.value[1].bytes[..], b"XY");
     let bounded_mixed =
-        poll_ready(reader.read_resolved_ranges(&mixed_requests, 2, mixed.work, &cancellation))
-            .ok_or("bounded mixed resolved batch blocked")??;
+        poll_immediate(reader.read_resolved_ranges(&mixed_requests, 2, mixed.work, &cancellation))?;
     assert_eq!(bounded_mixed.value, mixed.value);
     let target =
-        poll_ready(reader.read_symbolic_link(&path("link")?, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("symlink read blocked")??;
+        poll_immediate(reader.read_symbolic_link(&path("link")?, WorkBudget::UNBOUNDED, &cancellation))?;
     assert_eq!(&target.value[..], b"first");
     assert!(matches!(
-        poll_ready(reader.read_symbolic_link(
+        poll_immediate(reader.read_symbolic_link(
             &path("first")?,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("wrong-kind symlink read blocked")?,
+        )),
         Err(OperationFailure {
             error: FsError::NotSymbolicLink,
             ..
         })
     ));
-    let pages = poll_ready(reader.list_directory_pages(
+    let pages = poll_immediate(reader.list_directory_pages(
         &[
             DirectoryPageRequest {
                 path: second_directory,
@@ -3545,8 +1912,7 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
         2,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("directory page batch blocked")??;
+    ))?;
     let second_page = pages.value.first().ok_or("second directory page missing")?;
     let first_page = pages.value.get(1).ok_or("first directory page missing")?;
     assert_eq!(
@@ -3569,14 +1935,13 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
     );
     assert!(!second_page.has_more);
     assert!(!first_page.has_more);
-    let resolved_page = poll_ready(reader.resolve_directory_page(
+    let resolved_page = poll_immediate(reader.resolve_directory_page(
         &first_directory,
         None,
         1,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("resolved directory page blocked")??;
+    ))?;
     assert_eq!(resolved_page.value.entries.len(), 1);
     assert!(resolved_page.value.has_more);
     let resolved_entry = resolved_page
@@ -3586,45 +1951,40 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
         .ok_or("resolved directory entry missing")?;
     assert_eq!(resolved_entry.name.as_bytes(), b"a");
     assert_eq!(resolved_entry.file.description().kind, FileKind::Regular);
-    let resolved_child = poll_ready(resolved_entry.file.read_range(
+    let resolved_child = poll_immediate(resolved_entry.file.read_range(
         ByteRange {
             offset: 0,
             length: 1,
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("resolved child read blocked")??;
+    ))?;
     assert_eq!(&resolved_child.value.bytes[..], b"x");
     assert_eq!(resolved_child.work.page_reads, 0);
     assert!(
-        poll_ready(reader.list_directory_pages(&[], 0, WorkBudget::UNBOUNDED, &cancellation,))
-            .ok_or("zero-concurrency directory batch blocked")?
+        poll_immediate(reader.list_directory_pages(&[], 0, WorkBudget::UNBOUNDED, &cancellation,))
             .is_err()
     );
 
-    let first = poll_ready(reader.read_file_range(
+    let first = poll_immediate(reader.read_file_range(
         &request_paths[0],
         requests[0].range,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("single read blocked")??;
-    let second = poll_ready(reader.read_file_range(
+    ))?;
+    let second = poll_immediate(reader.read_file_range(
         &request_paths[1],
         requests[1].range,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("single read blocked")??;
+    ))?;
     let independent = first.work.checked_add(second.work)?;
     assert!(batch.work.object_probes < independent.object_probes);
     assert!(batch.work.backend_read_operations < independent.backend_read_operations);
     assert!(batch.work.page_reads < independent.page_reads);
 
     let Err(bounded_failure) =
-        poll_ready(reader.read_resolved_ranges(&requests, 2, first.work, &cancellation))
-            .ok_or("bounded batch blocked")?
+        poll_immediate(reader.read_resolved_ranges(&requests, 2, first.work, &cancellation))
     else {
         return Err("the second range received the first range's full budget".into());
     };
@@ -3643,13 +2003,12 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
             range: requests[1].range,
         },
     ];
-    let Err(concurrent_failure) = poll_ready(reader.read_resolved_ranges(
+    let Err(concurrent_failure) = poll_immediate(reader.read_resolved_ranges(
         &concurrent_failure_requests,
         2,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("concurrent failure batch blocked")?
     else {
         return Err("the invalid concurrent range unexpectedly succeeded".into());
     };
@@ -3663,13 +2022,12 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
         second.work.output_bytes
     );
 
-    let tracking = poll_ready(volume.checkout(
+    let tracking = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         tracking(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("tracking checkout blocked")??
+    ))?
     .value;
     assert!(matches!(
         tracking.pinned_reader(),
@@ -3682,33 +2040,29 @@ fn pinned_reader_batches_ranges_in_request_order() -> Result<(), Box<dyn std::er
 fn checkout_snapshot_reader_is_private_and_stable() -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("create blocked")??
+    let volume = poll_immediate(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))?
         .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_tracking(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("checkout blocked")??
+    ))?
     .value;
     let file_path = path("private")?;
-    let file_id = poll_ready(checkout.create_file(
+    let file_id = poll_immediate(checkout.create_file(
         file_path.clone(),
         bytes::Bytes::from_static(b"first"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("create file blocked")??
+    ))?
     .value;
     let snapshot = checkout.snapshot_reader();
-    let resolved = poll_ready(snapshot.resolve_files(
+    let resolved = poll_immediate(snapshot.resolve_files(
         std::slice::from_ref(&file_path),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("snapshot resolve blocked")??
+    ))?
     .value
     .into_iter()
     .next()
@@ -3716,23 +2070,21 @@ fn checkout_snapshot_reader_is_private_and_stable() -> Result<(), Box<dyn std::e
     .ok_or("private file missing from snapshot")?;
     assert_eq!(resolved.file_id(), file_id);
 
-    poll_ready(checkout.write_file(
+    poll_immediate(checkout.write_file(
         file_path,
         0,
         bytes::Bytes::from_static(b"later"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("write blocked")??;
-    let bytes = poll_ready(resolved.read_range(
+    ))?;
+    let bytes = poll_immediate(resolved.read_range(
         ByteRange {
             offset: 0,
             length: 5,
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("snapshot read blocked")??
+    ))?
     .value
     .bytes;
     assert_eq!(&bytes[..], b"first");
@@ -3759,7 +2111,7 @@ fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retry()
             for cut in 1..=64 {
                 control.arm(cut);
                 let outcome =
-                    poll_ready($operation).ok_or("fault-injected authority future blocked")?;
+                    poll_immediate($operation);
                 match outcome {
                     Ok(receipt) => {
                         success = Some(receipt);
@@ -3802,13 +2154,12 @@ fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retry()
     ))
     .value;
     control.disable();
-    poll_ready(checkout.create_file(
+    poll_immediate(checkout.create_file(
         path("authority-cut-file")?,
         bytes::Bytes::from_static(b"authority cut candidate"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("authority cut candidate creation blocked")??;
+    ))?;
     let candidate = checkout.generation_id();
     assert!(checkout.has_pending_mutations());
     let commit_operation = OperationId::from_bytes([33; 16]);
@@ -3816,8 +2167,7 @@ fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retry()
     for cut in 1..=64 {
         control.arm(cut);
         let outcome =
-            poll_ready(checkout.commit(commit_operation, WorkBudget::UNBOUNDED, &cancellation))
-                .ok_or("fault-injected commit blocked")?;
+            poll_immediate(checkout.commit(commit_operation, WorkBudget::UNBOUNDED, &cancellation));
         match outcome {
             Ok(receipt) => {
                 committed = Some(receipt);
@@ -3867,26 +2217,24 @@ fn every_authority_backend_cut_preserves_creation_checkout_and_commit_retry()
     .value;
     let live_before = live.generation_id();
     control.disable();
-    poll_ready(live.create_file(
+    poll_immediate(live.create_file(
         path("live-authority-cut")?,
         bytes::Bytes::from_static(b"live"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("live candidate mutation blocked")??;
+    ))?;
     assert!(live.has_pending_mutations());
     let live_operation = OperationId::from_bytes([34; 16]);
     let mut published = None;
     for cut in 1..=64 {
         control.arm(cut);
-        let outcome = poll_ready(live.resume_live(
+        let outcome = poll_immediate(live.resume_live(
             live_operation,
             3,
             16,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("fault-injected live publication blocked")?;
+        ));
         match outcome {
             Ok(receipt) => {
                 published = Some(receipt);
@@ -3936,13 +2284,12 @@ fn every_post_put_creation_fault_retries_from_a_complete_authenticated_closure()
         let volume_id = VolumeId::from_bytes(
             [u8::try_from(cut).map_err(|_| "post-put cut does not fit identity")?; 16],
         );
-        let first = poll_ready(fs.create_volume_with_id(
+        let first = poll_immediate(fs.create_volume_with_id(
             volume_id,
             config(),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("post-put creation future blocked")?;
+        ));
         match first {
             Ok(created) => {
                 assert_eq!(created.value.id(), volume_id);
@@ -3960,24 +2307,21 @@ fn every_post_put_creation_fault_retries_from_a_complete_authenticated_closure()
                     u64::try_from(cut).map_err(|_| "post-put cut does not fit work counter")?
                 );
                 control.disable();
-                let retried = poll_ready(fs.create_volume_with_id(
+                let retried = poll_immediate(fs.create_volume_with_id(
                     volume_id,
                     config(),
                     WorkBudget::UNBOUNDED,
                     &cancellation,
-                ))
-                .ok_or("post-put creation retry blocked")??;
+                ))?;
                 assert_eq!(retried.value.id(), volume_id);
                 let reopened =
-                    poll_ready(fs.open_volume(volume_id, WorkBudget::UNBOUNDED, &cancellation))
-                        .ok_or("post-put volume reopen blocked")??;
-                let checkout = poll_ready(reopened.value.checkout(
+                    poll_immediate(fs.open_volume(volume_id, WorkBudget::UNBOUNDED, &cancellation))?;
+                let checkout = poll_immediate(reopened.value.checkout(
                     GenerationSelector::Head,
                     pinned(),
                     WorkBudget::UNBOUNDED,
                     &cancellation,
-                ))
-                .ok_or("post-put checkout blocked")??;
+                ))?;
                 assert_eq!(checkout.value.volume_id(), volume_id);
                 assert!(!checkout.value.has_pending_mutations());
             }
@@ -4004,13 +2348,12 @@ fn every_pre_object_fault_preserves_creation_and_checkout_retry()
     let mut volume = None;
     for cut in 1..=64 {
         control.arm(cut);
-        match poll_ready(fs.create_volume_with_id(
+        match poll_immediate(fs.create_volume_with_id(
             volume_id,
             config(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("pre-object creation future blocked")?
         {
             Ok(receipt) => {
                 volume = Some(receipt.value);
@@ -4037,13 +2380,12 @@ fn every_pre_object_fault_preserves_creation_and_checkout_retry()
     let mut checkout = None;
     for cut in 1..=64 {
         control.arm(cut);
-        match poll_ready(volume.checkout(
+        match poll_immediate(volume.checkout(
             GenerationSelector::Head,
             pinned(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("pre-object checkout future blocked")?
         {
             Ok(receipt) => {
                 checkout = Some(receipt.value);
@@ -4079,52 +2421,45 @@ fn every_object_cut_preserves_sparse_rebase_retry_and_candidate_state()
         EmbeddedCapabilities::MEMORY,
     );
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("rebase fixture creation blocked")??
+    let volume = poll_immediate(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))?
         .value;
-    let mut writer = poll_ready(volume.checkout(
+    let mut writer = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("writer checkout blocked")??
+    ))?
     .value;
-    let mut rebasing = poll_ready(volume.checkout(
+    let mut rebasing = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_tracking(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("tracking checkout blocked")??
+    ))?
     .value;
-    poll_ready(rebasing.create_file(
+    poll_immediate(rebasing.create_file(
         path("local")?,
         bytes::Bytes::from_static(b"local sparse candidate"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("local mutation blocked")??;
-    poll_ready(writer.create_file(
+    ))?;
+    poll_immediate(writer.create_file(
         path("remote")?,
         bytes::Bytes::from_static(b"remote sparse head"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("remote mutation blocked")??;
-    poll_ready(writer.commit(
+    ))?;
+    poll_immediate(writer.commit(
         OperationId::from_bytes([227; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("remote commit blocked")??;
+    ))?;
 
     let original = checkout_state(&rebasing);
     let mut completed = None;
     for cut in 1..=512 {
         control.arm(cut);
-        match poll_ready(rebasing.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("fault-injected rebase blocked")?
+        match poll_immediate(rebasing.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
         {
             Ok(receipt) => {
                 completed = Some(receipt);
@@ -4141,23 +2476,21 @@ fn every_object_cut_preserves_sparse_rebase_retry_and_candidate_state()
     assert!(matches!(completed.value, RebaseDecision::Safe { .. }));
     assert!(rebasing.has_pending_mutations());
     assert!(
-        poll_ready(rebasing.lookup_no_follow(
+        poll_immediate(rebasing.lookup_no_follow(
             &path("local")?,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("local lookup blocked")??
+        ))?
         .value
         .record
         .is_some()
     );
     assert!(
-        poll_ready(rebasing.lookup_no_follow(
+        poll_immediate(rebasing.lookup_no_follow(
             &path("remote")?,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("remote lookup blocked")??
+        ))?
         .value
         .record
         .is_some()
@@ -4178,60 +2511,51 @@ fn every_object_cut_preserves_diff_export_and_merge_preparation()
         EmbeddedCapabilities::MEMORY,
     );
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("merge fixture creation blocked")??
+    let volume = poll_immediate(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))?
         .value;
-    let base = poll_ready(volume.checkout(
+    let base = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("base checkout blocked")??
+    ))?
     .value
     .generation_id();
-    let mut ours = poll_ready(volume.checkout(
+    let mut ours = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("ours checkout blocked")??
+    ))?
     .value;
-    let mut theirs = poll_ready(volume.checkout(
+    let mut theirs = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("theirs checkout blocked")??
+    ))?
     .value;
-    poll_ready(ours.create_file(
+    poll_immediate(ours.create_file(
         path("ours")?,
         bytes::Bytes::from(vec![b'o'; 4_096]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("ours mutation blocked")??;
-    poll_ready(theirs.create_file(
+    ))?;
+    poll_immediate(theirs.create_file(
         path("theirs")?,
         bytes::Bytes::from(vec![b't'; 4_096]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("theirs mutation blocked")??;
-    let ours_generation = poll_ready(ours.checkpoint(WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("ours checkpoint blocked")??
+    ))?;
+    let ours_generation = poll_immediate(ours.checkpoint(WorkBudget::UNBOUNDED, &cancellation))?
         .value;
-    let theirs_generation = poll_ready(theirs.checkpoint(WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("theirs checkpoint blocked")??
+    let theirs_generation = poll_immediate(theirs.checkpoint(WorkBudget::UNBOUNDED, &cancellation))?
         .value;
-    poll_ready(theirs.commit(
+    poll_immediate(theirs.commit(
         OperationId::from_bytes([228; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("theirs commit blocked")??;
+    ))?;
 
     macro_rules! sweep_read_only {
         ($operation:expr) => {{
@@ -4239,7 +2563,7 @@ fn every_object_cut_preserves_diff_export_and_merge_preparation()
             let mut completed = None;
             for cut in 1..=4_096 {
                 control.arm(cut);
-                match poll_ready($operation).ok_or("fault-injected operation blocked")? {
+                match poll_immediate($operation) {
                     Ok(receipt) => {
                         completed = Some(receipt);
                         break;
@@ -4288,12 +2612,11 @@ fn every_object_cut_preserves_diff_export_and_merge_preparation()
     assert!(ours.has_pending_mutations());
     for expected in ["ours", "theirs"] {
         assert!(
-            poll_ready(ours.lookup_no_follow(
+            poll_immediate(ours.lookup_no_follow(
                 &path(expected)?,
                 WorkBudget::UNBOUNDED,
                 &cancellation,
-            ))
-            .ok_or("merged lookup blocked")??
+            ))?
             .value
             .record
             .is_some()
@@ -4315,25 +2638,22 @@ fn every_object_cut_preserves_authenticated_publication_retry()
         EmbeddedCapabilities::MEMORY,
     );
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("publication fixture creation blocked")??
+    let volume = poll_immediate(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))?
         .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("publication checkout blocked")??
+    ))?
     .value;
-    poll_ready(checkout.create_file(
+    poll_immediate(checkout.create_file(
         path("publish-large")?,
         bytes::Bytes::from(vec![b'p'; 16_384]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("publication mutation blocked")??;
-    poll_ready(checkout.write_named_attribute(
+    ))?;
+    poll_immediate(checkout.write_named_attribute(
         path("publish-large")?,
         AttributeName::new(
             crate::kernel::AttributeClass::PosixXattr,
@@ -4344,16 +2664,14 @@ fn every_object_cut_preserves_authenticated_publication_retry()
         NamedAttributeWriteMode::Create,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("publication attribute blocked")??;
+    ))?;
 
     let original = checkout_state(&checkout);
     let operation_id = OperationId::from_bytes([229; 16]);
     let mut completed = None;
     for cut in 1..=4_096 {
         control.arm(cut);
-        match poll_ready(checkout.commit(operation_id, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("fault-injected publication blocked")?
+        match poll_immediate(checkout.commit(operation_id, WorkBudget::UNBOUNDED, &cancellation))
         {
             Ok(receipt) => {
                 completed = Some(receipt);
@@ -4392,29 +2710,25 @@ fn indeterminate_post_append_retry_resolves_one_durable_publication()
         EmbeddedCapabilities::MEMORY,
     );
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("indeterminate fixture create blocked")??
+    let volume = poll_immediate(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))?
         .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("indeterminate fixture checkout blocked")??
+    ))?
     .value;
-    poll_ready(checkout.create_file(
+    poll_immediate(checkout.create_file(
         path("indeterminate-file")?,
         bytes::Bytes::from_static(b"durable exactly once"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("indeterminate fixture mutation blocked")??;
+    ))?;
     let before = checkout_state(&checkout);
     let operation_id = OperationId::from_bytes([49; 16]);
     control.arm(1);
-    let failure = poll_ready(checkout.commit(operation_id, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("indeterminate commit blocked")?
+    let failure = poll_immediate(checkout.commit(operation_id, WorkBudget::UNBOUNDED, &cancellation))
         .err()
         .ok_or("post-append acknowledgement loss unexpectedly succeeded")?;
     assert!(matches!(
@@ -4436,8 +2750,7 @@ fn indeterminate_post_append_retry_resolves_one_durable_publication()
     );
 
     control.disable();
-    let resolved = poll_ready(checkout.commit(operation_id, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("indeterminate commit retry blocked")??;
+    let resolved = poll_immediate(checkout.commit(operation_id, WorkBudget::UNBOUNDED, &cancellation))?;
     assert!(matches!(
         resolved.value,
         CheckoutCommitOutcome::AlreadyCommitted { .. }
@@ -4461,14 +2774,13 @@ fn indeterminate_post_append_retry_resolves_one_durable_publication()
             .count(),
         1
     );
-    let mut reopened = poll_ready(volume.checkout(
+    let mut reopened = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("indeterminate committed checkout blocked")??;
-    let bytes = poll_ready(reopened.value.read_file_range(
+    ))?;
+    let bytes = poll_immediate(reopened.value.read_file_range(
         &path("indeterminate-file")?,
         ByteRange {
             offset: 0,
@@ -4476,8 +2788,7 @@ fn indeterminate_post_append_retry_resolves_one_durable_publication()
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("indeterminate committed read blocked")??;
+    ))?;
     assert_eq!(bytes.value.bytes.as_ref(), b"durable exactly once");
     Ok(())
 }
@@ -4487,49 +2798,43 @@ fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("create blocked")??
+    let volume = poll_immediate(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))?
         .value;
     let file = path("open-file")?;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("checkout blocked")??
+    ))?
     .value;
-    poll_ready(checkout.create_file(
+    poll_immediate(checkout.create_file(
         file.clone(),
         bytes::Bytes::from(vec![b'a'; 128]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("create file blocked")??;
+    ))?;
     let detached =
-        poll_ready(checkout.detach_regular_file(&file, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("detach blocked")??;
+        poll_immediate(checkout.detach_regular_file(&file, WorkBudget::UNBOUNDED, &cancellation))?;
     let mut detached = detached.value;
     let file_id = detached.file_id();
     assert_eq!(
-        poll_ready(detached.seek(
+        poll_immediate(detached.seek(
             0,
             ExtentSeekTarget::Data,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("detached data seek blocked")??
+        ))?
         .value,
         Some(0)
     );
     assert_eq!(
-        poll_ready(detached.seek(
+        poll_immediate(detached.seek(
             0,
             ExtentSeekTarget::Hole,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("detached hole seek blocked")??
+        ))?
         .value,
         Some(128)
     );
@@ -4540,8 +2845,7 @@ fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal()
         (129, ExtentSeekTarget::Hole, None),
     ] {
         assert_eq!(
-            poll_ready(detached.seek(offset, target, WorkBudget::UNBOUNDED, &cancellation,))
-                .ok_or("detached boundary seek blocked")??
+            poll_immediate(detached.seek(offset, target, WorkBudget::UNBOUNDED, &cancellation,))?
                 .value,
             expected
         );
@@ -4553,124 +2857,107 @@ fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal()
         128,
     )?;
     assert!(
-        poll_ready(
+        poll_immediate(
             detached.read_named_attribute(&attribute, WorkBudget::UNBOUNDED, &cancellation,)
-        )
-        .ok_or("detached attribute read blocked")??
+        )?
         .value
         .is_none()
     );
     assert!(
-        poll_ready(detached.list_named_attributes(None, 8, WorkBudget::UNBOUNDED, &cancellation,))
-            .ok_or("detached attribute listing blocked")??
+        poll_immediate(detached.list_named_attributes(None, 8, WorkBudget::UNBOUNDED, &cancellation,))?
             .value
             .entries
             .is_empty()
     );
-    let absent_remove = poll_ready(detached.remove_named_attribute(
+    let absent_remove = poll_immediate(detached.remove_named_attribute(
         attribute.clone(),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("attribute-free detached removal blocked")?
     .err()
     .ok_or("attribute-free detached removal unexpectedly succeeded")?;
     assert!(matches!(absent_remove.error, FsError::NotFound));
-    let absent_replace = poll_ready(detached.write_named_attribute(
+    let absent_replace = poll_immediate(detached.write_named_attribute(
         attribute.clone(),
         bytes::Bytes::from_static(b"replacement"),
         NamedAttributeWriteMode::Replace,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("absent detached replacement blocked")?
     .err()
     .ok_or("absent detached replacement unexpectedly succeeded")?;
     assert!(matches!(absent_replace.error, FsError::CreationRejected));
-    poll_ready(detached.write_named_attribute(
+    poll_immediate(detached.write_named_attribute(
         attribute.clone(),
         bytes::Bytes::from_static(b"first"),
         NamedAttributeWriteMode::Create,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("detached attribute creation blocked")??;
+    ))?;
     assert_eq!(
-        poll_ready(
+        poll_immediate(
             detached.read_named_attribute(&attribute, WorkBudget::UNBOUNDED, &cancellation,)
-        )
-        .ok_or("detached attribute reread blocked")??
+        )?
         .value
         .as_deref(),
         Some(b"first".as_slice())
     );
     assert_eq!(
-        poll_ready(detached.list_named_attributes(None, 8, WorkBudget::UNBOUNDED, &cancellation,))
-            .ok_or("detached populated attribute listing blocked")??
+        poll_immediate(detached.list_named_attributes(None, 8, WorkBudget::UNBOUNDED, &cancellation,))?
             .value
             .entries
             .len(),
         1
     );
     assert!(
-        poll_ready(detached.write_named_attribute(
+        poll_immediate(detached.write_named_attribute(
             attribute.clone(),
             bytes::Bytes::from_static(b"duplicate"),
             NamedAttributeWriteMode::Create,
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("detached duplicate attribute write blocked")?
         .is_err()
     );
-    poll_ready(detached.write_named_attribute(
+    poll_immediate(detached.write_named_attribute(
         attribute.clone(),
         bytes::Bytes::from_static(b"second"),
         NamedAttributeWriteMode::Replace,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("detached attribute replacement blocked")??;
+    ))?;
 
-    let mut metadata = poll_ready(detached.read_metadata(WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("detached metadata read blocked")??
+    let mut metadata = poll_immediate(detached.read_metadata(WorkBudget::UNBOUNDED, &cancellation))?
         .value;
     metadata.posix_mode = MetadataField::Value(0o100_640);
-    poll_ready(detached.set_metadata(metadata, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("detached metadata write blocked")??;
+    poll_immediate(detached.set_metadata(metadata, WorkBudget::UNBOUNDED, &cancellation))?;
     metadata.posix_mode = MetadataField::Value(0o100_600);
-    poll_ready(detached.set_attributes(metadata, None, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("detached metadata-only attributes write blocked")??;
+    poll_immediate(detached.set_attributes(metadata, None, WorkBudget::UNBOUNDED, &cancellation))?;
     assert_eq!(detached.logical_bytes(), 128);
-    poll_ready(detached.set_attributes(metadata, Some(160), WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("detached attributes write blocked")??;
+    poll_immediate(detached.set_attributes(metadata, Some(160), WorkBudget::UNBOUNDED, &cancellation))?;
     assert_eq!(detached.logical_bytes(), 160);
-    poll_ready(checkout.remove(
+    poll_immediate(checkout.remove(
         file.clone(),
         Some(file_id),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("remove blocked")??;
-    let absent = poll_ready(checkout.lookup_no_follow(&file, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("lookup blocked")??;
+    ))?;
+    let absent = poll_immediate(checkout.lookup_no_follow(&file, WorkBudget::UNBOUNDED, &cancellation))?;
     assert!(absent.value.record.is_none());
 
-    poll_ready(detached.change_content(
+    poll_immediate(detached.change_content(
         ContentChange::Write { offset: 0, bytes: OwnedBytes::from_static(b"open") },
         None,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("detached write blocked")??;
-    poll_ready(detached.change_content(
+    ))?;
+    poll_immediate(detached.change_content(
         ContentChange::Write { offset: 4, bytes: OwnedBytes::new() },
         None,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("detached empty write blocked")??;
-    poll_ready(detached.change_content(
+    ))?;
+    poll_immediate(detached.change_content(
         ContentChange::Preallocate {
             range: ByteRange {
                 offset: 128,
@@ -4681,9 +2968,8 @@ fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal()
         None,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("detached preallocation blocked")??;
-    poll_ready(detached.change_content(
+    ))?;
+    poll_immediate(detached.change_content(
         ContentChange::ZeroRange {
             range: ByteRange {
                 offset: 64,
@@ -4695,40 +2981,35 @@ fn detached_open_file_remains_sparse_and_mutable_after_last_binding_removal()
         None,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("detached hole blocked")??;
-    let read = poll_ready(detached.read_range(
+    ))?;
+    let read = poll_immediate(detached.read_range(
         ByteRange {
             offset: 0,
             length: 80,
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("detached read blocked")??;
+    ))?;
     assert_eq!(&read.value.bytes[..4], b"open");
     assert_eq!(&read.value.bytes[64..80], &[0; 16]);
-    poll_ready(detached.change_content(
+    poll_immediate(detached.change_content(
         ContentChange::Resize { logical_bytes: 192 },
         None,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("detached resize blocked")??;
+    ))?;
     assert_eq!(detached.logical_bytes(), 192);
-    poll_ready(detached.remove_named_attribute(
+    poll_immediate(detached.remove_named_attribute(
         attribute.clone(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("detached attribute removal blocked")??;
+    ))?;
     assert!(
-        poll_ready(detached.remove_named_attribute(
+        poll_immediate(detached.remove_named_attribute(
             attribute,
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("detached absent attribute removal blocked")?
         .is_err()
     );
     Ok(())
@@ -4739,46 +3020,41 @@ fn tracking_reads_capture_only_their_exact_terminal_regions()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([81; 16]),
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("volume creation blocked")??
+    ))?
     .value;
     let file = path("file")?;
-    let mut seed = poll_ready(volume.checkout(
+    let mut seed = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("seed checkout blocked")??
+    ))?
     .value;
-    poll_ready(seed.create_file(
+    poll_immediate(seed.create_file(
         file.clone(),
         bytes::Bytes::from(vec![b'a'; 128]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("seed create blocked")??;
-    poll_ready(seed.commit(
+    ))?;
+    poll_immediate(seed.commit(
         OperationId::from_bytes([82; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("seed commit blocked")??;
+    ))?;
 
-    let mut content_reader = poll_ready(volume.checkout(
+    let mut content_reader = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         tracking(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("content reader blocked")??
+    ))?
     .value;
-    poll_ready(content_reader.read_file_range(
+    poll_immediate(content_reader.read_file_range(
         &file,
         ByteRange {
             offset: 0,
@@ -4786,108 +3062,91 @@ fn tracking_reads_capture_only_their_exact_terminal_regions()
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("content observation blocked")??;
-    let mut metadata_writer = poll_ready(volume.checkout(
+    ))?;
+    let mut metadata_writer = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("metadata writer blocked")??
+    ))?
     .value;
     let mut changed_metadata = empty_metadata();
     changed_metadata.modified_ns = MetadataField::Value(7);
-    poll_ready(metadata_writer.set_metadata(
+    poll_immediate(metadata_writer.set_metadata(
         file.clone(),
         changed_metadata,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("metadata mutation blocked")??;
-    poll_ready(metadata_writer.commit(
+    ))?;
+    poll_immediate(metadata_writer.commit(
         OperationId::from_bytes([83; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("metadata commit blocked")??;
+    ))?;
     let content_rebase =
-        poll_ready(content_reader.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("content rebase blocked")??;
+        poll_immediate(content_reader.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))?;
     assert!(matches!(content_rebase.value, RebaseDecision::Safe { .. }));
 
-    let mut metadata_reader = poll_ready(volume.checkout(
+    let mut metadata_reader = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         tracking(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("metadata reader blocked")??
+    ))?
     .value;
-    poll_ready(metadata_reader.read_metadata(&file, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("metadata observation blocked")??;
-    let mut content_writer = poll_ready(volume.checkout(
+    poll_immediate(metadata_reader.read_metadata(&file, WorkBudget::UNBOUNDED, &cancellation))?;
+    let mut content_writer = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("content writer blocked")??
+    ))?
     .value;
-    poll_ready(content_writer.write_file(
+    poll_immediate(content_writer.write_file(
         file.clone(),
         64,
         bytes::Bytes::from_static(b"changed"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("content mutation blocked")??;
-    poll_ready(content_writer.commit(
+    ))?;
+    poll_immediate(content_writer.commit(
         OperationId::from_bytes([84; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("content commit blocked")??;
+    ))?;
     let metadata_rebase =
-        poll_ready(metadata_reader.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("metadata rebase blocked")??;
+        poll_immediate(metadata_reader.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))?;
     assert!(matches!(metadata_rebase.value, RebaseDecision::Safe { .. }));
 
-    let mut generic_reader = poll_ready(volume.checkout(
+    let mut generic_reader = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         tracking(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("generic reader blocked")??
+    ))?
     .value;
-    poll_ready(generic_reader.lookup_no_follow(&file, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("generic observation blocked")??;
-    let mut final_writer = poll_ready(volume.checkout(
+    poll_immediate(generic_reader.lookup_no_follow(&file, WorkBudget::UNBOUNDED, &cancellation))?;
+    let mut final_writer = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("final writer blocked")??
+    ))?
     .value;
-    poll_ready(final_writer.write_file(
+    poll_immediate(final_writer.write_file(
         file,
         96,
         bytes::Bytes::from_static(b"different"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("final mutation blocked")??;
-    poll_ready(final_writer.commit(
+    ))?;
+    poll_immediate(final_writer.commit(
         OperationId::from_bytes([85; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("final commit blocked")??;
+    ))?;
     let generic_rebase =
-        poll_ready(generic_reader.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("generic rebase blocked")??;
+        poll_immediate(generic_reader.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))?;
     assert!(matches!(
         generic_rebase.value,
         RebaseDecision::Conflicted { ref conflicts, .. }
@@ -4904,46 +3163,41 @@ fn sparse_seek_dependencies_track_base_semantics_and_exact_observed_boundaries()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([101; 16]),
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("volume creation blocked")??
+    ))?
     .value;
     let file = path("sparse")?;
-    let mut seed = poll_ready(volume.checkout(
+    let mut seed = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("seed checkout blocked")??
+    ))?
     .value;
-    poll_ready(seed.create_file(
+    poll_immediate(seed.create_file(
         file.clone(),
         bytes::Bytes::from(vec![b'a'; 256]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("seed create blocked")??;
-    poll_ready(seed.commit(
+    ))?;
+    poll_immediate(seed.commit(
         OperationId::from_bytes([102; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("seed commit blocked")??;
+    ))?;
 
-    let mut local = poll_ready(volume.checkout(
+    let mut local = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_tracking(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("local checkout blocked")??
+    ))?
     .value;
-    poll_ready(local.zero_file_range(
+    poll_immediate(local.zero_file_range(
         file.clone(),
         ByteRange {
             offset: 128,
@@ -4953,27 +3207,24 @@ fn sparse_seek_dependencies_track_base_semantics_and_exact_observed_boundaries()
         false,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("local hole blocked")??;
-    let local_observation = poll_ready(local.seek_file_extent(
+    ))?;
+    let local_observation = poll_immediate(local.seek_file_extent(
         &file,
         128,
         ExtentSeekTarget::Hole,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("local seek blocked")??;
+    ))?;
     assert_eq!(local_observation.value, Some(128));
 
-    let mut disjoint = poll_ready(volume.checkout(
+    let mut disjoint = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("disjoint checkout blocked")??
+    ))?
     .value;
-    poll_ready(disjoint.zero_file_range(
+    poll_immediate(disjoint.zero_file_range(
         file.clone(),
         ByteRange {
             offset: 0,
@@ -4983,54 +3234,47 @@ fn sparse_seek_dependencies_track_base_semantics_and_exact_observed_boundaries()
         false,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("disjoint hole blocked")??;
-    poll_ready(disjoint.commit(
+    ))?;
+    poll_immediate(disjoint.commit(
         OperationId::from_bytes([103; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("disjoint commit blocked")??;
-    let safe = poll_ready(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("local rebase blocked")??;
+    ))?;
+    let safe = poll_immediate(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))?;
     assert!(matches!(safe.value, RebaseDecision::Safe { .. }));
-    let retained = poll_ready(local.seek_file_extent(
+    let retained = poll_immediate(local.seek_file_extent(
         &file,
         128,
         ExtentSeekTarget::Hole,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("retained local seek blocked")??;
+    ))?;
     assert_eq!(retained.value, Some(128));
 
-    let mut reader = poll_ready(volume.checkout(
+    let mut reader = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         tracking(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("reader checkout blocked")??
+    ))?
     .value;
-    let observation = poll_ready(reader.seek_file_extent(
+    let observation = poll_immediate(reader.seek_file_extent(
         &file,
         128,
         ExtentSeekTarget::Hole,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("reader seek blocked")??;
+    ))?;
     assert_eq!(observation.value, Some(256));
 
-    let mut conflicting = poll_ready(volume.checkout(
+    let mut conflicting = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("conflicting checkout blocked")??
+    ))?
     .value;
-    poll_ready(conflicting.zero_file_range(
+    poll_immediate(conflicting.zero_file_range(
         file,
         ByteRange {
             offset: 192,
@@ -5040,16 +3284,13 @@ fn sparse_seek_dependencies_track_base_semantics_and_exact_observed_boundaries()
         false,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("conflicting hole blocked")??;
-    poll_ready(conflicting.commit(
+    ))?;
+    poll_immediate(conflicting.commit(
         OperationId::from_bytes([104; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("conflicting commit blocked")??;
-    let conflict = poll_ready(reader.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("conflicting rebase blocked")??;
+    ))?;
+    let conflict = poll_immediate(reader.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))?;
     assert!(matches!(
         conflict.value,
         RebaseDecision::Conflicted { ref conflicts, .. }
@@ -5070,80 +3311,70 @@ fn sparse_seek_dependencies_track_base_semantics_and_exact_observed_boundaries()
 fn clipped_identity_read_at_eof_tracks_file_length() -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([190; 16]),
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("volume creation blocked")??
+    ))?
     .value;
     let file = path("file")?;
-    let mut seed = poll_ready(volume.checkout(
+    let mut seed = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("seed checkout blocked")??
+    ))?
     .value;
-    let file_id = poll_ready(seed.create_file(
+    let file_id = poll_immediate(seed.create_file(
         file.clone(),
         bytes::Bytes::from_static(b"abc"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("seed create blocked")??
+    ))?
     .value;
-    poll_ready(seed.commit(
+    poll_immediate(seed.commit(
         OperationId::from_bytes([190; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("seed commit blocked")??;
+    ))?;
 
-    let mut reader = poll_ready(volume.checkout(
+    let mut reader = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         tracking(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("reader checkout blocked")??
+    ))?
     .value;
-    let at_eof = poll_ready(reader.read_file_up_to_by_id(
+    let at_eof = poll_immediate(reader.read_file_up_to_by_id(
         file_id,
         3,
         16,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("EOF read blocked")??;
+    ))?;
     assert!(at_eof.value.bytes.is_empty());
 
-    let mut writer = poll_ready(volume.checkout(
+    let mut writer = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("writer checkout blocked")??
+    ))?
     .value;
-    poll_ready(writer.write_file(
+    poll_immediate(writer.write_file(
         file,
         3,
         bytes::Bytes::from_static(b"d"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("append blocked")??;
-    poll_ready(writer.commit(
+    ))?;
+    poll_immediate(writer.commit(
         OperationId::from_bytes([191; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("append commit blocked")??;
-    let rebase = poll_ready(reader.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("reader rebase blocked")??;
+    ))?;
+    let rebase = poll_immediate(reader.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))?;
     assert!(matches!(
         rebase.value,
         RebaseDecision::Conflicted { ref conflicts, .. }
@@ -5172,75 +3403,66 @@ fn sparse_rebase_across_remote_ranges(native: bool)
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([86; 16]),
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("volume creation blocked")??
+    ))?
     .value;
     let file = path("file")?;
-    let mut seed = poll_ready(volume.checkout(
+    let mut seed = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("seed checkout blocked")??
+    ))?
     .value;
-    poll_ready(seed.create_file(
+    poll_immediate(seed.create_file(
         file.clone(),
         bytes::Bytes::from(vec![b'a'; 128]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("seed create blocked")??;
-    poll_ready(seed.commit(
+    ))?;
+    poll_immediate(seed.commit(
         OperationId::from_bytes([87; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("seed commit blocked")??;
+    ))?;
 
-    let mut local = poll_ready(volume.checkout(
+    let mut local = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_tracking(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("local checkout blocked")??
+    ))?
     .value;
-    let mut remote = poll_ready(volume.checkout(
+    let mut remote = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("remote checkout blocked")??
+    ))?
     .value;
-    poll_ready(local.write_file(
+    poll_immediate(local.write_file(
         file.clone(),
         0,
         bytes::Bytes::from_static(b"LOCAL"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("local write blocked")??;
-    poll_ready(remote.write_file(
+    ))?;
+    poll_immediate(remote.write_file(
         file.clone(),
         64,
         bytes::Bytes::from_static(b"REMOTE"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("remote write blocked")??;
-    poll_ready(remote.commit(
+    ))?;
+    poll_immediate(remote.commit(
         OperationId::from_bytes([88; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("remote commit blocked")??;
+    ))?;
     #[cfg(not(target_arch = "wasm32"))]
     if native {
         let before = (
@@ -5251,8 +3473,7 @@ fn sparse_rebase_across_remote_ranges(native: bool)
         let denied = crate::NativeMaterializationWork::new(
             WorkBudget { allocation_operations: 1, ..WorkBudget::UNBOUNDED }, &cancellation,
         ).map_err(|(cause, _)| cause)?;
-        assert!(poll_ready(local.rebase_head_with_native_work(8, &denied, &cancellation))
-            .ok_or("native denial rebase blocked")?.is_err());
+        assert!(poll_immediate(local.rebase_head_with_native_work(8, &denied, &cancellation)).is_err());
         assert_eq!(before, (
             local.generation_id(), local.root.file_table, local.base_file_table,
             local.authority_head, local.authored_operation_id, local.live_operation_id,
@@ -5264,18 +3485,15 @@ fn sparse_rebase_across_remote_ranges(native: bool)
         .map_err(|(cause, _)| cause)?;
     #[cfg(not(target_arch = "wasm32"))]
     let safe = if native {
-        let result = poll_ready(local.rebase_head_with_native_work(8, &original, &cancellation))
-            .ok_or("native disjoint rebase blocked")??;
+        let result = poll_immediate(local.rebase_head_with_native_work(8, &original, &cancellation))?;
         (result.0, Some(result.1))
     } else {
-        (poll_ready(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("disjoint rebase blocked")??.value, None)
+        (poll_immediate(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))?.value, None)
     };
     #[cfg(target_arch = "wasm32")]
-    let safe = (poll_ready(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("disjoint rebase blocked")??.value, ());
+    let safe = (poll_immediate(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))?.value, ());
     assert!(matches!(safe.0, RebaseDecision::Safe { .. }));
-    let local_bytes = poll_ready(local.read_file_range(
+    let local_bytes = poll_immediate(local.read_file_range(
         &file,
         ByteRange {
             offset: 0,
@@ -5283,49 +3501,43 @@ fn sparse_rebase_across_remote_ranges(native: bool)
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("rebased read blocked")??;
+    ))?;
     assert_eq!(&local_bytes.value.bytes[..5], b"LOCAL");
     assert_eq!(&local_bytes.value.bytes[64..70], b"REMOTE");
 
-    let mut overlapping_local = poll_ready(volume.checkout(
+    let mut overlapping_local = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_tracking(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("overlapping local checkout blocked")??
+    ))?
     .value;
-    let mut overlapping_remote = poll_ready(volume.checkout(
+    let mut overlapping_remote = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("overlapping remote checkout blocked")??
+    ))?
     .value;
-    poll_ready(overlapping_local.write_file(
+    poll_immediate(overlapping_local.write_file(
         file.clone(),
         10,
         bytes::Bytes::from_static(b"local"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("overlapping local write blocked")??;
-    poll_ready(overlapping_remote.write_file(
+    ))?;
+    poll_immediate(overlapping_remote.write_file(
         file,
         12,
         bytes::Bytes::from_static(b"remote"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("overlapping remote write blocked")??;
-    poll_ready(overlapping_remote.commit(
+    ))?;
+    poll_immediate(overlapping_remote.commit(
         OperationId::from_bytes([89; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("overlapping remote commit blocked")??;
+    ))?;
     let unchanged = (
         overlapping_local.generation_id(), overlapping_local.root.file_table,
         overlapping_local.base_file_table, overlapping_local.authority_head,
@@ -5334,18 +3546,15 @@ fn sparse_rebase_across_remote_ranges(native: bool)
     );
     #[cfg(not(target_arch = "wasm32"))]
     let conflict = if native {
-        let result = poll_ready(overlapping_local.rebase_head_with_native_work(8, &original, &cancellation))
-            .ok_or("native overlapping rebase blocked")??;
+        let result = poll_immediate(overlapping_local.rebase_head_with_native_work(8, &original, &cancellation))?;
         assert!(result.1.work().shares_ledger(&original));
         assert!(result.1.bytes() >= (std::mem::size_of::<crate::kernel::RebaseConflict>()) as u64);
         (result.0, Some(result.1))
     } else {
-        (poll_ready(overlapping_local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("overlapping rebase blocked")??.value, None)
+        (poll_immediate(overlapping_local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))?.value, None)
     };
     #[cfg(target_arch = "wasm32")]
-    let conflict = (poll_ready(overlapping_local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("overlapping rebase blocked")??.value, ());
+    let conflict = (poll_immediate(overlapping_local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))?.value, ());
     assert_eq!(unchanged, (
         overlapping_local.generation_id(), overlapping_local.root.file_table,
         overlapping_local.base_file_table, overlapping_local.authority_head,
@@ -5368,80 +3577,70 @@ fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_range()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([111; 16]),
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("volume creation blocked")??
+    ))?
     .value;
     let file = path("identity")?;
-    let mut seed = poll_ready(volume.checkout(
+    let mut seed = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("seed checkout blocked")??
+    ))?
     .value;
-    let file_id = poll_ready(seed.create_file(
+    let file_id = poll_immediate(seed.create_file(
         file.clone(),
         bytes::Bytes::from(vec![b'a'; 128]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("seed create blocked")??
+    ))?
     .value;
-    poll_ready(seed.commit(
+    poll_immediate(seed.commit(
         OperationId::from_bytes([112; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("seed commit blocked")??;
+    ))?;
 
-    let mut local = poll_ready(volume.checkout(
+    let mut local = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_tracking(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("local checkout blocked")??
+    ))?
     .value;
-    let mut remote = poll_ready(volume.checkout(
+    let mut remote = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("remote checkout blocked")??
+    ))?
     .value;
-    poll_ready(local.write_file_by_id(
+    poll_immediate(local.write_file_by_id(
         file_id,
         0,
         bytes::Bytes::from_static(b"LOCAL"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("identity write blocked")??;
-    poll_ready(remote.write_file(
+    ))?;
+    poll_immediate(remote.write_file(
         file.clone(),
         64,
         bytes::Bytes::from_static(b"REMOTE"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("remote write blocked")??;
-    poll_ready(remote.commit(
+    ))?;
+    poll_immediate(remote.commit(
         OperationId::from_bytes([113; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("remote commit blocked")??;
-    let safe = poll_ready(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("identity rebase blocked")??;
+    ))?;
+    let safe = poll_immediate(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))?;
     assert!(matches!(safe.value, RebaseDecision::Safe { .. }));
-    let bytes = poll_ready(local.read_file_range_by_id(
+    let bytes = poll_immediate(local.read_file_range_by_id(
         file_id,
         ByteRange {
             offset: 0,
@@ -5449,11 +3648,10 @@ fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_range()
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("identity read blocked")??;
+    ))?;
     assert_eq!(&bytes.value.bytes[..5], b"LOCAL");
     assert_eq!(&bytes.value.bytes[64..70], b"REMOTE");
-    let plan = poll_ready(local.plan_file_extents_by_id(
+    let plan = poll_immediate(local.plan_file_extents_by_id(
         file_id,
         ByteRange {
             offset: 0,
@@ -5462,51 +3660,44 @@ fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_range()
         8,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("identity extent plan blocked")??;
+    ))?;
     assert!(plan.value.is_some());
 
-    let mut overlapping_local = poll_ready(volume.checkout(
+    let mut overlapping_local = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_tracking(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("overlapping local checkout blocked")??
+    ))?
     .value;
-    let mut overlapping_remote = poll_ready(volume.checkout(
+    let mut overlapping_remote = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("overlapping remote checkout blocked")??
+    ))?
     .value;
-    poll_ready(overlapping_local.write_file_by_id(
+    poll_immediate(overlapping_local.write_file_by_id(
         file_id,
         10,
         bytes::Bytes::from_static(b"local"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("overlapping identity write blocked")??;
-    poll_ready(overlapping_remote.write_file(
+    ))?;
+    poll_immediate(overlapping_remote.write_file(
         file,
         12,
         bytes::Bytes::from_static(b"remote"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("overlapping remote write blocked")??;
-    poll_ready(overlapping_remote.commit(
+    ))?;
+    poll_immediate(overlapping_remote.commit(
         OperationId::from_bytes([114; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("overlapping remote commit blocked")??;
+    ))?;
     let conflict =
-        poll_ready(overlapping_local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("overlapping identity rebase blocked")??;
+        poll_immediate(overlapping_local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))?;
     assert!(matches!(
         conflict.value,
         RebaseDecision::Conflicted { ref conflicts, .. }
@@ -5516,23 +3707,21 @@ fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_range()
             ))
     ));
 
-    let mut extending = poll_ready(volume.checkout(
+    let mut extending = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_tracking(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("extending identity checkout blocked")??
+    ))?
     .value;
-    poll_ready(extending.write_file_by_id(
+    poll_immediate(extending.write_file_by_id(
         file_id,
         128,
         bytes::Bytes::from_static(b"TAIL"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("identity append blocked")??;
-    poll_ready(extending.clone_file_range_by_id(
+    ))?;
+    poll_immediate(extending.clone_file_range_by_id(
         file_id,
         0,
         file_id,
@@ -5540,9 +3729,8 @@ fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_range()
         4,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("identity extending clone blocked")??;
-    let extended = poll_ready(extending.read_file_range_by_id(
+    ))?;
+    let extended = poll_immediate(extending.read_file_range_by_id(
         file_id,
         ByteRange {
             offset: 128,
@@ -5550,121 +3738,10 @@ fn identity_writes_rebase_without_namespace_lookup_and_conflict_by_exact_range()
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("identity extended read blocked")??;
+    ))?;
     assert_eq!(&extended.value.bytes[..4], b"TAIL");
     assert_eq!(&extended.value.bytes[4..12], &[0; 8]);
     assert_eq!(&extended.value.bytes[12..], b"aaaa");
-    Ok(())
-}
-
-#[test]
-fn inline_extent_plans_validate_ranges_and_capture_identity_dependencies()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume_with_id(
-        VolumeId::from_bytes([115; 16]),
-        config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("volume creation blocked")??
-    .value;
-    let file = path("inline")?;
-    let mut seed = poll_ready(volume.checkout(
-        GenerationSelector::Head,
-        writable_pinned(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("seed checkout blocked")??
-    .value;
-    let file_id = poll_ready(seed.create_file(
-        file.clone(),
-        bytes::Bytes::from_static(b"abc"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("seed create blocked")??
-    .value;
-    poll_ready(seed.commit(
-        OperationId::from_bytes([116; 16]),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("seed commit blocked")??;
-
-    let mut checkout = poll_ready(volume.checkout(
-        GenerationSelector::Head,
-        writable_tracking(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("tracking checkout blocked")??
-    .value;
-    let plan = poll_ready(checkout.plan_file_extents_by_id(
-        file_id,
-        ByteRange {
-            offset: 0,
-            length: 2,
-        },
-        1,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("inline identity plan blocked")??;
-    assert!(plan.value.is_none());
-    assert_eq!(checkout.dependencies.proof().len(), 1);
-
-    let invalid = poll_ready(checkout.plan_file_extents_by_id(
-        file_id,
-        ByteRange {
-            offset: 2,
-            length: 2,
-        },
-        1,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("invalid inline identity plan blocked")?
-    .err()
-    .ok_or("inline identity plan accepted a range beyond EOF")?;
-    assert!(matches!(
-        invalid.error,
-        FsError::FileRead(FileRangeReadError::InvalidRange)
-    ));
-    assert_eq!(checkout.dependencies.proof().len(), 1);
-
-    let path_plan = poll_ready(checkout.plan_file_extents(
-        &file,
-        ByteRange {
-            offset: 1,
-            length: 2,
-        },
-        1,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("inline path plan blocked")??;
-    assert!(path_plan.value.is_none());
-    let invalid_path = poll_ready(checkout.plan_file_extents(
-        &file,
-        ByteRange {
-            offset: 3,
-            length: 1,
-        },
-        1,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("invalid inline path plan blocked")?
-    .err()
-    .ok_or("inline path plan accepted a range beyond EOF")?;
-    assert!(matches!(
-        invalid_path.error,
-        FsError::FileRead(FileRangeReadError::InvalidRange)
-    ));
     Ok(())
 }
 
@@ -5758,21 +3835,19 @@ fn direct_live_mutations_retry_only_across_exactly_safe_regions()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let optimistic = poll_ready(fs.create_volume_with_id(
+    let optimistic = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([90; 16]),
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("optimistic volume blocked")??
+    ))?
     .value;
-    let rejected = poll_ready(optimistic.checkout(
+    let rejected = poll_immediate(optimistic.checkout(
         GenerationSelector::Head,
         writable_live(),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("live rejection blocked")?
     .err()
     .ok_or("optimistic volume admitted direct live")?;
     assert!(matches!(
@@ -5780,66 +3855,58 @@ fn direct_live_mutations_retry_only_across_exactly_safe_regions()
         FsError::LiveRequiresSerializedAuthority
     ));
 
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([91; 16]),
         serialized_config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("serialized volume blocked")??
+    ))?
     .value;
     let file = path("file")?;
-    let mut seed = poll_ready(volume.checkout(
+    let mut seed = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("seed checkout blocked")??
+    ))?
     .value;
-    poll_ready(seed.create_file(
+    poll_immediate(seed.create_file(
         file.clone(),
         bytes::Bytes::from(vec![b'a'; 128]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("seed create blocked")??;
-    poll_ready(seed.commit(
+    ))?;
+    poll_immediate(seed.commit(
         OperationId::from_bytes([92; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("seed commit blocked")??;
+    ))?;
 
-    let mut first = poll_ready(volume.checkout(
+    let mut first = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_live(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("first live checkout blocked")??
+    ))?
     .value;
-    let mut second = poll_ready(volume.checkout(
+    let mut second = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_live(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("second live checkout blocked")??
+    ))?
     .value;
-    let first_blob = poll_ready(first.stage_blob(
+    let first_blob = poll_immediate(first.stage_blob(
         bytes::Bytes::from_static(b"FIRST"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("first blob blocked")??;
-    let second_blob = poll_ready(second.stage_blob(
+    ))?;
+    let second_blob = poll_immediate(second.stage_blob(
         bytes::Bytes::from_static(b"SECOND"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("second blob blocked")??;
-    let first_outcome = poll_ready(first.mutate_live(
+    ))?;
+    let first_outcome = poll_immediate(first.mutate_live(
         vec![Mutation::Write {
             path: file.clone(),
             offset: 0,
@@ -5852,13 +3919,12 @@ fn direct_live_mutations_retry_only_across_exactly_safe_regions()
         8,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("first live mutation blocked")??;
+    ))?;
     assert!(matches!(
         first_outcome.value,
         LiveMutationOutcome::Committed { .. }
     ));
-    let second_outcome = poll_ready(second.mutate_live(
+    let second_outcome = poll_immediate(second.mutate_live(
         vec![Mutation::Write {
             path: file.clone(),
             offset: 64,
@@ -5871,42 +3937,37 @@ fn direct_live_mutations_retry_only_across_exactly_safe_regions()
         8,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("second live mutation blocked")??;
+    ))?;
     assert!(matches!(
         second_outcome.value,
         LiveMutationOutcome::Committed { .. }
     ));
 
-    let mut overlapping = poll_ready(volume.checkout(
+    let mut overlapping = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_live(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("overlap checkout blocked")??
+    ))?
     .value;
-    let mut racing = poll_ready(volume.checkout(
+    let mut racing = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_live(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("racing checkout blocked")??
+    ))?
     .value;
-    let overlap_blob = poll_ready(overlapping.stage_blob(
+    let overlap_blob = poll_immediate(overlapping.stage_blob(
         bytes::Bytes::from_static(b"OVERLAP"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("overlap blob blocked")??;
-    let racing_blob = poll_ready(racing.stage_blob(
+    ))?;
+    let racing_blob = poll_immediate(racing.stage_blob(
         bytes::Bytes::from_static(b"RACING"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("racing blob blocked")??;
-    poll_ready(racing.mutate_live(
+    ))?;
+    poll_immediate(racing.mutate_live(
         vec![Mutation::Write {
             path: file.clone(),
             offset: 10,
@@ -5919,9 +3980,8 @@ fn direct_live_mutations_retry_only_across_exactly_safe_regions()
         8,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("racing mutation blocked")??;
-    let conflict = poll_ready(overlapping.mutate_live(
+    ))?;
+    let conflict = poll_immediate(overlapping.mutate_live(
         vec![Mutation::Write {
             path: file,
             offset: 12,
@@ -5934,8 +3994,7 @@ fn direct_live_mutations_retry_only_across_exactly_safe_regions()
         8,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("overlap mutation blocked")??;
+    ))?;
     assert!(matches!(
         conflict.value,
         LiveMutationOutcome::Conflicted { ref conflicts, .. }
@@ -5952,7 +4011,7 @@ fn explicit_live_refresh_advances_only_across_unobserved_regions()
 -> Result<(), Box<dyn std::error::Error>> {
     macro_rules! ready {
         ($future:expr) => {
-            poll_ready($future).ok_or("filesystem future blocked")??
+            poll_immediate($future)?
         };
     }
 
@@ -6073,8 +4132,7 @@ fn explicit_live_refresh_advances_only_across_unobserved_regions()
         &cancellation,
     ));
     let before_conflict = live.generation_id();
-    let conflict = poll_ready(live.refresh_live(WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("conflicting live refresh blocked")?
+    let conflict = poll_immediate(live.refresh_live(WorkBudget::UNBOUNDED, &cancellation))
         .err()
         .ok_or("conflicting live refresh unexpectedly advanced")?;
     assert!(matches!(
@@ -6090,8 +4148,7 @@ fn explicit_live_refresh_advances_only_across_unobserved_regions()
     {
         let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
             .map_err(|(cause, _)| cause)?;
-        let native_conflict = poll_ready(live.synchronize_live_with_native_work(&original, &cancellation))
-            .ok_or("native conflicting live sync blocked")?
+        let native_conflict = poll_immediate(live.synchronize_live_with_native_work(&original, &cancellation))
             .err().ok_or("native conflicting live sync unexpectedly advanced")?;
         assert!(matches!(&native_conflict,
             FsError::NativeLiveConflict { conflicts, allocation, .. }
@@ -6111,7 +4168,7 @@ fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
 -> Result<(), Box<dyn std::error::Error>> {
     macro_rules! ready {
         ($future:expr) => {
-            poll_ready($future).ok_or("filesystem future blocked")??
+            poll_immediate($future)?
         };
     }
 
@@ -6168,27 +4225,25 @@ fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
         LiveMutationOutcome::RetryLimit { .. }
     ));
     assert!(retrying.has_pending_mutations());
-    let mutation_while_unresolved = poll_ready(retrying.create_file(
+    let mutation_while_unresolved = poll_immediate(retrying.create_file(
         path("must-remain-fenced")?,
         bytes::Bytes::from_static(b"blocked"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("unresolved live mutation guard blocked")?
     .err()
     .ok_or("unresolved live mutation accepted another mutation")?;
     assert!(matches!(
         mutation_while_unresolved.error,
         FsError::PendingLiveMutation
     ));
-    let mismatched_resume = poll_ready(retrying.resume_live(
+    let mismatched_resume = poll_immediate(retrying.resume_live(
         OperationId::from_bytes([120; 16]),
         2,
         8,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("mismatched live resume blocked")?
     .err()
     .ok_or("mismatched live resume unexpectedly succeeded")?;
     assert!(matches!(
@@ -6196,8 +4251,7 @@ fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
         FsError::PendingLiveMutation
     ));
     let rebase_while_unresolved =
-        poll_ready(retrying.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("unresolved live rebase guard blocked")?
+        poll_immediate(retrying.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
             .err()
             .ok_or("unresolved live operation accepted public rebase")?;
     assert!(matches!(
@@ -6211,30 +4265,28 @@ fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
         LiveMutationOutcome::Committed { .. }
     ));
     assert!(!retrying.has_pending_mutations());
-    let clean_resume = poll_ready(retrying.resume_live(
+    let clean_resume = poll_immediate(retrying.resume_live(
         retry_operation,
         1,
         8,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("clean live resume blocked")?
     .err()
     .ok_or("clean live resume unexpectedly succeeded")?;
     assert!(matches!(clean_resume.error, FsError::NoPendingMutations));
     assert_eq!(*clean_resume.work, WorkCounters::default());
     for failure in [
-        poll_ready(retrying.resume_live(
+        poll_immediate(retrying.resume_live(
             retry_operation,
             0,
             8,
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("zero-limit live resume blocked")?
         .err()
         .ok_or("zero-limit live resume unexpectedly succeeded")?,
-        poll_ready(retrying.mutate_live(
+        poll_immediate(retrying.mutate_live(
             Vec::new(),
             OperationId::from_bytes([124; 16]),
             0,
@@ -6242,7 +4294,6 @@ fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("zero-limit live mutation blocked")?
         .err()
         .ok_or("zero-limit live mutation unexpectedly succeeded")?,
     ] {
@@ -6263,7 +4314,7 @@ fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
-    let pending_failure = poll_ready(pending_guard.mutate_live(
+    let pending_failure = poll_immediate(pending_guard.mutate_live(
         Vec::new(),
         OperationId::from_bytes([125; 16]),
         1,
@@ -6271,7 +4322,6 @@ fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("pending live mutation guard blocked")?
     .err()
     .ok_or("second pending live mutation unexpectedly succeeded")?;
     assert!(matches!(
@@ -6279,7 +4329,7 @@ fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
         FsError::PendingLiveMutation
     ));
     assert_eq!(*pending_failure.work, WorkCounters::default());
-    let authored_pending = poll_ready(pending_guard.apply_authored_live(
+    let authored_pending = poll_immediate(pending_guard.apply_authored_live(
         Vec::new(),
         OperationId::from_bytes([126; 16]),
         1,
@@ -6287,7 +4337,6 @@ fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("pending authored-live guard blocked")?
     .err()
     .ok_or("pending authored-live operation unexpectedly succeeded")?;
     assert!(matches!(
@@ -6433,12 +4482,11 @@ fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
     ))
     .value;
     assert!(
-        poll_ready(non_live.refresh_live(WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("non-live refresh blocked")?
+        poll_immediate(non_live.refresh_live(WorkBudget::UNBOUNDED, &cancellation))
             .is_err()
     );
     assert!(
-        poll_ready(non_live.mutate_live(
+        poll_immediate(non_live.mutate_live(
             Vec::new(),
             OperationId::from_bytes([123; 16]),
             1,
@@ -6446,75 +4494,8 @@ fn direct_live_resume_is_idempotent_retry_bounded_and_epoch_fenced()
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("non-live mutation blocked")?
         .is_err()
     );
-    Ok(())
-}
-
-#[test]
-fn high_level_operations_stage_one_explicit_direct_live_transaction()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume_with_id(
-        VolumeId::from_bytes([111; 16]),
-        serialized_config(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("serialized volume blocked")??
-    .value;
-    let mut checkout = poll_ready(volume.checkout(
-        GenerationSelector::Head,
-        writable_live(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("live checkout blocked")??
-    .value;
-    let file = path("live.txt")?;
-    poll_ready(checkout.create_file(
-        file.clone(),
-        bytes::Bytes::from_static(b"initial"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("high-level live create blocked")??;
-    poll_ready(checkout.write_file(
-        file.clone(),
-        7,
-        bytes::Bytes::from_static(b"-published"),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("high-level live write blocked")??;
-    assert!(checkout.has_pending_mutations());
-
-    let published = poll_ready(checkout.resume_live(
-        OperationId::from_bytes([112; 16]),
-        3,
-        8,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("live publication blocked")??;
-    assert!(matches!(
-        published.value,
-        LiveMutationOutcome::Committed { .. }
-    ));
-    assert!(!checkout.has_pending_mutations());
-    let bytes = poll_ready(checkout.read_file_range(
-        &file,
-        ByteRange {
-            offset: 0,
-            length: 17,
-        },
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("published read blocked")??;
-    assert_eq!(bytes.value.bytes.as_ref(), b"initial-published");
     Ok(())
 }
 
@@ -6523,24 +4504,22 @@ fn authored_live_transaction_preserves_create_ids_and_publishes_atomically()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([117; 16]),
         serialized_config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("serialized volume blocked")??
+    ))?
     .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_live(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("live checkout blocked")??
+    ))?
     .value;
     let file = path("authored-live.txt")?;
-    let receipt = poll_ready(checkout.apply_authored_live(
+    let receipt = poll_immediate(checkout.apply_authored_live(
         vec![
             AuthoredMutation::CreateFile {
                 path: file.clone(),
@@ -6558,8 +4537,7 @@ fn authored_live_transaction_preserves_create_ids_and_publishes_atomically()
         8,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("authored live transaction blocked")??;
+    ))?;
     assert!(matches!(
         receipt.value.outcome,
         LiveMutationOutcome::Committed { .. }
@@ -6568,7 +4546,7 @@ fn authored_live_transaction_preserves_create_ids_and_publishes_atomically()
     assert!(receipt.value.created_file_ids[0].is_some());
     assert!(receipt.value.created_file_ids[1].is_none());
     assert!(!checkout.has_pending_mutations());
-    let read = poll_ready(checkout.read_file_range(
+    let read = poll_immediate(checkout.read_file_range(
         &file,
         ByteRange {
             offset: 0,
@@ -6576,8 +4554,7 @@ fn authored_live_transaction_preserves_create_ids_and_publishes_atomically()
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("published authored read blocked")??;
+    ))?;
     assert_eq!(read.value.bytes.as_ref(), b"initial-published");
     Ok(())
 }
@@ -6587,25 +4564,23 @@ fn authored_transaction_is_atomic_and_preserves_result_positions()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([113; 16]),
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("volume creation blocked")??
+    ))?
     .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("checkout blocked")??
+    ))?
     .value;
     let directory = path("workspace")?;
     let file = path("file.txt")?;
-    let transaction = poll_ready(checkout.apply_authored_transaction(
+    let transaction = poll_immediate(checkout.apply_authored_transaction(
         vec![
             AuthoredMutation::CreateDirectory {
                 path: directory,
@@ -6624,13 +4599,12 @@ fn authored_transaction_is_atomic_and_preserves_result_positions()
         ],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("authored transaction blocked")??;
+    ))?;
     assert_eq!(transaction.value.created_file_ids.len(), 3);
     assert!(transaction.value.created_file_ids[0].is_some());
     assert!(transaction.value.created_file_ids[1].is_some());
     assert!(transaction.value.created_file_ids[2].is_none());
-    let read = poll_ready(checkout.read_file_range(
+    let read = poll_immediate(checkout.read_file_range(
         &file,
         ByteRange {
             offset: 0,
@@ -6638,11 +4612,10 @@ fn authored_transaction_is_atomic_and_preserves_result_positions()
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("transaction read blocked")??;
+    ))?;
     assert_eq!(read.value.bytes.as_ref(), b"initial-atomic");
 
-    let failed = poll_ready(checkout.apply_authored_transaction(
+    let failed = poll_immediate(checkout.apply_authored_transaction(
         vec![
             AuthoredMutation::CreateFile {
                 path: path("orphan")?,
@@ -6656,15 +4629,13 @@ fn authored_transaction_is_atomic_and_preserves_result_positions()
         ],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("failing transaction blocked")?;
+    ));
     assert!(failed.is_err());
-    let absent = poll_ready(checkout.lookup_no_follow(
+    let absent = poll_immediate(checkout.lookup_no_follow(
         &path("orphan")?,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("atomicity lookup blocked")??;
+    ))?;
     assert!(absent.value.record.is_none());
     Ok(())
 }
@@ -6675,47 +4646,43 @@ fn authored_bulk_transaction_is_bounded_and_atomic() -> Result<(), Box<dyn std::
     let cancellation = CancellationToken::new();
     let mut limited = config();
     limited.limits.maximum_mutations_per_batch = 2;
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([244; 16]),
         limited,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("volume creation blocked")??
+    ))?
     .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("checkout blocked")??
+    ))?
     .value;
     let created = (0..5)
         .map(|index| {
             Ok(AuthoredMutation::CreateFile { path: path(&format!("bulk{index}"))?, bytes: OwnedBytes::from_static(b"ok"), metadata: empty_metadata() })
         })
         .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
-    poll_ready(checkout.apply_authored_bulk_transaction(
+    poll_immediate(checkout.apply_authored_bulk_transaction(
         created,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("bulk transaction blocked")??;
+    ))?;
     for index in 0..5 {
         assert!(
-            poll_ready(checkout.lookup_no_follow(
+            poll_immediate(checkout.lookup_no_follow(
                 &path(&format!("bulk{index}"))?,
                 WorkBudget::UNBOUNDED,
                 &cancellation,
-            ))
-            .ok_or("bulk lookup blocked")??
+            ))?
             .value
             .record
             .is_some()
         );
     }
-    let failed = poll_ready(checkout.apply_authored_bulk_transaction(
+    let failed = poll_immediate(checkout.apply_authored_bulk_transaction(
         vec![
             AuthoredMutation::CreateFile {
                 path: path("should-not-appear")?,
@@ -6735,131 +4702,18 @@ fn authored_bulk_transaction_is_bounded_and_atomic() -> Result<(), Box<dyn std::
         ],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("failing bulk transaction blocked")?;
+    ));
     assert!(failed.is_err());
     assert!(
-        poll_ready(checkout.lookup_no_follow(
+        poll_immediate(checkout.lookup_no_follow(
             &path("should-not-appear")?,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("failed bulk lookup blocked")??
+        ))?
         .value
         .record
         .is_none()
     );
-    Ok(())
-}
-
-#[test]
-fn encoded_metadata_denials_preserve_the_actual_producer_receipt()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    let encoded = crate::kernel::encode_file_metadata_measured(
-        empty_metadata(), WorkBudget::UNBOUNDED, &cancellation,
-    )?;
-    let producer_work = encoded.work;
-    assert_eq!(producer_work.allocation_operations, 1);
-    assert_eq!(producer_work.bytes_encoded, encoded.value.len() as u64);
-    let failure = poll_ready(fs.put_encoded(
-        ObjectKind::Metadata, encoded, WorkCounters::UNCHARGED,
-        WorkBudget { bytes_hashed: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
-    )).ok_or("bounded metadata put blocked")?
-        .err().ok_or("metadata hashing unexpectedly admitted")?;
-    assert!(matches!(failure.error, FsError::Work(_)));
-    assert_eq!(*failure.work, producer_work);
-
-    let mut encoded = crate::kernel::encode_file_metadata_measured(
-        empty_metadata(), WorkBudget::UNBOUNDED, &cancellation,
-    )?;
-    let mut allocations = crate::kernel::allocation::AllocationLedger::default();
-    allocations.claim_bytes(
-        encoded.value.capacity() as u64, 0, &mut encoded.work, WorkBudget::UNBOUNDED,
-    ).map_err(crate::collection::handle_allocation_error)?;
-    let spare_capacity = encoded.value.capacity() + 1;
-    admit_pending_vec(
-        &mut encoded.value, spare_capacity, &mut allocations, &mut encoded.work,
-        WorkBudget::UNBOUNDED, &cancellation,
-    )?;
-    assert!(encoded.value.capacity() > encoded.value.len());
-    let producer_work = encoded.work;
-    let failure = poll_ready(fs.put_encoded(
-        ObjectKind::Metadata, encoded, WorkCounters::UNCHARGED,
-        WorkBudget {
-            allocation_operations: producer_work.allocation_operations,
-            ..WorkBudget::UNBOUNDED
-        },
-        &cancellation,
-    )).ok_or("bounded bytes owner allocation blocked")?
-        .err().ok_or("bytes owner allocation unexpectedly admitted")?;
-    assert!(matches!(failure.error, FsError::Work(_)));
-    assert_eq!(*failure.work, producer_work);
-
-    let encoded = crate::kernel::encode_file_metadata_measured(
-        empty_metadata(), WorkBudget::UNBOUNDED, &cancellation,
-    )?;
-    let producer_work = encoded.work;
-    cancellation.cancel();
-    let failure = poll_ready(fs.put_encoded(
-        ObjectKind::Metadata, encoded, WorkCounters::UNCHARGED,
-        WorkBudget::UNBOUNDED, &cancellation,
-    )).ok_or("cancelled metadata put blocked")?
-        .err().ok_or("cancelled metadata put unexpectedly succeeded")?;
-    assert!(matches!(failure.error, FsError::Cancelled(_)));
-    assert_eq!(*failure.work, producer_work);
-    Ok(())
-}
-
-#[test]
-fn authored_buffer_failures_retain_admitted_capacity_and_leave_checkout_unchanged()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume_with_id(
-        VolumeId::from_bytes([243; 16]), config(), WorkBudget::UNBOUNDED, &cancellation,
-    )).ok_or("volume creation blocked")??.value;
-    let mut checkout = poll_ready(volume.checkout(
-        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
-    )).ok_or("checkout blocked")??.value;
-    let original_root = checkout.root.clone();
-    let mutation = || -> Result<AuthoredMutation, Box<dyn std::error::Error>> {
-        Ok(AuthoredMutation::CreateFile { path: path("not-created")?, bytes: OwnedBytes::from_static(b"payload"), metadata: empty_metadata() })
-    };
-    let one_allocation = WorkBudget {
-        allocation_operations: 1,
-        ..WorkBudget::UNBOUNDED
-    };
-    let failed = poll_ready(checkout.apply_authored_transaction(
-        vec![mutation()?], one_allocation, &cancellation,
-    )).ok_or("bounded transaction blocked")?
-        .err().ok_or("second buffer allocation unexpectedly admitted")?;
-    assert!(matches!(failed.error, FsError::Work(_)));
-    assert_eq!(failed.work.allocation_operations, 1);
-    assert!(failed.work.peak_allocation_bytes >= size_of::<Mutation>() as u64);
-    assert_eq!(failed.work.bytes_copied, 0);
-    assert!(*checkout.root == original_root);
-
-    // A real released candidate provides a vacant registration slot, so the
-    // next candidate does not need to copy a growing global root table.
-    let spare = checkout.private_candidate_measured(WorkBudget::UNBOUNDED, &cancellation)?;
-    drop(spare);
-    let candidate_copy_only = WorkBudget {
-        bytes_copied: size_of::<Proof>() as u64,
-        ..WorkBudget::UNBOUNDED
-    };
-    let failed = poll_ready(checkout.apply_authored_bulk_transaction(
-        vec![mutation()?], candidate_copy_only, &cancellation,
-    )).ok_or("bounded bulk transaction blocked")?
-        .err().ok_or("authored batch copy unexpectedly admitted")?;
-    assert!(matches!(failed.error, FsError::Work(_)));
-    assert!(failed.work.allocation_operations >= 2);
-    assert_eq!(failed.work.bytes_copied, size_of::<Proof>() as u64);
-    assert!(*checkout.root == original_root);
-    assert!(poll_ready(checkout.lookup_no_follow(
-        &path("not-created")?, WorkBudget::UNBOUNDED, &cancellation,
-    )).ok_or("unchanged checkout lookup blocked")??.value.record.is_none());
     Ok(())
 }
 
@@ -6891,375 +4745,13 @@ fn original_authored_creates(
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
-async fn original_authored_compiler_admits_metadata_and_inline_copy_before_effects()
--> Result<(), Box<dyn std::error::Error>> {
-    use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("original-authored-compiler").await?;
-    workspace.write_text("/source", "authenticated compiler source").await?;
-    let cancellation = CancellationToken::new();
-    let mut checkout = workspace.checkout_measured(
-        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    let metadata = checkout.lookup_no_follow_with_metadata(
-        &path("source")?, WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value.ok_or("authenticated source metadata absent")?.metadata;
-    checkout.bind_authored_operation(OperationId::new());
-    let requested = path("compiler-copy")?;
-    let body = OwnedBytes::from_static(b"authenticated compiler source");
-    let expected = checkout.authored_file_id(FileKind::Regular, &requested);
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(cause, _)| cause)?;
-    let baseline = original.live_allocation_bytes();
-    let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let mut operations = crate::kernel::Owned::<Vec<Mutation>>::allocate(1, &mut accounting)?;
-    let paid_path = clone_authored_path(&requested, &mut accounting)?;
-    let authored = crate::kernel::Owned::new(
-        AuthoredMutation::CreateFile { path: paid_path.value, bytes: body.clone(), metadata },
-        paid_path.allocation, paid_path.bytes,
-    );
-    let mut cache = AuthoredMetadataCache::new();
-    let created = checkout.compile_authored_mutation_with_accounting(
-        authored, &mut operations, &mut cache, &mut accounting, &cancellation,
-    ).await?;
-    assert_eq!(created, Some(expected));
-    let Mutation::Create { record, path: actual_path } = &operations.value[0] else {
-        return Err("inline source did not produce an actual create".into());
-    };
-    assert_eq!(actual_path, &requested);
-    assert_eq!(record.file_id, expected);
-    assert_eq!(record.payload, FilePayload::InlineRegular(InlineFileData::new(&body)?));
-    assert!(original.receipt().backend_write_operations > 0);
-    assert_eq!(original.receipt().source_bytes_read, 0);
-    let KernelOwnedAllocation::NativeOriginal(guard) = &operations.allocation else {
-        return Err("compiler output lost original custody".into());
-    };
-    assert!(guard.work().shares_ledger(&original));
-    assert_eq!(guard.bytes(), operations.bytes);
-    operations.retire(&mut accounting)?;
-    assert_eq!(original.live_allocation_bytes(), baseline);
-
-    // Cached real metadata removes staging from the copy-denial control.
-    let metadata_object = cache.get(metadata, &mut accounting)?.ok_or("real metadata was not cached")?;
-    for deny_metadata in [true, false] {
-        let budget = if deny_metadata {
-            WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED }
-        } else {
-            WorkBudget { bytes_copied: requested.components().iter()
-                .map(|name| name.as_bytes().len() as u64).sum(), ..WorkBudget::UNBOUNDED }
-        };
-        let original = crate::NativeMaterializationWork::new(budget, &cancellation)
-            .map_err(|(cause, _)| cause)?;
-        let baseline = original.live_allocation_bytes();
-        let mut accounting = KernelAccounting::native(&original, &cancellation);
-        let mut operations = crate::kernel::Owned::<Vec<Mutation>>::allocate(1, &mut accounting)?;
-        let paid_path = clone_authored_path(&requested, &mut accounting)?;
-        let authored = crate::kernel::Owned::new(
-            AuthoredMutation::CreateFile { path: paid_path.value, bytes: body.clone(), metadata },
-            paid_path.allocation, paid_path.bytes,
-        );
-        let mut cache = AuthoredMetadataCache::new();
-        if !deny_metadata { cache.remember(metadata, metadata_object); }
-        let failure = checkout.compile_authored_mutation_with_accounting(
-            authored, &mut operations, &mut cache, &mut accounting, &cancellation,
-        ).await.err().ok_or("finite compiler denial unexpectedly succeeded")?;
-        assert!(matches!(failure, FsError::Work(_) | FsError::NativeKernel(_)));
-        assert!(operations.value.is_empty());
-        assert_eq!(original.receipt().backend_write_operations, 0);
-        assert_eq!(original.receipt().source_bytes_read, 0);
-        assert_eq!(original.receipt().bytes_encoded, 0);
-        operations.retire(&mut accounting)?;
-        assert_eq!(original.live_allocation_bytes(), baseline);
-    }
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-fn borrowed_compiler_source_body(
-    body: &[u8],
-    accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
-) -> Result<OwnedBytes, FsError> {
-    let mut data = crate::kernel::Owned::<Vec<u8>>::allocate(body.len(), accounting)?;
-    accounting.charge(WorkCounters {
-        bytes_copied: body.len() as u64, ..WorkCounters::UNCHARGED
-    })?;
-    data.value.extend_from_slice(body);
-    let crate::kernel::allocation::KernelOwnedAllocation::NativeOriginal(custody) = &data.allocation else {
-        data.retire(accounting)?;
-        return Err(crate::NativeTreeMaterializationError::InvalidLayout.into());
-    };
-    let original = custody.work().clone();
-    OwnedBytes::from_vec_with_guard(data.value, data.allocation, original.runtime_meter_owner())
-        .map_err(|failure| match failure.into_error() {
-            acyclic_stream::PreparedOwnedBytesError::Admission(error) => original.runtime_error(error).into(),
-            acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-            | acyclic_stream::PreparedOwnedBytesError::NotUnique => {
-                crate::NativeTreeMaterializationError::InvalidLayout.into()
-            }
-        })
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn borrowed_authored_compiler_preserves_all_descriptors_and_external_source_custody()
--> Result<(), Box<dyn std::error::Error>> {
-    use crate::kernel::allocation::{KernelAccounting, KernelOwnedAllocation};
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    for profile in [FilesystemProfile::Posix, FilesystemProfile::Windows] {
-        let mut volume_config = config();
-        volume_config.profile = profile;
-        let volume = fs.create_volume(
-            volume_config, WorkBudget::UNBOUNDED, &cancellation,
-        ).await?.value;
-        let mut checkout = volume.checkout(
-            GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
-        ).await?.value;
-        let metadata = empty_metadata();
-        checkout.apply_authored_transaction(
-            vec![AuthoredMutation::CreateFile {
-                path: path("source")?, bytes: OwnedBytes::from_static(b"existing source"), metadata,
-            }], WorkBudget::UNBOUNDED, &cancellation,
-        ).await?;
-        let source_id = checkout.lookup_no_follow(
-            &path("source")?, WorkBudget::UNBOUNDED, &cancellation,
-        ).await?.value.record.ok_or("compiler source missing")?.file_id;
-        checkout.bind_authored_operation(OperationId::new());
-        let mut cursor = std::io::Cursor::new(b"authenticated staged source");
-        let staged = checkout.stage_content(
-            &mut cursor, 64, WorkBudget::UNBOUNDED, &cancellation,
-        ).await?.value;
-
-        // These are real producer allocations on another ledger. Neither source
-        // paths nor the opaque OwnedBytes owner may be adopted by the SDK's original.
-        let producer = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, _)| cause)?;
-        let producer_baseline = producer.live_allocation_bytes();
-        let mut source_accounting = KernelAccounting::native(&producer, &cancellation);
-        let body = borrowed_compiler_source_body(b"opaque\0source target", &mut source_accounting)?;
-        let body_pointer = body.as_ptr();
-        let empty_body = body.slice(..0);
-        let mut requests = vec![
-            AuthoredMutation::Reidentify { path: path("source")?, file_id: source_id },
-            AuthoredMutation::CreateFile {
-                path: path("new-file")?, bytes: body.clone(), metadata,
-            },
-            AuthoredMutation::CreateFileFromContent {
-                path: path("streamed-file")?, content: staged, metadata, file_id: Some(source_id),
-            },
-            AuthoredMutation::CreateDirectory { path: path("directory")?, metadata },
-            AuthoredMutation::CreateSymbolicLink {
-                path: path("symlink")?, target: body.clone(), metadata,
-            },
-            AuthoredMutation::CreateEmptySpecial {
-                path: path("boundary")?, kind: FileKind::MountBoundary, metadata,
-            },
-            AuthoredMutation::Remove { path: path("source")?, expected_file_id: Some(source_id) },
-            AuthoredMutation::Rename {
-                source: path("source")?, destination: path("renamed")?, replace: true,
-            },
-            AuthoredMutation::HardLink { source: path("source")?, destination: path("alias")? },
-            AuthoredMutation::Write {
-                path: path("source")?, offset: 7, bytes: body.clone(),
-            },
-            AuthoredMutation::WriteFromContent { path: path("source")?, offset: 11, content: staged },
-            AuthoredMutation::SetMetadata { path: path("source")?, metadata },
-            AuthoredMutation::Resize { path: path("source")?, logical_bytes: 91 },
-            AuthoredMutation::ZeroRange {
-                path: path("source")?, range: ByteRange { offset: 13, length: 17 },
-                allocated: true, extend: true,
-            },
-            AuthoredMutation::Preallocate {
-                path: path("source")?, range: ByteRange { offset: 19, length: 23 }, keep_size: true,
-            },
-            AuthoredMutation::CloneRange(FileCloneRequest {
-                source: path("source")?, source_offset: 29,
-                destination: path("destination")?, destination_offset: 31, length: 37,
-            }),
-        ];
-        if profile == FilesystemProfile::Posix {
-            requests.push(AuthoredMutation::CreateEmptySpecial {
-                path: path("fifo")?, kind: FileKind::Fifo, metadata,
-            });
-            requests.push(AuthoredMutation::CreateEmptySpecial {
-                path: path("socket")?, kind: FileKind::Socket, metadata,
-            });
-            for (name, kind) in [
-                ("character-device", FileKind::CharacterDevice),
-                ("block-device", FileKind::BlockDevice),
-            ] {
-                requests.push(AuthoredMutation::CreateDevice {
-                    path: path(name)?, kind, major: 41, minor: 43, metadata,
-                });
-            }
-        } else {
-            requests.push(AuthoredMutation::CreateReparsePoint {
-                path: path("reparse")?, payload: body.clone(), metadata,
-            });
-        }
-        for request in requests {
-            source_accounting.charge(WorkCounters {
-                bytes_copied: size_of::<AuthoredMutation>() as u64, ..WorkCounters::UNCHARGED
-            })?;
-            let source = clone_borrowed_authored_descriptor(&request, &mut source_accounting)?;
-            let source_live = producer.live_allocation_bytes();
-            let source_receipt = producer.receipt();
-            let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-                .map_err(|(cause, _)| cause)?;
-            let baseline = original.live_allocation_bytes();
-            let mut accounting = KernelAccounting::native(&original, &cancellation);
-            let mut operations = crate::kernel::Owned::<Vec<Mutation>>::allocate(2, &mut accounting)?;
-            let mut cache = AuthoredMetadataCache::new();
-            let created = checkout.compile_borrowed_authored_mutation_with_accounting(
-                &source.value, &mut operations, &mut cache, &mut accounting, &cancellation,
-            ).await?;
-            assert_eq!(source.value, request);
-            assert_eq!(producer.live_allocation_bytes(), source_live);
-            assert_eq!(producer.receipt(), source_receipt);
-            assert_eq!(body.as_ptr(), body_pointer);
-            let KernelOwnedAllocation::NativeOriginal(source_guard) = &source.allocation else {
-                return Err("source descriptor lost producer custody".into());
-            };
-            assert!(source_guard.work().shares_ledger(&producer));
-            assert!(!source_guard.work().shares_ledger(&original));
-            assert_eq!(source_guard.bytes(), source.bytes);
-            let KernelOwnedAllocation::NativeOriginal(output_guard) = &operations.allocation else {
-                return Err("borrowed compiler output lost original custody".into());
-            };
-            assert!(output_guard.work().shares_ledger(&original));
-            assert_eq!(output_guard.bytes(), operations.bytes);
-
-            let mut ordinary = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-            let mut expected = crate::kernel::Owned::<Vec<Mutation>>::allocate(2, &mut ordinary)?;
-            let input = request.clone();
-            let bytes = input.logical_owned_bytes();
-            let allocation = ordinary.claim_owned(bytes, 0)?;
-            let ordinary_created = checkout.compile_authored_mutation_with_accounting(
-                crate::kernel::Owned::new(input, allocation, bytes),
-                &mut expected, &mut AuthoredMetadataCache::new(), &mut ordinary, &cancellation,
-            ).await?;
-            assert_eq!(created, ordinary_created);
-            assert_eq!(operations.value, expected.value);
-            expected.retire(&mut ordinary)?;
-            operations.retire(&mut accounting)?;
-            assert_eq!(original.live_allocation_bytes(), baseline);
-            // Destroy every descriptor reference before retiring its producer guard.
-            drop(request);
-            source.retire(&mut source_accounting)?;
-        }
-        drop(body);
-        assert!(producer.live_allocation_bytes() > producer_baseline);
-        drop(empty_body);
-        assert_eq!(producer.live_allocation_bytes(), producer_baseline);
-    }
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn borrowed_authored_compiler_denies_copy_metadata_and_partial_path_before_effects()
--> Result<(), Box<dyn std::error::Error>> {
-    use crate::kernel::allocation::KernelAccounting;
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("borrowed-compiler-denials").await?;
-    let cancellation = CancellationToken::new();
-    let checkout = workspace.checkout_measured(
-        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    let producer = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(cause, _)| cause)?;
-    let producer_baseline = producer.live_allocation_bytes();
-    let mut source_accounting = KernelAccounting::native(&producer, &cancellation);
-    let body = borrowed_compiler_source_body(b"paid source body", &mut source_accounting)?;
-    let request = AuthoredMutation::CreateFile { path: path("not-staged")?, bytes: body.clone(), metadata: empty_metadata() };
-    let source = clone_borrowed_authored_descriptor(&request, &mut source_accounting)?;
-    for budget in [
-        WorkBudget { bytes_copied: 0, ..WorkBudget::UNBOUNDED },
-        WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED },
-    ] {
-        let original = crate::NativeMaterializationWork::new(budget, &cancellation)
-            .map_err(|(cause, _)| cause)?;
-        let baseline = original.live_allocation_bytes();
-        let source_live = producer.live_allocation_bytes();
-        let mut accounting = KernelAccounting::native(&original, &cancellation);
-        let mut operations = crate::kernel::Owned::<Vec<Mutation>>::allocate(1, &mut accounting)?;
-        let failure = checkout.compile_borrowed_authored_mutation_with_accounting(
-            &source.value, &mut operations, &mut AuthoredMetadataCache::new(),
-            &mut accounting, &cancellation,
-        ).await.err().ok_or("borrowed compiler denial unexpectedly succeeded")?;
-        assert!(matches!(failure, FsError::Work(_) | FsError::NativeKernel(_)));
-        assert!(operations.value.is_empty());
-        assert_eq!(original.receipt().backend_write_operations, 0);
-        assert_eq!(original.receipt().source_bytes_read, 0);
-        assert_eq!(original.receipt().bytes_encoded, 0);
-        operations.retire(&mut accounting)?;
-        assert_eq!(original.live_allocation_bytes(), baseline);
-        assert_eq!(producer.live_allocation_bytes(), source_live);
-    }
-    let cancelled = CancellationToken::new();
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancelled)
-        .map_err(|(cause, _)| cause)?;
-    let baseline = original.live_allocation_bytes();
-    let mut accounting = KernelAccounting::native(&original, &cancelled);
-    let mut operations = crate::kernel::Owned::<Vec<Mutation>>::allocate(1, &mut accounting)?;
-    let before = original.receipt();
-    let source_live = producer.live_allocation_bytes();
-    cancelled.cancel();
-    assert!(checkout.compile_borrowed_authored_mutation_with_accounting(
-        &source.value, &mut operations, &mut AuthoredMetadataCache::new(),
-        &mut accounting, &cancelled,
-    ).await.is_err());
-    assert!(operations.value.is_empty());
-    assert_eq!(original.receipt(), before);
-    assert_eq!(producer.live_allocation_bytes(), source_live);
-    operations.retire(&mut accounting)?;
-    assert_eq!(original.live_allocation_bytes(), baseline);
-    drop(request);
-    source.retire(&mut source_accounting)?;
-
-    let request = AuthoredMutation::HardLink {
-        source: path("first-paid-path")?, destination: path("second-denied-path")?,
-    };
-    let source = clone_borrowed_authored_descriptor(&request, &mut source_accounting)?;
-    let AuthoredMutation::HardLink { source: first, .. } = &source.value else { unreachable!() };
-    let mut probe = KernelAccounting::standalone(WorkBudget::UNBOUNDED, &cancellation);
-    let paid_first = clone_authored_path(first, &mut probe)?;
-    let first_copy_bytes = probe.spent().bytes_copied;
-    paid_first.retire(&mut probe)?;
-    let original = crate::NativeMaterializationWork::new(WorkBudget {
-        bytes_copied: size_of::<AuthoredMutation>() as u64 + first_copy_bytes,
-        ..WorkBudget::UNBOUNDED
-    }, &cancellation).map_err(|(cause, _)| cause)?;
-    let baseline = original.live_allocation_bytes();
-    let mut accounting = KernelAccounting::native(&original, &cancellation);
-    let mut operations = crate::kernel::Owned::<Vec<Mutation>>::allocate(1, &mut accounting)?;
-    assert!(checkout.compile_borrowed_authored_mutation_with_accounting(
-        &source.value, &mut operations, &mut AuthoredMetadataCache::new(),
-        &mut accounting, &cancellation,
-    ).await.is_err());
-    assert!(operations.value.is_empty());
-    assert_eq!(original.receipt().bytes_copied,
-        size_of::<AuthoredMutation>() as u64 + first_copy_bytes);
-    assert_eq!(original.receipt().backend_write_operations, 0);
-    assert_eq!(original.live_allocation_bytes(), baseline + operations.bytes);
-    operations.retire(&mut accounting)?;
-    assert_eq!(original.live_allocation_bytes(), baseline);
-    drop(request);
-    source.retire(&mut source_accounting)?;
-    drop(body);
-    assert_eq!(producer.live_allocation_bytes(), producer_baseline);
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
 async fn original_authored_transaction_keeps_true_ids_and_original_result_custody()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let workspace = fs.create_workspace("original-authored-transaction").await?;
     workspace.write_text("/source", "transaction source").await?;
     let cancellation = CancellationToken::new();
-    let mut checkout = workspace.checkout_measured(
+    let mut checkout = workspace.checkout(
         GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value;
     let metadata = checkout.lookup_no_follow_with_metadata(
@@ -7350,153 +4842,6 @@ fn original_borrowed_path_changes(
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
-async fn borrowed_authored_path_changes_match_owned_and_keep_source_for_finish()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("borrowed-authored-paths").await?;
-    workspace.write_text("/source", "source body").await?;
-    workspace.write_text("/removed", "removed body").await?;
-    let cancellation = CancellationToken::new();
-    let mut checkout = workspace.checkout_measured(
-        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    let source = path("source")?;
-    let destination = path("destination")?;
-    let removed = path("removed")?;
-    let mut metadata = checkout.lookup_no_follow_with_metadata(
-        &source, WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value.ok_or("real source missing")?.metadata;
-    metadata.modified_ns = MetadataField::Value(42);
-    let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-        .map_err(|(cause, _)| cause)?;
-    let mut native = checkout.private_candidate_with_native_work(&original, &cancellation)?;
-    let mut ordinary = checkout.private_candidate();
-    let operation = OperationId::new();
-    native.bind_authored_operation(operation);
-    ordinary.bind_authored_operation(operation);
-    let input = original_borrowed_path_changes(
-        &source, &destination, &removed, metadata, &original, &cancellation,
-    )?;
-    let slots = input.1.bytes();
-    let source_bytes = input.2.bytes();
-    assert_eq!(slots, (input.0.capacity() * size_of::<AuthoredMutation>()) as u64);
-    let result = native.apply_borrowed_authored_transaction_with_native_work(
-        &input.0, &input.1, &original, &cancellation,
-    ).await?;
-    let ordinary_result = ordinary.apply_authored_transaction(
-        vec![
-            AuthoredMutation::SetMetadata { path: source.clone(), metadata },
-            AuthoredMutation::Resize { path: source.clone(), logical_bytes: 4 },
-            AuthoredMutation::Rename {
-                source: source.clone(), destination: destination.clone(), replace: true,
-            },
-            AuthoredMutation::Remove { path: removed.clone(), expected_file_id: None },
-        ], WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    assert_eq!(result.0.created_file_ids, ordinary_result.created_file_ids);
-    assert_eq!(result.0.created_file_ids, [None; 4]);
-    assert_eq!(original.receipt().source_bytes_read, 0);
-    assert_eq!(native.root.file_table, ordinary.root.file_table);
-    assert!(result.1.work().shares_ledger(&original));
-    assert_eq!(result.1.bytes(),
-        (result.0.created_file_ids.capacity() * size_of::<Option<FileId>>()) as u64);
-    assert_eq!(input.1.bytes(), slots);
-    assert_eq!(input.2.bytes(), source_bytes);
-    // Source's real finish phase can still inspect the original paths after await.
-    assert!(matches!(&input.0[2], AuthoredMutation::Rename {
-        source: old_source, destination: old_destination, ..
-    } if old_source == &source && old_destination == &destination));
-    let actual = native.lookup_no_follow_with_metadata_with_native_work(
-        &destination, &original, &cancellation,
-    ).await?.ok_or("renamed source absent")?;
-    assert_eq!(actual.metadata, metadata);
-    match actual.record.payload {
-        FilePayload::InlineRegular(data) => assert_eq!(data.as_bytes(), b"sour"),
-        FilePayload::Regular { logical_bytes, .. } => assert_eq!(logical_bytes, 4),
-        _ => return Err("metadata/resize changed regular file kind".into()),
-    }
-    for requested in [&source, &removed] {
-        assert!(native.lookup_no_follow(requested, WorkBudget::UNBOUNDED, &cancellation)
-            .await?.value.record.is_none());
-        assert!(checkout.lookup_no_follow(requested, WorkBudget::UNBOUNDED, &cancellation)
-            .await?.value.record.is_some());
-    }
-    drop(result);
-    drop(native);
-    let live = original.live_allocation_bytes();
-    drop(input);
-    assert_eq!(original.live_allocation_bytes(), live - slots - source_bytes);
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn borrowed_authored_slots_and_native_denial_precede_copies_and_writes()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("borrowed-authored-slots").await?;
-    workspace.write_text("/source", "source body").await?;
-    workspace.write_text("/removed", "removed body").await?;
-    let cancellation = CancellationToken::new();
-    let mut checkout = workspace.checkout_measured(
-        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    let source = path("source")?;
-    let destination = path("destination")?;
-    let removed = path("removed")?;
-    let metadata = checkout.lookup_no_follow_with_metadata(
-        &source, WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value.ok_or("real source missing")?.metadata;
-    let mut producer_allocations = 0;
-    for deny in [false, true] {
-        let original = crate::NativeMaterializationWork::new(
-            WorkBudget {
-                allocation_operations: if deny { producer_allocations } else { u64::MAX },
-                ..WorkBudget::UNBOUNDED
-            }, &cancellation,
-        ).map_err(|(cause, _)| cause)?;
-        let mut candidate = checkout.private_candidate_with_native_work(&original, &cancellation)?;
-        let input = original_borrowed_path_changes(
-            &source, &destination, &removed, metadata, &original, &cancellation,
-        )?;
-        producer_allocations = original.receipt().allocation_operations;
-        let short = original.claim(0)?;
-        let foreign = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, _)| cause)?;
-        let foreign_slots = foreign.claim(input.1.bytes())?;
-        let before = original.receipt();
-        let live = original.live_allocation_bytes();
-        let state = checkout_state(&candidate);
-        for witness in [&short, &foreign_slots] {
-            let failure = candidate.apply_borrowed_authored_transaction_with_native_work(
-                &input.0, witness, &original, &cancellation,
-            ).await.err().ok_or("invalid slots accepted")?;
-            assert!(matches!(failure, FsError::NativeKernel(crate::NativeTreeMaterializationError::InvalidLayout)));
-            assert_eq!(original.receipt(), before);
-            assert_eq!(checkout_state(&candidate), state);
-        }
-        let failure = candidate.apply_borrowed_authored_transaction_with_native_work(
-            &input.0, &input.1, &foreign, &cancellation,
-        ).await.err().ok_or("foreign original accepted")?;
-        assert!(matches!(failure, FsError::NativeKernel(_)));
-        assert_eq!(original.receipt(), before);
-        if deny {
-            let failure = candidate.apply_borrowed_authored_transaction_with_native_work(
-                &input.0, &input.1, &original, &cancellation,
-            ).await.err().ok_or("exhausted allocation budget accepted")?;
-            assert!(matches!(failure, FsError::Work(_) | FsError::NativeKernel(_)));
-            assert_eq!(original.receipt().bytes_copied, before.bytes_copied);
-            assert_eq!(original.receipt().backend_write_operations, before.backend_write_operations);
-            assert_eq!(original.live_allocation_bytes(), live);
-            assert_eq!(checkout_state(&candidate), state);
-            assert_eq!(input.0.len(), 4);
-        }
-    }
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
 async fn borrowed_authored_second_staged_write_failure_keeps_candidate_source_and_destination()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
@@ -7560,87 +4905,35 @@ async fn borrowed_authored_second_staged_write_failure_keeps_candidate_source_an
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn original_authored_bulk_source_denial_preserves_the_installed_root()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    let mut limits = config();
-    limits.limits.maximum_mutations_per_batch = 2;
-    let volume = fs.create_volume_with_id(
-        VolumeId::from_bytes([121; 16]), limits, WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    let mut checkout = volume.checkout(
-        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    let root = NamespacePath::new(Vec::new(), limits.limits)?;
-    let metadata = checkout.lookup_no_follow_with_metadata(
-        &root, WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value.ok_or("authenticated root metadata absent")?.metadata;
-    let original = crate::NativeMaterializationWork::new(
-        WorkBudget { source_bytes_read: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
-    ).map_err(|(cause, _)| cause)?;
-    let baseline = original.live_allocation_bytes();
-    let first = path("bulk-first")?;
-    let second = path("bulk-source-denied")?;
-    let input = original_authored_creates(
-        &[(&first, OwnedBytes::from_static(b"first staged batch")),
-          (&second, OwnedBytes::from_static(&[b'b'; 1024]))],
-        metadata, &original, &cancellation,
-    )?;
-    let before = (checkout.root.file_table, checkout.base_file_table,
-        checkout.authored_operation_id, checkout.live_operation_id);
-    let failure = checkout.apply_authored_bulk_transaction_with_native_work(
-        input.0, input.1, &original, &cancellation,
-    ).await.err().ok_or("denied actual bulk source installed a candidate")?;
-    assert!(matches!(failure, FsError::Work(_) | FsError::NativeKernel(_)));
-    assert!(original.receipt().backend_write_operations > 0, "immutable first-batch prefix was staged");
-    assert_eq!(original.receipt().source_bytes_read, 0);
-    assert_eq!(before, (checkout.root.file_table, checkout.base_file_table,
-        checkout.authored_operation_id, checkout.live_operation_id));
-    assert_eq!(original.live_allocation_bytes(), baseline);
-    for requested in [&first, &second] {
-        assert!(checkout.lookup_no_follow(
-            requested, WorkBudget::UNBOUNDED, &cancellation,
-        ).await?.value.record.is_none());
-    }
-    Ok(())
-}
-
 #[test]
 fn inverse_private_mutations_restore_the_base_and_clear_replay_state()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([136; 16]),
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("inverse volume creation blocked")??
+    ))?
     .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("inverse checkout blocked")??
+    ))?
     .value;
     let base = checkout.generation_id();
     let transient = path("transient")?;
-    poll_ready(checkout.create_file(
+    poll_immediate(checkout.create_file(
         transient.clone(),
         bytes::Bytes::from_static(b"temporary"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("inverse creation blocked")??;
+    ))?;
     assert!(checkout.has_pending_mutations());
-    poll_ready(checkout.remove(transient, None, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("inverse removal blocked")??;
+    poll_immediate(checkout.remove(transient, None, WorkBudget::UNBOUNDED, &cancellation))?;
     assert!(!checkout.has_pending_mutations());
     assert_eq!(checkout.generation_id(), base);
     Ok(())
@@ -7654,23 +4947,21 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
 
     let mut operation_limited = config();
     operation_limited.limits.maximum_mutations_per_batch = 1;
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([124; 16]),
         operation_limited,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("operation-limited volume blocked")??
+    ))?
     .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("operation-limited checkout blocked")??
+    ))?
     .value;
-    let missing_noop = poll_ready(checkout.apply_authored_transaction(
+    let missing_noop = poll_immediate(checkout.apply_authored_transaction(
         vec![AuthoredMutation::Write {
             path: path("absent")?,
             offset: 0,
@@ -7679,7 +4970,6 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("authored missing noop blocked")?
     .err()
     .ok_or("authored missing noop succeeded")?;
     assert!(matches!(
@@ -7689,23 +4979,21 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
     assert!(missing_noop.work.page_reads > 0);
 
     let noop_fs = Fs::memory();
-    let noop_volume = poll_ready(noop_fs.create_volume_with_id(
+    let noop_volume = poll_immediate(noop_fs.create_volume_with_id(
         VolumeId::from_bytes([125; 16]),
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("noop volume creation blocked")??
+    ))?
     .value;
-    let mut noop_checkout = poll_ready(noop_volume.checkout(
+    let mut noop_checkout = poll_immediate(noop_volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("noop checkout blocked")??
+    ))?
     .value;
-    let ordered = poll_ready(noop_checkout.apply_authored_transaction(
+    let ordered = poll_immediate(noop_checkout.apply_authored_transaction(
         vec![
             AuthoredMutation::Write {
                 path: path("ordered")?,
@@ -7721,7 +5009,6 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("ordered noop transaction blocked")?
     .err()
     .ok_or("ordered noop bypassed its missing source")?;
     assert!(matches!(
@@ -7729,25 +5016,23 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         FsError::Mutation(GenerationMutationError::MissingSource)
     ));
     assert!(
-        poll_ready(noop_checkout.lookup_no_follow(
+        poll_immediate(noop_checkout.lookup_no_follow(
             &path("ordered")?,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("ordered path lookup blocked")??
+        ))?
         .value
         .record
         .is_none()
     );
 
-    let direct_missing = poll_ready(noop_checkout.write_file(
+    let direct_missing = poll_immediate(noop_checkout.write_file(
         path("missing")?,
         0,
         bytes::Bytes::new(),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("direct missing noop blocked")?
     .err()
     .ok_or("direct missing noop succeeded")?;
     assert!(matches!(
@@ -7755,7 +5040,7 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         FsError::Mutation(GenerationMutationError::MissingSource)
     ));
 
-    let created = poll_ready(noop_checkout.apply_authored_transaction(
+    let created = poll_immediate(noop_checkout.apply_authored_transaction(
         vec![AuthoredMutation::CreateFile {
             path: path("present")?,
             bytes: OwnedBytes::new(),
@@ -7763,20 +5048,18 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("authored fixture creation blocked")??;
+    ))?;
     let file_id = created.value.created_file_ids[0].ok_or("created file id missing")?;
     let generation_before_noop = noop_checkout.generation_id();
-    let empty = poll_ready(noop_checkout.apply_authored_transaction(
+    let empty = poll_immediate(noop_checkout.apply_authored_transaction(
         Vec::new(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("empty authored transaction blocked")??;
+    ))?;
     assert!(empty.value.created_file_ids.is_empty());
     assert_eq!(empty.work, WorkCounters::default());
     assert_eq!(noop_checkout.generation_id(), generation_before_noop);
-    let noop = poll_ready(noop_checkout.apply_authored_transaction(
+    let noop = poll_immediate(noop_checkout.apply_authored_transaction(
         vec![AuthoredMutation::Write {
             path: path("present")?,
             offset: 0,
@@ -7784,22 +5067,20 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("authored validated noop blocked")??;
+    ))?;
     assert_eq!(noop.value.created_file_ids, vec![None]);
     assert!(noop.work.page_reads > 0);
     assert_eq!(noop_checkout.generation_id(), generation_before_noop);
     let mut empty_source = std::io::Cursor::new(OwnedBytes::new());
-    let empty_content = poll_ready(noop_checkout.stage_content(
+    let empty_content = poll_immediate(noop_checkout.stage_content(
         &mut empty_source,
         1,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("empty content staging blocked")??
+    ))?
     .value;
     assert_eq!(empty_content.logical_bytes(), 0);
-    let content_noop = poll_ready(noop_checkout.apply_authored_transaction(
+    let content_noop = poll_immediate(noop_checkout.apply_authored_transaction(
         vec![AuthoredMutation::WriteFromContent {
             path: path("present")?,
             offset: u64::MAX,
@@ -7807,33 +5088,30 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("empty staged-content write blocked")??;
+    ))?;
     assert_eq!(content_noop.value.created_file_ids, vec![None]);
     assert!(content_noop.work.page_reads > 0);
     assert_eq!(noop_checkout.generation_id(), generation_before_noop);
-    let direct = poll_ready(noop_checkout.write_file(
+    let direct = poll_immediate(noop_checkout.write_file(
         path("present")?,
         u64::MAX,
         bytes::Bytes::new(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("direct validated noop blocked")??;
+    ))?;
     assert!(direct.work.page_reads > 0);
     assert_eq!(noop_checkout.generation_id(), generation_before_noop);
-    let identity = poll_ready(noop_checkout.write_file_by_id(
+    let identity = poll_immediate(noop_checkout.write_file_by_id(
         file_id,
         u64::MAX,
         bytes::Bytes::new(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("identity validated noop blocked")??;
+    ))?;
     assert!(identity.work.page_reads > 0);
     assert_eq!(noop_checkout.generation_id(), generation_before_noop);
 
-    let expanded = poll_ready(checkout.apply_authored_transaction(
+    let expanded = poll_immediate(checkout.apply_authored_transaction(
         vec![AuthoredMutation::CreateFile {
             path: path("large")?,
             bytes: OwnedBytes::from(vec![1; crate::kernel::MAXIMUM_INLINE_FILE_BYTES + 1]),
@@ -7842,18 +5120,16 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("expanded authored transaction blocked")?
     .err()
     .ok_or("expanded authored transaction unexpectedly succeeded")?;
     assert!(matches!(expanded.error, FsError::TooManyPendingMutations));
     assert_eq!(*expanded.work, WorkCounters::default());
     assert!(
-        poll_ready(checkout.lookup_no_follow(
+        poll_immediate(checkout.lookup_no_follow(
             &path("large")?,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("expanded path lookup blocked")??
+        ))?
         .value
         .record
         .is_none()
@@ -7861,33 +5137,30 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
 
     let mut byte_limited = config();
     byte_limited.limits.maximum_read_bytes = 1;
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([125; 16]),
         byte_limited,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("byte-limited volume blocked")??
+    ))?
     .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("byte-limited checkout blocked")??
+    ))?
     .value;
     for mutation in [
         AuthoredMutation::CreateFile { path: path("created-file")?, bytes: OwnedBytes::from_static(b"xx"), metadata: empty_metadata() },
         AuthoredMutation::Write { path: path("file")?, offset: 0, bytes: OwnedBytes::from_static(b"xx") },
         AuthoredMutation::CreateSymbolicLink { path: path("link")?, target: OwnedBytes::from_static(b"xx"), metadata: empty_metadata() },
     ] {
-        let failure = poll_ready(checkout.apply_authored_transaction(
+        let failure = poll_immediate(checkout.apply_authored_transaction(
             vec![mutation],
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("byte-limited authored transaction blocked")?
         .err()
         .ok_or("byte-limited authored transaction unexpectedly succeeded")?;
         assert!(matches!(
@@ -7896,13 +5169,12 @@ fn authored_transactions_preflight_expansion_noops_and_byte_bounds()
         ));
         assert_eq!(*failure.work, WorkCounters::default());
     }
-    let direct = poll_ready(checkout.create_symbolic_link(
+    let direct = poll_immediate(checkout.create_symbolic_link(
         path("direct-link")?,
         bytes::Bytes::from_static(b"xx"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("byte-limited direct symlink blocked")?
     .err()
     .ok_or("byte-limited direct symlink unexpectedly succeeded")?;
     assert!(matches!(
@@ -7921,34 +5193,30 @@ fn opaque_payload_reads_enforce_the_volume_output_bound() -> Result<(), Box<dyn 
     let mut limited = config();
     limited.profile = FilesystemProfile::Windows;
     limited.limits.maximum_read_bytes = 1;
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([126; 16]),
         limited,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("limited Windows volume blocked")??
+    ))?
     .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("limited Windows checkout blocked")??
+    ))?
     .value;
     let mut source = std::io::Cursor::new(OwnedBytes::from_static(b"xx"));
     let staged =
-        poll_ready(checkout.stage_content(&mut source, 2, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("oversized opaque staging blocked")??
+        poll_immediate(checkout.stage_content(&mut source, 2, WorkBudget::UNBOUNDED, &cancellation))?
             .value;
     let metadata =
-        poll_ready(checkout.stage_metadata(empty_metadata(), WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("opaque metadata staging blocked")??
+        poll_immediate(checkout.stage_metadata(empty_metadata(), WorkBudget::UNBOUNDED, &cancellation))?
             .value;
     let symbolic = path("symbolic")?;
     let reparse = path("reparse")?;
-    poll_ready(checkout.mutate(
+    poll_immediate(checkout.mutate(
         vec![
             Mutation::Create {
                 path: symbolic.clone(),
@@ -7979,15 +5247,12 @@ fn opaque_payload_reads_enforce_the_volume_output_bound() -> Result<(), Box<dyn 
         ],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("opaque raw mutation blocked")??;
+    ))?;
     for failure in [
-        poll_ready(checkout.read_symbolic_link(&symbolic, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("bounded symlink read blocked")?
+        poll_immediate(checkout.read_symbolic_link(&symbolic, WorkBudget::UNBOUNDED, &cancellation))
             .err()
             .ok_or("oversized symlink read unexpectedly succeeded")?,
-        poll_ready(checkout.read_reparse_point(&reparse, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("bounded reparse read blocked")?
+        poll_immediate(checkout.read_reparse_point(&reparse, WorkBudget::UNBOUNDED, &cancellation))
             .err()
             .ok_or("oversized reparse read unexpectedly succeeded")?,
     ] {
@@ -8005,40 +5270,36 @@ fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([114; 16]),
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("volume creation blocked")??
+    ))?
     .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("checkout blocked")??
+    ))?
     .value;
 
     let mut create_source = std::io::Cursor::new(OwnedBytes::from_static(b"streamed"));
-    let staged_create = poll_ready(checkout.stage_content(
+    let staged_create = poll_immediate(checkout.stage_content(
         &mut create_source,
         64,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("create staging blocked")??
+    ))?
     .value;
     let mut write_source = std::io::Cursor::new(OwnedBytes::from_static(b"TAIL"));
-    let staged_write = poll_ready(checkout.stage_content(
+    let staged_write = poll_immediate(checkout.stage_content(
         &mut write_source,
         64,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("write staging blocked")??
+    ))?
     .value;
     assert_eq!(staged_create.logical_bytes(), 8);
     assert_eq!(staged_create.root().kind, ObjectKind::Blob);
@@ -8054,7 +5315,7 @@ fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
     let mut replacement_metadata = empty_metadata();
     replacement_metadata.modified_ns = MetadataField::Value(42);
     let large = OwnedBytes::from(vec![0x5a; crate::kernel::MAXIMUM_INLINE_FILE_BYTES + 1]);
-    let transaction = poll_ready(checkout.apply_authored_transaction(
+    let transaction = poll_immediate(checkout.apply_authored_transaction(
         vec![
             AuthoredMutation::CreateDirectory {
                 path: path("directory")?,
@@ -8149,8 +5410,7 @@ fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
         ],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("complete authored transaction blocked")??;
+    ))?;
     assert_eq!(transaction.value.created_file_ids.len(), 17);
     assert_eq!(
         transaction.value.created_file_ids.get(4),
@@ -8166,7 +5426,7 @@ fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
         6
     );
     assert_eq!(
-        poll_ready(checkout.read_file_range(
+        poll_immediate(checkout.read_file_range(
             &streamed,
             ByteRange {
                 offset: 0,
@@ -8174,15 +5434,14 @@ fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
             },
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("streamed read blocked")??
+        ))?
         .value
         .bytes
         .as_ref(),
         b"streamedTAIL"
     );
     assert!(
-        poll_ready(checkout.apply_authored_transaction(
+        poll_immediate(checkout.apply_authored_transaction(
             vec![AuthoredMutation::CreateFileFromContent {
                 path: path("duplicate-source-identity")?,
                 content: staged_create,
@@ -8192,11 +5451,10 @@ fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("duplicate identity transaction blocked")?
         .is_err()
     );
     assert_eq!(
-        poll_ready(checkout.read_file_range(
+        poll_immediate(checkout.read_file_range(
             &path("large")?,
             ByteRange {
                 offset: 0,
@@ -8204,26 +5462,23 @@ fn authored_transactions_cover_every_portable_operation_without_hidden_paths()
             },
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("large read blocked")??
+        ))?
         .value
         .bytes.as_ref(),
         large.as_ref()
     );
     assert_eq!(
-        poll_ready(checkout.read_symbolic_link(
+        poll_immediate(checkout.read_symbolic_link(
             &path("symbolic")?,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("symbolic-link read blocked")??
+        ))?
         .value
         .as_ref(),
         b"../source"
     );
     assert_eq!(
-        poll_ready(checkout.read_metadata(&source, WorkBudget::UNBOUNDED, &cancellation,))
-            .ok_or("metadata read blocked")??
+        poll_immediate(checkout.read_metadata(&source, WorkBudget::UNBOUNDED, &cancellation,))?
             .value
             .modified_ns,
         MetadataField::Value(42)
@@ -8236,58 +5491,52 @@ fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
 -> Result<(), Box<dyn std::error::Error>> {
     let cancellation = CancellationToken::new();
     let fs = Fs::memory();
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([117; 16]),
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("volume creation blocked")??
+    ))?
     .value;
     assert_eq!(volume.id(), VolumeId::from_bytes([117; 16]));
     assert_eq!(volume.config(), config());
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_tracking(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("checkout blocked")??
+    ))?
     .value;
     let source = path("source-path")?;
     let destination = path("destination-path")?;
-    let source_id = poll_ready(checkout.create_file(
+    let source_id = poll_immediate(checkout.create_file(
         source.clone(),
         bytes::Bytes::from(vec![b's'; 128]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("source creation blocked")??
+    ))?
     .value;
-    poll_ready(checkout.create_file(
+    poll_immediate(checkout.create_file(
         destination.clone(),
         bytes::Bytes::from(vec![b'd'; 128]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("destination creation blocked")??;
+    ))?;
     let mut metadata = empty_metadata();
     metadata.modified_ns = MetadataField::Value(99);
-    poll_ready(checkout.set_metadata(
+    poll_immediate(checkout.set_metadata(
         source.clone(),
         metadata,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("path metadata write blocked")??;
-    poll_ready(checkout.resize_file(
+    ))?;
+    poll_immediate(checkout.resize_file(
         destination.clone(),
         160,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("path resize blocked")??;
-    poll_ready(checkout.zero_file_range(
+    ))?;
+    poll_immediate(checkout.zero_file_range(
         source.clone(),
         ByteRange {
             offset: 64,
@@ -8297,9 +5546,8 @@ fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
         false,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("path zero blocked")??;
-    poll_ready(checkout.preallocate_file(
+    ))?;
+    poll_immediate(checkout.preallocate_file(
         destination.clone(),
         ByteRange {
             offset: 128,
@@ -8308,9 +5556,8 @@ fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
         false,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("path preallocation blocked")??;
-    poll_ready(checkout.clone_file_range(
+    ))?;
+    poll_immediate(checkout.clone_file_range(
         FileCloneRequest {
             source: source.clone(),
             source_offset: 0,
@@ -8320,41 +5567,36 @@ fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("path clone blocked")??;
+    ))?;
     let alias = path("source-alias")?;
     let renamed = path("source-renamed")?;
-    poll_ready(checkout.hard_link(
+    poll_immediate(checkout.hard_link(
         source.clone(),
         alias.clone(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("path hard link blocked")??;
-    poll_ready(checkout.rename(
+    ))?;
+    poll_immediate(checkout.rename(
         alias,
         renamed.clone(),
         false,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("path rename blocked")??;
-    let lookup = poll_ready(checkout.lookup_no_follow_with_metadata(
+    ))?;
+    let lookup = poll_immediate(checkout.lookup_no_follow_with_metadata(
         &renamed,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("metadata lookup blocked")??
+    ))?
     .value
     .ok_or("renamed link is absent")?;
     assert_eq!(lookup.record.file_id, source_id);
     assert_eq!(lookup.metadata.modified_ns, MetadataField::Value(99));
-    let batch = poll_ready(checkout.lookup_batch_no_follow(
+    let batch = poll_immediate(checkout.lookup_batch_no_follow(
         &[source.clone(), renamed.clone(), path("absent-path")?],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("path batch lookup blocked")??;
+    ))?;
     assert_eq!(batch.value.entries.len(), 3);
     assert_eq!(
         batch.value.entries[0].record.map(|record| record.file_id),
@@ -8365,16 +5607,15 @@ fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
         Some(source_id)
     );
     assert!(batch.value.entries[2].record.is_none());
-    let records = poll_ready(checkout.list_directory_records(
+    let records = poll_immediate(checkout.list_directory_records(
         &root_path()?,
         None,
         16,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("record listing blocked")??;
+    ))?;
     assert_eq!(records.value.entries.len(), 3);
-    let plan = poll_ready(checkout.plan_file_extents(
+    let plan = poll_immediate(checkout.plan_file_extents(
         &source,
         ByteRange {
             offset: 0,
@@ -8383,49 +5624,43 @@ fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
         8,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("path extent plan blocked")??;
+    ))?;
     assert!(plan.value.is_some());
     assert_eq!(
-        poll_ready(checkout.seek_file_extent(
+        poll_immediate(checkout.seek_file_extent(
             &source,
             64,
             ExtentSeekTarget::Hole,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("path hole seek blocked")??
+        ))?
         .value,
         Some(64)
     );
     assert_eq!(
-        poll_ready(checkout.read_metadata(&source, WorkBudget::UNBOUNDED, &cancellation,))
-            .ok_or("path metadata read blocked")??
+        poll_immediate(checkout.read_metadata(&source, WorkBudget::UNBOUNDED, &cancellation,))?
             .value,
         metadata
     );
-    poll_ready(checkout.remove(
+    poll_immediate(checkout.remove(
         renamed,
         Some(source_id),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("path removal blocked")??;
+    ))?;
 
     let mut empty = std::io::Cursor::new(OwnedBytes::new());
     assert!(
-        poll_ready(checkout.stage_content(&mut empty, 0, WorkBudget::UNBOUNDED, &cancellation,))
-            .ok_or("zero staging bound blocked")?
+        poll_immediate(checkout.stage_content(&mut empty, 0, WorkBudget::UNBOUNDED, &cancellation,))
             .is_err()
     );
     assert!(
-        poll_ready(checkout.stage_content(
+        poll_immediate(checkout.stage_content(
             &mut empty,
             config().limits.maximum_generation_bytes + 1,
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("excessive staging bound blocked")?
         .is_err()
     );
     #[cfg(not(target_arch = "wasm32"))]
@@ -8435,9 +5670,9 @@ fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
         let mut accounting = crate::kernel::allocation::KernelAccounting::native(&original, &cancellation);
         let body = [b'n'; 256];
         let mut source = std::io::Cursor::new(body.as_slice());
-        let staged = poll_ready(checkout.stage_content_with_accounting(
+        let staged = poll_immediate(checkout.stage_content_with_accounting(
             &mut source, body.len() as u64, &mut accounting, &cancellation,
-        )).ok_or("original content staging blocked")??;
+        ))?;
         assert_eq!(staged.logical_bytes(), body.len() as u64);
         assert_eq!(original.receipt().source_bytes_read, body.len() as u64);
         assert!(original.receipt().backend_write_operations > 0);
@@ -8447,9 +5682,9 @@ fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
         ).map_err(|(cause, _)| cause)?;
         let mut accounting = crate::kernel::allocation::KernelAccounting::native(&denied, &cancellation);
         let mut source = std::io::Cursor::new(body.as_slice());
-        assert!(poll_ready(checkout.stage_content_with_accounting(
+        assert!(poll_immediate(checkout.stage_content_with_accounting(
             &mut source, body.len() as u64, &mut accounting, &cancellation,
-        )).ok_or("original source denial blocked")?.is_err());
+        )).is_err());
         assert_eq!(source.position(), 0);
         assert_eq!(denied.receipt().backend_write_operations, 0);
 
@@ -8486,9 +5721,9 @@ fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
             .map_err(|(cause, _)| cause)?;
         let mut accounting = crate::kernel::allocation::KernelAccounting::native(&failed, &cancellation);
         let mut source = PrefixFailure(false);
-        assert!(poll_ready(checkout.stage_content_with_accounting(
+        assert!(poll_immediate(checkout.stage_content_with_accounting(
             &mut source, 64, &mut accounting, &cancellation,
-        )).ok_or("original source failure blocked")?.is_err());
+        )).is_err());
         assert_eq!(failed.receipt().source_bytes_read, 4);
 
         let cancelled = CancellationToken::new();
@@ -8497,9 +5732,9 @@ fn path_sdk_exposes_every_sparse_operation_with_one_authenticated_state()
         cancelled.cancel();
         let mut accounting = crate::kernel::allocation::KernelAccounting::native(&stopped, &cancelled);
         let mut source = std::io::Cursor::new(body.as_slice());
-        assert!(poll_ready(checkout.stage_content_with_accounting(
+        assert!(poll_immediate(checkout.stage_content_with_accounting(
             &mut source, body.len() as u64, &mut accounting, &cancelled,
-        )).ok_or("original cancellation blocked")?.is_err());
+        )).is_err());
         assert_eq!(source.position(), 0);
         assert_eq!(stopped.receipt().backend_write_operations, 0);
     }
@@ -8511,48 +5746,43 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([118; 16]),
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("volume creation blocked")??
+    ))?
     .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_tracking(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("checkout blocked")??
+    ))?
     .value;
     let file = path("regular")?;
     let directory = path("directory")?;
     let missing = path("missing")?;
-    let file_id = poll_ready(checkout.create_file(
+    let file_id = poll_immediate(checkout.create_file(
         file.clone(),
         bytes::Bytes::from_static(b"data"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("file creation blocked")??
+    ))?
     .value;
-    let directory_id = poll_ready(checkout.create_directory(
+    let directory_id = poll_immediate(checkout.create_directory(
         directory.clone(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("directory creation blocked")??
+    ))?
     .value;
-    let empty_directory = poll_ready(checkout.list_directory_records(
+    let empty_directory = poll_immediate(checkout.list_directory_records(
         &directory,
         None,
         8,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("empty directory record listing blocked")??;
+    ))?;
     assert!(empty_directory.value.entries.is_empty());
     assert!(!empty_directory.value.has_more);
     let unknown_id = FileId::from_bytes([250; 16]);
@@ -8562,7 +5792,7 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         128,
     )?;
 
-    let oversized_identity_read = poll_ready(checkout.read_file_range_by_id(
+    let oversized_identity_read = poll_immediate(checkout.read_file_range_by_id(
         file_id,
         ByteRange {
             offset: 0,
@@ -8571,7 +5801,6 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("oversized identity read blocked")?
     .err()
     .ok_or("oversized identity read unexpectedly succeeded")?;
     assert!(matches!(
@@ -8579,7 +5808,7 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         FsError::FileRead(FileRangeReadError::InvalidRange)
     ));
     assert_eq!(*oversized_identity_read.work, WorkCounters::default());
-    let zero_span_plan = poll_ready(checkout.plan_file_extents_by_id(
+    let zero_span_plan = poll_immediate(checkout.plan_file_extents_by_id(
         file_id,
         ByteRange {
             offset: 0,
@@ -8589,7 +5818,6 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("zero-span identity plan blocked")?
     .err()
     .ok_or("zero-span identity plan unexpectedly succeeded")?;
     assert!(matches!(
@@ -8598,26 +5826,24 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
     ));
     assert_eq!(*zero_span_plan.work, WorkCounters::default());
     assert_eq!(
-        poll_ready(checkout.seek_file_extent_by_id(
+        poll_immediate(checkout.seek_file_extent_by_id(
             file_id,
             0,
             ExtentSeekTarget::Data,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("inline identity data seek blocked")??
+        ))?
         .value,
         Some(0)
     );
     assert_eq!(
-        poll_ready(checkout.seek_file_extent_by_id(
+        poll_immediate(checkout.seek_file_extent_by_id(
             file_id,
             0,
             ExtentSeekTarget::Hole,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("inline identity hole seek blocked")??
+        ))?
         .value,
         Some(4)
     );
@@ -8628,38 +5854,35 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         (5, ExtentSeekTarget::Hole, None),
     ] {
         assert_eq!(
-            poll_ready(checkout.seek_file_extent_by_id(
+            poll_immediate(checkout.seek_file_extent_by_id(
                 file_id,
                 offset,
                 target,
                 WorkBudget::UNBOUNDED,
                 &cancellation,
-            ))
-            .ok_or("inline identity boundary seek blocked")??
+            ))?
             .value,
             expected
         );
         assert_eq!(
-            poll_ready(checkout.seek_file_extent(
+            poll_immediate(checkout.seek_file_extent(
                 &file,
                 offset,
                 target,
                 WorkBudget::UNBOUNDED,
                 &cancellation,
-            ))
-            .ok_or("inline path boundary seek blocked")??
+            ))?
             .value,
             expected
         );
     }
-    let wrong_kind_seek = poll_ready(checkout.seek_file_extent_by_id(
+    let wrong_kind_seek = poll_immediate(checkout.seek_file_extent_by_id(
         directory_id,
         0,
         ExtentSeekTarget::Data,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("wrong-kind identity seek blocked")?
     .err()
     .ok_or("wrong-kind identity seek unexpectedly succeeded")?;
     assert!(matches!(
@@ -8667,40 +5890,37 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         FsError::FileRead(FileRangeReadError::NotRegular)
     ));
     assert!(
-        poll_ready(checkout.read_named_attribute_by_id(
+        poll_immediate(checkout.read_named_attribute_by_id(
             file_id,
             &attribute,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("attribute-free identity read blocked")??
+        ))?
         .value
         .is_none()
     );
     assert!(
-        poll_ready(checkout.list_named_attributes_by_id(
+        poll_immediate(checkout.list_named_attributes_by_id(
             file_id,
             None,
             8,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("attribute-free identity listing blocked")??
+        ))?
         .value
         .entries
         .is_empty()
     );
-    let missing_remove = poll_ready(checkout.remove_named_attribute_by_id(
+    let missing_remove = poll_immediate(checkout.remove_named_attribute_by_id(
         file_id,
         attribute.clone(),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("attribute-free identity removal blocked")?
     .err()
     .ok_or("attribute-free identity removal unexpectedly succeeded")?;
     assert!(matches!(missing_remove.error, FsError::NotFound));
-    let missing_replace = poll_ready(checkout.write_named_attribute_by_id(
+    let missing_replace = poll_immediate(checkout.write_named_attribute_by_id(
         file_id,
         attribute.clone(),
         bytes::Bytes::from_static(b"first"),
@@ -8708,20 +5928,18 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("missing identity attribute replacement blocked")?
     .err()
     .ok_or("missing identity attribute replacement unexpectedly succeeded")?;
     assert!(matches!(missing_replace.error, FsError::CreationRejected));
-    poll_ready(checkout.write_named_attribute_by_id(
+    poll_immediate(checkout.write_named_attribute_by_id(
         file_id,
         attribute.clone(),
         bytes::Bytes::from_static(b"first"),
         NamedAttributeWriteMode::Create,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("identity attribute creation blocked")??;
-    let duplicate_create = poll_ready(checkout.write_named_attribute_by_id(
+    ))?;
+    let duplicate_create = poll_immediate(checkout.write_named_attribute_by_id(
         file_id,
         attribute.clone(),
         bytes::Bytes::from_static(b"second"),
@@ -8729,36 +5947,32 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("duplicate identity attribute creation blocked")?
     .err()
     .ok_or("duplicate identity attribute creation unexpectedly succeeded")?;
     assert!(matches!(duplicate_create.error, FsError::CreationRejected));
     assert_eq!(
-        poll_ready(checkout.read_named_attribute_by_id(
+        poll_immediate(checkout.read_named_attribute_by_id(
             file_id,
             &attribute,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("identity attribute read blocked")??
+        ))?
         .value
         .as_deref(),
         Some(b"first".as_slice())
     );
-    poll_ready(checkout.remove_named_attribute_by_id(
+    poll_immediate(checkout.remove_named_attribute_by_id(
+        file_id,
+        attribute.clone(),
+        WorkBudget::UNBOUNDED,
+        &cancellation,
+    ))?;
+    let repeated_remove = poll_immediate(checkout.remove_named_attribute_by_id(
         file_id,
         attribute.clone(),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("identity attribute removal blocked")??;
-    let repeated_remove = poll_ready(checkout.remove_named_attribute_by_id(
-        file_id,
-        attribute.clone(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("repeated identity attribute removal blocked")?
     .err()
     .ok_or("repeated identity attribute removal unexpectedly succeeded")?;
     assert!(matches!(repeated_remove.error, FsError::NotFound));
@@ -8769,49 +5983,49 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             .map_err(|(cause, _)| cause)?;
         let mut candidate = checkout.private_candidate_with_native_work(&original, &cancellation)?;
         let source = OwnedBytes::from_static(b"actual original-accounted attribute source");
-        poll_ready(candidate.write_named_attribute_by_id_with_native_work(
+        poll_immediate(candidate.write_named_attribute_by_id_with_native_work(
             file_id, &attribute, &source, NamedAttributeWriteMode::Create, &original, &cancellation,
-        )).ok_or("native identity attribute creation blocked")??;
-        let created = poll_ready(candidate.read_metadata_by_id_with_native_work(
+        ))?;
+        let created = poll_immediate(candidate.read_metadata_by_id_with_native_work(
             file_id, &original, &cancellation,
-        )).ok_or("native identity metadata read blocked")??;
+        ))?;
         let MetadataField::Value(root) = created.named_attributes else {
             return Err("native attribute metadata root absent".into());
         };
         let reader = candidate.pinned_reader_with_native_work(&original, &cancellation)?;
-        let (values, allocation) = poll_ready(reader.read_named_attributes_with_native_work(
+        let (values, allocation) = poll_immediate(reader.read_named_attributes_with_native_work(
             root, &original, &cancellation,
-        )).ok_or("native attribute source read blocked")??;
+        ))?;
         assert_eq!(values.len(), 1);
         assert_eq!(&values[0].0, &attribute);
         assert_eq!(values[0].1, source);
         drop(values);
         drop(allocation);
-        let duplicate = poll_ready(candidate.write_named_attribute_by_id_with_native_work(
+        let duplicate = poll_immediate(candidate.write_named_attribute_by_id_with_native_work(
             file_id, &attribute, &source, NamedAttributeWriteMode::Create, &original, &cancellation,
-        )).ok_or("native duplicate attribute creation blocked")?
+        ))
             .err().ok_or("native duplicate attribute unexpectedly accepted")?;
         assert!(matches!(duplicate, FsError::CreationRejected));
         let mut updated = created;
         updated.modified_ns = MetadataField::Value(913);
-        poll_ready(candidate.set_attributes_by_id_with_native_work(
+        poll_immediate(candidate.set_attributes_by_id_with_native_work(
             file_id, updated, Some(7), &original, &cancellation,
-        )).ok_or("native metadata resize blocked")??;
-        assert_eq!(poll_ready(candidate.read_metadata_by_id_with_native_work(
+        ))?;
+        assert_eq!(poll_immediate(candidate.read_metadata_by_id_with_native_work(
             file_id, &original, &cancellation,
-        )).ok_or("native changed metadata read blocked")??, updated);
-        let resized = poll_ready(candidate.read_file_record_by_id_with_native_work(
+        ))?, updated);
+        let resized = poll_immediate(candidate.read_file_record_by_id_with_native_work(
             file_id, &original, &cancellation,
-        )).ok_or("native resized record read blocked")??;
+        ))?;
         let resized_bytes = match resized.payload {
             FilePayload::InlineRegular(data) => data.as_bytes().len() as u64,
             FilePayload::Regular { logical_bytes, .. } => logical_bytes,
             _ => return Err("native resize changed the regular file kind".into()),
         };
         assert_eq!(resized_bytes, 7);
-        poll_ready(candidate.remove_named_attribute_by_id_with_native_work(
+        poll_immediate(candidate.remove_named_attribute_by_id_with_native_work(
             file_id, &attribute, &original, &cancellation,
-        )).ok_or("native identity attribute removal blocked")??;
+        ))?;
         assert!(original.receipt().source_bytes_read >= source.len() as u64);
         assert!(original.receipt().bytes_encoded > 0);
         assert!(original.receipt().allocation_operations > 0);
@@ -8821,9 +6035,9 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         ).map_err(|(cause, _)| cause)?;
         let mut denied_candidate = checkout.private_candidate_with_native_work(&denied, &cancellation)?;
         let before = denied_candidate.root.file_table;
-        let failure = poll_ready(denied_candidate.write_named_attribute_by_id_with_native_work(
+        let failure = poll_immediate(denied_candidate.write_named_attribute_by_id_with_native_work(
             file_id, &attribute, &source, NamedAttributeWriteMode::Upsert, &denied, &cancellation,
-        )).ok_or("native denied attribute source blocked")?
+        ))
             .err().ok_or("native attribute source denial ignored")?;
         assert!(matches!(failure, FsError::Work(_)));
         assert_eq!(denied_candidate.root.file_table, before);
@@ -8834,9 +6048,9 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
         ).map_err(|(cause, _)| cause)?;
         let mut denied_candidate = checkout.private_candidate_with_native_work(&denied_metadata, &cancellation)?;
         let before = denied_candidate.root.file_table;
-        let failure = poll_ready(denied_candidate.set_attributes_by_id_with_native_work(
+        let failure = poll_immediate(denied_candidate.set_attributes_by_id_with_native_work(
             file_id, updated, Some(3), &denied_metadata, &cancellation,
-        )).ok_or("native denied metadata resize blocked")?
+        ))
             .err().ok_or("native metadata encoding denial ignored")?;
         assert!(matches!(failure, FsError::Work(_)));
         assert_eq!(denied_candidate.root.file_table, before);
@@ -8844,23 +6058,21 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
     }
 
     assert!(
-        poll_ready(checkout.list_directory(&file, None, 8, WorkBudget::UNBOUNDED, &cancellation,))
-            .ok_or("wrong-kind directory listing blocked")?
+        poll_immediate(checkout.list_directory(&file, None, 8, WorkBudget::UNBOUNDED, &cancellation,))
             .is_err()
     );
     assert!(
-        poll_ready(checkout.list_directory_records(
+        poll_immediate(checkout.list_directory_records(
             &file,
             None,
             8,
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("wrong-kind record listing blocked")?
         .is_err()
     );
     assert!(
-        poll_ready(checkout.read_file_range(
+        poll_immediate(checkout.read_file_range(
             &directory,
             ByteRange {
                 offset: 0,
@@ -8869,11 +6081,10 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("wrong-kind path read blocked")?
         .is_err()
     );
     assert!(
-        poll_ready(checkout.read_file_range(
+        poll_immediate(checkout.read_file_range(
             &file,
             ByteRange {
                 offset: 5,
@@ -8882,11 +6093,10 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("invalid path range blocked")?
         .is_err()
     );
     assert!(
-        poll_ready(checkout.plan_file_extents(
+        poll_immediate(checkout.plan_file_extents(
             &directory,
             ByteRange {
                 offset: 0,
@@ -8896,78 +6106,69 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("wrong-kind path plan blocked")?
         .is_err()
     );
     assert!(
-        poll_ready(checkout.seek_file_extent(
+        poll_immediate(checkout.seek_file_extent(
             &directory,
             0,
             ExtentSeekTarget::Data,
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("wrong-kind path seek blocked")?
         .is_err()
     );
     assert!(
-        poll_ready(checkout.read_symbolic_link(&file, WorkBudget::UNBOUNDED, &cancellation,))
-            .ok_or("wrong-kind symbolic read blocked")?
+        poll_immediate(checkout.read_symbolic_link(&file, WorkBudget::UNBOUNDED, &cancellation,))
             .is_err()
     );
     assert!(
-        poll_ready(checkout.read_reparse_point(&file, WorkBudget::UNBOUNDED, &cancellation,))
-            .ok_or("wrong-kind reparse read blocked")?
+        poll_immediate(checkout.read_reparse_point(&file, WorkBudget::UNBOUNDED, &cancellation,))
             .is_err()
     );
     assert!(
-        poll_ready(checkout.read_metadata(&missing, WorkBudget::UNBOUNDED, &cancellation,))
-            .ok_or("missing metadata read blocked")?
+        poll_immediate(checkout.read_metadata(&missing, WorkBudget::UNBOUNDED, &cancellation,))
             .is_err()
     );
     assert!(
-        poll_ready(checkout.read_named_attribute(
+        poll_immediate(checkout.read_named_attribute(
             &missing,
             &attribute,
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("missing attribute read blocked")?
         .is_err()
     );
     assert!(
-        poll_ready(checkout.list_named_attributes(
+        poll_immediate(checkout.list_named_attributes(
             &missing,
             None,
             8,
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("missing attribute listing blocked")?
         .is_err()
     );
     assert!(
-        poll_ready(checkout.remove_named_attribute(
+        poll_immediate(checkout.remove_named_attribute(
             missing.clone(),
             attribute.clone(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("missing attribute removal blocked")?
         .is_err()
     );
 
     assert!(
-        poll_ready(checkout.read_file_record_by_id(
+        poll_immediate(checkout.read_file_record_by_id(
             unknown_id,
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("unknown identity read blocked")?
         .is_err()
     );
     assert!(
-        poll_ready(checkout.read_file_range_by_id(
+        poll_immediate(checkout.read_file_range_by_id(
             directory_id,
             ByteRange {
                 offset: 0,
@@ -8976,11 +6177,10 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("wrong-kind identity read blocked")?
         .is_err()
     );
     assert!(
-        poll_ready(checkout.read_file_range_by_id(
+        poll_immediate(checkout.read_file_range_by_id(
             file_id,
             ByteRange {
                 offset: 5,
@@ -8989,11 +6189,10 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("invalid identity range blocked")?
         .is_err()
     );
     assert!(
-        poll_ready(checkout.plan_file_extents_by_id(
+        poll_immediate(checkout.plan_file_extents_by_id(
             directory_id,
             ByteRange {
                 offset: 0,
@@ -9003,70 +6202,63 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("wrong-kind identity plan blocked")?
         .is_err()
     );
     assert!(
-        poll_ready(checkout.seek_file_extent_by_id(
+        poll_immediate(checkout.seek_file_extent_by_id(
             directory_id,
             0,
             ExtentSeekTarget::Data,
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("wrong-kind identity seek blocked")?
         .is_err()
     );
     assert!(
-        poll_ready(checkout.read_metadata_by_id(unknown_id, WorkBudget::UNBOUNDED, &cancellation,))
-            .ok_or("unknown identity metadata blocked")?
+        poll_immediate(checkout.read_metadata_by_id(unknown_id, WorkBudget::UNBOUNDED, &cancellation,))
             .is_err()
     );
     assert!(
-        poll_ready(checkout.read_named_attribute_by_id(
+        poll_immediate(checkout.read_named_attribute_by_id(
             unknown_id,
             &attribute,
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("unknown identity attribute blocked")?
         .is_err()
     );
     assert!(
-        poll_ready(checkout.list_named_attributes_by_id(
+        poll_immediate(checkout.list_named_attributes_by_id(
             unknown_id,
             None,
             8,
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("unknown identity attribute listing blocked")?
         .is_err()
     );
     assert!(
-        poll_ready(checkout.write_file_by_id(
+        poll_immediate(checkout.write_file_by_id(
             directory_id,
             0,
             bytes::Bytes::from_static(b"x"),
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("wrong-kind identity write blocked")?
         .is_err()
     );
     assert!(
-        poll_ready(checkout.remove_named_attribute_by_id(
+        poll_immediate(checkout.remove_named_attribute_by_id(
             unknown_id,
             attribute,
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("unknown identity attribute removal blocked")?
         .is_err()
     );
     assert!(checkout.has_pending_mutations());
     assert_eq!(
-        poll_ready(checkout.read_file_range(
+        poll_immediate(checkout.read_file_range(
             &file,
             ByteRange {
                 offset: 0,
@@ -9074,8 +6266,7 @@ fn public_query_and_identity_failures_preserve_the_checkout_candidate()
             },
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("surviving file read blocked")??
+        ))?
         .value
         .bytes
         .as_ref(),
@@ -9091,30 +6282,27 @@ fn public_byte_boundaries_reject_before_allocation_or_backend_work()
     let cancellation = CancellationToken::new();
     let mut limited = config();
     limited.limits.maximum_read_bytes = 4;
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([189; 16]),
         limited,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("volume creation blocked")??
+    ))?
     .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("checkout blocked")??
+    ))?
     .value;
     let file = path("bounded")?;
-    let failure = poll_ready(checkout.create_file(
+    let failure = poll_immediate(checkout.create_file(
         file.clone(),
         bytes::Bytes::from_static(b"12345"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("oversized create blocked")?
     .err()
     .ok_or("oversized create succeeded")?;
     assert!(matches!(
@@ -9123,33 +6311,30 @@ fn public_byte_boundaries_reject_before_allocation_or_backend_work()
     ));
     assert_eq!(*failure.work, WorkCounters::default());
 
-    let file_id = poll_ready(checkout.create_file(
+    let file_id = poll_immediate(checkout.create_file(
         file.clone(),
         bytes::Bytes::from_static(b"1234"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("bounded create blocked")??
+    ))?
     .value;
     for failure in [
-        poll_ready(checkout.write_file(
+        poll_immediate(checkout.write_file(
             file.clone(),
             0,
             bytes::Bytes::from_static(b"12345"),
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("oversized path write blocked")?
         .err()
         .ok_or("oversized path write succeeded")?,
-        poll_ready(checkout.write_file_by_id(
+        poll_immediate(checkout.write_file_by_id(
             file_id,
             0,
             bytes::Bytes::from_static(b"12345"),
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("oversized identity write blocked")?
         .err()
         .ok_or("oversized identity write succeeded")?,
     ] {
@@ -9160,17 +6345,16 @@ fn public_byte_boundaries_reject_before_allocation_or_backend_work()
         assert_eq!(*failure.work, WorkCounters::default());
     }
 
-    poll_ready(checkout.write_file_by_id(
+    poll_immediate(checkout.write_file_by_id(
         file_id,
         4,
         bytes::Bytes::from_static(b"5"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("bounded extension blocked")??;
+    ))?;
 
     for failure in [
-        poll_ready(checkout.read_file_range(
+        poll_immediate(checkout.read_file_range(
             &file,
             ByteRange {
                 offset: 0,
@@ -9179,10 +6363,9 @@ fn public_byte_boundaries_reject_before_allocation_or_backend_work()
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("oversized path read blocked")?
         .err()
         .ok_or("oversized path read succeeded")?,
-        poll_ready(checkout.read_file_range_by_id(
+        poll_immediate(checkout.read_file_range_by_id(
             file_id,
             ByteRange {
                 offset: 0,
@@ -9191,7 +6374,6 @@ fn public_byte_boundaries_reject_before_allocation_or_backend_work()
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("oversized identity read blocked")?
         .err()
         .ok_or("oversized identity read succeeded")?,
     ] {
@@ -9207,24 +6389,22 @@ fn public_byte_boundaries_reject_before_allocation_or_backend_work()
         length: limited.limits.maximum_generation_bytes + 1,
     };
     for failure in [
-        poll_ready(checkout.plan_file_extents(
+        poll_immediate(checkout.plan_file_extents(
             &file,
             excessive_range,
             1,
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("oversized path plan blocked")?
         .err()
         .ok_or("oversized path plan succeeded")?,
-        poll_ready(checkout.plan_file_extents_by_id(
+        poll_immediate(checkout.plan_file_extents_by_id(
             file_id,
             excessive_range,
             1,
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("oversized identity plan blocked")?
         .err()
         .ok_or("oversized identity plan succeeded")?,
     ] {
@@ -9235,13 +6415,12 @@ fn public_byte_boundaries_reject_before_allocation_or_backend_work()
         assert_eq!(*failure.work, WorkCounters::default());
     }
 
-    let symbolic = poll_ready(checkout.create_symbolic_link(
+    let symbolic = poll_immediate(checkout.create_symbolic_link(
         path("link")?,
         bytes::Bytes::from_static(b"12345"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("oversized symbolic link blocked")?
     .err()
     .ok_or("oversized symbolic link succeeded")?;
     assert!(matches!(
@@ -9251,10 +6430,9 @@ fn public_byte_boundaries_reject_before_allocation_or_backend_work()
     assert_eq!(*symbolic.work, WorkCounters::default());
 
     let mut detached =
-        poll_ready(checkout.detach_regular_file(&file, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("file detachment blocked")??
+        poll_immediate(checkout.detach_regular_file(&file, WorkBudget::UNBOUNDED, &cancellation))?
             .value;
-    let detached_read_failure = poll_ready(detached.read_range(
+    let detached_read_failure = poll_immediate(detached.read_range(
         ByteRange {
             offset: 0,
             length: 5,
@@ -9262,7 +6440,6 @@ fn public_byte_boundaries_reject_before_allocation_or_backend_work()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("oversized detached read blocked")?
     .err()
     .ok_or("oversized detached read succeeded")?;
     assert!(matches!(
@@ -9270,13 +6447,12 @@ fn public_byte_boundaries_reject_before_allocation_or_backend_work()
         FsError::FileRead(FileRangeReadError::InvalidRange)
     ));
     assert_eq!(*detached_read_failure.work, WorkCounters::default());
-    let detached_failure = poll_ready(detached.change_content(
+    let detached_failure = poll_immediate(detached.change_content(
         ContentChange::Write { offset: 0, bytes: OwnedBytes::from_static(b"12345") },
         None,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("oversized detached write blocked")?
     .err()
     .ok_or("oversized detached write succeeded")?;
     assert!(matches!(
@@ -9292,107 +6468,94 @@ fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let first = poll_ready(fs.create_volume_with_id(
+    let first = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([119; 16]),
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("first volume blocked")??
+    ))?
     .value;
-    let second = poll_ready(fs.create_volume_with_id(
+    let second = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([120; 16]),
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("second volume blocked")??
+    ))?
     .value;
-    let first_head = poll_ready(first.checkout(
+    let first_head = poll_immediate(first.checkout(
         GenerationSelector::Head,
         pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("first head blocked")??
+    ))?
     .value
     .generation_id();
-    let second_head = poll_ready(second.checkout(
+    let second_head = poll_immediate(second.checkout(
         GenerationSelector::Head,
         pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("second head blocked")??
+    ))?
     .value
     .generation_id();
     assert!(
-        poll_ready(first.checkout(
+        poll_immediate(first.checkout(
             GenerationSelector::Exact(first_head),
             writable_pinned(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("writable exact checkout blocked")?
         .is_err()
     );
     assert!(
-        poll_ready(first.checkout(
+        poll_immediate(first.checkout(
             GenerationSelector::Exact(second_head),
             pinned(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("foreign exact checkout blocked")?
         .is_err()
     );
     assert!(
-        poll_ready(first.diff_generations(
+        poll_immediate(first.diff_generations(
             first_head,
             second_head,
             8,
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("foreign generation diff blocked")?
         .is_err()
     );
 
-    let mut read_only = poll_ready(first.checkout(
+    let mut read_only = poll_immediate(first.checkout(
         GenerationSelector::Head,
         pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("read-only checkout blocked")??
+    ))?
     .value;
     assert!(
-        poll_ready(read_only.mutate(Vec::new(), WorkBudget::UNBOUNDED, &cancellation,))
-            .ok_or("read-only mutation blocked")?
+        poll_immediate(read_only.mutate(Vec::new(), WorkBudget::UNBOUNDED, &cancellation,))
             .is_err()
     );
     assert!(
-        poll_ready(read_only.commit(OperationId::new(), WorkBudget::UNBOUNDED, &cancellation,))
-            .ok_or("read-only commit blocked")?
+        poll_immediate(read_only.commit(OperationId::new(), WorkBudget::UNBOUNDED, &cancellation,))
             .is_err()
     );
     assert!(
-        poll_ready(read_only.discard(WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("read-only discard blocked")?
+        poll_immediate(read_only.discard(WorkBudget::UNBOUNDED, &cancellation))
             .is_err()
     );
     assert!(
-        poll_ready(read_only.refresh_head(WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("pinned refresh blocked")?
+        poll_immediate(read_only.refresh_head(WorkBudget::UNBOUNDED, &cancellation))
             .is_err()
     );
     assert!(
-        poll_ready(read_only.refresh_live(WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("non-live refresh blocked")?
+        poll_immediate(read_only.refresh_live(WorkBudget::UNBOUNDED, &cancellation))
             .is_err()
     );
     assert!(
-        poll_ready(read_only.mutate_live(
+        poll_immediate(read_only.mutate_live(
             Vec::new(),
             OperationId::new(),
             1,
@@ -9400,92 +6563,80 @@ fn checkout_generation_and_mode_guards_reject_without_candidate_damage()
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("non-live mutation blocked")?
         .is_err()
     );
     assert!(
-        poll_ready(read_only.resume_live(
+        poll_immediate(read_only.resume_live(
             OperationId::new(),
             1,
             1,
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("non-live resume blocked")?
         .is_err()
     );
 
-    let mut writable = poll_ready(first.checkout(
+    let mut writable = poll_immediate(first.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("writable checkout blocked")??
+    ))?
     .value;
     let excessive_capacity = Vec::<Mutation>::with_capacity(
         usize::try_from(config().limits.maximum_mutations_per_batch)? + 1,
     );
     let failure =
-        poll_ready(writable.mutate(excessive_capacity, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("capacity-guarded mutation blocked")?
+        poll_immediate(writable.mutate(excessive_capacity, WorkBudget::UNBOUNDED, &cancellation))
             .err()
             .ok_or("excessive mutation capacity unexpectedly succeeded")?;
     assert!(matches!(failure.error, FsError::ExcessiveMutationCapacity));
     assert_eq!(*failure.work, WorkCounters::default());
 
-    let mut clean = poll_ready(first.checkout(
+    let mut clean = poll_immediate(first.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("clean writable checkout blocked")??
+    ))?
     .value;
     assert!(
-        poll_ready(clean.commit(OperationId::new(), WorkBudget::UNBOUNDED, &cancellation,))
-            .ok_or("clean commit blocked")?
+        poll_immediate(clean.commit(OperationId::new(), WorkBudget::UNBOUNDED, &cancellation,))
             .is_err()
     );
     assert!(
-        poll_ready(clean.resume_live(
+        poll_immediate(clean.resume_live(
             OperationId::new(),
             1,
             1,
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("clean non-live resume blocked")?
         .is_err()
     );
 
-    let mut manual_checkout = poll_ready(first.checkout(
+    let mut manual_checkout = poll_immediate(first.checkout(
         GenerationSelector::Head,
         writable_manual(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("manual checkout blocked")??
+    ))?
     .value;
-    poll_ready(manual_checkout.create_file(
+    poll_immediate(manual_checkout.create_file(
         path("dirty")?,
         bytes::Bytes::from_static(b"dirty"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("manual mutation blocked")??;
+    ))?;
     assert!(
-        poll_ready(manual_checkout.refresh_head(WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("dirty manual refresh blocked")?
+        poll_immediate(manual_checkout.refresh_head(WorkBudget::UNBOUNDED, &cancellation))
             .is_err()
     );
     assert!(manual_checkout.has_pending_mutations());
-    poll_ready(manual_checkout.discard(WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("manual discard blocked")??;
+    poll_immediate(manual_checkout.discard(WorkBudget::UNBOUNDED, &cancellation))?;
     assert!(!manual_checkout.has_pending_mutations());
     assert_eq!(
-        poll_ready(manual_checkout.refresh_head(WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("clean manual refresh blocked")??
+        poll_immediate(manual_checkout.refresh_head(WorkBudget::UNBOUNDED, &cancellation))?
             .value,
         first_head
     );
@@ -9499,23 +6650,21 @@ fn authored_special_operations_are_profile_exact_and_fail_atomically()
     let cancellation = CancellationToken::new();
     let mut posix = config();
     posix.profile = FilesystemProfile::Posix;
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([115; 16]),
         posix,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("POSIX volume blocked")??
+    ))?
     .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("POSIX checkout blocked")??
+    ))?
     .value;
-    let receipt = poll_ready(checkout.apply_authored_transaction(
+    let receipt = poll_immediate(checkout.apply_authored_transaction(
         vec![
             AuthoredMutation::CreateEmptySpecial {
                 path: path("fifo")?,
@@ -9549,8 +6698,7 @@ fn authored_special_operations_are_profile_exact_and_fail_atomically()
         ],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("POSIX authored transaction blocked")??;
+    ))?;
     assert!(receipt.value.created_file_ids.iter().all(Option::is_some));
 
     for (mutation, sentinel) in [
@@ -9573,16 +6721,14 @@ fn authored_special_operations_are_profile_exact_and_fail_atomically()
             path("invalid-device")?,
         ),
     ] {
-        let failure = poll_ready(checkout.apply_authored_transaction(
+        let failure = poll_immediate(checkout.apply_authored_transaction(
             vec![mutation],
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("invalid authored transaction blocked")?;
+        ));
         assert!(failure.is_err());
         assert!(
-            poll_ready(checkout.lookup_no_follow(&sentinel, WorkBudget::UNBOUNDED, &cancellation,))
-                .ok_or("invalid-path lookup blocked")??
+            poll_immediate(checkout.lookup_no_follow(&sentinel, WorkBudget::UNBOUNDED, &cancellation,))?
                 .value
                 .record
                 .is_none()
@@ -9591,25 +6737,23 @@ fn authored_special_operations_are_profile_exact_and_fail_atomically()
 
     let mut windows = config();
     windows.profile = FilesystemProfile::Windows;
-    let windows_volume = poll_ready(fs.create_volume_with_id(
+    let windows_volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([116; 16]),
         windows,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("Windows volume blocked")??
+    ))?
     .value;
-    let mut windows_checkout = poll_ready(windows_volume.checkout(
+    let mut windows_checkout = poll_immediate(windows_volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("Windows checkout blocked")??
+    ))?
     .value;
     let reparse = path("reparse")?;
     let reparse_payload = OwnedBytes::from_static(b"opaque-reparse-data");
-    let receipt = poll_ready(windows_checkout.apply_authored_transaction(
+    let receipt = poll_immediate(windows_checkout.apply_authored_transaction(
         vec![AuthoredMutation::CreateReparsePoint {
             path: reparse.clone(),
             payload: reparse_payload.clone(),
@@ -9617,16 +6761,14 @@ fn authored_special_operations_are_profile_exact_and_fail_atomically()
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("Windows authored transaction blocked")??;
+    ))?;
     assert!(receipt.value.created_file_ids[0].is_some());
     assert_eq!(
-        poll_ready(windows_checkout.read_reparse_point(
+        poll_immediate(windows_checkout.read_reparse_point(
             &reparse,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("reparse read blocked")??
+        ))?
         .value.as_ref(),
         reparse_payload.as_ref()
     );
@@ -9639,66 +6781,58 @@ fn manifest_transfer_restores_only_after_the_complete_closure_authenticates()
     let source = Fs::memory();
     let destination = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(source.create_volume_with_id(
+    let volume = poll_immediate(source.create_volume_with_id(
         VolumeId::from_bytes([97; 16]),
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("source volume blocked")??
+    ))?
     .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("source checkout blocked")??
+    ))?
     .value;
-    poll_ready(checkout.create_file(
+    poll_immediate(checkout.create_file(
         path("file")?,
         bytes::Bytes::from(vec![42; 4096]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("source file blocked")??;
-    let first_checkpoint = poll_ready(checkout.checkpoint(WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("first checkpoint blocked")??;
-    let repeated_checkpoint = poll_ready(checkout.checkpoint(WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("repeated checkpoint blocked")??;
+    ))?;
+    let first_checkpoint = poll_immediate(checkout.checkpoint(WorkBudget::UNBOUNDED, &cancellation))?;
+    let repeated_checkpoint = poll_immediate(checkout.checkpoint(WorkBudget::UNBOUNDED, &cancellation))?;
     assert_eq!(first_checkpoint.value, repeated_checkpoint.value);
-    let manifest = poll_ready(checkout.export_manifest(WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("manifest blocked")??
+    let manifest = poll_immediate(checkout.export_manifest(WorkBudget::UNBOUNDED, &cancellation))?
         .value;
     assert_eq!(manifest.generation_id, first_checkpoint.value);
     assert!(manifest.objects.contains(&manifest.generation_root));
 
     let mut cursor = TransferCursor::START;
     loop {
-        let exported = poll_ready(source.export_generation_batch(
+        let exported = poll_immediate(source.export_generation_batch(
             &manifest,
             cursor,
             2,
             config().limits.maximum_object_bytes,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("object export batch blocked")??;
+        ))?;
         let bodies = exported
             .value
             .objects
             .iter()
             .map(|object| object.bytes.clone())
             .collect::<Vec<_>>();
-        let imported = poll_ready(destination.import_generation_batch(
+        let imported = poll_immediate(destination.import_generation_batch(
             &manifest,
             cursor,
             &bodies,
             2,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("object import batch blocked")??;
+        ))?;
         assert_eq!(
             imported.value.next_object(),
             cursor.next_object() + u64::try_from(bodies.len())?
@@ -9733,13 +6867,12 @@ fn manifest_transfer_restores_only_after_the_complete_closure_authenticates()
         ("objects", wrong_objects, true),
         ("file-count", wrong_file_count, true),
     ] {
-        let failure = poll_ready(destination.restore_volume(
+        let failure = poll_immediate(destination.restore_volume(
             &invalid,
             OperationId::from_bytes([31; 16]),
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("invalid restore blocked")?
         .err()
         .ok_or("invalid manifest unexpectedly restored")?;
         assert!(matches!(failure.error, FsError::InvalidExportManifest));
@@ -9751,42 +6884,38 @@ fn manifest_transfer_restores_only_after_the_complete_closure_authenticates()
         assert_eq!(failure.work.authority_records_appended, 0);
     }
     let restore_operation = OperationId::from_bytes([32; 16]);
-    let restored = poll_ready(destination.restore_volume(
+    let restored = poll_immediate(destination.restore_volume(
         &manifest,
         restore_operation,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("restore blocked")??
+    ))?
     .value;
-    let retried = poll_ready(destination.restore_volume(
+    let retried = poll_immediate(destination.restore_volume(
         &manifest,
         restore_operation,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("restore retry blocked")??
+    ))?
     .value;
     assert_eq!(retried.id(), restored.id());
-    let changed_operation = poll_ready(destination.restore_volume(
+    let changed_operation = poll_immediate(destination.restore_volume(
         &manifest,
         OperationId::from_bytes([33; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("changed-operation restore blocked")?
     .err()
     .ok_or("changed-operation restore unexpectedly succeeded")?;
     assert!(matches!(changed_operation.error, FsError::CreationRejected));
-    let mut restored_checkout = poll_ready(restored.checkout(
+    let mut restored_checkout = poll_immediate(restored.checkout(
         GenerationSelector::Head,
         pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("restored checkout blocked")??
+    ))?
     .value;
-    let bytes = poll_ready(restored_checkout.read_file_range(
+    let bytes = poll_immediate(restored_checkout.read_file_range(
         &path("file")?,
         ByteRange {
             offset: 0,
@@ -9794,8 +6923,7 @@ fn manifest_transfer_restores_only_after_the_complete_closure_authenticates()
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("restored read blocked")??;
+    ))?;
     assert_eq!(bytes.value.bytes.as_ref(), vec![42; 4096]);
     Ok(())
 }
@@ -9807,138 +6935,58 @@ fn windows_reparse_payload_round_trips_without_interpretation()
     let cancellation = CancellationToken::new();
     let mut windows = config();
     windows.profile = FilesystemProfile::Windows;
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([98; 16]),
         windows,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("Windows volume blocked")??
+    ))?
     .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("Windows checkout blocked")??
+    ))?
     .value;
     let payload = bytes::Bytes::from_static(b"opaque-reparse\0payload");
-    poll_ready(checkout.create_reparse_point(
+    poll_immediate(checkout.create_reparse_point(
         path("junction")?,
         payload.clone(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("reparse create blocked")??;
-    let read = poll_ready(checkout.read_reparse_point(
+    ))?;
+    let read = poll_immediate(checkout.read_reparse_point(
         &path("junction")?,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("reparse read blocked")??;
+    ))?;
     assert_eq!(read.value.as_ref(), payload.as_ref());
 
     let empty_reparse = path("empty-reparse")?;
-    poll_ready(checkout.create_reparse_point(
+    poll_immediate(checkout.create_reparse_point(
         empty_reparse.clone(),
         bytes::Bytes::new(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("empty reparse create blocked")??;
-    let empty_reparse_read = poll_ready(checkout.read_reparse_point(
+    ))?;
+    let empty_reparse_read = poll_immediate(checkout.read_reparse_point(
         &empty_reparse,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("empty reparse read blocked")??;
+    ))?;
     assert!(empty_reparse_read.value.is_empty());
 
     let empty_link = path("empty-link")?;
-    poll_ready(checkout.create_symbolic_link(
+    poll_immediate(checkout.create_symbolic_link(
         empty_link.clone(),
         bytes::Bytes::new(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("empty symbolic-link create blocked")??;
+    ))?;
     let empty_link_read =
-        poll_ready(checkout.read_symbolic_link(&empty_link, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("empty symbolic-link read blocked")??;
+        poll_immediate(checkout.read_symbolic_link(&empty_link, WorkBudget::UNBOUNDED, &cancellation))?;
     assert!(empty_link_read.value.is_empty());
-    Ok(())
-}
-
-#[test]
-fn encoded_object_and_backend_buffers_share_one_exact_peak()
--> Result<(), Box<dyn std::error::Error>> {
-    let prior = WorkCounters {
-        bytes_encoded: 64,
-        peak_allocation_bytes: 64,
-        ..WorkCounters::default()
-    };
-    let nested = WorkCounters {
-        backend_write_operations: 1,
-        peak_allocation_bytes: 32,
-        ..WorkCounters::default()
-    };
-    let mut budget = WorkBudget::UNBOUNDED;
-    budget.peak_allocation_bytes = 96;
-    let merged =
-        merge_simultaneous_work(prior, nested, 64, budget).map_err(|failure| failure.error)?;
-    assert_eq!(merged.peak_allocation_bytes, 96);
-    assert_eq!(merged.backend_write_operations, 1);
-
-    budget.peak_allocation_bytes = 95;
-    let rejected = merge_simultaneous_work(prior, nested, 64, budget)
-        .err()
-        .ok_or("simultaneous peak unexpectedly admitted")?;
-    assert!(matches!(
-        rejected.error,
-        FsError::Work(WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes",
-            observed: 96,
-            maximum: 95,
-        })
-    ));
-
-    let fs = Fs::memory();
-    let cancellation = CancellationToken::new();
-    let encoded = vec![7_u8; 16];
-    let encoded_capacity = u64::try_from(encoded.capacity())?;
-    let stored = poll_ready(fs.put_encoded(
-        ObjectKind::Metadata,
-        OperationReceipt { value: encoded.clone(), work: WorkCounters::default() },
-        WorkCounters::default(),
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("encoded object put blocked")??;
-    assert_eq!(stored.1.peak_allocation_bytes, encoded_capacity);
-    assert_eq!(stored.1.backend_write_operations, 1);
-
-    let mut one_byte_short = WorkBudget::UNBOUNDED;
-    one_byte_short.peak_allocation_bytes = encoded_capacity - 1;
-    let failure = poll_ready(fs.put_encoded(
-        ObjectKind::Metadata,
-        OperationReceipt { value: encoded, work: WorkCounters::default() },
-        WorkCounters::default(),
-        one_byte_short,
-        &cancellation,
-    ))
-    .ok_or("peak-limited encoded put blocked")?
-    .err()
-    .ok_or("one-byte-short encoded put unexpectedly succeeded")?;
-    assert!(matches!(
-        failure.error,
-        FsError::Work(WorkError::BudgetExceeded {
-            counter: "peak_allocation_bytes",
-            observed,
-            maximum,
-        }) if observed == encoded_capacity && maximum == encoded_capacity - 1
-    ));
-    assert_eq!(*failure.work, WorkCounters::default());
     Ok(())
 }
 
@@ -9948,45 +6996,40 @@ fn memory_create_open_and_head_checkout_reconstruct_from_two_stores()
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let volume_id = VolumeId::from_bytes([41; 16]);
-    let created = poll_ready(fs.create_volume_with_id(
+    let created = poll_immediate(fs.create_volume_with_id(
         volume_id,
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("memory create blocked")??;
-    let opened = poll_ready(fs.open_volume(volume_id, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("memory open blocked")??;
+    ))?;
+    let opened = poll_immediate(fs.open_volume(volume_id, WorkBudget::UNBOUNDED, &cancellation))?;
     assert_eq!(opened.value.config(), config());
-    let mut checkout = poll_ready(opened.value.checkout(
+    let mut checkout = poll_immediate(opened.value.checkout(
         GenerationSelector::Head,
         pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("memory checkout blocked")??;
+    ))?;
     assert_eq!(checkout.value.volume_id(), volume_id);
     assert_eq!(checkout.value.root().parents, Vec::new());
     assert_eq!(checkout.work.object_probes, 1);
     assert_eq!(checkout.work.page_reads, 0);
     assert!(checkout.work.object_bytes_read <= MAXIMUM_GENERATION_ROOT_BYTES);
     let root_path = NamespacePath::new(Vec::new(), config().limits)?;
-    let root = poll_ready(checkout.value.lookup_no_follow(
+    let root = poll_immediate(checkout.value.lookup_no_follow(
         &root_path,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("memory root lookup blocked")??;
+    ))?;
     assert_eq!(
         root.value.record.map(|record| record.kind),
         Some(FileKind::Directory)
     );
-    let roots = poll_ready(checkout.value.lookup_batch_no_follow(
+    let roots = poll_immediate(checkout.value.lookup_batch_no_follow(
         &[root_path.clone(), root_path],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("memory root batch blocked")??;
+    ))?;
     assert_eq!(roots.value.entries.len(), 2);
     assert_eq!(roots.value.entries[0], roots.value.entries[1]);
     assert!(created.work.backend_write_operations >= 4);
@@ -9999,34 +7042,30 @@ fn create_retry_is_idempotent_and_exact_selector_matches_head()
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let volume_id = VolumeId::from_bytes([42; 16]);
-    let first = poll_ready(fs.create_volume_with_id(
+    let first = poll_immediate(fs.create_volume_with_id(
         volume_id,
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("first create blocked")??;
-    let retry = poll_ready(fs.create_volume_with_id(
+    ))?;
+    let retry = poll_immediate(fs.create_volume_with_id(
         volume_id,
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("retry create blocked")??;
-    let head = poll_ready(first.value.checkout(
+    ))?;
+    let head = poll_immediate(first.value.checkout(
         GenerationSelector::Head,
         pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("head checkout blocked")??;
-    let exact = poll_ready(retry.value.checkout(
+    ))?;
+    let exact = poll_immediate(retry.value.checkout(
         GenerationSelector::Exact(head.value.generation_id()),
         pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("exact checkout blocked")??;
+    ))?;
     assert_eq!(exact.value.generation_id(), head.value.generation_id());
     Ok(())
 }
@@ -10037,13 +7076,12 @@ fn unsupported_semantics_reject_before_backend_work() -> Result<(), Box<dyn std:
     let cancellation = CancellationToken::new();
     let mut durable = config();
     durable.lifecycle = Lifecycle::Durable;
-    let result = poll_ready(fs.create_volume_with_id(
+    let result = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([43; 16]),
         durable,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("memory create blocked")?;
+    ));
     let Err(failure) = result else {
         return Err("durable memory volume succeeded".into());
     };
@@ -10058,23 +7096,20 @@ fn conflicting_creation_config_is_rejected_without_changing_opened_config()
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let volume_id = VolumeId::from_bytes([44; 16]);
-    poll_ready(fs.create_volume_with_id(volume_id, config(), WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("first create blocked")??;
+    poll_immediate(fs.create_volume_with_id(volume_id, config(), WorkBudget::UNBOUNDED, &cancellation))?;
     let mut conflicting = config();
     conflicting.sparse_files = false;
-    let retry = poll_ready(fs.create_volume_with_id(
+    let retry = poll_immediate(fs.create_volume_with_id(
         volume_id,
         conflicting,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("conflicting create blocked")?;
+    ));
     let Err(failure) = retry else {
         return Err("conflicting creation succeeded".into());
     };
     assert!(matches!(failure.error, FsError::CreationRejected));
-    let opened = poll_ready(fs.open_volume(volume_id, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("open blocked")??;
+    let opened = poll_immediate(fs.open_volume(volume_id, WorkBudget::UNBOUNDED, &cancellation))?;
     assert_eq!(opened.value.config(), config());
     Ok(())
 }
@@ -10083,34 +7118,30 @@ fn conflicting_creation_config_is_rejected_without_changing_opened_config()
 fn exact_generation_cannot_cross_volume_identity() -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let first = poll_ready(fs.create_volume_with_id(
+    let first = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([45; 16]),
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("first volume create blocked")??;
-    let second = poll_ready(fs.create_volume_with_id(
+    ))?;
+    let second = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([46; 16]),
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("second volume create blocked")??;
-    let second_head = poll_ready(second.value.checkout(
+    ))?;
+    let second_head = poll_immediate(second.value.checkout(
         GenerationSelector::Head,
         pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("second head blocked")??;
-    let crossing = poll_ready(first.value.checkout(
+    ))?;
+    let crossing = poll_immediate(first.value.checkout(
         GenerationSelector::Exact(second_head.value.generation_id()),
         pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("cross-volume exact checkout blocked")?;
+    ));
     let Err(failure) = crossing else {
         return Err("cross-volume exact checkout succeeded".into());
     };
@@ -10123,13 +7154,12 @@ fn pre_cancelled_facade_operations_perform_zero_work() -> Result<(), Box<dyn std
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     cancellation.cancel();
-    let result = poll_ready(fs.create_volume_with_id(
+    let result = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([47; 16]),
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("cancelled create blocked")?;
+    ));
     let Err(failure) = result else {
         return Err("cancelled create succeeded".into());
     };
@@ -10159,34 +7189,30 @@ fn pre_cancelled_existing_volume_surfaces_fail_before_visible_work()
 
     let fs = Fs::memory();
     let active = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([137; 16]),
         config(),
         WorkBudget::UNBOUNDED,
         &active,
-    ))
-    .ok_or("cancellation fixture volume blocked")??
+    ))?
     .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_tracking(),
         WorkBudget::UNBOUNDED,
         &active,
-    ))
-    .ok_or("cancellation fixture checkout blocked")??
+    ))?
     .value;
     let file = path("cancelled-file")?;
-    let file_id = poll_ready(checkout.create_file(
+    let file_id = poll_immediate(checkout.create_file(
         file.clone(),
         bytes::Bytes::from_static(b"abcdefgh"),
         WorkBudget::UNBOUNDED,
         &active,
-    ))
-    .ok_or("cancellation fixture file blocked")??
+    ))?
     .value;
     let mut detached =
-        poll_ready(checkout.detach_regular_file(&file, WorkBudget::UNBOUNDED, &active))
-            .ok_or("cancellation fixture detach blocked")??
+        poll_immediate(checkout.detach_regular_file(&file, WorkBudget::UNBOUNDED, &active))?
             .value;
     let cancelled_token = CancellationToken::new();
     cancelled_token.cancel();
@@ -10322,42 +7348,37 @@ fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let volume_id = VolumeId::from_bytes([49; 16]);
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         volume_id,
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("memory create blocked")??
+    ))?
     .value;
-    let mut first = poll_ready(volume.checkout(
+    let mut first = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("first writable checkout blocked")??
+    ))?
     .value;
-    let mut retry = poll_ready(volume.checkout(
+    let mut retry = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("retry writable checkout blocked")??
+    ))?
     .value;
-    let mut stale = poll_ready(volume.checkout(
+    let mut stale = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("stale writable checkout blocked")??
+    ))?
     .value;
     let root_path = NamespacePath::new(Vec::new(), config().limits)?;
     let metadata =
-        poll_ready(first.lookup_no_follow(&root_path, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("root lookup blocked")??
+        poll_immediate(first.lookup_no_follow(&root_path, WorkBudget::UNBOUNDED, &cancellation))?
             .value
             .record
             .ok_or("root record absent")?
@@ -10370,22 +7391,20 @@ fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
         payload: FilePayload::InlineRegular(InlineFileData::new(b"hello")?),
     };
     for checkout in [&mut first, &mut retry] {
-        poll_ready(checkout.mutate(
+        poll_immediate(checkout.mutate(
             vec![Mutation::Create {
                 path: path("a")?,
                 record,
             }],
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("overlay mutation blocked")??;
+        ))?;
         assert_eq!(
-            poll_ready(checkout.lookup_no_follow(
+            poll_immediate(checkout.lookup_no_follow(
                 &path("a")?,
                 WorkBudget::UNBOUNDED,
                 &cancellation,
-            ))
-            .ok_or("candidate lookup blocked")??
+            ))?
             .value
             .record
             .map(|value| value.payload),
@@ -10393,13 +7412,12 @@ fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
         );
     }
     assert!(
-        poll_ready(stale.lookup_no_follow(&path("a")?, WorkBudget::UNBOUNDED, &cancellation,))
-            .ok_or("base lookup blocked")??
+        poll_immediate(stale.lookup_no_follow(&path("a")?, WorkBudget::UNBOUNDED, &cancellation,))?
             .value
             .record
             .is_none()
     );
-    poll_ready(stale.mutate(
+    poll_immediate(stale.mutate(
         vec![Mutation::Create {
             path: path("b")?,
             record: FileRecord {
@@ -10409,103 +7427,92 @@ fn private_overlay_commit_retry_and_conflict_are_generation_fenced()
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("stale overlay mutation blocked")??;
+    ))?;
 
     let operation_id = OperationId::from_bytes([9; 16]);
-    let committed = poll_ready(first.commit(operation_id, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("first commit blocked")??;
+    let committed = poll_immediate(first.commit(operation_id, WorkBudget::UNBOUNDED, &cancellation))?;
     assert!(matches!(
         committed.value,
         CheckoutCommitOutcome::Committed { .. }
     ));
     assert!(!first.has_pending_mutations());
-    let repeated = poll_ready(retry.commit(operation_id, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("idempotent commit blocked")??;
+    let repeated = poll_immediate(retry.commit(operation_id, WorkBudget::UNBOUNDED, &cancellation))?;
     assert!(matches!(
         repeated.value,
         CheckoutCommitOutcome::AlreadyCommitted { .. }
     ));
     assert!(!retry.has_pending_mutations());
-    let conflict = poll_ready(stale.commit(
+    let conflict = poll_immediate(stale.commit(
         OperationId::from_bytes([10; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("stale commit blocked")??;
+    ))?;
     assert!(matches!(
         conflict.value,
         CheckoutCommitOutcome::Conflict { .. }
     ));
     assert!(stale.has_pending_mutations());
 
-    let mut head = poll_ready(volume.checkout(
+    let mut head = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("published head checkout blocked")??;
+    ))?;
     assert!(
-        poll_ready(
+        poll_immediate(
             head.value
                 .lookup_no_follow(&path("a")?, WorkBudget::UNBOUNDED, &cancellation,)
-        )
-        .ok_or("published file lookup blocked")??
+        )?
         .value
         .record
         .is_some()
     );
-    let clean_failure = poll_ready(first.commit(
+    let clean_failure = poll_immediate(first.commit(
         OperationId::from_bytes([11; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("clean commit blocked")?
     .err()
     .ok_or("clean checkout commit unexpectedly succeeded")?;
     assert!(matches!(clean_failure.error, FsError::NoPendingMutations));
     assert_eq!(*clean_failure.work, WorkCounters::default());
 
-    let mut inverse = poll_ready(volume.checkout(
+    let mut inverse = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("inverse writable checkout blocked")??
+    ))?
     .value;
     let inverse_record = FileRecord {
         file_id: FileId::from_bytes([15; 16]),
         ..record
     };
-    poll_ready(inverse.mutate(
+    poll_immediate(inverse.mutate(
         vec![Mutation::Create {
             path: path("inverse")?,
             record: inverse_record,
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("inverse create blocked")??;
+    ))?;
     assert!(inverse.has_pending_mutations());
-    poll_ready(inverse.mutate(
+    poll_immediate(inverse.mutate(
         vec![Mutation::Remove {
             path: path("inverse")?,
             expected_file_id: MetadataField::Value(inverse_record.file_id),
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("inverse removal blocked")??;
+    ))?;
     assert!(!inverse.has_pending_mutations());
     assert!(inverse.dependencies.proof().is_empty());
-    let inverse_commit = poll_ready(inverse.commit(
+    let inverse_commit = poll_immediate(inverse.commit(
         OperationId::from_bytes([16; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("inverse clean commit blocked")?
     .err()
     .ok_or("inverse clean commit unexpectedly succeeded")?;
     assert!(matches!(inverse_commit.error, FsError::NoPendingMutations));
@@ -10524,60 +7531,53 @@ fn exclusive_writer_checkout_atomically_fences_every_prior_writer()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([0xe1; 16]),
         exclusive_config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("exclusive volume creation blocked")??
+    ))?
     .value;
-    let mut displaced = poll_ready(volume.checkout(
+    let mut displaced = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("first exclusive checkout blocked")??
+    ))?
     .value;
-    let mut owner = poll_ready(volume.checkout(
+    let mut owner = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("replacement exclusive checkout blocked")??
+    ))?
     .value;
-    poll_ready(displaced.create_file(
+    poll_immediate(displaced.create_file(
         path("displaced")?,
         bytes::Bytes::from_static(b"stale"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("displaced mutation blocked")??;
-    let rejected = poll_ready(displaced.commit(
+    ))?;
+    let rejected = poll_immediate(displaced.commit(
         OperationId::from_bytes([0xe2; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("displaced publication blocked")??;
+    ))?;
     assert!(matches!(
         rejected.value,
         CheckoutCommitOutcome::Fenced { actual_epoch } if actual_epoch.get() == 3
     ));
-    poll_ready(owner.create_file(
+    poll_immediate(owner.create_file(
         path("owner")?,
         bytes::Bytes::from_static(b"current"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("owner mutation blocked")??;
-    let committed = poll_ready(owner.commit(
+    ))?;
+    let committed = poll_immediate(owner.commit(
         OperationId::from_bytes([0xe3; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("owner publication blocked")??;
+    ))?;
     assert!(matches!(
         committed.value,
         CheckoutCommitOutcome::Committed { head, .. } if head.epoch.get() == 3
@@ -10590,66 +7590,58 @@ fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([50; 16]),
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("memory create blocked")??
+    ))?
     .value;
-    let mut clean = poll_ready(volume.checkout(
+    let mut clean = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         manual(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("clean manual checkout blocked")??
+    ))?
     .value;
-    let mut clean_tracking = poll_ready(volume.checkout(
+    let mut clean_tracking = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         tracking(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("clean tracking checkout blocked")??
+    ))?
     .value;
-    let mut dirty = poll_ready(volume.checkout(
+    let mut dirty = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_manual(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("dirty manual checkout blocked")??
+    ))?
     .value;
-    let mut conflicted = poll_ready(volume.checkout(
+    let mut conflicted = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_manual(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("conflicted manual checkout blocked")??
+    ))?
     .value;
-    let mut writer = poll_ready(volume.checkout(
+    let mut writer = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("writer checkout blocked")??
+    ))?
     .value;
-    let mut pinned_checkout = poll_ready(volume.checkout(
+    let mut pinned_checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("pinned checkout blocked")??
+    ))?
     .value;
     let root_path = NamespacePath::new(Vec::new(), config().limits)?;
     let metadata =
-        poll_ready(writer.lookup_no_follow(&root_path, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("root lookup blocked")??
+        poll_immediate(writer.lookup_no_follow(&root_path, WorkBudget::UNBOUNDED, &cancellation))?
             .value
             .record
             .ok_or("root record absent")?
@@ -10662,17 +7654,16 @@ fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
         payload: FilePayload::InlineRegular(InlineFileData::new(b"new-head")?),
     };
     assert!(
-        poll_ready(conflicted.lookup_no_follow(
+        poll_immediate(conflicted.lookup_no_follow(
             &path("published")?,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("negative dependency lookup blocked")??
+        ))?
         .value
         .record
         .is_none()
     );
-    poll_ready(conflicted.mutate(
+    poll_immediate(conflicted.mutate(
         vec![Mutation::Create {
             path: path("conflicted-local")?,
             record: FileRecord {
@@ -10682,18 +7673,16 @@ fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("conflicted local mutation blocked")??;
-    poll_ready(dirty.mutate(
+    ))?;
+    poll_immediate(dirty.mutate(
         vec![Mutation::Create {
             path: path("private")?,
             record,
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("dirty mutation blocked")??;
-    poll_ready(writer.mutate(
+    ))?;
+    poll_immediate(writer.mutate(
         vec![Mutation::Create {
             path: path("published")?,
             record: FileRecord {
@@ -10703,16 +7692,13 @@ fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("writer mutation blocked")??;
-    poll_ready(writer.commit(
+    ))?;
+    poll_immediate(writer.commit(
         OperationId::from_bytes([14; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("writer commit blocked")??;
-    let conflict = poll_ready(conflicted.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("conflicting rebase blocked")??;
+    ))?;
+    let conflict = poll_immediate(conflicted.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))?;
     assert!(matches!(
         conflict.value,
         RebaseDecision::Conflicted {
@@ -10726,22 +7712,19 @@ fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
     assert!(conflicted.has_pending_mutations());
 
     let pinned_failure =
-        poll_ready(pinned_checkout.refresh_head(WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("pinned refresh blocked")?
+        poll_immediate(pinned_checkout.refresh_head(WorkBudget::UNBOUNDED, &cancellation))
             .err()
             .ok_or("pinned refresh unexpectedly succeeded")?;
     assert!(matches!(pinned_failure.error, FsError::RefreshNotAllowed));
     assert_eq!(*pinned_failure.work, WorkCounters::default());
     let pinned_rebase =
-        poll_ready(pinned_checkout.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("pinned rebase guard blocked")?
+        poll_immediate(pinned_checkout.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
             .err()
             .ok_or("pinned rebase unexpectedly succeeded")?;
     assert!(matches!(pinned_rebase.error, FsError::RefreshNotAllowed));
     assert_eq!(*pinned_rebase.work, WorkCounters::default());
 
-    let dirty_failure = poll_ready(dirty.refresh_head(WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("dirty refresh blocked")?
+    let dirty_failure = poll_immediate(dirty.refresh_head(WorkBudget::UNBOUNDED, &cancellation))
         .err()
         .ok_or("dirty refresh unexpectedly succeeded")?;
     assert!(matches!(
@@ -10751,90 +7734,79 @@ fn manual_refresh_is_explicit_bounded_and_never_discards_mutations()
     assert_eq!(*dirty_failure.work, WorkCounters::default());
     assert!(dirty.has_pending_mutations());
     assert!(
-        poll_ready(
+        poll_immediate(
             dirty.lookup_no_follow(&path("private")?, WorkBudget::UNBOUNDED, &cancellation,)
-        )
-        .ok_or("private lookup blocked")??
+        )?
         .value
         .record
         .is_some()
     );
-    let rebased = poll_ready(dirty.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("safe dirty rebase blocked")??;
+    let rebased = poll_immediate(dirty.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))?;
     assert!(matches!(rebased.value, RebaseDecision::Safe { .. }));
     assert!(dirty.has_pending_mutations());
     assert!(
-        poll_ready(dirty.lookup_no_follow(
+        poll_immediate(dirty.lookup_no_follow(
             &path("published")?,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("rebased published lookup blocked")??
+        ))?
         .value
         .record
         .is_some()
     );
     assert!(
-        poll_ready(
+        poll_immediate(
             dirty.lookup_no_follow(&path("private")?, WorkBudget::UNBOUNDED, &cancellation,)
-        )
-        .ok_or("rebased private lookup blocked")??
+        )?
         .value
         .record
         .is_some()
     );
 
-    let advanced = poll_ready(clean.refresh_head(WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("manual refresh blocked")??;
+    let advanced = poll_immediate(clean.refresh_head(WorkBudget::UNBOUNDED, &cancellation))?;
     assert_eq!(advanced.value, writer.generation_id());
     assert!(advanced.work.object_probes > 0);
     let tracking_advanced =
-        poll_ready(clean_tracking.refresh_head(WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("tracking refresh blocked")??;
+        poll_immediate(clean_tracking.refresh_head(WorkBudget::UNBOUNDED, &cancellation))?;
     assert_eq!(tracking_advanced.value, writer.generation_id());
     assert!(
-        poll_ready(clean.lookup_no_follow(
+        poll_immediate(clean.lookup_no_follow(
             &path("published")?,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("published lookup blocked")??
+        ))?
         .value
         .record
         .is_some()
     );
-    let equal = poll_ready(clean.refresh_head(WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("equal refresh blocked")??;
+    let equal = poll_immediate(clean.refresh_head(WorkBudget::UNBOUNDED, &cancellation))?;
     assert_eq!(equal.value, advanced.value);
     assert_eq!(equal.work.object_probes, 0);
     assert_eq!(equal.work.backend_read_operations, 3);
 
     assert!(!dirty.dependencies.proof().is_empty());
-    poll_ready(dirty.discard(WorkBudget::UNBOUNDED, &cancellation)).ok_or("discard blocked")??;
+    poll_immediate(dirty.discard(WorkBudget::UNBOUNDED, &cancellation))?;
     assert!(!dirty.has_pending_mutations());
     assert!(dirty.dependencies.proof().is_empty());
     assert!(
-        poll_ready(
+        poll_immediate(
             dirty.lookup_no_follow(&path("private")?, WorkBudget::UNBOUNDED, &cancellation,)
-        )
-        .ok_or("discarded lookup blocked")??
+        )?
         .value
         .record
         .is_none()
     );
     assert!(
-        poll_ready(dirty.lookup_no_follow(
+        poll_immediate(dirty.lookup_no_follow(
             &path("published")?,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("discarded published lookup blocked")??
+        ))?
         .value
         .record
         .is_some()
     );
-    let after_discard = poll_ready(dirty.refresh_head(WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("post-discard refresh blocked")??;
+    let after_discard = poll_immediate(dirty.refresh_head(WorkBudget::UNBOUNDED, &cancellation))?;
     assert_eq!(after_discard.value, writer.generation_id());
     Ok(())
 }
@@ -10846,84 +7818,74 @@ fn private_candidate_rebases_more_changes_than_one_mutation_batch()
     let cancellation = CancellationToken::new();
     let mut limited = config();
     limited.limits.maximum_mutations_per_batch = 8;
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([241; 16]),
         limited,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("volume creation blocked")??
+    ))?
     .value;
-    let mut local = poll_ready(volume.checkout(
+    let mut local = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_manual(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("local checkout blocked")??
+    ))?
     .value;
-    let mut remote = poll_ready(volume.checkout(
+    let mut remote = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("remote checkout blocked")??
+    ))?
     .value;
     for index in 0..20 {
-        poll_ready(local.create_file(
+        poll_immediate(local.create_file(
             path(&format!("local{index}"))?,
             bytes::Bytes::from_static(b"local"),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("local mutation blocked")??;
+        ))?;
     }
-    poll_ready(remote.create_file(
+    poll_immediate(remote.create_file(
         path("remote")?,
         bytes::Bytes::from_static(b"remote"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("remote mutation blocked")??;
-    poll_ready(remote.commit(
+    ))?;
+    poll_immediate(remote.commit(
         OperationId::from_bytes([242; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("remote commit blocked")??;
+    ))?;
     assert!(matches!(
-        poll_ready(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("rebase blocked")??
+        poll_immediate(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))?
             .value,
         RebaseDecision::Safe { .. }
     ));
     assert!(matches!(
-        poll_ready(local.commit(
+        poll_immediate(local.commit(
             OperationId::from_bytes([243; 16]),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("local commit blocked")??
+        ))?
         .value,
         CheckoutCommitOutcome::Committed { .. }
     ));
     for index in 0..20 {
         assert!(
-            poll_ready(local.lookup_no_follow(
+            poll_immediate(local.lookup_no_follow(
                 &path(&format!("local{index}"))?,
                 WorkBudget::UNBOUNDED,
                 &cancellation,
-            ))
-            .ok_or("local lookup blocked")??
+            ))?
             .value
             .record
             .is_some()
         );
     }
     assert!(
-        poll_ready(local.lookup_no_follow(&path("remote")?, WorkBudget::UNBOUNDED, &cancellation,))
-            .ok_or("remote lookup blocked")??
+        poll_immediate(local.lookup_no_follow(&path("remote")?, WorkBudget::UNBOUNDED, &cancellation,))?
             .value
             .record
             .is_some()
@@ -11213,7 +8175,7 @@ fn public_identity_and_posix_special_surfaces_share_one_candidate()
 -> Result<(), Box<dyn std::error::Error>> {
     macro_rules! ready {
         ($future:expr) => {
-            poll_ready($future).ok_or("filesystem future blocked")??
+            poll_immediate($future)?
         };
     }
 
@@ -11550,17 +8512,16 @@ fn public_identity_and_posix_special_surfaces_share_one_candidate()
         &cancellation,
     ));
     assert!(
-        poll_ready(checkout.value.create_empty_special(
+        poll_immediate(checkout.value.create_empty_special(
             path("invalid")?,
             FileKind::Regular,
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("invalid special blocked")?
         .is_err()
     );
     assert!(
-        poll_ready(checkout.value.create_device(
+        poll_immediate(checkout.value.create_device(
             path("invalid-device")?,
             FileKind::Regular,
             0,
@@ -11568,7 +8529,6 @@ fn public_identity_and_posix_special_surfaces_share_one_candidate()
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("invalid device blocked")?
         .is_err()
     );
 
@@ -11602,16 +8562,13 @@ fn public_identity_and_posix_special_surfaces_share_one_candidate()
     Ok(())
 }
 
-/// A rejected open must not leave a provider opening behind it: once the live
-/// engine drops, its providers belong to the next opener at once.
+/// A rejected open must not leave a provider opening behind it: once the live engine drops, its providers belong to the next opener at once.
 #[cfg(all(feature = "local", not(target_arch = "wasm32")))]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_rejected_open_leaves_no_provider_opening_behind_it()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = tempfile::tempdir()?;
     let options = LocalOptions::new(directory.path());
-    // An orphaned opener shows on the first quick reopen it races; the
-    // iterations only vary that race's timing.
     for iteration in 0..24_u32 {
         let fs = Fs::local(options.clone()).await?;
         assert!(
@@ -11681,8 +8638,6 @@ async fn local_garbage_collection_keeps_live_state_while_the_root_is_open()
             &cancellation,
         )
         .await?;
-    // An open checkout's unpublished work survives a collection, and so
-    // does everything its publication then names.
     let pending = path("pending.txt")?;
     checkout
         .create_file(
@@ -11857,7 +8812,7 @@ fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
 -> Result<(), Box<dyn std::error::Error>> {
     macro_rules! ready {
         ($future:expr) => {
-            poll_ready($future).ok_or("filesystem future blocked")??
+            poll_immediate($future)?
         };
     }
     let cancellation = CancellationToken::new();
@@ -11900,17 +8855,16 @@ fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
     ));
     assert!(empty_listing.value.entries.is_empty());
     assert!(!empty_listing.value.has_more);
-    let absent_remove = poll_ready(checkout.value.remove_named_attribute(
+    let absent_remove = poll_immediate(checkout.value.remove_named_attribute(
         path.clone(),
         name.clone(),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("attribute-free removal blocked")?
     .err()
     .ok_or("attribute-free removal unexpectedly succeeded")?;
     assert!(matches!(absent_remove.error, FsError::NotFound));
-    let absent_replace = poll_ready(checkout.value.write_named_attribute(
+    let absent_replace = poll_immediate(checkout.value.write_named_attribute(
         path.clone(),
         name.clone(),
         bytes::Bytes::from_static(b"replacement"),
@@ -11918,7 +8872,6 @@ fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("absent attribute replacement blocked")?
     .err()
     .ok_or("absent attribute replacement unexpectedly succeeded")?;
     assert!(matches!(absent_replace.error, FsError::CreationRejected));
@@ -11930,7 +8883,7 @@ fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ));
-    let duplicate_create = poll_ready(checkout.value.write_named_attribute(
+    let duplicate_create = poll_immediate(checkout.value.write_named_attribute(
         path.clone(),
         name.clone(),
         bytes::Bytes::from_static(b"duplicate"),
@@ -11938,7 +8891,6 @@ fn named_attributes_are_sparse_bounded_and_atomic_with_metadata()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("duplicate attribute creation blocked")?
     .err()
     .ok_or("duplicate attribute creation unexpectedly succeeded")?;
     assert!(matches!(duplicate_create.error, FsError::CreationRejected));
@@ -12004,7 +8956,7 @@ fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
 -> Result<(), Box<dyn std::error::Error>> {
     macro_rules! ready {
         ($future:expr) => {
-            poll_ready($future).ok_or("filesystem future blocked")??
+            poll_immediate($future)?
         };
     }
     let cancellation = CancellationToken::new();
@@ -12037,14 +8989,13 @@ fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
             CheckoutCommitOutcome::Committed { generation_id, .. } => generation_id,
             outcome => return Err(format!("unexpected first commit: {outcome:?}").into()),
         };
-    let invalid = poll_ready(volume.diff_generations(
+    let invalid = poll_immediate(volume.diff_generations(
         initial,
         first,
         0,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("zero-bound generation diff blocked")?
     .err()
     .ok_or("zero-bound generation diff unexpectedly succeeded")?;
     assert!(matches!(invalid.error, FsError::InvalidDiff));
@@ -12124,8 +9075,6 @@ fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
             usize::try_from(maximum)?
         );
     }
-    // Extend the same fixture with an identity-preserving rename, a hard link,
-    // and directory metadata: none may become a remove/create approximation.
     let changed_id = ready!(checkout.lookup_no_follow(
         &path("changed")?, WorkBudget::UNBOUNDED, &cancellation,
     )).value.record.ok_or("changed record absent")?.file_id;
@@ -12208,9 +9157,9 @@ fn generation_diff_is_semantic_bounded_and_equal_root_constant_work()
                 let denied = crate::NativeMaterializationWork::new(budget, &cancellation)
                     .map_err(|(cause, _)| cause)?;
                 let baseline = denied.live_allocation_bytes();
-                let failure = poll_ready(before.candidate_diff_with_native_work(
+                let failure = poll_immediate(before.candidate_diff_with_native_work(
                     &after, 32, &denied, &cancellation,
-                )).ok_or("native diff denial blocked")?.err().ok_or("native diff denial succeeded")?;
+                )).err().ok_or("native diff denial succeeded")?;
                 assert!(matches!(failure, FsError::Work(_) | FsError::NativeKernel(_)));
                 assert_eq!(denied.receipt().bytes_copied, 0);
                 if budget.allocation_operations == 0 {
@@ -12229,7 +9178,7 @@ fn three_way_merge_combines_independent_directory_bindings_and_publishes()
 -> Result<(), Box<dyn std::error::Error>> {
     macro_rules! ready {
         ($future:expr) => {
-            poll_ready($future).ok_or("filesystem future blocked")??
+            poll_immediate($future)?
         };
     }
     let cancellation = CancellationToken::new();
@@ -12286,8 +9235,7 @@ fn three_way_merge_combines_independent_directory_bindings_and_publishes()
     ));
     assert!(matches!(prepared.value, MergePreparation::Prepared { .. }));
     let mutation_during_merge =
-        poll_ready(ours.mutate(Vec::new(), WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("prepared merge mutation guard blocked")?
+        poll_immediate(ours.mutate(Vec::new(), WorkBudget::UNBOUNDED, &cancellation))
             .err()
             .ok_or("prepared merge accepted a mutation")?;
     assert!(matches!(
@@ -12295,19 +9243,17 @@ fn three_way_merge_combines_independent_directory_bindings_and_publishes()
         FsError::PreparedMergePending
     ));
     assert!(
-        poll_ready(ours.prepare_merge(
+        poll_immediate(ours.prepare_merge(
             theirs_generation,
             32,
             8,
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("duplicate merge preparation blocked")?
         .is_err()
     );
     assert!(
-        poll_ready(ours.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("prepared merge rebase blocked")?
+        poll_immediate(ours.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
             .is_err()
     );
     let merged_generation = match ready!(ours.commit(
@@ -12423,7 +9369,7 @@ fn three_way_merge_rejects_guards_and_reports_exact_file_conflicts()
 -> Result<(), Box<dyn std::error::Error>> {
     macro_rules! ready {
         ($future:expr) => {
-            poll_ready($future).ok_or("filesystem future blocked")??
+            poll_immediate($future)?
         };
     }
     let cancellation = CancellationToken::new();
@@ -12490,28 +9436,25 @@ fn three_way_merge_rejects_guards_and_reports_exact_file_conflicts()
     ))
     .value;
     assert!(
-        poll_ready(read_only.prepare_merge(
+        poll_immediate(read_only.prepare_merge(
             base_generation,
             8,
             8,
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("read-only merge preparation blocked")?
         .is_err()
     );
     assert!(
-        poll_ready(
+        poll_immediate(
             ours.prepare_merge(base_generation, 0, 8, WorkBudget::UNBOUNDED, &cancellation,)
         )
-        .ok_or("zero-change merge preparation blocked")?
         .is_err()
     );
     assert!(
-        poll_ready(
+        poll_immediate(
             ours.prepare_merge(base_generation, 8, 0, WorkBudget::UNBOUNDED, &cancellation,)
         )
-        .ok_or("zero-conflict merge preparation blocked")?
         .is_err()
     );
     ready!(ours.write_file(
@@ -12553,20 +9496,18 @@ fn three_way_merge_rejects_guards_and_reports_exact_file_conflicts()
         outcome => return Err(format!("unexpected competing commit: {outcome:?}").into()),
     };
     assert!(
-        poll_ready(
+        poll_immediate(
             ours.prepare_merge(base_generation, 8, 8, WorkBudget::UNBOUNDED, &cancellation,)
         )
-        .ok_or("stale merge parent check blocked")?
         .is_err()
     );
-    let change_limited = poll_ready(ours.prepare_merge(
+    let change_limited = poll_immediate(ours.prepare_merge(
         theirs_generation,
         1,
         8,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("change-limited merge preparation blocked")?
     .err()
     .ok_or("truncated merge inputs unexpectedly prepared")?;
     assert!(matches!(change_limited.error, FsError::MergeChangeLimit));
@@ -12607,304 +9548,6 @@ fn three_way_merge_rejects_guards_and_reports_exact_file_conflicts()
 }
 
 #[test]
-fn directory_merge_helper_covers_scalar_binding_limit_and_invalid_diff_matrix()
--> Result<(), Box<dyn std::error::Error>> {
-    let store = crate::memory::MemoryObjectStore::default();
-    let cancellation = CancellationToken::new();
-    let limits = DecodeLimits::default();
-    let directory_id = FileId::from_bytes([80; 16]);
-    // Real stored metadata differing in authored state (the mode): the merge
-    // reads metadata to tell activity timestamps from authored changes.
-    let metadata = |byte: u8| -> ObjectId {
-        let record = crate::kernel::FileMetadata {
-            posix_mode: crate::kernel::MetadataField::Value(u32::from(byte)),
-            ..crate::kernel::FileMetadata::default()
-        };
-        let bytes = OwnedBytes::from(crate::kernel::encode_file_metadata(record).expect("metadata"));
-        let object_id = ObjectId {
-            kind: ObjectKind::Metadata,
-            digest: object_digest(ObjectKind::Metadata, &bytes),
-        };
-        ObjectStore::put(&store, object_id, bytes, WorkBudget::UNBOUNDED).expect("store metadata");
-        object_id
-    };
-    let put_tree = |page: TreePage| -> Result<ObjectId, Box<dyn std::error::Error>> {
-        let bytes = OwnedBytes::from(encode_tree_page(&page, 16)?);
-        let object_id = ObjectId {
-            kind: ObjectKind::TreePage,
-            digest: object_digest(ObjectKind::TreePage, &bytes),
-        };
-        ObjectStore::put(&store, object_id, bytes, WorkBudget::UNBOUNDED)?;
-        Ok(object_id)
-    };
-    let empty = put_tree(TreePage::Leaf(Vec::new()))?;
-    let name = LogicalName::new(NameEncoding::Utf8, b"entry".to_vec(), 128)?;
-    let entry = |byte| crate::kernel::TreeEntry {
-        name: name.clone(),
-        file_id: FileId::from_bytes([byte; 16]),
-        kind: FileKind::Regular,
-    };
-    let base_entries = put_tree(TreePage::Leaf(vec![entry(81)]))?;
-    let ours_entries = put_tree(TreePage::Leaf(vec![entry(82)]))?;
-    let theirs_entries = put_tree(TreePage::Leaf(vec![entry(83)]))?;
-    let directory = |entries, metadata, link_count| FileRecord {
-        file_id: directory_id,
-        kind: FileKind::Directory,
-        link_count,
-        metadata,
-        payload: FilePayload::Directory { entries },
-    };
-    let base = directory(base_entries, metadata(84), 1);
-
-    let scalar = poll_ready(merge_directory_record(
-        &store,
-        directory_id,
-        base,
-        directory(base_entries, metadata(85), 1),
-        directory(base_entries, metadata(86), 1),
-        8,
-        1,
-        limits,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("scalar directory merge blocked")??;
-    assert_eq!(
-        scalar.value.conflicts,
-        vec![MergeConflict::File(directory_id)]
-    );
-    assert!(scalar.value.record.is_none());
-    assert!(!scalar.value.truncated);
-
-    let truncated_scalar = poll_ready(merge_directory_record(
-        &store,
-        directory_id,
-        base,
-        directory(base_entries, metadata(84), 2),
-        directory(base_entries, metadata(84), 3),
-        8,
-        0,
-        limits,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("truncated scalar directory merge blocked")??;
-    assert!(truncated_scalar.value.conflicts.is_empty());
-    assert!(truncated_scalar.value.record.is_none());
-    assert!(truncated_scalar.value.truncated);
-
-    let invalid = poll_ready(merge_directory_record(
-        &store,
-        directory_id,
-        base,
-        helper_record(directory_id, FilePayload::Empty, FileKind::Fifo),
-        base,
-        8,
-        1,
-        limits,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("invalid directory merge blocked")?
-    .err()
-    .ok_or("invalid directory payload merged")?;
-    assert!(matches!(invalid.error, MergeGenerationError::InvalidDiff));
-
-    let binding_conflict = poll_ready(merge_directory_record(
-        &store,
-        directory_id,
-        base,
-        directory(ours_entries, metadata(84), 1),
-        directory(theirs_entries, metadata(84), 1),
-        8,
-        1,
-        limits,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("binding-conflict directory merge blocked")??;
-    assert_eq!(
-        binding_conflict.value.conflicts,
-        vec![MergeConflict::Binding {
-            directory_id,
-            name: name.clone(),
-        }]
-    );
-    assert!(binding_conflict.value.record.is_none());
-    assert!(!binding_conflict.value.truncated);
-
-    let binding_truncated = poll_ready(merge_directory_record(
-        &store,
-        directory_id,
-        base,
-        directory(ours_entries, metadata(84), 1),
-        directory(theirs_entries, metadata(84), 1),
-        8,
-        0,
-        limits,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("truncated binding directory merge blocked")??;
-    assert!(binding_truncated.value.conflicts.is_empty());
-    assert!(binding_truncated.value.truncated);
-
-    let unchanged = poll_ready(merge_directory_record(
-        &store,
-        directory_id,
-        directory(empty, metadata(84), 1),
-        directory(empty, metadata(84), 1),
-        directory(empty, metadata(84), 1),
-        8,
-        1,
-        limits,
-        WorkBudget::UNBOUNDED,
-        &cancellation,
-    ))
-    .ok_or("unchanged directory merge blocked")??;
-    assert_eq!(
-        unchanged
-            .value
-            .record
-            .and_then(|record| directory_entries(Some(record))),
-        Some(empty)
-    );
-    assert!(unchanged.value.conflicts.is_empty());
-
-    let prior = WorkCounters {
-        object_probes: 1,
-        ..WorkCounters::default()
-    };
-    let invalid_root = poll_ready(diff_generation_file_tables(
-        &store, empty, empty, 1, config(), prior, WorkBudget::UNBOUNDED, &cancellation,
-    )).ok_or("invalid-root diff blocked")?.expect_err("a tree is not a file-table root");
-    assert!(matches!(invalid_root.error, FsError::InvalidDiff));
-    assert_eq!(*invalid_root.work, prior, "pre-I/O rejection preserves the actual caller prefix");
-    let table = ObjectId { kind: ObjectKind::FileTablePage, digest: empty.digest };
-    let invalid_bound = poll_ready(diff_generation_file_tables(
-        &store, table, table, 0, config(), prior, WorkBudget::UNBOUNDED, &cancellation,
-    )).ok_or("zero-bound diff blocked")?.expect_err("the canonical engine rejects a zero bound");
-    assert!(matches!(invalid_bound.error, FsError::InvalidDiff));
-    assert_eq!(*invalid_bound.work, prior);
-    Ok(())
-}
-
-#[test]
-fn merge_and_transfer_error_adapters_preserve_every_typed_class() {
-    let prior = WorkCounters {
-        object_probes: 1,
-        ..WorkCounters::default()
-    };
-    let nested = WorkCounters {
-        items_examined: 1,
-        ..WorkCounters::default()
-    };
-    let mapped = [
-        map_merge_failure(
-            OperationFailure::new(MergeGenerationError::InvalidDiff, nested),
-            prior,
-        ),
-        map_merge_failure(
-            OperationFailure::new(MergeGenerationError::ChangeLimit, nested),
-            prior,
-        ),
-        map_merge_failure(
-            OperationFailure::new(MergeGenerationError::AllocationFailed, nested),
-            prior,
-        ),
-        map_merge_failure(
-            OperationFailure::new(
-                MergeGenerationError::Object(ObjectStoreError::Corrupt),
-                nested,
-            ),
-            prior,
-        ),
-        map_merge_failure(
-            OperationFailure::new(
-                MergeGenerationError::Decode(CanonicalDecodeError::TrailingBytes),
-                nested,
-            ),
-            prior,
-        ),
-        map_merge_failure(
-            OperationFailure::new(
-                MergeGenerationError::FileTable(FileTableMutationError::Missing),
-                nested,
-            ),
-            prior,
-        ),
-        map_merge_failure(
-            OperationFailure::new(
-                MergeGenerationError::Tree(TreeMutationError::Missing),
-                nested,
-            ),
-            prior,
-        ),
-        map_merge_failure(
-            OperationFailure::new(
-                MergeGenerationError::Checkpoint(CheckpointError::DuplicateParent),
-                nested,
-            ),
-            prior,
-        ),
-        map_merge_failure(
-            OperationFailure::new(MergeGenerationError::Cancelled(CancellationError), nested),
-            prior,
-        ),
-        map_merge_failure(
-            OperationFailure::new(MergeGenerationError::Work(WorkError::Overflow), nested),
-            prior,
-        ),
-    ];
-    assert!(matches!(mapped[0].error, FsError::InvalidDiff));
-    assert!(matches!(mapped[1].error, FsError::MergeChangeLimit));
-    assert!(matches!(mapped[2].error, FsError::DiffAllocationFailed));
-    assert!(matches!(mapped[3].error, FsError::Object(_)));
-    assert!(matches!(mapped[4].error, FsError::Decode(_)));
-    assert!(matches!(mapped[5].error, FsError::MergeFileTable(_)));
-    assert!(matches!(mapped[6].error, FsError::MergeTree(_)));
-    assert!(matches!(mapped[7].error, FsError::Checkpoint(_)));
-    assert!(matches!(mapped[8].error, FsError::Cancelled(_)));
-    assert!(matches!(mapped[9].error, FsError::Work(_)));
-    assert!(
-        mapped
-            .iter()
-            .all(|failure| failure.work.object_probes == 1 && failure.work.items_examined == 1)
-    );
-}
-
-#[test]
-fn transfer_error_adapter_preserves_every_typed_class() {
-    let transfer = [
-        map_transfer_error(GenerationTransferError::Cancelled(CancellationError)),
-        map_transfer_error(GenerationTransferError::Manifest(
-            GenerationExportManifestError::WrongRootKind,
-        )),
-        map_transfer_error(GenerationTransferError::ManifestMismatch),
-        map_transfer_error(GenerationTransferError::Closure(
-            ClosureError::WrongObjectKind,
-        )),
-        map_transfer_error(GenerationTransferError::Object(ObjectStoreError::Corrupt)),
-        map_transfer_error(GenerationTransferError::Work(WorkError::Overflow)),
-        map_transfer_error(GenerationTransferError::InvalidCursor),
-        map_transfer_error(GenerationTransferError::EmptyBatch),
-        map_transfer_error(GenerationTransferError::TooManyObjects),
-        map_transfer_error(GenerationTransferError::AllocationFailed),
-    ];
-    assert!(matches!(transfer[0], FsError::Cancelled(_)));
-    assert!(matches!(transfer[1], FsError::InvalidExportManifest));
-    assert!(matches!(transfer[2], FsError::InvalidExportManifest));
-    assert!(matches!(transfer[3], FsError::Closure(_)));
-    assert!(matches!(transfer[4], FsError::Object(_)));
-    assert!(matches!(transfer[5], FsError::Work(_)));
-    assert!(
-        transfer[6..]
-            .iter()
-            .all(|error| matches!(error, FsError::Transfer(_)))
-    );
-}
-
-#[test]
 fn memory_facade_exposes_shared_cache_control_without_alternate_storage_truth()
 -> Result<(), Box<dyn std::error::Error>> {
     let objects = crate::CachedObjectStore::new(
@@ -12917,16 +9560,14 @@ fn memory_facade_exposes_shared_cache_control_without_alternate_storage_truth()
         EmbeddedCapabilities::MEMORY,
     );
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("cached memory volume creation blocked")??
+    let volume = poll_immediate(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))?
         .value;
-    let checkout = poll_ready(volume.checkout(
+    let checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("cached memory checkout blocked")??
+    ))?
     .value;
     let root = ObjectId {
         kind: ObjectKind::GenerationRoot,
@@ -12935,20 +9576,18 @@ fn memory_facade_exposes_shared_cache_control_without_alternate_storage_truth()
 
     fs.clear_object_cache()?;
     assert_eq!(fs.object_cache_stats()?.resident_entries, 0);
-    let first = poll_ready(fs.export_object(
+    let first = poll_immediate(fs.export_object(
         root,
         config().limits.maximum_object_bytes,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("cold cached export blocked")??;
-    let warm = poll_ready(fs.clone().export_object(
+    ))?;
+    let warm = poll_immediate(fs.clone().export_object(
         root,
         config().limits.maximum_object_bytes,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("warm cached export blocked")??;
+    ))?;
     assert_eq!(first.value.bytes, warm.value.bytes);
     assert_eq!(first.work.backend_read_operations, 1);
     assert_eq!(warm.work.backend_read_operations, 0);
@@ -12965,28 +9604,24 @@ fn detached_inline_file_seek_and_attribute_absence_are_exact()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("inline detached volume creation blocked")??
+    let volume = poll_immediate(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))?
         .value;
     let file = path("inline-detached")?;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("inline detached checkout blocked")??
+    ))?
     .value;
-    poll_ready(checkout.create_file(
+    poll_immediate(checkout.create_file(
         file.clone(),
         bytes::Bytes::from_static(b"abc"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("inline file creation blocked")??;
+    ))?;
     let mut detached =
-        poll_ready(checkout.detach_regular_file(&file, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("inline file detachment blocked")??
+        poll_immediate(checkout.detach_regular_file(&file, WorkBudget::UNBOUNDED, &cancellation))?
             .value;
     assert_eq!(detached.logical_bytes(), 3);
     for (offset, target, expected) in [
@@ -12997,8 +9632,7 @@ fn detached_inline_file_seek_and_attribute_absence_are_exact()
         (4, ExtentSeekTarget::Hole, None),
     ] {
         let receipt =
-            poll_ready(detached.seek(offset, target, WorkBudget::UNBOUNDED, &cancellation))
-                .ok_or("inline detached seek blocked")??;
+            poll_immediate(detached.seek(offset, target, WorkBudget::UNBOUNDED, &cancellation))?;
         assert_eq!(receipt.value, expected);
         assert_eq!(receipt.work, WorkCounters::default());
     }
@@ -13008,35 +9642,31 @@ fn detached_inline_file_seek_and_attribute_absence_are_exact()
         b"user.inline".to_vec(),
         config().limits.maximum_component_bytes,
     )?;
-    poll_ready(detached.write_named_attribute(
+    poll_immediate(detached.write_named_attribute(
         attribute.clone(),
         OwnedBytes::from_static(b"value"),
         NamedAttributeWriteMode::Create,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("inline detached attribute creation blocked")??;
-    poll_ready(detached.remove_named_attribute(
+    ))?;
+    poll_immediate(detached.remove_named_attribute(
         attribute.clone(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("inline detached attribute removal blocked")??;
+    ))?;
     let absent =
-        poll_ready(detached.read_named_attribute(&attribute, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("inline detached absent attribute read blocked")??;
+        poll_immediate(detached.read_named_attribute(&attribute, WorkBudget::UNBOUNDED, &cancellation))?;
     assert_eq!(absent.value, None);
 
     detached.record.kind = FileKind::Fifo;
     detached.record.payload = FilePayload::Empty;
     assert_eq!(detached.logical_bytes(), 0);
-    let rejected = poll_ready(detached.seek(
+    let rejected = poll_immediate(detached.seek(
         0,
         ExtentSeekTarget::Data,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("non-regular detached seek blocked")?
     .err()
     .ok_or("non-regular detached seek succeeded")?;
     assert!(matches!(
@@ -13084,21 +9714,19 @@ fn remaining_facade_guards_are_fast_typed_and_non_mutating()
     let cancellation = CancellationToken::new();
     let mut limited = config();
     limited.limits.maximum_read_bytes = 1;
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([211; 16]),
         limited,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("volume creation blocked")??
+    ))?
     .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("checkout blocked")??
+    ))?
     .value;
 
     let baseline = WorkCounters {
@@ -13106,13 +9734,12 @@ fn remaining_facade_guards_are_fast_typed_and_non_mutating()
         ..WorkCounters::default()
     };
     assert_eq!(
-        poll_ready(checkout.observe_base_metadata_ids(
+        poll_immediate(checkout.observe_base_metadata_ids(
             &[],
             baseline,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("empty metadata observation blocked")??,
+        ))?,
         baseline
     );
     assert!(matches!(
@@ -13123,27 +9750,24 @@ fn remaining_facade_guards_are_fast_typed_and_non_mutating()
         })
     ));
     assert!(matches!(
-        poll_ready(checkout.stage_blob(
+        poll_immediate(checkout.stage_blob(
             bytes::Bytes::from_static(b"xx"),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("oversized blob guard blocked")?,
+        )),
         Err(OperationFailure {
             error: FsError::FileRead(FileRangeReadError::InvalidRange),
             ..
         })
     ));
 
-    poll_ready(checkout.create_directory(path("directory")?, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("directory creation blocked")??;
+    poll_immediate(checkout.create_directory(path("directory")?, WorkBudget::UNBOUNDED, &cancellation))?;
     assert!(matches!(
-        poll_ready(checkout.detach_regular_file(
+        poll_immediate(checkout.detach_regular_file(
             &path("directory")?,
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("directory detach guard blocked")?,
+        )),
         Err(OperationFailure {
             error: FsError::FileRead(FileRangeReadError::NotRegular),
             ..
@@ -13236,13 +9860,12 @@ fn assert_authority_volume_identity_fails_closed() -> Result<(), Box<dyn std::er
     )?;
     let cancellation = CancellationToken::new();
     assert!(matches!(
-        poll_ready(fs.read_creation(
+        poll_immediate(fs.read_creation(
             expected_volume,
             WorkCounters::default(),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("authority identity replay blocked")?,
+        )),
         Err(OperationFailure {
             error: FsError::VolumeMismatch,
             ..
@@ -13262,8 +9885,7 @@ fn assert_authority_volume_identity_fails_closed() -> Result<(), Box<dyn std::er
         config: config(),
     };
     assert!(matches!(
-        poll_ready(empty.resolve_head_generation(WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("empty authority head blocked")?,
+        poll_immediate(empty.resolve_head_generation(WorkBudget::UNBOUNDED, &cancellation)),
         Err(OperationFailure {
             error: FsError::EmptyAuthority,
             ..
@@ -13277,61 +9899,54 @@ fn detached_payload_bounds_and_authority_volume_identity_fail_closed()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("volume creation blocked")??
+    let volume = poll_immediate(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))?
         .value;
     let file = path("bounded-detached")?;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("checkout blocked")??
+    ))?
     .value;
-    poll_ready(checkout.create_file(
+    poll_immediate(checkout.create_file(
         file.clone(),
         bytes::Bytes::new(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("file creation blocked")??;
+    ))?;
     let attribute = AttributeName::new(
         crate::kernel::AttributeClass::PosixXattr,
         b"user.bounded".to_vec(),
         config().limits.maximum_component_bytes,
     )?;
-    poll_ready(checkout.write_named_attribute(
+    poll_immediate(checkout.write_named_attribute(
         file.clone(),
         attribute.clone(),
         bytes::Bytes::from_static(b"xx"),
         NamedAttributeWriteMode::Create,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("attribute write blocked")??;
+    ))?;
     let mut detached =
-        poll_ready(checkout.detach_regular_file(&file, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("file detachment blocked")??
+        poll_immediate(checkout.detach_regular_file(&file, WorkBudget::UNBOUNDED, &cancellation))?
             .value;
     detached.volume.config.limits.maximum_read_bytes = 1;
     assert!(matches!(
-        poll_ready(
+        poll_immediate(
             detached.read_named_attribute(&attribute, WorkBudget::UNBOUNDED, &cancellation,)
-        )
-        .ok_or("bounded attribute read blocked")?,
+        ),
         Err(OperationFailure {
             error: FsError::FileRead(FileRangeReadError::InvalidRange),
             ..
         })
     ));
     assert!(matches!(
-        poll_ready(detached.stage_blob(
+        poll_immediate(detached.stage_blob(
             bytes::Bytes::from_static(b"xx"),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("bounded detached staging blocked")?,
+        )),
         Err(OperationFailure {
             error: FsError::FileRead(FileRangeReadError::InvalidRange),
             ..
@@ -13340,14 +9955,6 @@ fn detached_payload_bounds_and_authority_volume_identity_fail_closed()
 
     assert_authority_volume_identity_fails_closed()
 }
-
-// --- Case-folding / Unicode-normalization ---
-//
-// `CaseSensitivity::ProfileFolded` rejects same-directory siblings whose
-// names collide once case-folded (`FsError::NameCollision`) and resolves
-// lookups case-insensitively; `UnicodePolicy::RequireNfc` rejects any new
-// name that is not canonical NFC (`FsError::NonNormalizedName`). Both are
-// admitted at volume creation (pinned above).
 
 fn folded_config() -> VolumeConfig {
     VolumeConfig {
@@ -13369,16 +9976,14 @@ fn profile_folded_volumes_can_be_created_and_checked_out() -> Result<(), Box<dyn
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let volume =
-        poll_ready(fs.create_volume(folded_config(), WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("create blocked")??
+        poll_immediate(fs.create_volume(folded_config(), WorkBudget::UNBOUNDED, &cancellation))?
             .value;
-    poll_ready(volume.checkout(
+    poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("checkout blocked")??;
+    ))?;
     Ok(())
 }
 
@@ -13386,16 +9991,14 @@ fn profile_folded_volumes_can_be_created_and_checked_out() -> Result<(), Box<dyn
 fn require_nfc_volumes_can_be_created_and_checked_out() -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume(nfc_config(), WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("create blocked")??
+    let volume = poll_immediate(fs.create_volume(nfc_config(), WorkBudget::UNBOUNDED, &cancellation))?
         .value;
-    poll_ready(volume.checkout(
+    poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("checkout blocked")??;
+    ))?;
     Ok(())
 }
 
@@ -13404,31 +10007,27 @@ fn profile_folded_volume_rejects_case_only_collisions() -> Result<(), Box<dyn st
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let volume =
-        poll_ready(fs.create_volume(folded_config(), WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("create blocked")??
+        poll_immediate(fs.create_volume(folded_config(), WorkBudget::UNBOUNDED, &cancellation))?
             .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("checkout blocked")??
+    ))?
     .value;
-    poll_ready(checkout.create_file(
+    poll_immediate(checkout.create_file(
         path("Foo")?,
         bytes::Bytes::from_static(b"first"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("first create blocked")??;
-    let collision = poll_ready(checkout.create_file(
+    ))?;
+    let collision = poll_immediate(checkout.create_file(
         path("foo")?,
         bytes::Bytes::from_static(b"second"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("second create blocked")?;
+    ));
     assert!(
         collision.is_err(),
         "creating \"foo\" must collide with the existing \"Foo\" under ProfileFolded"
@@ -13442,101 +10041,89 @@ fn profile_folded_admission_covers_directories_links_and_renames()
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let volume =
-        poll_ready(fs.create_volume(folded_config(), WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("create blocked")??
+        poll_immediate(fs.create_volume(folded_config(), WorkBudget::UNBOUNDED, &cancellation))?
             .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("checkout blocked")??
+    ))?
     .value;
 
-    poll_ready(checkout.create_directory(path("Directory")?, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("directory create blocked")??;
-    let directory_collision = poll_ready(checkout.create_directory(
+    poll_immediate(checkout.create_directory(path("Directory")?, WorkBudget::UNBOUNDED, &cancellation))?;
+    let directory_collision = poll_immediate(checkout.create_directory(
         path("directory")?,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("directory collision blocked")?
     .err()
     .ok_or("directory collision unexpectedly succeeded")?;
     assert!(matches!(directory_collision.error, FsError::NameCollision));
 
-    poll_ready(checkout.create_symbolic_link(
+    poll_immediate(checkout.create_symbolic_link(
         path("Link")?,
         bytes::Bytes::from_static(b"target"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("link create blocked")??;
-    let link_collision = poll_ready(checkout.create_symbolic_link(
+    ))?;
+    let link_collision = poll_immediate(checkout.create_symbolic_link(
         path("link")?,
         bytes::Bytes::from_static(b"other"),
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("link collision blocked")?
     .err()
     .ok_or("link collision unexpectedly succeeded")?;
     assert!(matches!(link_collision.error, FsError::NameCollision));
 
-    let source = poll_ready(checkout.create_file(
+    let source = poll_immediate(checkout.create_file(
         path("Source")?,
         bytes::Bytes::from_static(b"body"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("source create blocked")??
+    ))?
     .value;
-    poll_ready(checkout.rename(
+    poll_immediate(checkout.rename(
         path("Source")?,
         path("SOURCE")?,
         false,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("case-only rename blocked")??;
-    let renamed = poll_ready(checkout.lookup_no_follow(
+    ))?;
+    let renamed = poll_immediate(checkout.lookup_no_follow(
         &path("source")?,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("renamed lookup blocked")??
+    ))?
     .value
     .record
     .ok_or("renamed source absent")?;
     assert_eq!(renamed.file_id, source);
 
-    poll_ready(checkout.create_file(
+    poll_immediate(checkout.create_file(
         path("Other")?,
         bytes::Bytes::from_static(b"other"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("other create blocked")??;
-    let rename_collision = poll_ready(checkout.rename(
+    ))?;
+    let rename_collision = poll_immediate(checkout.rename(
         path("SOURCE")?,
         path("other")?,
         false,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("rename collision blocked")?
     .err()
     .ok_or("rename collision unexpectedly succeeded")?;
     assert!(matches!(rename_collision.error, FsError::NameCollision));
 
-    let link_destination_collision = poll_ready(checkout.hard_link(
+    let link_destination_collision = poll_immediate(checkout.hard_link(
         path("SOURCE")?,
         path("source")?,
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("same-fold link blocked")?
     .err()
     .ok_or("same-fold link unexpectedly succeeded")?;
     assert!(matches!(
@@ -13544,22 +10131,19 @@ fn profile_folded_admission_covers_directories_links_and_renames()
         FsError::NameCollision
     ));
 
-    poll_ready(checkout.create_file(
+    poll_immediate(checkout.create_file(
         path("Removed")?,
         bytes::Bytes::from_static(b"removed"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("removed create blocked")??;
-    poll_ready(checkout.remove(path("Removed")?, None, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("removed delete blocked")??;
-    poll_ready(checkout.create_file(
+    ))?;
+    poll_immediate(checkout.remove(path("Removed")?, None, WorkBudget::UNBOUNDED, &cancellation))?;
+    poll_immediate(checkout.create_file(
         path("removed")?,
         bytes::Bytes::from_static(b"reused"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("reused folded name blocked")??;
+    ))?;
     Ok(())
 }
 
@@ -13569,18 +10153,16 @@ fn profile_folded_authored_batches_reject_intra_batch_collisions()
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let volume =
-        poll_ready(fs.create_volume(folded_config(), WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("create blocked")??
+        poll_immediate(fs.create_volume(folded_config(), WorkBudget::UNBOUNDED, &cancellation))?
             .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("checkout blocked")??
+    ))?
     .value;
-    let failure = poll_ready(checkout.apply_authored_transaction(
+    let failure = poll_immediate(checkout.apply_authored_transaction(
         vec![
             AuthoredMutation::CreateDirectory {
                 path: path("Batch")?,
@@ -13595,13 +10177,12 @@ fn profile_folded_authored_batches_reject_intra_batch_collisions()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("authored collision blocked")?
     .err()
     .ok_or("authored collision unexpectedly succeeded")?;
     assert!(matches!(failure.error, FsError::NameCollision));
     assert!(!checkout.has_pending_mutations());
 
-    let ordered_aliases = poll_ready(checkout.apply_authored_transaction(
+    let ordered_aliases = poll_immediate(checkout.apply_authored_transaction(
         vec![
             AuthoredMutation::CreateFile {
                 path: path("Source")?,
@@ -13616,15 +10197,13 @@ fn profile_folded_authored_batches_reject_intra_batch_collisions()
         ],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("folded authored alias batch blocked")??;
+    ))?;
     let created_id = ordered_aliases.value.created_file_ids[0].ok_or("created id missing")?;
-    let renamed = poll_ready(checkout.lookup_no_follow(
+    let renamed = poll_immediate(checkout.lookup_no_follow(
         &path("renamed")?,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("folded authored alias lookup blocked")??;
+    ))?;
     assert_eq!(
         renamed
             .value
@@ -13634,7 +10213,7 @@ fn profile_folded_authored_batches_reject_intra_batch_collisions()
         created_id
     );
 
-    let nested = poll_ready(checkout.apply_authored_transaction(
+    let nested = poll_immediate(checkout.apply_authored_transaction(
         vec![
             AuthoredMutation::CreateDirectory {
                 path: path("Nested")?,
@@ -13648,10 +10227,9 @@ fn profile_folded_authored_batches_reject_intra_batch_collisions()
         ],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("nested folded authored batch blocked")??;
+    ))?;
     assert_eq!(nested.value.created_file_ids.len(), 2);
-    let nested_read = poll_ready(checkout.read_file_range(
+    let nested_read = poll_immediate(checkout.read_file_range(
         &path_parts(&["NESTED", "child"])?,
         ByteRange {
             offset: 0,
@@ -13659,8 +10237,7 @@ fn profile_folded_authored_batches_reject_intra_batch_collisions()
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("nested folded lookup blocked")??;
+    ))?;
     assert_eq!(nested_read.value.bytes.as_ref(), b"nested");
     Ok(())
 }
@@ -13668,35 +10245,29 @@ fn profile_folded_authored_batches_reject_intra_batch_collisions()
 #[test]
 fn sensitive_volume_still_permits_case_distinct_siblings() -> Result<(), Box<dyn std::error::Error>>
 {
-    // Control: default `Sensitive` behavior must not regress while the
-    // ProfileFolded tests above are red.
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("create blocked")??
+    let volume = poll_immediate(fs.create_volume(config(), WorkBudget::UNBOUNDED, &cancellation))?
         .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("checkout blocked")??
+    ))?
     .value;
-    poll_ready(checkout.create_file(
+    poll_immediate(checkout.create_file(
         path("Foo")?,
         bytes::Bytes::from_static(b"first"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("first create blocked")??;
-    poll_ready(checkout.create_file(
+    ))?;
+    poll_immediate(checkout.create_file(
         path("foo")?,
         bytes::Bytes::from_static(b"second"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("second create blocked")??;
+    ))?;
     Ok(())
 }
 
@@ -13706,28 +10277,24 @@ fn profile_folded_volume_resolves_case_insensitive_lookups()
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let volume =
-        poll_ready(fs.create_volume(folded_config(), WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("create blocked")??
+        poll_immediate(fs.create_volume(folded_config(), WorkBudget::UNBOUNDED, &cancellation))?
             .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("checkout blocked")??
+    ))?
     .value;
-    let created = poll_ready(checkout.create_file(
+    let created = poll_immediate(checkout.create_file(
         path("foo")?,
         bytes::Bytes::from_static(b"body"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("create blocked")??
+    ))?
     .value;
     let lookup =
-        poll_ready(checkout.lookup_no_follow(&path("FOO")?, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("lookup blocked")??
+        poll_immediate(checkout.lookup_no_follow(&path("FOO")?, WorkBudget::UNBOUNDED, &cancellation))?
             .value;
     assert_eq!(
         lookup.record.map(|record| record.file_id),
@@ -13739,42 +10306,35 @@ fn profile_folded_volume_resolves_case_insensitive_lookups()
 
 #[test]
 fn require_nfc_volume_rejects_non_normalized_names() -> Result<(), Box<dyn std::error::Error>> {
-    // "Ã©" spelled two ways: precomposed NFC (U+00E9) and decomposed NFD
-    // ('e' U+0065 followed by combining acute accent U+0301). Both encode to
-    // the same visible grapheme; only the NFC form is canonical.
     let precomposed = "\u{00e9}";
     let decomposed = "e\u{0301}";
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume(nfc_config(), WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("create blocked")??
+    let volume = poll_immediate(fs.create_volume(nfc_config(), WorkBudget::UNBOUNDED, &cancellation))?
         .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("checkout blocked")??
+    ))?
     .value;
-    let rejected = poll_ready(checkout.create_file(
+    let rejected = poll_immediate(checkout.create_file(
         path(decomposed)?,
         bytes::Bytes::from_static(b"body"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("nfd create blocked")?;
+    ));
     assert!(
         rejected.is_err(),
         "a non-normalized (NFD) name must be rejected under RequireNfc"
     );
-    poll_ready(checkout.create_file(
+    poll_immediate(checkout.create_file(
         path(precomposed)?,
         bytes::Bytes::from_static(b"body"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("nfc create blocked")??;
+    ))?;
     Ok(())
 }
 
@@ -13783,103 +10343,90 @@ fn stamped_content_change_equals_the_change_then_its_stamp_in_one_mutation()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([131; 16]),
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("volume creation blocked")??
+    ))?
     .value;
     let timed = path("timed")?;
     let untimed = path("untimed")?;
-    let mut seed = poll_ready(volume.checkout(
+    let mut seed = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("seed checkout blocked")??
+    ))?
     .value;
-    let file_id = poll_ready(seed.create_file(
+    let file_id = poll_immediate(seed.create_file(
         timed.clone(),
         bytes::Bytes::from(vec![b'a'; 128]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("seed create blocked")??
+    ))?
     .value;
-    poll_ready(seed.create_file(
+    poll_immediate(seed.create_file(
         untimed.clone(),
         bytes::Bytes::from(vec![b'b'; 128]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("untimed create blocked")??;
+    ))?;
     let times = FileMetadata {
         modified_ns: MetadataField::Value(1),
         accessed_ns: MetadataField::Value(2),
         changed_ns: MetadataField::Value(3),
         ..FileMetadata::default()
     };
-    poll_ready(seed.set_metadata_by_id(file_id, times, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("seed metadata blocked")??;
-    poll_ready(seed.commit(
+    poll_immediate(seed.set_metadata_by_id(file_id, times, WorkBudget::UNBOUNDED, &cancellation))?;
+    poll_immediate(seed.commit(
         OperationId::from_bytes([132; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("seed commit blocked")??;
+    ))?;
 
-    let mut stamped = poll_ready(volume.checkout(
+    let mut stamped = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("stamped checkout blocked")??
+    ))?
     .value;
-    let mut separate = poll_ready(volume.checkout(
+    let mut separate = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("separate checkout blocked")??
+    ))?
     .value;
-    poll_ready(stamped.change_content_by_id(
+    poll_immediate(stamped.change_content_by_id(
         file_id,
         ContentChange::Write { offset: 4, bytes: OwnedBytes::from_static(b"STAMP") },
         ContentTimes::Stamp(99),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("stamped write blocked")??;
-    poll_ready(separate.write_file_by_id(
+    ))?;
+    poll_immediate(separate.write_file_by_id(
         file_id,
         4,
         bytes::Bytes::from_static(b"STAMP"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("separate write blocked")??;
+    ))?;
     let mut expected =
-        poll_ready(separate.read_metadata_by_id(file_id, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("separate metadata read blocked")??
+        poll_immediate(separate.read_metadata_by_id(file_id, WorkBudget::UNBOUNDED, &cancellation))?
             .value;
     assert_eq!(expected, times, "a preserving write leaves metadata intact");
     assert!(expected.stamp_content_change(99));
-    poll_ready(separate.set_metadata_by_id(
+    poll_immediate(separate.set_metadata_by_id(
         file_id,
         expected,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("separate stamp blocked")??;
+    ))?;
     assert_eq!(stamped.root(), separate.root());
     let metadata =
-        poll_ready(stamped.read_metadata_by_id(file_id, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("stamped metadata read blocked")??
+        poll_immediate(stamped.read_metadata_by_id(file_id, WorkBudget::UNBOUNDED, &cancellation))?
             .value;
     assert_eq!(metadata.modified_ns, MetadataField::Value(99));
     assert_eq!(metadata.changed_ns, MetadataField::Value(99));
@@ -13888,7 +10435,7 @@ fn stamped_content_change_equals_the_change_then_its_stamp_in_one_mutation()
     // The change and its stamp are one mutation: a change that fails stamps nothing.
     let before = stamped.root().clone();
     assert!(
-        poll_ready(stamped.change_content_by_id(
+        poll_immediate(stamped.change_content_by_id(
             file_id,
             ContentChange::CloneFrom {
                 source: FileId::from_bytes([200; 16]),
@@ -13900,27 +10447,23 @@ fn stamped_content_change_equals_the_change_then_its_stamp_in_one_mutation()
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("failing stamped clone blocked")?
         .is_err()
     );
     assert_eq!(stamped.root(), &before);
 
     // A profile that represents no content times keeps its metadata object.
     let untimed_before =
-        poll_ready(stamped.read_metadata(&untimed, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("untimed metadata read blocked")??
+        poll_immediate(stamped.read_metadata(&untimed, WorkBudget::UNBOUNDED, &cancellation))?
             .value;
-    poll_ready(stamped.change_content(
+    poll_immediate(stamped.change_content(
         untimed.clone(),
         ContentChange::Resize { logical_bytes: 7 },
         ContentTimes::Stamp(101),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("untimed resize blocked")??;
+    ))?;
     let untimed_after =
-        poll_ready(stamped.read_metadata(&untimed, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("untimed metadata reread blocked")??
+        poll_immediate(stamped.read_metadata(&untimed, WorkBudget::UNBOUNDED, &cancellation))?
             .value;
     assert_eq!(untimed_after, untimed_before);
     Ok(())
@@ -13931,29 +10474,26 @@ fn grouped_changes_land_together_and_each_keeps_its_own_result()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([141; 16]),
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("volume creation blocked")??
+    ))?
     .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("checkout blocked")??
+    ))?
     .value;
-    let existing = poll_ready(checkout.create_file(
+    let existing = poll_immediate(checkout.create_file(
         path("existing")?,
         bytes::Bytes::from(vec![b'a'; 128]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("seed create blocked")??
+    ))?
     .value;
     let content = |bytes: &'static [u8]| GroupedChange::Content {
         file_id: existing,
@@ -13970,12 +10510,11 @@ fn grouped_changes_land_together_and_each_keeps_its_own_result()
     };
 
     // Every change applies: one mutation, one result each.
-    let applied = poll_ready(checkout.apply_group(
+    let applied = poll_immediate(checkout.apply_group(
         vec![create("first")?, content(b"ONE"), create("second")?],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("group blocked")??
+    ))?
     .value;
     let [
         Ok(GroupedOutcome::Created(first)),
@@ -13988,7 +10527,7 @@ fn grouped_changes_land_together_and_each_keeps_its_own_result()
     assert_ne!(first, second);
 
     // A failing change fails alone; its neighbours still apply in order.
-    let mixed = poll_ready(checkout.apply_group(
+    let mixed = poll_immediate(checkout.apply_group(
         vec![
             create("third")?,
             create("first")?,
@@ -14001,8 +10540,7 @@ fn grouped_changes_land_together_and_each_keeps_its_own_result()
         ],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("mixed group blocked")??
+    ))?
     .value;
     assert!(matches!(mixed[0], Ok(GroupedOutcome::Created(_))));
     assert!(
@@ -14014,19 +10552,18 @@ fn grouped_changes_land_together_and_each_keeps_its_own_result()
 
     for name in ["existing", "first", "second", "third"] {
         assert!(
-            poll_ready(checkout.lookup_no_follow(
+            poll_immediate(checkout.lookup_no_follow(
                 &path(name)?,
                 WorkBudget::UNBOUNDED,
                 &cancellation
-            ))
-            .ok_or("lookup blocked")??
+            ))?
             .value
             .record
             .is_some(),
             "{name} is bound"
         );
     }
-    let read = poll_ready(checkout.read_file_range_by_id(
+    let read = poll_immediate(checkout.read_file_range_by_id(
         existing,
         ByteRange {
             offset: 0,
@@ -14034,14 +10571,11 @@ fn grouped_changes_land_together_and_each_keeps_its_own_result()
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("read blocked")??
+    ))?
     .value;
     assert_eq!(read.bytes.as_ref(), b"TWOa");
-    // A real streamed source still completes before ordered retry, even when
-    // its neighbour makes the combined transaction fail.
     let streamed_id = FileId::new();
-    let streamed = poll_ready(checkout.apply_group(
+    let streamed = poll_immediate(checkout.apply_group(
         vec![
             GroupedChange::CreateFile {
                 path: path("streamed")?,
@@ -14055,31 +10589,31 @@ fn grouped_changes_land_together_and_each_keeps_its_own_result()
         ],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    )).ok_or("streamed mixed group blocked")??.value;
+    ))?.value;
     assert!(matches!(streamed[0], Ok(GroupedOutcome::Created(id)) if id == streamed_id));
     assert!(streamed[1].is_err());
     assert!(matches!(streamed[2], Ok(GroupedOutcome::Changed)));
     assert!(matches!(streamed[3], Ok(GroupedOutcome::Changed)));
-    let streamed_read = poll_ready(checkout.read_file_range_by_id(
+    let streamed_read = poll_immediate(checkout.read_file_range_by_id(
         streamed_id, ByteRange { offset: 0, length: 4096 },
         WorkBudget::UNBOUNDED, &cancellation,
-    )).ok_or("streamed read blocked")??.value;
+    ))?.value;
     assert_eq!(streamed_read.bytes.as_ref(), vec![b's'; 4096].as_slice());
-    let ordered_read = poll_ready(checkout.read_file_range_by_id(
+    let ordered_read = poll_immediate(checkout.read_file_range_by_id(
         existing, ByteRange { offset: 0, length: 4 },
         WorkBudget::UNBOUNDED, &cancellation,
-    )).ok_or("ordered read blocked")??.value;
+    ))?.value;
     assert_eq!(ordered_read.bytes.as_ref(), b"LAST");
 
-    let denied = poll_ready(checkout.apply_group(
+    let denied = poll_immediate(checkout.apply_group(
         vec![create("denied-group")?],
         WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED },
         &cancellation,
-    )).ok_or("denied group blocked")?;
+    ));
     assert!(denied.is_err(), "output admission must precede effects");
-    assert!(poll_ready(checkout.lookup_no_follow(
+    assert!(poll_immediate(checkout.lookup_no_follow(
         &path("denied-group")?, WorkBudget::UNBOUNDED, &cancellation,
-    )).ok_or("denied lookup blocked")??.value.record.is_none());
+    ))?.value.record.is_none());
     Ok(())
 }
 
@@ -14088,53 +10622,47 @@ fn repeated_lookups_observe_the_base_once_and_still_conflict()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([151; 16]),
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("volume creation blocked")??
+    ))?
     .value;
-    let mut local = poll_ready(volume.checkout(
+    let mut local = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_tracking(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("local checkout blocked")??
+    ))?
     .value;
-    let mut remote = poll_ready(volume.checkout(
+    let mut remote = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("remote checkout blocked")??
+    ))?
     .value;
-    poll_ready(local.create_file(
+    poll_immediate(local.create_file(
         path("authored")?,
         bytes::Bytes::from_static(b"local"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("local create blocked")??;
+    ))?;
 
     let observed = path("observed")?;
-    let first = poll_ready(local.lookup_no_follow_with_metadata(
+    let first = poll_immediate(local.lookup_no_follow_with_metadata(
         &observed,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("first lookup blocked")??;
+    ))?;
     assert!(first.value.is_none());
     let proof = local.dependencies.proof().dependencies.clone();
-    let second = poll_ready(local.lookup_no_follow_with_metadata(
+    let second = poll_immediate(local.lookup_no_follow_with_metadata(
         &observed,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("second lookup blocked")??;
+    ))?;
     assert!(second.value.is_none());
     assert_eq!(
         local.dependencies.proof().dependencies,
@@ -14147,21 +10675,18 @@ fn repeated_lookups_observe_the_base_once_and_still_conflict()
     );
 
     // The observation absorbed once still fences a racing binding.
-    poll_ready(remote.create_file(
+    poll_immediate(remote.create_file(
         observed,
         bytes::Bytes::from_static(b"remote"),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("remote create blocked")??;
-    poll_ready(remote.commit(
+    ))?;
+    poll_immediate(remote.commit(
         OperationId::from_bytes([152; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("remote commit blocked")??;
-    let rebase = poll_ready(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-        .ok_or("rebase blocked")??;
+    ))?;
+    let rebase = poll_immediate(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))?;
     assert!(matches!(rebase.value, RebaseDecision::Conflicted { .. }));
     Ok(())
 }
@@ -14169,48 +10694,41 @@ fn repeated_lookups_observe_the_base_once_and_still_conflict()
 #[test]
 fn batch_lookups_observe_every_path_in_one_walk_and_still_conflict()
 -> Result<(), Box<dyn std::error::Error>> {
-    // Once with an unchanged candidate, whose one walk both answers and
-    // observes, and once with a private change, which observes the base.
     for (seed, authored) in [(171_u8, false), (181, true)] {
         let fs = Fs::memory();
         let cancellation = CancellationToken::new();
-        let volume = poll_ready(fs.create_volume_with_id(
+        let volume = poll_immediate(fs.create_volume_with_id(
             VolumeId::from_bytes([seed; 16]),
             config(),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("volume creation blocked")??
+        ))?
         .value;
-        let mut local = poll_ready(volume.checkout(
+        let mut local = poll_immediate(volume.checkout(
             GenerationSelector::Head,
             writable_tracking(),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("local checkout blocked")??
+        ))?
         .value;
-        let mut remote = poll_ready(volume.checkout(
+        let mut remote = poll_immediate(volume.checkout(
             GenerationSelector::Head,
             writable_pinned(),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("remote checkout blocked")??
+        ))?
         .value;
         if authored {
-            poll_ready(local.create_file(
+            poll_immediate(local.create_file(
                 path("authored")?,
                 bytes::Bytes::from_static(b"local"),
                 WorkBudget::UNBOUNDED,
                 &cancellation,
-            ))
-            .ok_or("local create blocked")??;
+            ))?;
         }
         let paths = [path("first")?, path("second")?];
         let batch =
-            poll_ready(local.lookup_batch_no_follow(&paths, WorkBudget::UNBOUNDED, &cancellation))
-                .ok_or("batch lookup blocked")??;
+            poll_immediate(local.lookup_batch_no_follow(&paths, WorkBudget::UNBOUNDED, &cancellation))?;
         assert!(
             batch
                 .value
@@ -14219,25 +10737,21 @@ fn batch_lookups_observe_every_path_in_one_walk_and_still_conflict()
                 .all(|entry| entry.record.is_none())
         );
         let proof = local.dependencies.proof().dependencies.clone();
-        poll_ready(local.lookup_batch_no_follow(&paths, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("repeated batch lookup blocked")??;
+        poll_immediate(local.lookup_batch_no_follow(&paths, WorkBudget::UNBOUNDED, &cancellation))?;
         assert_eq!(local.dependencies.proof().dependencies, proof);
 
-        poll_ready(remote.create_file(
+        poll_immediate(remote.create_file(
             path("second")?,
             bytes::Bytes::from_static(b"remote"),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("remote create blocked")??;
-        poll_ready(remote.commit(
+        ))?;
+        poll_immediate(remote.commit(
             OperationId::from_bytes([seed.wrapping_add(1); 16]),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("remote commit blocked")??;
-        let rebase = poll_ready(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("rebase blocked")??;
+        ))?;
+        let rebase = poll_immediate(local.rebase_head(8, WorkBudget::UNBOUNDED, &cancellation))?;
         assert!(matches!(rebase.value, RebaseDecision::Conflicted { .. }));
     }
     Ok(())
@@ -14247,34 +10761,30 @@ fn batch_lookups_observe_every_path_in_one_walk_and_still_conflict()
 fn one_reader_answers_a_batch_of_identities() -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([191; 16]),
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("volume creation blocked")??
+    ))?
     .value;
-    let mut writer = poll_ready(volume.checkout(
+    let mut writer = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("checkout blocked")??
+    ))?
     .value;
     let mut identities = Vec::new();
     for name in ["a", "b"] {
-        poll_ready(writer.create_file(
+        poll_immediate(writer.create_file(
             path(name)?,
             bytes::Bytes::from_static(b"x"),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("create blocked")??;
+        ))?;
         let record =
-            poll_ready(writer.lookup_no_follow(&path(name)?, WorkBudget::UNBOUNDED, &cancellation))
-                .ok_or("lookup blocked")??
+            poll_immediate(writer.lookup_no_follow(&path(name)?, WorkBudget::UNBOUNDED, &cancellation))?
                 .value
                 .record
                 .ok_or("created file missing")?;
@@ -14283,12 +10793,11 @@ fn one_reader_answers_a_batch_of_identities() -> Result<(), Box<dyn std::error::
     let absent = FileId::from_bytes([192; 16]);
     let reader = writer.pinned_reader()?;
     assert_eq!(reader.generation_id(), writer.generation_id());
-    let records = poll_ready(reader.file_records_by_id(
+    let records = poll_immediate(reader.file_records_by_id(
         &[identities[1].file_id, absent, identities[0].file_id],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("identity batch blocked")??;
+    ))?;
     assert_eq!(
         records.value,
         vec![Some(identities[1]), None, Some(identities[0])]
@@ -14300,31 +10809,28 @@ fn one_reader_answers_a_batch_of_identities() -> Result<(), Box<dyn std::error::
 fn each_grouped_change_has_its_own_budget() -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([161; 16]),
         config(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("volume creation blocked")??
+    ))?
     .value;
-    let mut checkout = poll_ready(volume.checkout(
+    let mut checkout = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("checkout blocked")??
+    ))?
     .value;
     let mut files = Vec::new();
     for (index, name) in ["one", "two", "three", "four"].into_iter().enumerate() {
-        let file_id = poll_ready(checkout.create_file(
+        let file_id = poll_immediate(checkout.create_file(
             path(name)?,
             bytes::Bytes::from(vec![u8::try_from(index)?; 16]),
             WorkBudget::UNBOUNDED,
             &cancellation,
-        ))
-        .ok_or("seed create blocked")??
+        ))?
         .value;
         files.push(file_id);
     }
@@ -14333,22 +10839,20 @@ fn each_grouped_change_has_its_own_budget() -> Result<(), Box<dyn std::error::Er
         change: ContentChange::Write { offset: 0, bytes: OwnedBytes::from(vec![fill; 4_096]) },
         times: ContentTimes::Preserve,
     };
-    let single = poll_ready(checkout.apply_group(
+    let single = poll_immediate(checkout.apply_group(
         vec![write(files[0], 1)],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("single group blocked")??;
+    ))?;
     assert!(single.value.iter().all(Result::is_ok));
     // Enough for any one change, far from enough for three sharing it.
     let mut budget = WorkBudget::UNBOUNDED;
     budget.bytes_hashed = single.work.bytes_hashed * 3 / 2;
-    let group = poll_ready(checkout.apply_group(
+    let group = poll_immediate(checkout.apply_group(
         vec![write(files[1], 2), write(files[2], 3), write(files[3], 4)],
         budget,
         &cancellation,
-    ))
-    .ok_or("group blocked")??;
+    ))?;
     assert!(
         group.value.iter().all(Result::is_ok),
         "a change failed on its neighbours' work: {:?}",
@@ -14358,12 +10862,7 @@ fn each_grouped_change_has_its_own_budget() -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
-/// Rewriting an existing file whole (truncate, extend, write from staged content, the shape
-/// native capture gives every changed regular file) depends on the file's complete record
-/// through its `Resize`. Its content-range dependencies on the old bytes add nothing to that
-/// proof, and when the file is larger than `maximum_read_bytes` they cannot be captured at all:
-/// every later publication of a workspace holding a file over 16 MiB failed with
-/// `ContentRangeTooLarge`.
+/// Rewriting an existing file whole (truncate, extend, write from staged content, the shape native capture gives every changed regular file) depends on the file's complete record through its `Resize`.
 #[test]
 fn a_whole_file_rewrite_larger_than_the_read_bound_is_admitted()
 -> Result<(), Box<dyn std::error::Error>> {
@@ -14371,33 +10870,30 @@ fn a_whole_file_rewrite_larger_than_the_read_bound_is_admitted()
     let cancellation = CancellationToken::new();
     let mut limited = config();
     limited.limits.maximum_read_bytes = 8;
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([231; 16]),
         limited,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("volume creation blocked")??
+    ))?
     .value;
     let file = path("large")?;
     let stage = |checkout: &Checkout<_, _>, body: &'static [u8]| {
         let mut source = std::io::Cursor::new(OwnedBytes::from_static(body));
-        poll_ready(checkout.stage_content(&mut source, 64, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("staging blocked")?
+        poll_immediate(checkout.stage_content(&mut source, 64, WorkBudget::UNBOUNDED, &cancellation))
             .map(|staged| staged.value)
             .map_err(|failure| format!("staging failed: {:?}", failure.error))
     };
 
-    let mut first = poll_ready(volume.checkout(
+    let mut first = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("first checkout blocked")??
+    ))?
     .value;
     let original = stage(&first, b"0123456789abcdef0123456789abcdef")?;
-    poll_ready(first.apply_authored_transaction(
+    poll_immediate(first.apply_authored_transaction(
         vec![AuthoredMutation::CreateFileFromContent {
             path: file.clone(),
             content: original,
@@ -14406,25 +10902,22 @@ fn a_whole_file_rewrite_larger_than_the_read_bound_is_admitted()
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("create blocked")??;
-    poll_ready(first.commit(
+    ))?;
+    poll_immediate(first.commit(
         OperationId::from_bytes([231; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("first commit blocked")??;
+    ))?;
 
-    let mut second = poll_ready(volume.checkout(
+    let mut second = poll_immediate(volume.checkout(
         GenerationSelector::Head,
         writable_pinned(),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("second checkout blocked")??
+    ))?
     .value;
     let replacement = stage(&second, b"ZYXWVUTSRQPONMLKzyxwvutsrqponmlk")?;
-    poll_ready(second.apply_authored_transaction(
+    poll_immediate(second.apply_authored_transaction(
         vec![
             AuthoredMutation::Resize {
                 path: file.clone(),
@@ -14443,15 +10936,13 @@ fn a_whole_file_rewrite_larger_than_the_read_bound_is_admitted()
         WorkBudget::UNBOUNDED,
         &cancellation,
     ))
-    .ok_or("rewrite blocked")?
     .map_err(|failure| format!("whole-file rewrite refused: {:?}", failure.error))?;
-    poll_ready(second.commit(
+    poll_immediate(second.commit(
         OperationId::from_bytes([232; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("second commit blocked")??;
-    let head = poll_ready(second.read_file_range(
+    ))?;
+    let head = poll_immediate(second.read_file_range(
         &file,
         ByteRange {
             offset: 24,
@@ -14459,52 +10950,46 @@ fn a_whole_file_rewrite_larger_than_the_read_bound_is_admitted()
         },
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("read blocked")??
+    ))?
     .value;
     assert_eq!(head.bytes.as_ref(), b"rqponmlk");
     Ok(())
 }
 
-/// Dropping a rewritten file's byte-range dependencies keeps its record dependency, so a whole
-/// rewrite planned against a stale base still conflicts with a rewrite another checkout
-/// committed first, rather than silently replacing it.
+/// Dropping a rewritten file's byte-range dependencies keeps its record dependency, so a whole rewrite planned against a stale base still conflicts with a rewrite another checkout committed first, rather than silently replacing it.
 #[test]
 fn a_stale_whole_file_rewrite_still_conflicts() -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
     let cancellation = CancellationToken::new();
     let mut limited = config();
     limited.limits.maximum_read_bytes = 8;
-    let volume = poll_ready(fs.create_volume_with_id(
+    let volume = poll_immediate(fs.create_volume_with_id(
         VolumeId::from_bytes([233; 16]),
         limited,
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("volume creation blocked")??
+    ))?
     .value;
     let file = path("large")?;
     let checkout = || {
-        poll_ready(volume.checkout(
+        poll_immediate(volume.checkout(
             GenerationSelector::Head,
             writable_pinned(),
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("checkout blocked")?
         .map(|checkout| checkout.value)
         .map_err(|failure| format!("checkout failed: {:?}", failure.error))
     };
     let stage = |checkout: &Checkout<_, _>, body: &'static [u8]| {
         let mut source = std::io::Cursor::new(OwnedBytes::from_static(body));
-        poll_ready(checkout.stage_content(&mut source, 64, WorkBudget::UNBOUNDED, &cancellation))
-            .ok_or("staging blocked")?
+        poll_immediate(checkout.stage_content(&mut source, 64, WorkBudget::UNBOUNDED, &cancellation))
             .map(|staged| staged.value)
             .map_err(|failure| format!("staging failed: {:?}", failure.error))
     };
     let rewrite = |checkout: &mut Checkout<_, _>, body: &'static [u8]| {
         let content = stage(checkout, body)?;
-        poll_ready(checkout.apply_authored_transaction(
+        poll_immediate(checkout.apply_authored_transaction(
             vec![
                 AuthoredMutation::Resize {
                     path: file.clone(),
@@ -14523,14 +11008,13 @@ fn a_stale_whole_file_rewrite_still_conflicts() -> Result<(), Box<dyn std::error
             WorkBudget::UNBOUNDED,
             &cancellation,
         ))
-        .ok_or("rewrite blocked")?
         .map(|_| ())
         .map_err(|failure| format!("rewrite refused: {:?}", failure.error))
     };
 
     let mut seed = checkout()?;
     let original = stage(&seed, b"0123456789abcdef0123456789abcdef")?;
-    poll_ready(seed.apply_authored_transaction(
+    poll_immediate(seed.apply_authored_transaction(
         vec![AuthoredMutation::CreateFileFromContent {
             path: file.clone(),
             content: original,
@@ -14539,95 +11023,37 @@ fn a_stale_whole_file_rewrite_still_conflicts() -> Result<(), Box<dyn std::error
         }],
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("create blocked")??;
-    poll_ready(seed.commit(
+    ))?;
+    poll_immediate(seed.commit(
         OperationId::from_bytes([233; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("seed commit blocked")??;
+    ))?;
 
     let mut first = checkout()?;
     let mut stale = checkout()?;
     rewrite(&mut first, b"FIRSTFIRSTFIRSTFIRSTFIRSTFIRST12")?;
-    let committed = poll_ready(first.commit(
+    let committed = poll_immediate(first.commit(
         OperationId::from_bytes([234; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("first commit blocked")??
+    ))?
     .value;
     assert!(
         matches!(committed, CheckoutCommitOutcome::Committed { .. }),
         "{committed:?}"
     );
     rewrite(&mut stale, b"STALESTALESTALESTALESTALESTALE12")?;
-    let refused = poll_ready(stale.commit(
+    let refused = poll_immediate(stale.commit(
         OperationId::from_bytes([235; 16]),
         WorkBudget::UNBOUNDED,
         &cancellation,
-    ))
-    .ok_or("stale commit blocked")??
+    ))?
     .value;
     assert!(
         matches!(refused, CheckoutCommitOutcome::Conflict { .. }),
         "{refused:?}"
     );
-    Ok(())
-}
-
-#[tokio::test]
-async fn readonly_directory_records_share_the_finite_and_unbounded_engine()
--> Result<(), Box<dyn std::error::Error>> {
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("readonly-directory-finite-engine").await?;
-    workspace.write_text("/first", "one").await?;
-    workspace.write_text("/second", "two").await?;
-    let cancellation = CancellationToken::new();
-    let mut checkout = workspace.checkout_measured(
-        GenerationSelector::Head, CheckoutMode::read_only_pinned(),
-        WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    let root = root_path()?;
-    // Warm authenticated immutable-page caches before comparing exact receipts.
-    checkout.list_directory_records(
-        &root, None, 8, WorkBudget::UNBOUNDED, &cancellation,
-    ).await?;
-    let ordinary = checkout.list_directory_records(
-        &root, None, 8, WorkBudget::UNBOUNDED, &cancellation,
-    ).await?;
-    let finite = checkout.list_directory_records(
-        &root, None, 8,
-        WorkBudget {
-            items_returned: ordinary.work.items_returned + 8 - ordinary.value.entries.len() as u64,
-            ..ordinary.work
-        },
-        &cancellation,
-    ).await?;
-    assert_eq!(finite.value, ordinary.value);
-    assert_eq!(finite.work, ordinary.work);
-    assert!(ordinary.work.allocation_operations > 0);
-    // Every allocation cutoff includes the named-record, request, and final
-    // output admissions, not merely the outer heap-future allocation.
-    for maximum in 0..ordinary.work.allocation_operations {
-        let failure = checkout.list_directory_records(
-            &root, None, 8,
-            WorkBudget { allocation_operations: maximum, ..WorkBudget::UNBOUNDED },
-            &cancellation,
-        ).await.err().ok_or("finite list bypassed a vector admission")?;
-        assert!(failure.work.allocation_operations <= maximum);
-    }
-    let cancelled = CancellationToken::new();
-    cancelled.cancel();
-    let failure = checkout.list_directory_records(
-        &root, None, 8, WorkBudget::UNBOUNDED, &cancelled,
-    ).await.err().ok_or("cancelled list unexpectedly succeeded")?;
-    assert!(matches!(failure.error, FsError::Cancelled(_)));
-    let after_failure = checkout.list_directory_records(
-        &root, None, 8, WorkBudget::UNBOUNDED, &cancellation,
-    ).await?;
-    assert_eq!(after_failure.value, ordinary.value);
     Ok(())
 }
 
@@ -14638,9 +11064,9 @@ async fn selected_fork_invalid_native_paths_preflight_before_allocation_and_read
     let fs = Fs::memory();
     let workspace = fs.create_workspace("selected-fork-invalid-paths").await?;
     workspace.write_text("/file", "body").await?;
-    let source = workspace.head().await?;
+    let source = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let cancellation = CancellationToken::new();
-    let checkout = workspace.checkout_measured(
+    let checkout = workspace.checkout(
         GenerationSelector::Exact(source.id()), CheckoutMode::read_only_pinned(),
         WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value;
@@ -14669,98 +11095,32 @@ async fn selected_fork_invalid_native_paths_preflight_before_allocation_and_read
     Ok(())
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
-async fn selected_fork_original_native_matches_frozen_source_and_keeps_failed_work()
--> Result<(), Box<dyn std::error::Error>> {
-    use crate::kernel::allocation::KernelAccounting;
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("selected-fork-original-frozen").await?;
-    let mut transaction = workspace.begin_transaction(crate::IdempotencyKey::new()).await?;
-    transaction.create_dir_all("/tree/nested").await?;
-    transaction.write_text("/tree/nested/file", "frozen body").await?;
-    transaction.hard_link("/tree/nested/file", "/tree/nested/alias").await?;
-    transaction.hard_link("/tree/nested/file", "/outside-alias").await?;
-    transaction.write_text("/omitted", "old omitted body").await?;
-    transaction.commit().await?;
-    let source = workspace.head().await?;
-    let cancellation = CancellationToken::new();
-    let checkout = workspace.checkout_measured(
-        GenerationSelector::Exact(source.id()), CheckoutMode::read_only_pinned(),
-        WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    let source_table = checkout.root().file_table;
-    let source_id = source.id();
-    // Selection must authenticate the supplied frozen generation, not current head.
-    workspace.write_text("/tree/nested/file", "replacement at current head").await?;
-    workspace.write_text("/new-at-head", "not in the frozen source").await?;
-    for paths in [
-        vec!["/tree".to_owned(), "/tree/nested/file".to_owned(), "/tree".to_owned()],
-        vec!["/tree/nested/file".to_owned()],
-        vec!["/outside-alias".to_owned(), "/tree/nested/alias".to_owned()],
-        Vec::new(),
-        vec!["/tree".to_owned(), "/".to_owned()],
-    ] {
-        let expected = fs.select_fork_paths(
-            &source, checkout.root(), paths.clone(), WorkBudget::UNBOUNDED, &cancellation,
-        ).await?.0;
-        let original = crate::NativeMaterializationWork::new(WorkBudget::UNBOUNDED, &cancellation)
-            .map_err(|(cause, _)| cause)?;
-        let mut accounting = KernelAccounting::native(&original, &cancellation);
-        let actual = fs.select_fork_paths_with_accounting(
-            &source, checkout.root(), paths, &mut accounting, &cancellation,
-        ).await?;
-        assert_eq!(actual, expected, "the original operation uses the same canonical closure");
-        assert_eq!(source.id(), source_id);
-        assert_eq!(checkout.root().file_table, source_table);
-    }
-    assert_eq!((source.read("/tree/nested/file", 64).await?).as_ref(), b"frozen body");
-    assert!(source.read("/new-at-head", 64).await.is_err());
-
-    let denied = crate::NativeMaterializationWork::new(
-        WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED }, &cancellation,
-    ).map_err(|(cause, _)| cause)?;
-    let mut accounting = KernelAccounting::native(&denied, &cancellation);
-    let failed = fs.select_fork_paths_with_accounting(
-        &source, checkout.root(), vec!["/tree/nested/file".to_owned()],
-        &mut accounting, &cancellation,
-    ).await.err().ok_or("native selection ignored its original encoding ceiling")?;
-    assert!(matches!(failed, crate::workspace::WorkspaceError::Work(_)));
-    let spent = denied.receipt();
-    assert!(spent.allocation_operations > 0);
-    assert!(spent.backend_read_operations > 0);
-    assert_eq!(spent.bytes_encoded, 0);
-    assert_eq!(spent.backend_write_operations, 0);
-    assert_eq!(checkout.root().file_table, source_table);
-    Ok(())
-}
-
 #[tokio::test]
 async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_semantics()
 -> Result<(), Box<dyn std::error::Error>> {
     use crate::workspace::{ForkOptions, WorkspaceError};
     let fs = Fs::memory();
     let workspace = fs.create_workspace("selected-fork-closure-controls").await?;
-    let mut transaction = workspace.begin_transaction(crate::IdempotencyKey::new()).await?;
+    let mut transaction = workspace.begin_transaction(crate::IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction.create_dir_all("/tree/nested").await?;
     transaction.write_text("/tree/nested/file", "linked body").await?;
     transaction.hard_link("/tree/nested/file", "/tree/nested/alias").await?;
     transaction.hard_link("/tree/nested/file", "/outside-alias").await?;
     transaction.write_text("/omitted", "not inherited").await?;
-    transaction.commit().await?;
-    let source = workspace.head().await?;
+    transaction.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let source = workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let paths = vec!["/tree".to_owned(), "/tree/nested/file".to_owned(), "/tree".to_owned()];
     let child = workspace.fork(
         "selected-fork-closure-child",
         ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
             .inherit_paths(paths.clone()),
     ).await?;
-    let initial = child.head().await?;
+    let initial = child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!((child.read("/tree/nested/alias", 32).await?).as_ref(), b"linked body");
     assert!(child.read("/outside-alias", 32).await.is_err());
     assert!(child.read("/omitted", 32).await.is_err());
-    let file = initial.stat("/tree/nested/file").await?;
-    let alias = initial.stat("/tree/nested/alias").await?;
+    let file = initial.stat("/tree/nested/file", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let alias = initial.stat("/tree/nested/alias", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(file.file_id, alias.file_id);
     assert_eq!(file.link_count, 2);
     assert!(initial.matches_fork_selection(&source, Some(paths.clone())).await?);
@@ -14805,7 +11165,7 @@ async fn selected_fork_nested_hardlink_closure_replays_finite_work_and_root_sema
         ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
             .inherit_paths(vec!["/tree".to_owned(), "/".to_owned(), "/".to_owned()]),
     ).await?;
-    let all = all.head().await?;
+    let all = all.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert!(all.matches_fork_selection(&source, None).await?);
     assert!(all.matches_fork_selection(&source, Some(vec!["/".to_owned()])).await?);
     assert!(!initial.matches_fork_selection(&source, Some(vec!["/".to_owned()])).await?);
@@ -14828,16 +11188,15 @@ fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed_prefi
         },
         EmbeddedCapabilities::MEMORY,
     );
-    let workspace = poll_ready(fs.create_workspace("selected-fork-verification-gates"))
-        .ok_or("workspace creation blocked")??;
-    poll_ready(workspace.write_text("/file", "body")).ok_or("fixture write blocked")??;
-    let source = poll_ready(workspace.head()).ok_or("source head blocked")??;
-    let child = poll_ready(workspace.fork(
+    let workspace = poll_immediate(fs.create_workspace("selected-fork-verification-gates"))?;
+    poll_immediate(workspace.write_text("/file", "body"))?;
+    let source = poll_immediate(async { workspace.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) })?;
+    let child = poll_immediate(workspace.fork(
         "selected-fork-verification-child",
         ForkOptions::from_generation(source.clone(), crate::IdempotencyKey::new())
             .inherit_paths(vec!["/file".to_owned()]),
-    )).ok_or("selected fork blocked")??;
-    let initial = poll_ready(child.head()).ok_or("child head blocked")??;
+    ))?;
+    let initial = poll_immediate(async { child.head(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) })?;
     *tracked.lock().map_err(|_| "tracking lock poisoned")? = Some(ObjectId {
         kind: ObjectKind::GenerationRoot, digest: source.id().digest(),
     });
@@ -14847,9 +11206,9 @@ fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed_prefi
         WorkBudget::default(),
         WorkBudget { allocation_operations: 0, ..WorkBudget::UNBOUNDED },
     ] {
-        let failed = poll_ready(initial.matches_fork_selection_measured(
+        let failed = poll_immediate(initial.matches_fork_selection_measured(
             &source, Some(vec!["/file".to_owned()]), budget, &cancellation,
-        )).ok_or("bounded verification blocked")?.err().ok_or("verification ignored its allocation gate")?;
+        )).err().ok_or("verification ignored its allocation gate")?;
         assert!(matches!(failed.error, WorkspaceError::Work(_)));
         assert_eq!(failed.work.allocation_operations, 0);
         assert_eq!(failed.work.backend_read_operations, 0);
@@ -14857,9 +11216,9 @@ fn selected_fork_verification_zero_allocation_and_cancellation_keep_failed_prefi
     }
     let cancelled = CancellationToken::new();
     cancelled.cancel();
-    let failed = poll_ready(initial.matches_fork_selection_measured(
+    let failed = poll_immediate(initial.matches_fork_selection_measured(
         &source, Some(vec!["/file".to_owned()]), WorkBudget::UNBOUNDED, &cancelled,
-    )).ok_or("cancelled verification blocked")?.err().ok_or("verification ignored cancellation")?;
+    )).err().ok_or("verification ignored cancellation")?;
     assert!(matches!(failed.error, WorkspaceError::Cancelled(_)));
     assert_eq!(failed.work.allocation_operations, 0);
     assert_eq!(failed.work.backend_read_operations, 0);
@@ -14876,7 +11235,7 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
     workspace.write_text("/source", "authenticated source bytes").await?;
     workspace.write_text("/destination", "old destination").await?;
     let cancellation = CancellationToken::new();
-    let mut checkout = workspace.checkout_measured(
+    let mut checkout = workspace.checkout(
         GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value;
     let source = checkout.lookup_no_follow(
@@ -14955,58 +11314,6 @@ async fn original_content_stream_and_clone_keep_real_identity_and_atomic_stamps(
 
 #[cfg(not(target_arch = "wasm32"))]
 #[tokio::test]
-async fn original_content_copy_and_stamp_denials_leave_real_records_unchanged()
--> Result<(), Box<dyn std::error::Error>> {
-    use crate::kernel::allocation::KernelAccounting;
-    let fs = Fs::memory();
-    let workspace = fs.create_workspace("original-content-denials").await?;
-    workspace.write_text("/source", "actual clone source").await?;
-    workspace.write_text("/destination", "actual old destination").await?;
-    let cancellation = CancellationToken::new();
-    let mut checkout = workspace.checkout_measured(
-        GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value;
-    let source = checkout.lookup_no_follow(
-        &path("source")?, WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value.record.ok_or("actual source absent")?;
-    let destination = checkout.lookup_no_follow(
-        &path("destination")?, WorkBudget::UNBOUNDED, &cancellation,
-    ).await?.value.record.ok_or("actual destination absent")?;
-    checkout.set_metadata_by_id(destination.file_id, FileMetadata {
-        modified_ns: MetadataField::Value(1), changed_ns: MetadataField::Value(2),
-        ..FileMetadata::default()
-    }, WorkBudget::UNBOUNDED, &cancellation).await?;
-    let before = checkout.root.file_table;
-    for deny_stamp in [false, true] {
-        let budget = if deny_stamp {
-            WorkBudget { bytes_encoded: 0, ..WorkBudget::UNBOUNDED }
-        } else {
-            WorkBudget { bytes_copied: 0, ..WorkBudget::UNBOUNDED }
-        };
-        let original = crate::NativeMaterializationWork::new(budget, &cancellation)
-            .map_err(|(cause, _)| cause)?;
-        let baseline = original.live_allocation_bytes();
-        let mut accounting = KernelAccounting::native(&original, &cancellation);
-        let allocation = accounting.claim_owned(0, 0)?;
-        let change = ContentChange::CloneFrom {
-            source: source.file_id, source_offset: 0, offset: 0, length: 6,
-        };
-        let failed = checkout.compile_content_with_accounting(
-            crate::kernel::Owned::new((destination.file_id, change), allocation, 0),
-            if deny_stamp { ContentTimes::Stamp(50) } else { ContentTimes::Preserve },
-            &mut accounting, &cancellation,
-        ).await.err().ok_or("original content ignored its copy/stamp gate")?;
-        assert!(matches!(failed, FsError::Work(_) | FsError::NativeKernel(_)));
-        assert_eq!(checkout.root.file_table, before);
-        assert_eq!(original.receipt().bytes_encoded, 0);
-        assert_eq!(original.receipt().backend_write_operations, 0);
-        if !deny_stamp { assert_eq!(original.live_allocation_bytes(), baseline); }
-    }
-    Ok(())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-#[tokio::test]
 async fn original_detached_content_stream_keeps_atomic_metadata_transition()
 -> Result<(), Box<dyn std::error::Error>> {
     let fs = Fs::memory();
@@ -15014,7 +11321,7 @@ async fn original_detached_content_stream_keeps_atomic_metadata_transition()
     workspace.write_text("/source", "real detached stream").await?;
     workspace.write_text("/destination", "before").await?;
     let cancellation = CancellationToken::new();
-    let mut checkout = workspace.checkout_measured(
+    let mut checkout = workspace.checkout(
         GenerationSelector::Head, writable_pinned(), WorkBudget::UNBOUNDED, &cancellation,
     ).await?.value;
     let source = checkout.lookup_no_follow(

@@ -194,22 +194,6 @@ where
         })
     }
 
-    #[cfg(not(target_arch = "wasm32"))]
-    fn observe_received_copy_with_native_work<'a>(
-        &'a self, proof: &'a crate::runtime::ReceivedCopyReadWitness<'_>,
-        work: &'a acyclic_fs::NativeMaterializationWork,
-    ) -> Result<crate::NativeFutureBundle<'a, (Option<FileRef>, acyclic_fs::NativeAllocation)>> {
-        crate::NativeFutureBundle::new(work, || async move {
-            let io = PreparationIo::from_native_work(work)?;
-            self.grant.require_with_io(&self.volume, VolumeOperation::Read, Some(&io))?;
-            let file = self.host.received_copy_record_with_io(
-                &self.volume, proof, self.maximum_bytes, &io,
-            ).await?;
-            let retained = file.as_ref().map(UploadRecord::logical_owned_bytes).transpose()?.unwrap_or(0);
-            let custody = io.into_native_custody(retained)?;
-            Ok((file, custody))
-        })
-    }
 
     fn observe_staged_once_measured<'a>(
         &'a self, operation_id: OperationId, maximum_bytes: u64,

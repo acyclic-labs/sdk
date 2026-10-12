@@ -25,7 +25,7 @@ pub(super) fn send<'a, P: StreamProvider + 'static>(
         let io = super::super::PreparationIo::from_native_work(work)?;
         io.retain_owned(std::mem::size_of::<crate::durable_host::MailSendAck>() as u64)?;
         let payload = payload.clone_with_io(&io)?;
-        let ack = mailbox.host.send_from_owner_with_io(
+        let ack = mailbox.host.send_from_owner(
             mailbox.owner.as_ref(), recipient, operation, payload, Some(&io),
         ).await?;
         let owned = (std::mem::size_of::<crate::durable_host::MailSendAck>() as u64)

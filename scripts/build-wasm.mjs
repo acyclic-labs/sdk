@@ -8,17 +8,6 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const usage = "usage: build-wasm.mjs [PACKAGE [OUTPUT_DIR [CARGO [WASM_BINDGEN]]]]";
 
-// wasm-bindgen exposes the internal closure invoke shim in its generated
-// `InitOutput` declarations. Its short hash is derived from linker details
-// and therefore changes between otherwise equivalent host builds (for
-// example, Windows and Linux). The shim is an implementation detail: it is
-// never a supported JS entry point and is not used by the public Harness
-// facade. Omit it from the tracked declaration surface so a clean build is
-// byte-for-byte stable across platforms while leaving the generated runtime
-// JS/WASM pair untouched. Older toolchains name it
-// `wasm_bindgen__convert__closures_____invoke__h<hash>`; newer ones spell out
-// the closure type with each crate's build hash, which Cargo derives from the
-// host triple among other things.
 const closureInvokeShim = /^\s*(?:(?:readonly|export const)\s+)?wasm_bindgen_(?:[0-9a-f]+)?_+convert__closures_+invoke_[^:\s]*:.*\r?\n/gm;
 const stripHarnessClosureShims = output => {
   for (const name of ["acyclic_harness_wasm.d.ts", "acyclic_harness_wasm_bg.wasm.d.ts"]) {
@@ -29,11 +18,6 @@ const stripHarnessClosureShims = output => {
   }
 };
 
-// wasm-bindgen cannot express the relationship between the route argument and
-// the projected response because the Rust ABI quite correctly exposes JsValue.
-// The route/response map itself is emitted by the Rust route macro; this
-// narrow declaration rewrite preserves that generated relationship at the
-// TypeScript boundary without adding a handwritten runtime assertion.
 const narrowMachinesDecoder = output => {
   const declarationPath = resolve(output, "acyclic_machines_wasm.d.ts");
   const declaration = readFileSync(declarationPath, "utf8");
@@ -50,14 +34,6 @@ const narrowMachinesDecoder = output => {
   );
 };
 
-// TypeScript package -> cargo package selection, built artifact, bindgen
-// output name, optional target directory, and optional post-processing of the
-// generated directory. acyclic-stream is itself a cdylib, so Cargo gives its
-// library no per-configuration filename: the stream build (with `wasm`), the
-// filesystem build and the harness build (each unifying stream's dependencies
-// differently) would overwrite one artifact and recompile it and every
-// dependent crate under fat LTO on each later run. Separate target
-// directories keep each configuration warm.
 const packages = {
   workers: { family: true },
   actors: { family: true },
@@ -104,7 +80,6 @@ const resolveWasmBindgen = () => {
   const explicit = wasmBindgenArgument || process.env.ACYCLIC_WASM_BINDGEN_BIN;
   if (explicit) return explicit;
   if (capture("wasm-bindgen", ["--version"]) === expectedVersion) return "wasm-bindgen";
-  // Fall back to the pinned resolver, which installs the CLI when missing.
   const script = resolve(root, "scripts", "ensure-wasm-bindgen.sh");
   const gitBash = process.platform === "win32" ? capture("cygpath", ["-w", "/bin/bash.exe"]) : undefined;
   return gitBash
@@ -141,10 +116,6 @@ for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) 
   }
   const output = outputArgument ? resolve(outputArgument) : resolve(root, "typescript/packages", name, "generated/wasm");
   const target = targetDirectory ? resolve(targetRoot, targetDirectory) : targetRoot;
-  // Panic locations embed source paths, including registry sources and
-  // build-script output. Remap the checkout, Cargo home and target directory
-  // so the committed bytes do not depend on where they were built. The flags
-  // apply to the WASM target only, leaving host builds and their caches alone.
   const rustflags = [
     "--remap-path-prefix", `${root}=.`,
     "--remap-path-prefix", `${target}=/cargo/build-dir`,
@@ -167,18 +138,12 @@ for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) 
       }
     }
   } finally { await rustcCapture?.close(); }
-  // A lane builds each package several times (the workspace check, the
-  // check-generated comparison, package checks). Cargo already makes the
-  // repeated module build a no-op; the bindings are a pure function of the
-  // module, the CLI and this script, so reuse them while those are unchanged.
   const module = resolve(target, "wasm32-unknown-unknown", "wasm-release", `${artifact}.wasm`);
   const bindings = resolve(target, "wasm-bindgen", name);
   const stamp = `${bindings}.sha256`;
   const key = createHash("sha256").update(script).update(expectedVersion).update(readFileSync(module)).digest("hex");
   if (!existsSync(stamp) || readFileSync(stamp, "utf8") !== key) {
     for (const stale of [stamp, bindings]) rmSync(stale, { recursive: true, force: true });
-    // The function name section is about 45% of each module and only serves
-    // symbolicated stack traces; shipped packages trade those for size.
     run(wasmBindgen, [
       module, "--target", "web", "--out-dir", bindings, "--out-name", outName,
       "--remove-name-section", "--remove-producers-section",
@@ -205,8 +170,6 @@ for (const name of packageArgument ? [packageArgument] : Object.keys(packages)) 
     };
     if (!receipt.build?.cargo?.version || !receipt.build?.rustc?.identity?.output) throw new Error("WASM compiler identity is missing");
     if (originalReceipt) {
-      // Reuse the original capture only for the identical source, recipe, tools
-      // and built module; never relabel an older receipt for a new source cut.
       const actualCompiler = producer.capturedCompilerIdentity(receipt.build.rustc.invocation, "wasm32-unknown-unknown");
       if (receipt.schema !== "acyclic.wasm-build-receipt.v1" || receipt.family !== name || receipt.package !== family.wasmPackageName || receipt.version !== family.version || receipt.source_commit !== revision || receipt.source_sha256 !== source.sha256 || JSON.stringify(receipt.source_files) !== JSON.stringify(source.files) || receipt.build.module_sha256 !== moduleSha256 || JSON.stringify(receipt.build.cargo) !== JSON.stringify({ command: cargo, version: capture(cargo, ["--version"]), args: buildArgs }) || JSON.stringify(receipt.build.rustc.identity) !== JSON.stringify(actualCompiler) || JSON.stringify(receipt.build.wasm_bindgen) !== JSON.stringify({ command: wasmBindgen, version: expectedVersion }) || JSON.stringify(receipt.artifacts) !== JSON.stringify(artifacts)) throw new Error("Cached WASM compiler receipt differs; a fresh owned target build is required");
     }

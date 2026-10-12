@@ -412,7 +412,7 @@ fn scan_work(work: NativeWork<'_>) -> Result<()> {
     let _ = work;
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(work) = work {
-        work.charge(acyclic_fs::WorkCounters { bytes_read: 1,
+        work.charge(acyclic_fs::WorkCounters { source_bytes_read: 1,
             items_examined: 1, ..acyclic_fs::WorkCounters::default() }).map_err(native_error)?;
     }
     Ok(())
@@ -456,7 +456,7 @@ fn codec_charge(
         Charge::Release { bytes } => custody.release(bytes).map_err(native_error),
         Charge::Retain { bytes } => custody.resize_retained(custody.bytes().checked_add(bytes)
             .ok_or_else(|| rejection(Some(work), "MCP codec custody overflows"))?).map_err(native_error),
-        Charge::Admission { maximum_owned_bytes } => quota.resize_retained(maximum_owned_bytes).map_err(native_error),
+        Charge::Admission { maximum_owned_bytes, .. } => quota.resize_retained(maximum_owned_bytes).map_err(native_error),
         Charge::CopyAdmission { bytes } => work.admit(acyclic_fs::WorkCounters {
             bytes_copied: bytes, ..acyclic_fs::WorkCounters::default() }).map_err(native_error),
         Charge::AllocationOperation { .. } => work.charge(acyclic_fs::WorkCounters {
@@ -464,9 +464,11 @@ fn codec_charge(
         Charge::Copy { bytes } => work.charge(acyclic_fs::WorkCounters {
             bytes_copied: bytes, ..acyclic_fs::WorkCounters::default() }).map_err(native_error),
         Charge::Read { bytes } => work.charge(acyclic_fs::WorkCounters {
-            bytes_read: bytes, ..acyclic_fs::WorkCounters::default() }).map_err(native_error),
+            source_bytes_read: bytes, ..acyclic_fs::WorkCounters::default() }).map_err(native_error),
+        Charge::Inspect { items } => work.charge(acyclic_fs::WorkCounters {
+            items_examined: items, ..Default::default() }).map_err(native_error),
         Charge::Work { bytes, items } => work.charge(acyclic_fs::WorkCounters {
-            bytes_read: bytes, items_examined: items, ..acyclic_fs::WorkCounters::default() }).map_err(native_error),
+            bytes_encoded: bytes, items_examined: items, ..acyclic_fs::WorkCounters::default() }).map_err(native_error),
     }
 }
 
@@ -477,8 +479,8 @@ fn encode_line<T: Serialize>(value: &T, maximum: usize, work: NativeWork<'_>) ->
             .max(crate::contract::lexical_json_diagnostic_bytes())).map_err(native_error)?;
         let mut custody = work.retain_owned(0).map_err(native_error)?;
         let mut quota = work.retain_owned(0).map_err(native_error)?;
-        let encoded = crate::json_bytes_bounded_trusted(value, bounds(maximum.saturating_sub(1)),
-            &mut |event| codec_charge(work, &mut custody, &mut quota, event));
+        let encoded = crate::json_bytes_bounded(value, bounds(maximum.saturating_sub(1)),
+            None, &mut |event| codec_charge(work, &mut custody, &mut quota, event));
         let bytes = match encoded {
             Ok(bytes) => bytes,
             Err(Error::Invalid(message)) => {
@@ -521,8 +523,8 @@ fn frame_admission(body: &[u8], maximum: usize, work: NativeWork<'_>) -> Result<
         let mut diagnostic = work.retain_owned(crate::contract::lexical_json_diagnostic_bytes()).map_err(native_error)?;
         let scanned = crate::contract::admit_json(body, bounds(maximum), &mut |event| match event {
             crate::JsonCodecCharge::Read { bytes } => work.charge(acyclic_fs::WorkCounters {
-                bytes_read: bytes, ..acyclic_fs::WorkCounters::default() }).map_err(native_error),
-            crate::JsonCodecCharge::Work { items, .. } => work.charge(acyclic_fs::WorkCounters {
+                source_bytes_read: bytes, ..acyclic_fs::WorkCounters::default() }).map_err(native_error),
+            crate::JsonCodecCharge::Work { items, .. } | crate::JsonCodecCharge::Inspect { items } => work.charge(acyclic_fs::WorkCounters {
                 items_examined: items, ..acyclic_fs::WorkCounters::default() }).map_err(native_error),
             _ => checkpoint(Some(work)),
         });
@@ -541,7 +543,7 @@ fn frame_admission(body: &[u8], maximum: usize, work: NativeWork<'_>) -> Result<
 fn serde_error(source: serde_json::Error, work: NativeWork<'_>, custody: &mut NativeCustody) -> Error {
     let _ = (&work, &custody);
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if work.is_some() { return Error::NativeDecode { source, custody: custody.take() }; }
+    if work.is_some() { return Error::NativeDecode { code: crate::wire::ErrorCode::Invalid, source, custody: custody.take() }; }
     Error::Invalid(format!("invalid MCP stdio JSON: {source}"))
 }
 

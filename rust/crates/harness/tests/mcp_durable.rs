@@ -314,7 +314,7 @@ async fn journal(root: &Path, create: bool) -> Result<(Arc<LocalJournal>, Author
         stream,
         host,
         private,
-        issuer.verifier(),
+        issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
         signed.clone(),
         8192,
     )?);

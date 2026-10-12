@@ -3106,7 +3106,7 @@ pub(crate) struct DetachReadMeter {
 /// Actual direct task plus its existing shared carrier. Field order drops the
 /// native task and carrier Arc before the last outside allocation-custody alias.
 struct DirectUnmountTask {
-    task: Option<acyclic_native_runtime::BlockingIoTask<std::io::Result<c_int>>>,
+    task: Option<acyclic_native_runtime::NativeCompletion<std::io::Result<c_int>>>,
     submission_failure: Option<std::io::Error>,
     _meter: Arc<DetachReadMeter>,
     original: super::NativeMountMeterWork,
@@ -3656,7 +3656,7 @@ impl DarwinRecoveryControl {
                         Ok(std::task::Poll::Pending) => None,
                         Ok(std::task::Poll::Ready(result)) => Some(result),
                         Err(panic) => {
-                            // BlockingIoTask publishes panic only after its
+                            // NativeCompletion publishes panic only after its
                             // accepted payload has physically unwound.
                             failure = Some(NativeMountError::DriverPanicked {
                                 operation: "Darwin administrative direct detach",

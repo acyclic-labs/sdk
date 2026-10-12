@@ -11,7 +11,7 @@ use acyclic_stream::{
 use futures::TryStreamExt as _;
 use serde::{Deserialize, Serialize};
 
-use crate::distributed::SdkCallError;
+use crate::distributed::{SdkCallError, sdk_error, sdk_source};
 pub(crate) fn original_native_decode_mode(observer: &dyn super::history::HistoryIo) -> bool {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     { observer.original_native_work().is_some() }
@@ -861,11 +861,11 @@ impl IndexedPublication {
                 path: self.path.clone(),
                 expected: self.expected_tail,
             }),
-            Err(error) if *error.source() == acyclic_stream::StreamError::NotFound && self.expected_tail == 0 => {
+            Err(error) if *sdk_source(&error) == acyclic_stream::StreamError::NotFound && self.expected_tail == 0 => {
                 drop(error);
                 Ok(CommitCondition::Absent { path: self.path.clone() })
             }
-            Err(error) => Err(error.into_error(work)),
+            Err(error) => Err(sdk_error(error, work)),
         }
     }
 
@@ -1086,7 +1086,7 @@ pub(crate) async fn read_records_with_work<P: StreamProvider>(
         return native_records_with_work(client, stream.path(), from, count, original).await;
     }
     if let Some(observer) = work.as_deref_mut() { observer.begin_call()?; }
-    Ok(stream.read(from, count).await.map(ObservedRecords::Ordinary).map_err(SdkCallError::ordinary))
+    Ok(stream.read(from, count).await.map(ObservedRecords::Ordinary).map_err(SdkCallError::Ok))
 }
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 async fn native_records_with_work<P: StreamProvider>(
@@ -1134,11 +1134,11 @@ pub(crate) async fn bounds_with_work<P: StreamProvider>(
             .map(|result| result.map(|output| *output.value()));
     }
     if work.is_none() {
-        return Ok(client.bounds(path.as_str()).await.map_err(SdkCallError::ordinary));
+        return Ok(client.bounds(path.as_str()).await.map_err(SdkCallError::Ok));
     }
     let handle = stream_with_work(client, path, work)?;
     if let Some(observer) = work.as_deref_mut() { observer.begin_call()?; }
-    Ok(handle.stream.bounds().await.map_err(SdkCallError::ordinary))
+    Ok(handle.stream.bounds().await.map_err(SdkCallError::Ok))
 }
 
 pub(crate) async fn tail_with_work<P: StreamProvider>(
@@ -1161,11 +1161,11 @@ pub(crate) async fn tail_optional_with_work<P: StreamProvider>(
         let result = crate::distributed::native_call_result(original, result)?;
         return match result {
             Ok(output) => Ok(Some(*output.value())),
-            Err(error) if *error.source() == acyclic_stream::StreamError::NotFound => {
+            Err(error) if *sdk_source(&error) == acyclic_stream::StreamError::NotFound => {
                 drop(error);
                 Ok(None)
             },
-            Err(error) => Err(error.into_error(work)),
+            Err(error) => Err(sdk_error(error, work)),
         };
     }
     let handle = stream_with_work(client, path, work)?;
@@ -1186,11 +1186,11 @@ pub(crate) async fn one_record<P: StreamProvider>(
 ) -> Result<Option<ObservedRecord>> {
     let mut records = match read_path_records_with_work(client, path, from, 1, work).await? {
         Ok(records) => records,
-        Err(error) if *error.source() == acyclic_stream::StreamError::NotFound => {
+        Err(error) if *sdk_source(&error) == acyclic_stream::StreamError::NotFound => {
             drop(error);
             return Ok(None);
         },
-        Err(error) => return Err(error.into_error(work)),
+        Err(error) => return Err(sdk_error(error, work)),
     };
     let mut first = None;
     let mut extra = None;
@@ -1789,7 +1789,7 @@ mod native_publication_custody_tests {
         let receiver = NativeMaterializationWork::new(budget(), &cancellation)
             .expect("different receiver ledger");
         let mut records = native_records_with_work(&client, &path, 0, 1, &producer)
-            .await?.map_err(|error| error.into_error(&None))?;
+            .await?.map_err(|error| sdk_error(error, &None))?;
         let mut io = native_work_io(&receiver).expect("receiver custody");
         let error = records.next(&mut Some(&mut io)).await
             .expect_err("foreign SDK output metadata is not this call's custody");
@@ -2156,7 +2156,7 @@ mod native_only_provider_tests {
             "pin tail, page tail, and finite read each have one SDK boundary");
         let mut work: Option<&mut dyn HistoryIo> = Some(&mut io);
         let bounds = bounds_with_work(&client, &publication.path, &mut work).await?
-            .map_err(|error| error.into_error(&work))?;
+            .map_err(|error| sdk_error(error, &work))?;
         assert_eq!(bounds.tail, 1);
         drop(page);
         drop(cursor);

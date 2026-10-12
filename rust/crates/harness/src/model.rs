@@ -481,7 +481,7 @@ fn model_digest<T: Serialize>(
     if let Some(io) = io {
         let _bytes;
         let bytes = io.encode_json(value, io.remaining()?.bytes_encoded, true)?;
-        _bytes = io.guard_owned(bytes.len() as u64)?;
+        _bytes = io.guard_bytes(&bytes)?;
         return model_hash(&bytes, Some(io));
     }
     crate::contract::canonical_json_digest(value)
@@ -970,7 +970,7 @@ impl NativeConfigurationBinding {
                 &(admission.source(), admission.selected(), admission.configurations()),
                 io.remaining()?.bytes_encoded, false,
             )?;
-            _bytes = io.guard_owned(bytes.len() as u64)?;
+            _bytes = io.guard_bytes(&bytes)?;
         }
         if admission.source() != &self.source
             || !admission.selected().contains(&self.configuration.extension)
@@ -1152,7 +1152,7 @@ impl ToolResultContent {
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         let root = std::mem::size_of::<Self>() as u64;
         let payload = match self {
-            Self::Json { value } => model_value_owned_bytes(value)?,
+            Self::Json { value } => crate::contract::json_value_logical_owned_bytes(value)?,
             Self::Parts { parts } => {
                 let mut bytes = model_owned_mul(parts.capacity(), std::mem::size_of::<ModelDataPart>())?;
                 for part in parts {
@@ -1246,24 +1246,6 @@ fn model_owned_mul(capacity: usize, slot: usize) -> Result<u64> {
     (capacity as u64).checked_mul(slot as u64).ok_or_else(model_owned_overflow)
 }
 
-/// Out-of-line known JSON storage; the caller already owns its Value header.
-pub(crate) fn model_value_owned_bytes(value: &Value) -> Result<u64> {
-    match value {
-        Value::String(text) => Ok(text.capacity() as u64),
-        Value::Array(values) => values.iter().try_fold(
-            model_owned_mul(values.capacity(), std::mem::size_of::<Value>())?,
-            |bytes, value| model_owned_add(bytes, model_value_owned_bytes(value)?),
-        ),
-        Value::Object(values) => values.iter().try_fold(
-            model_owned_mul(values.len(), std::mem::size_of::<(String, Value)>())?,
-            |bytes, (key, value)| {
-                model_owned_add(model_owned_add(bytes, key.capacity() as u64)?, model_value_owned_bytes(value)?)
-            },
-        ),
-        Value::Null | Value::Bool(_) | Value::Number(_) => Ok(0),
-    }
-}
-
 fn model_native_policy_owned_bytes(policy: &NativeMediaPolicy) -> Result<u64> {
     let mut bytes = std::mem::size_of::<NativeMediaPolicy>() as u64;
     if let Some(binding) = &policy.configuration {
@@ -1275,7 +1257,7 @@ fn model_native_policy_owned_bytes(policy: &NativeMediaPolicy) -> Result<u64> {
 }
 
 fn model_selection_payload_bytes(model: &Model) -> Result<u64> {
-    let mut bytes = model_value_owned_bytes(&model.options)?;
+    let mut bytes = crate::contract::json_value_logical_owned_bytes(&model.options)?;
     for capacity in [model.provider.capacity(), model.name.capacity(), model.revision.capacity()] {
         bytes = model_owned_add(bytes, capacity as u64)?;
     }
@@ -1296,7 +1278,7 @@ fn model_part_payload_bytes(part: &ModelContentPart) -> Result<u64> {
         ModelContentPart::File { file, policy } => model_file_payload_bytes(file, policy),
         ModelContentPart::ToolCall { call_id, name, arguments } => model_owned_add(
             model_owned_add(call_id.capacity() as u64, name.capacity() as u64)?,
-            model_value_owned_bytes(arguments)?,
+            crate::contract::json_value_logical_owned_bytes(arguments)?,
         ),
         ModelContentPart::ToolResult { call_id, name, content } => {
             let content = content.logical_owned_bytes()?.checked_sub(std::mem::size_of::<ToolResultContent>() as u64)
@@ -1333,7 +1315,7 @@ fn model_request_payload_bytes(request: &ModelRequest) -> Result<u64> {
             bytes = model_owned_add(bytes, capacity as u64)?;
         }
         for value in [&tool.input_schema, &tool.output_schema, &tool.projection_schema] {
-            bytes = model_owned_add(bytes, model_value_owned_bytes(value)?)?;
+            bytes = model_owned_add(bytes, crate::contract::json_value_logical_owned_bytes(value)?)?;
         }
     }
     Ok(bytes)
@@ -1359,7 +1341,7 @@ pub struct ModelRequest {
 #[derive(Clone, Debug)]
 pub struct PreparedModelRequest {
     request: ModelRequest,
-    bytes: Vec<u8>,
+    bytes: acyclic_stream::OwnedBytes,
     manifest: ModelRequestManifest,
 }
 
@@ -1451,7 +1433,7 @@ impl ModelRequest {
                         let tool = tools
                             .get(name)
                             .ok_or_else(|| Error::Invalid("model tool call is unbound".into()))?;
-                        crate::contract::validate_json_schema_value_with_io(
+                        crate::contract::validate_json_schema_value(
                             &tool.input_schema, arguments, "model tool arguments", io,
                         )?;
                         pending.insert(call_id, name);
@@ -1477,9 +1459,9 @@ impl ModelRequest {
                             Some(io) => {
                             let _bytes;
                             let bytes = io.encode_json(content, io.remaining()?.bytes_encoded, false)?;
-                            _bytes = io.guard_owned(bytes.len() as u64)?;
+                            _bytes = io.guard_bytes(&bytes)?;
                             let envelope = io.decode_preparation::<Value>(&bytes)?;
-                            crate::contract::validate_json_schema_value_with_io(
+                            crate::contract::validate_json_schema_value(
                                 &tool.projection_schema, &envelope, "model tool result", Some(io),
                             )?;
                             }
@@ -1487,8 +1469,7 @@ impl ModelRequest {
                             let envelope = serde_json::to_value(content)
                                 .map_err(|error| Error::Invalid(error.to_string()))?;
                             crate::contract::validate_json_schema_value(
-                                &tool.projection_schema, &envelope, "model tool result",
-                            )?;
+                                &tool.projection_schema, &envelope, "model tool result", None)?;
                         }
                         }
                     }
@@ -1516,11 +1497,10 @@ impl ModelRequest {
 }
 
 impl PreparedModelRequest {
-    /// Actual complete returned graph; transient codec buffers are not retained.
+    /// Returned graph excluding the independently guarded encoded bytes.
     pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
         let bytes = model_owned_add(std::mem::size_of::<Self>() as u64,
             model_request_payload_bytes(&self.request)?)?;
-        let bytes = model_owned_add(bytes, self.bytes.capacity() as u64)?;
         model_owned_add(bytes, model_owned_mul(self.manifest.message_digests.capacity(), std::mem::size_of::<[u8; 32]>())?)
     }
 
@@ -1559,7 +1539,7 @@ impl PreparedModelRequest {
             let before = io.receipt().items_examined;
             let _witness;
             let witness = io.encode_json(&request, io.remaining()?.bytes_encoded, false)?;
-            _witness = io.guard_owned(witness.len() as u64)?;
+            _witness = io.guard_bytes(&witness)?;
             let items = io.receipt().items_examined.checked_sub(before)
                 .ok_or_else(|| Error::Invalid("model request witness underflow".into()))?;
             let owned = items.checked_mul(<ModelRequest as crate::filesystem::PreparationRecord>::maximum_slot_bytes())
@@ -1587,14 +1567,14 @@ impl PreparedModelRequest {
         request.validate_with_io(limits, io)?;
         #[cfg(feature = "filesystem")]
         let bytes_hold;
-        let bytes = match io {
+        let bytes: acyclic_stream::OwnedBytes = match io {
             #[cfg(feature = "filesystem")]
             Some(io) => io.encode_json(&request, io.remaining()?.bytes_encoded, true)?,
-            _ => crate::contract::canonical_json_bytes(&request)?,
+            _ => crate::contract::canonical_json_bytes(&request)?.into(),
         };
         #[cfg(feature = "filesystem")]
         {
-            bytes_hold = io.map(|io| io.guard_owned(bytes.capacity() as u64)).transpose()?;
+            bytes_hold = io.map(|io| io.guard_bytes(&bytes)).transpose()?.flatten();
         }
         let request_digest = model_hash(&bytes, io)?;
         let binding_digest = model_digest(&(&request.model, &request.tools), io)?;
@@ -1658,7 +1638,7 @@ impl PreparedModelRequest {
             model_step(Some(&io), 1)?;
             let _hold;
             let bytes = io.encode_json(message, io.remaining()?.bytes_encoded, false)?;
-            _hold = io.guard_owned(bytes.capacity() as u64)?;
+            _hold = io.guard_bytes(&bytes)?;
             let mut tokens = bytes.len() as u64;
             message.content.visit_file_bindings(|file, _| {
                 model_step(Some(&io), 1)?;
@@ -1789,10 +1769,10 @@ impl PreparedModelRequest {
                 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
                 Some(io) if io.original_native_work().is_some() => {
                     let work = io.original_native_work().expect("native branch retains original work");
-                    verifier.verify_with_native_work(&reference, reference.descriptor().byte_length(), work).await?;
+                    verifier.verify_with_native_work(&reference, reference.descriptor().byte_length(), work)?.await?;
                     let bytes = verifier.read_with_native_work(
                         &reference, reference.descriptor().byte_length(), work,
-                    ).await?;
+                    )?.await?;
                     bytes
                 }
                 #[cfg(feature = "filesystem")]
@@ -1943,7 +1923,7 @@ async fn model_verify_content_files(
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Some(io) if io.original_native_work().is_some() => {
                 verifier.verify_with_native_work(file, file.descriptor().byte_length(),
-                    io.original_native_work().expect("native branch retains original work")).await?;
+                    io.original_native_work().expect("native branch retains original work"))?.await?;
             }
             #[cfg(feature = "filesystem")]
             Some(io) => {
@@ -2098,9 +2078,9 @@ impl ModelEvent {
             Self::Content { delta } | Self::Reasoning { delta } => delta.capacity() as u64,
             Self::ToolCall { call_id, name, arguments } => model_owned_add(
                 model_owned_add(call_id.capacity() as u64, name.capacity() as u64)?,
-                model_value_owned_bytes(arguments)?,
+                crate::contract::json_value_logical_owned_bytes(arguments)?,
             )?,
-            Self::Completed { metadata } => model_value_owned_bytes(metadata)?,
+            Self::Completed { metadata } => crate::contract::json_value_logical_owned_bytes(metadata)?,
         };
         model_owned_add(std::mem::size_of::<Self>() as u64, payload)
     }

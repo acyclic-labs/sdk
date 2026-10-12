@@ -210,10 +210,6 @@ pub fn listing(
 }
 
 /// Decodes one download body frame of at most `remaining` selected bytes.
-///
-/// The declared length is checked against the codec's frame bound (64 KiB
-/// plain, 8 MiB compressed) and the remaining bytes
-/// before any allocation or decompression, and the decoded length must match it.
 pub fn body(frame: wire::Body, remaining: u64) -> Result<Vec<u8>, Error> {
     let (length, compressed) = body_spec(&frame, remaining)?;
     if compressed {
@@ -237,8 +233,6 @@ fn body_spec(frame: &wire::Body, remaining: u64) -> Result<(usize, bool), Error>
     }
 }
 /// Decompresses one or more complete Zstandard frames to exactly `length` bytes.
-///
-/// Empty data is not a Zstandard stream; an empty frame is sent as `CODEC_NONE`.
 fn zstd(
     mut input: &[u8], length: usize,
     allocate: impl FnOnce(usize) -> Option<Vec<u8>>,
@@ -289,7 +283,7 @@ impl Clone for NativeGetControls {
 
 #[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
 impl NativeGetControls {
-    pub fn fail(&self, error: impl Into<super::NativeObjectsError>) -> Error {
+    pub(crate) fn fail(&self, error: impl Into<super::NativeObjectsError>) -> Error {
         let error = error.into();
         let service = match &error {
             super::NativeObjectsError::Service(error) => *error,
@@ -299,11 +293,11 @@ impl NativeGetControls {
         service
     }
 
-    pub fn check(&self) -> Result<(), Error> {
+    pub(crate) fn check(&self) -> Result<(), Error> {
         self.meter.check().map_err(|error| self.fail(error))
     }
 
-    pub fn dispatch<T>(
+    pub(crate) fn dispatch<T>(
         &self,
         kind: acyclic_native_runtime::NativeOperationKind,
         operation: impl FnOnce() -> T,
@@ -319,14 +313,14 @@ impl NativeGetControls {
         Ok((operation, failed))
     }
 
-    pub fn request<M: prost::Message>(&self, query: &M) -> Result<acyclic_native_runtime::ReadAllocation, Error> {
+    pub(crate) fn request<M: prost::Message>(&self, query: &M) -> Result<acyclic_native_runtime::ReadAllocation, Error> {
         let maximum = query.encoded_len().checked_mul(4)
             .ok_or_else(invalid)?;
         acyclic_native_runtime::ReadAllocation::adopt(&self.meter, maximum)
             .map_err(|error| self.fail(error))
     }
 
-    pub fn binary(&self, value: &impl prost::Message) -> Result<(Vec<u8>, acyclic_native_runtime::ReadAllocation), Error> {
+    pub(crate) fn binary(&self, value: &impl prost::Message) -> Result<(Vec<u8>, acyclic_native_runtime::ReadAllocation), Error> {
         let maximum = value.encoded_len();
         self.meter.admit_codec(maximum as u64, 0, 0).map_err(|error| self.fail(error))?;
         let mut allocation = acyclic_native_runtime::ReadAllocation::new(&self.meter, maximum)
@@ -346,7 +340,7 @@ impl NativeGetControls {
         Ok((bytes, allocation))
     }
 
-    pub fn copy(&self, bytes: &[u8]) -> Result<(Vec<u8>, acyclic_native_runtime::ReadAllocation), Error> {
+    pub(crate) fn copy(&self, bytes: &[u8]) -> Result<(Vec<u8>, acyclic_native_runtime::ReadAllocation), Error> {
         self.meter.admit_codec(0, bytes.len() as u64, 0).map_err(|error| self.fail(error))?;
         let mut allocation = acyclic_native_runtime::ReadAllocation::new(&self.meter, bytes.len())
             .map_err(|error| self.fail(error))?;
@@ -365,7 +359,7 @@ impl NativeGetControls {
         Ok((data, allocation))
     }
 
-    pub fn wire_bytes(&self, data: Vec<u8>, mut allocation: acyclic_native_runtime::ReadAllocation) -> Result<bytes::Bytes, Error> {
+    pub(crate) fn wire_bytes(&self, data: Vec<u8>, mut allocation: acyclic_native_runtime::ReadAllocation) -> Result<bytes::Bytes, Error> {
         let mut control = match acyclic_native_runtime::ReadAllocation::new(&self.meter, std::mem::size_of::<NativeBodyChunk>()) {
             Ok(control) => control,
             Err(error) => return Err(self.fail(super::NativeObjectsError::from(error).with_wire(data, allocation))),
@@ -376,7 +370,7 @@ impl NativeGetControls {
         Ok(bytes::Bytes::from_owner(NativeBodyChunk { data, _allocation: allocation }))
     }
 
-    pub fn body(&self, frame: wire::Body, remaining: u64, mut allocation: acyclic_native_runtime::ReadAllocation) -> Result<bytes::Bytes, Error> {
+    pub(crate) fn body(&self, frame: wire::Body, remaining: u64, mut allocation: acyclic_native_runtime::ReadAllocation) -> Result<bytes::Bytes, Error> {
         use acyclic_native_runtime::ReadAllocation;
         if let Err(error) = allocation.reconcile_capacity(frame.data.capacity()) {
             return Err(self.fail(super::NativeObjectsError::from(error).with_wire(frame.data, allocation)));
@@ -509,8 +503,8 @@ pub(crate) enum RequestInput<M> {
 
 #[cfg(all(not(target_arch = "wasm32"), any(feature = "grpc", feature = "http")))]
 impl<M> RequestInput<M> {
-    pub fn ordinary(value: M) -> Self { Self::Ordinary(value) }
-    pub fn native(
+    pub(crate) fn ordinary(value: M) -> Self { Self::Ordinary(value) }
+    pub(crate) fn native(
         request: super::ObjectsNativeRequest<M>,
         meter: &std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<Self, super::NativeObjectsError> {
@@ -520,7 +514,7 @@ impl<M> RequestInput<M> {
         }
         Ok(input)
     }
-    pub fn value(&self) -> &M {
+    pub(crate) fn value(&self) -> &M {
         match self {
             Self::Ordinary(value) => value,
             Self::Native { request, .. } => request.data(),
@@ -528,7 +522,7 @@ impl<M> RequestInput<M> {
             Self::CodecFailure(_) => unreachable!("failed source frames are handled before encoding"),
         }
     }
-    pub fn map<N>(self, transform: impl FnOnce(M) -> N) -> RequestInput<N> {
+    pub(crate) fn map<N>(self, transform: impl FnOnce(M) -> N) -> RequestInput<N> {
         match self {
             Self::Ordinary(value) => RequestInput::Ordinary(transform(value)),
             Self::Native { request, controls } => RequestInput::Native { request: request.map(transform), controls },
@@ -537,7 +531,7 @@ impl<M> RequestInput<M> {
         }
     }
     #[cfg(feature = "grpc")]
-    pub fn with_controls(mut self, current: Option<NativeGetControls>) -> Result<Self, Error>
+    pub(crate) fn with_controls(mut self, current: Option<NativeGetControls>) -> Result<Self, Error>
     where M: prost::Message {
         if let (Self::Native { request, controls }, Some(current)) = (&mut self, current) {
             let encoded = request.data().encoded_len();
@@ -560,7 +554,7 @@ impl<M> RequestInput<M> {
 pub(crate) struct CustodyProstCodec<M, U>(std::marker::PhantomData<(M, U)>);
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 impl<M, U> CustodyProstCodec<M, U> {
-    pub fn new() -> Self { Self(std::marker::PhantomData) }
+    pub(crate) fn new() -> Self { Self(std::marker::PhantomData) }
 }
 #[cfg(all(feature = "grpc", not(target_arch = "wasm32")))]
 impl<M: prost::Message + 'static, U: prost::Message + Default + 'static> tonic::codec::Codec for CustodyProstCodec<M, U> {

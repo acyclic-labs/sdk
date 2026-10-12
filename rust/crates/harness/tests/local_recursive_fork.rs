@@ -161,7 +161,7 @@ where
         stream.clone(),
         host.clone(),
         private.clone(),
-        issuer.verifier(),
+        issuer.verifier(), acyclic_harness::core::SchemaRegistry::new(),
         read_scope,
         64 * 1024,
     )?

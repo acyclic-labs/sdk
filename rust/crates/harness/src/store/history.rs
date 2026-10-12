@@ -939,7 +939,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         }
         let mut records = super::operations::read_records_with_work(
             &self.client, &self.stream, cursor.after_revision, count, &mut work,
-        ).await?.map_err(|error| error.into_error(&work))?;
+        ).await?.map_err(|error| crate::distributed::sdk_error(error, &work))?;
         let mut retained_records = Vec::new();
         let mut bytes = 0_u64;
         loop {
@@ -1089,16 +1089,16 @@ pub(crate) fn canonical_bytes_for_bounds_with_work<T: Serialize + ?Sized>(
     };
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     let bytes = if work.original_native_work().is_some() {
-        crate::contract::canonical_json_bytes_bounded_native_trusted(
-            value, bounds, crate::wire::ErrorCode::Invalid,
+        crate::contract::canonical_json_bytes_bounded(
+            value, bounds, Some(crate::wire::ErrorCode::Invalid),
             &mut |charge| work.codec_charge(charge),
         )?
     } else {
-        crate::contract::canonical_json_bytes_bounded(value, bounds, &mut |charge| work.codec_charge(charge))?
+        crate::contract::canonical_json_bytes_bounded(value, bounds, None, &mut |charge| work.codec_charge(charge))?
     };
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
     let bytes = crate::contract::canonical_json_bytes_bounded(
-        value, bounds, &mut |charge| work.codec_charge(charge),
+        value, bounds, None, &mut |charge| work.codec_charge(charge),
     )?;
     retain_encoded_capacity(bytes, work)
 }

@@ -1,5 +1,4 @@
 //! Required pinned-CLI lane: real native provider, real filesystem, real Stream.
-//! No mock process runner and no test-only launch/status ledger.
 
 use super::*;
 use acyclic_harness::{

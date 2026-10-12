@@ -195,10 +195,10 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
         project.capability(VolumeOperation::Read)?, project.capability(VolumeOperation::Write)?,
         "conversation:bind".into(),
     ]);
-    admission = admission.with_resource_proofs(preparer.creation_proofs(&fork, task)?)?;
+    admission = admission.with_resource_proofs(preparer.creation_proofs(&fork, task, None)?)?;
     let mut request = created.request.clone();
     request.child = admission;
-    request.resources = preparer.creation_resources(&fork)?;
+    request.resources = preparer.creation_resources(&fork, None)?;
     request.payload = serde_json::to_value(&fork).map_err(|error| Error::Invalid(error.to_string()))?;
     let preparation = owner.resource_preparation(request).await?;
     let report = preparer.with_task_preparation(Arc::new(preparation))?.prepare(fork).await?;
@@ -352,7 +352,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     assert_eq!(aggregate.reducer().conversation().and_then(|state| state.agent), Some(agent));
     assert!(first_custody.bytes() > 0);
     assert!(first_custody.work().shares_ledger(&native));
-    owner.authenticate_fork_parent(&audience)?;
+    owner.authenticate_fork_parent(&audience, &mut None)?;
     let canonical = aggregate.operation_event(command.operation_id).await?
         .ok_or_else(|| Error::NotFound("original canonical ROOT event".into()))?;
     assert!(matches!(&first, ApplyResult::Applied { event } if event == &canonical));
@@ -425,7 +425,7 @@ async fn native_root_binding_keeps_original_actor_scope_fence_and_indexed_retry(
     drop(independent_retry);
     drop(independent_custody);
     assert_eq!(aggregate.reducer().revision(), 1);
-    owner.authenticate_fork_parent(&audience)?;
+    owner.authenticate_fork_parent(&audience, &mut None)?;
     let bootstrap = owner.root_bootstrap_binding_witness_with_native_work(&native).await?;
     let (original_root, root_custody) = owner.original_root_admission_with_native_work(&native).await?;
     owner.verify_root_bootstrap_context_with_native_work(
