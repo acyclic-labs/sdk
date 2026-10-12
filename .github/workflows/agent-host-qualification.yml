@@ -36,6 +36,7 @@ jobs:
     env:
       CARGO_INCREMENTAL: 0
       CARGO_PROFILE_TEST_DEBUG: 0
+      TOOLS_DIR: ${{ runner.temp }}/tools
     steps:
       - name: Check out exact source
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -82,6 +83,20 @@ jobs:
         with:
           node-version: 24.15.0
 
+      - name: Install pinned Bun on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          source scripts/ensure-bun.sh
+          dirname "$(command -v bun)" >> "$GITHUB_PATH"
+
+      - name: Install pinned Bun on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          . ./scripts/ensure-bun.ps1
+          Split-Path -Parent (Get-Command bun).Source >> $env:GITHUB_PATH
+
       - name: Install locked host binaries
         shell: bash
         env:
@@ -113,11 +128,18 @@ jobs:
         run: |
           suffix=""
           if [[ "$RUNNER_OS" == Windows ]]; then suffix=".exe"; fi
-          ACYCLIC_BINARY="$CARGO_TARGET_DIR/debug/acyclic$suffix" \
-            node --experimental-strip-types --test \
-              plugin/tests/hosts/pi-context.test.ts \
-              plugin/tests/hosts/pi-bootstrap.test.ts \
-              plugin/tests/hosts/pi-installation.test.ts
+          export ACYCLIC_BINARY="$CARGO_TARGET_DIR/debug/acyclic$suffix"
+          cd plugin/tests/hosts
+          bun run test:pi-context
+          bun run test:pi-context-mail
+          bun run test:pi-bootstrap
+          bun run test:pi-session
+          bun run test:pi-installation
+          bun run test:pi-service
+          bun run test:pi-native-recursive
+          bun run test:pi-context-fresh
+          bun run test:pi-context-pages
+          bun run test:pi-builtin-paths
 
       - name: Run codex scenario
         shell: bash

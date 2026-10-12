@@ -3,15 +3,15 @@
 <title>Malformed browser tool receipt retains uncertainty</title>
 <pre id="result" data-status="pending">initializing</pre>
 <script type="module">
-import { taskFixture, modelCapacity, modelTokenCount } from "./browser-task-fixture.mjs";
+import { qualifyBrowserTask, taskFixture, modelCapacity, modelTokenCount } from "./browser-task-fixture.mjs";
 import { jsonToolProjectionSchema } from "../generated/wasm/acyclic_harness_wasm.js";
-const result = document.querySelector("#result");
 const describe = value => JSON.stringify(value, (_, item) => typeof item === "bigint" ? `${item}n` : item);
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 const effectKey = `harness-malformed-tool-${crypto.randomUUID()}`;
 let fixture;
 let runtime;
-try {
+await qualifyBrowserTask(async phase => {
+  try {
   fixture = await taskFixture(crypto.randomUUID());
   let executions = 0;
   let reconciliations = 0;
@@ -81,14 +81,10 @@ try {
   assert(executions === 1 && reconciliations === 2 && projections === 1 && describe(requests) === "[0,1]", "recovery repeated effect, projection or model dispatch");
   assert((await runtime.outcome(admission.task_id))?.Succeeded === 7n, "durable workflow result differs");
   assert((await runtime.workerTick(worker, null, 128, 4)).work === null, "duplicate wake replayed settled work");
-  result.dataset.status = "passed";
-  result.textContent = "malformed execution/reconciliation receipts retain the exact attempt; valid recovery observes one effect";
-} catch (error) {
-  result.dataset.status = "failed";
-  result.textContent = String(error.stack ?? error);
-} finally {
+  } finally {
   runtime?.free();
   fixture?.free();
   localStorage.removeItem(effectKey);
 }
+});
 </script>

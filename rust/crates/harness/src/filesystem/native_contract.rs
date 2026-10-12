@@ -248,7 +248,7 @@ impl NativeProcessRequest {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         let io = super::PreparationIo::from_native_work(work)?;
-        io.decode_preparation_with_code::<Self>(
+        io.decode_preparation::<Self>(
             bytes, crate::wire::ErrorCode::Storage,
         )?.into_native_parts()
     }
@@ -294,7 +294,7 @@ impl NativeProcessRequest {
         let value = (NATIVE_PROCESS_EFFECT_KIND, task, command, self);
         let Some(io) = io else { return crate::contract::canonical_json_digest(&value); };
         let guard;
-        let encoded = io.encode_json(&value, io.remaining()?.bytes_encoded, true)?;
+        let encoded = io.encode(&value, io.remaining()?.bytes_encoded, true)?;
         guard = io.guard_bytes(&encoded)?;
         io.charge(acyclic_fs::WorkCounters { bytes_hashed: encoded.len() as u64, ..Default::default() })?;
         let digest = *blake3::hash(&encoded).as_bytes();
@@ -353,7 +353,7 @@ impl NativeProcessResult {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         let io = super::PreparationIo::from_native_work(work)?;
-        let mut decoded = io.decode_preparation_with_code::<Self>(
+        let mut decoded = io.decode_preparation::<Self>(
             bytes, crate::wire::ErrorCode::Storage,
         )?;
         let owned = (std::mem::size_of::<Self>() as u64)

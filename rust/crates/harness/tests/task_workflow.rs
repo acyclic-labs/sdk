@@ -26,7 +26,7 @@ use acyclic_harness::filesystem::{
     TaskWorkerOutcome, TimerTaskCommand, ToolTaskCommand,
 };
 use acyclic_harness::model::{
-    FileProjectionPolicy, Model, ModelAttempt, ModelContent, ModelContentPart, ModelEvent,
+    FileProjectionPolicy, Model, ModelContent, ModelContentPart, ModelEvent,
     ModelProvider, PreparedModelRequest,
 };
 use acyclic_harness::registry::ComponentIdentity;
@@ -54,9 +54,10 @@ use futures::{future::BoxFuture, stream::BoxStream};
 use serde_json::{Value, json};
 use sha2::{Digest as _, Sha256};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::{Arc, Mutex}};
 
 struct InterruptedModel {
+    requests: Mutex<Vec<Vec<u8>>>,
     approval_tool: bool,
     observed_events: usize,
     output_tokens: AtomicU64,
@@ -197,7 +198,7 @@ impl ModelProvider for InterruptedModel {
             .messages
             .iter()
             .map(|message| {
-                let bytes = message.content.file_refs().iter().try_fold(
+                let bytes = message.content.file_refs().try_fold(
                     serde_json::to_vec(message)
                         .map_err(|error| Error::Invalid(error.to_string()))?
                         .len() as u64,
@@ -227,6 +228,7 @@ impl ModelProvider for InterruptedModel {
         request: PreparedModelRequest,
         _dispatch: acyclic_harness::model::ModelDispatch,
     ) -> BoxStream<'a, Result<ModelEvent>> {
+        self.requests.lock().unwrap().push(request.bytes().to_vec());
         self.output_tokens.store(
             u64::from(request.request().max_output_tokens.unwrap_or(0)),
             Ordering::SeqCst,
@@ -268,13 +270,10 @@ impl ModelProvider for InterruptedModel {
             Err(Error::Storage("forced model interruption".into())),
         ]))
     }
-    fn reconcile<'a>(
-        &'a self,
-        attempt: ModelAttempt,
-    ) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
+    fn reconcile<'a>(&'a self, _dispatch: acyclic_harness::model::ModelDispatch, observed: &'a [acyclic_harness::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<ModelEvent>>>> {
         Box::pin(async move {
             assert_eq!(
-                attempt.observed,
+                observed,
                 if self.observed_events == 0 {
                     Vec::new()
                 } else {
@@ -906,6 +905,7 @@ async fn worker_restart_with_options(
     let mut old_lease: Option<acyclic_harness::distributed::WorkLease> = None;
     let mut discovery_cursor = None;
     let model = Arc::new(InterruptedModel {
+        requests: Mutex::new(Vec::new()),
         approval_tool: with_model_approval,
         observed_events: 1,
         output_tokens: AtomicU64::new(0),
@@ -978,7 +978,7 @@ async fn worker_restart_with_options(
                             scope: conversation_scope.clone(),
                             causal_parent: None,
                             action: Action::BindConversation { agent },
-                        })
+                        }, #[cfg(feature = "filesystem")] None, &mut None)
                         .await?;
                     Ok::<(), Error>(())
                 })
@@ -1976,6 +1976,132 @@ async fn registered_task_reopens_checkpoint_under_replacement_lease() -> Result<
 }
 
 #[tokio::test]
+async fn admitted_custom_merge_candidate_reopens_without_rerunning_driver() -> Result<()> {
+    use acyclic_fs::{ConflictKey, ConflictSide, JoinOutcome, MergeDriver, MergeDriverRegistry,
+        MergeResolution, MemoryMergeResolutionCache, resolve_merge_plan};
+    use acyclic_harness::conversation::ContentGrant;
+    use acyclic_harness::core::Reducer;
+    use acyclic_harness::filesystem::{FilesystemWorkflowJournal, ParentProjectController, WorkspaceMutation, workspace_ref};
+    use acyclic_harness::workflow::{MachineCheckpoint, WorkflowAdmission};
+
+    struct Driver(AtomicUsize);
+    impl MergeDriver for Driver {
+        fn fingerprint(&self) -> &[u8] { b"review-policy@7" }
+        fn resolve(&self, conflict: &acyclic_fs::ConflictView)
+            -> std::result::Result<MergeResolution, acyclic_fs::DriverError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(match conflict.key {
+                ConflictKey::File(_) | ConflictKey::ContentRange { .. } => MergeResolution::Text("custom resolution".into()),
+                _ => MergeResolution::Select(ConflictSide::Theirs),
+            })
+        }
+    }
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let options = LocalOptions::new(directory.path().join("filesystem"));
+    let stream_root = directory.path().join("streams");
+    let provider = ProviderRef::new("custom-merge", "filesystem", "2")?;
+    let agent = AgentId::from_bytes([141; 16]);
+    let project = VolumeRef::new(provider.clone(), "project", VolumeClass::Project, VolumeOwner::Project("review".into()))?;
+    let source = VolumeRef::new(provider.clone(), "source", VolumeClass::Project, project.owner().clone())?;
+    let private = VolumeRef::new(provider.clone(), "private", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
+    let authority = Authority { kind: AggregateKind::Conversation, id: "custom-merge-parent".into() };
+    let issuer = AuthorityIssuer::new("custom-merge", [142; 32], authority.clone());
+    let signed = issuer.root_for_agent(agent, "owner", Capabilities::new([
+        "conversation:bind".into(), "fork:publish".into(), "project:merge".into(),
+        project.capability(VolumeOperation::Read)?, project.capability(VolumeOperation::Write)?,
+        source.capability(VolumeOperation::Read)?, source.capability(VolumeOperation::Write)?,
+        private.capability(VolumeOperation::Read)?, private.capability(VolumeOperation::Write)?,
+    ]));
+    let mut parent = Reducer::new(authority, issuer.verifier(), SchemaRegistry::new());
+    parent.apply(Command { operation_id: OperationId::from_bytes([143; 16]), idempotency_key: IdempotencyKey::new("bind")?,
+        expected_revision: 0, scope: signed.clone(), causal_parent: None, action: Action::BindConversation { agent } })?;
+    let driver = Arc::new(Driver(AtomicUsize::new(0)));
+    let operation = OperationId::from_bytes([144; 16]);
+    let admission;
+    let resolution_record;
+    let source_head;
+    let target_head;
+    {
+        let host = Arc::new(FilesystemHost::new(Fs::local(options.clone()).await.map_err(|e| Error::Storage(e.to_string()))?, provider.clone())?);
+        host.create_volume(&project).await?;
+        host.create_volume(&private).await?;
+        let write = ContentGrant::verify(&issuer.verifier(), &signed, &project, VolumeOperation::Write)?;
+        host.put_content(&project, &write, "shared.txt", b"base", "text/plain", "shared.txt", 128,
+            &IdempotencyKey::new("base")?).await?;
+        let controller = ParentProjectController::new(&host, &parent, &issuer.verifier(), &signed, project.clone())?;
+        let base = host.resolve(&workspace_ref(provider.clone(), &project.storage_name()?)?).await?;
+        let fork = controller.fork_project(&base.generation, &source, &IdempotencyKey::new("fork")?).await?;
+        source_head = host.apply(&fork.workspace, Some(&fork.generation), &[WorkspaceMutation::PutFile {
+            path: "/shared.txt".into(), bytes: b"source".as_slice().into(),
+        }], &IdempotencyKey::new("source-edit")?).await?.generation;
+        let target = workspace_ref(provider.clone(), &project.storage_name()?)?;
+        target_head = host.apply(&target, None, &[WorkspaceMutation::PutFile {
+            path: "/shared.txt".into(), bytes: b"target".as_slice().into(),
+        }], &IdempotencyKey::new("target-edit")?).await?.generation;
+        let plan = controller.prepare_project_import(&source, &source_head).await?;
+        let JoinOutcome::Conflicted { conflicts, truncated } = controller.apply_project_merge(&plan, operation).await? else {
+            return Err(Error::Invalid("custom merge must have a real conflict".into()));
+        };
+        let described = controller.describe_project_merge_conflicts(&plan, &conflicts, truncated).await?;
+        let state = json!({"policy":"review", "revision":"7", "plan":acyclic_fs::encode_merge_plan(&described)
+            .map_err(|e| Error::Invalid(e.to_string()))?});
+        admission = WorkflowAdmission { operation_id: operation, request_digest: acyclic_harness::contract::canonical_json_digest(&state)?,
+            initial: MachineCheckpoint { machine: MachineIdentity { name: "test.custom-merge".into(), version: "7".into(), digest: [145; 32] },
+                revision: 0, state } };
+        let journal = FilesystemWorkflowJournal::new(StreamClient::new(Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await
+            .map_err(|e| Error::Storage(e.to_string()))?)), host.clone(), "custom-merge", private.clone(), issuer.verifier(), signed.clone(), 65_536)?;
+        assert_eq!(journal.admit(admission.clone()).await?, admission);
+        let mut registry = MergeDriverRegistry::new();
+        registry.register("review", driver.clone()).map_err(|e| Error::Invalid(e.to_string()))?;
+        registry.set_default("review").map_err(|e| Error::Invalid(e.to_string()))?;
+        let candidate = resolve_merge_plan(described, &registry, &mut MemoryMergeResolutionCache::default(), false)
+            .map_err(|e| Error::Invalid(e.to_string()))?;
+        let input = json!(acyclic_fs::encode_merge_candidate(&candidate).map_err(|e| Error::Invalid(e.to_string()))?);
+        let state = json!({"candidate":input});
+        resolution_record = WorkflowRecord { operation_id: OperationId::from_bytes([146; 16]),
+            idempotency_key: IdempotencyKey::new("driver-result")?, input_digest: acyclic_harness::contract::canonical_json_digest(&input)?,
+            prior: admission.initial.clone(), input,
+            transition: MachineTransition { state: state.clone(), commands: Vec::new(), status: MachineStatus::Suspended },
+            next: MachineCheckpoint { machine: admission.initial.machine.clone(), revision: 1, state } };
+        journal.commit(0, resolution_record.idempotency_key.clone(), resolution_record.clone()).await?;
+    }
+    let calls = driver.0.load(Ordering::SeqCst);
+    assert!(calls > 0);
+    for retry in 0..2 {
+        let host = Arc::new(FilesystemHost::new(Fs::local(options.clone()).await.map_err(|e| Error::Storage(e.to_string()))?, provider.clone())?);
+        let journal = FilesystemWorkflowJournal::new(StreamClient::new(Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await
+            .map_err(|e| Error::Storage(e.to_string()))?)), host.clone(), "custom-merge", private.clone(), issuer.verifier(), signed.clone(), 65_536)?;
+        let retained = journal.admission().await?.ok_or_else(|| Error::NotFound("merge admission".into()))?;
+        assert_eq!(retained, admission);
+        let records = journal.replay(0, 1).await?;
+        assert_eq!(records, vec![resolution_record.clone()]);
+        let record = records.first().ok_or_else(|| Error::NotFound("driver result".into()))?;
+        let candidate = acyclic_fs::decode_merge_candidate(record.next.state["candidate"].as_str()
+            .ok_or_else(|| Error::Invalid("candidate missing".into()))?).map_err(|e| Error::Invalid(e.to_string()))?;
+        let controller = ParentProjectController::new(&host, &parent, &issuer.verifier(), &signed, project.clone())?;
+        let plan = controller.prepare_project_import_at(&source, &source_head, &target_head).await?;
+        let denied = issuer.root_for_agent(agent, "no-write", Capabilities::new([source.capability(VolumeOperation::Read)?]));
+        let unauthorized = ParentProjectController::new(&host, &parent, &issuer.verifier(), &denied, project.clone())?;
+        assert!(unauthorized.apply_project_merge_candidate(&plan, operation, &candidate).await.is_err());
+        let mut changed = candidate.clone();
+        changed.plan.ours = candidate.plan.base;
+        assert!(controller.apply_project_merge_candidate(&plan, operation, &changed).await.is_err());
+        let outcome = controller.apply_project_merge_candidate(&plan, operation, &candidate).await?;
+        assert!(if retry == 0 { matches!(outcome, JoinOutcome::Applied(_)) } else { matches!(outcome, JoinOutcome::AlreadyApplied(_)) });
+        if retry == 0 {
+            let write = ContentGrant::verify(&issuer.verifier(), &signed, &project, VolumeOperation::Write)?;
+            host.put_content(&project, &write, "concurrent.txt", b"user edit", "text/plain", "concurrent.txt", 128,
+                &IdempotencyKey::new("concurrent")?).await?;
+        }
+        assert_eq!(host.read(&workspace_ref(provider.clone(), &project.storage_name()?)?, None, "/concurrent.txt", 128).await?.as_ref(), b"user edit");
+        assert_eq!(host.read(&workspace_ref(provider.clone(), &project.storage_name()?)?, None, "/shared.txt", 128).await?.as_ref(), b"custom resolution");
+        assert_eq!(host.resolve(&workspace_ref(provider.clone(), &source.storage_name()?)?).await?.generation, source_head);
+    }
+    assert_eq!(driver.0.load(Ordering::SeqCst), calls);
+    Ok(())
+}
+
+#[tokio::test]
 async fn direct_stock_turn_reconciles_through_runtime_after_provider_reopen() -> Result<()> {
     stock_restart_with_publication_fault(None, false, true).await
 }
@@ -2076,6 +2202,7 @@ async fn stock_restart_with_publication_fault(
     };
     let mut previous_lease: Option<acyclic_harness::distributed::WorkLease> = None;
     let model = Arc::new(InterruptedModel {
+        requests: Mutex::new(Vec::new()),
         approval_tool: false,
         observed_events: usize::from(fault != Some(ExecutionFaultMode::Before)),
         output_tokens: AtomicU64::new(0),
@@ -2587,6 +2714,119 @@ async fn stock_restart_with_publication_fault(
             assert_eq!(recovery_journal.replay(0, 64).await?.len(), 2);
         }
         previous_lease = Some(lease);
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn default_stock_turn_selects_one_queued_item_and_keeps_admitted_input_on_reopen() -> Result<()> {
+    use acyclic_harness::filesystem::StockTurnMachine;
+    for queued in [true, false] {
+    let directory = tempfile::tempdir().map_err(|error| Error::Storage(error.to_string()))?;
+    let fs_options = LocalOptions::new(directory.path().join("filesystem"));
+    let stream_root = directory.path().join("streams");
+    let provider = ProviderRef::new("stock-mail", "filesystem", "2")?;
+    let agent = AgentId::new();
+    let volume = VolumeRef::new(provider.clone(), "private", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
+    let issuer = AuthorityIssuer::new("stock-mail", [81;32], Authority { kind: AggregateKind::Task, id: "stock-mail".into() });
+    let signed = issuer.root_for_agent(agent, "owner", Capabilities::new([
+        "operation:declare".to_owned(), "operation:observe".to_owned(), "operation:cancel".to_owned(),
+        "task:spawn:acyclic.stock_turn@1".to_owned(), "model:generate".to_owned(),
+        "mail:send".to_owned(), "mail:read".to_owned(),
+        volume.capability(VolumeOperation::Read)?, volume.capability(VolumeOperation::Write)?,
+    ]));
+    let scope = RuntimeScope::new(signed.capabilities().clone(), Limits::default())?;
+    let machine = Arc::new(StockTurnMachine::new());
+    let definition = machine.definition()?;
+    let mut tasks = TaskRegistry::default();
+    tasks.register(definition)?;
+    let definition = tasks.get_version::<Value, acyclic_harness::executor::TurnOutput>("acyclic.stock_turn", "1")?;
+    let mut machines = MachineRegistry::default();
+    machines.register(machine)?;
+    let operation = OperationId::new();
+    let task = TaskId::from_bytes(operation.into_bytes());
+    let receive_operation = OperationId::new();
+    let model_operation = OperationId::new();
+    let model = Model::new("fixture", "stock-mail", "1", Value::Null)?;
+    let provider_model = Arc::new(InterruptedModel {
+        requests: Mutex::new(Vec::new()), approval_tool: false, observed_events: 1,
+        output_tokens: AtomicU64::new(0), generated: AtomicUsize::new(0), reconciled: AtomicUsize::new(0),
+    });
+    let worker = Worker { id: "stock-mail".into(), available: ResourceSnapshot::default(), labels: BTreeMap::new() };
+    let mut retained_lease = None;
+    let mut admitted_model = None;
+    let mut selected = None;
+    for phase in 0..4 {
+        let filesystem = Arc::new(FilesystemHost::new(Fs::local(fs_options.clone()).await
+            .map_err(|error| Error::Storage(error.to_string()))?, provider.clone())?);
+        if phase == 0 { filesystem.create_volume(&volume).await?; }
+        let stream = StreamClient::new(Arc::new(LocalStream::open(&stream_root, LocalStreamLimits::default()).await?));
+        let runtime = FilesystemTaskRuntime::open(stream, filesystem.clone(), volume.clone(), issuer.verifier(), signed.clone(),
+            scope.clone(), tasks.clone(), machines.clone(), ToolRegistry::new(),
+            SessionLimits { active_tasks: 1, total_tasks: 1, depth: 1, model_steps: 1 }, 1, 65536).await?;
+        let payloads = FilesystemSchedulerPayloadStore::new(filesystem, volume.clone(), &issuer.verifier(), &signed, 65536)?;
+        let commands = runtime.commands().with_model(model.clone(), provider_model.clone(), ContextPipeline::default(),
+            acyclic_harness::context::CompactionPolicy::Disabled);
+        if phase == 0 {
+            let model_payload = payloads.stage(operation, "model", &serde_json::to_vec(&ModelTaskCommand {
+                input: ModelContent::Text("original prompt".into()), selected_context: None, max_steps: 1,
+                max_output_tokens: None, mailbox_operation: None, selected_output_volume: None,
+            }).map_err(|error| Error::Invalid(error.to_string()))?).await?;
+            let model_command = WorkflowCommand { operation_id: model_operation, kind: MODEL_TASK_COMMAND_KIND.into(), payload: model_payload };
+            let receive = WorkflowCommand { operation_id: receive_operation, kind: MAIL_RECEIVE_TASK_COMMAND_KIND.into(),
+                payload: payloads.stage(operation, "receive", &serde_json::to_vec(&MailReceiveTaskCommand { after: 0 })
+                    .map_err(|error| Error::Invalid(error.to_string()))?).await? };
+            assert!(matches!(runtime.harness().admit(operation, &definition, json!({"receive":receive,"model":model_command}), None).await?, Admission::Accepted(_)));
+            admitted_model = Some(model_command);
+            let WorkPull::Claimed(lease) = runtime.task_host().pull_work(&worker).await? else {
+                return Err(Error::NotFound("stock lease".into()));
+            };
+            runtime.task_host().start_task(&lease).await?;
+            let fence = LeaseFence::from(&lease.reservation);
+            for (path, bytes) in [("first", b"first steering".as_slice()), ("second", b"later steering".as_slice())].into_iter().filter(|_| queued) {
+                let payload = payloads.stage(OperationId::new(), path, bytes).await?;
+                runtime.task_host().send_owned(task, fence.clone(), task, OperationId::new(), payload).await?;
+            }
+            let items = runtime.task_host().inbox(task, 0, 2).await?;
+            assert_eq!(items.len(), if queued { 2 } else { 0 });
+            selected = items.into_iter().next();
+            retained_lease = Some(lease);
+        }
+        let lease = retained_lease.clone().unwrap();
+        let attempt = runtime.resume_task(lease.clone(), &commands, if phase == 3 { 4 } else { 1 }).await;
+        match phase {
+            0 | 1 => assert!(matches!(attempt, TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { .. }))),
+            2 => assert!(matches!(attempt, TaskWorkerAttempt::Unresolved { error: Error::Indeterminate(_), .. }
+                | TaskWorkerAttempt::Progress(TaskWorkerOutcome::Reconciling { .. }))),
+            _ => assert!(matches!(attempt, TaskWorkerAttempt::Progress(TaskWorkerOutcome::Completed { .. }))),
+        }
+        if phase == 1 || phase == 2 {
+            let journal = runtime.workflow_journal(task, LeaseFence::from(&lease.reservation)).await?;
+            let record = journal.replay(0, 8).await?.pop().unwrap();
+            assert_eq!(record.transition.commands, vec![admitted_model.clone().unwrap()]);
+            assert_eq!(record.next.state["mail"], serde_json::to_value(&selected).unwrap());
+            let remaining = runtime.task_host().inbox(task, 1, 1).await?;
+            if queued { assert_eq!(remaining[0].sequence, 2); } else { assert!(remaining.is_empty()); }
+        }
+        if phase == 2 && queued {
+            let request: acyclic_harness::model::ModelRequest = serde_json::from_slice(
+                &provider_model.requests.lock().unwrap()[0],
+            ).map_err(|error| Error::Invalid(error.to_string()))?;
+            let parcel_path = format!("mailbox/{receive_operation}/parcel");
+            let parcel = request.messages.iter().flat_map(|message| message.content.file_refs())
+                .find(|file| file.path() == parcel_path).ok_or_else(|| Error::NotFound("selected model parcel".into()))?;
+            assert_eq!(parcel.descriptor(), selected.as_ref().unwrap().payload.descriptor());
+            assert_eq!(runtime.harness().durable_context(task, operation).await?.read_file(parcel).await?.as_ref(), b"first steering");
+        }
+        if phase == 3 {
+            let Some(Outcome::Succeeded(value)) = runtime.task_host().outcome(task).await? else {
+                return Err(Error::Invalid("stock model did not settle".into()));
+            };
+            assert_eq!(value["text"], "partial-restored");
+        }
+    }
+    assert_eq!(provider_model.generated.load(Ordering::SeqCst), 1);
+    assert_eq!(provider_model.reconciled.load(Ordering::SeqCst), 1);
     }
     Ok(())
 }

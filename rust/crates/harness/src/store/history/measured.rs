@@ -30,9 +30,9 @@ impl<P: StreamProvider> HistoryReader<P> {
     ) -> Result<(HistoryPage, acyclic_fs::NativeAllocation)> {
         let mut native_io = super::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let read = self.read_page_with_work(cursor, limits, false, Some(&mut native_io)).await?;
+        let (page, _, _, _) = self.read_page_with_work(cursor, limits, false, Some(&mut native_io)).await?;
         native_io.return_staged_output()?;
-        Ok((read.page, native_io.into_custody()))
+        Ok((page, native_io.into_custody()))
     }
 
     /// Reads the original authenticated immutable operation locator and event.
@@ -64,7 +64,7 @@ impl<P: StreamProvider> HistoryReader<P> {
     ) -> Result<(Vec<Event>, acyclic_fs::NativeAllocation)> {
         let mut native_io = super::native_work_io(work)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        let (events, _) = super::super::effects::read_with_retained_quota(
+        let (events, _) = super::super::effects::read(
             &self.client, &self.verifier, cursor, effect, limits,
             &mut Some(&mut native_io),
         ).await?;
@@ -88,20 +88,6 @@ impl<P: StreamProvider> HistoryReader<P> {
         ).await?.map(|(state, _)| state);
         native_io.return_staged_output()?;
         Ok((state, native_io.into_custody()))
-    }
-
-    /// Verifies the original canonical publication and initial child binding on the caller's ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub async fn verify_published_child_with_native_work(
-        &self,
-        parent: &Self,
-        seed: &crate::fork::ForkSeed,
-        limits: HistoryReadLimits,
-        original: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        let mut io = super::native_work_io(original)
-            .map_err(|cause| Error::NativeWork { cause, custody: None })?;
-        self.verify_published_child_with_work(parent, seed, limits, &mut Some(&mut io)).await
     }
 
     /// Pins the same committed Stream cut with a finite SDK-boundary receipt.
@@ -131,7 +117,7 @@ impl<P: StreamProvider> HistoryReader<P> {
         let result = async {
             work.preflight()?;
             self.read_page_with_work(cursor, limits, false, Some(&mut work))
-                .await.map(|read| read.page)
+                .await.map(|(page, _, _, _)| page)
         }.await;
         work.finish(result)
     }
@@ -164,30 +150,14 @@ impl<P: StreamProvider> HistoryReader<P> {
         let mut work = HistoryWork::new(budget, cancellation);
         let result = async {
             work.preflight()?;
-            super::super::effects::read_with_work(
+            super::super::effects::read(
                 &self.client, &self.verifier, cursor, effect, limits,
                 &mut Some(&mut work),
-            ).await
+            ).await.map(|(events, _)| events)
         }.await;
         work.finish(result)
     }
 
-    /// Verifies the original published child without acquiring another lease, restoring an aggregate, rebinding, or requiring a Summary projection.
-    pub async fn verify_published_child_measured(
-        &self, parent: &Self, seed: &crate::fork::ForkSeed,
-        budget: WorkBudget, cancellation: &CancellationToken,
-    ) -> MeasuredResult<OperationReceipt<()>, Error> {
-        let mut work = HistoryWork::verification(budget, cancellation);
-        let result = async {
-            work.preflight()?;
-            let limits = HistoryReadLimits {
-                maximum_events: 2,
-                maximum_bytes: budget.authority_bytes_read,
-            };
-            self.verify_published_child_with_work(parent, seed, limits, &mut Some(&mut work)).await
-        }.await;
-        work.finish(result)
-    }
 }
 
 pub(crate) struct HistoryWork<'a> {
@@ -197,16 +167,11 @@ pub(crate) struct HistoryWork<'a> {
     live_bytes: u64,
     staged_bytes: u64,
     staged_items: u64,
-    verification_only: bool,
 }
 
 impl<'a> HistoryWork<'a> {
     pub(crate) fn new(budget: WorkBudget, cancellation: &'a CancellationToken) -> Self {
-        Self { budget, cancellation, work: WorkCounters::default(), live_bytes: 0, staged_bytes: 0, staged_items: 0, verification_only: false }
-    }
-
-    pub(crate) fn verification(budget: WorkBudget, cancellation: &'a CancellationToken) -> Self {
-        Self { verification_only: true, ..Self::new(budget, cancellation) }
+        Self { budget, cancellation, work: WorkCounters::default(), live_bytes: 0, staged_bytes: 0, staged_items: 0 }
     }
 
     pub(crate) fn preflight(&self) -> Result<()> {
@@ -299,7 +264,6 @@ impl<'a> HistoryWork<'a> {
     }
 
     pub(crate) fn stage_output(&mut self, bytes: u64, count: u64) -> Result<()> {
-        if self.verification_only { return self.check_cancellation(); }
         let staged_bytes = self.staged_bytes.checked_add(bytes)
             .ok_or_else(|| Error::Invalid("history staged bytes overflow".into()))?;
         let staged_items = self.staged_items.checked_add(count)
@@ -384,12 +348,10 @@ impl<'a> HistoryWork<'a> {
     }
 
     pub(super) fn admit_output(&self, bytes: u64, count: u64) -> Result<()> {
-        if self.verification_only { return self.check_cancellation(); }
         self.verify(self.combined(WorkCounters { output_bytes: bytes, items_returned: count, ..WorkCounters::default() })?)
     }
 
     pub(super) fn return_output(&mut self, bytes: u64, count: u64) -> Result<()> {
-        if self.verification_only { return self.check_cancellation(); }
         self.admit_output(bytes, count)?;
         self.work = self.combined(WorkCounters { output_bytes: bytes, items_returned: count, ..WorkCounters::default() })?;
         Ok(())
@@ -531,10 +493,10 @@ impl HistoryIo for HistoryWork<'_> {
                 work.remaining()?, work.cancellation).await;
             match receipt {
                 Ok(receipt) => {
-                    let retained_bytes = receipt.value.capacity() as u64;
+                    let retained_bytes = receipt.value.retained_capacity().unwrap_or(0) as u64;
                     work.receive_work(receipt.work)?;
                     work.retain(retained_bytes)?;
-                    Ok((acyclic_stream::OwnedBytes::from(receipt.value), retained_bytes))
+                    Ok((receipt.value, retained_bytes))
                 }
                 Err(failure) => { let _ = work.receive_work(*failure.work); Err(failure.error) }
             }

@@ -476,11 +476,9 @@ async fn rename_hydration_case() -> Result<(), Failure> {
     fs::create_dir(&mount_path)?;
     let engine = Fs::local(LocalOptions::new(root.path().join("store"))).await?;
     let workspace = engine
-        .create_workspace_with_config("rename-hydration", VolumeConfig::native(Lifecycle::Durable))
-        .await?;
-    let mut fixture = workspace
-        .begin_transaction(acyclic_fs::IdempotencyKey::new())
-        .await?;
+        .create_workspace_with_config("rename-hydration", VolumeConfig::native(Lifecycle::Durable), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let mut fixture = workspace.begin_transaction(acyclic_fs::IdempotencyKey::new(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     for index in 0..RENAME_REPETITIONS {
         fixture
             .create_file(
@@ -490,7 +488,7 @@ async fn rename_hydration_case() -> Result<(), Failure> {
             )
             .await?;
     }
-    match fixture.commit().await? {
+    match fixture.commit(None, acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? {
         TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_) => {}
         _ => return Err("rename hydration fixture transaction was not committed".into()),
     }
@@ -516,12 +514,12 @@ async fn rename_hydration_case() -> Result<(), Failure> {
     for index in 0..RENAME_REPETITIONS {
         let renamed = format!("/after-{index}.txt");
         let replacement = format!("/replacement-{index}.txt");
-        if workspace.read(&renamed, 64).await?.as_ref()
+        if workspace.read(&renamed, 64, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref()
             != format!("renamed-before-hydration-{index}").as_bytes()
         {
             return Err(format!("renamed content {index} was not published").into());
         }
-        if workspace.read(&replacement, 64).await?.as_ref()
+        if workspace.read(&replacement, 64, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref()
             != format!("replacement-content-{index}").as_bytes()
         {
             return Err(format!("replacement content {index} was not published").into());
@@ -819,11 +817,9 @@ async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
     fs::write(root.path().join("outside-guard"), b"outside-safe")?;
     let engine = Fs::local(LocalOptions::new(&store)).await?;
     let workspace = engine
-        .create_workspace_with_config("native-matrix", VolumeConfig::native(Lifecycle::Durable))
-        .await?;
-    let mut transaction = workspace
-        .begin_transaction(acyclic_fs::IdempotencyKey::new())
-        .await?;
+        .create_workspace_with_config("native-matrix", VolumeConfig::native(Lifecycle::Durable), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let mut transaction = workspace.begin_transaction(acyclic_fs::IdempotencyKey::new(), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction.create_dir_all("/seed/nested").await?;
     transaction
         .create_file(
@@ -878,14 +874,12 @@ async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
                 .await?;
         }
     }
-    match transaction.commit().await? {
+    match transaction.commit(None, acyclic_fs::PublicationPermit::Unrestricted, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(), |_| async { Ok::<_, acyclic_fs::OperationFailure<acyclic_fs::WorkspaceError>>(acyclic_fs::OperationReceipt { value: (), work: acyclic_fs::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)? {
         TransactionCommit::Committed(_) | TransactionCommit::AlreadyCommitted(_) => {}
         _ => return Err("fixture transaction was not committed".into()),
     }
     #[cfg(windows)]
-    let default_read_metadata = workspace
-        .stat("/seed/nested/default-read.txt")
-        .await?
+    let default_read_metadata = workspace.stat("/seed/nested/default-read.txt", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
         .metadata;
 
     let (watch_tx, watch_rx) = mpsc::channel();
@@ -941,7 +935,7 @@ async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
     )?;
     parallel?;
     verify_published_mutations(&workspace, root.path()).await?;
-    let metadata = workspace.stat("/nested/metadata.txt").await?.metadata;
+    let metadata = workspace.stat("/nested/metadata.txt", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.metadata;
     #[cfg(windows)]
     {
         if metadata
@@ -950,7 +944,7 @@ async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
         {
             return Err("Windows read-only metadata was not published".into());
         }
-        let timestamps = workspace.stat("/nested/timestamps.txt").await?.metadata;
+        let timestamps = workspace.stat("/nested/timestamps.txt", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.metadata;
         if timestamps.modified_ns != Some(QUALIFICATION_MODIFIED_NS) {
             return Err(format!(
                 "modified timestamp was not published: {:?}",
@@ -958,9 +952,7 @@ async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
             )
             .into());
         }
-        let defaulted = workspace
-            .stat("/seed/nested/default-metadata.txt")
-            .await?
+        let defaulted = workspace.stat("/seed/nested/default-metadata.txt", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
             .metadata;
         if defaulted
             .windows_attributes
@@ -972,9 +964,7 @@ async fn mutation_matrix(kind: &'static str) -> Result<(), Failure> {
             )
             .into());
         }
-        let observed = workspace
-            .stat("/seed/nested/default-read.txt")
-            .await?
+        let observed = workspace.stat("/seed/nested/default-read.txt", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?
             .metadata;
         if observed != default_read_metadata {
             return Err(format!(
@@ -1004,28 +994,28 @@ async fn verify_published_mutations(
     if fs::read(&escaped)? != b"host-only" {
         return Err("traversal mutation did not remain in the temporary host parent".into());
     }
-    if workspace.stat("/escape-attempt.txt").await.is_ok() {
+    if workspace.stat("/escape-attempt.txt", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_ok() {
         return Err("traversal mutation escaped into workspace state".into());
     }
     fs::remove_file(escaped)?;
-    if workspace.read("/nested/created.txt", 64).await?.as_ref() != b"created-v2" {
+    if workspace.read("/nested/created.txt", 64, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref() != b"created-v2" {
         return Err("created content was not published".into());
     }
-    if workspace.read("/nested/atomic.txt", 64).await?.as_ref() != b"atomic-new" {
+    if workspace.read("/nested/atomic.txt", 64, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref() != b"atomic-new" {
         return Err("atomic save was not published".into());
     }
-    if workspace.read("/nested/renamed.txt", 64).await?.as_ref() != b"rename-me" {
+    if workspace.read("/nested/renamed.txt", 64, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref() != b"rename-me" {
         return Err("rename was not published".into());
     }
-    if workspace.stat("/nested/delete-me.txt").await.is_ok() {
+    if workspace.stat("/nested/delete-me.txt", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).is_ok() {
         return Err("delete was not published".into());
     }
-    let original = workspace.stat("/nested/hard-source.txt").await?;
-    let linked = workspace.stat("/nested/hard-link.txt").await?;
+    let original = workspace.stat("/nested/hard-source.txt", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let linked = workspace.stat("/nested/hard-link.txt", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     if original.file_id != linked.file_id || original.link_count < 2 {
         return Err("hard-link identity was not preserved".into());
     }
-    if workspace.read_symbolic_link("/nested/symbolic.txt").await?
+    if workspace.read_symbolic_link("/nested/symbolic.txt", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.bytes).map_err(|failure| failure.error)?
         != native_link_bytes("created.txt")
     {
         return Err("symbolic-link target was not published".into());
@@ -1707,8 +1697,8 @@ fn crash_recovery_inner(crash_root: &Path, mount: &Path, ready: &Path) -> Result
         runtime.block_on(async {
             eprintln!("qualification phase: reopening durable crash workspace");
             let engine = Fs::local(LocalOptions::new(crash_root.join("store"))).await?;
-            let workspace = engine.open_workspace("crash-owner").await?;
-            if workspace.read("/alive.txt", 16).await?.as_ref() != b"alive" {
+            let workspace = engine.open_workspace("crash-owner", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            if workspace.read("/alive.txt", 16, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.as_ref() != b"alive" {
                 return Err::<(), Failure>("durable workspace lost crash fixture".into());
             }
             eprintln!("qualification phase: remounting the original ProjFS destination");
@@ -1768,8 +1758,8 @@ fn crash_child(root: PathBuf, mount: PathBuf, ready: PathBuf) -> Result<(), Fail
         fs::create_dir_all(&root)?;
         let engine = Fs::local(LocalOptions::new(root.join("store"))).await?;
         let workspace = engine
-            .create_workspace_with_config("crash-owner", VolumeConfig::native(Lifecycle::Durable))
-            .await?;
+            .create_workspace_with_config("crash-owner", VolumeConfig::native(Lifecycle::Durable), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         workspace.write_text("/alive.txt", "alive").await?;
         let _mount = workspace.mount(&mount, MountOptions::read_write()).await?;
         #[cfg(windows)]
