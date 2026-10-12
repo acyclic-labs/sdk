@@ -12,6 +12,7 @@ use crate::{
     OperationFailure, OperationReceipt, PinnedReader, ResolvedFileRangeReadRequest, WorkBudget,
     WorkCounters, WorkError,
 };
+#[cfg(test)]
 use bytes::Bytes;
 #[cfg(unix)]
 use std::ffi::OsStr;
@@ -368,9 +369,7 @@ impl GenerationHostPath {
                     let mut count = 0_usize;
                     for _ in text.encode_utf16() {
                         receipt.run(|work| work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED }))?;
-                        count = count.checked_add(1).ok_or_else(|| {
-                            GenerationFailure::new(MaterializeError::Work(WorkError::Overflow), receipt.work())
-                        })?;
+                        count += 1;
                     }
                     count
                 }
@@ -1108,9 +1107,7 @@ fn generation_namespace_from_host(
         if !matches!(component, std::path::Component::Normal(_)) {
             return Err(GenerationFailure::new(MaterializeError::InvalidPath, receipt.work()));
         }
-        count = count.checked_add(1).ok_or_else(|| {
-            GenerationFailure::new(MaterializeError::Work(WorkError::Overflow), receipt.work())
-        })?;
+        count += 1;
         if count > usize::from(limits.maximum_path_depth) {
             return Err(GenerationFailure::new(MaterializeError::InvalidPath, receipt.work()));
         }
@@ -1124,11 +1121,8 @@ fn generation_namespace_from_host(
         receipt.run(|work| work.charge(WorkCounters {
             items_examined: 1, source_path_components: 1, ..WorkCounters::UNCHARGED
         }))?;
-        let std::path::Component::Normal(name) = component else {
-            return Err(GenerationFailure::new(MaterializeError::InvalidPath, receipt.work()));
-        };
         let encoded = crate::native_name::host_name_bytes_with_native_work(
-            name, config.profile, limits.maximum_component_bytes, receipt.custody.work(),
+            component.as_os_str(), config.profile, limits.maximum_component_bytes, receipt.custody.work(),
         );
         let ((encoding, bytes), custody) = receipt.custody_result(encoded)?;
         let bytes = receipt.accept_source(bytes, custody)?;
