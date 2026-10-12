@@ -1828,9 +1828,12 @@ mod tests {
     struct InteractionContent(std::collections::BTreeMap<String, Vec<u8>>);
 
     impl ContentResidencyVerifier for InteractionContent {
+
+
         fn read<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64,
             io: Option<&'a crate::conversation::ContentIo>,
         ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+            if io.is_some() { return Err(crate::conversation::content_error(io, crate::wire::ErrorCode::Unsupported, "fixture has no finite content reader")); }
             crate::conversation::BoundedContentFuture::new(io, || async move {
                 if reference.descriptor().byte_length() > maximum_bytes {
                     return Err(Error::Invalid("content exceeds fixture read bound".into()));
@@ -1839,6 +1842,7 @@ mod tests {
                     .0
                     .get(reference.path())
                     .ok_or_else(|| Error::NotFound(reference.path().into()))?;
+                if bytes.len() as u64 > maximum_bytes { return Err(Error::Invalid("content exceeds byte bound".into())); }
                 reference.descriptor().verify(bytes, &mut None)?;
                 Ok(bytes.clone().into())
             })
@@ -1926,9 +1930,12 @@ mod tests {
     }
 
     impl ContentResidencyVerifier for MigrationContentStore {
+
+
         fn read<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64,
             io: Option<&'a crate::conversation::ContentIo>,
         ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+            if io.is_some() { return Err(crate::conversation::content_error(io, crate::wire::ErrorCode::Unsupported, "fixture has no finite content reader")); }
             crate::conversation::BoundedContentFuture::new(io, || async move {
                 if reference.descriptor().byte_length() > maximum_bytes {
                     return Err(Error::Invalid("content exceeds fixture read bound".into()));
@@ -1940,6 +1947,7 @@ mod tests {
                     .get(&Self::key(reference)?)
                     .cloned()
                     .ok_or_else(|| Error::NotFound("migration content is absent".into()))?;
+                if bytes.len() as u64 > maximum_bytes { return Err(Error::Invalid("content exceeds byte bound".into())); }
                 reference.descriptor().verify(&bytes, &mut None)?;
                 Ok(bytes.into())
             })
@@ -1951,16 +1959,10 @@ mod tests {
             &self.volume
         }
 
-        fn stage<'a>(
-            &'a self,
-            _operation_id: OperationId,
-            path: &'a str,
-            bytes: &'a [u8],
-            media_type: &'a str,
-            display_name: &'a str,
-            io: Option<&'a crate::conversation::ContentIo>,
-        ) -> Result<crate::conversation::BoundedContentFuture<'a, (FileRef, Option<crate::conversation::ContentHold<'a>>)>>
-        {
+        fn stage<'a>(&'a self, _operation_id: OperationId, path: &'a str, bytes: &'a [u8],
+            media_type: &'a str, display_name: &'a str, io: Option<&'a crate::conversation::ContentIo>,
+        ) -> Result<crate::conversation::BoundedContentFuture<'a, (FileRef, Option<crate::conversation::ContentHold<'a>>)>> {
+            self.supports_stage(io)?;
             crate::conversation::BoundedContentFuture::new(io, || async move {
                 if bytes != EXTENSION_BYTES || media_type != "application/json" {
                     return Err(Error::Invalid("unexpected migration output".into()));
@@ -1984,10 +1986,9 @@ mod tests {
         fn read<'a>(&'a self, reference: &'a FileRef, maximum_bytes: u64,
             io: Option<&'a crate::conversation::ContentIo>,
         ) -> Result<crate::conversation::BoundedContentFuture<'a, acyclic_stream::OwnedBytes>> {
+            if io.is_some() { return Err(crate::conversation::content_error(io, crate::wire::ErrorCode::Unsupported, "fixture has no finite content reader")); }
             crate::conversation::BoundedContentFuture::new(io, || async move {
-                if reference.descriptor().byte_length() > maximum_bytes {
-                    return Err(Error::Invalid("content exceeds fixture read bound".into()));
-                }
+                if EXTENSION_BYTES.len() as u64 > maximum_bytes { return Err(Error::Invalid("content exceeds byte bound".into())); }
                 reference.descriptor().verify(EXTENSION_BYTES, &mut None)?;
                 Ok(acyclic_stream::OwnedBytes::from_static(EXTENSION_BYTES))
             })

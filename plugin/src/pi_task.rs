@@ -175,7 +175,7 @@ impl PiTaskMachine {
     pub(crate) fn definition(
         self: &Arc<Self>,
         work: &acyclic_fs::NativeMaterializationWork,
-    ) -> acyclic_harness::Result<(TaskDefinition<PiTaskInput, FileRef>, acyclic_fs::NativeAllocation)> {
+    ) -> acyclic_harness::Result<TaskDefinition<PiTaskInput, FileRef>> {
         let input_json = work.display(&format_args!(r#"{{
   "type":"object",
   "additionalProperties":false,
