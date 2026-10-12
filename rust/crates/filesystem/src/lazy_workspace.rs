@@ -7758,7 +7758,7 @@ where
                 let node = &pinned.node;
                 match node.kind {
                     SourceNodeKind::Directory => self.promotion_mutation_with_accounting(
-                        transaction, requested, LazyPromotionMutation::Directory, work, cancellation,
+                        transaction, requested, LazyPromotionMutation::Directory, work, cancellation.clone(),
                     ).await?,
                     SourceNodeKind::RegularFile => self.populate_regular_source_node(
                         transaction, requested, pinned, maximum_bytes, work, cancellation, source_used,
@@ -7771,7 +7771,7 @@ where
                             requested, pinned, None, u64::MAX, work, cancellation,
                         ).await?;
                         self.promotion_mutation_with_accounting(
-                            transaction, requested, LazyPromotionMutation::Link(chunk), work, cancellation,
+                            transaction, requested, LazyPromotionMutation::Link(chunk), work, cancellation.clone(),
                         ).await?;
                     }
                     SourceNodeKind::Fifo | SourceNodeKind::Socket
@@ -7785,19 +7785,19 @@ where
                         };
                         self.promotion_mutation_with_accounting(
                             transaction, requested, LazyPromotionMutation::Special(kind, node.device),
-                            work, cancellation,
+                            work, cancellation.clone(),
                         ).await?;
                     }
                     SourceNodeKind::Unsupported => return Err(LazyWorkspaceError::UnsupportedNode),
                 }
                 self.promotion_mutation_with_accounting(
                     transaction, requested, LazyPromotionMutation::Metadata(source_file_metadata(node.metadata)),
-                    work, cancellation,
+                    work, cancellation.clone(),
                 ).await?;
                 if node.kind != SourceNodeKind::Directory {
                     let identity = self.promotion_source_file_id(node, work, cancellation)?;
                     self.promotion_mutation_with_accounting(
-                        transaction, requested, LazyPromotionMutation::Identity(identity), work, cancellation,
+                        transaction, requested, LazyPromotionMutation::Identity(identity), work, cancellation.clone(),
                     ).await?;
                 }
                 Ok(())
@@ -7814,7 +7814,7 @@ where
                 let length = pinned.node.logical_bytes.ok_or(LazyWorkspaceError::NotRegularFile)?;
                 if length > maximum_bytes { return Err(LazyWorkspaceError::TooLarge); }
                 self.promotion_mutation_with_accounting(
-                    transaction, requested, LazyPromotionMutation::File(acyclic_stream::OwnedBytes::new()), work, cancellation,
+                    transaction, requested, LazyPromotionMutation::File(acyclic_stream::OwnedBytes::new()), work, cancellation.clone(),
                 ).await?;
                 let mut offset = 0_u64;
                 while offset < length {
@@ -7830,7 +7830,7 @@ where
                     }
                     let chunk_length = crate::foundation::usize_to_u64(chunk.bytes.len());
                     self.promotion_mutation_with_accounting(
-                        transaction, requested, LazyPromotionMutation::Write(offset, chunk), work, cancellation,
+                        transaction, requested, LazyPromotionMutation::Write(offset, chunk), work, cancellation.clone(),
                     ).await?;
                     offset = offset.checked_add(chunk_length).ok_or(LazyWorkspaceError::TooLarge)?;
                 }
@@ -7859,7 +7859,7 @@ where
 
     async fn promotion_mutation_with_accounting(
         &self, transaction: &mut crate::Transaction<A, O>, path: &str,
-        operation: LazyPromotionMutation<'_>, work: &LazyTreapWork<'_>, cancellation: &CancellationToken,
+        operation: LazyPromotionMutation<'_>, work: &LazyTreapWork<'_>, cancellation: CancellationToken,
     ) -> Result<(), LazyWorkspaceError> {
         in_heap_lazy_with_work(work, move || async move {
             match &work.meter {
@@ -7867,31 +7867,31 @@ where
                     let budget = work.remaining()?;
                     let applied = match operation {
                         LazyPromotionMutation::Directory =>
-                            transaction.create_directory_measured(path, budget, cancellation).await,
+                            transaction.create_directory_measured(path, budget, &cancellation).await,
                         LazyPromotionMutation::Parents =>
-                            transaction.create_dir_all_measured(path, budget, cancellation).await,
+                            transaction.create_dir_all_measured(path, budget, &cancellation).await,
                         LazyPromotionMutation::File(bytes) =>
-                            transaction.create_file_measured(path, bytes, budget, cancellation).await,
+                            transaction.create_file_measured(path, bytes, budget, &cancellation).await,
                         LazyPromotionMutation::Link(mut chunk) => {
                             let applied = transaction.create_symbolic_link_measured(
-                                path, std::mem::take(&mut chunk.bytes), budget, cancellation,
+                                path, std::mem::take(&mut chunk.bytes), budget, &cancellation,
                             ).await;
                             drop(chunk);
                             applied
                         }
                         LazyPromotionMutation::Special(kind, device) =>
-                            transaction.create_special_measured(path, kind, device, budget, cancellation).await,
+                            transaction.create_special_measured(path, kind, device, budget, &cancellation).await,
                         LazyPromotionMutation::Metadata(metadata) =>
-                            transaction.set_metadata_measured(path, metadata, budget, cancellation).await,
+                            transaction.set_metadata_measured(path, metadata, budget, &cancellation).await,
                         LazyPromotionMutation::Identity(identity) =>
-                            transaction.preserve_file_identity_measured(path, identity, budget, cancellation).await,
+                            transaction.preserve_file_identity_measured(path, identity, budget, &cancellation).await,
                         LazyPromotionMutation::Restore(record) =>
-                            transaction.restore_record_measured(path, record, budget, cancellation).await,
+                            transaction.restore_record_measured(path, record, budget, &cancellation).await,
                         LazyPromotionMutation::HardLink(source) =>
-                            transaction.hard_link_measured(source, path, budget, cancellation).await,
+                            transaction.hard_link_measured(source, path, budget, &cancellation).await,
                         LazyPromotionMutation::Write(offset, mut chunk) => {
                             let applied = transaction.write_range_measured(
-                                path, offset, std::mem::take(&mut chunk.bytes), budget, cancellation,
+                                path, offset, std::mem::take(&mut chunk.bytes), budget, &cancellation,
                             ).await;
                             drop(chunk);
                             applied
@@ -7903,31 +7903,31 @@ where
                 LazyTreapMeter::NativeOriginal { original, .. } => {
                     match operation {
                         LazyPromotionMutation::Directory =>
-                            transaction.create_directory_with_native_work(path, original, cancellation).await,
+                            transaction.create_directory_with_native_work(path, original, &cancellation).await,
                         LazyPromotionMutation::Parents =>
-                            transaction.create_dir_all_with_native_work(path, original, cancellation).await,
+                            transaction.create_dir_all_with_native_work(path, original, &cancellation).await,
                         LazyPromotionMutation::File(bytes) =>
-                            transaction.create_file_with_native_work(path, bytes, original, cancellation).await,
+                            transaction.create_file_with_native_work(path, bytes, original, &cancellation).await,
                         LazyPromotionMutation::Link(mut chunk) => {
                             let applied = transaction.create_symbolic_link_with_native_work(
-                                path, std::mem::take(&mut chunk.bytes), original, cancellation,
+                                path, std::mem::take(&mut chunk.bytes), original, &cancellation,
                             ).await;
                             drop(chunk);
                             applied
                         }
                         LazyPromotionMutation::Special(kind, device) =>
-                            transaction.create_special_with_native_work(path, kind, device, original, cancellation).await,
+                            transaction.create_special_with_native_work(path, kind, device, original, &cancellation).await,
                         LazyPromotionMutation::Metadata(metadata) =>
-                            transaction.set_metadata_with_native_work(path, metadata, original, cancellation).await,
+                            transaction.set_metadata_with_native_work(path, metadata, original, &cancellation).await,
                         LazyPromotionMutation::Identity(identity) =>
-                            transaction.preserve_file_identity_with_native_work(path, identity, original, cancellation).await,
+                            transaction.preserve_file_identity_with_native_work(path, identity, original, &cancellation).await,
                         LazyPromotionMutation::Restore(record) =>
-                            transaction.restore_record_with_native_work(path, record, original, cancellation).await,
+                            transaction.restore_record_with_native_work(path, record, original, &cancellation).await,
                         LazyPromotionMutation::HardLink(source) =>
-                            transaction.hard_link_with_native_work(source, path, original, cancellation).await,
+                            transaction.hard_link_with_native_work(source, path, original, &cancellation).await,
                         LazyPromotionMutation::Write(offset, mut chunk) => {
                             let applied = transaction.write_range_with_native_work(
-                                path, offset, std::mem::take(&mut chunk.bytes), original, cancellation,
+                                path, offset, std::mem::take(&mut chunk.bytes), original, &cancellation,
                             ).await;
                             drop(chunk);
                             applied
@@ -8364,7 +8364,7 @@ where
             let mut transaction = self.promotion_transaction_with_accounting(idempotency_key, work, cancellation).await?;
             if let Some(directory) = parent_path(requested) {
                 self.promotion_mutation_with_accounting(
-                    &mut transaction, directory, LazyPromotionMutation::Parents, work, cancellation,
+                    &mut transaction, directory, LazyPromotionMutation::Parents, work, cancellation.clone(),
                 ).await?;
             }
             let applied = self.apply_resolved_promotion_with_accounting(
@@ -8459,19 +8459,19 @@ where
                             snapshot, authored_path, work, cancellation,
                         ).await?;
                         self.promotion_mutation_with_accounting(
-                            transaction, requested, LazyPromotionMutation::Restore(record), work, cancellation,
+                            transaction, requested, LazyPromotionMutation::Restore(record), work, cancellation.clone(),
                         ).await?;
                         return Ok(true);
                     }
                     if authored_path == requested { return Ok(false); }
                     self.promotion_mutation_with_accounting(
-                        transaction, requested, LazyPromotionMutation::HardLink(authored_path), work, cancellation,
+                        transaction, requested, LazyPromotionMutation::HardLink(authored_path), work, cancellation.clone(),
                     ).await?;
                     return Ok(true);
                 }
                 LazyLookup::Shadow { record, .. } => {
                     self.promotion_mutation_with_accounting(
-                        transaction, requested, LazyPromotionMutation::Restore(*record), work, cancellation,
+                        transaction, requested, LazyPromotionMutation::Restore(*record), work, cancellation.clone(),
                     ).await?;
                     return Ok(true);
                 }
@@ -8809,7 +8809,7 @@ where
                         work.accept(applied.map(|work| OperationReceipt { value: (), work }))?;
                     } else {
                         self.promotion_mutation_with_accounting(
-                            &mut transaction, parent, LazyPromotionMutation::Parents, work, cancellation,
+                            &mut transaction, parent, LazyPromotionMutation::Parents, work, cancellation.clone(),
                         ).await?;
                     }
                 }
@@ -8821,7 +8821,7 @@ where
                         work.accept(applied.map(|work| OperationReceipt { value: (), work }))?;
                     } else {
                         self.promotion_mutation_with_accounting(
-                            &mut transaction, &requested, LazyPromotionMutation::Restore(record), work, cancellation,
+                            &mut transaction, &requested, LazyPromotionMutation::Restore(record), work, cancellation.clone(),
                         ).await?;
                     }
                     true
@@ -9418,6 +9418,7 @@ where
                                 let cleanup = page.publication.cleanup_budget();
                                 let mut reservation = None;
                                 let projected = async {
+                                    let mounted_mask = (move || mounted_mask)();
                                     reservation = Some(projection.reserve_publication(cleanup)?);
                                     if page.entries.len() > maximum_entries as usize {
                                         return Err(LazyWorkspaceError::InvalidPageBound);
@@ -11230,7 +11231,7 @@ where
                 let Some(bytes) = bytes else {
                     self.write_owner_with_accounting(basis, work, cancellation, before_mutation).await?;
                     self.promotion_mutation_with_accounting(
-                        transaction, &requested, LazyPromotionMutation::Parents, work, cancellation,
+                        transaction, &requested, LazyPromotionMutation::Parents, work, cancellation.clone(),
                     ).await?;
                     drop(frozen_lookup);
                     drop(ordinary_lookup);
@@ -11241,7 +11242,7 @@ where
                 if let Some(parent) = parent_path(&requested) {
                     self.write_owner_with_accounting(basis, work, cancellation, before_mutation).await?;
                     self.promotion_mutation_with_accounting(
-                        transaction, parent, LazyPromotionMutation::Parents, work, cancellation,
+                        transaction, parent, LazyPromotionMutation::Parents, work, cancellation.clone(),
                     ).await?;
                 }
                 let identity = match lookup {
@@ -11250,14 +11251,14 @@ where
                     Some(LazyLookup::Authored { path: authored, .. }) if authored != &requested => {
                         self.write_owner_with_accounting(basis, work, cancellation, before_mutation).await?;
                         self.promotion_mutation_with_accounting(
-                            transaction, &requested, LazyPromotionMutation::HardLink(authored), work, cancellation,
+                            transaction, &requested, LazyPromotionMutation::HardLink(authored), work, cancellation.clone(),
                         ).await?;
                         None
                     }
                     Some(LazyLookup::Shadow { record, .. }) => {
                         self.write_owner_with_accounting(basis, work, cancellation, before_mutation).await?;
                         self.promotion_mutation_with_accounting(
-                            transaction, &requested, LazyPromotionMutation::Restore(*record), work, cancellation,
+                            transaction, &requested, LazyPromotionMutation::Restore(*record), work, cancellation.clone(),
                         ).await?;
                         None
                     }
@@ -11280,7 +11281,7 @@ where
                 if let Some(identity) = identity {
                     self.write_owner_with_accounting(basis, work, cancellation, before_mutation).await?;
                     self.promotion_mutation_with_accounting(
-                        transaction, &requested, LazyPromotionMutation::Identity(identity), work, cancellation,
+                        transaction, &requested, LazyPromotionMutation::Identity(identity), work, cancellation.clone(),
                     ).await?;
                 }
                 drop(frozen_lookup);

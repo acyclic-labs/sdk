@@ -3543,11 +3543,11 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
             budget, cancellation).await
     }
 
-    async fn hard_link_with_accounting(
+    fn prepare_hard_link(
         &mut self, source: &str, destination: &str,
         accounting: &mut crate::kernel::allocation::KernelAccounting<'_>,
         cancellation: &crate::CancellationToken,
-    ) -> Result<(), WorkspaceError> {
+    ) -> Result<crate::kernel::Owned<Vec<AuthoredMutation>>, WorkspaceError> {
         let mut source = self.mutation_path_with_accounting(source, accounting, cancellation)?;
         let mut destination = self.mutation_path_with_accounting(destination, accounting, cancellation)?;
         source.allocation.absorb(&mut destination.allocation)?;
@@ -3558,17 +3558,22 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         );
         let mut operations = crate::kernel::Owned::allocate(1, accounting)?;
         Self::push_workspace_mutation(&mut operations, operation, accounting)?;
-        self.apply_workspace_authored_with_accounting(operations, accounting, cancellation).await
+        Ok(operations)
     }
 
-    pub(crate) async fn hard_link_measured(
-        &mut self, source: &str, destination: &str,
-        budget: crate::WorkBudget, cancellation: &crate::CancellationToken,
-    ) -> crate::MeasuredResult<crate::WorkCounters, WorkspaceError> {
+    pub(crate) fn hard_link_measured<'a>(
+        &'a mut self, source: &str, destination: &str,
+        budget: crate::WorkBudget, cancellation: &'a crate::CancellationToken,
+    ) -> impl std::future::Future<Output = crate::MeasuredResult<crate::WorkCounters, WorkspaceError>> + crate::async_storage::StorageFuture + 'a {
         let mut accounting = crate::kernel::allocation::KernelAccounting::standalone(budget, cancellation);
-        let result = self.hard_link_with_accounting(source, destination, &mut accounting, cancellation).await;
-        result.map(|()| accounting.spent())
-            .map_err(|error| crate::OperationFailure::new(error, accounting.spent()))
+        let operations = self.prepare_hard_link(source, destination, &mut accounting, cancellation);
+        async move {
+            let result = async {
+                self.apply_workspace_authored_with_accounting(operations?, &mut accounting, cancellation).await
+            }.await;
+            result.map(|()| accounting.spent())
+                .map_err(|error| crate::OperationFailure::new(error, accounting.spent()))
+        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -3876,8 +3881,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Transaction<A, O> {
         &mut self, source: &str, destination: &str, original: &crate::NativeMaterializationWork,
         cancellation: &crate::CancellationToken,
     ) -> Result<(), WorkspaceError> {
-        self.hard_link_with_accounting(source, destination,
-            &mut crate::kernel::allocation::KernelAccounting::native(original, cancellation), cancellation).await
+        let mut accounting = crate::kernel::allocation::KernelAccounting::native(original, cancellation);
+        let operations = self.prepare_hard_link(source, destination, &mut accounting, cancellation)?;
+        self.apply_workspace_authored_with_accounting(operations, &mut accounting, cancellation).await
     }
 
     #[cfg(not(target_arch = "wasm32"))]

@@ -2852,7 +2852,7 @@ impl<A, O> SharedCheckout<A, O> {
                     claimed
                 };
                 drop(checkout);
-                self.apply_grouped_requests(requests, &cancellation).await;
+                self.apply_grouped_requests(requests, cancellation.clone()).await;
             }
         })
     }
@@ -4693,13 +4693,13 @@ impl<A, O> SharedCheckout<A, O> {
     fn apply_grouped_requests<'a>(
         &'a self,
         requests: Vec<GroupedRequest>,
-        cancellation: &'a CancellationToken,
+        cancellation: CancellationToken,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'a>>
     where A: AsyncAuthorityStore, O: AsyncObjectStore {
         Box::pin(async move {
-            let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, cancellation);
+            let mut work = crate::demand::DemandWork::new(WorkBudget::UNBOUNDED, &cancellation);
             let _ = self.apply_grouped_requests_measured(
-                requests, &mut work, cancellation, None,
+                requests, &mut work, &cancellation, None,
             ).await;
         })
     }
