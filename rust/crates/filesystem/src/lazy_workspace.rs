@@ -9416,7 +9416,7 @@ where
         F: LazyWriteGuard<A, O, D, S, Error = E>,
         I: Iterator<Item = LazyWriteMutation<'path>> + Send,
     {
-        in_heap_lazy(work, || async {
+        in_heap_lazy(work, move || async move {
             let frozen_basis = basis.is_some();
             if let Some(basis) = basis
                 && let Some(original) = self.write_original_record_with_accounting(
