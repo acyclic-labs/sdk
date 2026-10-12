@@ -2428,7 +2428,7 @@ mod tests {
                 let mounted = &mount;
                 async move {
                     let scope = scope.map_err(MountLifecycleError::Native)?;
-                    let result = work.read_working_file_guarded::<MountLifecycleError, _, _>(
+                    let result = work.read_working_file::<MountLifecycleError, _, _>(
                         mounted.path(), identity, Path::new("source.txt"), 32,
                         || std::future::ready(Ok(())),
                     ).await;

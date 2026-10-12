@@ -1360,7 +1360,7 @@ where P: StreamProvider + 'static,
                 let physical = &physical;
                 async move {
                     let scope = scope.map_err(acyclic_fs::native_mount::MountLifecycleError::Native).map_err(Error::from)?;
-                    let result = physical.read_working_file_guarded(self.path(), self.identity, relative, maximum,
+                    let result = physical.read_working_file(self.path(), self.identity, relative, maximum,
                         || self.check(physical)).await;
                     drop(scope);
                     result
@@ -1494,7 +1494,7 @@ impl NativePreparationRoot {
         custody.absorb(&mut operation_custody).map_err(native_root_error)?;
         let meter = work.clone();
         acyclic_native_runtime::run_blocking_io_measured(move || {
-            let backend = acyclic_fs::NativeTreeMaterializationBackend::open(root, operation_directory, Some(custody), meter.clone()).map_err(native_root_error)?;
+            let backend = acyclic_fs::NativeTreeMaterializationBackend::new(root, operation_directory, Some(custody), meter.clone(), false).map_err(native_root_error)?;
             backend.require_initial_empty().map_err(native_root_error)?;
             let expected_identity = acyclic_fs::NativeRootIdentity::from_bytes(
                 backend.allocation_identity().ok_or(Error::NativeBoundary {
@@ -2247,7 +2247,7 @@ where
                 let store = NativePreparationStore::new(owner, work.clone(), false);
                 let materializer = acyclic_fs::JournaledMaterializer::new(store, backend);
                 let operation = native_preparation_operation_with_work(owner, &work).map_err(native_root_error)?;
-                let retained = materializer.load_owned(operation).await.map_err(native_materialization_error)?;
+                let retained = materializer.load(operation).await.map_err(native_materialization_error)?;
                 let (mut generations, generations_custody) = native_vec(bindings.len(), &work)?;
                 let (mut selection, mut plan_custody) = native_vec(bindings.len(), &work)?;
                 for (binding, volume_work) in bindings.iter().zip(&binding_work) {
@@ -2339,7 +2339,7 @@ where
                 drop(retained);
                 Self::authenticate_lazy_roots(owner, bindings, existing_lazy, &manifest.options.root, work).await?;
                 materializer.backend().require_selected_root(&plan.edits, &preserved).map_err(native_root_error)?;
-                let journal = materializer.prepare_owned(plan, plan_custody).await.map_err(native_materialization_error)?;
+                let journal = materializer.prepare(plan, Some(plan_custody)).await.map_err(native_materialization_error)?;
                 require_allocation(&journal, &allocation)?;
                 let restage = journal.phase == MaterializationPhase::Preparing
                     && journal.preimages.is_empty();
@@ -2383,7 +2383,7 @@ where
                             .await.map_err(NativePreparationJournalError::Owner)?;
                         Ok::<(), NativePreparationJournalError>(())
                     };
-                    materializer.recover_owned_guarded(
+                    materializer.recover(
                         operation, acyclic_fs::MaterializationRecovery::Complete, &mut before_effect,
                     ).await
                 }.map_err(NativePreparationJournalError::into_owner_error)?
@@ -2453,13 +2453,13 @@ where
                 cancellation.check().map_err(acyclic_fs::NativeTreeMaterializationError::from)
                     .map_err(native_root_error)?;
                 checkpoint_preparation(materializer.store(), journal).await?;
-                let inspection = materializer.inspect_owned(operation).await.map_err(native_materialization_error)?
+                let inspection = materializer.inspect(operation).await.map_err(native_materialization_error)?
                     .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict, reason: "native preparation journal disappeared" })?;
                 owner.verify_with_native_work(false, work).await?;
                 for (binding, volume) in bindings.iter().zip(&volumes) {
                     verify_binding(owner, binding, &volume._work)?;
                 }
-                let receipt = preparation_receipt(intent, inspection.0, inspection.1)?;
+                let receipt = preparation_receipt(intent, inspection, None)?;
                 drop(intent_operation_custody);
                 Ok(Self { manifest, volumes, preparation: receipt, cancellation: cancellation.clone(),
                     original_work: matches!(&callback_guards, NativePreparationCallbackGuards::Native(_))
@@ -2584,7 +2584,7 @@ where
                 let lease = view.native_source_io_lease()
                     .map_err(acyclic_fs::native_mount::MountLifecycleError::Native).map_err(Error::from)?;
                 let physical = work.with_source_io_lease(lease).map_err(native_root_error)?;
-                physical.read_working_file_guarded(&mapping.path, volume.original_identity, file, maximum_bytes,
+                physical.read_working_file(&mapping.path, volume.original_identity, file, maximum_bytes,
                     || self.verify_builtin_owner(owner, mapping, VolumeOperation::Read, work)).await
             }
         }
@@ -2610,7 +2610,7 @@ where
                 let lease = view.native_source_io_lease()
                     .map_err(acyclic_fs::native_mount::MountLifecycleError::Native).map_err(Error::from)?;
                 let physical = work.with_source_io_lease(lease).map_err(native_root_error)?;
-                physical.write_working_file_guarded(&mapping.path, volume.original_identity, file, content,
+                physical.write_working_file(&mapping.path, volume.original_identity, file, content,
                     create_parents, expected_sha256,
                     || async {
                         self.verify_builtin_owner(owner, mapping, VolumeOperation::Write, work).await?;
@@ -3144,7 +3144,7 @@ async fn native_backend(
     custody.absorb(&mut operation_custody).map_err(native_root_error)?;
     let meter = work.clone();
     let backend = acyclic_native_runtime::run_blocking_io_measured(move || {
-        acyclic_fs::NativeTreeMaterializationBackend::open(root, operation_directory, Some(custody), meter)
+        acyclic_fs::NativeTreeMaterializationBackend::new(root, operation_directory, Some(custody), meter, false)
     }, work.runtime_meter_owner())
         .map_err(|error| native_root_error(work.runtime_error(error)))?
         .await.map_err(|error| native_root_error(work.runtime_error(error)))?
@@ -3326,7 +3326,7 @@ fn inspect_native_preparation_with_work<'a, P: StreamProvider>(
                     owner.verify_with_native_work(true, work).await?;
                     Ok::<(), NativePreparationJournalError>(())
                 };
-                materializer.recover_owned_guarded(
+                materializer.recover(
                     operation, acyclic_fs::MaterializationRecovery::RollBack, &mut before_effect,
                 ).await
             }.map_err(NativePreparationJournalError::into_owner_error)?
@@ -3337,13 +3337,13 @@ fn inspect_native_preparation_with_work<'a, P: StreamProvider>(
             owner.verify_with_native_work(true, work).await?;
             checkpoint_preparation(materializer.store(), rolled_back).await?;
         }
-        let mut inspection = materializer.inspect_owned(operation).await.map_err(native_materialization_error)?
+        let mut inspection = materializer.inspect(operation).await.map_err(native_materialization_error)?
             .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
                 reason: "native preparation journal disappeared" })?;
-        if let Some(custody) = inspection.1.as_mut() {
+        if let Some(custody) = inspection.journal.custody.as_mut() {
             intent.1.absorb(custody).map_err(native_root_error)?;
         }
-        let receipt = preparation_receipt(intent.0, inspection.0, Some(intent.1))?;
+        let receipt = preparation_receipt(intent.0, inspection, Some(intent.1))?;
         let _final_owner_custody = materializer.store().verify_read_owner().await?;
         Ok(Some(receipt))
     })
