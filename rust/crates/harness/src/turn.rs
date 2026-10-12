@@ -309,14 +309,14 @@ mod tests {
             "turns",
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::new()),
-        )?;
+         &mut None)?;
         FileRef::new(
             volume,
             name,
             "v1",
-            FileDescriptor::from_bytes(b"body", "text/plain")?,
+            FileDescriptor::from_bytes(b"body", "text/plain", &mut None)?,
             name,
-        )
+         &mut None)
     }
 
     fn manifest_file(name: &str) -> Result<FileRef> {
@@ -325,14 +325,14 @@ mod tests {
             "turns",
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::new()),
-        )?;
+         &mut None)?;
         FileRef::new(
             volume,
             name,
             "v1",
-            FileDescriptor::from_bytes(br"[]", "application/vnd.acyclic.harness.attachments+json")?,
+            FileDescriptor::from_bytes(br"[]", "application/vnd.acyclic.harness.attachments+json", &mut None)?,
             name,
-        )
+         &mut None)
     }
 
     fn conversation() -> Result<ConversationState> {

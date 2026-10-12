@@ -880,12 +880,12 @@ mod tests {
                 "custom-turn",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes(1_u128.to_be_bytes())),
-            )?,
+             &mut None)?,
             "artifact.txt",
             "version-1",
-            FileDescriptor::from_bytes(b"custom artifact", "text/plain")?,
+            FileDescriptor::from_bytes(b"custom artifact", "text/plain", &mut None)?,
             "artifact.txt",
-        )?;
+         &mut None)?;
         let inputs = (1_u32..=2)
             .map(|index| {
                 let content = ModelContent::Parts(vec![
