@@ -6091,7 +6091,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             };
             let carrier = &mut *destination.carrier;
             self.checkout.finish_native_phase_with_carrier(
-                candidate, epoch, stamp, &ViewChange::Linked(destination_path, node), carrier,
+                candidate, epoch, stamp, &ViewChange::Entry(destination_path, node), carrier,
                 &cancellation, Some(&self.cancellation),
             ).await
         };
@@ -6172,7 +6172,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> CheckoutMountSource<A, O> {
             consumed.carrier.accept_with_prior_live(receipt, prior_live, mount_engine_error)
         };
         let installed = self.checkout.finish_native_phase_with_carrier(
-            candidate, epoch, stamp, &ViewChange::Unbound(namespace, node),
+            candidate, epoch, stamp, &ViewChange::Entry(namespace, node),
             phase_carrier, &cancellation, Some(&self.cancellation),
         ).await;
         drop(input);
@@ -8464,7 +8464,7 @@ where
     }
 
     fn observe_view(&self, observer: Weak<dyn ViewObserver>) {
-        self.checkout.ledger.observe(observer).expect("unbounded view observer registration");
+        self.checkout.ledger.observe(observer, &mut NativeDemandCarrier::Borrowed(&mut super::view_ledger::unbounded_view_work())).expect("unbounded view observer registration");
     }
 
     fn observe_view_with_meter(
@@ -8483,8 +8483,7 @@ where
             }).map_err(mount_demand_error)?;
         }
         // Metadata callbacks run outside the original-work mutex.
-        let custody = observer.upgrade().and_then(|observer| observer.allocation_custody());
-        self.checkout.ledger.observe_measured_with_meter(observer, custody, meter)?;
+        self.checkout.ledger.observe(observer, &mut NativeDemandCarrier::Shared(meter))?;
         meter.lock().check().map_err(mount_demand_error)?;
         self.cancellation.check().map_err(|_| MountSourceError::Stale)
     }

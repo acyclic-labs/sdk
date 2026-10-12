@@ -4728,7 +4728,7 @@ where
         scratch.track(logical_bytes)?;
         let namespace = self.authored.namespace_path(path, scratch.carrier)?;
         if namespace.1.is_none() { scratch.track(namespace.0.retained_bytes())?; }
-        super::adapter::record_view_change(&self.authored.shared_checkout().ledger, &ViewChange::Unbound(&namespace.0, file_id), scratch.carrier)?;
+        super::adapter::record_view_change(&self.authored.shared_checkout().ledger, &ViewChange::Entry(&namespace.0, file_id), scratch.carrier)?;
         let bytes = key.legacy_owned_bytes().checked_add(logical_bytes)
             .ok_or(MountSourceError::Work(crate::WorkError::Overflow))?;
         let custody = scratch.carrier.new_custody()?;
@@ -5031,7 +5031,7 @@ where
             removals.epoch = removals.epoch.wrapping_add(1);
             self.cursors.clear();
         }
-        self.authored.record_projection_change(&ViewChange::Unbound(
+        self.authored.record_projection_change(&ViewChange::Entry(
             &self.authored.namespace_path(path, &mut super::adapter::NativeDemandCarrier::Borrowed(&mut crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()))).map(|(path, _)| path)?,
             file_id,
         ));
