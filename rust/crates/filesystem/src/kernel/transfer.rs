@@ -254,16 +254,22 @@ pub async fn export_generation_batch_async<S: AsyncObjectStore + ?Sized>(
             maximum_bytes: admitted_object_bytes,
         });
     }
-    let nested = store
-        .read_many(
+    let nested = {
+        let __object_args = (
             &requests,
             work.remaining(budget).map_err(|error| {
                 OperationFailure::new(GenerationTransferError::Work(error), work)
             })?,
             cancellation,
-        )
-        .await
-        .map_err(|failure| failure.map_with_prior_work(work, GenerationTransferError::from))?;
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.1, __object_args.2);
+        let __object_result = store
+            .read_many(__object_args.0, &mut __object_work)
+            .await
+            .map(|(values, _allocation)| values);
+        __object_work.receipt(__object_result)
+    }
+    .map_err(|failure| failure.map_with_prior_work(work, GenerationTransferError::from))?;
     let nested_peak = request_bytes.saturating_add(nested.work.peak_allocation_bytes);
     work = work
         .checked_add(nested.work)
@@ -349,17 +355,22 @@ pub async fn import_generation_batch_async<S: AsyncObjectStore + ?Sized>(
                       `start + offset < start + body_count <= manifest.objects.len()`"
         )]
         let object_id = manifest.objects[start + offset];
-        let receipt = store
-            .put(
+        let receipt = {
+            let __object_args = (
                 object_id,
                 body.clone(),
                 work.remaining(budget).map_err(|error| {
                     OperationFailure::new(GenerationTransferError::Work(error), work)
                 })?,
                 cancellation,
-            )
-            .await
-            .map_err(|failure| failure.map_with_prior_work(work, GenerationTransferError::from))?;
+            );
+            let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+            let __object_result = store
+                .put(__object_args.0, __object_args.1, &mut __object_work)
+                .await;
+            __object_work.receipt(__object_result)
+        }
+        .map_err(|failure| failure.map_with_prior_work(work, GenerationTransferError::from))?;
         work = work
             .checked_add(receipt.work)
             .map_err(|error| OperationFailure::new(error.into(), work))?;

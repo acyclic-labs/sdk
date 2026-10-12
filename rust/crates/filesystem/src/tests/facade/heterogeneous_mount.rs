@@ -27,14 +27,18 @@ use super::*;
         };
 
         ($trait:ident, $field:ident, {$($extra:item)*},
-            $(fn $method:ident($($argument:ident: $type:ty),*) -> $result:ty;)*
+            $(fn $method:ident($context:ident: $context_type:ty $(, $argument:ident: $type:ty)*) -> $result:ty;)*
         ) => {
             impl $trait for Stores {
                 $($extra)*
-                $(async fn $method(&self, $($argument: $type),*) -> $result {
+                $(async fn $method(&self, $($argument: $type,)* $context: $context_type) -> $result {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    if $context.original.is_some() {
+                        return Err(crate::ObjectStoreError::NativeUnavailable);
+                    }
                     match self {
-                        Stores::Memory(fs) => $trait::$method(&fs.inner.$field, $($argument),*).await,
-                        Stores::Local(fs) => $trait::$method(&fs.inner.$field, $($argument),*).await,
+                        Stores::Memory(fs) => $trait::$method(&fs.inner.$field, $($argument,)* $context).await,
+                        Stores::Local(fs) => $trait::$method(&fs.inner.$field, $($argument,)* $context).await,
                     }
                 })*
             }
@@ -112,12 +116,12 @@ fn supports_generation_lineage_prefix(&self) -> bool {
             }
         }
     },
-        fn put(id: ObjectId, bytes: OwnedBytes, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<()>;
-        fn put_many(writes: &[ObjectWrite], budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<()>;
-        fn read(id: ObjectId, maximum: u64, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<ObjectRead>;
-        fn read_many(requests: &[ObjectReadRequest], budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<Vec<ObjectRead>>;
-        fn contains(id: ObjectId, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<bool>;
-        fn flush_before_publish(scope: crate::PublicationScope<'_>, budget: WorkBudget, cancellation: &CancellationToken) -> ObjectResult<crate::PublicationHold>;
+        fn put(context: &mut crate::AuthorityWork<'_>, id: ObjectId, bytes: OwnedBytes) -> Result<(), crate::ObjectStoreError>;
+        fn put_many(context: &mut crate::AuthorityWork<'_>, writes: &[ObjectWrite]) -> Result<(), crate::ObjectStoreError>;
+        fn read(context: &mut crate::AuthorityWork<'_>, id: ObjectId, maximum: u64) -> Result<ObjectRead, crate::ObjectStoreError>;
+        fn read_many(context: &mut crate::AuthorityWork<'_>, requests: &[ObjectReadRequest]) -> Result<(Vec<ObjectRead>, crate::AuthorityAllocation), crate::ObjectStoreError>;
+        fn contains(context: &mut crate::AuthorityWork<'_>, id: ObjectId) -> Result<bool, crate::ObjectStoreError>;
+        fn flush_before_publish(context: &mut crate::AuthorityWork<'_>, scope: crate::PublicationScope<'_>) -> Result<crate::PublicationHold, crate::ObjectStoreError>;
     );
 
     #[tokio::test]

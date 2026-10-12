@@ -543,14 +543,19 @@ pub async fn execute_residency<S: AsyncObjectStore>(
         ));
     }
     let request = permit.candidate.request;
-    let receipt = store
-        .read(
+    let receipt = {
+        let __object_args = (
             request.object_id,
             request.maximum_bytes,
             budget,
             cancellation,
-        )
-        .await?;
+        );
+        let mut __object_work = crate::AuthorityWork::new(__object_args.2, __object_args.3);
+        let __object_result = store
+            .read(__object_args.0, __object_args.1, &mut __object_work)
+            .await;
+        __object_work.receipt(__object_result)
+    }?;
     let byte_length = crate::foundation::usize_to_u64(receipt.value.bytes.len());
     Ok(crate::OperationReceipt {
         value: byte_length,
