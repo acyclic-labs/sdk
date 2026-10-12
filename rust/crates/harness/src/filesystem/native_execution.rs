@@ -34,8 +34,7 @@ pub struct NativeRootOutputSource {
     custody: acyclic_fs::NativeAllocation,
 }
 
-trait NativeRootOutputOwner: Send + Sync {
-    fn as_any(&self) -> &dyn std::any::Any;
+trait NativeRootOutputOwner: std::any::Any + Send + Sync {
     fn same_owner(&self, other: &dyn NativeRootOutputOwner) -> bool;
     fn authorize<'a>(
         &'a self, source: &'a NativeRootOutputSource, operation: VolumeOperation,
@@ -49,10 +48,8 @@ trait NativeRootOutputOwner: Send + Sync {
 }
 
 impl<P: StreamProvider + 'static> NativeRootOutputOwner for TaskJournalOwner<P> {
-    fn as_any(&self) -> &dyn std::any::Any { self }
-
     fn same_owner(&self, other: &dyn NativeRootOutputOwner) -> bool {
-        other.as_any().downcast_ref::<Self>()
+        (other as &dyn std::any::Any).downcast_ref::<Self>()
             .is_some_and(|other| self.same_original_root_output_owner(other))
     }
 
@@ -88,10 +85,6 @@ impl<P: StreamProvider + 'static> NativeRootOutputOwner for TaskJournalOwner<P> 
 }
 
 impl NativeRootOutputSource {
-    pub(crate) fn content_binding(&self) -> &crate::runtime::ContentBindings {
-        &self.binding
-    }
-
     /// Provider aliases retain this whole source, including its actual owner and metadata custody.
     pub(crate) fn retained_content_binding(self: &Arc<Self>) -> crate::runtime::ContentBindings {
         crate::runtime::ContentBindings {
@@ -277,12 +270,10 @@ impl NativeTaskViewDrainReceipt {
     }
 }
 
-trait NativeTaskWorkingViewSeal {
-    fn as_any(&self) -> &dyn std::any::Any;
-}
+trait NativeTaskWorkingViewSeal {}
 
 /// An SDK-issued working view bound to its original owner and ledger.
-pub trait NativeTaskWorkingView: NativeTaskWorkingViewSeal + Send + Sync {
+pub trait NativeTaskWorkingView: NativeTaskWorkingViewSeal + std::any::Any + Send + Sync {
     /// Compares the exact held view and owner.
     fn same_identity(&self, other: &dyn NativeTaskWorkingView) -> bool;
     /// Selects an authorized mounted volume.
@@ -335,10 +326,7 @@ where P: StreamProvider + 'static,
 }
 
 impl<P: StreamProvider + 'static, A: AsyncAuthorityStore + Send + Sync + 'static, O: AsyncObjectStore + Send + Sync + 'static>
-    NativeTaskWorkingViewSeal for HeldNativeTaskWorkingView<P, A, O>
-{
-    fn as_any(&self) -> &dyn std::any::Any { self }
-}
+    NativeTaskWorkingViewSeal for HeldNativeTaskWorkingView<P, A, O> {}
 
 impl<P, A, O> NativeTaskWorkingView for HeldNativeTaskWorkingView<P, A, O>
 where P: StreamProvider + 'static,
@@ -346,7 +334,7 @@ where P: StreamProvider + 'static,
     O: AsyncObjectStore + Send + Sync + 'static,
 {
     fn same_identity(&self, other: &dyn NativeTaskWorkingView) -> bool {
-        other.as_any().downcast_ref::<Self>().is_some_and(|other|
+        (other as &dyn std::any::Any).downcast_ref::<Self>().is_some_and(|other|
             Arc::ptr_eq(&self.view, &other.view) && Arc::ptr_eq(&self.owner, &other.owner))
     }
     fn volume_for_builtin_path<'a>(&'a self, path: &'a Path, operation: VolumeOperation,
@@ -1080,7 +1068,7 @@ pub struct NativePreparationReceipt {
 impl PartialEq for NativePreparationReceipt {
     fn eq(&self, other: &Self) -> bool {
         self.task == other.task && self.original_fence == other.original_fence
-            && self.preparation.manifest == other.manifest && self.journal == other.journal
+            && self.manifest == other.manifest && self.journal == other.journal
             && self.root == other.root && self.preparation == other.preparation
             && self.observations == other.observations
     }
