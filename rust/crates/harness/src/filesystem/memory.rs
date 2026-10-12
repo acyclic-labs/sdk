@@ -815,10 +815,12 @@ impl MemoryHarnessStorage {
             FilesystemExecutionJournal::new(
                 stream.clone(),
                 Arc::clone(&host),
-                volume.clone(),
-                issuer.verifier(), crate::core::SchemaRegistry::new(),
-                scope.clone(),
+                &volume,
+                &issuer.verifier(),
+                &crate::core::SchemaRegistry::new(),
+                &scope,
                 maximum_file_bytes,
+                None,
             )?
             .with_input_verifier(input.clone()),
         );
