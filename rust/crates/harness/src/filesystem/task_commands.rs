@@ -1119,14 +1119,14 @@ where
             #[cfg(not(target_arch = "wasm32"))]
             if let Some(io) = io {
                 let work = io.original_native_work().expect("native tool has its original work");
-                let runner = DurableToolRunner::new_with_native_work(self.runtime.tool_registry(), journal, work)?.with_limits(limits)?;
+                let runner = DurableToolRunner::new(self.runtime.tool_registry(), journal, Some(work))?.with_limits(limits)?;
                 let (outcome, custody) = if reconciliation_only {
                     runner.reconcile_with_native_context(task, operation, definition, &invocation.arguments, &context, work)?.await?
                 } else { runner.run_with_native_context(task, operation, definition, &invocation.arguments, &context, work)?.await? };
                 io.absorb_native_custody(custody)?;
                 break 'outcome outcome;
             }
-            let runner = DurableToolRunner::new(self.runtime.tool_registry().clone(), journal).with_limits(limits)?;
+            let runner = DurableToolRunner::new(self.runtime.tool_registry(), journal, None)?.with_limits(limits)?;
             break 'outcome runner.run_with_context(task, operation, definition.clone(), invocation.arguments, context).await?;
         };
         match outcome {
