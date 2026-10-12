@@ -1292,7 +1292,7 @@ where
         io: Option<&super::PreparationIo>,
     ) -> Result<&ToolDefinition> {
         self.tools
-            .get_version(name, revision, io)?
+            .get(name, Some(revision), io)?
             .map(|tool| &tool.definition)
             .ok_or_else(|| {
                 super::interaction_host::interaction_boundary(

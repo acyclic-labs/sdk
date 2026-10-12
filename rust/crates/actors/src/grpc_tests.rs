@@ -174,7 +174,7 @@ impl Service<http::Request<Body>> for TlsService {
 }
 #[tokio::test]
 async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-    let Some((pem, key, unrelated, mode)) =
+    let Some((pem, mut server, unrelated, mode)) =
         acyclic_grpc_observability::tests::tls_fixture(module_path!())?
     else {
         return Ok(());
@@ -183,11 +183,7 @@ async fn platform_roots_and_exclusive_ca() -> Result<(), Box<dyn std::error::Err
     let endpoint = format!("https://localhost:{}", incoming.local_addr()?.port());
     let (shutdown, stopped) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(
-        tonic::transport::Server::builder()
-            .tls_config(
-                tonic::transport::ServerTlsConfig::new()
-                    .identity(tonic::transport::Identity::from_pem(&pem, key)),
-            )?
+        server
             .add_service(TlsService)
             .serve_with_incoming_shutdown(incoming, async {
                 let _ = stopped.await;

@@ -186,7 +186,7 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                 Some(receipt)
             }
             Ok(AppendOutcome::TailConflict { .. }) => None,
-            Err(error) if coordinator_retry_conflict(&error) => None,
+            Err(error) if error.code() == wire::ErrorCode::Conflict => None,
             Err(error) => return Err(error),
         };
         self.refresh(request.work()).await?;

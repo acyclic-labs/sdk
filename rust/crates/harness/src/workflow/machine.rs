@@ -228,18 +228,6 @@ impl MachineRegistry {
         })
     }
 
-    /// Validates a checkpoint on its original ledger.
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    pub fn validate_checkpoint_with_native_work(
-        &self,
-        checkpoint: &MachineCheckpoint,
-        work: &acyclic_fs::NativeMaterializationWork,
-    ) -> Result<()> {
-        let io = PreparationIo::from_native_work(work)?;
-        let result = self.validate_checkpoint(checkpoint, Some(&io));
-        finish_native_io(result, io, 0).map(|_| ())
-    }
-
     /// Initializes paid schema-checked state.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub fn initialize_with_native_work(

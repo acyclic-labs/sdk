@@ -1,12 +1,9 @@
 use super::*;
-
-use super::*;
 use crate::{
     AgentId, Capabilities,
-    conversation::{Attachment, ContentMountResolver, Limits, VolumeClass, VolumeOwner},
+    conversation::{ContentMountResolver, Limits, VolumeClass, VolumeOwner},
     core::{AggregateKind, Authority, AuthorityIssuer},
-    fork::ForkPreparation,
-    resources::{GenerationRef, ProviderRef, StreamRef},
+    resources::ProviderRef,
 };
 use acyclic_objects::v1::{MemoryObjects, MemoryOptions};
 
@@ -39,18 +36,16 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
             id: "objects-test".into(),
         },
     );
-    let owner_scope = issuer
-        .issue(
-            "owner",
-            &Capabilities::new([
-                volume.capability(VolumeOperation::Read, &mut None)?,
-                volume.capability(VolumeOperation::Write, &mut None)?,
-            ]),
-            Some(owner),
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
+    let owner_scope = issuer.issue(
+        "owner",
+        &Capabilities::new([
+            volume.capability(VolumeOperation::Read, &mut None)?,
+            volume.capability(VolumeOperation::Write, &mut None)?,
+        ]),
+        Some(owner),
+        None,
+        &mut None,
+    )?;
     let provider = volume.provider().clone();
     let owner_store = ObjectContentStore::new(
         objects.clone(),
@@ -92,7 +87,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
         owner_store
             .read(&file, file.descriptor().byte_length(), None)?
             .await?
-            .as_ref(),
+            .as_slice(),
         b"owner bytes"
     );
     let duplicate = owner_store
@@ -124,11 +119,11 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
     owner_store.verify_artifact(&artifact).await?;
     let missing_version = ArtifactRef::new(
         provider.clone(),
-        artifact.as_resource().key().into(),
+        artifact.as_resource().key(),
         Some("missing-version".into()),
     )?;
     assert!(owner_store.verify_artifact(&missing_version).await.is_err());
-    let unpinned = ArtifactRef::new(provider.clone(), artifact.as_resource().key().into(), None)?;
+    let unpinned = ArtifactRef::new(provider.clone(), artifact.as_resource().key(), None)?;
     owner_store.verify_artifact(&unpinned).await?;
     let traversal = ArtifactRef::new(
         provider.clone(),
@@ -139,173 +134,29 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
         owner_store.verify_artifact(&traversal).await,
         Err(Error::Invalid(_))
     ));
-    let parent = Authority {
-        kind: AggregateKind::Conversation,
-        id: "artifact-parent".into(),
+    let mut request: ForkRequest =
+        serde_json::from_str(include_str!("../../fixtures/v2/fork-request.json"))
+            .map_err(|error| Error::Invalid(error.to_string()))?;
+    request.preparation.maximum_inherited_messages = 1;
+    request.preparation.maximum_inherited_bytes = 1_024;
+    request.preparation.maximum_inherited_references = 1;
+    let artifact_selection = ForkSelection {
+        required: false,
+        revision: ResourceRevision::Artifact(artifact.clone()),
     };
-    let filesystem = ProviderRef::new("local".into(), "filesystem".into(), "2".into(), &mut None)?;
-    let project_owner = VolumeOwner::Project("artifact-project".into());
-    let child_agent = AgentId::from_bytes([14; 16]);
-    let request = ForkRequest {
-        authorized_source: None,
-        operation_id: OperationId::from_bytes([15; 16]),
-        parent: parent.clone(),
-        parent_revision: 1,
-        child: Authority {
-            kind: AggregateKind::Conversation,
-            id: "artifact-child".into(),
-        },
-        child_agent,
-        attached_agents: Vec::new(),
-        preparation: ForkPreparation {
-            child_result_volume: None,
-            summary: None,
-            child_project_volume: VolumeRef::new(
-                filesystem.clone(),
-                "artifact-child-project".into(),
-                VolumeClass::Project,
-                project_owner.clone(),
-                &mut None,
-            )?,
-            child_private_volume: VolumeRef::new(
-                filesystem.clone(),
-                "artifact-child-private".into(),
-                VolumeClass::AgentPrivate,
-                VolumeOwner::Agent(child_agent),
-                &mut None,
-            )?,
-            inherited_through_sequence: 0,
-            maximum_inherited_messages: 1,
-            maximum_inherited_bytes: 1_024,
-            maximum_inherited_references: 1,
-        },
-        selections: vec![
-            ForkSelection {
-                required: true,
-                revision: ResourceRevision::PrivateVolume {
-                    volume: VolumeRef::new(
-                        filesystem.clone(),
-                        "parent-scratch".into(),
-                        VolumeClass::AgentPrivate,
-                        VolumeOwner::Agent(AgentId::from_bytes([1; 16])),
-                        &mut None,
-                    )?,
-                    generation: GenerationRef::new(&(filesystem), &([99; 32]), None, None)?.0,
-                    paths: Vec::new(),
-                },
-            },
-            ForkSelection {
-                required: true,
-                revision: ResourceRevision::History(StreamRef::new(
-                    ProviderRef::new("local".into(), "stream".into(), "2".into(), &mut None)?,
-                    parent.stream_path(&mut None)?.into_bytes(),
-                    Some("1".into()),
-                )?),
-            },
-            ForkSelection {
-                required: true,
-                revision: ResourceRevision::Project {
-                    volume: VolumeRef::new(
-                        filesystem.clone(),
-                        "artifact-parent-project".into(),
-                        VolumeClass::Project,
-                        project_owner,
-                        &mut None,
-                    )?,
-                    generation: GenerationRef::new(&(filesystem), &([16; 32]), Some("1"), None)?.0,
-                },
-            },
-            ForkSelection {
-                required: false,
-                revision: ResourceRevision::Artifact(artifact.clone()),
-            },
-        ],
-        boundary: None,
-    };
+    request.selections.push(artifact_selection.clone());
     request.validate(&mut None)?;
-    let [
-        _scratch_selection,
-        history_selection,
-        project_selection,
-        artifact_selection,
-    ] = request.selections.as_slice()
-    else {
-        return Err(Error::Invalid(
-            "fork request selections changed after validation".into(),
-        ));
+    let captured = CapturedResource {
+        source: artifact_selection.revision.clone(),
+        revision: artifact_selection.revision.clone(),
     };
     assert_eq!(
-        owner_store.capture(&request, artifact_selection).await?,
-        Capture::Captured(CapturedResource {
-            source: ResourceRevision::Artifact(artifact.clone()),
-            revision: ResourceRevision::Artifact(artifact.clone()),
-        }),
+        owner_store.capture(&request, &artifact_selection).await?,
+        Capture::Captured(captured.clone())
     );
-    let seed = ForkSeed {
-        history_witness: None,
-        summary: None,
-        authorized_source: request.authorized_source.clone(),
-        child_result_volume: request.preparation.child_result_volume.clone(),
-        child_result_generation: None,
-        operation_id: request.operation_id,
-        parent: request.parent.clone(),
-        parent_revision: request.parent_revision,
-        child: request.child.clone(),
-        child_agent: request.child_agent,
-        attached_agents: Vec::new(),
-        resources: vec![
-            CapturedResource {
-                source: _scratch_selection.revision.clone(),
-                revision: ResourceRevision::PrivateVolume {
-                    volume: request.preparation.child_private_volume.clone(),
-                    generation: GenerationRef::new(
-                        &(request.preparation.child_private_volume.provider()),
-                        &([18; 32]),
-                        Some("1"),
-                        None,
-                    )?
-                    .0,
-                    paths: Vec::new(),
-                },
-            },
-            CapturedResource {
-                source: history_selection.revision.clone(),
-                revision: history_selection.revision.clone(),
-            },
-            CapturedResource {
-                source: project_selection.revision.clone(),
-                revision: ResourceRevision::Project {
-                    volume: request.preparation.child_project_volume.clone(),
-                    generation: GenerationRef::new(
-                        &(request.preparation.child_project_volume.provider()),
-                        &([17; 32]),
-                        Some("1"),
-                        None,
-                    )?
-                    .0,
-                },
-            },
-            CapturedResource {
-                source: artifact_selection.revision.clone(),
-                revision: artifact_selection.revision.clone(),
-            },
-        ],
-        omissions: Vec::new(),
-        child_private_volume: request.preparation.child_private_volume.clone(),
-        child_private_generation: GenerationRef::new(
-            &(request.preparation.child_private_volume.provider()),
-            &([18; 32]),
-            Some("1"),
-            None,
-        )?
-        .0,
-        inherited_context: Vec::new(),
-        inherited_through_sequence: 0,
-        shared_grants: Vec::new(),
-        reference_grants: Vec::new(),
-        attachment_manifests: Vec::new(),
-        boundary: None,
-    };
+    let mut seed: ForkSeed = serde_json::from_str(include_str!("../../fixtures/v2/fork-seed.json"))
+        .map_err(|error| Error::Invalid(error.to_string()))?;
+    seed.resources.push(captured);
     ForkSeedVerifier::verify(owner_store.as_ref(), &seed, &mut None)?.await?;
     assert!(owner_store.bindings().writer.is_some());
     let items = vec![Attachment {
@@ -330,14 +181,13 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
         .await?;
     assert_eq!(
         crate::conversation::load_manifest(owner_store.as_ref(), &manifest, 1, None)
-            .await
-            .map(|(items, _)| items)?,
+            .await?
+            .0,
         items
     );
     assert!(
         crate::conversation::load_manifest(owner_store.as_ref(), &manifest, 2, None)
             .await
-            .map(|(items, _)| items)
             .is_err()
     );
     let delegated = issuer.delegate_private_file_read(&owner_scope, reader, "attached", &file)?;
@@ -356,7 +206,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
         attached
             .read(&file, file.descriptor().byte_length(), None)?
             .await?
-            .as_ref(),
+            .as_slice(),
         b"owner bytes"
     );
     assert!(attached.bindings().writer.is_none());
@@ -420,15 +270,13 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
             id: "impostor".into(),
         },
     );
-    let impostor_scope = impostor
-        .issue(
-            "forged",
-            &Capabilities::new([volume.capability(VolumeOperation::Read, &mut None)?]),
-            Some(reader),
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
+    let impostor_scope = impostor.issue(
+        "forged",
+        &Capabilities::new([volume.capability(VolumeOperation::Read, &mut None)?]),
+        Some(reader),
+        None,
+        &mut None,
+    )?;
     assert!(
         ObjectContentStore::new(
             objects.clone(),
@@ -459,10 +307,10 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
     );
     let wrong = FileRef::new(
         volume,
-        "notes/one.txt".to_owned(),
-        file.version().to_owned(),
+        "notes/one.txt".into(),
+        (file.version()).into(),
         FileDescriptor::from_bytes(b"other", "text/plain", &mut None)?,
-        "one.txt".to_owned(),
+        "one.txt".into(),
         &mut None,
     )?;
     assert!(
@@ -487,20 +335,21 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
         owner_store
             .read(&file, file.descriptor().byte_length(), None)?
             .await?
-            .as_ref(),
+            .as_slice(),
         b"owner bytes"
     );
     assert_eq!(
         owner_store
             .read(&replacement, replacement.descriptor().byte_length(), None)?
             .await?
-            .as_ref(),
+            .as_slice(),
         b"replacement bytes"
     );
     let replacement_artifact = owner_store.artifact_ref(&replacement)?;
     assert!(replacement_artifact.as_resource().version().is_none());
     owner_store.verify_artifact(&replacement_artifact).await?;
-    objects
+    owner_store
+        .objects
         .put(
             wire::PutObjectHeader {
                 bucket: Some(owner_store.bucket.clone()),
@@ -513,7 +362,7 @@ async fn staged_objects_are_exact_and_attached_readers_never_gain_write() -> Res
                 }),
                 ..Default::default()
             },
-            acyclic_stream::OwnedBytes::from_static(b"corrupt replacement"),
+            bytes::Bytes::from_static(b"corrupt replacement"),
         )
         .await
         .map_err(storage)?;
@@ -579,30 +428,26 @@ async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Resu
         VolumeOwner::Agent(owner_b),
         &mut None,
     )?;
-    let owner_scope_a = issuer
-        .issue(
-            "owner-a",
-            &Capabilities::new([
-                volume_a.capability(VolumeOperation::Read, &mut None)?,
-                volume_a.capability(VolumeOperation::Write, &mut None)?,
-            ]),
-            Some(owner_a),
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
-    let owner_scope_b = issuer
-        .issue(
-            "owner-b",
-            &Capabilities::new([
-                volume_b.capability(VolumeOperation::Read, &mut None)?,
-                volume_b.capability(VolumeOperation::Write, &mut None)?,
-            ]),
-            Some(owner_b),
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
+    let owner_scope_a = issuer.issue(
+        "owner-a",
+        &Capabilities::new([
+            volume_a.capability(VolumeOperation::Read, &mut None)?,
+            volume_a.capability(VolumeOperation::Write, &mut None)?,
+        ]),
+        Some(owner_a),
+        None,
+        &mut None,
+    )?;
+    let owner_scope_b = issuer.issue(
+        "owner-b",
+        &Capabilities::new([
+            volume_b.capability(VolumeOperation::Read, &mut None)?,
+            volume_b.capability(VolumeOperation::Write, &mut None)?,
+        ]),
+        Some(owner_b),
+        None,
+        &mut None,
+    )?;
     let owner_store_a = ObjectContentStore::new(
         objects.clone(),
         bucket_a.clone(),
@@ -680,7 +525,7 @@ async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Resu
         reader_a
             .read(&file_a, file_a.descriptor().byte_length(), None)?
             .await?
-            .as_ref(),
+            .as_slice(),
         b"bucket a"
     );
     let (grant_b, reader_b) = resolver.mount(&file_b).await?;
@@ -689,19 +534,17 @@ async fn lazy_mount_routes_registered_buckets_and_requires_exact_grant() -> Resu
         reader_b
             .read(&file_b, file_b.descriptor().byte_length(), None)?
             .await?
-            .as_ref(),
+            .as_slice(),
         b"bucket b"
     );
 
-    let no_grant = issuer
-        .issue(
-            "no-grant",
-            &Capabilities::new([] as [String; 0]),
-            Some(attached),
-            None,
-            &mut None,
-        )
-        .expect("scope proof");
+    let no_grant = issuer.issue(
+        "no-grant",
+        &Capabilities::new([] as [String; 0]),
+        Some(attached),
+        None,
+        &mut None,
+    )?;
     let denied_store = ObjectContentStore::new(
         objects,
         bucket_a,

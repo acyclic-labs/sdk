@@ -95,7 +95,7 @@ pub(super) struct BoundEffect {
     pub(super) effects: Arc<Effects>,
     pub(super) owner: Arc<TaskJournalOwner<LocalStream>>,
     pub(super) journal: Arc<Journal>,
-    pub(super) context: Arc<NativeTaskContext>,
+    pub(super) context: Arc<TaskContext>,
     pub(super) command: OperationId,
 }
 
@@ -128,7 +128,7 @@ pub(super) struct LiveHandles {
     pub(super) dispose_requested: bool,
     pub(super) preparation_owner: Option<(
         Arc<TaskJournalOwner<LocalStream>>,
-        Arc<NativeTaskContext>,
+        Arc<TaskContext>,
         OperationId,
     )>,
     // The actual SDK proof owns its original view and intrinsic allocation custody.

@@ -46,7 +46,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         if let Some(work) = io.and_then(PreparationIo::original_native_work)
             && let Some(task) = &self.task_preparation
         {
-            task.verify_creation_with_native_work(work)?.await?;
+            task.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
         }
         Ok(grants)
     }
@@ -70,7 +70,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         if let Some(work) = native
             && let Some(task) = &self.task_preparation
         {
-            task.verify_creation_with_native_work(work)?.await?;
+            task.verify(false, Some(&crate::filesystem::PreparationIo::from_native_work(work)?))?.await?;
         }
         let controller = self.controller(io.filter(|io| io.original_native_work().is_some()))?;
         let (grants, custody) = controller
@@ -104,7 +104,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         } else {
             let mut history = io.map(PreparationIo::history_io);
             request.validate(&mut history.as_mut().map(|history| history as &mut dyn crate::store::history::HistoryIo))?;
-            for (volume, _) in creation_volumes(request) {
+            for volume in creation_volumes(request) {
                 if volume.provider() != &self.host.provider {
                     return Err(stock_boundary(
                         io,
@@ -116,7 +116,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         }
         let count = creation_volumes(request).count();
         let mut proofs = crate::model::vec_with_capacity(count, io)?;
-        for (volume, _) in creation_volumes(request) {
+        for volume in creation_volumes(request) {
             let resource = bounded_io::content_workspace(&self.host.provider, volume, io)?.into_resource();
             proofs.push(crate::resource_preparation::ResourceCreationProofRef {
                 provider: match io { Some(io) => self.host.provider.clone_with_io(io)?, None => self.host.provider.clone() },
@@ -158,7 +158,7 @@ pub(in crate::filesystem) fn require_reference_donor(
 pub(super) fn add_summary_readers(
     request: &ForkRequest,
     grants: &mut Vec<ReferenceGrant>,
-    files: &std::collections::BTreeMap<[u8; 32], crate::conversation::FileRef>,
+    files: &std::collections::BTreeMap<[u8; 32], &crate::conversation::FileRef>,
     io: Option<&PreparationIo>,
 ) -> Result<()> {
     let reject = |reason| stock_boundary(io, crate::wire::ErrorCode::Invalid, reason);
@@ -182,7 +182,7 @@ pub(super) fn add_summary_readers(
             let mut present = false;
             for grant in &*grants {
                 crate::model::charge_items(io, 1)?;
-                if grant.reader == reader && grant.file == *file {
+                if grant.reader == reader && grant.file == **file {
                     present = true;
                     break;
                 }

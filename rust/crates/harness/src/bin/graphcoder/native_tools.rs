@@ -401,7 +401,7 @@ impl super::native::NativeSession {
         )?
         .await?
         .into_arc_with_native_work(&work)?;
-        let mut registry = EffectRegistry::new(Some(&work))?;
+        let mut registry = EffectRegistry::new(Some(&work), None)?;
         registry.register(provider, Some(&work))?;
         let mut authority_io =
             acyclic_harness::store::HistoryWork::new(PreparationIo::from_native_work(&work)?);
@@ -420,7 +420,7 @@ impl super::native::NativeSession {
             Some(&work),
         )?;
         let (status, _status_custody) = effects
-            .run_task_effect_with_native_work(&owner, operation, &configured.plan, &work)
+            .run_task_effect(&owner, operation, &configured.plan, Some(&work))
             .await?;
         Ok(format!(
             "command-json={}\n",

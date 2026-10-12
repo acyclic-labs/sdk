@@ -774,8 +774,8 @@ impl RuntimeScope {
             .as_ref()?
             .references
             .iter()
-            .find(|binding| reference == file)
-            .map(|binding| reader)
+            .find(|(reference, _)| reference == file)
+            .map(|(_, reader)| reader)
     }
 
     #[cfg(feature = "filesystem")]

@@ -45,7 +45,7 @@ impl HistoryIo for &PreparationIo {
             ..Default::default()
         })?;
         self.remaining()?;
-        self.retain_owned(bytes)
+        self.retain_owned(bytes).map_err(Into::into)
     }
     fn retain_owned(&mut self, bytes: u64) -> Result<()> {
         PreparationIo::retain_owned(self, bytes).map_err(Into::into)
@@ -104,7 +104,7 @@ impl HistoryIo for &PreparationIo {
         self.preflight(WorkCounters {
             bytes_copied: bytes,
             ..Default::default()
-        })
+        }).map_err(Into::into)
     }
     fn copy_bytes(&mut self, bytes: u64) -> Result<()> {
         self.charged(WorkCounters {
@@ -116,13 +116,13 @@ impl HistoryIo for &PreparationIo {
         self.charge(WorkCounters {
             bytes_encoded: bytes,
             ..Default::default()
-        })
+        }).map_err(Into::into)
     }
     fn admit_encoding(&self, bytes: u64) -> Result<()> {
         self.preflight(WorkCounters {
             bytes_encoded: bytes,
             ..Default::default()
-        })
+        }).map_err(Into::into)
     }
     fn codec_charge(&mut self, charge: crate::contract::JsonCodecCharge) -> Result<()> {
         match charge {
@@ -132,7 +132,7 @@ impl HistoryIo for &PreparationIo {
             } => self.retain_owned(
                 maximum_owned_bytes
                     .max(crate::contract::json_value_decode_owned_bytes(value_shape)?),
-            ),
+            ).map_err(Into::into),
             charge => PreparationIo::codec_charge(self, charge, true),
         }
     }
@@ -147,21 +147,21 @@ impl HistoryIo for &PreparationIo {
             authority_bytes_written: bytes,
             authority_records_appended: count,
             ..Default::default()
-        })
+        }).map_err(Into::into)
     }
     fn acknowledged(&mut self, bytes: u64, count: u64) -> Result<()> {
         self.charge(WorkCounters {
             authority_bytes_written: bytes,
             authority_records_appended: count,
             ..Default::default()
-        })
+        }).map_err(Into::into)
     }
     fn admit_output(&self, bytes: u64, count: u64) -> Result<()> {
         self.preflight(WorkCounters {
             output_bytes: bytes,
             items_returned: count,
             ..Default::default()
-        })
+        }).map_err(Into::into)
     }
     fn stage_output(&mut self, bytes: u64, count: u64) -> Result<()> {
         self.admit_output(bytes, count)

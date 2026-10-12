@@ -66,7 +66,7 @@ impl TaskResourcePreparation {
             if self
                 .native_custody
                 .as_ref()
-                .is_none_or(|guard| !guard.matches_work(work))
+                .is_none_or(|guard| !guard.work().shares_allocation_context(work))
             {
                 return Err(Error::NativeBoundary {
                     code: Unauthorized,
@@ -105,14 +105,7 @@ impl<P: StreamProvider> ResourcePreparationLease for crate::durable_host::TaskJo
                 });
             }
         }
-        crate::conversation::BoundedContentFuture::new(io, || async move {
-            if let Some(io) = io {
-                self.verify(settlement, &mut Some(&mut io.history_io()))
-                    .await
-            } else {
-                self.verify(settlement, &mut None).await
-            }
-        })
+        crate::conversation::BoundedContentFuture::new(io, || self.verify(settlement))
     }
 }
 

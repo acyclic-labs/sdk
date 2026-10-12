@@ -255,15 +255,7 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
         state.overlay,
         state.shadows,
     );
-    state.completed_selected_import = Some(crate::lazy_workspace::CompletedSelectedImport {
-        operation: OperationId::from_bytes([0xb3; 16]),
-        snapshot,
-        destination: snapshot,
-        source: snapshot,
-        input: Digest::from_bytes([0xb4; 32]),
-        config: crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral),
-        source_config: crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral),
-    });
+    state.selected_import_roots = Some([(snapshot, crate::model::VolumeConfig::portable(crate::model::Lifecycle::Ephemeral)); 3]);
     let cancellation = crate::CancellationToken::new();
     let work = crate::materializer::NativeMaterializationWork::new(
         crate::WorkBudget::UNBOUNDED,
@@ -308,8 +300,8 @@ async fn native_lazy_state_uses_original_meter_and_preserves_completed_snapshot_
         .expect("real backend restart")
         .expect("original retained state");
     assert_eq!(
-        original.completed_selected_import,
-        state.completed_selected_import
+        original.selected_import_roots,
+        state.selected_import_roots
     );
     assert_eq!(original.source, state.source);
     assert_eq!(original.workspace_id, id);

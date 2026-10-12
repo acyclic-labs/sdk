@@ -1,15 +1,11 @@
 use super::*;
-use crate::conversation::{ContentResidencyVerifier, FileRef};
-use std::{collections::BTreeSet, mem::size_of, sync::Arc};
+use std::{collections::BTreeSet, mem::size_of};
 pub(super) fn charge(work: &mut Option<&mut dyn HistoryIo>, items: u64) -> Result<()> {
     if let Some(io) = work.as_deref_mut() {
         io.check_cancellation()?;
         io.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items })?;
     }
     Ok(())
-}
-pub(super) fn denied(work: &mut Option<&mut dyn HistoryIo>) -> Error {
-    diagnostic(work, Unauthorized, "created access denied")
 }
 pub(super) fn overflow() -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -96,26 +92,6 @@ pub(super) fn proof_bytes(proof: &ResourceCreationProofRef) -> Result<u64> {
         proof.provider.logical_owned_bytes()?,
         proof.resource.logical_owned_bytes()?,
         proof.evidence.logical_owned_bytes()?,
-    ])
-}
-pub(super) fn receipt_bytes(receipt: &CreatedResourceReceipt) -> Result<u64> {
-    sum([
-        receipt.origin.owner.id.capacity() as u64,
-        receipt.origin.source_grants.logical_owned_bytes()?,
-        receipt.origin.creation_fence.reservation_id.capacity() as u64,
-        receipt.origin.creation_fence.placement.capacity() as u64,
-        receipt.resource.logical_owned_bytes()?,
-        receipt.evidence.logical_owned_bytes()?,
-        receipt.allocation_generation.logical_owned_bytes()?,
-        vector_bytes(&receipt.operations, |name| Ok(name.capacity() as u64))?,
-        slots(
-            receipt.content.capacity(),
-            size_of::<CreatedContentBinding>(),
-        )?,
-        slots(
-            receipt.references.capacity(),
-            size_of::<(FileRef, Arc<dyn ContentResidencyVerifier>)>(),
-        )?,
     ])
 }
 /// Derives a capability for one exact resource and operation.

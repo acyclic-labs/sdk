@@ -131,42 +131,6 @@ impl OperationState {
             revision: self.revision,
         })
     }
-    pub(crate) fn work_lease_with_work(
-        &self,
-        work: &mut Option<&mut dyn HistoryIo>,
-    ) -> Result<Option<crate::distributed::WorkLease>> {
-        observe(work)?;
-        if !matches!(
-            self.phase,
-            OperationPhase::Admitted | OperationPhase::Running | OperationPhase::Reconciling
-        ) {
-            return Ok(None);
-        }
-        let Some(reservation) = &self.reservation else {
-            return Ok(None);
-        };
-        if work.is_none() {
-            return Ok(Some(crate::distributed::WorkLease {
-                operation: self.spec.clone(),
-                reservation: reservation.clone(),
-                checkpoint: self.checkpoint.clone(),
-                operation_revision: self.revision,
-            }));
-        }
-        let mut quota = CodecQuota::new(work, 0)?;
-        let lease = crate::distributed::WorkLease {
-            operation: self.spec.copy_fields(&mut quota)?,
-            reservation: reservation.copy_fields(&mut quota)?,
-            checkpoint: self
-                .checkpoint
-                .as_ref()
-                .map(|value| copy_checkpoint(value, &mut quota))
-                .transpose()?,
-            operation_revision: self.revision,
-        };
-        quota.transfer();
-        Ok(Some(lease))
-    }
 }
 closed_clone!(Outcome<FileRef>);
 closed_clone!(WorkflowSuspension);

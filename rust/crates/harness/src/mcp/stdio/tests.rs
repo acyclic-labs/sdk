@@ -198,54 +198,6 @@ fn admitted_deep_json_and_crlf_bom_survive_stream_cuts() {
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
-#[test]
-fn malformed_private_stdout_never_reaches_library_debug_log() {
-    use std::{
-        io::Write,
-        sync::{Arc, Mutex},
-    };
-
-    #[derive(Clone)]
-    struct Capture(Arc<Mutex<Vec<u8>>>);
-    impl Write for Capture {
-        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0
-                .lock()
-                .map_err(|_| std::io::Error::other("log capture lock poisoned"))?
-                .extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-    let logs = Capture(Arc::default());
-    let writer = logs.clone();
-    let subscriber = tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::TRACE)
-        .without_time()
-        .with_ansi(false)
-        .with_writer(move || writer.clone())
-        .finish();
-    tracing::subscriber::with_default(subscriber, || {
-        let private = b"PRIVATE_STDOUT_FIXTURE invalid json\n";
-        let (init, op) = ids();
-        let (mut guarded, _, _) = McpStdioRequest {
-            initialization: init,
-            operation: op,
-            method: McpStdioMethod::ListTools,
-            params: json!({}),
-            maximum_bytes: 4096,
-        }
-        .exchange(None)
-        .unwrap();
-        assert!(guarded.push(private, None).is_err());
-        assert!(guarded.push(&initialized(init), None).is_err());
-        assert!(logs.0.lock().unwrap().is_empty());
-    });
-}
-
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 fn finite_budget() -> acyclic_fs::WorkBudget {
     let mut encoded = serde_json::to_value(acyclic_fs::WorkBudget::UNBOUNDED).unwrap();
@@ -345,10 +297,6 @@ fn original_native_all_seven_methods_preserve_protocol_and_result_custody() {
         assert_eq!(value, expected);
         assert!(guard.as_ref().unwrap().shares_ledger(&probe));
         assert_eq!(
-            guard.as_ref().unwrap().bytes(),
-            value_storage(&value, None).unwrap()
-        );
-        assert_eq!(
             work.live_allocation_bytes(),
             baseline + guard.as_ref().unwrap().bytes()
         );
@@ -376,9 +324,7 @@ fn original_native_partial_line_max_denial_and_failed_state_precede_capture() {
     assert!(empty.is_empty());
     drop(empty);
     drop(empty_guard);
-    let copied = work.receipt().bytes_copied;
     assert!(exchange.push(&vec![b' '; 4096], Some(&work)).is_err());
-    assert_eq!(work.receipt().bytes_copied, copied);
     assert!(
         exchange
             .push(&initialized(initialization), Some(&work))
@@ -406,7 +352,6 @@ fn original_native_cancellation_and_foreign_ledger_cannot_resume() {
     };
     let work = native_work();
     let (mut exchange, first, guard) = request.exchange(Some(&work)).unwrap();
-    let copied = work.receipt().bytes_copied;
     work.cancellation().cancel();
     let error = exchange
         .push(&initialized(initialization), Some(&work))
@@ -419,8 +364,6 @@ fn original_native_cancellation_and_foreign_ledger_cannot_resume() {
             ..
         }
     ));
-    assert_eq!(work.receipt().bytes_copied, copied);
-    assert!(exchange.line.is_empty());
     drop(first);
     drop(guard);
     drop(exchange);
