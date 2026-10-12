@@ -324,16 +324,6 @@ pub(in crate::bindings) fn encode_created_mutation(
     })
 }
 
-pub(in crate::bindings) fn native_mutation(
-    file_id: Option<FileId>,
-    work: acyclic_fs::WorkCounters,
-) -> Result<NativeMutationResult> {
-    Ok(NativeMutationResult {
-        file_id: file_id.map(|value| Buffer::from(value.into_bytes().to_vec())),
-        work_json: work_json(&work)?,
-    })
-}
-
 pub(in crate::bindings) fn mutation_result(
     work: acyclic_fs::WorkCounters,
 ) -> Result<NativeMutationResult> {

@@ -11,25 +11,18 @@ impl NativeCheckout {
         bytes: Buffer,
     ) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
-        let mut checkout = Box::pin(self.inner.lock()).await;
-        checkout.ensure_publication_resolved().map_err(napi_error)?;
-        let receipt = checkout
-            .change_content(
+        let receipt = checkout_mutation!(
+            self,
+            change_content(
                 path,
                 acyclic_fs::ContentChange::Write {
                     offset: bigint_u64(&offset, "offset")?,
                     bytes: (bytes::Bytes::from(bytes.to_vec())).into(),
                 },
                 acyclic_fs::ContentTimes::Preserve,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
             )
-            .await
-            .map_err(napi_error)?;
-        Ok(NativeMutationResult {
-            file_id: None,
-            work_json: work_json(&receipt.work)?,
-        })
+        )?;
+        mutation_result(receipt.work)
     }
 
     /// Replaces one logical file range by stable file identity.
@@ -41,21 +34,17 @@ impl NativeCheckout {
         bytes: Buffer,
     ) -> Result<NativeMutationResult> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let mut checkout = Box::pin(self.inner.lock()).await;
-        checkout.ensure_publication_resolved().map_err(napi_error)?;
-        let receipt = checkout
-            .change_content(
+        let receipt = checkout_mutation!(
+            self,
+            change_content(
                 file_id,
                 acyclic_fs::ContentChange::Write {
                     offset: bigint_u64(&offset, "offset")?,
                     bytes: (bytes::Bytes::from(bytes.to_vec())).into(),
                 },
                 acyclic_fs::ContentTimes::Preserve,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
             )
-            .await
-            .map_err(napi_error)?;
+        )?;
         mutation_result(receipt.work)
     }
 
@@ -67,20 +56,16 @@ impl NativeCheckout {
         logical_bytes: BigInt,
     ) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
-        let mut checkout = Box::pin(self.inner.lock()).await;
-        checkout.ensure_publication_resolved().map_err(napi_error)?;
-        let receipt = checkout
-            .change_content(
+        let receipt = checkout_mutation!(
+            self,
+            change_content(
                 path,
                 acyclic_fs::ContentChange::Resize {
                     logical_bytes: bigint_u64(&logical_bytes, "logicalBytes")?,
                 },
                 acyclic_fs::ContentTimes::Preserve,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
             )
-            .await
-            .map_err(napi_error)?;
+        )?;
         mutation_result(receipt.work)
     }
 
@@ -92,20 +77,16 @@ impl NativeCheckout {
         logical_bytes: BigInt,
     ) -> Result<NativeMutationResult> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let mut checkout = Box::pin(self.inner.lock()).await;
-        checkout.ensure_publication_resolved().map_err(napi_error)?;
-        let receipt = checkout
-            .change_content(
+        let receipt = checkout_mutation!(
+            self,
+            change_content(
                 file_id,
                 acyclic_fs::ContentChange::Resize {
                     logical_bytes: bigint_u64(&logical_bytes, "logicalBytes")?,
                 },
                 acyclic_fs::ContentTimes::Preserve,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
             )
-            .await
-            .map_err(napi_error)?;
+        )?;
         mutation_result(receipt.work)
     }
 
@@ -120,10 +101,9 @@ impl NativeCheckout {
         extend: bool,
     ) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
-        let mut checkout = Box::pin(self.inner.lock()).await;
-        checkout.ensure_publication_resolved().map_err(napi_error)?;
-        let receipt = checkout
-            .change_content(
+        let receipt = checkout_mutation!(
+            self,
+            change_content(
                 path,
                 acyclic_fs::ContentChange::ZeroRange {
                     range: ByteRange {
@@ -134,11 +114,8 @@ impl NativeCheckout {
                     extend: extend,
                 },
                 acyclic_fs::ContentTimes::Preserve,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
             )
-            .await
-            .map_err(napi_error)?;
+        )?;
         mutation_result(receipt.work)
     }
 
@@ -153,10 +130,9 @@ impl NativeCheckout {
         extend: bool,
     ) -> Result<NativeMutationResult> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let mut checkout = Box::pin(self.inner.lock()).await;
-        checkout.ensure_publication_resolved().map_err(napi_error)?;
-        let receipt = checkout
-            .change_content(
+        let receipt = checkout_mutation!(
+            self,
+            change_content(
                 file_id,
                 acyclic_fs::ContentChange::ZeroRange {
                     range: ByteRange {
@@ -167,11 +143,8 @@ impl NativeCheckout {
                     extend: extend,
                 },
                 acyclic_fs::ContentTimes::Preserve,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
             )
-            .await
-            .map_err(napi_error)?;
+        )?;
         mutation_result(receipt.work)
     }
 
@@ -185,10 +158,9 @@ impl NativeCheckout {
         keep_size: bool,
     ) -> Result<NativeMutationResult> {
         let path = native_path(&path, self.config)?;
-        let mut checkout = Box::pin(self.inner.lock()).await;
-        checkout.ensure_publication_resolved().map_err(napi_error)?;
-        let receipt = checkout
-            .change_content(
+        let receipt = checkout_mutation!(
+            self,
+            change_content(
                 path,
                 acyclic_fs::ContentChange::Preallocate {
                     range: ByteRange {
@@ -198,11 +170,8 @@ impl NativeCheckout {
                     keep_size: keep_size,
                 },
                 acyclic_fs::ContentTimes::Preserve,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
             )
-            .await
-            .map_err(napi_error)?;
+        )?;
         mutation_result(receipt.work)
     }
 
@@ -216,10 +185,9 @@ impl NativeCheckout {
         keep_size: bool,
     ) -> Result<NativeMutationResult> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
-        let mut checkout = Box::pin(self.inner.lock()).await;
-        checkout.ensure_publication_resolved().map_err(napi_error)?;
-        let receipt = checkout
-            .change_content(
+        let receipt = checkout_mutation!(
+            self,
+            change_content(
                 file_id,
                 acyclic_fs::ContentChange::Preallocate {
                     range: ByteRange {
@@ -229,11 +197,8 @@ impl NativeCheckout {
                     keep_size: keep_size,
                 },
                 acyclic_fs::ContentTimes::Preserve,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
             )
-            .await
-            .map_err(napi_error)?;
+        )?;
         mutation_result(receipt.work)
     }
 
@@ -254,10 +219,9 @@ impl NativeCheckout {
             destination_offset: bigint_u64(&destination_offset, "destinationOffset")?,
             length: bigint_u64(&length, "length")?,
         };
-        let mut checkout = Box::pin(self.inner.lock()).await;
-        checkout.ensure_publication_resolved().map_err(napi_error)?;
-        let receipt = checkout
-            .change_content(
+        let receipt = checkout_mutation!(
+            self,
+            change_content(
                 request.destination,
                 acyclic_fs::ContentChange::CloneFrom {
                     source: request.source,
@@ -266,11 +230,8 @@ impl NativeCheckout {
                     length: request.length,
                 },
                 acyclic_fs::ContentTimes::Preserve,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
             )
-            .await
-            .map_err(napi_error)?;
+        )?;
         mutation_result(receipt.work)
     }
 
@@ -286,10 +247,9 @@ impl NativeCheckout {
     ) -> Result<NativeMutationResult> {
         let source_file_id = FileId::from_bytes(fixed_16(&source_file_id)?);
         let destination_file_id = FileId::from_bytes(fixed_16(&destination_file_id)?);
-        let mut checkout = Box::pin(self.inner.lock()).await;
-        checkout.ensure_publication_resolved().map_err(napi_error)?;
-        let receipt = checkout
-            .change_content(
+        let receipt = checkout_mutation!(
+            self,
+            change_content(
                 destination_file_id,
                 acyclic_fs::ContentChange::CloneFrom {
                     source: source_file_id,
@@ -298,11 +258,8 @@ impl NativeCheckout {
                     length: bigint_u64(&length, "length")?,
                 },
                 acyclic_fs::ContentTimes::Preserve,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
             )
-            .await
-            .map_err(napi_error)?;
+        )?;
         mutation_result(receipt.work)
     }
 }

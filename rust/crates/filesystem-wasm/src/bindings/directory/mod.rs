@@ -54,14 +54,11 @@ impl BrowserCheckout {
     ) -> Result<Ts<BrowserDirectoryPageResult>, JsValue> {
         let maximum_entries = wasm_u32(&maximum_entries)?;
 
-        let portable =
-            PortablePath::parse(&path, self.engine.volume_config().limits).map_err(js_error)?;
-        let path = NamespacePath::from_portable_in_profile(
-            &portable,
+        let path = browser_path(
+            &path,
             self.engine.volume_config().profile,
             self.engine.volume_config().limits,
-        )
-        .map_err(js_error)?;
+        )?;
         let after = after
             .as_deref()
             .map(|value| {
@@ -72,18 +69,10 @@ impl BrowserCheckout {
                 )
             })
             .transpose()?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .list_directory(
-                &path,
-                after.as_ref(),
-                maximum_entries,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
-            )
-            .await
-            .map_err(js_error)?;
+        let receipt = browser_call!(
+            self,
+            list_directory(&path, after.as_ref(), maximum_entries,)
+        )?;
         let entries = receipt
             .value
             .entries
@@ -126,20 +115,16 @@ impl BrowserCheckout {
                 )
             })
             .transpose()?;
-        let cancellation = CancellationToken::default();
-        let receipt = self
-            .engine
-            .list_directory_records(
+        let receipt = browser_call!(
+            self,
+            list_directory_records(
                 &path,
                 after
                     .as_ref()
                     .map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded),
                 maximum_entries,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &cancellation,
             )
-            .await
-            .map_err(js_error)?;
+        )?;
         let entries = receipt
             .value
             .entries
