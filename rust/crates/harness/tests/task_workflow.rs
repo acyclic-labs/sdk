@@ -978,7 +978,7 @@ async fn worker_restart_with_options(
                             scope: conversation_scope.clone(),
                             causal_parent: None,
                             action: Action::BindConversation { agent },
-                        })
+                        }, #[cfg(feature = "filesystem")] None, &mut None)
                         .await?;
                     Ok::<(), Error>(())
                 })

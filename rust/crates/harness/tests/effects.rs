@@ -183,7 +183,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                     request: request.clone(),
                     result_schema: invalid_schema,
                 }
-            ))
+            ), #[cfg(feature = "filesystem")] None, &mut None)
             .await
             .is_err()
     );
@@ -200,7 +200,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                 request,
                 result_schema: schema,
             },
-        ))
+        ), #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     let planned = aggregate
         .reducer()
@@ -216,7 +216,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                 effect_id,
                 attempt_id,
             },
-        ))
+        ), #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     let dispatched = aggregate
         .reducer()
@@ -241,7 +241,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
             Action::ResolveEffect {
                 observation: attestation.clone(),
             },
-        ))
+        ), #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     assert!(matches!(
         aggregate
@@ -390,7 +390,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                         },
                         reason: None,
                     },
-                })
+                }, #[cfg(feature = "filesystem")] None, &mut None)
                 .await?;
         }
         if matches!(retained, 3 | 1_003 | 10_003) {
@@ -601,7 +601,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                 ordinal,
                 aggregate.reducer().revision(),
                 plan(id, position == 2),
-            ))
+            ), #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         if position == 0 {
             continue;
@@ -621,7 +621,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                         to: LifecycleState::Active,
                         reason: None,
                     },
-                ))
+                ), #[cfg(feature = "filesystem")] None, &mut None)
                 .await?;
             provider.forbid_writes.store(true, Ordering::SeqCst);
             let reader = HistoryReader::new(&stream, &authority, issuer.verifier())?;
@@ -659,7 +659,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                     effect_id: id,
                     attempt_id: EffectAttemptId::from_bytes(id.into_bytes()),
                 },
-            ))
+            ), #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         if let Some((cursor, exact, planned)) = gap {
             provider.forbid_writes.store(true, Ordering::SeqCst);
@@ -694,7 +694,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                     ordinal,
                     aggregate.reducer().revision(),
                     Action::ResolveEffect { observation },
-                ))
+                ), #[cfg(feature = "filesystem")] None, &mut None)
                 .await?;
         }
     }
@@ -707,7 +707,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                 ordinal,
                 aggregate.reducer().revision(),
                 plan(id, false),
-            ))
+            ), #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         ordinal += 1;
         aggregate
@@ -718,7 +718,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                     effect_id: id,
                     attempt_id: EffectAttemptId::from_bytes(id.into_bytes()),
                 },
-            ))
+            ), #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         let state = aggregate
             .reducer()
@@ -733,7 +733,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                 ordinal,
                 aggregate.reducer().revision(),
                 Action::ResolveEffect { observation },
-            ))
+            ), #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         let publication_io = provider.io_snapshot();
         assert!(publication_io.reads <= 512);
@@ -877,7 +877,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                 ordinal,
                 aggregate.reducer().revision(),
                 plan(id, false),
-            ))
+            ), #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         ordinal += 1;
         aggregate
@@ -888,7 +888,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                     effect_id: id,
                     attempt_id: EffectAttemptId::from_bytes(id.into_bytes()),
                 },
-            ))
+            ), #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         let state = aggregate
             .reducer()
@@ -908,7 +908,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         provider
             .aggregate_commit_fault
             .store(fault, Ordering::SeqCst);
-        let first = aggregate.execute(resolve.clone()).await;
+        let first = aggregate.execute(resolve.clone(), #[cfg(feature = "filesystem")] None, &mut None).await;
         if matches!(fault, 1 | 3 | 4 | 5) {
             assert!(first.is_err());
         }
@@ -941,7 +941,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         }
         .with_content_verifier(verifier.clone());
         provider.forbid_writes.store(false, Ordering::SeqCst);
-        let retried = aggregate.execute(resolve).await?;
+        let retried = aggregate.execute(resolve, #[cfg(feature = "filesystem")] None, &mut None).await?;
         assert_eq!(
             matches!(retried, acyclic_harness::core::ApplyResult::Replayed { .. }),
             fault != 1
@@ -980,7 +980,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                 number * 3,
                 short.reducer().revision(),
                 plan(id, false),
-            ))
+            ), #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         short
             .execute(fresh(
@@ -990,7 +990,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                     effect_id: id,
                     attempt_id: EffectAttemptId::from_bytes(id.into_bytes()),
                 },
-            ))
+            ), #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         if number == 1 {
             before_terminal = Some(short.reducer().snapshot_with_event_limit(1)?);
@@ -1011,7 +1011,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                 number * 3 + 2,
                 short.reducer().revision(),
                 Action::ResolveEffect { observation },
-            ))
+            ), #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
     }
     assert_eq!(short.reducer().revision(), 9);
@@ -1130,7 +1130,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                     effect_id,
                     attempt_id: EffectAttemptId::from_bytes([243; 16]),
                 },
-            ))
+            ), #[cfg(feature = "filesystem")] None, &mut None)
             .await,
         Err(acyclic_harness::Error::Invalid(_))
     ));
@@ -1151,7 +1151,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                     effect_id,
                     attempt_id: EffectAttemptId::from_bytes([244; 16]),
                 }
-            ))
+            ), #[cfg(feature = "filesystem")] None, &mut None)
             .await,
         Err(acyclic_harness::Error::Conflict(_))
     ));
@@ -1164,7 +1164,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                 Action::ResolveEffect {
                     observation: attestation.clone(),
                 }
-            ))
+            ), #[cfg(feature = "filesystem")] None, &mut None)
             .await,
         Err(acyclic_harness::Error::Conflict(_))
     ));
@@ -1183,7 +1183,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
         Capabilities::new(["effect:run"]),
     );
     assert!(matches!(
-        aggregate.execute(denied).await,
+        aggregate.execute(denied, #[cfg(feature = "filesystem")] None, &mut None).await,
         Err(acyclic_harness::Error::Unauthorized(_))
     ));
     assert_eq!(aggregate.reducer().resident_terminal_effect_count(), 2);
@@ -1192,7 +1192,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
     assert!(aggregate.reducer().effect(effect_id).is_none());
     assert!(matches!(
         aggregate
-            .execute(command(1, 0, plan(effect_id, false)))
+            .execute(command(1, 0, plan(effect_id, false)), #[cfg(feature = "filesystem")] None, &mut None)
             .await?,
         acyclic_harness::core::ApplyResult::Replayed { .. }
     ));
@@ -1204,7 +1204,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                 Action::ResolveEffect {
                     observation: attestation
                 }
-            ))
+            ), #[cfg(feature = "filesystem")] None, &mut None)
             .await?,
         acyclic_harness::core::ApplyResult::Replayed { .. }
     ));
@@ -1213,7 +1213,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
     let reuse = fresh(ordinal, revision, plan(effect_id, false));
     assert!(aggregate.reducer().plan(&reuse).is_err());
     assert!(matches!(
-        aggregate.execute(reuse).await,
+        aggregate.execute(reuse, #[cfg(feature = "filesystem")] None, &mut None).await,
         Err(acyclic_harness::Error::Conflict(_))
     ));
     assert_eq!(aggregate.reducer().revision(), revision);
@@ -1275,7 +1275,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                 ordinal,
                 aggregate.reducer().revision(),
                 plan(id, false),
-            ))
+            ), #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         ordinal += 1;
         aggregate
@@ -1286,7 +1286,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                     effect_id: id,
                     attempt_id: EffectAttemptId::from_bytes(id.into_bytes()),
                 },
-            ))
+            ), #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         let state = aggregate
             .reducer()
@@ -1301,7 +1301,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                 ordinal,
                 aggregate.reducer().revision(),
                 Action::ResolveEffect { observation },
-            ))
+            ), #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
         if bit == 0 {
             worst_completed = aggregate.reducer().effect(id).cloned();
@@ -1377,7 +1377,7 @@ async fn effect_request_and_result_bodies_never_enter_stream() -> Result<()> {
                 to: LifecycleState::Waiting,
                 reason: None,
             },
-        ))
+        ), #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     provider.forbid_writes.store(true, Ordering::SeqCst);
     assert_eq!(

@@ -1270,7 +1270,7 @@ async fn assert_checkpoint_tail_source(
                     extensions: Default::default(),
                 }),
             },
-        })
+        }, #[cfg(feature = "filesystem")] None, &mut None)
         .await?;
     read.assert_later_cut_controls(
         aggregate.reducer(),
@@ -2426,7 +2426,7 @@ async fn append_private_checkpoint_metadata(
                         extensions: Default::default(),
                     }),
                 },
-            })
+            }, #[cfg(feature = "filesystem")] None, &mut None)
             .await?;
     }
     Ok((metadata, metadata_ids))

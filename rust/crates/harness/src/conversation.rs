@@ -5188,7 +5188,7 @@ mod tests {
         assert_eq!(sparse.page(0, 3, 1)?.len(), 1);
         candidate.id = Uuid::new_v4();
         candidate.sequence = 2;
-        let before = sparse.clone_with_work(&mut None)?;
+        let before = sparse.copy(&mut None, None)?.0;
         assert!(sparse.append(candidate).is_err());
         assert_eq!(sparse, before);
         Ok(())
