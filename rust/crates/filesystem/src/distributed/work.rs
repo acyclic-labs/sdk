@@ -198,8 +198,6 @@ impl<'a> ForkWork<'a> {
             self.cancellation.check().map_err(|_| AuthorityStoreError::Cancelled)?;
             Some(original.claim(bytes, u64::from(bytes != 0), WorkCounters::UNCHARGED)?)
         } else { None };
-        #[cfg(target_arch = "wasm32")]
-        let allocation: AuthorityAllocation = None;
         if !self.is_native() {
             if self.opaque_live_upper_bytes != 0 {
                 let peak = self.allocations.live_bytes().checked_add(bytes)
@@ -213,6 +211,7 @@ impl<'a> ForkWork<'a> {
         let mut value = Vec::<T>::new();
         if value.try_reserve_exact(capacity).is_err() {
             drop(value);
+            #[cfg(not(target_arch = "wasm32"))]
             drop(allocation);
             self.release(bytes)?;
             return Err(AuthorityStoreError::RejectedStatic("fork allocation failed"));
