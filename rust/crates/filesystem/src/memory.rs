@@ -112,12 +112,6 @@ fn metadata_copy_work(
     Ok(WorkCounters { bytes_copied: bytes, ..WorkCounters::default() })
 }
 
-fn install_authority_commits(state: &mut AuthorityState, mut buffer: (Vec<DurableCommit>, KernelOwnedAllocation)) {
-    buffer.0.append(&mut state.commits);
-    drop(std::mem::replace(&mut state.commits, buffer.0));
-    state.commits_custody = buffer.1;
-}
-
 /// Deterministic single-process authority store.
 pub struct MemoryAuthorityStore {
     maximum_payload_bytes: u64,
@@ -419,8 +413,10 @@ impl MemoryAuthorityStore {
         let write = append_write_work(durable.payload.len() as u64);
         accounting.admit(write.checked_add(copied).map_err(|error| accounting.work_failure(error))?)?;
         accounting.record(write)?;
-        if let Some(buffer) = commits {
-            install_authority_commits(state, buffer);
+        if let Some(mut buffer) = commits {
+            buffer.0.append(&mut state.commits);
+            drop(std::mem::replace(&mut state.commits, buffer.0));
+            state.commits_custody = buffer.1;
         }
         let index = state.commits.len();
         state.operations.insert(durable.operation_id, (index, operation));
@@ -461,8 +457,32 @@ impl MemoryAuthorityStore {
                 after, head: head.sequence,
             }));
         }
-        let (start, end, payload_bytes) =
-            bounded_page_bounds(&state.commits, after, limit, accounting)?;
+        let start = usize::try_from(after.get()).map_err(|_| accounting.failure(
+            AuthorityStoreError::ReplayCursorProcessOverflow { after },
+        ))?;
+        let maximum_records = usize::try_from(limit.records).unwrap_or(usize::MAX);
+        let mut payload_bytes = 0_u64;
+        let mut record_count = 0_usize;
+        for commit in state.commits.iter().skip(start).take(maximum_records) {
+            accounting.examine()?;
+            let record_bytes = u64::try_from(commit.payload.len()).unwrap_or(u64::MAX);
+            let next = payload_bytes.checked_add(record_bytes).ok_or_else(|| accounting.failure(
+                AuthorityStoreError::Work(crate::WorkError::Overflow),
+            ))?;
+            if next > limit.payload_bytes {
+                if record_count == 0 {
+                    return Err(accounting.failure(AuthorityStoreError::ReplayRecordTooLarge {
+                        observed: record_bytes, maximum: limit.payload_bytes,
+                    }));
+                }
+                break;
+            }
+            payload_bytes = next;
+            record_count = record_count.saturating_add(1);
+        }
+        let end = start.checked_add(record_count).ok_or_else(|| accounting.failure(
+            AuthorityStoreError::Work(crate::WorkError::Overflow),
+        ))?;
         accounting.charge(WorkCounters {
             authority_records_read: u64::try_from(end - start).unwrap_or(u64::MAX),
             authority_bytes_read: payload_bytes,
@@ -1149,39 +1169,6 @@ fn authority_write_work() -> WorkCounters {
         backend_write_operations: 1,
         ..WorkCounters::default()
     }
-}
-
-fn bounded_page_bounds(
-    commits: &[DurableCommit], after: Sequence, limit: ReplayLimit,
-    accounting: &mut AuthorityAccounting<'_>,
-) -> Result<(usize, usize, u64), (AuthorityStoreError, WorkCounters)> {
-    let start = usize::try_from(after.get()).map_err(|_| accounting.failure(
-        AuthorityStoreError::ReplayCursorProcessOverflow { after },
-    ))?;
-    let maximum_records = usize::try_from(limit.records).unwrap_or(usize::MAX);
-    let mut bytes = 0_u64;
-    let mut record_count = 0_usize;
-    for commit in commits.iter().skip(start).take(maximum_records) {
-        accounting.examine()?;
-        let payload_bytes = u64::try_from(commit.payload.len()).unwrap_or(u64::MAX);
-        let next = bytes.checked_add(payload_bytes).ok_or_else(|| accounting.failure(
-            AuthorityStoreError::Work(crate::WorkError::Overflow),
-        ))?;
-        if next > limit.payload_bytes {
-            if record_count == 0 {
-                return Err(accounting.failure(AuthorityStoreError::ReplayRecordTooLarge {
-                    observed: payload_bytes, maximum: limit.payload_bytes,
-                }));
-            }
-            break;
-        }
-        bytes = next;
-        record_count = record_count.saturating_add(1);
-    }
-    let end = start.checked_add(record_count).ok_or_else(|| accounting.failure(
-        AuthorityStoreError::Work(crate::WorkError::Overflow),
-    ))?;
-    Ok((start, end, bytes))
 }
 
 /// Deterministic immutable-object store.

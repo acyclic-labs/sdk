@@ -1162,20 +1162,20 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 .first()
                 .ok_or_else(|| bounded_io::failure(self.io.as_ref(), crate::wire::ErrorCode::Invalid, "summary fork omitted its logical prefix"))?;
             let (_, summary_references) = super::summary_fork::split_references(prepared, self.io.as_ref())?;
-            let mut planned_grants = BTreeSet::new();
+            let mut granted = BTreeSet::new();
             for grant in &reference_grants {
-                reference_selection(&mut planned_grants, &grant.file, grant.reader, self.io.as_ref())?;
+                reference_selection(&mut granted, &grant.file, grant.reader, self.io.as_ref())?;
             }
             for reader in
                 std::iter::once(request.child_agent).chain(request.attached_agents.iter().copied())
             {
                 for file in summary_references.values() {
                     if file.volume().owner() != &crate::conversation::VolumeOwner::Agent(reader) {
-                        reference_selection(&mut planned_grants, file, reader, self.io.as_ref())?;
+                        reference_selection(&mut granted, file, reader, self.io.as_ref())?;
                     }
                 }
             }
-            if planned_grants.len() > request.preparation.maximum_inherited_references as usize {
+            if granted.len() > request.preparation.maximum_inherited_references as usize {
                 return Err(bounded_io::failure(self.io.as_ref(), crate::wire::ErrorCode::Invalid, "summary fork reader grants exceed capture allowance"));
             }
             let (capture, generation) = controller
@@ -1196,7 +1196,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                     self.native_creation_guard.as_ref(),
                 )
                 .await?;
-            let mut granted = BTreeSet::new();
+            granted.clear();
             for grant in &reference_grants {
                 reference_selection(&mut granted, &grant.file, grant.reader, self.io.as_ref())?;
             }

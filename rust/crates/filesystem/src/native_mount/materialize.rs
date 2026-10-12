@@ -982,7 +982,7 @@ where
                 GenerationSource::Standalone(checkout) => {
                     let remaining = receipt.run(|work| work.remaining())?;
                     let page = checkout.list_directory_records(
-                        &directory.0, after.as_ref(), options.maximum_directory_entries, remaining, cancellation,
+                        &directory.0, after.as_ref().map_or(std::ops::Bound::Unbounded, std::ops::Bound::Excluded), options.maximum_directory_entries, remaining, cancellation,
                     ).await.map_err(|failure| receipt.engine_failure(failure))?;
                     receipt.run(|work| work.merge(page.work))?;
                     page.value
