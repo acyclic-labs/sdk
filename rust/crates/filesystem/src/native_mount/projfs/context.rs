@@ -82,27 +82,6 @@ impl Runtime {
     }
 }
 
-pub(super) fn native_call<T>(
-    work: &crate::NativeMaterializationWork,
-    write: bool,
-    operation: impl FnOnce() -> std::io::Result<T>,
-) -> Result<T, NativeMountError> {
-    let delta = if write {
-        crate::WorkCounters {
-            backend_write_operations: 1,
-            ..crate::WorkCounters::UNCHARGED
-        }
-    } else {
-        crate::WorkCounters {
-            backend_read_operations: 1,
-            ..crate::WorkCounters::UNCHARGED
-        }
-    };
-    work.admit(delta)?;
-    work.record_admitted(delta)?;
-    operation().map_err(Into::into)
-}
-
 pub(super) fn reserve<T>(
     values: &mut Vec<T>,
     additional: usize,

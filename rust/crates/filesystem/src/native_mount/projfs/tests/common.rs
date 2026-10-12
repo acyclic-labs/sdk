@@ -118,7 +118,6 @@ pub(super) async fn writes_only_promised_content(
     listed_first: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let work = setup_work()?;
-    use crate::demand::native::NativeDemandSource;
     use std::io::Write as _;
 
     let root = tempfile::tempdir()?;
@@ -126,18 +125,7 @@ pub(super) async fn writes_only_promised_content(
     std::fs::create_dir(&source_root)?;
     std::fs::write(source_root.join("changed.txt"), b"before")?;
     std::fs::write(source_root.join("stable.txt"), b"stable")?;
-    let demand = NativeDemandSource::open(
-        std::borrow::Cow::Owned(std::path::Path::new(&source_root).to_path_buf()),
-        crate::model::FilesystemProfile::Windows,
-        crate::model::VolumeLimits::default(),
-        None,
-        None,
-        WorkBudget::UNBOUNDED,
-        work.cancellation(),
-    )
-    .await
-    .map(|receipt| receipt.value)
-    .map_err(|failure| failure.error)?;
+    let demand = windows_demand_source(&source_root, work.cancellation()).await?;
     let lazy = crate::LazyWorkspace::attach_with_config(
         &Fs::memory(),
         "pinned-projfs",
@@ -204,4 +192,22 @@ pub(super) fn setup_chunk(
                 }
             })?;
     Ok(crate::kernel::OwnedSourceChunk::intrinsic(bytes, 0))
+}
+
+pub(super) async fn windows_demand_source(
+    root: &std::path::Path,
+    cancellation: &CancellationToken,
+) -> Result<crate::demand::native::NativeDemandSource, crate::DemandError> {
+    crate::demand::native::NativeDemandSource::open(
+        std::borrow::Cow::Owned(root.to_path_buf()),
+        crate::model::FilesystemProfile::Windows,
+        crate::model::VolumeLimits::default(),
+        None,
+        None,
+        WorkBudget::UNBOUNDED,
+        cancellation,
+    )
+    .await
+    .map(|receipt| receipt.value)
+    .map_err(|failure| failure.error)
 }

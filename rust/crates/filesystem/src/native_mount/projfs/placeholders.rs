@@ -332,16 +332,22 @@ pub(super) fn write_ordinary(
     if !write_listed_content(projection, path, entry, &mut file)? {
         return Ok(Placed::Retry);
     }
-    native_call(work, true, || {
-        basic_information(&file, Some(&ordinary_basic_information(entry)))
-    })
-    .map_err(failed)?;
+    (&mut &*work)
+        .attempt_io(WriteOperations.delta(1), || {
+            basic_information(&file, Some(&ordinary_basic_information(entry)))
+        })
+        .map_err(NativeMountError::from)
+        .map_err(failed)?;
     let held = match replacing {
         Some(state) => {
             if has_pending_capture(runtime.post_operation_failure.as_ref(), path) {
                 return Ok(Placed::Retry);
             }
-            match native_call(work, false, || held_while(&runtime.root.join(host), state))
+            match (&mut &*work)
+                .attempt_io(ReadOperations.delta(1), || {
+                    held_while(&runtime.root.join(host), state)
+                })
+                .map_err(NativeMountError::from)
                 .map_err(failed)?
             {
                 Some(held) => Some(held),
@@ -390,8 +396,10 @@ pub(super) fn write_ordinary(
             crate::native_host::keep_windows_created_file(&file, &mut &*work)
                 .map_err(NativeMountError::from)
                 .map_err(failed)?;
-            native_call(work, false, || handle_state(&file))
+            (&mut &*work)
+                .attempt_io(ReadOperations.delta(1), || handle_state(&file))
                 .map(|state| Placed::Owned(Owned::File(state)))
+                .map_err(NativeMountError::from)
                 .map_err(failed)
         }
         Err(crate::NativeTreeMaterializationError::Io(error))
