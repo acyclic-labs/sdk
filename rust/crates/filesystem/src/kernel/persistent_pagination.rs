@@ -1,6 +1,7 @@
 //! Shared bounded cursor pagination with field-owned original native custody.
 
 use super::allocation::{AllocationLedger, KernelAccounting, KernelOwnedAllocation, VisitedObjectSet};
+use super::list::{DirectoryReadError as Error, DirectoryReadFailure as Failure};
 use super::persistent_btree::{Child, Format, Page, children_within, leaf_within};
 use super::persistent_io::{self, OwnedPage};
 use super::persistent_point::{Owned, retire_allocation, split_allocation};
@@ -13,7 +14,6 @@ use crate::performance::{OperationFailure, WorkBudget, WorkCounters, WorkError};
 use crate::storage::{ObjectId, ObjectReadRequest, ObjectStoreError};
 use std::mem::size_of;
 use std::ops::Bound;
-use thiserror::Error;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Receipt<V> {
@@ -21,38 +21,6 @@ pub(crate) struct Receipt<V> {
     pub(crate) has_more: bool,
     pub(crate) next_request: Option<ObjectReadRequest>,
     pub(crate) work: WorkCounters,
-}
-
-pub(crate) type Failure = OperationFailure<Error>;
-
-#[derive(Debug, Error)]
-pub(crate) enum Error {
-    #[error("persistent B+tree pagination was cancelled")]
-    Cancelled,
-    #[error("persistent B+tree page limit must be non-zero")]
-    ZeroLimit,
-    #[error("persistent B+tree page limit cannot be represented")]
-    LimitOverflow,
-    #[error("persistent B+tree root has the wrong object kind")]
-    WrongRootKind,
-    #[error("persistent B+tree limits are invalid")]
-    InvalidLimits,
-    #[error("persistent B+tree exceeds its admitted height")]
-    HeightExceeded,
-    #[error("persistent B+tree contains a cycle or alias")]
-    CycleOrAlias,
-    #[error("persistent B+tree child bounds do not match its page")]
-    ChildBoundsMismatch,
-    #[error("persistent B+tree traversal state is invalid")]
-    TraversalState,
-    #[error("persistent B+tree allocation failed")]
-    AllocationFailed,
-    #[error(transparent)]
-    Storage(#[from] ObjectStoreError),
-    #[error(transparent)]
-    Decode(#[from] CanonicalDecodeError),
-    #[error(transparent)]
-    Work(#[from] WorkError),
 }
 
 struct Pending<K> {
@@ -280,7 +248,7 @@ impl<'a, 'accounting, F: Format> Machine<'a, 'accounting, F> {
         let completed = finish_custody_leaf(&mut self.accounting, self.data_custody, prefix);
         let inserted = result.map_err(|error| self.failure(error))?;
         completed.map_err(|error| self.failure(error))?;
-        if !inserted.inserted { return Err(failed(Error::CycleOrAlias, self.accounting.spent())); }
+        if !inserted.inserted { return Err(failed(Error::Cycle, self.accounting.spent())); }
         Ok(())
     }
 
@@ -678,22 +646,13 @@ fn query_error(error: Error) -> crate::FsError {
     match error {
         #[cfg(not(target_arch = "wasm32"))]
         Error::Storage(ObjectStoreError::Native(error)) => crate::FsError::NativeKernel(error),
-        error => crate::FsError::Directory(super::list::map_error(error)),
+        error => crate::FsError::Directory(error),
     }
 }
 
 pub(super) fn project_failure(error: crate::FsError) -> Error {
-    use super::list::DirectoryReadError as D;
     match error {
-        crate::FsError::Directory(error) => match error {
-            D::Cancelled => Error::Cancelled, D::ZeroLimit => Error::ZeroLimit,
-            D::LimitOverflow => Error::LimitOverflow, D::WrongRootKind => Error::WrongRootKind,
-            D::InvalidLimits => Error::InvalidLimits, D::HeightExceeded => Error::HeightExceeded,
-            D::Cycle => Error::CycleOrAlias, D::ChildBoundsMismatch => Error::ChildBoundsMismatch,
-            D::TraversalState => Error::TraversalState, D::AllocationFailed => Error::AllocationFailed,
-            D::Storage(error) => Error::Storage(error), D::Decode(error) => Error::Decode(error),
-            D::Work(error) => Error::Work(error),
-        },
+        crate::FsError::Directory(error) => error,
         crate::FsError::Cancelled(_) => Error::Cancelled,
         crate::FsError::Work(error) => Error::Work(error),
         crate::FsError::Decode(error) => Error::Decode(error),
