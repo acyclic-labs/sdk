@@ -1,4 +1,5 @@
 //! Browser bindings over the ordinary task runtime and its real providers.
+use crate::runtime::TaskSpawner as _;
 
 use super::{
     WasmLimitsInput, WasmReducer, WasmTaskRunLimitsInput, from_js, js_error, key_bytes,
@@ -17,7 +18,7 @@ use crate::{
     },
     model::{Model, ModelDispatch, ModelEvent, ModelProvider, PreparedModelRequest},
     resources::ProviderRef,
-    runtime::{DurableTaskHost, RuntimeScope, TaskDefinition, TaskRegistry},
+    runtime::{RuntimeScope, TaskDefinition, TaskRegistry},
     scheduler::SessionLimits,
     tool::{
         Tool, ToolDefinition, ToolExecutor, ToolInvocation, ToolProjection, ToolRegistry,
@@ -572,9 +573,6 @@ impl WasmTaskRegistry {
         let task = machine.wire_definition().map_err(js_error)?;
         self.register_definition(machine, task)
     }
-}
-
-impl WasmTaskRegistry {
     /// Registers the ordinary bounded fork preparation worker.
     #[wasm_bindgen(js_name = registerForkPreparation)]
     pub fn register_fork_preparation(&mut self) -> std::result::Result<(), JsValue> {
@@ -583,6 +581,9 @@ impl WasmTaskRegistry {
         self.register_definition(machine, definition)
     }
 
+ }
+
+impl WasmTaskRegistry {
     fn register_definition(
         &mut self,
         machine: Arc<dyn ResumableMachine>,
@@ -630,7 +631,7 @@ impl WasmTaskRuntime {
         let options: WasmBrowserTaskOptions = from_js(options)?;
         let scope: Scope = from_js(signed_scope)?;
         let verifier = owner.issuer.verifier(&mut None).expect("verifier copy");
-        ContentGrant::verify(&verifier, &scope, &options.volume, VolumeOperation::Write)
+        ContentGrant::verify(&verifier, &scope, &options.volume, VolumeOperation::Write, options.maximum_payload_bytes, &mut None)
             .map_err(js_error)?;
         let root = RuntimeScope::new(
             scope.capabilities().clone(),
@@ -698,25 +699,25 @@ impl WasmTaskRuntime {
         let mut tools = registry.tools.clone();
         let mut resumable_tools = crate::durable_tool::ResumableToolRegistry::default();
         for definition in defaults.tools.definitions(None).map_err(js_error)? {
-            if tools.get(&definition.name).is_none() {
-                tools.register(defaults.tools.get(&definition.name).expect("registered default").clone())
+            if tools.get(&definition.name, None).map_err(js_error)?.is_none() {
+                tools.register(defaults.tools.get(&definition.name, None).map_err(js_error)?.expect("registered default").clone())
                     .map_err(js_error)?;
-                if let Some(tool) = defaults.resumable_tools.get(&definition.name, &definition.revision) {
+                if let Some(tool) = defaults.resumable_tools.get(&definition.name, &definition.revision, &mut None).map_err(js_error)? {
                     resumable_tools.register(tool.clone()).map_err(js_error)?;
                 }
             }
         }
         let limits = options.session_limits;
-        let runtime = FilesystemTaskRuntime::open_with_creation_providers(
+        let runtime = FilesystemTaskRuntime::open(
             stream.clone(),
             filesystem.clone(),
-            options.volume.clone(),
-            verifier.clone(),
-            scope.clone(),
-            root,
-            registry.tasks.clone(),
-            registry.machines.clone(),
-            tools,
+            &options.volume,
+            &verifier,
+            &scope,
+            &root,
+            &registry.tasks,
+            &registry.machines,
+            &tools,
             SessionLimits {
                 active_tasks: limits.active_tasks,
                 total_tasks: limits.total_tasks,
@@ -727,10 +728,10 @@ impl WasmTaskRuntime {
             options.maximum_payload_bytes,
             Arc::new(acyclic_stream::SystemUnixMillisClock),
             None,
-            vec![Arc::new(
+            &[Arc::new(
                 crate::filesystem::FilesystemResourceCreationProvider::new(filesystem.clone(), &owner.issuer, #[cfg(not(target_arch = "wasm32"))] None).map_err(js_error)?,
             )],
-            resumable_tools,
+            &resumable_tools, None,
         )
         .await
         .map_err(js_error)?;
@@ -797,7 +798,7 @@ impl WasmTaskRuntime {
             &self.verifier,
             &self.scope,
             &self.volume,
-            VolumeOperation::Write,
+            VolumeOperation::Write, self.maximum_payload_bytes, &mut None,
         )
         .map_err(js_error)?;
         self.filesystem
@@ -825,7 +826,7 @@ impl WasmTaskRuntime {
         )
         .map_err(js_error)?;
         let file: FileRef = store
-            .stage(operation, &key, &bytes)
+            .stage(operation, &key, &bytes, None).map_err(js_error)?
             .await
             .map_err(js_error)?;
         super::to_js_admitted(&file)
@@ -848,7 +849,7 @@ impl WasmTaskRuntime {
         let definition = self
             .runtime
             .harness()
-            .task_version::<Value, Value>(&name, &version)
+            .task::<Value, Value>(&format!("{name}@{version}"))
             .map_err(js_error)?;
         let admission = self
             .runtime
@@ -880,7 +881,7 @@ impl WasmTaskRuntime {
         let task = TaskId::parse(&task).map_err(js_error)?;
         match self
             .runtime
-            .run_operation(&worker, task, &self.commands(), maximum_transitions, None)
+            .run_operation(&worker, task, &self.commands().map_err(js_error)?, maximum_transitions, None)
             .await
             .map_err(js_error)?
         {
@@ -938,7 +939,7 @@ impl WasmTaskRuntime {
             .worker_tick(
                 &worker,
                 cursor,
-                &self.commands(),
+                &self.commands().map_err(js_error)?,
                 maximum_events,
                 maximum_transitions,
             )
@@ -977,7 +978,7 @@ impl WasmTaskRuntime {
         let lease: WorkLease = from_js(lease)?;
         work_to_js(&work_value(
             self.runtime
-                .resume_task(lease, &self.commands(), maximum_transitions, None)
+                .resume_task(lease, &self.commands().map_err(js_error)?, maximum_transitions, None)
                 .await,
         ))
     }
@@ -993,7 +994,7 @@ impl WasmTaskRuntime {
         let lease: WorkLease = from_js(lease)?;
         work_to_js(&work_value(
             self.runtime.reconcile_task(
-                lease, &self.commands(), maximum_commands, maximum_wait_millis, None,
+                lease, &self.commands().map_err(js_error)?, maximum_commands, maximum_wait_millis, None,
             ).await,
         ))
     }
@@ -1101,7 +1102,7 @@ impl WasmTaskRuntime {
             .task_host()
             .send_mail(sender, &crate::scheduler::LeaseFence::from(&lease.reservation), recipient, message, from_js(payload)?, None)
             .await
-            .map_err(js_error)
+            .map(|_| ()).map_err(js_error)
     }
 
     /// A page observation is not a retained model-consumption acknowledgment.
@@ -1127,21 +1128,21 @@ impl WasmTaskRuntime {
 impl WasmTaskRuntime {
     fn commands(
         &self,
-    ) -> crate::filesystem::FilesystemTaskCommands<
+    ) -> crate::Result<crate::filesystem::FilesystemTaskCommands<
         '_,
         BrowserStream,
         IndexedDbAuthorityStore,
         IndexedDbObjectStore,
-    > {
+    >> {
         let commands = self.runtime.commands();
         match &self.model {
             Some((model, provider, compaction)) => commands.with_model(
-                model.clone(),
+                model,
                 provider.clone(),
-                ContextPipeline::new([]),
-                compaction.clone(),
+                &ContextPipeline::new([]),
+                compaction, None,
             ),
-            None => commands,
+            None => Ok(commands),
         }
     }
 }

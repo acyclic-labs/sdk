@@ -353,7 +353,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> FsRootProj
             None => io.receive(self.host.filesystem.open_workspace(name, io.remaining()?, context.cancellation).await)?,
         }; }
         #[cfg(target_arch = "wasm32")]
-        { opened = io.receive(self.host.filesystem.open_workspace_measured(name, io.remaining()?, context.cancellation).await)?; }
+        { opened = io.receive(self.host.filesystem.open_workspace(name, io.remaining()?, context.cancellation).await)?; }
         #[cfg(not(target_arch = "wasm32"))]
         if io.original_native_work().is_none() { io.retain_owned(opened.name().as_str().len() as u64)?; }
         #[cfg(target_arch = "wasm32")]
