@@ -1543,8 +1543,8 @@ where
                     WorkspaceError::StaleGeneration,
                 ));
             }
-            let expected_source = self.source_file_id_with_work(
-                node, &original, cancellation,
+            let expected_source = self.source_file_id(
+                &node.file_identity, &mut crate::kernel::allocation::KernelAccounting::native(&original, cancellation),
             ).map_err(MountLifecycleError::Lazy)?;
             original.charge(crate::WorkCounters {
                 bytes_hashed: (b"acyclic-fs-lazy-mount-root-v1\0".len() + 16 + root_text.0.len() + node.version.0.len()) as u64,
