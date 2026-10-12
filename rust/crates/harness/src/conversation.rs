@@ -2490,8 +2490,7 @@ impl ConversationState {
         if model_visible(&message.kind) {
             self.model_positions.push(position);
         }
-        let outcome = message.kind == MessageKind::System
-            && message.extensions.contains_key("acyclic.turn.outcome");
+        let outcome = turn_outcome_parent(message).is_some();
         if let Some(parent) = message.reply_to {
             if (message.kind == MessageKind::Assistant || outcome)
                 && self.pending_user == Some(parent)
