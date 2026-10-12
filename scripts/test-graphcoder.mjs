@@ -347,6 +347,71 @@ if (scenarioDirectory) {
         caller: manifest.tasks[label], lease: leases[label], file: manifest.files[`${label}_project`],
       })}`, "file")).text;
     }
+    const command = { caller: manifest.native_command.caller, lease: manifest.native_command.lease,
+      operation: manifest.native_command.operation };
+    const commandRequest = input(command);
+    run(["--session", manifest.config, "--headless"], `/command ${commandRequest}\n`, false, 15_000);
+    run(["--session", manifest.config, "--headless"], `/command ${input({
+      ...command, caller: left, lease: leases.left,
+    })}\n`, false, 15_000);
+    await active.commandJson(`/command ${input({
+      ...command, decision: true,
+    })}`, "command-approval");
+    const commandResult = await active.commandJson(`/command ${commandRequest}`, "command");
+    assert.equal(commandResult.state, "succeeded");
+    const capturedCommand = JSON.parse((await active.commandJson(`/read ${input({
+      caller: right, lease: leases.right, file: commandResult.result,
+    })}`, "file")).text);
+    assert.equal(capturedCommand.exit_code, 0);
+    assert.ok(Buffer.from(capturedCommand.stdout).toString("utf8").includes("graphcoder-approved-command"));
+    await active.command("/reopen", /providers reopened/);
+    assert.deepEqual(await active.commandJson(`/command ${commandRequest}`, "command"), commandResult);
+    assert.equal((await active.commandJson(`/read ${input({
+      caller: right, lease: leases.right, file: manifest.files.right_project,
+    })}`, "file")).text, before.right);
+
+    const discoveryVolume = manifest.callers.bootstrap_seed.project;
+    const discoveryWrite = async (path, bytes) => active.commandJson(`/write ${input({
+      caller: manifest.tasks.bootstrap_seed, lease: load(manifest.leases.bootstrap_seed),
+      volume: discoveryVolume, operation: randomUUID(), path, bytes,
+    })}`, "file");
+    await discoveryWrite("AGENTS.md", "workflow repository instructions");
+    await discoveryWrite("skills/review/SKILL.md",
+      "---\nname: review\ndescription: Review the selected change\n---\nLAZY SKILL BODY");
+    const workflow = {
+      discovery: { instructions: [{ root: { volume: discoveryVolume, directory: "" }, active_directory: "" }],
+        skills: [{ volume: discoveryVolume, directory: "skills" }],
+        policy: { instruction_names: ["AGENTS.md"], skill_name: "SKILL.md" },
+        limits: { entries: 64, directories: 8, header_bytes: 256, instruction_bytes: 512 } },
+      attributes: [{ type_name: "graphcoder.role", type_revision: "1", schema: { type: "string" },
+        state_revision: "reviewer-1", value: "reviewer" }], attribute_mode: "prompt",
+    };
+    const initialContext = await active.commandJson(`/context ${input(workflow)}`, "context");
+    assert.equal(initialContext.discovered.skills[0].description, "Review the selected change");
+    assert.equal(initialContext.discovered.instructions.length, 1);
+    assert.ok(!JSON.stringify(initialContext).includes("LAZY SKILL BODY"));
+    const oldInstructions = initialContext.discovered.instructions;
+    await discoveryWrite("AGENTS.md", "reloaded workflow instructions");
+    const updatedWorkflow = { ...workflow, attribute_mode: "update", attributes: [
+      { ...workflow.attributes[0], state_revision: "implementor-2", value: "implementor" },
+    ] };
+    const updatedContext = await active.commandJson(`/context ${input(updatedWorkflow)}`, "context");
+    assert.notDeepEqual(updatedContext.discovered.instructions, oldInstructions);
+    assert.deepEqual(initialContext.discovered.instructions, oldInstructions);
+    assert.equal(updatedContext.attributes[0].value, "implementor");
+    const originalFork = fullConfig.fork_sources.find(value => value.caller === root);
+    for (const history of ["fork", "fresh"]) {
+      const selection = await active.commandJson(`/fork-selection ${input({
+        caller: root, lease: leases.root, operation: originalFork.request.operation_id, history,
+      })}`, "fork-selection");
+      assert.equal(selection.parent_revision, originalFork.snapshot.revision);
+      if (history === "fresh") assert.equal(selection.preparation.inherited_through_sequence, 0);
+      else assert.ok(selection.preparation.inherited_through_sequence > 0);
+      assert.equal(selection.child_agent, originalFork.request.child_agent);
+    }
+    run(["--session", manifest.config, "--headless"], `/fork-selection ${input({
+      caller: left, lease: leases.left, operation: originalFork.request.operation_id, history: "fresh",
+    })}\n`, false, 15_000);
     const mutation = `installed-left-project-${randomUUID()}`;
     const changed = await active.commandJson(`/write ${input({
       caller: left, lease: leases.left, volume: retained.left.report.request.preparation.child_project_volume,
@@ -403,6 +468,10 @@ if (scenarioDirectory) {
     await active.command(`/resume ${mailboxLeasePath}`, /original lease submitted for authoritative reconciliation/);
     const mailboxDispatch = await active.expect(/deterministic-dispatch operation=([0-9a-f-]+) step=0 request=([0-9a-f]+)/, "stderr", dispatchStart);
     const consumed = await modelCheckpoint(active, mailbox.task, mailboxLease);
+    await active.commandJson(`/context ${input({
+      ...updatedWorkflow, attributes: [{ ...updatedWorkflow.attributes[0],
+        state_revision: "researcher-3", value: "researcher" }],
+    })}`, "context");
     bindDispatch(mailbox.modelCommand, mailboxDispatch, consumed.transition);
     await active.commandJson(`/mail ${input({
       caller: root, lease: leases.root, recipient: mailbox.task, operation: randomUUID(), payload: manifest.files.root_project_after,
@@ -413,6 +482,7 @@ if (scenarioDirectory) {
     const mailboxOutcome = await active.commandJson(`/outcome ${mailbox.task}`, "task");
     assert.deepEqual(mailboxOutcome.outcome.Succeeded.mail, consumed.checkpoint.state.mail);
     assert.ok(mailboxOutcome.outcome.Succeeded.model.Succeeded.text.includes(mailboxDispatch[2]));
+    await active.commandJson(`/context ${input({ attributes: [] })}`, "context");
     const pendingCross = manifest.preparations.find(value => value.label === "cross_source");
     assert.equal(pendingCross.executed, false);
     const crossInput = load(pendingCross.request);

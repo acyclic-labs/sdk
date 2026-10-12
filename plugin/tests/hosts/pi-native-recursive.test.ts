@@ -343,7 +343,7 @@ test("required pinned Pi recursively launches original native effects and reopen
 test("installed Pi retains split spawn, import and cancellation identities across lost replies and extension reload", async () => {
   const directory = mkdtempSync(fileURLToPath(new URL(".pi-native-cuts-", import.meta.url)));
   const oracleDirectory = join(directory, "native-oracles");
-  let fixture: InstalledNativeFixture | undefined;
+  let fixture: Awaited<ReturnType<typeof installedNativeFixture>> | undefined;
   try {
     mkdirSync(oracleDirectory);
     fixture = await installedNativeFixture(directory, recursiveProvider, {
