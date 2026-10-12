@@ -148,12 +148,7 @@ async fn sealed_summary_preparation(
     tasks.register(definition)?;
     let mut machines = MachineRegistry::default();
     machines.register(implementation, &mut None)?;
-    let host = Arc::new(CoordinatorTaskHost::new(
-        DistributedCoordinator::open(&storage.stream, payloads.clone(), None, &mut None).await?,
-        storage.stream.clone(), payloads.clone(), reader, authority, signed,
-        issuer.verifier(&mut None).expect("verifier copy"), runtime_scope.clone(), tasks, machines,
-        Arc::new(acyclic_stream::SystemUnixMillisClock),
-    )?.with_session_limits(crate::scheduler::SessionLimits {
+    let host = Arc::new(CoordinatorTaskHost::new(DistributedCoordinator::open(&storage.stream, payloads.clone(), None, &mut None).await?, storage.stream.clone(), payloads.clone(), reader, &(authority), signed, issuer.verifier(&mut None).expect("verifier copy"), runtime_scope.clone(), tasks, machines, Arc::new(acyclic_stream::SystemUnixMillisClock), None)?.with_session_limits(crate::scheduler::SessionLimits {
         active_tasks: 4, total_tasks: 4, depth: 2, model_steps: 4,
     }, None)?.with_resource_creation_providers(&[Arc::new(
         crate::filesystem::FilesystemResourceCreationProvider::new(storage.host.clone(), &issuer, #[cfg(not(target_arch = "wasm32"))] None)?)], None)?);
@@ -179,7 +174,7 @@ async fn sealed_summary_preparation(
     let (resources, proofs) = preparer.creation_allocations(fork, prep_task, None)?;
     let child = admission(OperationId::new(), Some(root), serde_json::json!({})).with_resource_proofs(proofs)?;
     let command_payload = payloads.stage(fork.operation_id, "summary-fork-request",
-        &crate::contract::canonical_json_bytes(fork)?).await?;
+        &crate::contract::canonical_json_bytes(fork)?, None)?.await?;
     let request = crate::resource_preparation::ResourcePreparationRequest {
         provider: storage.volume.provider().clone(), child,
         resources, creation_grant: "fork:publish".into(),

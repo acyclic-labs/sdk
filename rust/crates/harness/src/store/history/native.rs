@@ -172,14 +172,13 @@ impl HistoryIo for NativeHistoryIo<'_> {
         self.retain(bytes)?;
         Ok(())
     }
-    fn release_record(&mut self, bytes: u64) -> Result<()> {
+    fn release_owned(&mut self, bytes: u64) -> Result<()> {
         self.custody.release(bytes).map_err(|error| self.native_error(error))
     }
     fn retain_owned(&mut self, bytes: u64) -> Result<()> { self.retain(bytes) }
     fn admit_owned(&self, bytes: u64) -> Result<()> {
         self.work.admit_retained(bytes).map_err(|error| self.native_error(error))
     }
-    fn release_owned(&mut self, bytes: u64) -> Result<()> { self.release_record(bytes) }
     fn clone_authority(&mut self, authority: &Authority) -> Result<Authority> {
         Ok(Authority { kind: authority.kind, id: self.clone_text(&authority.id)? })
     }
@@ -487,7 +486,6 @@ impl HistoryIo for AcceptedCompletionIo {
             ..WorkCounters::default()
         }).map_err(Self::native_error)
     }
-    fn release_record(&mut self, bytes: u64) -> Result<()> { self.release(bytes) }
     fn retain_owned(&mut self, bytes: u64) -> Result<()> { self.retain(bytes) }
     fn admit_owned(&self, bytes: u64) -> Result<()> {
         if bytes <= self.available_pool_bytes() { Ok(()) }
@@ -955,7 +953,7 @@ mod tests {
         assert_eq!(work.receipt(), prefix.checked_add(maximum).expect("actual additive prefix"));
         assert_eq!(io.completion_work().expect("completed pure original prefix"),
             durable.checked_add(work.receipt()).expect("durable and actual completed prefix"));
-        io.release_record(3).expect("virtual cleanup remains cancellation independent");
+        io.release_owned(3).expect("virtual cleanup remains cancellation independent");
         let pool = io.into_custody();
         assert_eq!(pool.bytes(), 16, "virtual cleanup must not release the real pool");
         assert!(pool.matches_work(&work));
@@ -1178,7 +1176,7 @@ mod tests {
         assert_eq!(work.receipt(), prefix.checked_add(maximum).expect("actual malformed prefix"));
         assert_eq!(io.retained, 0, "failed retention leaves no virtual record claim");
         assert_eq!(io.custody.bytes(), 4);
-        assert!(matches!(io.release_record(5), Err(Error::NativeBoundary { .. })));
+        assert!(matches!(io.release_owned(5), Err(Error::NativeBoundary { .. })));
         io.retain_owned(4).expect("existing pool remains usable");
         assert!(matches!(io.retain_owned(1), Err(Error::NativeBoundary { .. })));
         assert!(matches!(io.take_native_custody(5), Err(Error::NativeBoundary { .. })));

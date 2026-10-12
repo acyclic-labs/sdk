@@ -116,30 +116,6 @@ fn canonical_path_with_work(
     operations::publication_path_with_work(authority, "harness/v2/", None, work)
 }
 
-fn release_record_after_drop<T>(
-    result: Result<T>,
-    bytes: u64,
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<T> {
-    let released = match work.as_deref_mut() {
-        Some(observer) => observer.release_record(bytes),
-        None => Ok(()),
-    };
-    match result {
-        Ok(value) => released.map(|()| value),
-        Err(error) => Err(error),
-    }
-}
-
-async fn tail_with_work<P: StreamProvider>(
-    client: &std::sync::Arc<P>,
-    path: &StreamPath,
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<u64> {
-    operations::tail_optional_with_work(client, path, work).await
-        .map(|tail| tail.unwrap_or(0))
-}
-
 async fn verified_with_work<P: StreamProvider>(
     client: &std::sync::Arc<P>,
     authority: &Authority,
@@ -213,7 +189,7 @@ pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
                 0
             } else {
                 let source_path = &path.as_ref().expect("original effect path").0;
-                let count = tail_with_work(client, source_path, work).await?;
+                let count = operations::tail_optional_with_work(client, source_path, work).await?.unwrap_or(0);
                 if count == 0 {
                     return Err(Error::Unsupported(
                         "effect transition requires its original atomic index".into(),
@@ -229,7 +205,7 @@ pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
                 let record_bytes = operations::sdk_record_retained_bytes(&record, work);
                 drop(record);
                 let released = match work.as_deref_mut() {
-                    Some(observer) => observer.release_record(record_bytes),
+                    Some(observer) => observer.release_owned(record_bytes),
                     None => Ok(()),
                 };
                 let ((prior, owned), _) = prior?;
@@ -300,7 +276,7 @@ pub async fn effect_events<P: StreamProvider>(
         return Ok((Vec::new(), 0));
     }
     let (canonical_path, canonical_capacity) = canonical_path_with_work(&cursor.authority, work)?;
-    let canonical_tail = tail_with_work(client, &canonical_path, work).await;
+    let canonical_tail = operations::tail_optional_with_work(client, &canonical_path, work).await.map(|tail| tail.unwrap_or(0));
     drop(canonical_path);
     let canonical_tail = operations::release_owned_after_drop(canonical_tail, canonical_capacity, work)?;
     if cursor.through_revision > canonical_tail {
@@ -375,7 +351,7 @@ pub async fn effect_events<P: StreamProvider>(
             }.await;
             let record_bytes = operations::sdk_record_retained_bytes(&record, work);
             drop(record);
-            release_record_after_drop(result, record_bytes, work)?;
+            operations::release_owned_after_drop(result, record_bytes, work)?;
             let (event, owned) = staged.take().expect("original authenticated output event");
             event_claims += owned;
             events.push(event);
@@ -427,7 +403,7 @@ pub(super) async fn retirement_proof_with_work<P: StreamProvider>(
     };
     let result = async {
         let Some(operation) = operations::one_record(client, &operation_path, 0, work).await? else {
-            return if tail_with_work(client, &operation_path, work).await? == 0 {
+            return if operations::tail_optional_with_work(client, &operation_path, work).await?.unwrap_or(0) == 0 {
                 Ok((false, 0))
             } else {
                 Err(Error::Storage("terminal operation index is missing".into()))
@@ -438,7 +414,7 @@ pub(super) async fn retirement_proof_with_work<P: StreamProvider>(
             if used > maximum_bytes {
                 return Err(Error::Invalid("effect retirement exceeds byte allowance".into()));
             }
-            if tail_with_work(client, &operation_path, work).await? != 1 {
+            if operations::tail_optional_with_work(client, &operation_path, work).await?.unwrap_or(0) != 1 {
                 return Err(Error::Storage("terminal operation index is not immutable".into()));
             }
             let location = operations::decode_location_with_work(&operation.value, work)?;
@@ -476,7 +452,7 @@ pub(super) async fn retirement_proof_with_work<P: StreamProvider>(
                 })();
                 let record_bytes = operations::sdk_record_retained_bytes(&record, work);
                 drop(record);
-                release_record_after_drop(result, record_bytes, work)
+                operations::release_owned_after_drop(result, record_bytes, work)
             }.await;
             let location_bytes = location.authority.id.capacity() as u64;
             drop(location);
@@ -484,7 +460,7 @@ pub(super) async fn retirement_proof_with_work<P: StreamProvider>(
         }.await;
         let operation_bytes = operations::sdk_record_retained_bytes(&operation, work);
         drop(operation);
-        release_record_after_drop(result, operation_bytes, work)
+        operations::release_owned_after_drop(result, operation_bytes, work)
     }.await;
     drop(operation_path);
     operations::release_owned_after_drop(result, operation_path_capacity, work)
@@ -535,7 +511,7 @@ pub(super) async fn retirement_proof_for_event_with_work<P: StreamProvider>(
     }.await;
     let record_bytes = operations::sdk_record_retained_bytes(&record, work);
     drop(record);
-    release_record_after_drop(result, record_bytes, work)
+    operations::release_owned_after_drop(result, record_bytes, work)
 }
 
 #[cfg(all(test, feature = "filesystem", not(target_arch = "wasm32")))]
@@ -685,11 +661,11 @@ mod native_effect_paid_point_tests {
         let client = Arc::new(MemoryStream::default());
         let publication = checkpoints::publication_with_work(&client, &reducer, &event, &mut None).await?;
         let request = publication.request(&client,
-            IdempotencyKey::new(Bytes::from_static(b"paid-effect-point"))?).await?;
+            IdempotencyKey::new(Bytes::from_static(b"paid-effect-point"))?, &mut None).await?.0;
         let acyclic_stream::CommitOutcome::Committed(envelope) = client.commit(request).await? else {
             panic!("original atomic effect publication");
         };
-        publication.verify(&envelope)?;
+        publication.verify(&envelope, &mut None)?;
         drop(envelope);
         drop(publication);
 

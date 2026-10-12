@@ -40,7 +40,7 @@ impl MailFixture {
             let operation = OperationId::from_bytes([byte; 16]);
             let payload = payloads.stage(operation, "command", &crate::contract::canonical_json_bytes(
                 &super::super::super::ToolTaskCommand { name: "test.deadline".into(), revision: "1".into(), arguments: Value::Null },
-            )?).await?;
+            )?, None)?.await?;
             assert!(matches!(runtime.harness().admit(operation, &definition,
                 json!({"command": WorkflowCommand { operation_id: operation,
                     kind: super::super::super::TOOL_TASK_COMMAND_KIND.into(), payload }}), None).await?,
@@ -54,7 +54,7 @@ impl MailFixture {
             runtime.task_host().start_task(&lease, None).await?;
             tasks.push((TaskId::from_bytes(lease.operation.operation_id.into_bytes()), LeaseFence::from(&lease.reservation)));
         }
-        let payload = payloads.stage(OperationId::from_bytes([193; 16]), "mail-source", b"actual native mailbox source").await?;
+        let payload = payloads.stage(OperationId::from_bytes([193; 16]), "mail-source", b"actual native mailbox source", None)?.await?;
         Ok(Self { fixture, sdk, runtime, tasks, payload })
     }
 

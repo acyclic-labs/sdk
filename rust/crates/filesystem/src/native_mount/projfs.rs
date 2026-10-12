@@ -6033,7 +6033,7 @@ unsafe fn notification(
                     retry_path.set(Some(&path));
                     if projection.source.lookup_with_meter(&path, projection.work).map_err(detach_source_error)?.is_some() {
                         verify_source_write_work(projection.source, projection.work)?;
-                        projection.source.remove_with_meter(&path, None, projection.work).map_err(detach_source_error)?;
+                        projection.source.remove(&path, None, projection.work).map_err(detach_source_error)?;
                         verify_source_write_work(projection.source, projection.work)?;
                     }
                 } else { defer_host_capture(projection.captures, &path, projection)?; }
@@ -6194,7 +6194,7 @@ fn handle_rename_source(
         } else { defer_host_capture(projection.captures, destination, projection) };
     }
     verify_source_write_work(projection.source, projection.work)?;
-    projection.source.rename_with_meter(source, destination, true, projection.work).map_err(detach_source_error)?;
+    projection.source.rename(source, destination, true, projection.work).map_err(detach_source_error)?;
     verify_source_write_work(projection.source, projection.work)?;
     projection.source.flush(projection.work).map_err(detach_source_error)?;
     verify_source_write_work(projection.source, projection.work)
@@ -7220,7 +7220,7 @@ mod tests {
             std::fs::read_link(destination.join("link"))?,
             std::path::Path::new("first.txt")
         );
-        source.remove(&link, None)?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.remove(&link, None, work))?;
         boundary(source.cancellation(), |work| source.create_symbolic_link(&link, crate::kernel::OwnedSourceChunk::claimed(target("second.txt").into(), 0), FileMetadata::default(), work))?;
         session.revalidate()?;
         assert_eq!(sorted_names(&destination)?, ["link"]);
@@ -7228,7 +7228,7 @@ mod tests {
             std::fs::read_link(destination.join("link"))?,
             std::path::Path::new("second.txt")
         );
-        source.remove(&link, None)?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.remove(&link, None, work))?;
         session.revalidate()?;
         assert!(sorted_names(&destination)?.is_empty());
         session.stop()?;
@@ -7410,7 +7410,7 @@ mod tests {
                 .share_mode(FILE_SHARE_READ.0)
                 .custom_flags((FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS).0)
                 .open(&projected)?;
-            source.remove(&name, None)?;
+            crate::native_mount::adapter::boundary(source.cancellation(), |work| source.remove(&name, None, work))?;
             if directory {
                 boundary(source.cancellation(), |work| source.create_directory(&name, FileMetadata::default(), work))?;
                 let inner = name.child(windows_name("inner.txt"));
@@ -7448,7 +7448,7 @@ mod tests {
         );
         std::fs::remove_file(&projected)?;
         std::fs::create_dir(&projected)?;
-        source.remove(&link, None)?;
+        crate::native_mount::adapter::boundary(source.cancellation(), |work| source.remove(&link, None, work))?;
         session.revalidate()?;
         assert!(std::fs::symlink_metadata(&projected)?.is_dir());
         session.stop()?;

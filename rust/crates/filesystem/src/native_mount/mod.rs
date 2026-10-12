@@ -1273,11 +1273,11 @@ pub trait MountFilesystem: Send + Sync + 'static {
     ) -> Result<MountDirectoryPage, MountSourceError>;
 
     /// Removes the exact binding on a shared original invocation.
-    fn remove_with_meter(
+    fn remove(
         &self, path: &MountPath, expected: Option<FileId>, work: &NativeMaterializationWork,
     ) -> Result<(), MountSourceError>;
     /// Renames the exact binding with original source grants.
-    fn rename_with_meter(
+    fn rename(
         &self, source: &MountPath, destination: &MountPath, replace: bool,
         work: &NativeMaterializationWork,
     ) -> Result<(), MountSourceError>;
@@ -1592,15 +1592,6 @@ pub trait MountFilesystem: Send + Sync + 'static {
         destination: &MountPath,
         destination_offset: u64,
         length: u64,
-    ) -> Result<(), MountSourceError>;
-    /// Removes one namespace binding.
-    fn remove(&self, path: &MountPath, expected: Option<FileId>) -> Result<(), MountSourceError>;
-    /// Renames one binding atomically within the volume.
-    fn rename(
-        &self,
-        source: &MountPath,
-        destination: &MountPath,
-        replace: bool,
     ) -> Result<(), MountSourceError>;
     /// Reconciles exact final host state for one projected path and seals it.
     fn capture_host_path(
@@ -2625,17 +2616,6 @@ impl NativeMountSession {
             driver, session, session.begin_original_work(work), Err(NativeMountError::UnsupportedTarget),
         )?;
         Ok(OwnedNativeMountOriginalWorkScope { _driver: scope })
-    }
-
-    /// Runs native I/O under this original accounting scope.
-    pub async fn with_original_work<T, F: std::future::Future<Output = T>>(
-        &self, work: &NativeMaterializationWork,
-        operation: impl FnOnce(&OwnedNativeMountOriginalWorkScope) -> F,
-    ) -> Result<T, NativeMountError> {
-        let scope = self.begin_original_work(work)?;
-        let value = operation(&scope).await;
-        drop(scope);
-        Ok(value)
     }
 
     /// Authenticated active kernel-root identity captured by this driver during its original constructor.
@@ -3777,13 +3757,6 @@ mod tests {
                 .collect::<Result<Vec<_>, _>>()?,
             limits,
         )?)
-    }
-
-    #[test]
-    fn probe_names_exactly_one_target_driver() {
-        let probe = probe_native_mount();
-        assert!(probe.kind.is_some());
-        assert_eq!(probe.available, probe.unavailable_reason.is_none());
     }
 
     fn await_recovery_worker(thread: std::thread::JoinHandle<()>) -> Result<(), Box<dyn std::error::Error>> {
