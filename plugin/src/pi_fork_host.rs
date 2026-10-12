@@ -196,10 +196,6 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         work.admit(WorkCounters {
             bytes_copied: copied,
             ..WorkCounters::UNCHARGED
-        })
-        .map_err(|cause| Error::NativeWork {
-            cause,
-            custody: None,
         })?;
         let mut replacement = crate::pi_native::pi_native_vec(capacity, work)?;
         if let Some((entries, old_custody)) = retained.take() {
@@ -209,10 +205,6 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         work.spent(WorkCounters {
             bytes_copied: copied,
             ..WorkCounters::UNCHARGED
-        })
-        .map_err(|cause| Error::NativeWork {
-            cause,
-            custody: None,
         })?;
         replacement.0.push(value);
         *retained = Some(replacement);
@@ -436,14 +428,12 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
                 owner
                     .verify(
                         false,
-                        &mut Some(
-                            &mut acyclic_harness::store::history::native_work_io(work).map_err(
-                                |cause| acyclic_harness::Error::NativeWork {
-                                    cause,
-                                    custody: None,
-                                },
-                            )?,
-                        ),
+                        &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
+                            |cause| acyclic_harness::Error::NativeWork {
+                                cause,
+                                custody: None,
+                            },
+                        )?),
                     )
                     .await?;
                 snapshot
@@ -524,13 +514,12 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             .next()
             .ok_or_else(|| invalid("Pi project missing"))?;
         let workspace = {
-            let mut io =
-                acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
+                acyclic_harness::Error::NativeWork {
+                    cause,
+                    custody: None,
+                }
+            })?;
             let value = project.storage_name(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
@@ -696,13 +685,12 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         )?;
         let mut authority = (conversation.0, conversation.1);
         let mut verifier = {
-            let mut io =
-                acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
+                acyclic_harness::Error::NativeWork {
+                    cause,
+                    custody: None,
+                }
+            })?;
             let value = authority.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
@@ -717,18 +705,8 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         let mut parent_custody = parent.1;
         drop(authority.0.1);
         drop(authority.0.2);
-        parent_custody
-            .absorb(&mut authority.1)
-            .map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
-        parent_custody
-            .absorb(&mut verifier.1)
-            .map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
+        parent_custody.absorb(&mut authority.1)?;
+        parent_custody.absorb(&mut verifier.1)?;
         let mut parent = parent.0;
         parent.set_limits(context.scope().limits())?;
         let plan = coordinator
@@ -785,13 +763,12 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
                     .values()
                     .next()
                     .ok_or_else(|| invalid("Pi child project missing"))?;
-                let mut io =
-                    acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
-                        Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?;
+                let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
+                    Error::NativeWork {
+                        cause,
+                        custody: None,
+                    }
+                })?;
                 let name = volume.storage_name(&mut Some(&mut io))?;
                 (name, io.into_custody())
             };
@@ -976,12 +953,12 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             .verify(
                 false,
                 &mut Some(
-                    &mut acyclic_harness::store::history::native_work_io(&work).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
+                    &mut acyclic_harness::store::native_work_io(&work).map_err(|cause| {
+                        acyclic_harness::Error::NativeWork {
                             cause,
                             custody: None,
-                        },
-                    )?,
+                        }
+                    })?,
                 ),
             )
             .await?;
@@ -1004,12 +981,12 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             .verify(
                 false,
                 &mut Some(
-                    &mut acyclic_harness::store::history::native_work_io(&work).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
+                    &mut acyclic_harness::store::native_work_io(&work).map_err(|cause| {
+                        acyclic_harness::Error::NativeWork {
                             cause,
                             custody: None,
-                        },
-                    )?,
+                        }
+                    })?,
                 ),
             )
             .await?;
@@ -1074,14 +1051,12 @@ pub(crate) async fn freeze_created_root_source(
             owner
                 .verify(
                     false,
-                    &mut Some(
-                        &mut acyclic_harness::store::history::native_work_io(work).map_err(
-                            |cause| acyclic_harness::Error::NativeWork {
-                                cause,
-                                custody: None,
-                            },
-                        )?,
-                    ),
+                    &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
+                        |cause| acyclic_harness::Error::NativeWork {
+                            cause,
+                            custody: None,
+                        },
+                    )?),
                 )
                 .await?;
             let preparation = crate::pi_root_provider::load_original_preparation_with_native_work(
@@ -1108,14 +1083,12 @@ pub(crate) async fn freeze_created_root_source(
             owner
                 .verify(
                     false,
-                    &mut Some(
-                        &mut acyclic_harness::store::history::native_work_io(work).map_err(
-                            |cause| acyclic_harness::Error::NativeWork {
-                                cause,
-                                custody: None,
-                            },
-                        )?,
-                    ),
+                    &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
+                        |cause| acyclic_harness::Error::NativeWork {
+                            cause,
+                            custody: None,
+                        },
+                    )?),
                 )
                 .await
         },

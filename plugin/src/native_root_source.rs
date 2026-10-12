@@ -1134,12 +1134,12 @@ mod tests {
             .verify(
                 false,
                 &mut Some(
-                    &mut acyclic_harness::store::history::native_work_io(work).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
+                    &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
+                        acyclic_harness::Error::NativeWork {
                             cause,
                             custody: None,
-                        },
-                    )?,
+                        }
+                    })?,
                 ),
             )
             .await?;
@@ -1303,14 +1303,12 @@ mod tests {
                     fixture.journal.require_volume_grant(
                         &foreign,
                         VolumeOperation::Read,
-                        &mut Some(
-                            &mut acyclic_harness::store::history::native_work_io(&work).map_err(
-                                |cause| acyclic_harness::Error::NativeWork {
-                                    cause,
-                                    custody: None,
-                                },
-                            )?,
-                        ),
+                        &mut Some(&mut acyclic_harness::store::native_work_io(&work).map_err(
+                            |cause| acyclic_harness::Error::NativeWork {
+                                cause,
+                                custody: None,
+                            },
+                        )?),
                     )?;
                     Ok(expected)
                 },

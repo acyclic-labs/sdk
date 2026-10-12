@@ -950,7 +950,7 @@ pub(crate) async fn authorize_owner(
         .verify(
             false,
             &mut Some(
-                &mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
+                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
                     acyclic_harness::Error::NativeWork {
                         cause,
                         custody: None,
@@ -1027,7 +1027,7 @@ fn logical_path(
     acyclic_harness::conversation::validate_content_path(
         &value,
         &mut Some(
-            &mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
+            &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
                 acyclic_harness::Error::NativeWork {
                     cause,
                     custody: None,

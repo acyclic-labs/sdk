@@ -352,11 +352,7 @@ impl PiSession {
             if let Some(plan) = &plan {
                 let root_waiting = if caller == owner.policy().root_task {
                     let (suspension, suspension_custody) = (async {
-                        let mut io = acyclic_harness::store::history::native_work_io(&work)
-                            .map_err(|cause| acyclic_harness::Error::NativeWork {
-                                cause,
-                                custody: None,
-                            })?;
+                        let mut io = acyclic_harness::store::native_work_io(&work)?;
                         let value = self
                             .runtime
                             .runtime
@@ -444,14 +440,12 @@ impl PiSession {
                 live.owner
                     .verify(
                         false,
-                        &mut Some(
-                            &mut acyclic_harness::store::history::native_work_io(&work).map_err(
-                                |cause| acyclic_harness::Error::NativeWork {
-                                    cause,
-                                    custody: None,
-                                },
-                            )?,
-                        ),
+                        &mut Some(&mut acyclic_harness::store::native_work_io(&work).map_err(
+                            |cause| acyclic_harness::Error::NativeWork {
+                                cause,
+                                custody: None,
+                            },
+                        )?),
                     )
                     .await?;
                 self.spawn_child_step(
@@ -555,14 +549,12 @@ impl PiSession {
             live.owner
                 .verify(
                     false,
-                    &mut Some(
-                        &mut acyclic_harness::store::history::native_work_io(&work).map_err(
-                            |cause| acyclic_harness::Error::NativeWork {
-                                cause,
-                                custody: None,
-                            },
-                        )?,
-                    ),
+                    &mut Some(&mut acyclic_harness::store::native_work_io(&work).map_err(
+                        |cause| acyclic_harness::Error::NativeWork {
+                            cause,
+                            custody: None,
+                        },
+                    )?),
                 )
                 .await?;
         }
@@ -1086,13 +1078,12 @@ impl PiSession {
         )?;
         let paths = paths;
         let (workspace, workspace_custody) = {
-            let mut io =
-                acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
+                acyclic_harness::Error::NativeWork {
+                    cause,
+                    custody: None,
+                }
+            })?;
             let value = project.storage_name(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
@@ -1294,7 +1285,7 @@ impl PiSession {
         let report: acyclic_harness::fork::ForkReport = serde_json::from_value(value)
             .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
         report.validate(&mut Some(
-            &mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
+            &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
                 acyclic_harness::Error::NativeWork {
                     cause,
                     custody: None,
@@ -1358,7 +1349,7 @@ impl PiSession {
             ));
         }
         prepared.report.validate(&mut Some(
-            &mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
+            &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
                 acyclic_harness::Error::NativeWork {
                     cause,
                     custody: None,
@@ -1524,7 +1515,7 @@ impl PiSession {
             commit.child.task_id,
             operations.native,
             &mut Some(
-                &mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
+                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
                     acyclic_harness::Error::NativeWork {
                         cause,
                         custody: None,

@@ -264,12 +264,12 @@ impl<'a> PiControlHost<'a> {
             .verify(
                 false,
                 &mut Some(
-                    &mut acyclic_harness::store::history::native_work_io(work).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
+                    &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
+                        acyclic_harness::Error::NativeWork {
                             cause,
                             custody: None,
-                        },
-                    )?,
+                        }
+                    })?,
                 ),
             )
             .await?;
@@ -538,7 +538,7 @@ impl<'a> PiControlHost<'a> {
             scratch,
             acyclic_harness::conversation::VolumeOperation::Write,
             &mut Some(
-                &mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
+                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
                     acyclic_harness::Error::NativeWork {
                         cause,
                         custody: None,
@@ -1153,13 +1153,12 @@ impl PiControlHost<'_> {
             .get(key)
             .ok_or_else(|| denied("destination lacks this actual project"))?;
         let write_capability = {
-            let mut io =
-                acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
+                acyclic_harness::Error::NativeWork {
+                    cause,
+                    custody: None,
+                }
+            })?;
             let value = volume.capability(
                 acyclic_harness::conversation::VolumeOperation::Write,
                 &mut Some(&mut io),
@@ -1178,25 +1177,23 @@ impl PiControlHost<'_> {
             work,
         )?;
         let verifier = {
-            let mut io =
-                acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
+                acyclic_harness::Error::NativeWork {
+                    cause,
+                    custody: None,
+                }
+            })?;
             let value = authorization.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
         let scope = &authorization.0.2;
         let destination_grant = {
-            let mut io =
-                acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
+                acyclic_harness::Error::NativeWork {
+                    cause,
+                    custody: None,
+                }
+            })?;
             let grant = acyclic_harness::conversation::ContentGrant::verify(
                 &verifier.0,
                 scope,
@@ -1365,14 +1362,12 @@ impl PiControlHost<'_> {
                 owner
                     .verify(
                         false,
-                        &mut Some(
-                            &mut acyclic_harness::store::history::native_work_io(work).map_err(
-                                |cause| acyclic_harness::Error::NativeWork {
-                                    cause,
-                                    custody: None,
-                                },
-                            )?,
-                        ),
+                        &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
+                            |cause| acyclic_harness::Error::NativeWork {
+                                cause,
+                                custody: None,
+                            },
+                        )?),
                     )
                     .await?;
                 (snapshot, custody)
@@ -1642,13 +1637,12 @@ impl PiControlHost<'_> {
             work,
         )?;
         let root_volume = {
-            let mut io =
-                acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
+                acyclic_harness::Error::NativeWork {
+                    cause,
+                    custody: None,
+                }
+            })?;
             let value = volume.copy(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
@@ -1968,7 +1962,7 @@ pub(crate) async fn read_imported_selected_files(
         .map_err(Error::Unauthorized)?;
     let receipt = &descriptor.import_receipt;
     let storage_name = {
-        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
+        let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
             acyclic_harness::Error::NativeWork {
                 cause,
                 custody: None,
@@ -1998,7 +1992,7 @@ pub(crate) async fn read_imported_selected_files(
         ));
     }
     let capability = {
-        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
+        let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
             acyclic_harness::Error::NativeWork {
                 cause,
                 custody: None,
@@ -2016,7 +2010,7 @@ pub(crate) async fn read_imported_selected_files(
         work,
     )?;
     let verifier = {
-        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
+        let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
             acyclic_harness::Error::NativeWork {
                 cause,
                 custody: None,
@@ -2027,7 +2021,7 @@ pub(crate) async fn read_imported_selected_files(
     };
     let scope = &authorization.0.2;
     let _read_grant = {
-        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
+        let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
             acyclic_harness::Error::NativeWork {
                 cause,
                 custody: None,
@@ -2154,7 +2148,7 @@ pub(crate) async fn read_imported_selected_files(
         acyclic_harness::conversation::validate_content_path(
             path,
             &mut Some(
-                &mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
+                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
                     acyclic_harness::Error::NativeWork {
                         cause,
                         custody: None,
@@ -2177,13 +2171,12 @@ pub(crate) async fn read_imported_selected_files(
             .check()
             .map_err(|_| native_error(acyclic_fs::NativeTreeMaterializationError::Cancelled))?;
         let _current_read_grant = {
-            let mut io =
-                acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
+                acyclic_harness::Error::NativeWork {
+                    cause,
+                    custody: None,
+                }
+            })?;
             let grant = ContentGrant::verify(
                 &verifier.0,
                 scope,

@@ -1506,7 +1506,7 @@ where
         .verify(
             false,
             &mut Some(
-                &mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
+                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
                     acyclic_harness::Error::NativeWork {
                         cause,
                         custody: None,
@@ -1578,7 +1578,7 @@ where
         .verify(
             false,
             &mut Some(
-                &mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
+                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
                     acyclic_harness::Error::NativeWork {
                         cause,
                         custody: None,
@@ -1626,7 +1626,7 @@ where
         .verify(
             false,
             &mut Some(
-                &mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
+                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
                     acyclic_harness::Error::NativeWork {
                         cause,
                         custody: None,
@@ -1695,12 +1695,12 @@ impl PiNativeRootSeed {
             .verify(
                 false,
                 &mut Some(
-                    &mut acyclic_harness::store::history::native_work_io(meter).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
+                    &mut acyclic_harness::store::native_work_io(meter).map_err(|cause| {
+                        acyclic_harness::Error::NativeWork {
                             cause,
                             custody: None,
-                        },
-                    )?,
+                        }
+                    })?,
                 ),
             )
             .await?;
@@ -1746,24 +1746,24 @@ impl PiNativeRootSeed {
                 operation,
                 u64::MAX,
                 &mut Some(
-                    &mut acyclic_harness::store::history::native_work_io(meter).map_err(
-                        |cause| Error::NativeWork {
+                    &mut acyclic_harness::store::native_work_io(meter).map_err(|cause| {
+                        Error::NativeWork {
                             cause,
                             custody: None,
-                        },
-                    )?,
+                        }
+                    })?,
                 ),
             )?;
             owner.require_volume_grant(
                 &self.scratch,
                 operation,
                 &mut Some(
-                    &mut acyclic_harness::store::history::native_work_io(meter).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
+                    &mut acyclic_harness::store::native_work_io(meter).map_err(|cause| {
+                        acyclic_harness::Error::NativeWork {
                             cause,
                             custody: None,
-                        },
-                    )?,
+                        }
+                    })?,
                 ),
             )?;
         }
@@ -1831,13 +1831,7 @@ impl PiNativeRootSeed {
                     owner
                         .verify(
                             false,
-                            &mut Some(
-                                &mut acyclic_harness::store::history::native_work_io(meter)
-                                    .map_err(|cause| acyclic_harness::Error::NativeWork {
-                                        cause,
-                                        custody: None,
-                                    })?,
-                            ),
+                            &mut Some(&mut acyclic_harness::store::native_work_io(meter)?),
                         )
                         .await?;
                     creator
@@ -1921,12 +1915,12 @@ impl PiNativeRootSeed {
             .verify(
                 false,
                 &mut Some(
-                    &mut acyclic_harness::store::history::native_work_io(meter).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
+                    &mut acyclic_harness::store::native_work_io(meter).map_err(|cause| {
+                        acyclic_harness::Error::NativeWork {
                             cause,
                             custody: None,
-                        },
-                    )?,
+                        }
+                    })?,
                 ),
             )
             .await?;
@@ -1954,24 +1948,24 @@ impl PiNativeRootSeed {
                 operation,
                 u64::MAX,
                 &mut Some(
-                    &mut acyclic_harness::store::history::native_work_io(meter).map_err(
-                        |cause| Error::NativeWork {
+                    &mut acyclic_harness::store::native_work_io(meter).map_err(|cause| {
+                        Error::NativeWork {
                             cause,
                             custody: None,
-                        },
-                    )?,
+                        }
+                    })?,
                 ),
             )?;
             owner.require_volume_grant(
                 volume,
                 operation,
                 &mut Some(
-                    &mut acyclic_harness::store::history::native_work_io(meter).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
+                    &mut acyclic_harness::store::native_work_io(meter).map_err(|cause| {
+                        acyclic_harness::Error::NativeWork {
                             cause,
                             custody: None,
-                        },
-                    )?,
+                        }
+                    })?,
                 ),
             )?;
         }
@@ -2087,12 +2081,12 @@ impl PiNativeRootSeed {
             .verify(
                 false,
                 &mut Some(
-                    &mut acyclic_harness::store::history::native_work_io(meter).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
+                    &mut acyclic_harness::store::native_work_io(meter).map_err(|cause| {
+                        acyclic_harness::Error::NativeWork {
                             cause,
                             custody: None,
-                        },
-                    )?,
+                        }
+                    })?,
                 ),
             )
             .await?;
@@ -2105,8 +2099,7 @@ impl PiNativeRootSeed {
                 .min(super::MAXIMUM_ADAPTER_STATE_BYTES),
             meter,
         )?;
-        let mut volume_io =
-            acyclic_harness::store::history::native_work_io(meter).map_err(native_error)?;
+        let mut volume_io = acyclic_harness::store::native_work_io(meter).map_err(native_error)?;
         let volume_copy = volume.copy(&mut Some(&mut volume_io))?;
         let mut volume_copy = (volume_copy, volume_io.into_custody());
         let reference = original_generation.as_resource();
@@ -2183,12 +2176,12 @@ impl PiNativeRootSeed {
             .verify(
                 false,
                 &mut Some(
-                    &mut acyclic_harness::store::history::native_work_io(meter).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
+                    &mut acyclic_harness::store::native_work_io(meter).map_err(|cause| {
+                        acyclic_harness::Error::NativeWork {
                             cause,
                             custody: None,
-                        },
-                    )?,
+                        }
+                    })?,
                 ),
             )
             .await?;
@@ -2242,12 +2235,12 @@ impl PiNativeRootSeed {
             .verify(
                 false,
                 &mut Some(
-                    &mut acyclic_harness::store::history::native_work_io(meter).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
+                    &mut acyclic_harness::store::native_work_io(meter).map_err(|cause| {
+                        acyclic_harness::Error::NativeWork {
                             cause,
                             custody: None,
-                        },
-                    )?,
+                        }
+                    })?,
                 ),
             )
             .await?;
@@ -2642,8 +2635,7 @@ where
     )
     .map_err(native_error)?;
     let mut service_root = meter.copy_path(service).map_err(native_error)?;
-    let mut scratch_io =
-        acyclic_harness::store::history::native_work_io(meter).map_err(native_error)?;
+    let mut scratch_io = acyclic_harness::store::native_work_io(meter).map_err(native_error)?;
     let scratch = binding.scratch.volume.copy(&mut Some(&mut scratch_io))?;
     let mut scratch = (scratch, scratch_io.into_custody());
     let mut view_root = meter.copy_path(&options.root).map_err(native_error)?;

@@ -143,17 +143,8 @@ impl PiLazyCapture {
                 u64::from(claim_bytes != 0),
                 acyclic_fs::WorkCounters::UNCHARGED,
             )
-        }
-        .map_err(|cause| Error::NativeWork {
-            cause,
-            custody: None,
-        })?;
-        metadata
-            .absorb(&mut slot)
-            .map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
-            })?;
+        }?;
+        metadata.absorb(&mut slot)?;
         Ok(Arc::new(Self {
             source,
             frozen,
@@ -211,10 +202,6 @@ impl PiLazyCapture {
             work.charge(WorkCounters {
                 items_examined: 1,
                 ..WorkCounters::UNCHARGED
-            })
-            .map_err(|cause| Error::NativeWork {
-                cause,
-                custody: None,
             })?;
             if selected == selection {
                 member = true;
@@ -329,8 +316,8 @@ impl ForkSeedVerifier for PiLazyCapture {
     fn verify<'a, 'w: 'a>(
         &'a self,
         seed: &'a ForkSeed,
-        observer: &'a mut Option<&'w mut dyn acyclic_harness::store::history::HistoryIo>,
-    ) -> Result<acyclic_harness::store::history::HistoryContentFuture<'a, ()>> {
+        observer: &'a mut Option<&'w mut dyn acyclic_harness::store::HistoryIo>,
+    ) -> Result<acyclic_harness::store::HistoryContentFuture<'a, ()>> {
         let work = observer
             .as_ref()
             .and_then(|io| io.original_native_work())
@@ -345,10 +332,6 @@ impl ForkSeedVerifier for PiLazyCapture {
                 work.charge(WorkCounters {
                     items_examined: 1,
                     ..WorkCounters::UNCHARGED
-                })
-                .map_err(|cause| Error::NativeWork {
-                    cause,
-                    custody: None,
                 })?;
                 if capture.source.provider() == self.revision.provider()
                     || capture.revision.provider() == self.revision.provider()
@@ -381,7 +364,7 @@ impl ForkSeedVerifier for PiLazyCapture {
                 .await
                 .map_err(native_lazy_error)
         })
-        .map(acyclic_harness::store::history::HistoryContentFuture::Native)
+        .map(acyclic_harness::store::HistoryContentFuture::Native)
     }
 }
 
@@ -410,7 +393,7 @@ where
         .verify(
             false,
             &mut Some(
-                &mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
+                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
                     acyclic_harness::Error::NativeWork {
                         cause,
                         custody: None,
@@ -450,7 +433,7 @@ where
         .verify(
             false,
             &mut Some(
-                &mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
+                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
                     acyclic_harness::Error::NativeWork {
                         cause,
                         custody: None,
@@ -490,7 +473,7 @@ pub(crate) async fn freeze_child_source<P: acyclic_stream::StreamProvider>(
         .verify(
             false,
             &mut Some(
-                &mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
+                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
                     acyclic_harness::Error::NativeWork {
                         cause,
                         custody: None,
@@ -506,7 +489,7 @@ pub(crate) async fn freeze_child_source<P: acyclic_stream::StreamProvider>(
         .verify(
             false,
             &mut Some(
-                &mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
+                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
                     acyclic_harness::Error::NativeWork {
                         cause,
                         custody: None,

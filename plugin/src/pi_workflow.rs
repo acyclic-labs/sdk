@@ -96,14 +96,13 @@ impl<'a> PiWorkflowHost<'a> {
         let recovered_custody;
         let recovered;
         (recovered, recovered_custody) = (async {
-            let mut io =
-                acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
-            acyclic_harness::store::history::HistoryIo::retain_owned(
+            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
+                acyclic_harness::Error::NativeWork {
+                    cause,
+                    custody: None,
+                }
+            })?;
+            acyclic_harness::store::HistoryIo::retain_owned(
                 &mut io,
                 std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(
                     std::mem::size_of::<acyclic_harness::filesystem::TaskWorkerAttempt>(),
@@ -194,7 +193,7 @@ impl<'a> PiWorkflowHost<'a> {
             owner.policy().root_task,
             pi_root_inputs::preparation_operation(owner.policy().root_task, work)?,
             &mut Some(
-                &mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
+                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
                     acyclic_harness::Error::NativeWork {
                         cause,
                         custody: None,
@@ -317,13 +316,12 @@ impl<'a> PiWorkflowHost<'a> {
         let suspension_custody;
         let suspension;
         (suspension, suspension_custody) = (async {
-            let mut io =
-                acyclic_harness::store::history::native_work_io(&self.work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+            let mut io = acyclic_harness::store::native_work_io(&self.work).map_err(|cause| {
+                acyclic_harness::Error::NativeWork {
+                    cause,
+                    custody: None,
+                }
+            })?;
             let value = host.workflow_suspension(task, &mut Some(&mut io)).await?;
             Ok::<_, acyclic_harness::Error>((value, io.into_custody()))
         })
@@ -422,12 +420,12 @@ impl<'a> PiWorkflowHost<'a> {
             .verify(
                 false,
                 &mut Some(
-                    &mut acyclic_harness::store::history::native_work_io(work).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
+                    &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
+                        acyclic_harness::Error::NativeWork {
                             cause,
                             custody: None,
-                        },
-                    )?,
+                        }
+                    })?,
                 ),
             )
             .await?;
@@ -489,12 +487,12 @@ impl<'a> PiWorkflowHost<'a> {
             .verify(
                 false,
                 &mut Some(
-                    &mut acyclic_harness::store::history::native_work_io(work).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
+                    &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
+                        acyclic_harness::Error::NativeWork {
                             cause,
                             custody: None,
-                        },
-                    )?,
+                        }
+                    })?,
                 ),
             )
             .await?;

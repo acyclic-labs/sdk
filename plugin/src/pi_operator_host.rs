@@ -159,7 +159,7 @@ fn conversation_journal<'a>(
         work,
     )?;
     let verifier = {
-        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
+        let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
             acyclic_harness::Error::NativeWork {
                 cause,
                 custody: None,
@@ -219,7 +219,7 @@ pub(crate) async fn open_prepared_approval(
         .verify(
             false,
             &mut Some(
-                &mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
+                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
                     acyclic_harness::Error::NativeWork {
                         cause,
                         custody: None,
@@ -236,7 +236,7 @@ pub(crate) async fn open_prepared_approval(
         work,
     )?;
     let verifier = {
-        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
+        let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
             acyclic_harness::Error::NativeWork {
                 cause,
                 custody: None,
@@ -294,7 +294,7 @@ pub(crate) async fn open_prepared_approval(
         .verify(
             false,
             &mut Some(
-                &mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
+                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
                     acyclic_harness::Error::NativeWork {
                         cause,
                         custody: None,
@@ -316,7 +316,7 @@ pub(crate) async fn open_prepared_approval(
         .verify(
             false,
             &mut Some(
-                &mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
+                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
                     acyclic_harness::Error::NativeWork {
                         cause,
                         custody: None,
@@ -864,12 +864,12 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             .verify(
                 false,
                 &mut Some(
-                    &mut acyclic_harness::store::history::native_work_io(work).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
+                    &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
+                        acyclic_harness::Error::NativeWork {
                             cause,
                             custody: None,
-                        },
-                    )?,
+                        }
+                    })?,
                 ),
             )
             .await?;
@@ -934,14 +934,12 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             owner
                 .verify(
                     false,
-                    &mut Some(
-                        &mut acyclic_harness::store::history::native_work_io(work).map_err(
-                            |cause| acyclic_harness::Error::NativeWork {
-                                cause,
-                                custody: None,
-                            },
-                        )?,
-                    ),
+                    &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
+                        |cause| acyclic_harness::Error::NativeWork {
+                            cause,
+                            custody: None,
+                        },
+                    )?),
                 )
                 .await?;
             journal
@@ -950,14 +948,12 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             owner
                 .verify(
                     false,
-                    &mut Some(
-                        &mut acyclic_harness::store::history::native_work_io(work).map_err(
-                            |cause| acyclic_harness::Error::NativeWork {
-                                cause,
-                                custody: None,
-                            },
-                        )?,
-                    ),
+                    &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
+                        |cause| acyclic_harness::Error::NativeWork {
+                            cause,
+                            custody: None,
+                        },
+                    )?),
                 )
                 .await?;
         }
@@ -1028,12 +1024,12 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             .verify(
                 false,
                 &mut Some(
-                    &mut acyclic_harness::store::history::native_work_io(work).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
+                    &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
+                        acyclic_harness::Error::NativeWork {
                             cause,
                             custody: None,
-                        },
-                    )?,
+                        }
+                    })?,
                 ),
             )
             .await?;

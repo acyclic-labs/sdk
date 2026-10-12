@@ -315,7 +315,7 @@ async fn real_original_owner_grant_and_cancel_checks_are_used_by_builtins() {
             .require_volume_grant(
                 project,
                 operation,
-                &mut Some(&mut acyclic_harness::store::history::native_work_io(&work).unwrap()),
+                &mut Some(&mut acyclic_harness::store::native_work_io(&work).unwrap()),
             )
             .unwrap();
     }
@@ -382,7 +382,7 @@ async fn real_original_owner_grant_and_cancel_checks_are_used_by_builtins() {
                 .require_volume_grant(
                     &unrelated,
                     operation,
-                    &mut Some(&mut acyclic_harness::store::history::native_work_io(&work).unwrap())
+                    &mut Some(&mut acyclic_harness::store::native_work_io(&work).unwrap())
                 )
                 .is_err()
         );

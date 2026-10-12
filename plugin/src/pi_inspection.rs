@@ -214,12 +214,12 @@ impl PiWritebackPublicationGuard {
             .verify(
                 false,
                 &mut Some(
-                    &mut acyclic_harness::store::history::native_work_io(work).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
+                    &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
+                        acyclic_harness::Error::NativeWork {
                             cause,
                             custody: None,
-                        },
-                    )?,
+                        }
+                    })?,
                 ),
             )
             .await?;
@@ -229,13 +229,12 @@ impl PiWritebackPublicationGuard {
                     request.0.binding.project_volumes.get(key).ok_or_else(|| {
                         selected_unauthorized("writeback lost its original project")
                     })?;
-                let mut io =
-                    acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
-                        Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?;
+                let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
+                    Error::NativeWork {
+                        cause,
+                        custody: None,
+                    }
+                })?;
                 let capability = volume.capability(
                     acyclic_harness::conversation::VolumeOperation::Write,
                     &mut Some(&mut io),
@@ -308,12 +307,12 @@ impl PiWritebackPublicationGuard {
             .verify(
                 false,
                 &mut Some(
-                    &mut acyclic_harness::store::history::native_work_io(work).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
+                    &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
+                        acyclic_harness::Error::NativeWork {
                             cause,
                             custody: None,
-                        },
-                    )?,
+                        }
+                    })?,
                 ),
             )
             .await?;
@@ -339,7 +338,7 @@ impl PiWritebackPublicationGuard {
             volume,
             acyclic_harness::conversation::VolumeOperation::Write,
             &mut Some(
-                &mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
+                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
                     acyclic_harness::Error::NativeWork {
                         cause,
                         custody: None,
@@ -377,7 +376,7 @@ impl PiWritebackPublicationGuard {
             volume,
             acyclic_harness::conversation::VolumeOperation::Write,
             &mut Some(
-                &mut acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
+                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
                     acyclic_harness::Error::NativeWork {
                         cause,
                         custody: None,
@@ -389,12 +388,12 @@ impl PiWritebackPublicationGuard {
             .verify(
                 false,
                 &mut Some(
-                    &mut acyclic_harness::store::history::native_work_io(work).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
+                    &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
+                        acyclic_harness::Error::NativeWork {
                             cause,
                             custody: None,
-                        },
-                    )?,
+                        }
+                    })?,
                 ),
             )
             .await
@@ -430,13 +429,12 @@ pub(crate) async fn build_writeback_generations<'a>(
 
     authenticate_root(root, context, owner, verifier, scope, native_work).await?;
     let _read_grant = {
-        let mut io =
-            acyclic_harness::store::history::native_work_io(native_work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+        let mut io = acyclic_harness::store::native_work_io(native_work).map_err(|cause| {
+            acyclic_harness::Error::NativeWork {
+                cause,
+                custody: None,
+            }
+        })?;
         let grant = acyclic_harness::conversation::ContentGrant::verify(
             verifier,
             scope,
@@ -448,13 +446,12 @@ pub(crate) async fn build_writeback_generations<'a>(
         (grant, io.into_custody())
     };
     let storage_name = {
-        let mut io =
-            acyclic_harness::store::history::native_work_io(native_work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+        let mut io = acyclic_harness::store::native_work_io(native_work).map_err(|cause| {
+            acyclic_harness::Error::NativeWork {
+                cause,
+                custody: None,
+            }
+        })?;
         let value = root.volume.storage_name(&mut Some(&mut io))?;
         (value, io.into_custody())
     };
@@ -501,12 +498,12 @@ pub(crate) async fn build_writeback_generations<'a>(
         validate_content_path(
             path,
             &mut Some(
-                &mut acyclic_harness::store::history::native_work_io(native_work).map_err(
-                    |cause| acyclic_harness::Error::NativeWork {
+                &mut acyclic_harness::store::native_work_io(native_work).map_err(|cause| {
+                    acyclic_harness::Error::NativeWork {
                         cause,
                         custody: None,
-                    },
-                )?,
+                    }
+                })?,
             ),
         )?;
         let mut absolute = native_work
@@ -614,24 +611,22 @@ impl<P: StreamProvider + 'static> PiSelectedPublicationGuard<P> {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<std::sync::Arc<Self>> {
         let volume = {
-            let mut io =
-                acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
+                acyclic_harness::Error::NativeWork {
+                    cause,
+                    custody: None,
+                }
+            })?;
             let value = volume.copy(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
         let capability = {
-            let mut io =
-                acyclic_harness::store::history::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
+                acyclic_harness::Error::NativeWork {
+                    cause,
+                    custody: None,
+                }
+            })?;
             let value = volume.0.capability(
                 acyclic_harness::conversation::VolumeOperation::Write,
                 &mut Some(&mut io),
@@ -691,14 +686,12 @@ impl<P: StreamProvider + 'static> PiSelectedPublicationGuard<P> {
             owner
                 .verify(
                     false,
-                    &mut Some(
-                        &mut acyclic_harness::store::history::native_work_io(work).map_err(
-                            |cause| acyclic_harness::Error::NativeWork {
-                                cause,
-                                custody: None,
-                            },
-                        )?,
-                    ),
+                    &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
+                        |cause| acyclic_harness::Error::NativeWork {
+                            cause,
+                            custody: None,
+                        },
+                    )?),
                 )
                 .await?;
             if context.context().durable_task_id() != Some(owner.task_id())
@@ -716,25 +709,23 @@ impl<P: StreamProvider + 'static> PiSelectedPublicationGuard<P> {
                 &self.volume,
                 acyclic_harness::conversation::VolumeOperation::Write,
                 &mut Some(
-                    &mut acyclic_harness::store::history::native_work_io(work).map_err(
-                        |cause| acyclic_harness::Error::NativeWork {
+                    &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
+                        acyclic_harness::Error::NativeWork {
                             cause,
                             custody: None,
-                        },
-                    )?,
+                        }
+                    })?,
                 ),
             )?;
             owner
                 .verify(
                     false,
-                    &mut Some(
-                        &mut acyclic_harness::store::history::native_work_io(work).map_err(
-                            |cause| acyclic_harness::Error::NativeWork {
-                                cause,
-                                custody: None,
-                            },
-                        )?,
-                    ),
+                    &mut Some(&mut acyclic_harness::store::native_work_io(work).map_err(
+                        |cause| acyclic_harness::Error::NativeWork {
+                            cause,
+                            custody: None,
+                        },
+                    )?),
                 )
                 .await?;
         }
@@ -852,13 +843,7 @@ pub(crate) async fn prepare_writeback<'a>(
         crate::MAXIMUM_CONTROL_MESSAGE_BYTES as u64,
         native_work,
     )?;
-    digest
-        .1
-        .absorb(&mut encoded.1)
-        .map_err(|cause| Error::NativeWork {
-            cause,
-            custody: None,
-        })?;
+    digest.1.absorb(&mut encoded.1)?;
     let canonical_digest_input = String::from_utf8(encoded.0).map_err(|error| {
         drop(error);
         selected_invalid("canonical SDK approval codec returned non-UTF8")
@@ -1046,13 +1031,12 @@ async fn authenticate_root(
     let native_owner = owner.native_view_owner();
     native_owner.verify_with_native_work(native_work).await?;
     let capability = {
-        let mut io =
-            acyclic_harness::store::history::native_work_io(native_work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+        let mut io = acyclic_harness::store::native_work_io(native_work).map_err(|cause| {
+            acyclic_harness::Error::NativeWork {
+                cause,
+                custody: None,
+            }
+        })?;
         let value = root.volume.capability(
             acyclic_harness::conversation::VolumeOperation::Write,
             &mut Some(&mut io),
@@ -1070,13 +1054,12 @@ async fn authenticate_root(
         ));
     }
     let _grant = {
-        let mut io =
-            acyclic_harness::store::history::native_work_io(native_work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+        let mut io = acyclic_harness::store::native_work_io(native_work).map_err(|cause| {
+            acyclic_harness::Error::NativeWork {
+                cause,
+                custody: None,
+            }
+        })?;
         let grant = acyclic_harness::conversation::ContentGrant::verify(
             verifier,
             scope,
@@ -1091,7 +1074,7 @@ async fn authenticate_root(
         &root.volume,
         acyclic_harness::conversation::VolumeOperation::Write,
         &mut Some(
-            &mut acyclic_harness::store::history::native_work_io(native_work).map_err(|cause| {
+            &mut acyclic_harness::store::native_work_io(native_work).map_err(|cause| {
                 acyclic_harness::Error::NativeWork {
                     cause,
                     custody: None,
@@ -1221,13 +1204,12 @@ where
         native_work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
         let storage_name = {
-            let mut io =
-                acyclic_harness::store::history::native_work_io(native_work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+            let mut io = acyclic_harness::store::native_work_io(native_work).map_err(|cause| {
+                acyclic_harness::Error::NativeWork {
+                    cause,
+                    custody: None,
+                }
+            })?;
             let value = volume.storage_name(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
@@ -1522,13 +1504,12 @@ where
         ));
     }
     let capability = {
-        let mut io =
-            acyclic_harness::store::history::native_work_io(native_work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+        let mut io = acyclic_harness::store::native_work_io(native_work).map_err(|cause| {
+            acyclic_harness::Error::NativeWork {
+                cause,
+                custody: None,
+            }
+        })?;
         let value = destination_volume.capability(
             acyclic_harness::conversation::VolumeOperation::Write,
             &mut Some(&mut io),
@@ -1536,13 +1517,12 @@ where
         (value, io.into_custody())
     };
     let storage_name = {
-        let mut io =
-            acyclic_harness::store::history::native_work_io(native_work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+        let mut io = acyclic_harness::store::native_work_io(native_work).map_err(|cause| {
+            acyclic_harness::Error::NativeWork {
+                cause,
+                custody: None,
+            }
+        })?;
         let value = destination_volume.storage_name(&mut Some(&mut io))?;
         (value, io.into_custody())
     };
@@ -1560,13 +1540,12 @@ where
         ));
     }
     let _grant = {
-        let mut io =
-            acyclic_harness::store::history::native_work_io(native_work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+        let mut io = acyclic_harness::store::native_work_io(native_work).map_err(|cause| {
+            acyclic_harness::Error::NativeWork {
+                cause,
+                custody: None,
+            }
+        })?;
         let grant = acyclic_harness::conversation::ContentGrant::verify(
             verifier,
             scope,
@@ -1609,12 +1588,12 @@ where
         validate_content_path(
             path,
             &mut Some(
-                &mut acyclic_harness::store::history::native_work_io(native_work).map_err(
-                    |cause| acyclic_harness::Error::NativeWork {
+                &mut acyclic_harness::store::native_work_io(native_work).map_err(|cause| {
+                    acyclic_harness::Error::NativeWork {
                         cause,
                         custody: None,
-                    },
-                )?,
+                    }
+                })?,
             ),
         )?;
         source.require_reader(caller, path)?;
