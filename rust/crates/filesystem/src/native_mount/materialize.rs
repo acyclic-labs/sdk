@@ -121,7 +121,7 @@ impl GenerationReceipt {
     }
 
     fn run<T>(
-        &mut self,
+        &self,
         operation: impl FnOnce(&mut NativeSourceWork<'_>) -> Result<T, DemandError>,
     ) -> Result<T, GenerationFailure> {
         let result = operation(&mut NativeSourceWork::from_native_materialization_work(self.custody.work()));
@@ -140,7 +140,7 @@ impl GenerationReceipt {
     }
 
     fn custody_result<T>(
-        &mut self,
+        &self,
         result: Result<T, crate::NativeTreeMaterializationError>,
     ) -> Result<T, GenerationFailure> {
         result.map_err(|error| GenerationFailure::new(materialize_native_error(error), self.work()))
@@ -231,12 +231,12 @@ impl GenerationReceipt {
         Ok(())
     }
 
-    fn native_meter(&mut self) -> Arc<dyn acyclic_native_runtime::NativeReadMeter> {
+    fn native_meter(&self) -> Arc<dyn acyclic_native_runtime::NativeReadMeter> {
         self.custody.work().runtime_meter_owner()
     }
 
     fn runtime_result<T>(
-        &mut self,
+        &self,
         result: std::io::Result<T>,
     ) -> Result<T, GenerationFailure> {
         result.map_err(|error| {
@@ -256,7 +256,7 @@ impl GenerationReceipt {
     }
 
     fn original_result<T>(
-        &mut self, result: Result<T, crate::FsError>,
+        &self, result: Result<T, crate::FsError>,
     ) -> Result<T, GenerationFailure> {
         result.map_err(|error| {
             let error = match error {
@@ -279,7 +279,7 @@ impl GenerationReceipt {
     }
 
     fn engine_failure(
-        &mut self,
+        &self,
         failure: OperationFailure<crate::FsError>,
     ) -> GenerationFailure {
         let error = MaterializeError::from(failure.error);
@@ -936,10 +936,9 @@ pub async fn materialize_checkout_with_work<A: AsyncAuthorityStore, O: AsyncObje
     work: &crate::NativeMaterializationWork,
 ) -> Result<MaterializationReceipt, MaterializeError> {
     let mode = MaterializeMode::DurableOutput;
-    let mut receipt = GenerationReceipt::from_work(work)?;
+    let receipt = GenerationReceipt::from_work(work)?;
     let validated = reader.validate_native_work(receipt.custody.work());
     receipt.original_result(validated)?;
-    receipt.native_source = true;
     materialize_heap_future_on_receipt(move |receipt| async move {
         let root = NamespacePath::new(Vec::new(), reader.volume_config().limits)
             .map_err(|_| GenerationFailure::new(MaterializeError::InvalidPath, receipt.work()))?;
@@ -969,7 +968,7 @@ pub(crate) async fn materialize_checkout_paths_with_mode_and_work<A: AsyncAuthor
     mode: MaterializeMode,
     work: &crate::NativeMaterializationWork,
 ) -> Result<MaterializationReceipt, MaterializeError> {
-    let mut receipt = GenerationReceipt::from_work(work)?;
+    let receipt = GenerationReceipt::from_work(work)?;
     let validated = reader.validate_native_work(receipt.custody.work());
     receipt.original_result(validated)?;
     validate_bounds(options).map_err(|error| GenerationFailure::new(error, receipt.work()))?;
@@ -978,7 +977,6 @@ pub(crate) async fn materialize_checkout_paths_with_mode_and_work<A: AsyncAuthor
     {
         return Err(MaterializeError::InvalidOptions);
     }
-    receipt.native_source = true;
     materialize_checkout_source_on_receipt(
         GenerationSource::Original(reader), paths, options, mode, receipt,
     ).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
@@ -1012,6 +1010,7 @@ where
     F: FnMut(NativeMaterializationActionPhase) -> Fut,
     Fut: Future<Output = Result<(), E>>,
 {
+    receipt.native_source = matches!(&source, GenerationSource::Original(_));
     let cancellation = receipt.cancellation.clone();
     let cancellation = &cancellation;
     let reader = match &source {
@@ -1211,10 +1210,9 @@ where
     F: FnMut(NativeMaterializationActionPhase) -> Fut,
     Fut: Future<Output = Result<(), E>>,
 {
-    let mut receipt = GenerationReceipt::from_work(work).map_err(|failure| E::from(failure.error))?;
+    let receipt = GenerationReceipt::from_work(work).map_err(|failure| E::from(failure.error))?;
     let validated = reader.validate_native_work(receipt.custody.work());
     receipt.original_result(validated).map_err(|failure| E::from(failure.error))?;
-    receipt.native_source = true;
     materialize_heap_future_on_receipt(move |mut receipt| async move {
         validate_bounds(options).map_err(|error| GenerationFailure::new(error, receipt.work()))?;
         let mut paths = Vec::new();
@@ -2821,11 +2819,7 @@ mod restore_recovery_tests {
     #[tokio::test]
     async fn multipath_failure_retains_completed_host_and_lookup_work()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::model::{
-            AccessMode, CaseSensitivity, CheckoutMode, ConcurrencyMode, ConsistencyMode,
-            FilesystemProfile, GenerationSelector, Lifecycle, MutationMode, UnicodePolicy,
-            VolumeConfig, VolumeLimits,
-        };
+        use crate::model::{Lifecycle, VolumeConfig, VolumeLimits};
         acyclic_native_runtime::initialize_native_io_services()?;
         let cancellation = CancellationToken::new();
         let limits = VolumeLimits::default();
@@ -2982,11 +2976,7 @@ mod restore_recovery_tests {
     )]
     async fn restore_removal_records_success_after_nested_missing_path()
     -> Result<(), Box<dyn std::error::Error>> {
-        use crate::model::{
-            AccessMode, CaseSensitivity, CheckoutMode, ConcurrencyMode, ConsistencyMode,
-            FilesystemProfile, GenerationSelector, Lifecycle, MutationMode, UnicodePolicy,
-            VolumeConfig, VolumeLimits,
-        };
+        use crate::model::{Lifecycle, VolumeConfig};
         use std::sync::Mutex;
         use tracing_subscriber::fmt::format::FmtSpan;
 
@@ -3440,7 +3430,7 @@ mod clone_tests {
     use super::*;
     use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
         use crate::model::{Lifecycle, VolumeConfig, VolumeLimits};
-    use crate::{Fs, VolumeId};
+    use crate::VolumeId;
 
     #[tokio::test]
     async fn identical_regular_payloads_use_native_clone_without_aliasing()

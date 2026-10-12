@@ -2598,12 +2598,13 @@ impl Drop for NativeMountStartupFailure {
     }
 }
 
-struct NativeMountStartupStorage {
+/// Actual preadmitted failure storage.
+pub struct PreparedNativeMountStart {
     buffer: Option<Box<std::mem::MaybeUninit<NativeMountStartupFailureState>>>,
     custody: Option<crate::NativeAllocation>,
     retired: Option<NativeMountSession>,
 }
-impl NativeMountStartupStorage {
+impl PreparedNativeMountStart {
     fn new(work: &crate::NativeMaterializationWork) -> Result<Self, NativeMountStartupAdmissionError> {
         let custody = work.claim_allocation(
             std::mem::size_of::<NativeMountStartupFailureState>() as u64, 1, crate::WorkCounters::UNCHARGED)?;
@@ -2619,7 +2620,7 @@ impl NativeMountStartupStorage {
         NativeMountStartupFailure { state: Some(state), custody: self.custody.take() }
     }
 }
-impl Drop for NativeMountStartupStorage {
+impl Drop for PreparedNativeMountStart {
     fn drop(&mut self) {
         drop(self.buffer.take());
         drop(self.retired.take());
@@ -2627,17 +2628,12 @@ impl Drop for NativeMountStartupStorage {
     }
 }
 
-/// Actual preadmitted failure storage.
-pub struct PreparedNativeMountStart {
-    storage: NativeMountStartupStorage,
-}
-
 fn prepare_native_mount_start(
     work: &crate::NativeMaterializationWork,
 ) -> Result<PreparedNativeMountStart, NativeMountStartupAdmissionError> {
     let _services = adapter::CallbackRuntime::existing_startup()?;
     work.admit(crate::WorkCounters::UNCHARGED)?;
-    Ok(PreparedNativeMountStart { storage: NativeMountStartupStorage::new(work)? })
+    PreparedNativeMountStart::new(work)
 }
 
 /// Admits the same actual startup storage on an already shared original ledger.
@@ -2653,7 +2649,7 @@ impl PreparedNativeMountStart {
         self, request: NativeMountRequest, source: Arc<dyn MountFilesystem>,
         work: &NativeMaterializationWork,
     ) -> Result<NativeMountSession, NativeMountError> {
-        start_native_mount_prepared_with_meter(request, source, false, work, self.storage, None)
+        start_native_mount_prepared_with_meter(request, source, false, work, self, None)
     }
 
     /// Continues only this SDK owner's retired Windows namespace with a freshly constructed stock source.
@@ -2665,15 +2661,15 @@ impl PreparedNativeMountStart {
             mount_id: retired.mount_id, volume_id: retired.volume_id, writable: retired.writable,
             destination: PathBuf::new(),
         }, Some(source.clone()), None);
-        self.storage.retired = Some(retired);
+        self.retired = Some(retired);
         let admitted = (|| -> Result<(), NativeMountError> {
             let original = work.clone();
-            let storage_work = self.storage.custody.as_ref().expect("original preborn custody").work();
+            let storage_work = self.custody.as_ref().expect("original preborn custody").work();
             if !storage_work.shares_ledger(&original) || !storage_work.shares_resource_allowance(&original) {
                 return Err(NativeMountError::Lifecycle("restart differs from its preborn original work"));
             }
             original.admit(crate::WorkCounters::UNCHARGED)?;
-            let old = self.storage.retired.as_ref().expect("complete original owner");
+            let old = self.retired.as_ref().expect("complete original owner");
             if !old.cleanup_state().cleanup_complete {
                 return Err(NativeMountError::ControlPending);
             }
@@ -2705,14 +2701,14 @@ impl PreparedNativeMountStart {
             }
         })();
         if let Err(error) = admitted {
-            return Err(NativeMountError::StartupFailed(self.storage.failed(error, next)));
+            return Err(NativeMountError::StartupFailed(self.failed(error, next)));
         }
         let request = NativeMountRequest {
             mount_id: next.mount_id, volume_id: next.volume_id, writable: next.writable,
             destination: std::mem::take(&mut next.destination),
         };
         start_native_mount_prepared_with_meter(
-            request, source, true, work, self.storage, next._destination_custody.take(),
+            request, source, true, work, self, next._destination_custody.take(),
         )
     }
 
@@ -2722,7 +2718,7 @@ impl PreparedNativeMountStart {
         source: Arc<dyn MountFilesystem>, work: &NativeMaterializationWork,
     ) -> Result<NativeMountSession, NativeMountError> {
         start_native_mount_prepared_with_meter(
-            request, source, false, work, self.storage, Some(destination_custody),
+            request, source, false, work, self, Some(destination_custody),
         )
     }
 
@@ -2740,7 +2736,7 @@ impl PreparedNativeMountStart {
         let mut owner = NativeMountSession::new(request, None, Some(destination_custody));
         owner.startup_source_watch = startup_source_watch;
         owner.measured_cleanup_failed = true;
-        NativeMountError::StartupFailed(self.storage.failed(error, owner))
+        NativeMountError::StartupFailed(self.failed(error, owner))
     }
 }
 
@@ -3220,7 +3216,7 @@ fn mount_native_ordinary(
     };
     // Ordinary bootstrap is explicit, but the supplied source still needs
     // genuine failure custody if that bootstrap cannot complete.
-    let storage = match NativeMountStartupStorage::new(&work) {
+    let storage = match PreparedNativeMountStart::new(&work) {
         Ok(storage) => storage,
         Err(cause) => return Err(NativeMountError::StartupAdmissionFailed { cause, source }),
     };
@@ -3250,7 +3246,7 @@ pub fn mount_native_measured(
         Err(cause) => return Err((NativeMountError::StartupAdmissionFailed { cause, source }, work.receipt())),
     };
     match start_native_mount_prepared_with_meter(
-        request, source, false, &work, prepared.storage, None,
+        request, source, false, &work, prepared, None,
     ) {
         Ok(value) => Ok(crate::OperationReceipt { value, work: work.receipt() }),
         Err(error) => Err((error, work.receipt())),
@@ -3259,7 +3255,7 @@ pub fn mount_native_measured(
 
 fn start_native_mount_prepared_with_meter(
     request: NativeMountRequest, source: Arc<dyn MountFilesystem>, allow_nonempty: bool,
-    work: &NativeMaterializationWork, storage: NativeMountStartupStorage,
+    work: &NativeMaterializationWork, storage: PreparedNativeMountStart,
     destination_custody: Option<crate::NativeAllocation>,
 ) -> Result<NativeMountSession, NativeMountError> {
     // The existing driver loop accepts its lifetime before this stack factory

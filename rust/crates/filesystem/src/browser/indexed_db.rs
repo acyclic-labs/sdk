@@ -116,6 +116,7 @@ impl From<IndexedDbOpenError> for JsValue {
 /// Transactional `IndexedDB` immutable-object backend.
 pub struct IndexedDbObjectStore {
     database: Database,
+    // Validated at open; copying an admitted object twice fits in u64.
     maximum_object_bytes: u64,
 }
 
@@ -144,12 +145,8 @@ impl IndexedDbObjectStore {
         key.push(char::from(b'0' + object_id.kind.canonical_tag()));
         key.push(':');
         for byte in object_id.digest.as_bytes() {
-            key.push(char::from(
-                *HEX.get(usize::from(byte >> 4)).unwrap_or(&b'0'),
-            ));
-            key.push(char::from(
-                *HEX.get(usize::from(byte & 0x0f)).unwrap_or(&b'0'),
-            ));
+            key.push(char::from(HEX[usize::from(byte >> 4)]));
+            key.push(char::from(HEX[usize::from(byte & 0x0f)]));
         }
         key
     }
@@ -164,18 +161,6 @@ impl IndexedDbObjectStore {
 
     fn backend(error: impl std::fmt::Display, work: WorkCounters) -> ObjectFailure {
         ObjectFailure::new(ObjectStoreError::Rejected(error.to_string()), work)
-    }
-
-    fn doubled(length: u64, work: WorkCounters) -> Result<u64, ObjectFailure> {
-        length
-            .checked_mul(2)
-            .ok_or_else(|| ObjectFailure::new(crate::WorkError::Overflow.into(), work))
-    }
-
-    fn peak_with_key(length: u64, work: WorkCounters) -> Result<u64, ObjectFailure> {
-        OBJECT_KEY_BYTES
-            .checked_add(length)
-            .ok_or_else(|| ObjectFailure::new(crate::WorkError::Overflow.into(), work))
     }
 
     async fn get_blob(
@@ -330,7 +315,7 @@ impl IndexedDbObjectStore {
         state: &mut ObjectBatchState,
         cancellation: &CancellationToken,
     ) -> Result<ObjectRead, ObjectFailure> {
-        let copied = Self::doubled(length, state.work)?;
+        let copied = length * 2;
         let transient = OBJECT_KEY_BYTES.saturating_add(copied);
         state.work = state
             .work
@@ -408,8 +393,8 @@ impl IndexedDbObjectStore {
         retained_handles: u64,
         cancellation: &CancellationToken,
     ) -> Result<(Blob, WorkCounters), ObjectFailure> {
-        let copied = Self::doubled(length, work)?;
-        let peak_allocation_bytes = Self::peak_with_key(copied, work)?
+        let copied = length * 2;
+        let peak_allocation_bytes = (OBJECT_KEY_BYTES + copied)
             .checked_add(retained_handles)
             .ok_or_else(|| ObjectFailure::new(crate::WorkError::Overflow.into(), work))?;
         let prospective = work
@@ -461,8 +446,8 @@ impl IndexedDbObjectStore {
         retained_handles: u64,
         cancellation: &CancellationToken,
     ) -> Result<WorkCounters, ObjectFailure> {
-        let copied = Self::doubled(length, work)?;
-        let peak_allocation_bytes = Self::peak_with_key(copied, work)?
+        let copied = length * 2;
+        let peak_allocation_bytes = (OBJECT_KEY_BYTES + copied)
             .checked_add(retained_handles)
             .ok_or_else(|| ObjectFailure::new(crate::WorkError::Overflow.into(), work))?;
         let prospective = work
@@ -2162,8 +2147,8 @@ impl AsyncObjectStore for IndexedDbObjectStore {
                 work,
             ));
         }
-        let copied = Self::doubled(length, work)?;
-        let peak_allocation_bytes = Self::peak_with_key(copied, work)?;
+        let copied = length * 2;
+        let peak_allocation_bytes = OBJECT_KEY_BYTES + copied;
         let prospective = work
             .checked_add(WorkCounters {
                 backend_read_operations: 1,
