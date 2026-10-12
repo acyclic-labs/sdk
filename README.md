@@ -102,11 +102,11 @@ The Filesystem API keeps the same workspace, generation, and sparse transaction
 shape when its execution boundary moves to the hosted service:
 
 ```rust,no_run
-use acyclic_fs::{Fs, HostedFsOptions, IdempotencyKey};
+use acyclic_fs::{HostedFs, HostedFsOptions, IdempotencyKey};
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 // Discovers ACYCLIC_FILESYSTEM_ENDPOINT and ACYCLIC_API_KEY.
-let filesystem = Fs::hosted(HostedFsOptions::default()).await?;
+let filesystem = HostedFs::connect(HostedFsOptions::default()).await?;
 let workspace = filesystem.open_workspace("project").await?;
 let base = workspace.head().await?;
 let mut transaction = workspace.begin_transaction(IdempotencyKey::new());
