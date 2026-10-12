@@ -245,10 +245,8 @@ impl Client {
         deadline_unix_millis: Option<u64>,
     ) -> Result<CommitOutcome, StreamError> {
         let body = wire::CommitRequest {
-            conditions: request.conditions.into_iter().map(condition_wire).collect(),
-            mutations: request.mutations.into_iter().map(mutation_wire).collect(),
-            idempotency_key: Bytes::copy_from_slice(request.idempotency_key.as_bytes()),
             deadline_unix_millis,
+            ..commit_to_wire(&request)
         };
         let response = self
             .unary(ATTEMPT_TIMEOUT, body, |mut service, request| {
