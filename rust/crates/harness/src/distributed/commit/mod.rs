@@ -64,7 +64,7 @@ pub(super) fn coordinator_retry_conflict(error: &Error) -> bool {
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn append<P: StreamProvider, const N: usize>(
-    (stream, client): (&Stream<P>, &std::sync::Arc<P>),
+    (stream, client): (&Stream<P>, &Arc<P>),
     input: [OwnedBytes; N],
     retained_request: u64,
     if_tail: Option<u64>,
@@ -72,26 +72,24 @@ pub(crate) async fn append<P: StreamProvider, const N: usize>(
     operation_id: OperationId,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<AppendOutcome> {
-    let mut custody = CodecQuota::from_retained(work, retained_request);
-    let mut records = crate::core::reserve_copy_vector(N, &mut custody)?;
+    let mut quota = CodecQuota::from_retained(work, retained_request);
+    let mut records = crate::core::reserve_copy_vector(N, &mut quota)?;
     records.extend(input);
-    let retained_request = custody.retained();
-    let count = records.len() as u64;
-    let bytes = records.iter().try_fold(0u64, |bytes, record| {
-        bytes.checked_add(record.len() as u64).ok_or_else(|| {
+    let bytes = records.iter().try_fold(0u64, |total, record| {
+        total.checked_add(record.len() as u64).ok_or_else(|| {
             coordinator_boundary(
-                custody.work(),
+                quota.work(),
                 wire::ErrorCode::Invalid,
                 "append request byte count exhausted",
             )
         })
     })?;
-    if let Some(io) = custody.work().as_deref_mut() {
-        io.admit_acknowledgment(bytes, count)?;
+    if let Some(io) = quota.work().as_deref_mut() {
+        io.admit_acknowledgment(bytes, N as u64)?;
     }
     let appended = async {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(original) = custody
+        if let Some(original) = quota
             .work()
             .as_deref()
             .and_then(|io| io.original_native_work())
@@ -113,7 +111,7 @@ pub(crate) async fn append<P: StreamProvider, const N: usize>(
             )?
             .map(|output| output.into_parts().0));
         }
-        if let Some(io) = custody.work().as_deref_mut() {
+        if let Some(io) = quota.work().as_deref_mut() {
             io.begin_write()?;
         }
         Ok::<_, Error>(
@@ -124,65 +122,58 @@ pub(crate) async fn append<P: StreamProvider, const N: usize>(
         )
     }
     .await?;
-    if custody.work().is_some() {
-        let released = custody.relinquish(retained_request);
-        if appended.is_ok()
-            || !custody
-                .work()
-                .as_deref()
-                .is_some_and(operations::original_native_decode_mode)
-        {
-            released?;
-        }
+    let native_failure = appended.is_err()
+        && quota
+            .work()
+            .as_deref()
+            .is_some_and(operations::original_native_decode_mode);
+    let released = quota.relinquish(quota.retained());
+    if !native_failure {
+        released?;
     }
     match appended {
         Ok(outcome) => {
-            if let Some(io) = custody.work().as_deref_mut()
-                && let AppendOutcome::Committed(receipt) = &outcome
-                && receipt.end.checked_sub(receipt.start) == Some(count)
-                && receipt.tail >= receipt.end
-            {
-                io.acknowledged(bytes, count)?;
-            }
-            if let Some(io) = custody.work().as_deref_mut() {
+            if let Some(io) = quota.work().as_deref_mut() {
+                if let AppendOutcome::Committed(receipt) = &outcome
+                    && receipt.end.checked_sub(receipt.start) == Some(N as u64)
+                    && receipt.tail >= receipt.end
+                {
+                    io.acknowledged(bytes, N as u64)?;
+                }
                 io.check_cancellation()?;
             }
             Ok(outcome)
         }
         Err(error) if *sdk_source(&error) == StreamError::Unavailable => {
-            let mut received = CodecQuota::from_retained(custody.work(), 0);
-            match inspect_idempotency(client, key, received.work(), None, None).await? {
+            match inspect_idempotency(client, key, quota.work(), None, None).await? {
                 Ok(Some((outcome, retained))) => {
-                    received.adopt(retained)?;
-                    let IdempotencyOutcome::Append(outcome) = outcome else {
-                        return Err(coordinator_boundary(
-                            received.work(),
+                    quota.adopt(retained)?;
+                    match outcome {
+                        IdempotencyOutcome::Append(outcome) => Ok(outcome),
+                        _ => Err(coordinator_boundary(
+                            quota.work(),
                             wire::ErrorCode::Conflict,
                             "append recovery identity has another operation kind",
-                        ));
-                    };
-                    if let Some(io) = received.work().as_deref_mut() {
-                        io.check_cancellation()?;
+                        )),
                     }
-                    Ok(outcome)
                 }
                 Ok(None) | Err(_) => Err(Error::Indeterminate(operation_id)),
             }
         }
         Err(error)
             if *sdk_source(&error) == StreamError::IdempotencyMismatch
-                && !custody
+                && !quota
                     .work()
                     .as_deref()
                     .is_some_and(operations::original_native_decode_mode) =>
         {
             Err(coordinator_boundary(
-                custody.work(),
+                quota.work(),
                 wire::ErrorCode::Conflict,
                 "append retry identity was reused",
             ))
         }
-        Err(error) => Err(sdk_error(error, custody.work())),
+        Err(error) => Err(sdk_error(error, quota.work())),
     }
 }
 
@@ -295,29 +286,11 @@ pub(super) fn reserve_prepared_vector<T>(
         return Ok(());
     }
     let old = values.capacity();
-    let requested = (capacity - old)
-        .checked_mul(std::mem::size_of::<T>())
-        .ok_or_else(|| {
-            coordinator_boundary(
-                custody.work(),
-                wire::ErrorCode::Invalid,
-                "commit vector capacity overflows",
-            )
-        })? as u64;
     if let Some(work) = custody.work().as_deref_mut() {
-        work.admit_owned(requested)?;
-        work.admit_allocation(requested)?;
-    }
-    values
-        .try_reserve_exact(capacity - values.len())
-        .map_err(|cause| match custody.work().as_deref_mut() {
-            Some(work) => work.allocation_failure(cause),
-            None => Error::Storage(cause.to_string()),
-        })?;
-    let actual = ((values.capacity() - old) * std::mem::size_of::<T>()) as u64;
-    if let Some(work) = custody.work().as_deref_mut() {
-        work.retain_owned(actual)?;
-        custody.adopt(actual)?;
+        crate::store::history::reserve(values, capacity, work)?;
+        custody.adopt(((values.capacity() - old) * std::mem::size_of::<T>()) as u64)?;
+    } else {
+        values.try_reserve_exact(capacity - values.len())?;
     }
     Ok(())
 }
@@ -413,111 +386,119 @@ pub(crate) async fn commit<P: StreamProvider>(
         *phase = CommitPhase::Uncommitted;
     }
     let key = request.idempotency_key.clone();
-    let committed = async {
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if custody
-            .work()
-            .as_deref()
-            .is_some_and(|io| io.requires_prepared_native_dispatch())
-        {
-            return Err(coordinator_boundary(
-                custody.work(),
-                wire::ErrorCode::Invalid,
-                "accepted completion requires its pre-action SDK dispatch",
-            ));
-        }
-        if custody.work().is_some() {
-            let (bytes, count) = request
-                .mutations
-                .iter()
-                .flat_map(|mutation| match mutation {
-                    acyclic_stream::CommitMutation::Append { records, .. }
-                    | acyclic_stream::CommitMutation::Fork { records, .. } => records,
-                })
-                .try_fold((0u64, 0u64), |(bytes, count), record| {
-                    let bytes = bytes.checked_add(record.len() as u64).ok_or_else(|| {
-                        coordinator_boundary(
-                            &None,
-                            wire::ErrorCode::Invalid,
-                            "commit payload byte count overflows",
-                        )
-                    })?;
-                    let count = count.checked_add(1).ok_or_else(|| {
-                        coordinator_boundary(
-                            &None,
-                            wire::ErrorCode::Invalid,
-                            "commit record count overflows",
-                        )
-                    })?;
-                    Ok::<_, Error>((bytes, count))
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if custody
+        .work()
+        .as_deref()
+        .is_some_and(|io| io.requires_prepared_native_dispatch())
+    {
+        return Err(coordinator_boundary(
+            custody.work(),
+            wire::ErrorCode::Invalid,
+            "accepted completion requires its pre-action SDK dispatch",
+        ));
+    }
+    if custody.work().is_some() {
+        let (bytes, count) = request
+            .mutations
+            .iter()
+            .flat_map(|mutation| match mutation {
+                acyclic_stream::CommitMutation::Append { records, .. }
+                | acyclic_stream::CommitMutation::Fork { records, .. } => records,
+            })
+            .try_fold((0u64, 0u64), |(bytes, count), record| {
+                let bytes = bytes.checked_add(record.len() as u64).ok_or_else(|| {
+                    coordinator_boundary(
+                        &None,
+                        wire::ErrorCode::Invalid,
+                        "commit payload byte count overflows",
+                    )
                 })?;
-            if let Some(work) = custody.work().as_deref_mut() {
-                work.admit_acknowledgment(bytes, count)?;
-                if !operations::original_native_decode_mode(work) {
-                    work.begin_write()?;
-                }
-            }
-        }
-        let vectors = (request.conditions.capacity()
-            * std::mem::size_of::<acyclic_stream::CommitCondition>()
-            + request.mutations.capacity() * std::mem::size_of::<acyclic_stream::CommitMutation>()
-            + request
-                .mutations
-                .iter()
-                .map(|mutation| {
-                    let (acyclic_stream::CommitMutation::Append { records, .. }
-                    | acyclic_stream::CommitMutation::Fork { records, .. }) = mutation;
-                    records.capacity() * std::mem::size_of::<OwnedBytes>()
-                })
-                .sum::<usize>()) as u64;
-        if let Some(phase) = phase.as_deref_mut() {
-            *phase = CommitPhase::Unknown;
-        }
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if let Some(original) = custody
-            .work()
-            .as_deref()
-            .and_then(|observer| observer.original_native_work())
-            .cloned()
-        {
-            let committed = client
-                .native_commit(request, original.runtime_meter())
-                .await;
-            return receive_native_commit(
-                &original,
-                committed,
-                phase.as_deref_mut(),
-                vectors,
-                &mut custody,
-            );
-        }
-        let committed = client.commit(request).await;
-        if let Some(phase) = phase.as_deref_mut() {
-            *phase = match &committed {
-                Ok(acyclic_stream::CommitOutcome::Committed(_)) => CommitPhase::Committed,
-                Ok(acyclic_stream::CommitOutcome::Conflict(_)) => CommitPhase::Uncommitted,
-                Err(StreamError::Unavailable) => CommitPhase::Unknown,
-                Err(_) => CommitPhase::Uncommitted,
-            };
-        }
-        if custody.work().is_some() {
-            custody.relinquish(vectors)?;
-        }
-        let mut received = CodecQuota::from_retained(custody.work(), 0);
-        match committed {
-            Err(source) => Ok::<_, Error>(Err(SdkCallError::Ok(source))),
-            Ok(outcome) => {
-                observe_commit(&outcome, true, &mut received)?;
-                if let Some(work) = received.work().as_deref_mut() {
-                    work.check_cancellation()?;
-                }
-                let retained = received.retained();
-                received.transfer();
-                Ok(Ok((outcome, retained)))
+                let count = count.checked_add(1).ok_or_else(|| {
+                    coordinator_boundary(
+                        &None,
+                        wire::ErrorCode::Invalid,
+                        "commit record count overflows",
+                    )
+                })?;
+                Ok::<_, Error>((bytes, count))
+            })?;
+        if let Some(work) = custody.work().as_deref_mut() {
+            work.admit_acknowledgment(bytes, count)?;
+            if !operations::original_native_decode_mode(work) {
+                work.begin_write()?;
             }
         }
     }
-    .await?;
+    let vectors = (request.conditions.capacity()
+        * std::mem::size_of::<acyclic_stream::CommitCondition>()
+        + request.mutations.capacity() * std::mem::size_of::<acyclic_stream::CommitMutation>()
+        + request
+            .mutations
+            .iter()
+            .map(|mutation| {
+                let (acyclic_stream::CommitMutation::Append { records, .. }
+                | acyclic_stream::CommitMutation::Fork { records, .. }) = mutation;
+                records.capacity() * std::mem::size_of::<OwnedBytes>()
+            })
+            .sum::<usize>()) as u64;
+    if let Some(phase) = phase.as_deref_mut() {
+        *phase = CommitPhase::Unknown;
+    }
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+    if let Some(original) = custody
+        .work()
+        .as_deref()
+        .and_then(|observer| observer.original_native_work())
+        .cloned()
+    {
+        let committed = client
+            .native_commit(request, original.runtime_meter())
+            .await;
+        let committed = receive_native_commit(
+            &original,
+            committed,
+            phase.as_deref_mut(),
+            vectors,
+            &mut custody,
+        )?;
+        return resolve_commit(
+            committed,
+            client,
+            key,
+            operation,
+            phase,
+            None,
+            custody.work(),
+        )
+        .await;
+    }
+    let committed = client.commit(request).await;
+    if let Some(phase) = phase.as_deref_mut() {
+        *phase = match &committed {
+            Ok(acyclic_stream::CommitOutcome::Committed(_)) => CommitPhase::Committed,
+            Ok(acyclic_stream::CommitOutcome::Conflict(_)) => CommitPhase::Uncommitted,
+            Err(StreamError::Unavailable) => CommitPhase::Unknown,
+            Err(_) => CommitPhase::Uncommitted,
+        };
+    }
+    if custody.work().is_some() {
+        custody.relinquish(vectors)?;
+    }
+    let mut received = CodecQuota::from_retained(custody.work(), 0);
+    let committed = match committed {
+        Err(source) => Err(SdkCallError::Ok(source)),
+        Ok(outcome) => {
+            observe_commit(&outcome, true, &mut received)?;
+            if let Some(work) = received.work().as_deref_mut() {
+                work.check_cancellation()?;
+            }
+            let retained = received.retained();
+            received.transfer();
+            Ok((outcome, retained))
+        }
+    };
+    drop(received);
     resolve_commit(
         committed,
         client,
@@ -532,48 +513,47 @@ pub(crate) async fn commit<P: StreamProvider>(
 
 pub(super) async fn resolve_commit<P: StreamProvider>(
     committed: std::result::Result<(acyclic_stream::CommitOutcome, u64), SdkCallError>,
-    client: &std::sync::Arc<P>,
+    client: &Arc<P>,
     key: StreamIdempotencyKey,
     operation: Option<OperationId>,
-    mut phase: Option<&mut CommitPhase>,
+    phase: Option<&mut CommitPhase>,
     recovery: Option<PreparedNativeRecovery>,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(acyclic_stream::CommitOutcome, u64)> {
-    let mut received = CodecQuota::from_retained(work, 0);
-    let outcome = match committed {
+    let mut quota = CodecQuota::from_retained(work, 0);
+    let (outcome, retained) = match committed {
         Ok((outcome, retained)) => {
-            received.adopt(retained)?;
-            outcome
+            quota.adopt(retained)?;
+            (outcome, retained)
         }
-        Err(error) if operation.is_some() && *sdk_source(&error) == StreamError::Unavailable => {
-            match inspect_idempotency(client, key, received.work(), phase.as_deref_mut(), recovery)
-                .await?
-            {
+        Err(error) => {
+            let Some(operation) =
+                operation.filter(|_| *sdk_source(&error) == StreamError::Unavailable)
+            else {
+                return Err(sdk_error(error, quota.work()));
+            };
+            match inspect_idempotency(client, key, quota.work(), phase, recovery).await? {
+                Ok(Some((IdempotencyOutcome::Commit(outcome), retained))) => {
+                    quota.adopt(retained)?;
+                    (outcome, retained)
+                }
                 Ok(Some((outcome, retained))) => {
-                    received.adopt(retained)?;
-                    match outcome {
-                        IdempotencyOutcome::Commit(outcome) => outcome,
-                        _ => {
-                            return Err(coordinator_boundary(
-                                received.work(),
-                                wire::ErrorCode::Conflict,
-                                "commit recovery identity reused",
-                            ));
-                        }
-                    }
+                    quota.adopt(retained)?;
+                    drop(outcome);
+                    return Err(coordinator_boundary(
+                        quota.work(),
+                        wire::ErrorCode::Conflict,
+                        "commit recovery identity reused",
+                    ));
                 }
-                Ok(None) | Err(_) => {
-                    return Err(Error::Indeterminate(operation.expect("recovery operation")));
-                }
+                Ok(None) | Err(_) => return Err(Error::Indeterminate(operation)),
             }
         }
-        Err(error) => return Err(sdk_error(error, received.work())),
     };
-    if let Some(work) = received.work().as_deref_mut() {
-        work.check_cancellation()?;
+    if let Some(io) = quota.work().as_deref_mut() {
+        io.check_cancellation()?;
     }
-    let retained = received.retained();
-    received.transfer();
+    quota.transfer();
     Ok((outcome, retained))
 }
 

@@ -191,10 +191,7 @@ fn cancellation_after_native_name_copy_releases_it_without_consuming_the_record(
         cancellation: &cancellation,
     };
     let (mut reader, allocation) = read_dir_held(&directory, &mut boundary)?;
-    #[cfg(unix)]
     let failure = reader.next(&mut boundary);
-    #[cfg(windows)]
-    let failure = reader.next_wide(&mut boundary);
     assert!(matches!(
         failure,
         Err(NativeTreeMaterializationError::Cancelled)
@@ -203,10 +200,7 @@ fn cancellation_after_native_name_copy_releases_it_without_consuming_the_record(
         materialization_live_bytes(&work)?,
         ACCOUNTING_STATE_BYTES + HostStatReader::BUFFER_BYTES as u64
     );
-    #[cfg(unix)]
     let repeated = reader.next(&mut boundary);
-    #[cfg(windows)]
-    let repeated = reader.next_wide(&mut boundary);
     assert!(matches!(
         repeated,
         Err(NativeTreeMaterializationError::Cancelled)
@@ -244,21 +238,11 @@ fn held_scanners_keep_independent_cursors_and_scoped_native_allocations()
         materialization_live_bytes(&work)?,
         ACCOUNTING_STATE_BYTES + 2 * HostStatReader::BUFFER_BYTES as u64
     );
-    #[cfg(unix)]
     let (first_entry, first_name) = first
         .next(&mut &work)?
         .ok_or_else(|| io::Error::other("first cursor lost its entry"))?;
-    #[cfg(windows)]
-    let (first_entry, first_name) = first
-        .next_wide(&mut &work)?
-        .ok_or_else(|| io::Error::other("first cursor lost its entry"))?;
-    #[cfg(unix)]
     let (second_entry, second_name) = second
         .next(&mut &work)?
-        .ok_or_else(|| io::Error::other("second cursor shared the first cursor's position"))?;
-    #[cfg(windows)]
-    let (second_entry, second_name) = second
-        .next_wide(&mut &work)?
         .ok_or_else(|| io::Error::other("second cursor shared the first cursor's position"))?;
     assert_eq!(first_entry.name, second_entry.name);
     assert_eq!(first_name.bytes(), first_entry.logical_owned_bytes());
@@ -290,10 +274,7 @@ fn a_record_survives_metadata_admission_failure_without_another_refill()
     let mut first = ordinary_work();
     let (mut reader, _) = root.read_dir_stats(Path::new(""), &mut first)?;
     first.budget.backend_read_operations = first.work.backend_read_operations + 1;
-    #[cfg(unix)]
     let failure = reader.next(&mut first);
-    #[cfg(windows)]
-    let failure = reader.next_wide(&mut first);
     assert!(matches!(
         failure,
         Err(DemandError::Work(crate::WorkError::BudgetExceeded {
@@ -303,10 +284,7 @@ fn a_record_survives_metadata_admission_failure_without_another_refill()
     ));
     let mut retry = ordinary_work();
     retry.adopt(reader.logical_owned_bytes())?;
-    #[cfg(unix)]
     let entry = reader.next(&mut retry)?;
-    #[cfg(windows)]
-    let entry = reader.next_wide(&mut retry)?;
     let (entry, _) = entry.ok_or_else(|| io::Error::other("denied native record was lost"))?;
     #[cfg(unix)]
     assert_eq!(entry.name, OsStr::new("kept"));
