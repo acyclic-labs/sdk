@@ -282,7 +282,7 @@ impl HarnessBuilder {
 
     /// Validates dependency exclusivity and constructs the immutable runtime binding.
     pub fn build(self) -> Result<HarnessBundle> {
-        self.limits.validate()?;
+        self.limits.validate(&mut None)?;
         let journal = self.journal;
         let name = self.name.unwrap_or_else(|| "harness".into());
         if name.trim().is_empty() {
@@ -463,8 +463,8 @@ impl HarnessBundle {
             return Err(Error::Invalid("agent attachments exceed limit".into()));
         }
         for attachment in &input.attachments {
-            attachment.validate()?;
-            self.limits.validate_file(&attachment.file)?;
+            attachment.validate(&mut None)?;
+            self.limits.validate_file(&attachment.file, &mut None)?;
             self.runtime.verify_readable_file(&attachment.file).await?;
         }
         let definition = self
@@ -482,8 +482,8 @@ impl HarnessBundle {
                 return Err(Error::Invalid("agent output exceeds limits".into()));
             }
             for attachment in &output.attachments {
-                attachment.validate()?;
-                self.limits.validate_file(&attachment.file)?;
+                attachment.validate(&mut None)?;
+                self.limits.validate_file(&attachment.file, &mut None)?;
                 self.runtime.verify_readable_file(&attachment.file).await?;
             }
         }
@@ -824,10 +824,7 @@ mod tests {
             }))
         }
 
-        fn reconcile<'a>(
-            &'a self,
-            _: crate::model::ModelAttempt,
-        ) -> BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
+        fn reconcile<'a>(&'a self, _dispatch: crate::model::ModelDispatch, _observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
             self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             async {
                 Err(Error::Unsupported(
@@ -996,12 +993,7 @@ mod tests {
             {
                 Box::pin(futures::stream::empty())
             }
-            fn reconcile<'a>(
-                &'a self,
-                _: crate::model::ModelAttempt,
-            ) -> BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
-                async { Ok(None) }.boxed()
-            }
+
         }
         let bundle = HarnessBuilder::new()
             .name("test")

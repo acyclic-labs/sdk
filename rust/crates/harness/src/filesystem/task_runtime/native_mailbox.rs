@@ -24,7 +24,7 @@ pub(super) fn send<'a, P: StreamProvider + 'static>(
     crate::NativeFutureBundle::new(work, || async move {
         let io = super::super::PreparationIo::from_native_work(work)?;
         io.retain_owned(std::mem::size_of::<crate::conversation::FileRef>() as u64)?;
-        let payload = payload.clone_with_io(&io)?;
+        let payload = payload.copy(&mut Some(&mut io.history_io()))?;
         let ack = mailbox.host.send_from_owner(
             mailbox.owner.as_ref(), recipient, operation, payload, Some(&io),
         ).await?;
@@ -48,9 +48,9 @@ pub(super) fn inbox<'a, P: StreamProvider + 'static>(
     }
     crate::NativeFutureBundle::new(work, || async move {
         let owner = mailbox.owner.as_ref();
-        owner.verify_read_access_with_native_work(work).await?;
+        owner.verify_read_access(&mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
         let items = mailbox.host.inbox_with_native_work(owner.task_id(), after, maximum, work).await?;
-        owner.verify_read_access_with_native_work(work).await?;
+        owner.verify_read_access(&mut Some(&mut crate::store::history::native_work_io(work)?)).await?;
         Ok(items)
     })
 }

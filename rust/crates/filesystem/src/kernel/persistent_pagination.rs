@@ -151,7 +151,6 @@ where S: AsyncObjectStore, F: Format {
         .map_err(|error| failed(project_failure(error), accounting.spent()))
 }
 
-/// Both projections execute the actual cursor machine on this accounting.
 pub(crate) async fn paginate_async_with_accounting<S, F>(
     store: &S, root: ObjectId, after: Option<&F::Key>, maximum_values: u32,
     limits: DecodeLimits, accounting: &mut KernelAccounting<'_>,
@@ -819,7 +818,6 @@ impl<'a, F: Format> Machine<'a, F> {
     }
 }
 
-
 pub(super) struct CustodyPrefix {
     before: WorkCounters,
     maximum_peak: u64,
@@ -873,7 +871,6 @@ pub(super) fn finish_custody_leaf(
     work.verify(*budget)?;
     Ok(())
 }
-
 
 fn query_error(error: Error) -> crate::FsError {
     match error {

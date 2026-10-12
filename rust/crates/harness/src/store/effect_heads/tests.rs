@@ -50,7 +50,7 @@ async fn publish_lifecycle(
         reducer.authority(),
         &event,
         crate::wire_codec::encode_event(reducer.authority(), &event)?,
-    )?;
+     &mut None)?;
     publication_with_work(
         client,
         reducer.authority(),
@@ -67,7 +67,7 @@ async fn publish_lifecycle(
             acyclic_stream::IdempotencyKey::new(format!("root-{number}"))?,
         )
         .await?;
-    let CommitOutcome::Committed(envelope) = client.commit(request).await? else {
+    let CommitOutcome::Committed(envelope) = client.provider.commit(request).await? else {
         return Err(Error::Invalid("root fixture publication conflicted".into()));
     };
     indexed.verify(&envelope)?;
@@ -85,7 +85,7 @@ async fn copy_cut(
     let proof_path = certificate_path_with_work(&authority(), &mut None).map(|(path, _)| path)?;
     if atomic {
         client
-            .commit(CommitRequest {
+            .provider.commit(CommitRequest {
                 conditions: vec![
                     CommitCondition::Absent {
                         path: canonical_path.clone(),

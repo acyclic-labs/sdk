@@ -4,13 +4,6 @@ use super::*;
 use acyclic_fs::{NativeAllocation, NativeMaterializationWork, WorkCounters};
 
 #[derive(Serialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-enum ReceiptWrite<'a, 'b> {
-    Launch(&'a LaunchReceipt<'b>),
-    Observed(&'a ObservedWrite<'a>),
-}
-
-#[derive(Serialize)]
 struct EffectWrite<'a> {
     provider: &'a str,
     effect_id: crate::EffectId,
@@ -42,10 +35,6 @@ pub(super) fn dispatch_payload(
 }
 
 
-fn check(work: &NativeMaterializationWork) -> Result<()> {
-    work.remaining()?;
-    Ok(())
-}
 
 pub(super) fn require_finite(work: &NativeMaterializationWork) -> Result<()> {
     let remaining = work.remaining()?;
@@ -58,10 +47,6 @@ pub(super) fn require_finite(work: &NativeMaterializationWork) -> Result<()> {
     Ok(())
 }
 
-fn examine(work: &NativeMaterializationWork, compare: impl FnOnce() -> bool) -> Result<bool> {
-    work.charge(WorkCounters { items_examined: 1, ..WorkCounters::default() })?;
-    Ok(compare())
-}
 
 fn checked_add(left: u64, right: u64) -> Result<u64> {
     left.checked_add(right).ok_or(receipt_error("native dispatch custody overflows"))
@@ -145,9 +130,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         drop(state);
         drop(cursor);
         drop(io);
-        let view = self.view.as_ref().ok_or(receipt_error(
-            "recovered native provider can only reconcile receipts"))?;
-        let (request, _, approval_digest) = self.executable_admission()?;
+        let Invocation { view, request, approval_digest, .. } = self.invocation()?;
         if !examine(work, || view.manifest() == &request.view)? {
             return Err(receipt_error("native dispatch view changed"));
         }
@@ -155,7 +138,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
         {
                 self.authority.approvals.verify_with_native_work(
-                    self.approval, self.command, approval_digest, work)?.await?;
+                    self.approval, self.command, *approval_digest, work)?.await?;
                 for mapping in &request.view.volumes {
                     self.owner.require_volume_grant_with_native_work(&mapping.volume,
                         crate::conversation::VolumeOperation::Read, work)?;
@@ -184,10 +167,10 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             dispatch: Cow::Borrowed(&dispatch), plan: Cow::Borrowed(&self.plan),
             conversation: Cow::Borrowed(self.authority.verifier.audience()), task,
             command: self.command, fence: Cow::Borrowed(fence), approval: self.approval,
-            approval_digest: self.executable_admission()?.2,
+            approval_digest: self.invocation()?.approval_digest,
         };
         if !append_receipt(&self.owner, &path, 0,
-            &ReceiptWrite::Launch(&launch), JournalWrite::Fresh, work).await? {
+            &Receipt::<_, &ObservedWrite<'_>>::Launch(&launch), JournalWrite::Fresh, work).await? {
             let receipt = self.receipt(dispatch.attempt_id, work, None).await?
                 .ok_or(receipt_error("native launch receipt changed"))?;
             return receipt.into_effect();
@@ -195,12 +178,13 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
         drop(launch);
         let (dispatch, custody) = payload;
         let owner = Arc::clone(&self.owner);
-        let view = Arc::clone(self.view.as_ref().ok_or(receipt_error(
-            "native dispatch requires a prepared view"))?);
+
         let authority = Arc::clone(&self.authority);
-        let (request, schema, approval_digest) = self.executable_admission()?;
-        let request = Arc::clone(request);
-        let schema = Arc::clone(schema);
+        let invocation = self.invocation()?;
+        let view = Arc::clone(&invocation.view);
+        let request = Arc::clone(&invocation.request);
+        let schema = Arc::clone(&invocation.result_schema);
+        let approval_digest = invocation.approval_digest;
         let supervisor = Arc::clone(&self.supervisor);
         let command = self.command;
         let plan = Arc::clone(&self.plan);
@@ -214,19 +198,20 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
             let _completion = NativeSupervisorCompletion(Arc::clone(&supervisor));
             let work = &original_work;
             let (execution, mut execution_custody) = execute(&owner, view.as_ref(), &authority,
-                &request, &dispatch, &schema, &supervisor, work)?.await?;
+                &request, &dispatch, &schema, &supervisor, work).await?;
             let mut custody = custody;
             custody.absorb(&mut execution_custody)?;
+            let completed_work = work.receipt();
             let observed = ObservedWrite {
                 effect: EffectWrite { provider: &dispatch.provider, effect_id: dispatch.effect_id,
                     attempt_id: dispatch.attempt_id, request_digest: dispatch.request_digest,
                     guarantee: dispatch.guarantee, status: &execution.status },
                 diagnostic: &execution.diagnostic, publication_failure: &None,
-                invocation_failure: &None, work: &execution.work,
+                invocation_failure: &None, work: &completed_work,
                 published: &execution.published,
             };
             if !append_receipt(&owner, &path, 1,
-                &ReceiptWrite::Observed(&observed), JournalWrite::Settlement, work).await? {
+                &Receipt::<&LaunchReceipt<'_>, _>::Observed(&observed), JournalWrite::Settlement, work).await? {
                 let retained = receipt_observation::read(&owner, &path, work).await?
                     .ok_or(receipt_error("native observed receipt is missing"))?;
                 let (task, fence) = owner.task_binding();
@@ -242,11 +227,7 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
                     return Err(receipt_error("native observed outcome was not retained"));
                 }
             }
-            let (_, phase) = supervisor.snapshot(attempt)?;
-            if matches!(phase, NativeCapturePhase::Pending | NativeCapturePhase::Drained) {
-                supervisor.record_capture(NativeCapturePhase::Recorded)
-                    .map_err(acyclic_fs::NativeTreeMaterializationError::from)?;
-            }
+            supervisor.snapshot(attempt)?;
             drop(path);
             let EffectDispatch { provider, effect_id, attempt_id, request_digest, guarantee,
                 effect_kind, request } = dispatch;
@@ -266,9 +247,9 @@ impl<P: StreamProvider + 'static> NativeProcessProvider<P> {
     }
 }
 
-async fn append_receipt<P: StreamProvider>(
+async fn append_receipt<P: StreamProvider, L: Serialize, O: Serialize>(
     owner: &TaskJournalOwner<P>, path: &StreamPath, tail: u64,
-    receipt: &ReceiptWrite<'_, '_>, write: JournalWrite,
+    receipt: &Receipt<L, O>, write: JournalWrite,
     work: &NativeMaterializationWork,
 ) -> Result<bool> {
     let io = super::super::PreparationIo::from_native_work(work)?;

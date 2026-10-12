@@ -16,8 +16,6 @@ fn preserves_descriptor_contract_without_source_locations() {
             .file_descriptor_proto()
             .clone();
         file.source_code_info = None;
-        // Declaration order is
-        // not wire identity; retain every declaration's complete contents.
         file.message_type.sort_by(|a, b| a.name.cmp(&b.name));
         file.enum_type.sort_by(|a, b| a.name.cmp(&b.name));
         file

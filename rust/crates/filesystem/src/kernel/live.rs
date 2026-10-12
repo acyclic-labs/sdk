@@ -106,10 +106,6 @@ pub struct LiveRetryState {
 
 impl LiveRetryState {
     /// Starts before the first publication attempt.
-    ///
-    /// # Errors
-    ///
-    /// Rejects a zero-attempt controller.
     pub const fn new(maximum_attempts: u32) -> Result<Self, LiveRetryError> {
         if maximum_attempts == 0 {
             return Err(LiveRetryError::ZeroAttempts);
@@ -121,10 +117,6 @@ impl LiveRetryState {
     }
 
     /// Consumes one authority publication observation.
-    ///
-    /// # Errors
-    ///
-    /// Rejects observations outside the publication phase.
     pub fn observe_publication(
         &mut self,
         observation: LivePublicationObservation,
@@ -172,10 +164,6 @@ impl LiveRetryState {
     }
 
     /// Consumes one exact rebase classification.
-    ///
-    /// # Errors
-    ///
-    /// Rejects classifications outside the rebase phase.
     pub fn observe_rebase(
         &mut self,
         decision: RebaseDecision,

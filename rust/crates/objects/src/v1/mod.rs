@@ -79,7 +79,6 @@ pub trait NativeBatchObjects: ObjectsProvider {
         _requests: ObjectsNativeRequest<Vec<(wire::GetObjectRequest, u64)>>,
         _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<Object>>, NativeObjectsError> {
-        drop(_requests);
         Err(NativeObjectsError::Unsupported)
     }
 
@@ -90,7 +89,6 @@ pub trait NativeBatchObjects: ObjectsProvider {
         _requests: ObjectsNativeRequest<Vec<(wire::PutObjectHeader, acyclic_stream::OwnedBytes)>>,
         _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, ObjectsBatch<ObjectsPutReceipt>>, NativeObjectsError> {
-        drop(_requests);
         Err(NativeObjectsError::Unsupported)
     }
 }
@@ -237,14 +235,6 @@ pub struct NativeObjectsFailure {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl NativeObjectsFailure {
-    /// Borrows retained malformed wire data without detaching its original custody.
-    pub fn wire_bytes(&self) -> Option<&[u8]> {
-        self.wire.as_ref().map(|(bytes, _)| bytes.as_slice())
-    }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
 impl NativeObjectsError {
     /// Destroys retained physical data before returning its original typed cause.
     pub fn into_cause(self) -> NativeObjectsCause {
@@ -253,72 +243,39 @@ impl NativeObjectsError {
             Self::Admission(error) => NativeObjectsCause::Admission(error),
             Self::Unsupported => NativeObjectsCause::Unsupported,
             Self::SharedFailure(failure) => NativeObjectsCause::SharedFailure(failure),
-            Self::ReadFailure(failure) => {
-                let NativeObjectsFailure { cause, object, secondary_object, partial, receipt, wire, transport_chunk } = failure;
-                drop(object);
-                drop(secondary_object);
-                drop(partial);
-                drop(receipt);
-                if let Some((bytes, allocation)) = wire { drop(bytes); drop(allocation); }
-                drop(transport_chunk);
-                cause
-            }
+            Self::ReadFailure(failure) => failure.cause,
         }
     }
 
-    /// Retains the actual malformed wire buffer without copying or adopting it.
-    pub fn with_wire(self, bytes: Vec<u8>, allocation: acyclic_native_runtime::ReadAllocation) -> Self {
+    fn into_failure(self) -> NativeObjectsFailure {
         match self {
-            Self::ReadFailure(mut failure) => {
-                if let Some((old_bytes, old_allocation)) = failure.wire.take() {
-                    drop(old_bytes);
-                    drop(old_allocation);
-                }
-                failure.wire = Some((bytes, allocation));
-                Self::ReadFailure(failure)
-            }
-            error => Self::ReadFailure(NativeObjectsFailure {
-                cause: error.into_cause(), object: None, secondary_object: None, partial: None, receipt: None,
-                wire: Some((bytes, allocation)), transport_chunk: None,
-            }),
-        }
-    }
-
-    /// Retains the actual decoded header behind its preadmitted original claim.
-    pub fn with_header(self, header: wire::GetObjectHeader, allocation: acyclic_native_runtime::ReadAllocation) -> Self {
-        let object = Object::new_native(header, acyclic_stream::OwnedBytes::new(), Some(allocation));
-        match self {
-            Self::ReadFailure(mut failure) => {
-                failure.secondary_object = failure.object.take();
-                failure.object = Some(object);
-                Self::ReadFailure(failure)
-            }
-            error => Self::ReadFailure(NativeObjectsFailure {
-                cause: error.into_cause(), object: Some(object), secondary_object: None,
-                partial: None, receipt: None, wire: None, transport_chunk: None,
-            }),
-        }
-    }
-
-    /// Retains a decoded acknowledgement behind its preadmitted original claim.
-    pub fn with_receipt(self, info: wire::ObjectInfo, allocation: acyclic_native_runtime::ReadAllocation) -> Self {
-        let receipt = ObjectsPutReceipt::new(info, Some(allocation));
-        match self {
-            Self::ReadFailure(mut failure) => {
-                failure.receipt = Some(receipt);
-                Self::ReadFailure(failure)
-            }
-            error => Self::ReadFailure(NativeObjectsFailure {
+            Self::ReadFailure(failure) => failure,
+            error => NativeObjectsFailure {
                 cause: error.into_cause(), object: None, secondary_object: None, partial: None,
-                receipt: Some(receipt), wire: None, transport_chunk: None,
-            }),
+                receipt: None, wire: None, transport_chunk: None,
+            },
         }
     }
+
+    fn with_wire(self, bytes: Vec<u8>, allocation: acyclic_native_runtime::ReadAllocation) -> Self {
+        let mut failure = self.into_failure();
+        failure.wire = Some((bytes, allocation));
+        Self::ReadFailure(failure)
+    }
+
+    fn with_header(self, header: wire::GetObjectHeader, allocation: acyclic_native_runtime::ReadAllocation) -> Self {
+        let mut failure = self.into_failure();
+        failure.secondary_object = failure.object.take();
+        failure.object = Some(Object::new_native(header, acyclic_stream::OwnedBytes::new(), Some(allocation)));
+        Self::ReadFailure(failure)
+    }
+
+
 }
 
 /// A preallocated error slot bridging existing semantic transport body streams.
 #[cfg(not(target_arch = "wasm32"))]
-pub struct NativeTransportErrors {
+pub(crate) struct NativeTransportErrors {
     error: std::sync::Mutex<Option<NativeObjectsError>>,
     #[cfg(feature = "grpc")]
     codec_status: std::sync::Mutex<Option<tonic::Status>>,
@@ -328,17 +285,14 @@ pub struct NativeTransportErrors {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl NativeTransportErrors {
-    /// Preserves the first original typed failure without allocating.
-    pub fn record(&self, error: NativeObjectsError) {
+    pub(crate) fn record(&self, error: NativeObjectsError) {
         let mut slot = self.error.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if slot.is_none() { *slot = Some(error); }
     }
-    /// Moves the original failure without formatting, copying or allocating.
-    pub fn take(&self) -> Option<NativeObjectsError> {
+    pub(crate) fn take(&self) -> Option<NativeObjectsError> {
         self.error.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take()
     }
 
-    /// Holds the original total known wire quota admitted before the whole RPC.
     pub(crate) fn retain_wire(
         &self, allocation: acyclic_native_runtime::ReadAllocation,
     ) -> Result<(), NativeObjectsError> {
@@ -353,7 +307,6 @@ impl NativeTransportErrors {
         Ok(())
     }
 
-    /// Transfers the same preadmitted wire quota to an actual immutable frame.
     #[cfg(feature = "grpc")]
     pub(crate) fn take_wire(
         &self, bytes: usize,
@@ -375,8 +328,7 @@ impl NativeTransportErrors {
         }
         let mut slot = self.codec_status.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if slot.is_none() {
-            // Status' private allocation layout is opaque; its empty logical
-            // payload and one real box attempt are admitted before codec I/O.
+            // Admit the opaque status control before codec I/O.
             meter.allocate_refcount_header()?;
             *slot = Some(tonic::Status::new(tonic::Code::Cancelled, ""));
         }
@@ -395,7 +347,7 @@ pub(crate) fn native_preparation_error(error: acyclic_stream::PreparedOwnedBytes
     match error {
         acyclic_stream::PreparedOwnedBytesError::Admission(error) => error.into(),
         acyclic_stream::PreparedOwnedBytesError::NotFullyInitialized
-        | acyclic_stream::PreparedOwnedBytesError::NotUnique =>
+        =>
             NativeObjectsError::Admission(std::io::ErrorKind::InvalidData.into()),
     }
 }
@@ -434,19 +386,10 @@ impl Object {
 
     /// Moves the same body after destroying metadata before its original claim.
     pub fn into_body(self) -> acyclic_stream::OwnedBytes {
+        drop(self.header);
         #[cfg(not(target_arch = "wasm32"))]
-        {
-            let Self { header, body, header_custody } = self;
-            drop(header);
-            drop(header_custody);
-            body
-        }
-        #[cfg(target_arch = "wasm32")]
-        {
-            let Self { header, body } = self;
-            drop(header);
-            body
-        }
+        drop(self.header_custody);
+        self.body
     }
 }
 
@@ -476,8 +419,8 @@ impl ObjectsPutReceipt {
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Debug)]
 pub struct ObjectsBatch<T> {
-    results: Vec<Result<T, NativeObjectsError>>,
-    allocation: acyclic_native_runtime::ReadAllocation,
+    results: std::vec::IntoIter<Result<T, NativeObjectsError>>,
+    _allocation: acyclic_native_runtime::ReadAllocation,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -493,48 +436,54 @@ impl<T> ObjectsBatch<T> {
             drop(allocation);
             return Err(NativeObjectsError::Admission(std::io::ErrorKind::InvalidData.into()));
         }
-        Ok(Self { results, allocation })
+        Ok(Self { results: results.into_iter(), _allocation: allocation })
     }
 
     /// Borrows the actual ordered results without separating their original claim.
-    pub fn results(&self) -> &[Result<T, NativeObjectsError>] { &self.results }
+    pub fn results(&self) -> &[Result<T, NativeObjectsError>] { self.results.as_slice() }
 
     /// Iterates owned results while retaining the actual vector's allocation.
     pub fn into_results(self) -> impl ExactSizeIterator<Item = Result<T, NativeObjectsError>> {
-        ObjectsBatchIterator { results: self.results.into_iter(), _allocation: self.allocation }
+        self
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-struct ObjectsBatchIterator<T> {
-    results: std::vec::IntoIter<Result<T, NativeObjectsError>>,
-    _allocation: acyclic_native_runtime::ReadAllocation,
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl<T> Iterator for ObjectsBatchIterator<T> {
+impl<T> Iterator for ObjectsBatch<T> {
     type Item = Result<T, NativeObjectsError>;
     fn next(&mut self) -> Option<Self::Item> { self.results.next() }
     fn size_hint(&self) -> (usize, Option<usize>) { self.results.size_hint() }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl<T> ExactSizeIterator for ObjectsBatchIterator<T> {}
+impl<T> ExactSizeIterator for ObjectsBatch<T> {}
 
-/// A preadmitted concrete native future whose physical box retires before custody.
 #[cfg(not(target_arch = "wasm32"))]
-pub struct ObjectsNativeFuture<'a, T> {
-    future: std::pin::Pin<Box<dyn Future<Output = Result<T, NativeObjectsError>> + Send + 'a>>,
-    _allocation: acyclic_native_runtime::ReadAllocation,
+pin_project_lite::pin_project! {
+    /// A future whose storage retires before its allocation guard.
+    #[doc(hidden)]
+    pub struct GuardedFuture<F> {
+        #[pin]
+        pub(crate) future: F,
+        pub(crate) _allocation: Option<acyclic_native_runtime::ReadAllocation>,
+    }
 }
-
 #[cfg(not(target_arch = "wasm32"))]
-impl<T> Future for ObjectsNativeFuture<'_, T> {
-    type Output = Result<T, NativeObjectsError>;
+impl<F: Future> Future for GuardedFuture<F> {
+    type Output = F::Output;
     fn poll(
         self: std::pin::Pin<&mut Self>, context: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> { self.get_mut().future.as_mut().poll(context) }
+    ) -> std::task::Poll<Self::Output> { self.project().future.poll(context) }
 }
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) type GuardedFuture<F> = F;
+
+/// A preadmitted boxed native future.
+#[cfg(not(target_arch = "wasm32"))]
+pub type ObjectsNativeFuture<'a, T> = GuardedFuture<
+    std::pin::Pin<Box<dyn Future<Output = Result<T, NativeObjectsError>> + Send + 'a>>,
+>;
 
 /// Admits the actual concrete native future before its physical box allocation.
 #[cfg(not(target_arch = "wasm32"))]
@@ -544,7 +493,7 @@ pub fn native_future<'a, T: 'a, F>(
 where F: Future<Output = Result<T, NativeObjectsError>> + Send + 'a {
     meter.check()?;
     let allocation = acyclic_native_runtime::ReadAllocation::new(&meter, std::mem::size_of::<F>())?;
-    Ok(ObjectsNativeFuture { future: Box::pin(future), _allocation: allocation })
+    Ok(GuardedFuture { future: Box::pin(future), _allocation: Some(allocation) })
 }
 
 /// Checks only existing input custody identity, never namespace authority.
@@ -621,14 +570,6 @@ impl From<futures::stream::BoxStream<'static, Result<OwnedBytes, Error>>> for Up
     }
 }
 
-impl UploadBody {
-    /// Boxes an ordinary already initialized input stream at its existing boundary.
-    pub fn from_stream<S>(stream: S) -> Self
-    where S: futures::Stream<Item = Result<OwnedBytes, Error>> + Send + 'static {
-        futures::StreamExt::boxed(stream).into()
-    }
-
-}
 impl futures::Stream for UploadBody {
     type Item = Result<OwnedBytes, Error>;
     fn poll_next(
@@ -641,7 +582,7 @@ impl futures::Stream for UploadBody {
 
 /// Exclusive native download storage prepared before the provider starts I/O.
 #[cfg(not(target_arch = "wasm32"))]
-pub struct PreparedNativeDownload {
+pub(crate) struct PreparedNativeDownload {
     bytes: Option<acyclic_stream::PreparedOwnedBytes<acyclic_native_runtime::ReadAllocation>>,
     maximum_bytes: usize,
     meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
@@ -651,23 +592,8 @@ pub struct PreparedNativeDownload {
 
 #[cfg(not(target_arch = "wasm32"))]
 impl PreparedNativeDownload {
-    /// Shares the already funded original-error bridge without another control.
-    pub fn errors(&self) -> std::sync::Arc<NativeTransportErrors> { std::sync::Arc::clone(&self.errors) }
-
-    /// Transfers actual header custody funded before the transport's I/O.
-    pub fn retain_header_allocation(&mut self, allocation: acyclic_native_runtime::ReadAllocation) -> Result<(), NativeObjectsError> {
-        match &mut self.header_allocation {
-            Some(current) => current.absorb(&mut { allocation })?,
-            None => self.header_allocation = Some(allocation),
-        }
-        Ok(())
-    }
-
-    /// Moves a recorded original transport failure, if one exists.
-    pub fn take_error(&self) -> Option<NativeObjectsError> { self.errors.take() }
-
     /// Returns a failed real read with its existing data and original custody.
-    pub fn fail(
+    fn fail(
         self, error: NativeObjectsError, header: Option<wire::GetObjectHeader>, filled: usize,
         transport_chunk: Option<bytes::Bytes>,
     ) -> NativeObjectsError {
@@ -678,21 +604,14 @@ impl PreparedNativeDownload {
             Some(header) => (Some(Object::new_native(header, body, self.header_allocation)), None),
             None => (None, Some(body)),
         };
-        match error {
-            NativeObjectsError::ReadFailure(mut failure) => {
-                if object.is_some() {
-                    failure.secondary_object = failure.object.take();
-                    failure.object = object;
-                }
-                if partial.is_some() { failure.partial = partial; }
-                if transport_chunk.is_some() { failure.transport_chunk = transport_chunk; }
-                NativeObjectsError::ReadFailure(failure)
-            }
-            error => NativeObjectsError::ReadFailure(NativeObjectsFailure {
-                cause: error.into_cause(), object, secondary_object: None, partial, receipt: None,
-                wire: None, transport_chunk,
-            }),
+        let mut failure = error.into_failure();
+        if object.is_some() {
+            failure.secondary_object = failure.object.take();
+            failure.object = object;
         }
+        if partial.is_some() { failure.partial = partial; }
+        if transport_chunk.is_some() { failure.transport_chunk = transport_chunk; }
+        NativeObjectsError::ReadFailure(failure)
     }
 }
 impl Download {
@@ -716,7 +635,7 @@ impl Download {
 
     /// Creates the actual fixed body storage and every byte control before I/O.
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn prepare_native(
+    pub(crate) fn prepare_native(
         maximum_bytes: u64,
         meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<PreparedNativeDownload, NativeObjectsError> {
@@ -739,7 +658,7 @@ impl Download {
 
     /// Collects into storage prepared before this download's physical request.
     #[cfg(not(target_arch = "wasm32"))]
-    pub async fn collect_native(
+    pub(crate) async fn collect_native(
         self, mut prepared: PreparedNativeDownload,
     ) -> Result<Object, NativeObjectsError> {
         use futures::StreamExt;
@@ -749,7 +668,7 @@ impl Download {
             let chunk = match chunk {
                 Ok(chunk) => chunk,
                 Err(error) => {
-                    let error = prepared.take_error().unwrap_or_else(|| error.into());
+                    let error = prepared.errors.take().unwrap_or_else(|| error.into());
                     return Err(prepared.fail(error, Some(self.header), filled, None));
                 }
             };
@@ -808,7 +727,6 @@ pub trait ObjectsProvider: Send + Sync {
         _request: ObjectsNativeRequest<(wire::PutObjectHeader, acyclic_stream::OwnedBytes)>,
         _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, ObjectsPutReceipt>, NativeObjectsError> {
-        drop(_request);
         Err(NativeObjectsError::Unsupported)
     }
     /// Reads one complete selected representation within the caller's allocation bound.
@@ -826,7 +744,6 @@ pub trait ObjectsProvider: Send + Sync {
         _maximum_bytes: u64,
         _meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>,
     ) -> Result<ObjectsNativeFuture<'_, Object>, NativeObjectsError> {
-        drop(_request);
         Err(NativeObjectsError::Unsupported)
     }
     /// Reads metadata without allocating body bytes.

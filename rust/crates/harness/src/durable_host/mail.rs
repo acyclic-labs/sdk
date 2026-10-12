@@ -65,7 +65,7 @@ fn encode<T: Serialize + ?Sized>(value: &T, maximum: u64, io: Option<&Preparatio
 fn decode<T: MailRecord>(bytes: &[u8], io: Option<&PreparationIo>) -> Result<T> {
     require_original(io)?;
     #[cfg(feature = "filesystem")]
-    if let Some(io) = io { return Ok(io.decode_preparation::<T>(bytes)?.into_retained()); }
+    if let Some(io) = io { return Ok(io.decode_preparation::<T>(bytes, crate::wire::ErrorCode::Storage)?.into_retained()); }
     crate::contract::json_from_slice(bytes).map_err(|error| Error::Storage(error.to_string()))
 }
 
@@ -81,8 +81,8 @@ fn validate_file(file: &FileRef, limits: crate::conversation::Limits, io: Option
         }
         return Ok(());
     }
-    file.validate()?;
-    limits.validate_file(file)
+    file.validate(&mut None)?;
+    limits.validate_file(file, &mut None)
 }
 
 fn reserve<T>(items: &mut Vec<T>, maximum: usize, io: Option<&PreparationIo>) -> Result<()> {
@@ -409,13 +409,14 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             hash.update(&physical);
             let digest = *hash.finalize().as_bytes();
             drop(physical);
-            let mut request = crate::distributed::PreparedCommitRequest::new_with_digest(digest, &mut work)?;
-            request.push_condition(target)?;
-            request.push_condition(absent)?;
-            if let Some(condition) = owner_condition { request.push_condition(condition)?; }
-            request.append(mailbox.stream.path().clone(), bytes.clone())?;
-            request.append(intent.stream.path().clone(), location_bytes)?;
-            let (outcome, retained) = request.commit(&self.stream, Some(message), None, None, None).await?;
+            let (key, held) = crate::distributed::digest_key(&digest, &mut work)?;
+            let mut request = crate::distributed::commit_request(key, held, &mut work);
+            crate::distributed::add_condition(&mut request, target)?;
+            crate::distributed::add_condition(&mut request, absent)?;
+            if let Some(condition) = owner_condition { crate::distributed::add_condition(&mut request, condition)?; }
+            crate::distributed::add_record(&mut request, mailbox.stream.path().clone(), bytes.clone())?;
+            crate::distributed::add_record(&mut request, intent.stream.path().clone(), location_bytes)?;
+            let (outcome, retained) = crate::distributed::commit(request, &self.stream, Some(message), None, None, None).await?;
             let committed = matches!(&outcome, CommitOutcome::Committed(_));
             drop(outcome);
             if let Some(observer) = work.as_deref_mut() { observer.release_owned(retained)?; }
@@ -442,7 +443,7 @@ impl<P: StreamProvider + 'static> CoordinatorTaskHost<P> {
             }
             return owner.verify(settlement, work).await;
         }
-        if let Some(fence) = fence { return self.verify_owner_with_work(sender, fence, settlement, &mut None).await; }
+        if let Some(fence) = fence { return self.verify_owner(sender, fence, settlement, &mut None).await; }
         Ok(())
     }
 

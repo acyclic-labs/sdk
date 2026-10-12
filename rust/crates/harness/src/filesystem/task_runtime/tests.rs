@@ -147,7 +147,7 @@ impl ResumableMachine for Machine {
             let encoded_hold;
             let encoded = io.encode(&state["command"], io.remaining()?.bytes_encoded, false)?;
             encoded_hold = io.guard_owned(encoded.capacity() as u64)?;
-            let command = io.decode_preparation::<WorkflowCommand>(&encoded)?.into_retained();
+            let command = io.decode_preparation::<WorkflowCommand>(&encoded, crate::wire::ErrorCode::Storage)?.into_retained();
             drop(encoded);
             drop(encoded_hold);
             command
@@ -239,11 +239,11 @@ impl Fixture {
             volume, issuer, signed, scope, tasks, machines, tools, clock, tool, machine })
     }
     async fn runtime(&self) -> Result<Runtime> {
-        FilesystemTaskRuntime::open_with_clock(
-            self.stream.clone(), self.filesystem.clone(), self.volume.clone(), self.issuer.verifier(),
-            self.signed.clone(), self.scope.clone(), self.tasks.clone(), self.machines.clone(),
-            self.tools.clone(), SessionLimits { active_tasks: 1, total_tasks: 1, depth: 1, model_steps: 1 },
-            1, 65_536, self.clock.clone(),
+        FilesystemTaskRuntime::open(
+            self.stream.clone(), self.filesystem.clone(), &self.volume, &self.issuer.verifier(),
+            &self.signed, &self.scope, &self.tasks, &self.machines,
+            &self.tools, SessionLimits { active_tasks: 1, total_tasks: 1, depth: 1, model_steps: 1 },
+            1, 65_536, self.clock.clone(), None, &[], &ResumableToolRegistry::default(), None,
         ).await
     }
     async fn admit(&self, runtime: &Runtime) -> Result<WorkLease> {
@@ -265,9 +265,7 @@ impl Fixture {
 
     async fn admit_only(&self, runtime: &Runtime, kind: &str, command: Value) -> Result<OperationId> {
         let operation = OperationId::from_bytes([104; 16]);
-        let payloads = FilesystemSchedulerPayloadStore::new(
-            self.filesystem.clone(), self.volume.clone(), &self.issuer.verifier(), &self.signed, 65_536,
-        )?;
+        let payloads = FilesystemSchedulerPayloadStore::new(self.filesystem.clone(), &(self.volume), &self.issuer.verifier(), &self.signed, 65_536, None)?;
         let payload = payloads.stage(operation, "command", &crate::contract::canonical_json_bytes(&command)?).await?;
         let definition = self.tasks.get_version::<Value, Value>("test.deadline", "1")?;
         let input = json!({"command":WorkflowCommand {
@@ -444,10 +442,7 @@ impl ModelProvider for PendingModel {
         self.clock.0.store(20, Ordering::SeqCst);
         Box::pin(futures::stream::pending())
     }
-    fn reconcile<'a>(
-        &'a self,
-        _: crate::model::ModelAttempt,
-    ) -> BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
+    fn reconcile<'a>(&'a self, _dispatch: crate::model::ModelDispatch, _observed: &'a [crate::model::ModelEvent]) -> BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
         Box::pin(async move {
             self.reconciled.fetch_add(1, Ordering::SeqCst);
             assert_eq!(self.generated.load(Ordering::SeqCst), 1);
@@ -557,10 +552,7 @@ async fn cancelled_mail_reconciles_original_atomic_send_without_republication() 
     let fixture = Fixture::new().await?;
     let runtime = fixture.runtime().await?;
     let task = TaskId::from_bytes([104; 16]);
-    let payloads = FilesystemSchedulerPayloadStore::new(
-        fixture.filesystem.clone(), fixture.volume.clone(), &fixture.issuer.verifier(),
-        &fixture.signed, 65_536,
-    )?;
+    let payloads = FilesystemSchedulerPayloadStore::new(fixture.filesystem.clone(), &(fixture.volume), &fixture.issuer.verifier(), &fixture.signed, 65_536, None)?;
     let file = payloads.stage(OperationId::from_bytes([106; 16]), "mail-body", b"7").await?;
     let lease = fixture.admit_command(
         &runtime, super::super::MAIL_SEND_TASK_COMMAND_KIND,

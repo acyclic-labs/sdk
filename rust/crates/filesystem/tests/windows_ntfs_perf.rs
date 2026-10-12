@@ -104,8 +104,8 @@ async fn ntfs_exactification_preserves_source_hard_links() -> Result<(), Box<dyn
             .await
     })
     .await??;
-    let file = exact.value.stat("/hot/file").await?;
-    let alias = exact.value.stat("/hot/alias").await?;
+    let file = exact.value.stat("/hot/file", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let alias = exact.value.stat("/hot/alias", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(file.file_id, alias.file_id);
     assert_eq!(file.link_count, 2);
     let view = tempfile::tempdir()?;
@@ -154,7 +154,7 @@ async fn materialized_ntfs_view_preserves_basic_metadata_and_hard_links()
         ..FileMetadata::default()
     };
     let fs = Fs::memory();
-    let workspace = fs.create_workspace("ntfs-metadata-view").await?;
+    let workspace = fs.create_workspace("ntfs-metadata-view", acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut transaction = workspace.begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     transaction.create_directory("/tree").await?;
     transaction
@@ -246,8 +246,8 @@ async fn captured_ntfs_link_retains_restorable_metadata() -> Result<(), Box<dyn 
         .create_workspace_with_config(
             "ntfs-link-capture",
             VolumeConfig::native(Lifecycle::Durable),
-        )
-        .await?;
+        acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),)
+        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut checkout = workspace.checkout(GenerationSelector::Head, CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let path = host_path_to_namespace(
         std::path::Path::new("link"),
@@ -498,7 +498,7 @@ async fn native_lazy_workspace_lists_windows_source_directories()
     )
     .await?;
     for directory in ["/", "/dir"] {
-        let page = lazy.list_directory(directory, None, 64).await?;
+        let page = lazy.list_directory(directory, None, 64, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await?.value;
         assert_eq!(page.entries.len(), 1, "{directory}");
     }
     Ok(())

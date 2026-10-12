@@ -211,14 +211,8 @@ fn node_path_with_work(
     authority: &Authority, hash: Digest, work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(StreamPath, u64)> {
     let suffix = blake3::Hash::from_bytes(hash).to_hex();
-    struct NodeSuffix<'a>(&'a dyn std::fmt::Display);
-    impl std::fmt::Display for NodeSuffix<'_> {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            write!(f, "nodes/{}", self.0)
-        }
-    }
     operations::publication_path_with_work(
-        authority, "harness/v2/effect-heads/", Some((&NodeSuffix(&suffix), 70)), work)
+        authority, "harness/v2/effect-heads/", Some((&format_args!("nodes/{suffix}"), 70)), work)
 }
 
 fn release_after_drop<T>(result: Result<T>, owned: u64, work: &mut Option<&mut dyn HistoryIo>) -> Result<T> {

@@ -9,6 +9,7 @@ pub(crate) mod operations;
 #[cfg(feature = "filesystem")]
 mod guarded;
 pub use history::*;
+pub use effects::effect_events;
 
 use crate::{
     Error, IdempotencyKey, OperationId, Result,
@@ -38,7 +39,7 @@ use std::{collections::BTreeMap, sync::Arc};
 /// Finite recent terminal cache.
 pub const DEFAULT_TERMINAL_EFFECTS: usize = 64;
 
-fn guarded_boundary(
+pub(crate) fn guarded_boundary(
     work: &Option<&mut dyn history::HistoryIo>, kind: crate::wire::ErrorCode,
     reason: &'static str,
 ) -> Error {
@@ -379,8 +380,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let migrations = self.extension_migrations.as_ref().ok_or_else(|| {
             Error::Unsupported("extension migration executor is not bound".into())
         })?;
-        self.limits.validate_file(&prior.content)?;
-        let bytes = verified_content_bytes(verifier.as_ref(), &prior.content).await?;
+        self.limits.validate_file(&prior.content, &mut None)?;
+        let bytes = verified_content_bytes(verifier.as_ref(), &prior.content, (&prior.content).descriptor().byte_length(), None).await.map(|(bytes, _)| bytes)?;
         self.reducer
             .validate_custom_bytes(&request.name, prior.version, &prior.content, &bytes)?;
         let value: Value = crate::contract::json_from_slice(&bytes).map_err(|error| {
@@ -911,30 +912,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         .await
     }
 
-    /// Restores caller state with explicit cold input and terminal cache limits.
-    pub async fn open_from_snapshot_with_projection_limits(
-        client: &StreamClient<P>,
-        authority: Authority,
-        authority_verifier: AuthorityVerifier,
-        schemas: SchemaRegistry,
-        snapshot: Snapshot,
-        limits: HistoryReadLimits,
-        maximum_terminal_effects: usize,
-    ) -> Result<Self> {
-        Self::open_inner(
-            client,
-            authority,
-            authority_verifier,
-            schemas,
-            Some(snapshot),
-            limits,
-            maximum_terminal_effects,
-            None,
-            &mut None,
-        )
-        .await
-    }
-
     #[allow(clippy::too_many_arguments, reason = "one original restore engine with optional exact cut and observer")]
     pub(crate) async fn open_inner(
         client: &StreamClient<P>,
@@ -1068,7 +1045,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             after_revision: reducer.revision(),
             through_revision: through,
         };
-        let read = reader
+        let (page, records, mut used, events_retained_bytes) = reader
             .read_page_with_work(
                 &cursor,
                 HistoryReadLimits { maximum_events, maximum_bytes },
@@ -1079,19 +1056,17 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let cursor_bytes = cursor.authority.id.capacity() as u64;
         drop(cursor);
         if let Some(work) = work.as_deref_mut() { work.release_bytes(cursor_bytes)?; }
-        if read.page.cursor.after_revision != through {
+        if page.cursor.after_revision != through {
             return Err(Error::Invalid(
                 "projection suffix exceeds byte allowance".into(),
             ));
         }
-        let event_bytes = (read.page.events.capacity() * std::mem::size_of::<crate::core::Event>()) as u64;
-        let record_capacity = (read.records.capacity() * std::mem::size_of::<operations::ObservedRecord>()) as u64;
-        let page_cursor_bytes = read.page.cursor.authority.id.capacity() as u64;
-        let events_retained_bytes = read.events_retained_bytes;
-        drop(read.page.cursor);
+        let event_bytes = (page.events.capacity() * std::mem::size_of::<crate::core::Event>()) as u64;
+        let record_capacity = (records.capacity() * std::mem::size_of::<operations::ObservedRecord>()) as u64;
+        let page_cursor_bytes = page.cursor.authority.id.capacity() as u64;
+        drop(page.cursor);
         if let Some(work) = work.as_deref_mut() { work.release_bytes(page_cursor_bytes)?; }
-        let mut used = read.bytes;
-        for (event, record) in read.page.events.into_iter().zip(read.records) {
+        for (event, record) in page.events.into_iter().zip(records) {
             let (indexed, bytes) = effects::retirement_proof_with_work(
                 client,
                 reducer.authority(),
@@ -1215,11 +1190,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }
     }
 
-    fn apply_published_event(&mut self, event: &crate::core::Event) -> Result<ApplyResult> {
-        let result = self.reducer.apply_committed(event.clone())?;
-        self.reducer.mark_indexed_terminal_effect_with_work(event, &mut None)?;
-        Ok(result)
-    }
 
     /// Configures the event/retry cache; canonical Stream history and live projections remain authoritative.
     pub fn with_resident_event_limit(mut self, maximum: usize) -> Result<Self> {
@@ -1276,7 +1246,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
 
     /// Updates admission bounds without discarding the verified projection.
     pub fn set_limits(&mut self, limits: Limits) -> Result<()> {
-        limits.validate()?;
+        limits.validate(&mut None)?;
         self.limits = limits;
         Ok(())
     }
@@ -1413,16 +1383,15 @@ impl<P: StreamProvider> StreamAggregate<P> {
             owned.adopt(reader.logical_owned_bytes()?.checked_sub(verifier_bytes)
                 .ok_or_else(|| Error::Invalid("history reader ownership underflows".into()))?)?;
         }
-        let page = reader.read_page_with_work(&cursor,
+        let (page, _, _, retained) = reader.read_page_with_work(&cursor,
             HistoryReadLimits { maximum_events: 1, maximum_bytes: acyclic_stream::MAX_RECORD_BYTES as u64 },
             false, owned.work().as_mut().map(|work| &mut **work as &mut dyn history::HistoryIo)).await?;
-        let retained = page.events_retained_bytes;
         if owned.work().is_some() {
-            owned.adopt(retained + page.page.cursor.authority.id.capacity() as u64
-                + (page.page.events.capacity() * std::mem::size_of::<crate::core::Event>()) as u64)?;
+            owned.adopt(retained + page.cursor.authority.id.capacity() as u64
+                + (page.events.capacity() * std::mem::size_of::<crate::core::Event>()) as u64)?;
         }
-        let event = page.page.events.into_iter().next();
-        drop(page.page.cursor);
+        let event = page.events.into_iter().next();
+        drop(page.cursor);
         drop(cursor);
         drop(reader);
         let event = event.ok_or_else(|| guarded_boundary(owned.work(), crate::wire::ErrorCode::NotFound,
@@ -1569,49 +1538,109 @@ impl<P: StreamProvider> StreamAggregate<P> {
         if work.is_some() {
             return Err(Error::Unsupported("aggregate work observers require filesystem support".into()));
         }
-        crate::obs::outcome(self.execute_untraced(command).await)
+        crate::obs::outcome(async {
+            if let Some((result, _)) = self.replay(&command, true, 2 * acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).await? {
+                if let Action::PublishFork { seed } = &command.action {
+                    self.release_replayed_fork_fence(seed).await?;
+                }
+                return Ok(result);
+            }
+            let idempotency_key =
+                stream_idempotency_key_with_work(self.stream.path().as_str(), &command.idempotency_key, &mut None)?;
+            let fresh_migration = matches!(&command.action, Action::MigrateExtensionState { .. })
+                && self
+                    .reducer
+                    .operation_revision(command.operation_id)
+                    .is_none();
+            let planned = self.plan_command(&command, fresh_migration).await?;
+            let ApplyResult::Applied { event } = planned else {
+                if let crate::core::Action::PublishFork { seed } = &command.action {
+                    self.release_replayed_fork_fence(seed).await?;
+                }
+                return Ok(planned);
+            };
+            if !fresh_migration {
+                self.validate_admission_content(&command.action).await?;
+            }
+            self.validate_causal_reference(event.causal_parent.as_ref(), &mut None)
+                .await?;
+            let publication = checkpoints::publication_with_work(&self.client, &self.reducer, &event, &mut None).await?;
+            let request = publication.request(&self.client, idempotency_key).await?;
+            let fork_guard = if let crate::core::Action::PublishFork { seed } = &command.action {
+                let verifier = self
+                    .fork_verifier
+                    .as_ref()
+                    .ok_or_else(|| Error::Unsupported("fork seed verifier is not bound".into()))?;
+                Some(verifier.activate(seed).await?)
+            } else {
+                None
+            };
+            let append = self.client.provider.commit(request).await;
+            let outcome = match append {
+                Ok(outcome) => outcome,
+                Err(StreamError::Unavailable) => {
+                    return match self.reconcile_inner(&command).await {
+                        Ok(Some(result)) => {
+                            if let Some(guard) = fork_guard {
+                                guard
+                                    .release()
+                                    .await
+                                    .map_err(|_| Error::Indeterminate(command.operation_id))?;
+                            }
+                            Ok(result)
+                        }
+                        Ok(None) | Err(Error::Storage(_)) => {
+                            Err(Error::Indeterminate(command.operation_id))
+                        }
+                        Err(error) => Err(error),
+                    };
+                }
+                Err(StreamError::IdempotencyMismatch) => {
+                    if let Some(guard) = fork_guard {
+                        guard
+                            .release()
+                            .await
+                            .map_err(|_| Error::Indeterminate(command.operation_id))?;
+                    }
+                    return Err(Error::Conflict(
+                        "retry identity is already bound to another append".into(),
+                    ));
+                }
+                Err(error) => {
+                    if let Some(guard) = fork_guard {
+                        guard
+                            .release()
+                            .await
+                            .map_err(|_| Error::Indeterminate(command.operation_id))?;
+                    }
+                    return Err(Error::Storage(error.to_string()));
+                }
+            };
+            let result = match outcome {
+                CommitOutcome::Committed(envelope) => {
+                    if publication.verify(&envelope).is_err() {
+                        return Err(Error::Indeterminate(publication.operation_id));
+                    }
+                    match self.reducer.apply_committed(event.clone()).and_then(|result|
+                        self.reducer.mark_indexed_terminal_effect_with_work(&event, &mut None).map(|()| result)) {
+                        Ok(result) => Ok(result),
+                        Err(_) => return Err(Error::Indeterminate(command.operation_id)),
+                    }
+                }
+                CommitOutcome::Conflict(_) => Err(Error::Conflict(
+                    "aggregate tail or operation identity changed".into(),
+                )),
+            };
+            if let Some(guard) = fork_guard {
+                guard
+                    .release()
+                    .await
+                    .map_err(|_| Error::Indeterminate(command.operation_id))?;
+            }
+            result
+        }.await)
     }
 
-    async fn execute_untraced(&mut self, command: Command) -> Result<ApplyResult> {
-        if let Some((result, _)) = self.replay(&command, true, 2 * acyclic_stream::MAX_RECORD_BYTES as u64, &mut None).await? {
-            if let Action::PublishFork { seed } = &command.action {
-                self.release_replayed_fork_fence(seed).await?;
-            }
-            return Ok(result);
-        }
-        let idempotency_key =
-            stream_idempotency_key_with_work(self.stream.path().as_str(), &command.idempotency_key, &mut None)?;
-        let fresh_migration = matches!(&command.action, Action::MigrateExtensionState { .. })
-            && self
-                .reducer
-                .operation_revision(command.operation_id)
-                .is_none();
-        let planned = self.plan_command(&command, fresh_migration).await?;
-        let ApplyResult::Applied { event } = planned else {
-            if let crate::core::Action::PublishFork { seed } = &command.action {
-                self.release_replayed_fork_fence(seed).await?;
-            }
-            return Ok(planned);
-        };
-        if !fresh_migration {
-            self.validate_admission_content(&command.action).await?;
-        }
-        self.validate_causal_reference(event.causal_parent.as_ref(), &mut None)
-            .await?;
-        let publication = checkpoints::publication_with_work(&self.client, &self.reducer, &event, &mut None).await?;
-        let request = publication.request(&self.client, idempotency_key).await?;
-        let fork_guard = if let crate::core::Action::PublishFork { seed } = &command.action {
-            let verifier = self
-                .fork_verifier
-                .as_ref()
-                .ok_or_else(|| Error::Unsupported("fork seed verifier is not bound".into()))?;
-            Some(verifier.activate(seed).await?)
-        } else {
-            None
-        };
-        self.append_planned_command(&command, event, publication, request, fork_guard)
-            .await
-    }
 
     async fn plan_command(&self, command: &Command, fresh_migration: bool) -> Result<ApplyResult> {
         if !fresh_migration {
@@ -1644,86 +1673,6 @@ impl<P: StreamProvider> StreamAggregate<P> {
         self.reducer.plan_indexed_with_retained_quota(command, true, &mut None).map(|(result, _)| result)
     }
 
-    #[cfg_attr(
-        not(target_arch = "wasm32"),
-        tracing::instrument(
-            name = "acyclic.harness.store.append",
-            level = "debug",
-            skip_all,
-            fields(rev = command.expected_revision, bytes = publication.bytes.len() as u64)
-        )
-    )]
-    async fn append_planned_command(
-        &mut self,
-        command: &Command,
-        event: crate::core::Event,
-        publication: operations::IndexedPublication,
-        request: acyclic_stream::CommitRequest,
-        fork_guard: Option<Box<dyn crate::fork::ForkPublicationGuard>>,
-    ) -> Result<ApplyResult> {
-        let append = self.client.commit(request).await;
-        let outcome = match append {
-            Ok(outcome) => outcome,
-            Err(StreamError::Unavailable) => {
-                return match self.reconcile_inner(command).await {
-                    Ok(Some(result)) => {
-                        if let Some(guard) = fork_guard {
-                            guard
-                                .release()
-                                .await
-                                .map_err(|_| Error::Indeterminate(command.operation_id))?;
-                        }
-                        Ok(result)
-                    }
-                    Ok(None) | Err(Error::Storage(_)) => {
-                        Err(Error::Indeterminate(command.operation_id))
-                    }
-                    Err(error) => Err(error),
-                };
-            }
-            Err(StreamError::IdempotencyMismatch) => {
-                if let Some(guard) = fork_guard {
-                    guard
-                        .release()
-                        .await
-                        .map_err(|_| Error::Indeterminate(command.operation_id))?;
-                }
-                return Err(Error::Conflict(
-                    "retry identity is already bound to another append".into(),
-                ));
-            }
-            Err(error) => {
-                if let Some(guard) = fork_guard {
-                    guard
-                        .release()
-                        .await
-                        .map_err(|_| Error::Indeterminate(command.operation_id))?;
-                }
-                return Err(Error::Storage(error.to_string()));
-            }
-        };
-        let result = match outcome {
-            CommitOutcome::Committed(envelope) => {
-                if publication.verify(&envelope).is_err() {
-                    return Err(Error::Indeterminate(publication.operation_id));
-                }
-                match self.apply_published_event(&event) {
-                    Ok(result) => Ok(result),
-                    Err(_) => return Err(Error::Indeterminate(command.operation_id)),
-                }
-            }
-            CommitOutcome::Conflict(_) => Err(Error::Conflict(
-                "aggregate tail or operation identity changed".into(),
-            )),
-        };
-        if let Some(guard) = fork_guard {
-            guard
-                .release()
-                .await
-                .map_err(|_| Error::Indeterminate(command.operation_id))?;
-        }
-        result
-    }
 
     #[cfg(feature = "filesystem")]
     async fn validate_task_admission_content_with_work(
@@ -1744,7 +1693,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         if let Action::PlanEffect { result_schema, .. } = action {
             match work.as_deref_mut() {
                 Some(observer) => history::verify_content_with_work(observer, verifier.as_ref(), reference).await?,
-                None => { verified_content_bytes(verifier.as_ref(), reference).await?; },
+                None => { verified_content_bytes(verifier.as_ref(), reference, (reference).descriptor().byte_length(), None).await.map(|(bytes, _)| bytes)?; },
             }
             let mut scratch = crate::wire_codec::CodecQuota::from_retained(work, 0);
             let (bytes, claim) = Self::read_admission_content_with_work(
@@ -1841,84 +1790,63 @@ impl<P: StreamProvider> StreamAggregate<P> {
     }
 
     async fn validate_admission_content(&self, action: &crate::core::Action) -> Result<()> {
-        self.validate_interaction_admission(action).await?;
-        self.validate_extension_admission_content(action).await?;
-        let message = match action {
-            crate::core::Action::AppendConversationMessage { message } => Some(message.as_ref()),
-            crate::core::Action::PublishProjectMerge { receipt } => Some(&receipt.notice),
-            _ => None,
-        };
-        if let Some(message) = message {
-            self.limits.validate_message(message)?;
-            let verifier = self.content_verifier.as_ref().ok_or_else(|| {
-                Error::Unsupported("conversation content verifier is not bound".into())
-            })?;
-            verified_content_bytes(verifier.as_ref(), &message.content).await?;
-            match &message.attachments {
-                ReferencedAttachments::Inline { items } => {
-                    for attachment in items {
-                        verified_content_bytes(verifier.as_ref(), &attachment.file).await?;
-                    }
-                }
-                ReferencedAttachments::Manifest {
-                    manifest,
-                    item_count,
-                } => {
-                    verified_attachment_manifest(
-                        verifier.as_ref(),
-                        manifest,
-                        *item_count,
-                        &self.limits,
-                    )
-                    .await?;
-                }
-            }
-            for reference in message.extensions.values() {
-                verified_content_bytes(verifier.as_ref(), reference).await?;
-            }
-        }
-        if let crate::core::Action::PlanEffect {
-            request,
-            result_schema,
-            ..
-        } = action
+        if let crate::core::Action::ResolveInteraction { resolution } = action
+            && matches!(resolution.outcome, InteractionOutcome::Expired)
         {
-            let verifier = self.content_verifier.as_ref().ok_or_else(|| {
-                Error::Unsupported("effect request content verifier is not bound".into())
-            })?;
-            verified_content_bytes(verifier.as_ref(), request).await?;
-            let schema_bytes = verifier.read(result_schema).await?;
-            validate_schema_bytes(result_schema, &schema_bytes)?;
-        }
-        if let crate::core::Action::ResolveEffect { observation } = action
-            && let EffectStatus::Succeeded { result } = &observation.status
-        {
-            let verifier = self.content_verifier.as_ref().ok_or_else(|| {
-                Error::Unsupported("effect result content verifier is not bound".into())
-            })?;
-            let effect = self
+            let (ticket, _) = self
                 .reducer
-                .effect(observation.effect_id)
-                .ok_or_else(|| Error::NotFound(format!("effect {}", observation.effect_id)))?;
-            let bytes = verifier.read(result).await?;
-            let schema_bytes = verifier.read(&effect.result_schema).await?;
-            let schema = validate_schema_bytes(&effect.result_schema, &schema_bytes)?;
-            validate_result_bytes(&schema, result, &bytes)?;
+                .interaction(&resolution.id)
+                .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
+            let deadline = ticket
+                .deadline_unix_ms
+                .ok_or_else(|| Error::Invalid("interaction has no expiry deadline".into()))?;
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|error| Error::Storage(error.to_string()))?
+                .as_millis();
+            if now < u128::from(deadline) {
+                return Err(Error::Conflict(
+                    "interaction deadline has not elapsed".into(),
+                ));
+            }
         }
-        if let crate::core::Action::PublishProjectMerge { receipt } = action {
-            let verifier = self
-                .merge_verifier
-                .as_ref()
-                .ok_or_else(|| Error::Unsupported("project merge verifier is not bound".into()))?;
-            verifier.verify(receipt).await?;
+        if let crate::core::Action::OpenInteraction { ticket } = action {
+            let verifier = self.content_verifier.as_ref().ok_or_else(|| {
+                Error::Unsupported("interaction content verifier is not bound".into())
+            })?;
+            let bytes = verifier.read(&ticket.request).await?;
+            ticket.validate_request_bytes(&bytes)?;
         }
-        Ok(())
-    }
-
-    async fn validate_extension_admission_content(
-        &self,
-        action: &crate::core::Action,
-    ) -> Result<()> {
+        if let crate::core::Action::ResolveInteraction { resolution } = action
+            && let InteractionOutcome::Answered { answer } = &resolution.outcome
+        {
+            let verifier = self.content_verifier.as_ref().ok_or_else(|| {
+                Error::Unsupported("interaction content verifier is not bound".into())
+            })?;
+            let (ticket, _) = self
+                .reducer
+                .interaction(&resolution.id)
+                .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
+            let request_bytes = verifier.read(&ticket.request).await?;
+            let request = ticket.validate_request_bytes(&request_bytes)?;
+            let answer_bytes = verifier.read(answer).await?;
+            ticket.validate_answer_bytes(&request, answer, &answer_bytes)?;
+        }
+        if let crate::core::Action::ResolveInteraction { resolution } = action
+            && let Some(detail) = &resolution.detail
+        {
+            let verifier = self.content_verifier.as_ref().ok_or_else(|| {
+                Error::Unsupported("interaction content verifier is not bound".into())
+            })?;
+            let (ticket, _) = self
+                .reducer
+                .interaction(&resolution.id)
+                .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
+            let request_bytes = verifier.read(&ticket.request).await?;
+            let request = ticket.validate_request_bytes(&request_bytes)?;
+            let detail_bytes = verifier.read(detail).await?;
+            ticket.validate_decision_bytes(&request, &resolution.outcome, detail, &detail_bytes)?;
+        }
         if let crate::core::Action::AppendCustom {
             schema,
             version,
@@ -1988,69 +1916,79 @@ impl<P: StreamProvider> StreamAggregate<P> {
             self.reducer
                 .validate_configuration_bytes(extension, content, &bytes)?;
         }
+        let message = match action {
+            crate::core::Action::AppendConversationMessage { message } => Some(message.as_ref()),
+            crate::core::Action::PublishProjectMerge { receipt } => Some(&receipt.notice),
+            _ => None,
+        };
+        if let Some(message) = message {
+            self.limits.validate_message(message, &mut None)?;
+            let verifier = self.content_verifier.as_ref().ok_or_else(|| {
+                Error::Unsupported("conversation content verifier is not bound".into())
+            })?;
+            verified_content_bytes(verifier.as_ref(), &message.content, (&message.content).descriptor().byte_length(), None).await.map(|(bytes, _)| bytes)?;
+            match &message.attachments {
+                ReferencedAttachments::Inline { items } => {
+                    for attachment in items {
+                        verified_content_bytes(verifier.as_ref(), &attachment.file, (&attachment.file).descriptor().byte_length(), None).await.map(|(bytes, _)| bytes)?;
+                    }
+                }
+                ReferencedAttachments::Manifest {
+                    manifest,
+                    item_count,
+                } => {
+                    verified_attachment_manifest(
+                        verifier.as_ref(),
+                        manifest,
+                        *item_count,
+                        &self.limits,
+                    )
+                    .await?;
+                }
+            }
+            for reference in message.extensions.values() {
+                verified_content_bytes(verifier.as_ref(), reference, (reference).descriptor().byte_length(), None).await.map(|(bytes, _)| bytes)?;
+            }
+        }
+        if let crate::core::Action::PlanEffect {
+            request,
+            result_schema,
+            ..
+        } = action
+        {
+            let verifier = self.content_verifier.as_ref().ok_or_else(|| {
+                Error::Unsupported("effect request content verifier is not bound".into())
+            })?;
+            verified_content_bytes(verifier.as_ref(), request, (request).descriptor().byte_length(), None).await.map(|(bytes, _)| bytes)?;
+            let schema_bytes = verifier.read(result_schema).await?;
+            validate_schema_bytes(result_schema, &schema_bytes)?;
+        }
+        if let crate::core::Action::ResolveEffect { observation } = action
+            && let EffectStatus::Succeeded { result } = &observation.status
+        {
+            let verifier = self.content_verifier.as_ref().ok_or_else(|| {
+                Error::Unsupported("effect result content verifier is not bound".into())
+            })?;
+            let effect = self
+                .reducer
+                .effect(observation.effect_id)
+                .ok_or_else(|| Error::NotFound(format!("effect {}", observation.effect_id)))?;
+            let bytes = verifier.read(result).await?;
+            let schema_bytes = verifier.read(&effect.result_schema).await?;
+            let schema = validate_schema_bytes(&effect.result_schema, &schema_bytes)?;
+            validate_result_bytes(&schema, result, &bytes)?;
+        }
+        if let crate::core::Action::PublishProjectMerge { receipt } = action {
+            let verifier = self
+                .merge_verifier
+                .as_ref()
+                .ok_or_else(|| Error::Unsupported("project merge verifier is not bound".into()))?;
+            verifier.verify(receipt).await?;
+        }
         Ok(())
     }
 
-    async fn validate_interaction_admission(&self, action: &crate::core::Action) -> Result<()> {
-        if let crate::core::Action::ResolveInteraction { resolution } = action
-            && matches!(resolution.outcome, InteractionOutcome::Expired)
-        {
-            let (ticket, _) = self
-                .reducer
-                .interaction(&resolution.id)
-                .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
-            let deadline = ticket
-                .deadline_unix_ms
-                .ok_or_else(|| Error::Invalid("interaction has no expiry deadline".into()))?;
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_err(|error| Error::Storage(error.to_string()))?
-                .as_millis();
-            if now < u128::from(deadline) {
-                return Err(Error::Conflict(
-                    "interaction deadline has not elapsed".into(),
-                ));
-            }
-        }
-        if let crate::core::Action::OpenInteraction { ticket } = action {
-            let verifier = self.content_verifier.as_ref().ok_or_else(|| {
-                Error::Unsupported("interaction content verifier is not bound".into())
-            })?;
-            let bytes = verifier.read(&ticket.request).await?;
-            ticket.validate_request_bytes(&bytes)?;
-        }
-        if let crate::core::Action::ResolveInteraction { resolution } = action
-            && let InteractionOutcome::Answered { answer } = &resolution.outcome
-        {
-            let verifier = self.content_verifier.as_ref().ok_or_else(|| {
-                Error::Unsupported("interaction content verifier is not bound".into())
-            })?;
-            let (ticket, _) = self
-                .reducer
-                .interaction(&resolution.id)
-                .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
-            let request_bytes = verifier.read(&ticket.request).await?;
-            let request = ticket.validate_request_bytes(&request_bytes)?;
-            let answer_bytes = verifier.read(answer).await?;
-            ticket.validate_answer_bytes(&request, answer, &answer_bytes)?;
-        }
-        if let crate::core::Action::ResolveInteraction { resolution } = action
-            && let Some(detail) = &resolution.detail
-        {
-            let verifier = self.content_verifier.as_ref().ok_or_else(|| {
-                Error::Unsupported("interaction content verifier is not bound".into())
-            })?;
-            let (ticket, _) = self
-                .reducer
-                .interaction(&resolution.id)
-                .ok_or_else(|| Error::NotFound(format!("interaction {}", resolution.id)))?;
-            let request_bytes = verifier.read(&ticket.request).await?;
-            let request = ticket.validate_request_bytes(&request_bytes)?;
-            let detail_bytes = verifier.read(detail).await?;
-            ticket.validate_decision_bytes(&request, &resolution.outcome, detail, &detail_bytes)?;
-        }
-        Ok(())
-    }
+
 
     /// Reconciles a possibly committed append without issuing another append.
     #[cfg_attr(
@@ -2093,7 +2031,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             return Ok(Some(result));
         }
         let key = stream_idempotency_key_with_work(self.stream.path().as_str(), &command.idempotency_key, &mut None)?;
-        let Some(observation) = self.client.inspect_idempotency(key).await? else {
+        let Some(observation) = self.client.provider.inspect_idempotency(key).await? else {
             return Ok(None);
         };
         match observation.outcome {
@@ -2228,7 +2166,7 @@ mod tests {
                     .0
                     .get(reference.path())
                     .ok_or_else(|| Error::NotFound(reference.path().into()))?;
-                reference.descriptor().verify(bytes)?;
+                reference.descriptor().verify(bytes, &mut None)?;
                 Ok(bytes.clone().into())
             })
         }
@@ -2305,7 +2243,7 @@ mod tests {
         }
 
         fn insert(&self, reference: &FileRef, bytes: &[u8]) -> Result<()> {
-            reference.descriptor().verify(bytes)?;
+            reference.descriptor().verify(bytes, &mut None)?;
             self.0
                 .lock()
                 .map_err(|_| Error::Storage("migration content lock poisoned".into()))?
@@ -2335,7 +2273,7 @@ mod tests {
                     .get(&Self::key(reference)?)
                     .cloned()
                     .ok_or_else(|| Error::NotFound("migration content is absent".into()))?;
-                reference.descriptor().verify(&bytes)?;
+                reference.descriptor().verify(&bytes, &mut None)?;
                 Ok(bytes.into())
             })
         }
@@ -2379,7 +2317,7 @@ mod tests {
             &'a self,
             reference: &'a FileRef,
         ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>> {
-            Box::pin(async move { reference.descriptor().verify(EXTENSION_BYTES) })
+            Box::pin(async move { reference.descriptor().verify(EXTENSION_BYTES, &mut None) })
         }
 
         fn read<'a>(
@@ -2388,7 +2326,7 @@ mod tests {
         ) -> std::pin::Pin<Box<dyn Future<Output = Result<acyclic_stream::OwnedBytes>> + Send + 'a>>
         {
             Box::pin(async move {
-                reference.descriptor().verify(EXTENSION_BYTES)?;
+                reference.descriptor().verify(EXTENSION_BYTES, &mut None)?;
                 Ok(acyclic_stream::OwnedBytes::from_static(EXTENSION_BYTES))
             })
         }
@@ -2607,7 +2545,7 @@ mod tests {
             &authority(),
             &event,
             encode_event(&authority(), &event)?,
-        )?;
+         &mut None)?;
         *provider
             .message_head_race
             .lock()
@@ -2754,8 +2692,8 @@ mod tests {
             .ok_or_else(|| Error::Invalid("live conversation missing".into()))?;
         assert_eq!(restored_history.logical_revision(), 10_000);
         assert_eq!(
-            restored_history.history_prefix_digest(10_000)?,
-            live_history.history_prefix_digest(10_000)?
+            restored_history.history_prefix_digest(10_000, &mut None)?,
+            live_history.history_prefix_digest(10_000, &mut None)?
         );
         assert!(
             restored
@@ -3104,7 +3042,7 @@ mod tests {
                 65_536,
             )?
             .with_input_verifier(Arc::new(TestContent));
-            let sparse = crate::conversation::ConversationState::selected_view_with_work(
+            let sparse = crate::conversation::ConversationState::selected_view(
                 [1, 5_000, 10_000].into_iter().map(message).collect(), &mut None).map(|(state, _)| state)?;
             assert_eq!(sparse.messages().len(), 3);
             assert!(sparse.agent.is_none());
@@ -3569,26 +3507,6 @@ mod tests {
         assert_eq!(
             reader.reducer().events_after(0, 6)?,
             reopened.reducer().events_after(0, 6)?
-        );
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn commit_then_reopen_replays_the_same_event() -> Result<()> {
-        let provider = Arc::new(MemoryStream::default());
-        let client = StreamClient::new(Arc::clone(&provider));
-        let mut aggregate = with_content(
-            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?,
-        );
-        let first = aggregate.execute(command(1)?, #[cfg(feature = "filesystem")] None, &mut None).await?;
-        let reopened =
-            StreamAggregate::open(&client, authority(), issuer().verifier(), schemas()).await?;
-        assert_eq!(reopened.reducer().revision(), 1);
-        assert_eq!(
-            reopened.reducer().events_after(0, 1)?,
-            vec![match first {
-                ApplyResult::Applied { event } | ApplyResult::Replayed { event } => event,
-            }]
         );
         Ok(())
     }
@@ -4610,7 +4528,7 @@ mod tests {
                 .await?;
         } else {
             let outcome = client
-                .commit(CommitRequest {
+                .provider.commit(CommitRequest {
                     conditions: vec![
                         CommitCondition::Tail {
                             path: stream.path().clone(),

@@ -1,12 +1,11 @@
 //! Canonical immutable volume-generation roots and parent lineage.
 
-use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder, EncodeAllocationStep, EncodeWorkStep, EncodeAccounting};
+use super::codec::{CanonicalDecodeError, DecodeLimits, Decoder, Encoder, EncodeWorkStep};
 use super::types::digest_object;
 use crate::foundation::{Digest, FileId, GenerationId, VolumeId};
 use crate::storage::{ObjectId, ObjectKind, object_digest};
-use crate::{CancellationToken, MeasuredResult, OperationFailure, OperationReceipt, WorkBudget, WorkCounters};
-use super::allocation::{AllocationLedger, KernelAccounting, KernelOwnedAllocation};
-use thiserror::Error;
+use crate::{CancellationToken, WorkBudget, WorkCounters};
+use super::allocation::{AllocationLedger};
 
 const DOMAIN: &[u8; 8] = b"ACYFSGEN";
 const VERSION: u16 = 1;
@@ -30,11 +29,9 @@ pub struct GenerationRoot {
 }
 
 impl GenerationRoot {
-    /// The initial namespace of a filtered fork is its delta baseline. Older
-    /// readers reject this required feature rather than publish false deletions.
+    /// The initial namespace of a filtered fork is its delta baseline.
     pub const FILTERED_FORK: u64 = 1;
 
-    /// Features of subsequent publications; filtering describes only creation.
     pub(crate) fn continuation_features(&self) -> u64 {
         self.required_features & !Self::FILTERED_FORK
     }
@@ -61,134 +58,8 @@ impl GenerationRoot {
     }
 }
 
-/// Encodes one validated canonical generation root.
-///
-/// # Errors
-///
-/// Rejects wrong object classes, duplicate/excess parents, and unsupported
-/// required feature bits.
-pub fn encode_generation_root(root: &GenerationRoot) -> Result<Vec<u8>, CanonicalDecodeError> {
-    encode_generation_root_with_permit(root, WorkBudget::UNBOUNDED, None, 0)
-        .map(|receipt| receipt.value)
-        .map_err(|failure| match failure.error {
-            GenerationRootEncodeError::Canonical(error) => error,
-            GenerationRootEncodeError::AllocationFailed(_) => CanonicalDecodeError::AllocationFailed,
-            GenerationRootEncodeError::Work(error) => CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Work(error)),
-            GenerationRootEncodeError::Cancelled(_) => CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static("filesystem operation was cancelled")),
-        })
-}
-
-/// Encodes the canonical root with admission before validation and allocation.
-/// `live_owned_bytes` accounts for operation-owned buffers retained by the caller.
-/// Borrowed input is not allocated again. Copies count identity and parent bytes;
-/// scalar serialization and the static domain contribute only encoded bytes.
-/// The ordinary encoder projects this same engine with an unbounded permit.
-///
-/// # Errors
-/// Preserves completed work and the actual output-reservation cause on failure.
-pub fn encode_generation_root_measured(
-    root: &GenerationRoot,
-    budget: WorkBudget,
-    cancellation: &CancellationToken,
-    live_owned_bytes: u64,
-) -> MeasuredResult<OperationReceipt<Vec<u8>>, GenerationRootEncodeError> {
-    encode_generation_root_with_permit(root, budget, Some(cancellation), live_owned_bytes)
-}
-
-fn encode_generation_root_with_permit(
-    root: &GenerationRoot,
-    budget: WorkBudget,
-    cancellation: Option<&CancellationToken>,
-    live_owned_bytes: u64,
-) -> MeasuredResult<OperationReceipt<Vec<u8>>, GenerationRootEncodeError> {
-    let mut work = WorkCounters::default();
-    let mut allocations = AllocationLedger::default();
-    let result = (|| {
-        if let Some(cancellation) = cancellation { cancellation.check()?; }
-        allocations.claim_bytes(live_owned_bytes, 0, &mut work, budget)
-            .map_err(|error| error.into_work_or(GenerationRootEncodeError::Canonical(CanonicalDecodeError::AllocationFailed)))?;
-        encode_generation_root_with_allocations(
-            root, &mut allocations, &mut work, budget, cancellation,
-            GenerationRootEncodeError::AllocationFailed,
-        )
-    })();
-    result.map(|value| OperationReceipt { value, work })
-        .map_err(|error| OperationFailure::new(error, work))
-}
-
-/// Uses the same writer on an existing operation ledger; native output keeps
-/// its actual capacity guard until the caller drops the encoded bytes.
-pub(crate) fn encode_generation_root_with_accounting(
-    root: &GenerationRoot,
-    accounting: &mut KernelAccounting<'_>,
-    cancellation: &CancellationToken,
-) -> Result<(Vec<u8>, KernelOwnedAllocation), crate::FsError> {
-    cancellation.check()?;
-    let mut encoding = EncodeAccounting::new(accounting);
-    let result = encode_generation_root_with_steps(
-        root,
-        |step| encoding.observe(step),
-        crate::FsError::EncodedAllocationFailed,
-    );
-    encoding.finish(result)
-}
-
-fn encode_generation_root_with_allocations<E>(
-    root: &GenerationRoot,
-    allocations: &mut AllocationLedger,
-    work: &mut WorkCounters,
-    budget: WorkBudget,
-    cancellation: Option<&CancellationToken>,
-    allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
-) -> Result<Vec<u8>, E>
-where E: From<CanonicalDecodeError> + From<crate::WorkError> + From<crate::CancellationError> {
-    let before = allocations.live_bytes();
-    let result = encode_generation_root_with_steps(
-        root,
-        |step| {
-            match step {
-                EncodeWorkStep::Check => {
-                    if let Some(cancellation) = cancellation { cancellation.check()?; }
-                }
-                EncodeWorkStep::Admit(delta) => work.admit(&delta, &budget)?,
-                EncodeWorkStep::Completed(delta) => {
-                    work.try_add_assign(&delta)?;
-                    work.verify(budget)?;
-                    if let Some(cancellation) = cancellation { cancellation.check()?; }
-                }
-                EncodeWorkStep::Allocation(EncodeAllocationStep::Reserve { capacity }) => {
-                    allocations.claim_elements::<u8>(capacity, work, budget)
-                        .map_err(|error| error.into_work_or(E::from(CanonicalDecodeError::AllocationFailed)))?;
-                }
-                EncodeWorkStep::Allocation(EncodeAllocationStep::Capacity { admitted_bytes, actual_bytes }) => {
-                    if actual_bytes > admitted_bytes {
-                        allocations.record_owned_bytes(actual_bytes - admitted_bytes, work)
-                            .map_err(|error| error.into_work_or(E::from(CanonicalDecodeError::AllocationFailed)))?;
-                        work.verify(budget)?;
-                    }
-                }
-                EncodeWorkStep::Allocation(EncodeAllocationStep::BeforeHeader { bytes }) => {
-                    work.admit(&WorkCounters { bytes_encoded: bytes, ..WorkCounters::default() }, &budget)?;
-                }
-                EncodeWorkStep::Allocation(EncodeAllocationStep::HeaderWritten { bytes }) => {
-                    work.try_add_assign(&WorkCounters { bytes_encoded: bytes, ..WorkCounters::default() })?;
-                    work.verify(budget)?;
-                    if let Some(cancellation) = cancellation { cancellation.check()?; }
-                }
-            }
-            Ok(())
-        },
-        allocation_error,
-    );
-    if result.is_err() {
-        let owned = allocations.live_bytes().checked_sub(before).ok_or(crate::WorkError::Overflow)?;
-        allocations.release(owned)
-            .map_err(|error| error.into_work_or(E::from(crate::WorkError::Overflow)))?;
-    }
-    result
-}
-
-fn encode_generation_root_with_steps<E: From<CanonicalDecodeError>>(
+/// Encodes one canonical object with before-effect admission.
+pub fn encode_generation_root<E: From<CanonicalDecodeError>>(
     root: &GenerationRoot,
     mut observe: impl FnMut(EncodeWorkStep) -> Result<(), E>,
     allocation_error: impl FnOnce(std::collections::TryReserveError) -> E,
@@ -206,35 +77,23 @@ fn encode_generation_root_with_steps<E: From<CanonicalDecodeError>>(
     };
     observe(EncodeWorkStep::Admit(encoded))?;
     observe(EncodeWorkStep::Check)?;
-    let mut encoder = Encoder::with_exact_capacity_with_steps(
+    let mut encoder = Encoder::with_exact_capacity(
         DOMAIN, VERSION, length,
         |step| observe(EncodeWorkStep::Allocation(step)),
         allocation_error,
     )?;
-    encode_generation_root_fields(root, &mut encoder);
+    encoder.fixed(&root.volume_id.into_bytes());
+    encoder.fixed(&root.root_file_id.into_bytes());
+    encoder.fixed(root.file_table.digest.as_bytes());
+    encoder.u32(root.parents.len() as u32);
+    for parent in &root.parents { encoder.fixed(parent.digest().as_bytes()); }
+    encoder.u64(root.required_features);
     observe(EncodeWorkStep::Completed(WorkCounters {
         bytes_encoded: (length - DOMAIN.len() - 2) as u64,
         bytes_copied: encoded.bytes_copied,
         ..WorkCounters::default()
     }))?;
     Ok(encoder.finish())
-}
-
-/// Failure from finite canonical root encoding.
-#[derive(Debug, Error)]
-pub enum GenerationRootEncodeError {
-    /// Invalid canonical root.
-    #[error(transparent)]
-    Canonical(#[from] CanonicalDecodeError),
-    /// The canonical output reservation failed with its actual allocator cause.
-    #[error("canonical generation-root output allocation failed")]
-    AllocationFailed(#[source] std::collections::TryReserveError),
-    /// The actual operation exceeded its permit.
-    #[error(transparent)]
-    Work(#[from] crate::WorkError),
-    /// The operation was cancelled.
-    #[error(transparent)]
-    Cancelled(#[from] crate::CancellationError),
 }
 
 pub(crate) fn generation_root_encoded_length(root: &GenerationRoot) -> Result<usize, CanonicalDecodeError> {
@@ -244,43 +103,25 @@ pub(crate) fn generation_root_encoded_length(root: &GenerationRoot) -> Result<us
         .ok_or(CanonicalDecodeError::LengthOverflow)
 }
 
-fn encode_generation_root_fields(root: &GenerationRoot, encoder: &mut Encoder) {
-    encoder.fixed(&root.volume_id.into_bytes());
-    encoder.fixed(&root.root_file_id.into_bytes());
-    encoder.fixed(root.file_table.digest.as_bytes());
-    encoder.u32(root.parents.len() as u32);
-    for parent in &root.parents {
-        encoder.fixed(parent.digest().as_bytes());
-    }
-    encoder.u64(root.required_features);
-}
-
-/// Decodes one bounded canonical generation root.
-///
-/// # Errors
-///
-/// Fails closed on malformed bytes, unsupported versions/features, excessive or
-/// duplicate parents, and trailing bytes.
-pub fn decode_generation_root(
-    bytes: &[u8],
-    limits: DecodeLimits,
-) -> Result<GenerationRoot, CanonicalDecodeError> {
-    decode_generation_root_with_steps(bytes, limits, |_| Ok(()))
-}
-
 /// Actual boundaries of the one canonical parent-buffer decoder.
-pub(crate) enum GenerationRootDecodeStep {
+pub enum GenerationRootDecodeStep {
+    /// Canonical primitive completion.
     Wire(super::codec::ReadAllocationStep),
+    /// Admit the parent buffer.
+    /// Admit one parent copy.
     BeforeParentsAllocation(usize),
+    /// Preserve the failed parent reservation.
     ReserveFailed(std::collections::TryReserveError),
+    /// Reconcile physical parent capacity.
     ParentsCapacity(usize),
+    /// Admit one parent copy.
     BeforeParent,
+    /// Record one completed parent copy.
     ParentCopied,
 }
 
-/// Uses the canonical decoder with short synchronous admission/completion
-/// callbacks. Copies are completed only after a successful parent decode/push.
-pub(crate) fn decode_generation_root_with_steps<E>(
+/// Uses the canonical decoder with short synchronous admission/completion callbacks.
+pub fn decode_generation_root<E>(
     bytes: &[u8],
     limits: DecodeLimits,
     mut observe: impl FnMut(GenerationRootDecodeStep) -> Result<(), E>,
@@ -288,20 +129,20 @@ pub(crate) fn decode_generation_root_with_steps<E>(
 where
     E: From<CanonicalDecodeError>,
 {
-    let mut decoder = Decoder::new_with_steps(
+    let mut decoder = Decoder::new(
         bytes, DOMAIN, VERSION, limits.maximum_object_bytes,
         &mut |step| observe(GenerationRootDecodeStep::Wire(step)),
     )?;
-    let volume_id = VolumeId::from_bytes(decoder.fixed_with_steps::<16, E>(
+    let volume_id = VolumeId::from_bytes(decoder.fixed::<16, E>(
         &mut |step| observe(GenerationRootDecodeStep::Wire(step)),
     )?);
-    let root_file_id = FileId::from_bytes(decoder.fixed_with_steps::<16, E>(
+    let root_file_id = FileId::from_bytes(decoder.fixed::<16, E>(
         &mut |step| observe(GenerationRootDecodeStep::Wire(step)),
     )?);
-    let file_table = digest_object(ObjectKind::FileTablePage, decoder.fixed_with_steps::<32, E>(
+    let file_table = digest_object(ObjectKind::FileTablePage, decoder.fixed::<32, E>(
         &mut |step| observe(GenerationRootDecodeStep::Wire(step)),
     )?);
-    let parent_count = decoder.u32_with_steps(&mut |step| observe(GenerationRootDecodeStep::Wire(step)))?;
+    let parent_count = decoder.u32(&mut |step| observe(GenerationRootDecodeStep::Wire(step)))?;
     if parent_count > MAXIMUM_PARENTS {
         return Err(CanonicalDecodeError::FieldTooLarge {
             observed: parent_count,
@@ -319,10 +160,10 @@ where
     observe(GenerationRootDecodeStep::ParentsCapacity(parents.capacity()))?;
     for _ in 0..parent_count {
         observe(GenerationRootDecodeStep::BeforeParent)?;
-        parents.push(GenerationId::new(Digest::from_bytes(decoder.fixed()?)));
+        parents.push(GenerationId::new(Digest::from_bytes(decoder.fixed(&mut |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()))?)));
         observe(GenerationRootDecodeStep::ParentCopied)?;
     }
-    let required_features = decoder.u64_with_steps(&mut |step| observe(GenerationRootDecodeStep::Wire(step)))?;
+    let required_features = decoder.u64(&mut |step| observe(GenerationRootDecodeStep::Wire(step)))?;
     decoder.finish()?;
     let root = GenerationRoot {
         volume_id,
@@ -335,9 +176,6 @@ where
     Ok(root)
 }
 
-/// Reads and decodes a root on one selected accounting context. Native provider
-/// bytes carry their original claim inside the physical buffer; only standalone
-/// reads merge provider receipts and retain their existing ledger bookkeeping.
 pub(crate) async fn read_generation_root_with_accounting<S: crate::AsyncObjectStore>(
     objects: &S,
     generation_root: ObjectId,
@@ -350,8 +188,6 @@ pub(crate) async fn read_generation_root_with_accounting<S: crate::AsyncObjectSt
     ).await
 }
 
-/// Reads the same authenticated root with the caller's exact decoder limits,
-/// retaining original native parent-buffer custody through every failure.
 pub(crate) async fn read_generation_root_with_limits_and_accounting<S: crate::AsyncObjectStore>(
     objects: &S,
     generation_root: ObjectId,
@@ -393,7 +229,7 @@ pub(crate) async fn read_generation_root_with_limits_and_accounting<S: crate::As
     );
     let mut scope = super::file_read::OriginalReadAccounting::new(accounting)?;
     let mut admitted_parent_bytes = 0;
-    let root = decode_generation_root_with_steps(&read, limits, |step| -> Result<(), crate::FsError> {
+    let root = decode_generation_root(&read, limits, |step| -> Result<(), crate::FsError> {
         match step {
             GenerationRootDecodeStep::Wire(step) => {
                 scope.observe(step).map_err(|error| {
@@ -506,33 +342,11 @@ async fn read_root_standalone<S: crate::AsyncObjectStore>(
     Ok((receipt.value, retained))
 }
 
-pub(crate) fn generation_root_parent_count(
-    bytes: &[u8],
-    limits: DecodeLimits,
-) -> Result<usize, CanonicalDecodeError> {
-    let mut decoder = Decoder::new(bytes, DOMAIN, VERSION, limits.maximum_object_bytes)?;
-    let _: [u8; 16] = decoder.fixed()?;
-    let _: [u8; 16] = decoder.fixed()?;
-    let _: [u8; 32] = decoder.fixed()?;
-    let parent_count = decoder.u32()?;
-    if parent_count > MAXIMUM_PARENTS {
-        return Err(CanonicalDecodeError::FieldTooLarge {
-            observed: parent_count,
-            maximum: MAXIMUM_PARENTS,
-        });
-    }
-    usize::try_from(parent_count).map_err(|_| CanonicalDecodeError::LengthOverflow)
-}
-
 /// Computes the typed object identity and generation identity of one root.
-///
-/// # Errors
-///
-/// Returns the same validation errors as [`encode_generation_root`].
 pub fn generation_root_id(
     root: &GenerationRoot,
 ) -> Result<(ObjectId, GenerationId), CanonicalDecodeError> {
-    let bytes = encode_generation_root(root)?;
+    let bytes = encode_generation_root(root, |_| Ok::<_, crate::kernel::CanonicalDecodeError>(()), |_| crate::kernel::CanonicalDecodeError::AllocationFailed)?;
     let object = ObjectId {
         kind: ObjectKind::GenerationRoot,
         digest: object_digest(ObjectKind::GenerationRoot, &bytes),

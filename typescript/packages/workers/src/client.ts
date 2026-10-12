@@ -67,7 +67,6 @@ export class WorkersClient {
 }
 export interface WorkersClient extends WorkersClientMethods {}
 export { WorkersClient as HttpWorkersClient };
-export type HttpWorkersOptions = WorkersOptions;
 export const createWorkersGrpcClient = (options: WorkersOptions): WorkersClient => new WorkersClient(options);
 function abortable<T>(pending: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (signal === undefined) return pending;

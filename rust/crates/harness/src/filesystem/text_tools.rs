@@ -35,7 +35,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         idempotency_key: &IdempotencyKey,
     ) -> Result<FileRef> {
         validate_edit_bound(maximum_bytes)?;
-        source.validate()?;
+        source.validate(&mut None)?;
         if is_internal_path(source.path()) {
             return Err(Error::Unauthorized(
                 "internal storage is not editable content".into(),

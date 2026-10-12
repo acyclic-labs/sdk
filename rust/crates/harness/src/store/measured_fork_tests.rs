@@ -36,7 +36,7 @@ async fn indexed_publication_cancellation_precedes_codec_and_sdk() -> Result<()>
     let cancellation = CancellationToken::new();
     cancellation.cancel();
     let mut work = history::HistoryWork::new(publication_budget(), &cancellation);
-    assert!(operations::IndexedPublication::new_with_work(
+    assert!(operations::IndexedPublication::new(
         reducer.authority(), &event, bytes, &mut Some(&mut work),
     ).is_err());
     Ok(())
@@ -691,7 +691,7 @@ async fn projection_location_mutations_never_read_chunks_and_release_original_gu
             };
             Some(records.remove(0))
         } else { None };
-        client.commit(request).await?;
+        client.provider.commit(request).await?;
         if let Some(bytes) = detached {
             client.stream(&head)?.append_at(bytes, 0).await?;
         }

@@ -34,7 +34,7 @@ pub(crate) fn copy_file(
     source: &FileRef, quota: &mut crate::wire_codec::CodecQuota<'_, '_>,
 ) -> Result<FileRef> {
     if quota.work().is_none() { return Ok(source.clone()); }
-    let file = source.clone_with_work(quota.work())?;
+    let file = source.copy(quota.work())?;
     quota.adopt(file.logical_owned_bytes()?)?;
     Ok(file)
 }
@@ -1247,7 +1247,7 @@ pub(super) fn admission_from_owned_value(
         for (output, value) in schema_digest.iter_mut().zip(bytes) {
             *output = u8::try_from(number(value)?).map_err(|_| invalid())?;
         }
-        let content = FileRef::from_owned_value_with_work(field(&mut fields, "content")?, work)?;
+        let content = FileRef::from_value(field(&mut fields, "content")?, work)?;
         Ok(ExtensionConfiguration { extension, schema_digest, content })
     }
     fn vector<T>(

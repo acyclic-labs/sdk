@@ -16,25 +16,6 @@ pub(super) fn validate_directory(path: &Path) -> io::Result<()> {
     validate_metadata(&metadata, true)
 }
 
-pub(super) fn create_private(path: &Path) -> io::Result<File> {
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o600).custom_flags(libc::O_NOFOLLOW);
-    }
-    let file = options.open(path)?;
-    if let Err(error) = file
-        .metadata()
-        .and_then(|metadata| validate_metadata(&metadata, false))
-    {
-        drop(file);
-        let _ = fs::remove_file(path);
-        return Err(error);
-    }
-    Ok(file)
-}
 
 pub(super) fn open_private(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
@@ -96,13 +77,8 @@ pub(super) fn new_key() -> io::Result<[u8; 32]> {
     Ok(key)
 }
 
-#[cfg(unix)]
-pub(super) fn protect(bytes: &[u8]) -> io::Result<Vec<u8>> {
-    Ok(bytes.to_vec())
-}
-#[cfg(unix)]
 pub(super) fn unprotect(bytes: &[u8]) -> io::Result<Vec<u8>> {
-    Ok(bytes.to_vec())
+    unprotect_with_copy(bytes, |bytes| Ok(bytes.to_vec()))
 }
 
 /// The managed copy belongs to the original caller's guarded SDK producer.
@@ -145,15 +121,6 @@ pub(super) fn new_key() -> io::Result<[u8; 32]> {
     Ok(key)
 }
 
-#[cfg(windows)]
-pub(super) fn protect(bytes: &[u8]) -> io::Result<Vec<u8>> {
-    windows_protect(bytes, true)
-}
-#[cfg(windows)]
-pub(super) fn unprotect(bytes: &[u8]) -> io::Result<Vec<u8>> {
-    windows_protect(bytes, false)
-}
-
 /// DPAPI owns its opaque foreign allocation.
 #[cfg(windows)]
 pub(super) fn unprotect_with_copy<T, E: From<io::Error>>(
@@ -167,11 +134,6 @@ pub(super) fn protect_with_copy<T, E: From<io::Error>>(
     bytes: &[u8], copy: impl FnOnce(&[u8]) -> Result<T, E>,
 ) -> Result<T, E> {
     windows_protect_with_copy(bytes, true, copy)
-}
-
-#[cfg(windows)]
-fn windows_protect(bytes: &[u8], protect: bool) -> io::Result<Vec<u8>> {
-    windows_protect_with_copy(bytes, protect, |bytes| Ok(bytes.to_vec()))
 }
 
 #[cfg(windows)]

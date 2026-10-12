@@ -36,7 +36,7 @@ impl ForkToolArguments {
         &self, caller: TaskId, limits: Limits,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<TaskId> {
-        limits.validate_with_work(work)?;
+        limits.validate(work)?;
         if let Some(observer) = work.as_deref_mut() {
             observer.codec_charge(crate::contract::JsonCodecCharge::Work { bytes: 0, items: 1 })?;
         }
@@ -179,7 +179,7 @@ where
         }
         crate::conversation::ContentGrant::verify(&verifier, &signed, volume, VolumeOperation::Read)?;
     }
-    config.limits.validate()?;
+    config.limits.validate(&mut None)?;
     let selected = arguments.source_task(caller, config.limits, &mut None)?;
     let mut request = ForkRequest {
         operation_id, parent: parent.reducer().authority().clone(),
@@ -304,12 +304,12 @@ pub(crate) fn recursive_fork_request_with_native_work(
         crate::resources::ResourceKind::Stream, provider, path, Some(version), &mut observer,
     )?;
     let reference = crate::resources::StreamRef::from_resource_with_work(reference, &mut observer)?;
-    let child_project = allocation.project.clone_with_work(&mut observer)?;
-    let child_private = allocation.private_volume.clone_with_work(&mut observer)?;
-    let child_result = allocation.result_volume.map(|volume| volume.clone_with_work(&mut observer)).transpose()?;
+    let child_project = allocation.project.copy(&mut observer)?;
+    let child_private = allocation.private_volume.copy(&mut observer)?;
+    let child_result = allocation.result_volume.map(|volume| volume.copy(&mut observer)).transpose()?;
     let source_project = source_read.map_or(source.project, |handle| &handle.authorization().project)
-        .clone_with_work(&mut observer)?;
-    let scratch = source.private_volume.clone_with_work(&mut observer)?;
+        .copy(&mut observer)?;
+    let scratch = source.private_volume.copy(&mut observer)?;
     let mut selections = Vec::new();
     let slots = 3 * std::mem::size_of::<crate::fork::ForkSelection>() as u64;
     observer.as_deref_mut().expect("native fork observer").admit_owned(slots)?;
@@ -525,7 +525,7 @@ where
         let mut history = io.history_io();
         let mut observer: Option<&mut dyn crate::store::history::HistoryIo> = Some(&mut history);
         (verifier.clone_with_work(&mut observer)?, signed.clone_with_work(&mut observer)?,
-            caller_project.clone_with_work(&mut observer)?)
+            caller_project.copy(&mut observer)?)
     };
     let provider = stream_provider.clone_with_io(&io)?;
     let selected_read = match source_read {
@@ -572,7 +572,7 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore, O: AsyncObjectStore>(
     use super::default_tools::{encode, recursive_observe, recursive_reject};
     recursive_observe(io, |work| {
         fork.validate_with_work(work)?;
-        command.validate_with_work(work)
+        command.validate(work)
     })?;
     if command.kind != FORK_PREPARE_TASK_COMMAND_KIND
         || fork.operation_id != command.operation_id || command.operation_id == child.operation_id
@@ -718,7 +718,7 @@ impl ForkPreparationMachine {
             digest: preparation_implementation_digest(Some(&io))?,
         };
         let schema;
-        (schema, custody) = io.decode_preparation::<Value>(PREPARATION_STATE_SCHEMA)?.into_native_parts()?;
+        (schema, custody) = io.decode_preparation::<Value>(PREPARATION_STATE_SCHEMA, crate::wire::ErrorCode::Storage)?.into_native_parts()?;
         metadata = io.take_native_custody(io.owned_bytes()?)?;
         custody.absorb(&mut metadata).map_err(Error::from)?;
         Ok(Arc::new(Self { identity, schema, _native_custody: Some(custody) }))
@@ -768,7 +768,7 @@ impl ResumableMachine for ForkPreparationMachine {
         let io = super::PreparationIo::from_native_work(work)?;
         let state = self.initialize_engine(input, Some(&io))?;
         let custody = io.take_native_custody(
-            super::default_tools::recursive_value_owned_bytes(&state, Some(&io))?,
+            super::default_tools::recursive_value_owned_bytes(&state)?,
         )?;
         Ok((state, custody))
     }
@@ -805,7 +805,7 @@ impl ForkPreparationMachine {
         let state: State = decode(state, io)?;
         let (state, commands, status) = match state {
             State::Ready { command, request_digest } => {
-                recursive_observe(io, |work| command.validate_with_work(work))?;
+                recursive_observe(io, |work| command.validate(work))?;
                 if !input.is_null() || command.kind != FORK_PREPARE_TASK_COMMAND_KIND {
                     return Err(recursive_reject(io, crate::wire::ErrorCode::Invalid, "fork preparation initial trigger changed"));
                 }
@@ -851,15 +851,6 @@ impl ForkPreparationMachine {
 
 fn preparation_payload_digest<T: Serialize>(value: &T, io: Option<&super::PreparationIo>) -> Result<[u8; 32]> {
     let Some(io) = io else { return crate::contract::canonical_json_digest(value); };
-    let mut observer = io.history_io();
-    let bytes = crate::store::history::canonical_bytes_with_work(
-        value, io.remaining()?.bytes_encoded, &mut Some(&mut observer),
-    )?;
-    use crate::store::history::HistoryIo as _;
-    observer.hashed_bytes(bytes.len() as u64)?;
-    let digest = *blake3::hash(&bytes).as_bytes();
-    let owned = bytes.capacity() as u64;
-    drop(bytes);
-    observer.release_owned(owned)?;
-    Ok(digest)
+    crate::contract::canonical_json_digest_with_work(
+        value, io.remaining()?.bytes_encoded, &mut Some(&mut io.history_io()))
 }

@@ -2794,8 +2794,8 @@ mod tests {
     ) -> S3Result<FilesystemS3Adapter<Resolver, MemoryAuthorityBackend, MemoryObjectBackend>> {
         let filesystem = Fs::memory();
         let workspace = filesystem
-            .create_workspace("s3-http")
-            .await
+            .create_workspace("s3-http", crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(|_| s3s::s3_error!(InternalError))?;
         FilesystemS3Adapter::new(
             Arc::new(Resolver {

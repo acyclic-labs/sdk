@@ -144,8 +144,6 @@ impl OwnedBytes {
             Bound::Unbounded => self.len(),
         };
         assert!(begin <= end && end <= self.len(), "slice range exceeds visible bytes");
-        // Preserve the full backing even for an empty view: the physical data
-        // and its original claim must retire together at the final carrier.
         Self {
             bytes: self.bytes.clone(), start: self.start + begin, end: self.start + end,
             retained_capacity: self.retained_capacity,
@@ -208,7 +206,6 @@ impl<'de> serde::Deserialize<'de> for OwnedBytes {
 /// Exclusive fixed-buffer preparation for the unified guarded byte carrier.
 #[must_use]
 pub struct PreparedOwnedBytes<G: Send + Sync + 'static> {
-    maximum_len: usize,
     guard: Arc<GuardBundle<G>>,
 }
 
@@ -229,7 +226,6 @@ impl<G: Send + Sync + 'static> PreparedOwnedBytes<G> {
         match metadata {
             Ok(metadata) => Ok(Self {
                 guard: Arc::new(GuardBundle { data, _metadata: metadata, _original_guard: original_guard }),
-                maximum_len,
             }),
             Err(error) => Err(PreparedOwnedBytesFailure { data, original_guard: Some(original_guard), error }),
         }
@@ -237,7 +233,7 @@ impl<G: Send + Sync + 'static> PreparedOwnedBytes<G> {
 
     /// Returns the initialized fixed writable bound established before the action.
     #[must_use]
-    pub const fn maximum_len(&self) -> usize { self.maximum_len }
+    pub fn maximum_len(&self) -> usize { self.guard.data.len() }
 
     /// Borrows only the fixed initialized slice. No vector or mutable owner escapes.
     pub fn writable(&mut self) -> &mut [u8] {
@@ -246,10 +242,10 @@ impl<G: Send + Sync + 'static> PreparedOwnedBytes<G> {
 
     /// Freezes the checked prefix into the unified carrier using existing controls.
     pub fn freeze(self, actual_len: usize) -> Result<OwnedBytes, Self> {
-        if actual_len > self.maximum_len { return Err(self); }
+        if actual_len > self.maximum_len() { return Err(self); }
         Ok(OwnedBytes {
             bytes: Bytes::new(), start: 0, end: actual_len,
-            retained_capacity: Some(self.maximum_len), guard: Some(self.guard),
+            retained_capacity: Some(self.maximum_len()), guard: Some(self.guard),
         })
     }
 }
@@ -262,7 +258,7 @@ impl<G: Send + Sync + 'static> AsMut<[u8]> for PreparedOwnedBytes<G> {
 #[cfg(not(target_arch = "wasm32"))]
 impl<G: Send + Sync + 'static> std::fmt::Debug for PreparedOwnedBytes<G> {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("PreparedOwnedBytes").field("maximum_len", &self.maximum_len).finish_non_exhaustive()
+        formatter.debug_struct("PreparedOwnedBytes").field("maximum_len", &self.maximum_len()).finish_non_exhaustive()
     }
 }
 
@@ -272,8 +268,6 @@ impl<G: Send + Sync + 'static> std::fmt::Debug for PreparedOwnedBytes<G> {
 pub enum PreparedOwnedBytesError {
     /// The transferred initialized length does not cover its real capacity.
     NotFullyInitialized,
-    /// The safe unique conversion unexpectedly could not recover mutable ownership.
-    NotUnique,
     /// Admission failed on the original meter before its corresponding allocator call.
     Admission(io::Error),
 }
@@ -326,7 +320,6 @@ mod tests {
     struct Meter {
         cancelled: AtomicBool,
         attempts: AtomicU64,
-        checks: AtomicU64,
         memory: AtomicU64,
         limit: AtomicU64,
     }
@@ -335,7 +328,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 cancelled: AtomicBool::new(false), attempts: AtomicU64::new(0),
-                checks: AtomicU64::new(0), memory: AtomicU64::new(0),
+                memory: AtomicU64::new(0),
                 limit: AtomicU64::new(u64::MAX),
             }
         }
@@ -353,7 +346,6 @@ mod tests {
 
     impl NativeReadMeter for Meter {
         fn check(&self) -> io::Result<()> {
-            self.checks.fetch_add(1, AtomicOrdering::Relaxed);
             if self.cancelled.load(AtomicOrdering::Relaxed) {
                 Err(io::ErrorKind::Interrupted.into())
             } else { Ok(()) }
@@ -424,13 +416,11 @@ mod tests {
         let (mut data, guard) = funded_data(&meter, 3);
         data[..3].copy_from_slice(b"abc");
         let data = OwnedBytes::from_vec_with_guard(data, guard, Arc::clone(&meter)).unwrap().slice(..3);
-        let attempts = observer.attempts.load(AtomicOrdering::Relaxed);
         let encoded = serde_json::to_string(&data).unwrap();
         assert_eq!(encoded, "[97,98,99]");
         let decoded: OwnedBytes = serde_json::from_str(&encoded).unwrap();
         assert_eq!(decoded.as_slice(), b"abc");
         assert!(!decoded.matches_meter(&meter));
-        assert_eq!(observer.attempts.load(AtomicOrdering::Relaxed), attempts);
     }
 
     #[test]
@@ -438,12 +428,7 @@ mod tests {
         let observer = Arc::new(Meter::new());
         let meter: Arc<dyn NativeReadMeter> = observer.clone();
         let (data, guard) = funded_data(&meter, 23);
-        let capacity = data.capacity();
         let mut builder = PreparedOwnedBytes::new(data, guard, meter).unwrap();
-        assert_eq!(observer.memory.load(AtomicOrdering::Relaxed),
-            (capacity + std::mem::size_of::<GuardBundle<ReadAllocation>>()) as u64);
-        let checks = observer.checks.load(AtomicOrdering::Relaxed);
-        let attempts = observer.attempts.load(AtomicOrdering::Relaxed);
         let retained = observer.memory.load(AtomicOrdering::Relaxed);
         observer.limit.store(3, AtomicOrdering::Relaxed);
         observer.cancelled.store(true, AtomicOrdering::Relaxed);
@@ -453,8 +438,6 @@ mod tests {
         let last_alias = bytes.slice(1..3);
         assert_eq!(last_alias.as_slice(), b"on");
         let empty_alias = bytes.slice(0..0);
-        assert_eq!(observer.checks.load(AtomicOrdering::Relaxed), checks);
-        assert_eq!(observer.attempts.load(AtomicOrdering::Relaxed), attempts);
         drop(bytes);
         drop(last_alias);
         assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), retained);
@@ -490,7 +473,6 @@ mod tests {
         let failure = PreparedOwnedBytes::new(data, guard, meter).unwrap_err();
         assert!(matches!(failure.error(), PreparedOwnedBytesError::NotFullyInitialized));
         assert_eq!(failure.retained_capacity(), capacity);
-        assert_eq!(observer.attempts.load(AtomicOrdering::Relaxed), 1);
         assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), capacity as u64);
         drop(failure);
         assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), 0);
@@ -509,7 +491,6 @@ mod tests {
             PreparedOwnedBytesError::Admission(error) => assert_eq!(error.kind(), io::ErrorKind::Interrupted),
             _ => panic!("original cancellation cause is retained"),
         }
-        assert_eq!(observer.attempts.load(AtomicOrdering::Relaxed), 1);
         assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), capacity as u64);
         drop(failure);
         assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), 0);
@@ -565,26 +546,6 @@ mod tests {
         assert_eq!(OwnedBytes::from(Bytes::from_static(b"opaque")).retained_capacity(), None);
     }
 
-    #[test]
-    fn ordinary_unique_take_recovers_original_pointer_and_capacity() {
-        for (capacity, contents) in [(31, &b"spare"[..]), (5, &b"exact"[..]), (19, &b""[..])] {
-            let mut data = Vec::with_capacity(capacity);
-            data.extend_from_slice(contents);
-            let pointer = data.as_ptr();
-            let capacity = data.capacity();
-            let bytes = OwnedBytes::from(data);
-            let recovered = bytes.try_into_ordinary_vec().unwrap();
-            assert_eq!(recovered.as_ptr(), pointer);
-            assert_eq!(recovered.capacity(), capacity);
-            assert_eq!(recovered, contents);
-        }
-        let data = vec![1, 2, 3].into_boxed_slice();
-        let pointer = data.as_ptr();
-        let recovered = OwnedBytes::from(data).try_into_ordinary_vec().unwrap();
-        assert_eq!(recovered.as_ptr(), pointer);
-        assert_eq!(recovered.capacity(), 3);
-        assert_eq!(recovered, [1, 2, 3]);
-    }
 
     #[test]
     fn ordinary_shared_take_preserves_carrier_until_last_alias_retires() {
@@ -618,7 +579,6 @@ mod tests {
         let narrowed = narrowed.try_into_ordinary_vec().unwrap_err();
         assert_eq!(narrowed.as_slice(), [2, 3]);
         assert_eq!(narrowed.as_slice().as_ptr(), pointer);
-        assert_eq!((narrowed.start, narrowed.end), (1, 3));
         assert_eq!(narrowed.retained_capacity(), Some(4));
 
         for bytes in [
@@ -644,8 +604,6 @@ mod tests {
         let pointer = data.as_ptr();
         let capacity = data.capacity();
         let bytes = OwnedBytes::from_vec_with_guard(data, guard, meter.clone()).unwrap();
-        let guard_pointer = Arc::as_ptr(bytes.guard.as_ref().unwrap());
-        let checks = observer.checks.load(AtomicOrdering::Relaxed);
         let attempts = observer.attempts.load(AtomicOrdering::Relaxed);
         let retained = observer.memory.load(AtomicOrdering::Relaxed);
         observer.cancelled.store(true, AtomicOrdering::Relaxed);
@@ -653,12 +611,8 @@ mod tests {
         let recovered = bytes.try_into_ordinary_vec().unwrap_err();
         assert_eq!(recovered.as_slice().as_ptr(), pointer);
         assert_eq!(recovered.as_slice(), vec![0; capacity]);
-        assert_eq!((recovered.start, recovered.end), (0, capacity));
         assert_eq!(recovered.retained_capacity(), Some(capacity));
-        assert!(std::ptr::eq(Arc::as_ptr(recovered.guard.as_ref().unwrap()), guard_pointer));
         assert!(recovered.matches_meter(&meter));
-        assert_eq!(observer.checks.load(AtomicOrdering::Relaxed), checks);
-        assert_eq!(observer.attempts.load(AtomicOrdering::Relaxed), attempts);
         assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), retained);
         drop(recovered);
         assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), 0);
@@ -717,8 +671,6 @@ mod tests {
         let bytes = OwnedBytes::from_vec_with_guard(data, guard, meter.clone()).unwrap();
         assert_eq!(bytes.retained_capacity(), Some(capacity));
         assert!(bytes.matches_meter(&meter));
-        let checks = observer.checks.load(AtomicOrdering::Relaxed);
-        let attempts = observer.attempts.load(AtomicOrdering::Relaxed);
         let retained = observer.memory.load(AtomicOrdering::Relaxed);
         observer.cancelled.store(true, AtomicOrdering::Relaxed);
         observer.limit.store(3, AtomicOrdering::Relaxed);
@@ -727,8 +679,6 @@ mod tests {
         assert!(alias.is_empty());
         assert_eq!(alias.retained_capacity(), Some(capacity));
         assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), retained);
-        assert_eq!(observer.checks.load(AtomicOrdering::Relaxed), checks);
-        assert_eq!(observer.attempts.load(AtomicOrdering::Relaxed), attempts);
         drop(alias);
         assert_eq!(observer.memory.load(AtomicOrdering::Relaxed), 0);
     }

@@ -4,7 +4,7 @@ use super::{
     CanonicalDecodeError, ClosureError, ClosureLimits, GenerationProof, codec::Decoder,
     volume_authority_id,
 };
-use crate::async_storage::StorageFuture;
+use acyclic_stream::ProviderTask;
 use crate::cancellation::CancellationToken;
 use crate::foundation::{
     AuthorityId, Digest, Epoch, Head, OperationId, ProposedCommit, VolumeId, usize_to_u64,
@@ -125,7 +125,6 @@ impl<'a> PublicationAccounting<'a> {
         }
     }
 
-
     fn retain(&mut self, bytes: u64) -> Result<(), crate::FsError> {
         if let Self::Standalone { retained, .. } = self {
             *retained = retained.checked_add(bytes).ok_or(WorkError::Overflow)?;
@@ -229,8 +228,6 @@ impl PublicationIntent {
         self
     }
 
-    /// Original fingerprint data supplied only by trusted, authenticated
-    /// canonical evidence ingress. This never changes current CAS authority.
     pub(crate) fn with_original_fingerprint_permit(mut self, original_permit: Option<PublicationPermit>) -> Self {
         self.fingerprint_permit = original_permit;
         self
@@ -246,8 +243,6 @@ pub struct PublishedGeneration {
     pub generation_root: ObjectId,
 }
 
-/// Borrowed data authenticated by the complete canonical publication decoder.
-/// It conveys no current publication permission or owner authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct BorrowedPublicationEvidence<'a> {
     pub(crate) publication: PublishedGeneration,
@@ -255,42 +250,25 @@ pub(crate) struct BorrowedPublicationEvidence<'a> {
     pub(crate) evidence_digest: Option<Digest>,
 }
 
-/// Decodes one canonical generation-publication authority payload.
-///
-/// The authority store deliberately treats payloads as opaque. This decoder is
-/// the filesystem projection boundary used to reconstruct the current volume
-/// generation without scanning immutable storage or confusing the authority
-/// hash-chain digest with a generation identity.
-///
-/// # Errors
-///
-/// Rejects wrong domain/version, truncation, trailing bytes, an unknown/non-root
-/// object kind, or invalid v2 evidence framing/digest before projecting either scalar.
-pub fn decode_published_generation(
-    bytes: &[u8],
-    maximum_payload_bytes: u64,
-) -> Result<PublishedGeneration, CanonicalDecodeError> {
-    decode_published_generation_with_steps(bytes, maximum_payload_bytes, |_| Ok(()))
-}
-
-pub(crate) fn decode_published_generation_with_steps<E: From<CanonicalDecodeError>>(
+/// Decodes one canonical publication with before-effect admission.
+pub fn decode_published_generation<E: From<CanonicalDecodeError>>(
     bytes: &[u8],
     maximum_payload_bytes: u64,
     observe: impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<PublishedGeneration, E> {
-    decode_publication_evidence_with_steps(bytes, maximum_payload_bytes, observe).map(|decoded| decoded.publication)
+    decode_publication_evidence(bytes, maximum_payload_bytes, observe).map(|decoded| decoded.publication)
 }
 
-pub(crate) fn decode_publication_evidence_with_steps<'a, E: From<CanonicalDecodeError>>(
+pub(crate) fn decode_publication_evidence<'a, E: From<CanonicalDecodeError>>(
     bytes: &'a [u8],
     maximum_payload_bytes: u64,
     mut observe: impl FnMut(super::codec::ReadAllocationStep) -> Result<(), E>,
 ) -> Result<BorrowedPublicationEvidence<'a>, E> {
-    let (mut decoder, version) = Decoder::new_recognized_versions_with_steps(
+    let (mut decoder, version) = Decoder::new_recognized_versions(
         bytes, PAYLOAD_DOMAIN, &[1, 2], maximum_payload_bytes, &mut observe,
     )?;
-    let volume_id = VolumeId::from_bytes(decoder.fixed_with_steps::<16, E>(&mut observe)?);
-    let kind = ObjectKind::from_canonical_tag(decoder.u8_with_steps(&mut observe)?).map_err(|_| {
+    let volume_id = VolumeId::from_bytes(decoder.fixed::<16, E>(&mut observe)?);
+    let kind = ObjectKind::from_canonical_tag(decoder.u8(&mut observe)?).map_err(|_| {
         E::from(CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static("unknown publication object kind")))
     })?;
     if kind != ObjectKind::GenerationRoot {
@@ -300,14 +278,14 @@ pub(crate) fn decode_publication_evidence_with_steps<'a, E: From<CanonicalDecode
     }
     let generation_root = ObjectId {
         kind,
-        digest: Digest::from_bytes(decoder.fixed_with_steps::<32, E>(&mut observe)?),
+        digest: Digest::from_bytes(decoder.fixed::<32, E>(&mut observe)?),
     };
     let publication = PublishedGeneration { volume_id, generation_root };
     if version == 1 {
         decoder.finish().map_err(E::from)?;
         return Ok(BorrowedPublicationEvidence { publication, original_evidence: None, evidence_digest: None });
     }
-    let length = decoder.u32_with_steps(&mut observe)?;
+    let length = decoder.u32(&mut observe)?;
     if length == 0 {
         return Err(E::from(CanonicalDecodeError::Invariant(super::codec::CanonicalInvariant::Static(
             "empty original publication evidence",
@@ -320,7 +298,7 @@ pub(crate) fn decode_publication_evidence_with_steps<'a, E: From<CanonicalDecode
         return Err(E::from(CanonicalDecodeError::FieldTooLarge { observed: length, maximum }));
     }
     let evidence = decoder.take_exact(usize::try_from(length).map_err(|_| CanonicalDecodeError::LengthOverflow)?)?;
-    let stored_digest = Digest::from_bytes(decoder.fixed_with_steps::<32, E>(&mut observe)?);
+    let stored_digest = Digest::from_bytes(decoder.fixed::<32, E>(&mut observe)?);
     decoder.finish().map_err(E::from)?;
     let hashed = usize_to_u64(EVIDENCE_DOMAIN.len()).checked_add(u64::from(length))
         .ok_or(CanonicalDecodeError::LengthOverflow)?;
@@ -335,40 +313,14 @@ pub(crate) fn decode_publication_evidence_with_steps<'a, E: From<CanonicalDecode
     Ok(BorrowedPublicationEvidence { publication, original_evidence: Some(evidence), evidence_digest: Some(stored_digest) })
 }
 
-/// Decodes the same canonical authority payload on the caller's existing
-/// accounting context. This fixed-field format allocates neither data nor
-/// error strings, including on malformed original-native recovery.
-pub(crate) fn decode_published_generation_with_accounting(
-    bytes: &[u8],
-    maximum_payload_bytes: u64,
-    accounting: &mut super::allocation::KernelAccounting<'_>,
-) -> Result<PublishedGeneration, crate::FsError> {
-    decode_publication_evidence_with_accounting(bytes, maximum_payload_bytes, accounting).map(|decoded| decoded.publication)
-}
-
 pub(crate) fn decode_publication_evidence_with_accounting<'a>(
     bytes: &'a [u8],
     maximum_payload_bytes: u64,
     accounting: &mut super::allocation::KernelAccounting<'_>,
 ) -> Result<BorrowedPublicationEvidence<'a>, crate::FsError> {
-    accounting.check()?;
-    #[cfg(not(target_arch = "wasm32"))]
-    if accounting.native_work().is_some() {
-        let mut observer = super::file_read::OriginalReadAccounting::new(accounting)?;
-        let decoded = decode_publication_evidence_with_steps(bytes, maximum_payload_bytes, |step| observer.observe(step));
-        drop(observer.into_allocation());
-        return decoded.map_err(super::file_read::ReadDecodeError::into_original_fs_error);
-    }
-    let (allocations, work, budget, cancellation) = accounting.standalone_parts()
-        .expect("only a standalone decoder remains after the native branch");
-    let mut observer = Some(super::file_read::ReadDecodeAccounting { allocations, work, budget, cancellation });
-    decode_publication_evidence_with_steps(bytes, maximum_payload_bytes, |step| {
-        super::file_read::observe_read_decode_step(&mut observer, step).map_err(|error| match error {
-            super::file_read::ReadDecodeError::Canonical(error) => crate::FsError::Decode(error),
-            super::file_read::ReadDecodeError::AllocationFailed(_) => crate::FsError::Decode(CanonicalDecodeError::AllocationFailed),
-            super::file_read::ReadDecodeError::Accounting(error) => error,
-        })
-    })
+    super::file_read::decode_owned(accounting, |observe| decode_publication_evidence(bytes, maximum_payload_bytes, observe))
+        .map(|(value, _guard)| value)
+        .map_err(super::file_read::ReadDecodeError::into_original_fs_error)
 }
 
 /// Successful or semantically rejected generation publication.
@@ -384,8 +336,6 @@ pub struct PublicationReceipt {
 
 /// Publication failure retaining every unit of work spent before rejection.
 pub type PublicationFailure = OperationFailure<PublicationError>;
-
-
 
 /// Fail-closed generation-publication errors.
 #[derive(Debug, Error, strum::IntoStaticStr)]
@@ -422,18 +372,7 @@ pub enum PublicationError {
     Work(#[from] WorkError),
 }
 
-/// Authenticates an immutable generation's complete closure, then atomically
-/// submits it to the volume authority.
-///
-/// No authority operation occurs unless closure and volume validation succeed.
-/// Semantic stale-head, fenced-writer, and idempotency outcomes are returned as
-/// values so callers can resolve retries without guessing whether publication
-/// became durable.
-///
-/// # Errors
-///
-/// Fails with an exact work receipt on closure, volume, authority-backend, or
-/// work-admission failure.
+/// Authenticates an immutable generation's complete closure, then atomically submits it to the volume authority.
 pub fn publish_generation<O: crate::ImmediateObjectStore, A: crate::ImmediateAuthorityStore>(
     objects: &O,
     authority: &A,
@@ -448,15 +387,6 @@ pub fn publish_generation<O: crate::ImmediateObjectStore, A: crate::ImmediateAut
 }
 
 /// Asynchronously authenticates and atomically publishes one generation.
-///
-/// This is the browser/remote execution surface for the same canonical closure
-/// proof, publication payload, fingerprint, and authority state machine used by
-/// [`publish_generation`].
-///
-/// # Errors
-///
-/// Returns exact closure, cancellation, authority, and work failures without
-/// exposing a generation before its complete immutable closure is proven.
 pub async fn publish_generation_async<O: crate::AsyncObjectStore, A: crate::AsyncAuthorityStore>(
     objects: &O,
     authority: &A,
@@ -491,11 +421,6 @@ pub(crate) async fn publish_generation_async_with_permit<
     ).await.map_err(|failure| OperationFailure::new(publication_error(failure.error), *failure.work))
 }
 
-/// Uses the original closure/append engine with a caller-owned asynchronous
-/// check at its authority seal. Resolved lost acknowledgements never reseal.
-/// Optional root preparation admits actual caller-owned buffers from the
-/// authenticated root before publication; those buffers remain standing
-/// throughout the drain, owner check and original authority CAS.
 pub(crate) async fn publish_generation_async_guarded<O, A, E, F, Fut>(
     objects: &O,
     authority: &A,
@@ -512,8 +437,8 @@ where
     O: crate::AsyncObjectStore,
     A: crate::AsyncAuthorityStore,
     E: From<crate::FsError> + Send,
-    F: FnMut(WorkBudget) -> Fut + StorageFuture,
-    Fut: Future<Output = crate::MeasuredResult<crate::OperationReceipt<()>, E>> + StorageFuture,
+    F: FnMut(WorkBudget) -> Fut + ProviderTask,
+    Fut: Future<Output = crate::MeasuredResult<crate::OperationReceipt<()>, E>> + ProviderTask,
 {
     let mut accounting = PublicationAccounting::standalone(budget, cancellation);
     let mut seal = |allowance: Option<WorkBudget>| {
@@ -561,9 +486,6 @@ where
         .map_err(|error| OperationFailure::new(error, accounting.work()))
 }
 
-/// Original-ledger publication: no reconstructed budget, measured failure box
-/// or receipt merge occurs in this path. The actual proof guard leaves with
-/// its data, and the caller's exact callback cause remains unchanged.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) async fn publish_generation_async_guarded_with_native_work<'a, O, A, E, F, Fut>(
     objects: &O,
@@ -654,10 +576,10 @@ async fn publish_generation_async_inner<O, E, F, Fut, G, Dispatch, R>(
 where
     O: crate::AsyncObjectStore,
     E: From<crate::FsError> + Send,
-    F: FnMut(Option<WorkBudget>) -> Fut + StorageFuture,
-    Fut: Future<Output = Result<Option<WorkCounters>, PublicationStepFailure<E>>> + StorageFuture,
-    G: FnMut(GuardedAppend, Option<WorkBudget>) -> Dispatch + crate::async_storage::StorageFuture,
-    Dispatch: Future<Output = Result<(PublicationAppend, Option<WorkCounters>), PublicationStepFailure<E>>> + crate::async_storage::StorageFuture,
+    F: FnMut(Option<WorkBudget>) -> Fut + ProviderTask,
+    Fut: Future<Output = Result<Option<WorkCounters>, PublicationStepFailure<E>>> + ProviderTask,
+    G: FnMut(GuardedAppend, Option<WorkBudget>) -> Dispatch + acyclic_stream::ProviderTask,
+    Dispatch: Future<Output = Result<(PublicationAppend, Option<WorkCounters>), PublicationStepFailure<E>>> + acyclic_stream::ProviderTask,
     R: FnMut(&super::GenerationRoot, &mut PublicationProofGuard, &mut PublicationAccounting<'_>) -> Result<(), E>,
 {
     let expected_authority = volume_authority_id(request.volume_id);
@@ -1021,8 +943,6 @@ pub(crate) fn contextual_publication_fingerprint_with_accounting(
     Ok(fingerprint)
 }
 
-/// Hashes the authenticated original payload without allocating or copying its
-/// retained operation data. The caller keeps the complete durable record alive.
 pub(crate) fn contextual_publication_fingerprint_from_payload_with_accounting(
     request: PublishGenerationRequest,
     operation_context: Digest,
@@ -1063,7 +983,6 @@ fn hash_publication_fingerprint(operation_context: Option<Digest>, input: &[u8])
     hasher.update(input);
     Digest::from_bytes(*hasher.finalize().as_bytes())
 }
-
 
 const fn publication_payload_length() -> usize {
     PAYLOAD_DOMAIN.len() + 2 + 16 + 1 + 32

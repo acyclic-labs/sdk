@@ -49,11 +49,8 @@ pub(crate) fn clone_value(
         io.check_json_byte_bound(value, maximum_bytes)?;
     }
     io.retain_owned(std::mem::size_of::<Value>() as u64)?;
-    let copied = crate::model::model_value_clone_with_io(value, Some(&io))?;
-    let retained = (std::mem::size_of::<Value>() as u64)
-        .checked_add(crate::contract::json_value_logical_owned_bytes(&copied)?)
-        .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-            reason: "tool JSON ownership overflow" })?;
+    let copied = crate::model::clone_value(value, Some(&io))?;
+    let retained = value_owned_bytes(&copied)?;
     let custody = io.into_native_custody(retained)?;
     Ok((copied, custody))
 }
@@ -66,7 +63,7 @@ fn clone_definition_with_native_work(
     use crate::filesystem::UploadRecord as _;
     let io = crate::filesystem::PreparationIo::from_native_work(work)?;
     io.retain_owned(std::mem::size_of::<ToolDefinition>() as u64)?;
-    let copied = crate::model::model_tool_definition_clone_with_io(value, Some(&io))?;
+    let copied = crate::model::clone_tool_definition(value, Some(&io))?;
     let retained = (std::mem::size_of::<ToolDefinition>() as u64)
         .checked_add(copied.logical_owned_bytes()?)
         .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
@@ -227,14 +224,14 @@ impl ToolDefinition {
         }
         io.retain_owned(std::mem::size_of::<Self>() as u64)?;
         let definition = Self {
-            name: crate::model::model_string_clone_with_io(name, Some(&io))?,
-            revision: crate::model::model_string_clone_with_io(revision, Some(&io))?,
-            description: crate::model::model_string_clone_with_io(description, Some(&io))?,
-            input_schema: io.decode_preparation_with_code::<Value>(
+            name: crate::executor::stock_string_copy(name, Some(&io))?,
+            revision: crate::executor::stock_string_copy(revision, Some(&io))?,
+            description: crate::executor::stock_string_copy(description, Some(&io))?,
+            input_schema: io.decode_preparation::<Value>(
                 input_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?.into_retained(),
-            output_schema: io.decode_preparation_with_code::<Value>(
+            output_schema: io.decode_preparation::<Value>(
                 output_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?.into_retained(),
-            projection_schema: io.decode_preparation_with_code::<Value>(
+            projection_schema: io.decode_preparation::<Value>(
                 projection_schema_json.as_bytes(), crate::wire::ErrorCode::Invalid)?.into_retained(),
         };
         definition.validate_schemas_with_io(Some(&io))?;
@@ -344,7 +341,7 @@ impl ToolDefinition {
             &self.projection_schema, value, "tool projection", Some(&io))?;
         let content: crate::model::ToolResultContent =
             io.value_decode(value, crate::wire::ErrorCode::Invalid)?;
-        content.validate_limits_with_io(limits, Some(&io))?;
+        crate::executor::with_history_io(Some(&io), |work| content.validate_limits(limits, work))?;
         let retained = content.logical_owned_bytes()?;
         let custody = io.into_native_custody(retained)?;
         Ok((content, custody))
@@ -926,8 +923,8 @@ impl ToolRegistry {
             io.charge(counters)?;
         }
         let key = (
-            crate::model::model_string_clone_with_io(&tool.definition.name, io)?,
-            crate::model::model_string_clone_with_io(&tool.definition.revision, io)?,
+            crate::executor::stock_string_copy(&tool.definition.name, io)?,
+            crate::executor::stock_string_copy(&tool.definition.revision, io)?,
         );
         if self.versions.contains_key(&key) {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -951,11 +948,11 @@ impl ToolRegistry {
             if let Some(io) = io {
                 io.retain_owned(std::mem::size_of::<(String, ModelSelection)>() as u64)?;
             }
-            let name = crate::model::model_string_clone_with_io(&key.0, io)?;
+            let name = crate::executor::stock_string_copy(&key.0, io)?;
             let selection = if previous {
                 ModelSelection::Ambiguous
             } else {
-                ModelSelection::Revision(crate::model::model_string_clone_with_io(&key.1, io)?)
+                ModelSelection::Revision(crate::executor::stock_string_copy(&key.1, io)?)
             };
             RegistrationSelection::Insert(name, selection)
         };
@@ -1107,8 +1104,8 @@ impl ToolRegistry {
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<&Tool>> {
         let key = (
-            crate::model::model_string_clone_with_io(name, io)?,
-            crate::model::model_string_clone_with_io(revision, io)?,
+            crate::executor::stock_string_copy(name, io)?,
+            crate::executor::stock_string_copy(revision, io)?,
         );
         Ok(self.versions.get(&key))
     }

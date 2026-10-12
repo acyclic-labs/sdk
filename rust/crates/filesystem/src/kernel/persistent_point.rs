@@ -15,7 +15,6 @@ pub(crate) struct Receipt<V> {
 }
 pub(crate) type Failure = OperationFailure<Error>;
 
-/// Data precedes its original allocation guard in physical destruction order.
 pub(crate) struct Owned<T> {
     pub(crate) value: T,
     pub(crate) bytes: u64,
@@ -125,7 +124,6 @@ pub(super) fn absorb(
     }
 }
 
-
 pub(crate) async fn lookup_async<S, F>(
     store: &S, root: ObjectId, key: &F::Key, limits: DecodeLimits,
     budget: WorkBudget, cancellation: &CancellationToken,
@@ -141,7 +139,6 @@ where S: AsyncObjectStore, F: Format {
         .map_err(|error| OperationFailure::new(project_failure(error), work))
 }
 
-/// The standalone projection and native invocation walk exactly this body.
 pub(crate) async fn lookup_async_with_accounting<S, F>(
     store: &S, root: ObjectId, key: &F::Key, limits: DecodeLimits,
     accounting: &mut KernelAccounting<'_>, cancellation: &CancellationToken,

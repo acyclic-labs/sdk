@@ -140,24 +140,24 @@ async fn durable_merge_rejects_foreign_receipts_and_success_shaped_nonoutcomes()
     let effect = OperationId::from_bytes([31; 16]);
     let (plan, payload) = merge_plan(&fixture, effect).await?;
     let machine = RecursiveToolMachine::new(Kind::Merge, 65536);
-    let initial = machine.initialize(&encode(&plan.arguments)?)?;
-    let command = WorkflowCommand { operation_id: derived(effect, Stage::MergeApply.label()), kind: MERGE_APPLY.into(), payload: payload.clone() };
-    let waiting = machine.transition(&initial, &encode(InitialPlan { plan: Plan::Merge(Box::new(plan.clone())), command: command.clone() })?)?;
+    let initial = machine.initialize(&encode(&plan.arguments, None)?)?;
+    let command = WorkflowCommand { operation_id: derived(effect, "merge-apply", None)?, kind: MERGE_APPLY.into(), payload: payload.clone() };
+    let waiting = machine.transition(&initial, &encode(&(InitialPlan { plan: Plan::Merge(Box::new(plan.clone())), command: command.clone() }), None)?)?;
     assert!(matches!(waiting.status, MachineStatus::Suspended));
     assert_eq!(waiting.commands, vec![command.clone()]);
-    assert!(machine.transition(&waiting.state, &encode(Receipt { operation_id: OperationId::from_bytes([99; 16]), value: Outcome::Succeeded(json!({"status":"no_changes"})), next: None })?).is_err());
-    assert!(machine.transition(&waiting.state, &encode(Receipt { operation_id: command.operation_id, value: Outcome::Succeeded(json!({"status":"success"})), next: None })?).is_err());
-    assert!(matches!(machine.transition(&waiting.state, &encode(Receipt { operation_id: command.operation_id,
-        value: Outcome::Indeterminate { operation_id: effect }, next: None })?), Err(Error::Indeterminate(operation)) if operation == effect));
+    assert!(machine.transition(&waiting.state, &encode(&(Receipt { operation_id: OperationId::from_bytes([99; 16]), value: Outcome::Succeeded(json!({"status":"no_changes"})), next: None }), None)?).is_err());
+    assert!(machine.transition(&waiting.state, &encode(&(Receipt { operation_id: command.operation_id, value: Outcome::Succeeded(json!({"status":"success"})), next: None }), None)?).is_err());
+    assert!(matches!(machine.transition(&waiting.state, &encode(&(Receipt { operation_id: command.operation_id,
+        value: Outcome::Indeterminate { operation_id: effect }, next: None }), None)?), Err(Error::Indeterminate(operation)) if operation == effect));
     let controller = ParentProjectController::new(fixture.host.as_ref(), fixture.parent.reducer(), &fixture.issuer.verifier(), &fixture.scope, fixture.project.clone())?;
     let inspected = controller.prepare_project_import_at(&plan.source_project, &plan.source_generation, &plan.expected_target_generation).await?;
     let outcome = controller.apply_project_merge(&inspected, effect).await?;
     let receipt = controller.merge_receipt(&inspected, &outcome, plan.source.clone(), effect, plan.notice.clone())?;
     let mut foreign = receipt.clone(); foreign.operation_id = OperationId::from_bytes([98; 16]);
     assert!(validate_merge_receipt(&plan, &foreign, None).is_err());
-    let next = WorkflowCommand { operation_id: derived(effect, Stage::MergePublish.label()), kind: MERGE_PUBLISH.into(), payload };
-    let published = machine.transition(&waiting.state, &encode(Receipt { operation_id: command.operation_id,
-        value: Outcome::Succeeded(json!({"status":"applied","receipt":receipt})), next: Some(next) })?)?;
+    let next = WorkflowCommand { operation_id: derived(effect, "merge-publish", None)?, kind: MERGE_PUBLISH.into(), payload };
+    let published = machine.transition(&waiting.state, &encode(&(Receipt { operation_id: command.operation_id,
+        value: Outcome::Succeeded(json!({"status":"applied","receipt":receipt})), next: Some(next) }), None)?)?;
     assert!(matches!(published.status, MachineStatus::Suspended), "Filesystem publication alone must not claim history publication");
     Ok(())
 }
@@ -166,13 +166,13 @@ async fn durable_merge_rejects_foreign_receipts_and_success_shaped_nonoutcomes()
 fn fork_initialization_retains_raw_child_message_and_independent_source_choice() -> Result<()> {
     let machine = RecursiveToolMachine::new(Kind::Fork, 4096);
     let arguments = ForkToolArguments { id: AgentId::from_bytes([40; 16]), msg: "exact é\0🦀\r\nchild task".into(), source: Some(TaskId::from_bytes([41; 16])) };
-    let value = encode(&arguments)?;
-    let State::Ready { arguments: retained } = decode(&machine.initialize(&value)?)? else { return Err(Error::Invalid("fork initialized beyond admission boundary".into())); };
+    let value = encode(&arguments, None)?;
+    let State::Ready { arguments: retained } = decode(&machine.initialize(&value)?, None)? else { return Err(Error::Invalid("fork initialized beyond admission boundary".into())); };
     assert_eq!(retained, value);
     assert_eq!(arguments.source_task(TaskId::from_bytes([42; 16]), crate::conversation::Limits::default())?, TaskId::from_bytes([41; 16]));
     let mut oversized = arguments; oversized.msg = "x".repeat(4097);
-    assert!(machine.initialize(&encode(oversized)?).is_err());
-    assert_ne!(derived(OperationId::from_bytes([43; 16]), "prepare"), derived(OperationId::from_bytes([43; 16]), "preparation-task"));
+    assert!(machine.initialize(&encode(&(oversized), None)?).is_err());
+    assert_ne!(derived(OperationId::from_bytes([43; 16]), "prepare", None)?, derived(OperationId::from_bytes([43; 16]), "preparation-task", None)?);
     Ok(())
 }
 
@@ -332,7 +332,7 @@ async fn durable_source_pin_keeps_original_cut_when_real_parent_history_advances
     let child_agent = AgentId::from_bytes([63; 16]);
     let effect = OperationId::from_bytes([64; 16]);
     let arguments = ForkToolArguments { id: child_agent, msg: "sealed original é\0🦀\r\n".into(), source: None };
-    let value = encode(&arguments)?;
+    let value = encode(&arguments, None)?;
     let write = ContentGrant::verify(&fixture.issuer.verifier(), &fixture.scope, &fixture.private, VolumeOperation::Write)?;
     let file = fixture.host.put_content(&fixture.private, &write, "source/arguments.json",
         &crate::contract::canonical_json_bytes(&value)?, "application/json", "arguments.json", 8192,
@@ -367,8 +367,8 @@ async fn durable_source_pin_keeps_original_cut_when_real_parent_history_advances
         child_operation_id: OperationId::from_bytes([65; 16]), allocation_digest: [66; 32], request };
     let machine = RecursiveToolMachine::new(Kind::Fork, 65536);
     let initial = machine.initialize(&value)?;
-    let command = WorkflowCommand { operation_id: derived(effect, "source-stage"), kind: FORK_SOURCE_STAGE.into(), payload: file.clone() };
-    let pinned = machine.transition(&initial, &encode(SourcePin { intent: intent.clone(), command: command.clone() })?)?;
+    let command = WorkflowCommand { operation_id: derived(effect, "source-stage", None)?, kind: FORK_SOURCE_STAGE.into(), payload: file.clone() };
+    let pinned = machine.transition(&initial, &encode(&(SourcePin { intent: intent.clone(), command: command.clone() }), None)?)?;
     assert_eq!(pinned.status, MachineStatus::Suspended);
     assert_eq!(pinned.commands, vec![command.clone()]);
     fixture.parent = fixture.parent.with_content_verifier(Arc::new(FilesystemContentVerifier::new(
@@ -381,7 +381,7 @@ async fn durable_source_pin_keeps_original_cut_when_real_parent_history_advances
             attachments: Vec::new().into(), reply_to: None, tool_call_id: None, extensions: BTreeMap::new(),
         }) },
     }).await?;
-    let restored: State = decode(&pinned.state)?;
+    let restored: State = decode(&pinned.state, None)?;
     let State::SourcePinned { intent: original, arguments: retained, .. } = restored else {
         return Err(Error::Invalid("source selection was not durably pinned".into()));
     };
@@ -391,6 +391,6 @@ async fn durable_source_pin_keeps_original_cut_when_real_parent_history_advances
     let mut changed = intent;
     changed.child_operation_id = OperationId::from_bytes([68; 16]);
     changed.allocation_digest = [69; 32];
-    assert!(machine.transition(&pinned.state, &encode(SourcePin { intent: changed, command })?).is_err());
+    assert!(machine.transition(&pinned.state, &encode(&(SourcePin { intent: changed, command }), None)?).is_err());
     Ok(())
 }

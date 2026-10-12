@@ -14,7 +14,7 @@ use std::{
     time::Duration,
 };
 
-use acyclic_stream::{StreamClient, StreamError, StreamPath, grpc, wire, wire_codec};
+use acyclic_stream::{StreamProvider, StreamClient, StreamError, StreamPath, grpc, wire, wire_codec};
 use futures::StreamExt;
 use napi::bindgen_prelude::{Buffer, Error, Result, Status};
 use napi_derive::napi;
@@ -727,7 +727,7 @@ async fn inspect_idempotency(
     let value = run_with_cancellation(
         async {
             client
-                .inspect_idempotency(key)
+                .provider.inspect_idempotency(key)
                 .await
                 .map_err(|error| stream_error(&error))
         },
@@ -975,8 +975,8 @@ async fn commit(
     let value = run_with_cancellation(
         async {
             match deadline {
-                Some(deadline) => client.commit_before(request, deadline).await,
-                None => client.commit(request).await,
+                Some(deadline) => client.provider.commit_before(request, deadline).await,
+                None => client.provider.commit(request).await,
             }
             .map_err(|error| stream_error(&error))
         },
@@ -997,7 +997,7 @@ async fn read_commit(
     let value = run_with_cancellation(
         async {
             client
-                .read_commit(commit_id)
+                .provider.read_commit(commit_id)
                 .await
                 .map_err(|error| stream_error(&error))
         },

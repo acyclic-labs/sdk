@@ -86,7 +86,7 @@ fn validate_task_plan<P: StreamProvider>(
 ) -> Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(native) = work.as_deref().and_then(|io| io.original_native_work()) {
-        owner.require_effect_grants_with_native_work(&plan.provider, planning, native)?;
+        owner.require_effect_grants(&plan.provider, planning, &mut Some(&mut crate::store::history::native_work_io(native)?))?;
         owner.validate_input_file(&plan.request, Some(&crate::filesystem::PreparationIo::from_native_work(native)?))?;
         return owner.validate_input_file(&plan.result_schema, Some(&crate::filesystem::PreparationIo::from_native_work(native)?));
     }
@@ -128,7 +128,7 @@ fn clone_status(
 ) -> Result<EffectStatus> {
     match status {
         EffectStatus::Succeeded { result } => Ok(EffectStatus::Succeeded {
-            result: result.clone_with_work(work)?,
+            result: result.copy(work)?,
         }),
         EffectStatus::Failed { message } => Ok(EffectStatus::Failed {
             message: match work.as_deref_mut() {
@@ -181,8 +181,8 @@ fn prepare_action_with_work(
             };
             Action::PlanEffect {
                 effect_id, provider, guarantee: plan.guarantee, effect_kind,
-                request: plan.request.clone_with_work(work)?,
-                result_schema: plan.result_schema.clone_with_work(work)?,
+                request: plan.request.copy(work)?,
+                result_schema: plan.result_schema.copy(work)?,
             }
         },
         TaskEffectAction::Dispatch(attempt_id) => Action::MarkEffectDispatched {

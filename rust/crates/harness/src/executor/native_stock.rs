@@ -5,36 +5,28 @@ use std::fmt::{Arguments, Write as _};
 
 pub(super) struct StockExecution<'a> {
     pub(super) stock: &'a StockExecutor,
+    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) native: Option<NativeStockExecution<'a>>,
     pub(super) summary_pipeline: Option<ContextPipeline>,
-    pub(super) summary_mode: bool,
-    pub(super) max_output_tokens_override: Option<Option<u32>>,
+    pub(super) summary_output_tokens: Option<u32>,
     pub(super) reconciliation_only: bool,
 }
 
+#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 #[derive(Clone, Copy)]
 pub(super) struct NativeStockExecution<'a> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) context: &'a Arc<crate::runtime::NativeTaskContext>,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) io: &'a PreparationIo,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) operation: OperationId,
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     pub(super) interactions: Option<&'a Arc<dyn crate::runtime::InteractionRouter>>,
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    marker: std::marker::PhantomData<&'a ()>,
-}
-
-impl std::ops::Deref for StockExecution<'_> {
-    type Target = StockExecutor;
-    fn deref(&self) -> &Self::Target { self.stock }
 }
 
 impl<'a> StockExecution<'a> {
     pub(super) fn ordinary(stock: &'a StockExecutor) -> Self {
-        Self { stock, native: None, summary_pipeline: None, summary_mode: false,
-            max_output_tokens_override: None, reconciliation_only: stock.reconciliation_only }
+        Self { stock,
+            #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+            native: None, summary_pipeline: None,
+            summary_output_tokens: None, reconciliation_only: stock.reconciliation_only }
     }
     pub(super) fn io(&self) -> Option<&PreparationIo> {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
@@ -55,30 +47,26 @@ impl<'a> StockExecution<'a> {
         if let Some(native) = self.native { return Some(native.context.context()); }
         self.stock.task_context.as_ref().map(|(context, _)| context)
     }
-    pub(super) fn tool_scope(&self) -> &RuntimeScope {
-        &self.stock.tool_scope
-    }
     pub(super) fn context_pipeline(&self) -> &ContextPipeline {
         self.summary_pipeline.as_ref().unwrap_or(&self.stock.context)
     }
     pub(super) fn compaction_policy(&self) -> &crate::context::CompactionPolicy {
-        if self.summary_mode { &crate::context::CompactionPolicy::Disabled } else { &self.stock.compaction }
+        if self.summary_pipeline.is_some() { &crate::context::CompactionPolicy::Disabled } else { &self.stock.compaction }
     }
     pub(super) fn output_tokens(&self) -> Option<u32> {
-        self.max_output_tokens_override.unwrap_or(self.stock.max_output_tokens)
+        if self.summary_pipeline.is_some() { self.summary_output_tokens } else { self.stock.max_output_tokens }
     }
-    pub(super) fn reconciliation_only(&self) -> bool { self.reconciliation_only }
     pub(super) fn inherited_prefix(&self) -> Option<&(FileRef, Arc<dyn crate::conversation::ContentResidencyVerifier>)> {
-        if self.summary_mode { None } else { self.stock.inherited_prefix.as_ref() }
+        if self.summary_pipeline.is_some() { None } else { self.stock.inherited_prefix.as_ref() }
     }
 }
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn native_boundary(code: crate::wire::ErrorCode, reason: &'static str) -> Error {
+pub(crate) fn native_boundary(code: crate::wire::ErrorCode, reason: &'static str) -> Error {
     Error::NativeBoundary { code, reason }
 }
 
-pub(super) fn stock_boundary(io: Option<&PreparationIo>, code: crate::wire::ErrorCode, reason: &'static str) -> Error {
+pub(crate) fn stock_boundary(io: Option<&PreparationIo>, code: crate::wire::ErrorCode, reason: &'static str) -> Error {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if io.and_then(PreparationIo::original_native_work).is_some() { return native_boundary(code, reason); }
     #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
@@ -98,38 +86,6 @@ pub(crate) fn stock_string_copy(value: &str, io: Option<&PreparationIo>) -> Resu
     Ok(copied)
 }
 
-pub(crate) fn stock_file_copy(value: &FileRef, io: Option<&PreparationIo>) -> Result<FileRef> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io && let Some(work) = io.original_native_work() {
-        let (copied, custody) = value.clone_with_native_work(work)?;
-        io.absorb_native_custody(custody)?;
-        return Ok(copied);
-    }
-    Ok(value.clone())
-}
-
-pub(crate) fn stock_model_copy(value: &crate::model::Model, io: Option<&PreparationIo>) -> Result<crate::model::Model> {
-    crate::model::model_model_clone_with_io(value, io)
-}
-
-pub(crate) fn stock_messages_copy(value: &[ModelMessage], io: Option<&PreparationIo>) -> Result<Vec<ModelMessage>> {
-    crate::model::model_messages_clone_with_io(value, io)
-}
-
-pub(crate) fn stock_value_copy(value: &Value, io: Option<&PreparationIo>) -> Result<Value> {
-    crate::model::model_value_clone_with_io(value, io)
-}
-
-pub(super) fn stock_context_copy(value: &crate::context::Context, io: Option<&PreparationIo>) -> Result<crate::context::Context> {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    if let Some(io) = io && let Some(work) = io.original_native_work() {
-        let (copied, custody) = crate::context::clone_context_native(value, work)?;
-        io.absorb_native_custody(custody)?;
-        return Ok(copied);
-    }
-    Ok(value.clone())
-}
-
 pub(super) fn stock_count_copy(value: &crate::context::ModelTokenCount, io: Option<&PreparationIo>) -> Result<crate::context::ModelTokenCount> {
     let mut counts = Vec::new();
     for count in &value.message_tokens { stock_vec_push(&mut counts, *count, io)?; }
@@ -141,7 +97,7 @@ pub(super) fn stock_count_copy(value: &crate::context::ModelTokenCount, io: Opti
 pub(super) fn stock_selection_copy(value: &ModelContextSelection, io: Option<&PreparationIo>) -> Result<ModelContextSelection> {
     let mut ids = Vec::new();
     for id in &value.message_ids { stock_vec_push(&mut ids, *id, io)?; }
-    let checkpoint = value.checkpoint.as_ref().map(|reference| stock_file_copy(reference, io)).transpose()?;
+    let checkpoint = value.checkpoint.as_ref().map(|reference| crate::model::clone_file(reference, io)).transpose()?;
     Ok(ModelContextSelection { conversation_revision: value.conversation_revision, message_ids: ids, checkpoint })
 }
 
@@ -293,7 +249,7 @@ pub(super) async fn stock_append_if_tail(journal: &dyn ExecutionJournal, operati
     journal.append_if_tail(operation, tail, key.to_owned(), event.clone()).await
 }
 
-pub(super) async fn stage_media_bytes_with_io(journal: &dyn ExecutionJournal, operation: OperationId,
+pub(super) async fn stage_media_bytes(journal: &dyn ExecutionJournal, operation: OperationId,
     key: &str, bytes: &[u8], media: &'static str, io: Option<&PreparationIo>) -> Result<FileRef> {
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
     if let Some(io) = io && let Some(work) = io.original_native_work() {
@@ -310,7 +266,7 @@ pub(super) async fn stage_media_bytes_with_io(journal: &dyn ExecutionJournal, op
     journal.stage(operation, key.to_owned(), bytes.to_vec(), media).await
 }
 
-pub(super) async fn stage_bytes_with_io(journal: &dyn ExecutionJournal, operation: OperationId,
+pub(super) async fn stage_bytes(journal: &dyn ExecutionJournal, operation: OperationId,
     key: &str, bytes: &[u8], io: Option<&PreparationIo>) -> Result<FileRef> {
     let copied;
     #[cfg(feature = "filesystem")]
@@ -325,7 +281,7 @@ pub(super) async fn stage_bytes_with_io(journal: &dyn ExecutionJournal, operatio
         io.spent(acyclic_fs::WorkCounters { bytes_hashed: bytes.len() as u64 * 2, ..Default::default() })?;
     }
     copied = stock_key(format_args!("{key}:{}", identity.to_hex()), io)?;
-    let reference = stage_media_bytes_with_io(journal, operation, &copied, bytes, "application/json", io).await?;
+    let reference = stage_media_bytes(journal, operation, &copied, bytes, "application/json", io).await?;
     if reference.volume().class() != VolumeClass::AgentPrivate
         || reference.descriptor().media_type() != "application/json"
         || reference.descriptor().byte_length() != bytes.len() as u64
@@ -339,24 +295,20 @@ pub(super) async fn stage_bytes_with_io(journal: &dyn ExecutionJournal, operatio
     Ok(reference)
 }
 
-pub(super) async fn stage_json_with_io<T: Serialize>(journal: &dyn ExecutionJournal,
+pub(crate) async fn stage_json<T: Serialize>(journal: &dyn ExecutionJournal,
     operation: OperationId, key: &str, value: &T, io: Option<&PreparationIo>) -> Result<FileRef> {
     #[cfg(feature = "filesystem")]
     if let Some(io) = io {
         let hold;
         let bytes = io.encode(value, io.remaining()?.bytes_encoded, true)?;
-        hold = io.guard_owned(bytes.capacity() as u64)?;
-        let result = stage_bytes_with_io(journal, operation, key, &bytes, Some(io)).await;
+        hold = io.guard_bytes(&bytes)?;
+        let result = stage_bytes(journal, operation, key, &bytes, Some(io)).await;
         drop(bytes);
         drop(hold);
         return result;
     }
-    stage_json(journal, operation, key, value).await
-}
-
-pub(super) async fn load_json_with_io<T: PreparationRecord>(journal: &dyn ExecutionJournal,
-    reference: &FileRef, io: Option<&PreparationIo>) -> Result<T> {
-    Ok(load_preparation_json::<T>(journal, reference, io).await?.into_retained())
+    let bytes = crate::contract::canonical_json_bytes(value)?;
+    stage_bytes(journal, operation, key, &bytes, None).await
 }
 
 pub(super) fn stock_tool_definitions(registry: &ToolRegistry, scope: &RuntimeScope,
@@ -432,7 +384,7 @@ pub(crate) fn replay_execution_with_native_work<'a>(journal: &'a dyn ExecutionJo
     crate::NativeFutureBundle::new(work, || async move {
         let io = PreparationIo::from_native_work(work)?;
         io.absorb_native_custody(work.retain_owned(std::mem::size_of::<Vec<ExecutionRecord>>() as u64)?)?;
-        let (tail, records) = replay_execution_with_io(journal, operation, maximum, select, Some(&io)).await?;
+        let (tail, records) = replay_execution(journal, operation, maximum, select, Some(&io)).await?;
         let mut retained = native_size_add(std::mem::size_of::<Vec<ExecutionRecord>>() as u64,
             (records.capacity() as u64).checked_mul(std::mem::size_of::<ExecutionRecord>() as u64)
                 .ok_or_else(|| native_boundary(crate::wire::ErrorCode::Invalid, "execution replay size overflow"))?)?;
@@ -473,7 +425,7 @@ pub(crate) fn stage_json_with_native_work<'a, T: Serialize + Sync>(journal: &'a 
     }
     crate::NativeFutureBundle::new(work, || async move {
         let io = PreparationIo::from_native_work(work)?;
-        let reference = stage_json_with_io(journal, operation, key, value, Some(&io)).await?;
+        let reference = stage_json(journal, operation, key, value, Some(&io)).await?;
         let retained = reference.logical_owned_bytes()?;
         work.remaining()?;
         let custody = io.into_native_custody(retained)?;
@@ -490,7 +442,7 @@ pub(crate) fn load_json_with_native_work<'a, T: PreparationRecord + crate::files
     }
     crate::NativeFutureBundle::new(work, || async move {
         let io = PreparationIo::from_native_work(work)?;
-        let value: T = load_json_with_io(journal, reference, Some(&io)).await?;
+        let value: T = load_json(journal, reference, Some(&io)).await?.into_retained();
         let retained = native_size_add(std::mem::size_of::<T>() as u64,
             crate::filesystem::UploadRecord::logical_owned_bytes(&value)?)?;
         work.remaining()?;
@@ -503,8 +455,7 @@ pub(crate) fn load_json_with_native_work<'a, T: PreparationRecord + crate::files
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub struct NativeStockExecutor {
     pub(super) stock: StockExecutor,
-    context: Option<Arc<crate::runtime::NativeTaskContext>>,
-    operation: Option<OperationId>,
+    context: Option<(Arc<crate::runtime::NativeTaskContext>, OperationId)>,
     pub(super) interactions: Option<Arc<dyn crate::runtime::InteractionRouter>>,
     custody: acyclic_fs::NativeAllocation,
 }
@@ -519,18 +470,17 @@ impl StockExecutor {
         if !provider.supports_native_model(work)? {
             return Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native model provider is unavailable"));
         }
-        pipeline.validate_with_native_work(work)?;
+        pipeline.validate(Some(&PreparationIo::from_native_work(work)?))?;
         let io = PreparationIo::from_native_work(work)?;
         io.absorb_native_custody(work.retain_owned(std::mem::size_of::<NativeStockExecutor>() as u64)?)?;
-        let model = crate::model::model_model_clone_with_io(model, Some(&io))?;
-        let (pipeline, pipeline_custody) = pipeline.clone_with_native_work(work)?;
-        io.absorb_native_custody(pipeline_custody)?;
+        let model = crate::model::clone_model(model, Some(&io))?;
+        let pipeline = pipeline.copy(Some(&io))?;
         let (tools, tools_custody) = tools.clone_with_native_work(work)?;
         io.absorb_native_custody(tools_custody)?;
         let stock = Self::new(model, provider, pipeline, tools);
         let retained = io.owned_bytes()?;
         let custody = io.into_native_custody(retained)?;
-        Ok(NativeStockExecutor { stock, context: None, operation: None, interactions: None, custody })
+        Ok(NativeStockExecutor { stock, context: None, interactions: None, custody })
     }
 }
 
@@ -587,8 +537,7 @@ impl NativeStockExecutor {
         let mut incoming = io.into_native_custody(retained)?;
         self.custody.absorb(&mut incoming)?;
         self.stock.task = Some((host, task, fence));
-        self.context = Some(context);
-        self.operation = Some(operation);
+        self.context = Some((context, operation));
         Ok(self)
     }
 
@@ -598,7 +547,7 @@ impl NativeStockExecutor {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
         self.require_original_work(work)?;
-        let Some(context) = self.context.as_ref() else {
+        let Some((context, _)) = self.context.as_ref() else {
             return Err(native_boundary(crate::wire::ErrorCode::Unauthorized, "stock policy has no original context binding"));
         };
         context.context().validate_stock_scope_with_native_work(scope, self.stock.limits, work)?;
@@ -661,12 +610,12 @@ impl NativeStockExecutor {
         journal: &dyn ExecutionJournal, work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
         self.require_original_work(work)?;
-        if self.operation != Some(input.operation_id)
-            || self.context.as_ref().is_none_or(|original| !Arc::ptr_eq(original, context))
+        if self.context.as_ref().is_none_or(|(original, operation)|
+            *operation != input.operation_id || !Arc::ptr_eq(original, context))
             || !context.native_metadata_matches(work) {
             return Err(native_boundary(crate::wire::ErrorCode::Unauthorized, "native stock execution differs from its original binding"));
         }
-        native_execution_supported(&self.stock, context, input.operation_id, journal, work)
+        native_execution_supported(&self.stock, context, journal, work)
     }
 
     /// Runs the complete ordinary/native stock loop using borrowed issued inputs.
@@ -691,7 +640,7 @@ impl NativeStockExecutor {
 
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(super) fn native_execution_supported(
-    stock: &StockExecutor, context: &Arc<crate::runtime::NativeTaskContext>, operation: OperationId,
+    stock: &StockExecutor, context: &Arc<crate::runtime::NativeTaskContext>,
     journal: &dyn ExecutionJournal, work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
     work.remaining()?;
@@ -712,7 +661,7 @@ pub(super) fn native_execution_supported(
             return Err(native_boundary(crate::wire::ErrorCode::Unsupported, "native stock task owner is unavailable"));
         }
     }
-    stock.context.validate_with_native_work(work)?;
+    stock.context.validate(Some(&PreparationIo::from_native_work(work)?))?;
     for (_, policy) in context.context().stock_tool_policy_binding().into_iter()
         .chain(context.context().stock_tool_policy_overrides()) {
         policy.supports_native_policy(work)?;
@@ -731,7 +680,6 @@ pub(super) fn native_execution_supported(
         return Err(native_boundary(crate::wire::ErrorCode::Unauthorized,
             "stock task context differs from execution binding"));
     }
-    let _ = operation;
     Ok(())
 }
 
@@ -742,7 +690,7 @@ pub(super) fn native_session<'a>(
     interactions: Option<&'a Arc<dyn crate::runtime::InteractionRouter>>,
 ) -> StockExecution<'a> {
     StockExecution { stock, native: Some(NativeStockExecution { context, io, operation, interactions }),
-        summary_pipeline: None, summary_mode: false, max_output_tokens_override: None,
+        summary_pipeline: None, summary_output_tokens: None,
         reconciliation_only: reconcile }
 }
 
@@ -757,63 +705,12 @@ pub(super) fn native_progress<'a>(
         io.absorb_native_custody(work.retain_owned(std::mem::size_of::<StockTurnProgress>() as u64)?)?;
         let progress = {
             let session = native_session(stock, context, input.operation_id, &io, reconcile, interactions);
-            session.execute_progress_engine(input, journal).await?
+            session.execute_progress(input, journal).await?
         };
         let retained = native_progress_owned_bytes(&progress)?;
         work.remaining()?;
         Ok((progress, io.into_native_custody(retained)?))
     })
-}
-
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(super) fn native_request_digest(session: &StockExecution<'_>, input: &TurnInput) -> Result<[u8; 32]> {
-    #[derive(Serialize)]
-    struct IssuedContext<'a> {
-        admission_operation: OperationId,
-        execution_operation: OperationId,
-        task_id: Option<TaskId>,
-        run_limits: crate::runtime::TaskRunLimits,
-        extensions: Option<&'a crate::core::ExtensionAdmission>,
-    }
-    #[derive(Serialize)]
-    struct Request<'a> {
-        executor: &'static str,
-        input: &'a TurnInput,
-        model: &'a Model,
-        max_output_tokens: Option<u32>,
-        context: &'a [Value],
-        tools: &'a [crate::tool::ToolDefinition],
-        limits: Limits,
-        tool_scope: (&'a crate::Capabilities, Limits),
-        policy: Option<&'a ComponentIdentity>,
-        inherited_prefix: Option<&'a FileRef>,
-        compaction: &'a crate::context::CompactionPolicy,
-        model_capacity: Option<crate::context::ModelContextCapacity>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        task_id: Option<TaskId>,
-        #[serde(skip_serializing_if = "Option::is_none")]
-        task_context: Option<IssuedContext<'a>>,
-    }
-    let io = session.io().ok_or_else(|| native_boundary(crate::wire::ErrorCode::Storage, "native request binding has no original work"))?;
-    let work = io.original_native_work().ok_or_else(|| native_boundary(crate::wire::ErrorCode::Storage, "native request binding has no original work"))?;
-    let (contracts, custody) = session.context_pipeline().contracts_with_native_work(work)?;
-    io.absorb_native_custody(custody)?;
-    let (tools, custody) = session.tools.definitions_with_native_work(work)?;
-    io.absorb_native_custody(custody)?;
-    let task_context = session.original_context().map(|context| IssuedContext {
-        admission_operation: context.id(), execution_operation: input.operation_id,
-        task_id: context.durable_task_id(), run_limits: context.scope().run_limits(),
-        extensions: context.scope().extensions(),
-    });
-    preparation_digest(&Request {
-        executor: "acyclic.stock.v6", input, model: &session.model,
-        max_output_tokens: session.output_tokens(), context: &contracts, tools: &tools,
-        limits: session.limits, tool_scope: (session.tool_scope().grants(), session.tool_scope().limits()),
-        policy: session.policy_identity.as_ref(),
-        inherited_prefix: session.inherited_prefix().map(|(reference, _)| reference),
-        compaction: session.compaction_policy(), model_capacity: session.model_capacity()?,
-        task_id: session.task.as_ref().map(|(_, task, _)| *task), task_context,
-    }, Some(io))
 }
 
 impl StockExecutor {
@@ -834,13 +731,8 @@ impl StockExecutor {
     }
     /// Freezes a completed tool call prefix without dispatching effects.
     pub async fn completed_tool_prefix(&self, journal: &dyn ExecutionJournal, input: &TurnInput,
-        step: u32, call: &str) -> Result<crate::model::PreparedModelRequest> {
+        step: u32, call: Option<&str>) -> Result<crate::model::PreparedModelRequest> {
         StockExecution::ordinary(self).completed_tool_prefix(journal, input, step, call).await
-    }
-    /// Freezes the whole completed batch under its original request binding.
-    pub async fn completed_tool_batch_prefix(&self, journal: &dyn ExecutionJournal, input: &TurnInput,
-        step: u32) -> Result<crate::model::PreparedModelRequest> {
-        StockExecution::ordinary(self).completed_tool_batch_prefix(journal, input, step).await
     }
     pub(super) fn verify_task_context_binding(&self, operation: OperationId) -> Result<()> {
         StockExecution::ordinary(self).verify_task_context_binding(operation)
@@ -952,7 +844,7 @@ pub(super) fn stock_projection_content(definition: &crate::tool::ToolDefinition,
         return Ok(content);
     }
     let content = definition.validate_projection(value)?;
-    content.validate_limits(limits)?;
+    content.validate_limits(limits, &mut None)?;
     Ok(content)
 }
 
@@ -1002,14 +894,14 @@ impl StockExecution<'_> {
             crate::wire::ErrorCode::Storage, "stock policy has no original work"))?;
         for (_, policy) in context.stock_tool_policy_binding().into_iter().chain(context.stock_tool_policy_overrides()) {
             let Some(((approval_operation, request), custody)) = context.stock_policy_approval_with_native_work(
-                policy.as_ref(), self.tool_scope(), definition, invocation, work,
+                policy.as_ref(), &self.stock.tool_scope, definition, invocation, work,
             ).await? else { continue; };
             native.io.absorb_native_custody(custody)?;
-            if !self.tool_scope().grants().contains(capability::INTERACTION_ROUTE) {
+            if !self.stock.tool_scope.grants().contains(capability::INTERACTION_ROUTE) {
                 return Err(native_boundary(crate::wire::ErrorCode::Unauthorized,
                     "stock tool approval requires interaction:route"));
             }
-            let task = self.task.as_ref().map_or(TaskId::from_bytes(operation.into_bytes()), |(_, task, _)| *task);
+            let task = self.stock.task.as_ref().map_or(TaskId::from_bytes(operation.into_bytes()), |(_, task, _)| *task);
             let approval = stock_task_interaction_id(task, approval_operation, Some(native.io))?;
             journal.open_interaction_with_native_work(approval, &request, work)?.await?;
             let (outcome, custody) = journal.interaction_outcome_with_native_work(approval, work)?.await?;
@@ -1045,11 +937,6 @@ pub(super) fn stock_validate_invocation(invocation: &ToolInvocation, io: Option<
         return Ok(());
     }
     invocation.validate()
-}
-
-pub(super) fn stock_validate_schema(schema: &Value, value: &Value, label: &'static str,
-    io: Option<&PreparationIo>) -> Result<()> {
-    crate::contract::validate_json_schema_value(schema, value, label, io)
 }
 
 pub(super) async fn stock_tool_rejection(
@@ -1102,7 +989,7 @@ fn native_progress_owned_bytes(progress: &StockTurnProgress) -> Result<u64> {
 impl StockExecutor {
     pub(crate) async fn execute_progress(&self, input: TurnInput, journal: &dyn ExecutionJournal) -> Result<StockTurnProgress> {
         let span = obs_span!("acyclic.harness.executor.execute", operation_id = format_args!("{}", input.operation_id));
-        traced(span, StockExecution::ordinary(self).execute_progress_engine(&input, journal)).await
+        traced(span, StockExecution::ordinary(self).execute_progress(&input, journal)).await
     }
 }
 
@@ -1112,7 +999,7 @@ impl StockExecutor {
     pub(crate) fn supports_native_execution(&self, work: &acyclic_fs::NativeMaterializationWork) -> Result<bool> {
         work.remaining()?;
         if !self.provider.supports_native_model(work)? { return Ok(false); }
-        self.context.validate_with_native_work(work)?;
+        self.context.validate(Some(&PreparationIo::from_native_work(work)?))?;
         if let Some((host, _, _)) = &self.task
             && !host.supports_native_execution(work)? { return Ok(false); }
         if let Some(policy) = &self.policy { policy.supports_native_policy(work)?; }
@@ -1126,9 +1013,8 @@ impl StockExecutor {
         }
         let io = PreparationIo::from_native_work(work)?;
         io.absorb_native_custody(work.retain_owned(std::mem::size_of::<NativeStockExecutor>() as u64)?)?;
-        let model = crate::model::model_model_clone_with_io(&self.model, Some(&io))?;
-        let (context, custody) = self.context.clone_with_native_work(work)?;
-        io.absorb_native_custody(custody)?;
+        let model = crate::model::clone_model(&self.model, Some(&io))?;
+        let context = self.context.copy(Some(&io))?;
         let (tools, custody) = self.tools.clone_with_native_work(work)?;
         io.absorb_native_custody(custody)?;
         let (tool_scope, custody) = self.tool_scope.clone_with_native_work(work)?;
@@ -1145,7 +1031,7 @@ impl StockExecutor {
             Ok((Arc::clone(host), *task, fence))
         }).transpose()?;
         let inherited_prefix = self.inherited_prefix.as_ref().map(|(reference, verifier)| -> Result<_> {
-            Ok((stock_file_copy(reference, Some(&io))?, Arc::clone(verifier)))
+            Ok((crate::model::clone_file(reference, Some(&io))?, Arc::clone(verifier)))
         }).transpose()?;
         let stock = StockExecutor {
             model, max_output_tokens: self.max_output_tokens, provider: Arc::clone(&self.provider),
@@ -1157,7 +1043,7 @@ impl StockExecutor {
         let retained = io.owned_bytes()?;
         work.remaining()?;
         Ok(NativeStockExecutor {
-            stock, context: None, operation: None, interactions: None, custody: io.into_native_custody(retained)?,
+            stock, context: None, interactions: None, custody: io.into_native_custody(retained)?,
         })
     }
 }
@@ -1173,7 +1059,7 @@ pub(crate) fn retained_model_step_with_native_work<'a>(
     crate::NativeFutureBundle::new(work, || async move {
         let io = PreparationIo::from_native_work(work)?;
         io.absorb_native_custody(work.retain_owned(std::mem::size_of::<RetainedModelStep>() as u64)?)?;
-        let retained = retained_model_step_with_io(journal, records, step, purpose, limits, Some(&io)).await?;
+        let retained = retained_model_step(journal, records, step, purpose, limits, Some(&io)).await?;
         let mut bytes = std::mem::size_of::<RetainedModelStep>() as u64;
         if let Some(request) = &retained.request {
             bytes = native_size_add(bytes, request.logical_owned_bytes()? - std::mem::size_of::<crate::model::PreparedModelRequest>() as u64)?;
@@ -1199,7 +1085,7 @@ pub(crate) fn completed_tool_projection_with_native_work<'a>(
     }
     crate::NativeFutureBundle::new(work, || async move {
         let io = PreparationIo::from_native_work(work)?;
-        let content = completed_tool_projection_with_io(journal, records, step, expected, tools, Some(limits), Some(&io)).await?;
+        let content = completed_tool_projection(journal, records, step, expected, tools, Some(limits), Some(&io)).await?;
         let retained = content.logical_owned_bytes()?;
         work.remaining()?;
         Ok((content, io.into_native_custody(retained)?))

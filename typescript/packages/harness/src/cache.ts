@@ -25,12 +25,12 @@ export class HydrationCache<Key, Value> {
     return this.#bytes;
   }
 
-  get(key: Key): Value | undefined {
+  get(key: Key): Hydrated<Value> | undefined {
     const entry = this.#values.get(key);
     if (entry === undefined) return undefined;
     this.#values.delete(key);
     this.#values.set(key, entry);
-    return entry.value;
+    return entry;
   }
 
   set(key: Key, value: Value, bytes: number): void {
@@ -40,7 +40,7 @@ export class HydrationCache<Key, Value> {
     const previous = this.#values.get(key);
     if (previous !== undefined) this.#bytes -= previous.bytes;
     this.#values.delete(key);
-    this.#values.set(key, { value, bytes });
+    this.#values.set(key, Object.freeze({ value, bytes }));
     this.#bytes += bytes;
     while (this.#values.size > this.maxEntries || this.#bytes > this.maxBytes) {
       const oldest = this.#values.entries().next().value as [Key, Hydrated<Value>] | undefined;

@@ -143,7 +143,7 @@ impl McpRuntimeCallbacks {
     /// Selects the existing execution owner and model display identity.
     pub fn new(executor: StockExecutor, journal: Arc<dyn ExecutionJournal>, model_name: String, sampling: McpSamplingPolicy) -> Result<Self> {
         if model_name.is_empty() { return Err(Error::Invalid("MCP sampling model name is empty".into())); }
-        sampling.continuation.validate_user_input()?;
+        sampling.continuation.validate_user_input(&mut None)?;
         if sampling.image.as_ref().is_some_and(|policy| !matches!(policy.intent, NativeMediaIntent::Image { .. }))
             || sampling.audio.as_ref().is_some_and(|policy| !matches!(policy.intent, NativeMediaIntent::Audio { .. }))
         { return Err(Error::Invalid("MCP sampling media intent differs from selected modality".into())); }
@@ -200,7 +200,7 @@ impl McpRuntimeCallbacks {
                 match context.interact(operation, interaction.clone()).await? {
                     InteractionOutcome::Answered { answer } => {
                         let bytes = self.journal.load(&answer).await?;
-                        answer.descriptor().verify(&bytes)?;
+                        answer.descriptor().verify(&bytes, &mut None)?;
                         let response: InteractionResponse = crate::contract::json_from_slice(&bytes).map_err(|error| Error::Invalid(error.to_string()))?;
                         interaction.validate_response(&response)?;
                         let InteractionResponse::Form { value } = response else { return Err(Error::Invalid("MCP form answer kind differs".into())); };
@@ -275,7 +275,7 @@ impl SamplingRequest {
                         for (byte, source) in identity.iter_mut().zip(digest) { *byte = source; }
                         let path = format!("mcp/{operation}/sampling/{message_index}-{block_index}");
                         let file = context.stage_file_once(OperationId::from_bytes(identity), &path, &bytes, mime, "MCP sampling media").await?;
-                        media.validate(&file, context.scope().limits())?;
+                        media.validate(&file, context.scope().limits(), &mut None)?;
                         ModelContentPart::File { file, policy: FileProjectionPolicy::Native(Box::new(media.clone())) }
                     }
                     _ => return Err(Error::Unsupported("MCP sampling content needs a host-selected projection".into())),

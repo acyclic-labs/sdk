@@ -12,11 +12,7 @@ pub(crate) type WireMeter<'a> = Option<&'a Arc<dyn NativeReadMeter>>;
 #[cfg(target_arch = "wasm32")]
 pub(crate) type WireMeter<'a> = Option<&'a ()>;
 
-pub(crate) struct ObservedWire<T> {
-    pub(crate) value: T,
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) allocation: Option<ReadAllocation>,
-}
+use crate::memory::{MemoryAllocation, MemoryOutput};
 
 /// Custody of the actual SDK-owned generated DTO fields.
 pub(crate) struct WireFunding<'a> {
@@ -24,8 +20,7 @@ pub(crate) struct WireFunding<'a> {
     meter: WireMeter<'a>,
     #[cfg(target_arch = "wasm32")]
     _meter: WireMeter<'a>,
-    #[cfg(not(target_arch = "wasm32"))]
-    allocation: Option<ReadAllocation>,
+    allocation: MemoryAllocation,
 }
 
 impl<'a> WireFunding<'a> {
@@ -35,8 +30,10 @@ impl<'a> WireFunding<'a> {
             meter,
             #[cfg(target_arch = "wasm32")]
             _meter: meter,
-            #[cfg(not(target_arch = "wasm32"))]
-            allocation: meter.map(ReadAllocation::empty),
+            allocation: MemoryAllocation {
+                #[cfg(not(target_arch = "wasm32"))]
+                allocation: meter.map(ReadAllocation::empty),
+            },
         }
     }
 
@@ -94,7 +91,7 @@ impl<'a> WireFunding<'a> {
         #[cfg(target_arch = "wasm32")]
         let _ = bytes;
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(allocation) = &mut self.allocation { allocation.release(bytes)?; }
+        if let Some(allocation) = &mut self.allocation.allocation { allocation.release(bytes)?; }
         Ok(())
     }
 
@@ -117,7 +114,7 @@ impl<'a> WireFunding<'a> {
 
     pub(crate) fn capacity(&self) -> usize {
         #[cfg(not(target_arch = "wasm32"))]
-        { self.allocation.as_ref().map_or(0, |allocation| allocation.bytes() as usize) }
+        { self.allocation.allocation.as_ref().map_or(0, |allocation| allocation.bytes() as usize) }
         #[cfg(target_arch = "wasm32")]
         { 0 }
     }
@@ -127,7 +124,7 @@ impl<'a> WireFunding<'a> {
         let _ = bytes;
         #[cfg(not(target_arch = "wasm32"))]
         if bytes != 0
-            && let Some(allocation) = &mut self.allocation
+            && let Some(allocation) = &mut self.allocation.allocation
         {
             allocation.grow(bytes)?;
         }
@@ -138,7 +135,7 @@ impl<'a> WireFunding<'a> {
         #[cfg(target_arch = "wasm32")]
         let _ = (previous, actual);
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some(allocation) = &mut self.allocation {
+        if let Some(allocation) = &mut self.allocation.allocation {
             let total = previous.checked_add(actual)
                 .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
             allocation.reconcile_capacity(total)?;
@@ -167,12 +164,8 @@ impl<'a> WireFunding<'a> {
         Ok(())
     }
 
-    pub(crate) fn finish<T>(self, value: T) -> ObservedWire<T> {
-        ObservedWire {
-            value,
-            #[cfg(not(target_arch = "wasm32"))]
-            allocation: self.allocation,
-        }
+    pub(crate) fn finish<T>(self, value: T) -> MemoryOutput<T> {
+        MemoryOutput { value, allocation: self.allocation }
     }
 }
 
@@ -209,6 +202,7 @@ struct WireSink<'a> {
     output: Option<&'a mut Vec<u8>>,
     length: usize,
     maximum_record: Option<usize>,
+    observer: Option<&'a crate::memory::MemoryObserver>,
 }
 
 impl WireSink<'_> {
@@ -254,23 +248,28 @@ impl WireSink<'_> {
     }
 
     fn record(&mut self, tag: u64, value: &crate::OwnedBytes) -> std::io::Result<()> {
+        if let Some(observer) = self.observer { observer.admit_item()?; }
         if let Some(length) = self.maximum_record {
             self.varint((tag << 3) | 2)?;
             self.varint(length as u64)?;
             self.length = self.length.checked_add(length)
                 .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
-            Ok(())
         } else {
-            self.field(tag, value.as_ref(), true)
+            self.field(tag, value.as_ref(), true)?;
         }
+        if let Some(observer) = self.observer { observer.record_item()?; }
+        Ok(())
     }
 
     fn nested(&mut self, tag: u64, value: CanonicalWire<'_>) -> std::io::Result<()> {
         self.varint((tag << 3) | 2)?;
-        let mut count = WireSink { output: None, length: 0, maximum_record: self.maximum_record };
+        let mut count = WireSink { output: None, length: 0, maximum_record: self.maximum_record, observer: self.observer };
         value.write(&mut count)?;
         self.varint(count.length as u64)?;
-        value.write(self)
+        if self.output.is_some() { value.write(self) } else {
+            self.length = self.length.checked_add(count.length).ok_or(std::io::ErrorKind::InvalidInput)?;
+            Ok(())
+        }
     }
 
     fn message(
@@ -278,34 +277,30 @@ impl WireSink<'_> {
         tag: u64,
         write: impl Fn(&mut WireSink<'_>) -> std::io::Result<()>,
     ) -> std::io::Result<()> {
-        let mut count = WireSink { output: None, length: 0, maximum_record: self.maximum_record };
+        let mut count = WireSink { output: None, length: 0, maximum_record: self.maximum_record, observer: self.observer };
         write(&mut count)?;
         self.varint((tag << 3) | 2)?;
         self.varint(count.length as u64)?;
-        write(self)
+        if self.output.is_some() { write(self) } else {
+            self.length = self.length.checked_add(count.length).ok_or(std::io::ErrorKind::InvalidInput)?;
+            Ok(())
+        }
     }
 }
 
 impl CanonicalWire<'_> {
-    pub(crate) fn encoded_len(&self) -> std::io::Result<usize> {
-        let mut sink = WireSink { output: None, length: 0, maximum_record: None };
-        self.write(&mut sink)?;
-        Ok(sink.length)
-    }
-
-    /// Sizes the exact closed request with its late record at the admitted bound using the SAME field visitor, without allocating or copying bytes.
-    pub(crate) fn encoded_len_for_record_maximum(&self, maximum: usize) -> std::io::Result<usize> {
-        let mut sink = WireSink { output: None, length: 0, maximum_record: Some(maximum) };
+    pub(crate) fn encoded_len(&self, maximum_record: Option<usize>, observer: Option<&crate::memory::MemoryObserver>) -> std::io::Result<usize> {
+        let mut sink = WireSink { output: None, length: 0, maximum_record, observer };
         self.write(&mut sink)?;
         Ok(sink.length)
     }
 
     pub(crate) fn encode(&self, output: &mut Vec<u8>) -> std::io::Result<()> {
-        self.write(&mut WireSink { output: Some(output), length: 0, maximum_record: None })
+        self.write(&mut WireSink { output: Some(output), length: 0, maximum_record: None, observer: None })
     }
 
     pub(crate) fn encode_to_vec(&self) -> std::io::Result<Vec<u8>> {
-        let mut output = Vec::with_capacity(self.encoded_len()?);
+        let mut output = Vec::with_capacity(self.encoded_len(None, None)?);
         self.encode(&mut output)?;
         Ok(output)
     }
@@ -331,8 +326,16 @@ impl CanonicalWire<'_> {
                 if let Some(key) = &value.idempotency_key { sink.field(4, key.as_bytes(), true)?; }
             }
             Self::Commit(value) => {
-                for value in &value.conditions { sink.nested(1, Self::Condition(value))?; }
-                for value in &value.mutations { sink.nested(2, Self::Mutation(value))?; }
+                for value in &value.conditions {
+                    if let Some(observer) = sink.observer { observer.admit_item()?; }
+                    sink.nested(1, Self::Condition(value))?;
+                    if let Some(observer) = sink.observer { observer.record_item()?; }
+                }
+                for value in &value.mutations {
+                    if let Some(observer) = sink.observer { observer.admit_item()?; }
+                    sink.nested(2, Self::Mutation(value))?;
+                    if let Some(observer) = sink.observer { observer.record_item()?; }
+                }
                 sink.field(3, value.idempotency_key.as_bytes(), false)?;
             }
             Self::Condition(value) => match value {
@@ -448,14 +451,6 @@ pub(crate) fn path(value: String) -> Result<StreamPath, StreamError> {
 ))]
 pub(crate) fn optional_key(value: Option<Bytes>) -> Result<Option<IdempotencyKey>, StreamError> {
     value.map(IdempotencyKey::new).transpose()
-}
-
-#[cfg(feature = "grpc")]
-/// Converts an optional wire idempotency key, rejecting an omitted key.
-pub fn required_key(value: Option<Bytes>) -> Result<IdempotencyKey, StreamError> {
-    value
-        .ok_or(StreamError::InvalidArgument)
-        .and_then(IdempotencyKey::new)
 }
 
 pub(crate) fn condition_wire(value: CommitCondition) -> wire::CommitCondition {
@@ -578,13 +573,13 @@ pub(crate) fn observation_from_wire(
 pub fn observation_wire(value: IdempotencyObservation) -> wire::IdempotencyObservation {
     let outcome = match value.outcome {
         IdempotencyOutcome::Append(value) => {
-            wire::idempotency_observation::Outcome::Append(append_outcome_wire(value))
+            wire::idempotency_observation::Outcome::Append(append_outcome_to_wire(value))
         }
         IdempotencyOutcome::Fork(value) => {
-            wire::idempotency_observation::Outcome::Fork(fork_receipt_wire(&value))
+            wire::idempotency_observation::Outcome::Fork(fork_receipt_to_wire(&value))
         }
         IdempotencyOutcome::Commit(value) => {
-            wire::idempotency_observation::Outcome::Commit(commit_outcome_wire(value))
+            wire::idempotency_observation::Outcome::Commit(commit_outcome_to_wire(value))
         }
     };
     wire::IdempotencyObservation {
@@ -607,7 +602,8 @@ pub(crate) fn append_outcome_from_wire(
     }
 }
 
-pub(crate) fn append_outcome_wire(value: AppendOutcome) -> wire::AppendResponse {
+/// Converts the domain value to its wire representation.
+pub fn append_outcome_to_wire(value: AppendOutcome) -> wire::AppendResponse {
     let outcome = match value {
         AppendOutcome::Committed(receipt) => {
             wire::append_response::Outcome::Committed(append_receipt_wire(&receipt))
@@ -638,10 +634,11 @@ pub(crate) fn commit_outcome_from_wire(
     }
 }
 
-pub(crate) fn commit_outcome_wire(value: CommitOutcome) -> wire::CommitResponse {
+/// Converts the domain value to its wire representation.
+pub fn commit_outcome_to_wire(value: CommitOutcome) -> wire::CommitResponse {
     let outcome = match value {
         CommitOutcome::Committed(envelope) => {
-            wire::commit_response::Outcome::Committed(envelope_wire(envelope))
+            wire::commit_response::Outcome::Committed(envelope_to_wire(envelope))
         }
         CommitOutcome::Conflict(conflicts) => {
             wire::commit_response::Outcome::Conflict(wire::CommitConflicts {
@@ -697,7 +694,8 @@ pub(crate) fn append_receipt_wire(value: &AppendReceipt) -> wire::AppendReceipt 
     }
 }
 
-pub(crate) fn fork_receipt_wire(value: &ForkReceipt) -> wire::ForkReceipt {
+/// Converts the domain value to its wire representation.
+pub fn fork_receipt_to_wire(value: &ForkReceipt) -> wire::ForkReceipt {
     wire::ForkReceipt {
         source: value.source.to_string(),
         destination: value.destination.to_string(),
@@ -857,23 +855,7 @@ pub(crate) fn commit_to_wire(value: &crate::CommitRequest) -> wire::CommitReques
     }
 }
 
-#[cfg(any(
-    all(feature = "grpc", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
-/// Converts an append outcome into its generated wire representation.
-pub fn append_outcome_to_wire(value: crate::AppendOutcome) -> wire::AppendResponse {
-    append_outcome_wire(value)
-}
 
-#[cfg(any(
-    all(feature = "grpc", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
-/// Converts a fork receipt into its generated wire representation.
-pub fn fork_receipt_to_wire(value: &crate::ForkReceipt) -> wire::ForkReceipt {
-    fork_receipt_wire(value)
-}
 pub(crate) fn envelope_from_wire(
     value: wire::CommittedEnvelope,
 ) -> Result<CommittedEnvelope, StreamError> {
@@ -887,7 +869,8 @@ pub(crate) fn envelope_from_wire(
     })
 }
 
-pub(crate) fn envelope_wire(value: CommittedEnvelope) -> wire::CommittedEnvelope {
+/// Converts the domain value to its wire representation.
+pub fn envelope_to_wire(value: CommittedEnvelope) -> wire::CommittedEnvelope {
     wire::CommittedEnvelope {
         commit_id: Bytes::copy_from_slice(value.commit_id.as_bytes()),
         mutations: value
@@ -898,23 +881,7 @@ pub(crate) fn envelope_wire(value: CommittedEnvelope) -> wire::CommittedEnvelope
     }
 }
 
-#[cfg(any(
-    all(feature = "grpc", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
-/// Converts a commit outcome into its generated wire representation.
-pub fn commit_outcome_to_wire(value: crate::CommitOutcome) -> wire::CommitResponse {
-    commit_outcome_wire(value)
-}
 
-#[cfg(any(
-    all(feature = "grpc", not(target_arch = "wasm32")),
-    all(feature = "wasm", target_arch = "wasm32")
-))]
-/// Converts a committed envelope into its generated wire representation.
-pub fn envelope_to_wire(value: crate::CommittedEnvelope) -> wire::CommittedEnvelope {
-    envelope_wire(value)
-}
 
 pub(crate) fn committed_mutation(
     value: wire::CommittedMutation,

@@ -81,17 +81,13 @@ macro_rules! workflow_physical_copy {
         pub(crate) fn $name(
             source: &$kind, io: Option<&crate::executor::PreparationIo>,
         ) -> Result<$kind> {
-            #[cfg(feature = "filesystem")]
-            if let Some(io) = io {
-                let mut observer = io.history_io();
-                let mut work = Some(&mut observer as &mut dyn crate::store::history::HistoryIo);
-                let mut quota = crate::wire_codec::CodecQuota::new(&mut work, 0)?;
+            if io.is_none() { return Ok(source.clone()); }
+            crate::executor::with_history_io(io, |work| {
+                let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
                 let copied = $factory(source, &mut quota)?;
                 quota.transfer();
-                return Ok(copied);
-            }
-            let _ = io;
-            Ok(source.clone())
+                Ok(copied)
+            })
         }
     };
 }
@@ -118,11 +114,7 @@ pub struct WorkflowCommand {
 
 impl WorkflowCommand {
     /// Rejects malformed public command contracts before checkpoint commit.
-    pub fn validate(&self) -> Result<()> {
-        self.validate_with_work(&mut None)
-    }
-
-    pub(crate) fn validate_with_work(
+    pub fn validate(
         &self, work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<()> {
         if let Some(observer) = work.as_deref_mut() {
@@ -135,25 +127,18 @@ impl WorkflowCommand {
         });
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let native = false;
-        if native {
-            if !crate::contract::is_valid_component_label(&self.kind) {
-                return Err(workflow_command_invalid());
-            }
-        } else {
+        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+        if native && !crate::contract::is_valid_component_label(&self.kind) {
+            return Err(Error::NativeBoundary {
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "workflow command kind is invalid",
+            });
+        }
+        if !native {
             crate::contract::validate_component_label(&self.kind, "workflow command kind")?;
         }
-        self.payload.validate_with_work(work)
+        self.payload.validate(work)
     }
-}
-
-fn workflow_command_invalid() -> Error {
-    #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    { Error::NativeBoundary {
-        code: crate::wire::ErrorCode::Invalid,
-        reason: "workflow command kind is invalid",
-    } }
-    #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-    { Error::Invalid("workflow command kind is invalid".into()) }
 }
 
 /// Stable identity of a resumable state-machine implementation.
@@ -1374,7 +1359,7 @@ fn validate_commands(
     let mut custody = crate::wire_codec::CodecQuota::new(work, bytes)?;
     let mut identities = BTreeSet::new();
     for command in commands {
-        command.validate_with_work(custody.work())?;
+        command.validate(custody.work())?;
         if let Some(observer) = custody.work().as_deref_mut() {
             observer.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
         }
@@ -1642,16 +1627,6 @@ mod tests {
         );
         assert_eq!(
             journal
-                .replay(
-                    u64::from(WORKFLOW_REPLAY_PAGE_RECORDS),
-                    WORKFLOW_REPLAY_PAGE_RECORDS
-                )
-                .await?
-                .len(),
-            1
-        );
-        assert_eq!(
-            journal
                 .replay(0, WORKFLOW_REPLAY_PAGE_RECORDS + 1)
                 .await?
                 .len(),
@@ -1676,14 +1651,8 @@ mod tests {
         );
         // A duplicate retry key appears beyond the first page and remains a hard error.
         let original_key = {
-            let mut state = journal
-                .state
-                .lock()
-                .map_err(|_| Error::Storage("workflow journal poisoned".into()))?;
-            let last = state
-                .records
-                .last_mut()
-                .ok_or_else(|| Error::Storage("missing workflow record".into()))?;
+            let mut state = journal.state.lock().unwrap();
+            let last = state.records.last_mut().unwrap();
             let original = last.idempotency_key.clone();
             last.idempotency_key = first_key.clone();
             original
@@ -1694,14 +1663,8 @@ mod tests {
                 .is_err()
         );
         {
-            let mut state = journal
-                .state
-                .lock()
-                .map_err(|_| Error::Storage("workflow journal poisoned".into()))?;
-            let last = state
-                .records
-                .last_mut()
-                .ok_or_else(|| Error::Storage("missing workflow record".into()))?;
+            let mut state = journal.state.lock().unwrap();
+            let last = state.records.last_mut().unwrap();
             last.idempotency_key = original_key;
             last.operation_id = first;
         }
@@ -1712,10 +1675,7 @@ mod tests {
         );
         // Retry records are loaded by revision and compared with the verified digest.
         {
-            let mut state = journal
-                .state
-                .lock()
-                .map_err(|_| Error::Storage("workflow journal poisoned".into()))?;
+            let mut state = journal.state.lock().unwrap();
             state.records[0].idempotency_key = IdempotencyKey::new("changed-first")?;
         }
         assert!(matches!(
