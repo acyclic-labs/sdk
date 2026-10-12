@@ -1699,7 +1699,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
             {
                 return Err(reject("fork claim request differs from its original witnessed admission"));
             }
-            request.validate_with_work(&mut Some(&mut io.history_io()))?;
+            request.validate(&mut Some(&mut io.history_io()))?;
             let fork = io.value_decode_preparation::<ForkRequest>(
                 &request.payload, crate::wire::ErrorCode::Invalid,
             )?;

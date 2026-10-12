@@ -871,39 +871,27 @@ async fn read_projected_tool_result<R: ContentResidencyVerifier + ?Sized>(
     serde_json::from_value(value).map_err(|error| Error::Invalid(error.to_string()))
 }
 
-// Private, closed source DTOs only. This is not a DeserializeOwned theorem.
 #[cfg(feature = "filesystem")]
-trait ProjectionArtifact: crate::filesystem::PreparationRecord {
-    fn heap_owned_bytes(&self, io: &crate::executor::PreparationIo) -> Result<u64>;
-}
-
-#[cfg(feature = "filesystem")]
-impl ProjectionArtifact for serde_json::Value {
-    fn heap_owned_bytes(&self, _io: &crate::executor::PreparationIo) -> Result<u64> {
-        crate::contract::json_value_logical_owned_bytes(self)
+impl crate::filesystem::UploadRecord for ProjectedToolInvocation {
+    fn json_value_schema() -> crate::contract::JsonValueSchema {
+        crate::contract::JsonValueSchema::ProjectedToolInvocation
     }
-}
-
-#[cfg(feature = "filesystem")]
-impl ProjectionArtifact for ProjectedToolInvocation {
-    fn heap_owned_bytes(&self, io: &crate::executor::PreparationIo) -> Result<u64> {
+    fn logical_owned_bytes(&self) -> Result<u64> {
         let arguments = crate::contract::json_value_logical_owned_bytes(&self.arguments)?;
         (self.call_id.capacity() as u64).checked_add(self.name.capacity() as u64)
             .and_then(|bytes| bytes.checked_add(arguments))
-            .ok_or_else(|| projection_invalid(Some(io), "projected tool invocation ownership overflows"))
+            .ok_or_else(|| {
+                #[cfg(not(target_arch = "wasm32"))]
+                { Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
+                    reason: "projected tool invocation ownership overflows" } }
+                #[cfg(target_arch = "wasm32")]
+                { Error::Invalid("projected tool invocation ownership overflows".into()) }
+            })
     }
 }
 
 #[cfg(feature = "filesystem")]
-impl ProjectionArtifact for crate::model::ToolResultContent {
-    fn heap_owned_bytes(&self, io: &crate::executor::PreparationIo) -> Result<u64> {
-        self.logical_owned_bytes()?.checked_sub(std::mem::size_of::<Self>() as u64)
-            .ok_or_else(|| projection_invalid(Some(io), "projected tool result ownership overflows"))
-    }
-}
-
-#[cfg(feature = "filesystem")]
-fn projection_conversion_allowance<T: ProjectionArtifact>(
+fn projection_conversion_allowance<T: crate::filesystem::UploadRecord>(
     shape: crate::contract::JsonValueShape,
     io: &crate::executor::PreparationIo,
 ) -> Result<u64> {
@@ -952,7 +940,7 @@ fn projection_conversion_allowance<T: ProjectionArtifact>(
 }
 
 #[cfg(feature = "filesystem")]
-fn convert_projection_value<'a, T: ProjectionArtifact>(
+fn convert_projection_value<'a, T: crate::filesystem::UploadRecord>(
     source: (serde_json::Value, crate::filesystem::DecodeReservation<'a>), maximum_bytes: u64,
     io: &'a crate::executor::PreparationIo,
 ) -> Result<(T, crate::filesystem::DecodeReservation<'a>)> {
@@ -994,7 +982,7 @@ fn convert_projection_value<'a, T: ProjectionArtifact>(
             return Err(Error::Invalid(message));
         }
     };
-    let retained = value.heap_owned_bytes(io)?;
+    let retained = value.logical_owned_bytes()?;
     #[cfg(not(target_arch = "wasm32"))]
     if let Some(mut custody) = native_custody.take() {
         if let Err(cause) = custody.substitute(retained) {

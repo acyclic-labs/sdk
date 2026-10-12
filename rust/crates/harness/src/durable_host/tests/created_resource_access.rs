@@ -197,7 +197,7 @@ impl SandboxCreator {
     ) -> Result<()> {
         preparation.verify_creation().await?;
         let request = preparation.request();
-        request.validate()?;
+        request.validate(&mut None)?;
         let proof = self.proof(preparation.origin().preparation_task)?;
         if request.provider != self.provider
             || request.creation_grant != "resource:create:custom"
@@ -272,7 +272,7 @@ impl ResourceCreationProvider for SandboxCreator {
         proof: &'a ResourceCreationProofRef,
     ) -> BoxProviderFuture<'a, Result<CreatedResourceReceipt>> {
         Box::pin(async move {
-            request.validate()?;
+            request.validate(&mut None)?;
             if request.provider != self.provider || proof != &self.proof(proof.preparation)? {
                 return Err(Error::Unauthorized("sandbox proof identity changed".into()));
             }

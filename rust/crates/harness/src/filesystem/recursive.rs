@@ -628,7 +628,7 @@ pub fn fork_preparation_request<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         read_authorization, payload: encode(fork, io)?,
         command: Some(command), source_checkpoint, input_files,
     };
-    recursive_observe(io, |work| request.validate_with_work(work))?;
+    recursive_observe(io, |work| request.validate(work))?;
     Ok(request)
 }
 
@@ -790,7 +790,7 @@ impl ForkPreparationMachine {
     fn initialize_engine(&self, input: &Value, io: Option<&super::PreparationIo>) -> Result<Value> {
         use super::default_tools::{recursive_box, decode, encode, recursive_observe, recursive_reject};
         let request: ResourcePreparationRequest = decode(input, io)?;
-        recursive_observe(io, |work| request.validate_with_work(work))?;
+        recursive_observe(io, |work| request.validate(work))?;
         let command = request.command.ok_or_else(|| recursive_reject(
             io, crate::wire::ErrorCode::Invalid, "fork preparation has no admitted command"))?;
         if command.kind != FORK_PREPARE_TASK_COMMAND_KIND {

@@ -16,12 +16,12 @@ use crate::{
 };
 use serde_json::Value;
 
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
+#[cfg(feature = "filesystem")]
 impl crate::filesystem::UploadRecord for Value {
     fn diagnostic_label_bytes() -> u64 { 0 }
     fn json_value_schema() -> crate::contract::JsonValueSchema { crate::contract::JsonValueSchema::Root }
     fn logical_owned_bytes(&self) -> Result<u64> {
-        Ok(crate::tool::value_owned_bytes(self)? - std::mem::size_of::<Self>() as u64)
+        crate::contract::json_value_logical_owned_bytes(self)
     }
 }
 use std::sync::Arc;

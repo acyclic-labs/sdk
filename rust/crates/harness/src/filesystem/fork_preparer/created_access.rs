@@ -964,7 +964,7 @@ async fn authenticate<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         Some(io) => io,
         None => { owned = PreparationIo::new(request, &CancellationToken::new())?; &owned }
     };
-    request.validate()?;
+    request.validate(&mut None)?;
     proof.validate(&mut None)?;
     if request.provider != host.provider || proof.provider != host.provider
         || request.creation_grant != capability::FORK_PUBLISH

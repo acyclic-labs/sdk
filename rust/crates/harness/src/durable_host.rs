@@ -469,7 +469,7 @@ impl<P: StreamProvider> TaskAdmissionReadonlyWitness<P> {
         self.require_query_with_native_work(query, work)?;
         let mut io = crate::store::history::native_work_io(work)?;
         let mut observer = Some(&mut io as &mut dyn crate::store::history::HistoryIo);
-        request.validate_with_work(&mut observer)?;
+        request.validate(&mut observer)?;
         let admission_digest = self.admission.canonical_digest_with_work(&mut observer)?;
         let request_digest = host_digest_with_work(
             &self.admission.input, acyclic_stream::MAX_RECORD_BYTES as u64, &mut observer)?;
@@ -1391,7 +1391,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
             let input = crate::store::history::canonical_bytes_with_work(
                 &request, self.input_limits.file_bytes, quota.work())?;
             quota.adopt(input.capacity() as u64)?;
-            request.validate_with_work(quota.work())?;
+            request.validate(quota.work())?;
             if let Some(checkpoint) = &request.source_checkpoint {
                 #[cfg(not(target_arch = "wasm32"))]
                 if let Some(native) = native.as_ref() {
