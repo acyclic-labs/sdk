@@ -392,14 +392,7 @@ where
     owner
         .verify(
             false,
-            &mut Some(
-                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
-            ),
+            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
         )
         .await?;
     let observed = physical.observe_with_native_work(work, &mut guard).await?;
@@ -432,14 +425,7 @@ where
     owner
         .verify(
             false,
-            &mut Some(
-                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
-            ),
+            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
         )
         .await?;
     drop(rebound);
@@ -472,30 +458,16 @@ pub(crate) async fn freeze_child_source<P: acyclic_stream::StreamProvider>(
     owner
         .verify(
             false,
-            &mut Some(
-                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
-            ),
+            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
         )
         .await?;
     let checkpoint = view
-        .checkpoint_projects_with_native_work(owner.native_view_owner(), work)?
+        .checkpoint_projects_with_native_work(&owner, work)?
         .await?;
     owner
         .verify(
             false,
-            &mut Some(
-                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
-            ),
+            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
         )
         .await?;
     let mut selected = checkpoint

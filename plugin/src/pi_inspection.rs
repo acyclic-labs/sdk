@@ -28,8 +28,10 @@ where
     O: acyclic_fs::AsyncObjectStore + 'static,
 {
     owner
-        .native_view_owner()
-        .verify_with_native_work(native_work)
+        .verify(
+            false,
+            &mut Some(&mut acyclic_harness::store::native_work_io(native_work)?),
+        )
         .await?;
     if caller.durable_task_id() != Some(owner.task_id()) {
         return Err(selected_unauthorized(
@@ -73,8 +75,10 @@ where
         }
     }
     owner
-        .native_view_owner()
-        .verify_with_native_work(native_work)
+        .verify(
+            false,
+            &mut Some(&mut acyclic_harness::store::native_work_io(native_work)?),
+        )
         .await
 }
 
@@ -213,14 +217,7 @@ impl PiWritebackPublicationGuard {
         owner
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
             )
             .await?;
         let write_capability =
@@ -229,12 +226,7 @@ impl PiWritebackPublicationGuard {
                     request.0.binding.project_volumes.get(key).ok_or_else(|| {
                         selected_unauthorized("writeback lost its original project")
                     })?;
-                let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+                let mut io = acyclic_harness::store::native_work_io(work)?;
                 let capability = volume.capability(
                     acyclic_harness::conversation::VolumeOperation::Write,
                     &mut Some(&mut io),
@@ -306,14 +298,7 @@ impl PiWritebackPublicationGuard {
         self.owner
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
             )
             .await?;
         let volume = self
@@ -337,14 +322,7 @@ impl PiWritebackPublicationGuard {
         self.owner.require_volume_grant(
             volume,
             acyclic_harness::conversation::VolumeOperation::Write,
-            &mut Some(
-                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
-            ),
+            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
         )?;
         let preparation = crate::pi_root_provider::load_original_preparation_with_native_work(
             &self.protected,
@@ -375,26 +353,12 @@ impl PiWritebackPublicationGuard {
         self.owner.require_volume_grant(
             volume,
             acyclic_harness::conversation::VolumeOperation::Write,
-            &mut Some(
-                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
-            ),
+            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
         )?;
         self.owner
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
             )
             .await
     }
@@ -429,12 +393,7 @@ pub(crate) async fn build_writeback_generations<'a>(
 
     authenticate_root(root, context, owner, verifier, scope, native_work).await?;
     let _read_grant = {
-        let mut io = acyclic_harness::store::native_work_io(native_work).map_err(|cause| {
-            acyclic_harness::Error::NativeWork {
-                cause,
-                custody: None,
-            }
-        })?;
+        let mut io = acyclic_harness::store::native_work_io(native_work)?;
         let grant = acyclic_harness::conversation::ContentGrant::verify(
             verifier,
             scope,
@@ -446,12 +405,7 @@ pub(crate) async fn build_writeback_generations<'a>(
         (grant, io.into_custody())
     };
     let storage_name = {
-        let mut io = acyclic_harness::store::native_work_io(native_work).map_err(|cause| {
-            acyclic_harness::Error::NativeWork {
-                cause,
-                custody: None,
-            }
-        })?;
+        let mut io = acyclic_harness::store::native_work_io(native_work)?;
         let value = root.volume.storage_name(&mut Some(&mut io))?;
         (value, io.into_custody())
     };
@@ -497,14 +451,7 @@ pub(crate) async fn build_writeback_generations<'a>(
     for path in paths {
         validate_content_path(
             path,
-            &mut Some(
-                &mut acyclic_harness::store::native_work_io(native_work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
-            ),
+            &mut Some(&mut acyclic_harness::store::native_work_io(native_work)?),
         )?;
         let mut absolute = native_work
             .display(&format_args!("/{path}"))
@@ -611,22 +558,12 @@ impl<P: StreamProvider + 'static> PiSelectedPublicationGuard<P> {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<std::sync::Arc<Self>> {
         let volume = {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let value = volume.copy(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
         let capability = {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let value = volume.0.capability(
                 acyclic_harness::conversation::VolumeOperation::Write,
                 &mut Some(&mut io),
@@ -708,14 +645,7 @@ impl<P: StreamProvider + 'static> PiSelectedPublicationGuard<P> {
             owner.require_volume_grant(
                 &self.volume,
                 acyclic_harness::conversation::VolumeOperation::Write,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
             )?;
             owner
                 .verify(
@@ -1028,15 +958,15 @@ async fn authenticate_root(
     scope: &acyclic_harness::core::Scope,
     native_work: &acyclic_fs::NativeMaterializationWork,
 ) -> Result<()> {
-    let native_owner = owner.native_view_owner();
-    native_owner.verify_with_native_work(native_work).await?;
+    let native_owner = &owner;
+    native_owner
+        .verify(
+            false,
+            &mut Some(&mut acyclic_harness::store::native_work_io(native_work)?),
+        )
+        .await?;
     let capability = {
-        let mut io = acyclic_harness::store::native_work_io(native_work).map_err(|cause| {
-            acyclic_harness::Error::NativeWork {
-                cause,
-                custody: None,
-            }
-        })?;
+        let mut io = acyclic_harness::store::native_work_io(native_work)?;
         let value = root.volume.capability(
             acyclic_harness::conversation::VolumeOperation::Write,
             &mut Some(&mut io),
@@ -1054,12 +984,7 @@ async fn authenticate_root(
         ));
     }
     let _grant = {
-        let mut io = acyclic_harness::store::native_work_io(native_work).map_err(|cause| {
-            acyclic_harness::Error::NativeWork {
-                cause,
-                custody: None,
-            }
-        })?;
+        let mut io = acyclic_harness::store::native_work_io(native_work)?;
         let grant = acyclic_harness::conversation::ContentGrant::verify(
             verifier,
             scope,
@@ -1073,14 +998,7 @@ async fn authenticate_root(
     native_owner.require_volume_grant(
         &root.volume,
         acyclic_harness::conversation::VolumeOperation::Write,
-        &mut Some(
-            &mut acyclic_harness::store::native_work_io(native_work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?,
-        ),
+        &mut Some(&mut acyclic_harness::store::native_work_io(native_work)?),
     )?;
     Ok(())
 }
@@ -1204,12 +1122,7 @@ where
         native_work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<Self> {
         let storage_name = {
-            let mut io = acyclic_harness::store::native_work_io(native_work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(native_work)?;
             let value = volume.storage_name(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
@@ -1256,8 +1169,10 @@ where
         native_work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<PiNativeInspectionPage<'b>> {
         owner
-            .native_view_owner()
-            .verify_with_native_work(native_work)
+            .verify(
+                false,
+                &mut Some(&mut acyclic_harness::store::native_work_io(native_work)?),
+            )
             .await?;
         if context.durable_task_id() != Some(owner.task_id()) {
             return Err(selected_unauthorized(
@@ -1367,8 +1282,10 @@ where
         };
         drop(page);
         owner
-            .native_view_owner()
-            .verify_with_native_work(native_work)
+            .verify(
+                false,
+                &mut Some(&mut acyclic_harness::store::native_work_io(native_work)?),
+            )
             .await?;
         Ok(PiNativeInspectionPage {
             source: self.source,
@@ -1489,12 +1406,16 @@ where
         ));
     }
     caller_owner
-        .native_view_owner()
-        .verify_with_native_work(native_work)
+        .verify(
+            false,
+            &mut Some(&mut acyclic_harness::store::native_work_io(native_work)?),
+        )
         .await?;
     destination_owner
-        .native_view_owner()
-        .verify_with_native_work(native_work)
+        .verify(
+            false,
+            &mut Some(&mut acyclic_harness::store::native_work_io(native_work)?),
+        )
         .await?;
     if caller.durable_task_id() != Some(caller_owner.task_id())
         || destination.durable_task_id() != Some(destination_owner.task_id())
@@ -1504,12 +1425,7 @@ where
         ));
     }
     let capability = {
-        let mut io = acyclic_harness::store::native_work_io(native_work).map_err(|cause| {
-            acyclic_harness::Error::NativeWork {
-                cause,
-                custody: None,
-            }
-        })?;
+        let mut io = acyclic_harness::store::native_work_io(native_work)?;
         let value = destination_volume.capability(
             acyclic_harness::conversation::VolumeOperation::Write,
             &mut Some(&mut io),
@@ -1517,12 +1433,7 @@ where
         (value, io.into_custody())
     };
     let storage_name = {
-        let mut io = acyclic_harness::store::native_work_io(native_work).map_err(|cause| {
-            acyclic_harness::Error::NativeWork {
-                cause,
-                custody: None,
-            }
-        })?;
+        let mut io = acyclic_harness::store::native_work_io(native_work)?;
         let value = destination_volume.storage_name(&mut Some(&mut io))?;
         (value, io.into_custody())
     };
@@ -1540,12 +1451,7 @@ where
         ));
     }
     let _grant = {
-        let mut io = acyclic_harness::store::native_work_io(native_work).map_err(|cause| {
-            acyclic_harness::Error::NativeWork {
-                cause,
-                custody: None,
-            }
-        })?;
+        let mut io = acyclic_harness::store::native_work_io(native_work)?;
         let grant = acyclic_harness::conversation::ContentGrant::verify(
             verifier,
             scope,
@@ -1587,19 +1493,14 @@ where
     for path in paths {
         validate_content_path(
             path,
-            &mut Some(
-                &mut acyclic_harness::store::native_work_io(native_work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
-            ),
+            &mut Some(&mut acyclic_harness::store::native_work_io(native_work)?),
         )?;
         source.require_reader(caller, path)?;
         caller_owner
-            .native_view_owner()
-            .verify_with_native_work(native_work)
+            .verify(
+                false,
+                &mut Some(&mut acyclic_harness::store::native_work_io(native_work)?),
+            )
             .await?;
         let absolute = native_work
             .display(&format_args!("/{path}"))
@@ -1622,8 +1523,10 @@ where
         )
         .await?;
     caller_owner
-        .native_view_owner()
-        .verify_with_native_work(native_work)
+        .verify(
+            false,
+            &mut Some(&mut acyclic_harness::store::native_work_io(native_work)?),
+        )
         .await?;
     if plan.0.logical_bytes() > maximum_bytes
         || plan.0.maximum_regular_file_bytes() > caller.scope().limits().file_bytes
@@ -1742,8 +1645,10 @@ where
     S: acyclic_fs::LazyWorkspaceStore + 'static,
 {
     owner
-        .native_view_owner()
-        .verify_with_native_work(native_work)
+        .verify(
+            false,
+            &mut Some(&mut acyclic_harness::store::native_work_io(native_work)?),
+        )
         .await?;
     if context.durable_task_id() != Some(owner.task_id()) {
         return Err(selected_unauthorized(
@@ -1955,8 +1860,10 @@ where
             output.0.push(PiDifference { name: name.0, kind });
         }
         owner
-            .native_view_owner()
-            .verify_with_native_work(native_work)
+            .verify(
+                false,
+                &mut Some(&mut acyclic_harness::store::native_work_io(native_work)?),
+            )
             .await?;
     }
     let next = if let Some(next) = page.as_ref().and_then(|(page, _)| page.next.as_ref()) {
@@ -1992,8 +1899,10 @@ where
     };
     drop(page);
     owner
-        .native_view_owner()
-        .verify_with_native_work(native_work)
+        .verify(
+            false,
+            &mut Some(&mut acyclic_harness::store::native_work_io(native_work)?),
+        )
         .await?;
     Ok(PiNativeDiffPage {
         entries: output.0,

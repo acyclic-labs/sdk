@@ -1133,14 +1133,7 @@ mod tests {
             .journal
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
             )
             .await?;
         // Fixture::new obtained this protected result by observing the real

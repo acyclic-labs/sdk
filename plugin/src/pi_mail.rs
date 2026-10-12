@@ -83,14 +83,7 @@ async fn authenticate<P: StreamProvider>(
     owner
         .verify(
             false,
-            &mut Some(
-                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
-            ),
+            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
         )
         .await?;
     Ok(owner.task_id())
@@ -131,14 +124,7 @@ pub(crate) async fn prepare_send<P: StreamProvider, F: FnOnce(TaskId, TaskId) ->
     owner
         .verify(
             false,
-            &mut Some(
-                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
-            ),
+            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
         )
         .await?;
     Ok((command.0, command.1))

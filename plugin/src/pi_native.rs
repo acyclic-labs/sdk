@@ -1505,14 +1505,7 @@ where
     owner
         .verify(
             false,
-            &mut Some(
-                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
-            ),
+            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
         )
         .await?;
     let native_capability = "effect:provider:acyclic.pi.native";
@@ -1577,14 +1570,7 @@ where
     owner
         .verify(
             false,
-            &mut Some(
-                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
-            ),
+            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
         )
         .await?;
     let respond = native_fixed_text(format_args!("interaction:respond:{approval}"))?;
@@ -1625,14 +1611,7 @@ where
     owner
         .verify(
             false,
-            &mut Some(
-                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
-            ),
+            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
         )
         .await?;
     Ok(approval)
@@ -1694,14 +1673,7 @@ impl PiNativeRootSeed {
         owner
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(meter).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(meter)?),
             )
             .await?;
         if owner.task_id() != self.task
@@ -1745,26 +1717,12 @@ impl PiNativeRootSeed {
                 &self.scratch,
                 operation,
                 u64::MAX,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(meter).map_err(|cause| {
-                        Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(meter)?),
             )?;
             owner.require_volume_grant(
                 &self.scratch,
                 operation,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(meter).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(meter)?),
             )?;
         }
         let bytes = shared
@@ -1914,14 +1872,7 @@ impl PiNativeRootSeed {
         owner
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(meter).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(meter)?),
             )
             .await?;
         if owner.task_id() != self.task
@@ -1947,26 +1898,12 @@ impl PiNativeRootSeed {
                 volume,
                 operation,
                 u64::MAX,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(meter).map_err(|cause| {
-                        Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(meter)?),
             )?;
             owner.require_volume_grant(
                 volume,
                 operation,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(meter).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(meter)?),
             )?;
         }
         let allocation = self.witnessed_allocation()?;
@@ -2080,14 +2017,7 @@ impl PiNativeRootSeed {
         owner
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(meter).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(meter)?),
             )
             .await?;
         let authority_revision = native_digest(
@@ -2175,14 +2105,7 @@ impl PiNativeRootSeed {
         owner
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(meter).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(meter)?),
             )
             .await?;
         let allocation = seed.witnessed_allocation()?;
@@ -2234,14 +2157,7 @@ impl PiNativeRootSeed {
         owner
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(meter).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(meter)?),
             )
             .await?;
         let view = view.into_arc_with_native_work(meter)?;
@@ -2422,11 +2338,7 @@ impl<A, O> PiPreparedScratch<A, O> {
         }
         self.view
             .require_drained_for_disposal_with_native_work(
-                owner.native_view_owner(),
-                command,
-                drained,
-                original,
-                meter,
+                &owner, command, drained, original, meter,
             )?
             .await?;
         self._creator_packet

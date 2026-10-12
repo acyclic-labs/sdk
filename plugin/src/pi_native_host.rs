@@ -105,55 +105,33 @@ impl NativeGate {
     ) -> Result<PublicationPermit> {
         if let Some(reservation) = self.reservation.as_ref() {
             owner
-                .native_view_owner()
-                .verify_with_native_work(meter)
+                .verify(
+                    false,
+                    &mut Some(&mut acyclic_harness::store::native_work_io(meter)?),
+                )
                 .await?;
-            owner.native_view_owner().require_volume_grant(
+            owner.require_volume_grant(
                 volume,
                 VolumeOperation::Write,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(meter).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(meter)?),
             )?;
             return Ok(reservation.0);
         }
         let recover_original = existing_only || self.requires_original_recovery;
         self.requires_original_recovery = true;
         let original = acyclic_fs::OperationId::from_bytes(command.into_bytes());
-        let acquired = if recover_original {
-            owner
-                .native_view_owner()
-                .recover_publication(
-                    workspace,
-                    volume,
-                    generation,
-                    original,
-                    meter,
-                    cancellation,
-                    cleanup_cancellation,
-                )
-                .await?
-        } else {
-            Some(
-                owner
-                    .native_view_owner()
-                    .reserve_publication(
-                        workspace,
-                        volume,
-                        generation,
-                        original,
-                        meter,
-                        cancellation,
-                        cleanup_cancellation,
-                    )
-                    .await?,
+        let acquired = owner
+            .publication(
+                workspace,
+                volume,
+                generation,
+                original,
+                meter,
+                cancellation,
+                cleanup_cancellation,
+                recover_original,
             )
-        };
+            .await?;
         let reservation = acquired.ok_or(Error::Indeterminate(command))?;
         let permit = reservation.0;
         self.reservation = Some(reservation);
@@ -175,10 +153,7 @@ impl NativeGate {
                 Ok(())
             };
         };
-        reservation
-            .1
-            .release(&owner.native_view_owner(), meter, cancellation)
-            .await?;
+        reservation.1.release(owner, meter, cancellation).await?;
         self.requires_original_recovery = false;
         remaining(meter)?;
         Ok(())
@@ -355,14 +330,11 @@ impl PiNativeCommandHost {
 
     async fn register_binding(&self, prepared: PreparedPiFork, observed: bool) -> Result<()> {
         let original_work = prepared._metadata_custody.work().clone();
-        prepared.report.validate(&mut Some(
-            &mut acyclic_harness::store::native_work_io(&original_work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?,
-        ))?;
+        prepared
+            .report
+            .validate(&mut Some(&mut acyclic_harness::store::native_work_io(
+                &original_work,
+            )?))?;
         let binding = &prepared.binding;
         binding.validate_with_native_work(
             None,
@@ -743,7 +715,9 @@ impl PiNativeCommandHost {
                 ),
             )
             .await?;
-        if effect.owner.task_id() != task || effect.context().durable_task_id() != Some(task) {
+        if effect.owner.task_id() != task
+            || effect.context.context().durable_task_id() != Some(task)
+        {
             return Err(unauthorized(
                 "Pi live source differs from its original owner/context",
             ));
@@ -848,10 +822,7 @@ impl PiNativeCommandHost {
                     .live_view(task)
                     .ok_or_else(|| Error::Indeterminate(effect.command))?;
                 let snapshots = view
-                    .checkpoint_projects_with_native_work(
-                        effect.owner.native_view_owner(),
-                        &original_work,
-                    )?
+                    .checkpoint_projects_with_native_work(&effect.owner, &original_work)?
                     .await?;
                 if snapshots.0.len() != 1 {
                     return Err(unauthorized(
@@ -1056,14 +1027,7 @@ impl PiNativeCommandHost {
             .owner
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(&work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(&work)?),
             )
             .await?;
         Ok(work)
@@ -1093,12 +1057,7 @@ impl PiNativeCommandHost {
         let work = self.preparation_work(&entry).await?;
         self.child_admission(task, &work).await?;
         let observed = (async {
-            let mut io = acyclic_harness::store::native_work_io(&work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(&work)?;
             acyclic_harness::store::HistoryIo::retain_owned(
                 &mut io,
                 std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(
@@ -1178,12 +1137,7 @@ impl PiNativeCommandHost {
         let work = self.preparation_work(&entry).await?;
         self.child_admission(task, &work).await?;
         let observed = (async {
-            let mut io = acyclic_harness::store::native_work_io(&work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(&work)?;
             acyclic_harness::store::HistoryIo::retain_owned(
                 &mut io,
                 std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(
@@ -1312,7 +1266,7 @@ impl PiNativeCommandHost {
                         let workflow = self
                             .runtime
                             .runtime
-                            .workflow_journal(task, effect.context().owned_task_fence()?)
+                            .workflow_journal(task, effect.context.context().owned_task_fence()?)
                             .await?;
                         effect
                             .journal
@@ -1435,7 +1389,7 @@ impl PiNativeCommandHost {
             } = &mut *handles;
             match view
                 .cleanup_mounts_with_native_work(
-                    effect.owner.native_view_owner(),
+                    &effect.owner,
                     process_drained,
                     drained,
                     &original,
@@ -1465,14 +1419,7 @@ impl PiNativeCommandHost {
             .owner
             .verify(
                 true,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(meter).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(meter)?),
             )
             .await?;
         handles
@@ -1525,7 +1472,7 @@ impl PiNativeCommandHost {
             scratch
                 .release_scratch_with_work(
                     &effect.owner,
-                    effect.context(),
+                    effect.context.context(),
                     effect.command,
                     drained,
                     &proof,
@@ -1582,14 +1529,7 @@ impl PiNativeCommandHost {
         owner
             .verify(
                 true,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(meter).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(meter)?),
             )
             .await?;
         let admission = self.child_admission(task, meter).await?;
@@ -1730,7 +1670,7 @@ impl PiNativeCommandHost {
         let admission = self.child_admission(effect.owner.task_id(), meter).await?;
         let input = &admission.1;
         let recorded_effect = self
-            .original_effect(effect.context(), input, effect.command, meter)
+            .original_effect(effect.context.context(), input, effect.command, meter)
             .await?;
         Ok(recorded_effect
             .0
@@ -1933,12 +1873,7 @@ impl PiNativeCommandHost {
             }
         }
         let observed = (async {
-            let mut io = acyclic_harness::store::native_work_io(meter).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(meter)?;
             acyclic_harness::store::HistoryIo::retain_owned(
                 &mut io,
                 std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(
@@ -2039,14 +1974,7 @@ impl PiNativeCommandHost {
         owner
             .verify(
                 recovery,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
             )
             .await?;
         Ok(((admitted.1, admitted.2), owner, original))
@@ -2081,12 +2009,7 @@ impl PiNativeCommandHost {
             work,
         )?;
         let interaction_verifier = {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let value = conversation.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
@@ -2140,12 +2063,7 @@ impl PiNativeCommandHost {
             work,
         )?;
         let verifier = {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let value = conversation.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
@@ -2208,22 +2126,12 @@ impl PiNativeCommandHost {
             work,
         )?;
         let verifier = {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let value = conversation.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
         let history = {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let value = HistoryReader::new(
                 &self.stream,
                 &conversation.0.0,
@@ -2236,14 +2144,7 @@ impl PiNativeCommandHost {
         let effect = acyclic_harness::effect_host::task_effect_id(
             input.binding.task_id,
             command,
-            &mut Some(
-                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
-            ),
+            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
         )?;
         history
             .0
@@ -2655,12 +2556,7 @@ impl PiNativeCommandHost {
                     work,
                 )?;
                 let write_capability = {
-                    let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?;
+                    let mut io = acyclic_harness::store::native_work_io(work)?;
                     let value = project.capability(VolumeOperation::Write, &mut Some(&mut io))?;
                     (value, io.into_custody())
                 };

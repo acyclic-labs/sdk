@@ -159,12 +159,7 @@ fn conversation_journal<'a>(
         work,
     )?;
     let verifier = {
-        let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-            acyclic_harness::Error::NativeWork {
-                cause,
-                custody: None,
-            }
-        })?;
+        let mut io = acyclic_harness::store::native_work_io(work)?;
         let value = authority.0.1.verifier(&mut Some(&mut io))?;
         (value, io.into_custody())
     };
@@ -218,14 +213,7 @@ pub(crate) async fn open_prepared_approval(
     owner
         .verify(
             false,
-            &mut Some(
-                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
-            ),
+            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
         )
         .await?;
     let storage = protected.authority_with_native_work(work)?;
@@ -236,12 +224,7 @@ pub(crate) async fn open_prepared_approval(
         work,
     )?;
     let verifier = {
-        let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-            acyclic_harness::Error::NativeWork {
-                cause,
-                custody: None,
-            }
-        })?;
+        let mut io = acyclic_harness::store::native_work_io(work)?;
         let value = authority.0.1.verifier(&mut Some(&mut io))?;
         (value, io.into_custody())
     };
@@ -293,14 +276,7 @@ pub(crate) async fn open_prepared_approval(
     owner
         .verify(
             false,
-            &mut Some(
-                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
-            ),
+            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
         )
         .await?;
     let _staged = crate::pi_root_provider::stage_pi_input(
@@ -315,14 +291,7 @@ pub(crate) async fn open_prepared_approval(
     owner
         .verify(
             false,
-            &mut Some(
-                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
-            ),
+            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
         )
         .await
 }
@@ -863,14 +832,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         owner
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
             )
             .await?;
         let (admitted, _admission_custody) = self.admission_input(root, work).await?;
@@ -1023,14 +985,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         owner
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
             )
             .await?;
         let (status, native) = observe_writeback(

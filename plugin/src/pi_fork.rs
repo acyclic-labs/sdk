@@ -598,12 +598,7 @@ impl PiForkCoordinator {
             .verify_original_volume_read_with_native_work(owner, volume, work)
             .await?;
         let name = {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let value = volume.storage_name(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
@@ -616,14 +611,7 @@ impl PiForkCoordinator {
         (owner)
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(&self.work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(&self.work)?),
             )
             .await?;
         let head = workspace
@@ -633,14 +621,7 @@ impl PiForkCoordinator {
         (owner)
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(&self.work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(&self.work)?),
             )
             .await?;
         acyclic_harness::resources::GenerationRef::new_with_native_work(
@@ -762,12 +743,7 @@ impl PiForkCoordinator {
             work,
         )?;
         let verifier = {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let value = authority.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
@@ -804,12 +780,7 @@ impl PiForkCoordinator {
         let mut selected_project = None;
         for (key, volume) in &source_input.binding.project_volumes {
             let name = {
-                let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+                let mut io = acyclic_harness::store::native_work_io(work)?;
                 let value = volume.storage_name(&mut Some(&mut io))?;
                 (value, io.into_custody())
             };
@@ -916,32 +887,17 @@ impl PiForkCoordinator {
             });
         }
         let child_project = {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let value = child_project.copy(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
         let child_private = {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let value = commit.child.scratch.volume.copy(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
         let child_result = {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let value = results.volume.copy(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
@@ -1045,12 +1001,7 @@ impl PiForkCoordinator {
         request_custody.absorb(&mut source_snapshot.1)?;
         let input_read = {
             let journal = &self.owner.policy().journal;
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let value = journal.directory_read_capability(
                 crate::pi_root_inputs::ROOT_INPUT_DIRECTORY,
                 &mut Some(&mut io),
@@ -1203,14 +1154,7 @@ impl PiForkCoordinator {
         (owner)
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(&self.work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(&self.work)?),
             )
             .await?;
         let container = {
@@ -1355,12 +1299,7 @@ impl PiForkCoordinator {
     fn require_input_read(&self, context: &acyclic_harness::runtime::TaskContext) -> Result<()> {
         let native = {
             let journal = &self.owner.policy().journal;
-            let mut io = acyclic_harness::store::native_work_io(&self.work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(&self.work)?;
             let value = journal.directory_read_capability(
                 crate::pi_root_inputs::ROOT_INPUT_DIRECTORY,
                 &mut Some(&mut io),
@@ -1506,14 +1445,11 @@ impl PiForkCoordinator {
                 )?,
                 _ => return Ok(None),
             };
-            report.0.validate(&mut Some(
-                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
-            ))?;
+            report
+                .0
+                .validate(&mut Some(&mut acyclic_harness::store::native_work_io(
+                    work,
+                )?))?;
             if !self.same_payload(&plan.request.payload, &report.0.request)? {
                 return Err(Error::NativeBoundary {
                     code: acyclic_harness::wire::ErrorCode::Unauthorized,
@@ -1592,12 +1528,7 @@ impl PiForkCoordinator {
                 work,
             )?;
             let parent_verifier = {
-                let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+                let mut io = acyclic_harness::store::native_work_io(work)?;
                 let value = parent_authority.0.1.verifier(&mut Some(&mut io))?;
                 (value, io.into_custody())
             };
@@ -1608,22 +1539,12 @@ impl PiForkCoordinator {
                 work,
             )?;
             let child_verifier = {
-                let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+                let mut io = acyclic_harness::store::native_work_io(work)?;
                 let value = child_authority.0.1.verifier(&mut Some(&mut io))?;
                 (value, io.into_custody())
             };
             let parent = {
-                let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+                let mut io = acyclic_harness::store::native_work_io(work)?;
                 let value = acyclic_harness::store::HistoryReader::new(
                     &self.stream,
                     &parent_authority.0.0,
@@ -1633,12 +1554,7 @@ impl PiForkCoordinator {
                 (value, io.into_custody())
             };
             let child = {
-                let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+                let mut io = acyclic_harness::store::native_work_io(work)?;
                 let value = acyclic_harness::store::HistoryReader::new(
                     &self.stream,
                     &child_authority.0.0,
@@ -1647,12 +1563,7 @@ impl PiForkCoordinator {
                 )?;
                 (value, io.into_custody())
             };
-            let mut seed_io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut seed_io = acyclic_harness::store::native_work_io(work)?;
             let (seed, _) = report.0.copy(&mut Some(&mut seed_io))?;
             let seed_value = seed.into_seed(&mut Some(&mut seed_io))?;
             let _seed_custody = seed_io.into_custody();
@@ -1706,14 +1617,7 @@ impl PiForkCoordinator {
         (owner)
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(&self.work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(&self.work)?),
             )
             .await?;
         {
@@ -1724,12 +1628,7 @@ impl PiForkCoordinator {
                 FORK_PLAN_DIAGNOSTIC_LABEL_BYTES,
             )?;
             let name = {
-                let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+                let mut io = acyclic_harness::store::native_work_io(work)?;
                 let value = request
                     .0
                     .preparation
@@ -1841,14 +1740,7 @@ impl PiForkCoordinator {
         (owner)
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(&self.work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(&self.work)?),
             )
             .await?;
         let snapshot = Snapshot::decode_with_native_work(
@@ -1864,12 +1756,7 @@ impl PiForkCoordinator {
             });
         }
         let verifier = {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let value = authority.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
@@ -1892,12 +1779,7 @@ impl PiForkCoordinator {
             Some(&acyclic_harness::filesystem::PreparationIo::from_native_work(work)?),
         )?;
         let verifier = {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let value = authority.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
@@ -1936,14 +1818,7 @@ impl PiForkCoordinator {
         (owner)
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(&self.work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(&self.work)?),
             )
             .await?;
         preparer.into_native_shared(work)
@@ -1980,14 +1855,7 @@ impl PiForkCoordinator {
         (owner)
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(&self.work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(&self.work)?),
             )
             .await?;
         self.admit_original(&plan.preparation, fence).await?;
@@ -2018,14 +1886,7 @@ impl PiForkCoordinator {
         (owner)
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(&self.work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(&self.work)?),
             )
             .await?;
         cancel.check().map_err(|_| Error::NativeWork {
@@ -2040,14 +1901,7 @@ impl PiForkCoordinator {
         (owner)
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(&self.work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(&self.work)?),
             )
             .await?;
         self.admit_original(&plan.preparation, fence).await?;
@@ -2076,12 +1930,7 @@ impl PiForkCoordinator {
         {
             let commands = self.runtime.runtime.commands().with_fork_preparer(preparer);
             let recovered = (async {
-                let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+                let mut io = acyclic_harness::store::native_work_io(work)?;
                 acyclic_harness::store::HistoryIo::retain_owned(
                     &mut io,
                     std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(
@@ -2170,14 +2019,11 @@ impl PiForkCoordinator {
             }
             None | Some(Outcome::Indeterminate { .. }) => return Ok(None),
         };
-        report.0.validate(&mut Some(
-            &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?,
-        ))?;
+        report
+            .0
+            .validate(&mut Some(&mut acyclic_harness::store::native_work_io(
+                work,
+            )?))?;
         if !self.same_payload(&plan.request.payload, &report.0.request)? {
             return Err(Error::NativeBoundary {
                 code: acyclic_harness::wire::ErrorCode::Unauthorized,
@@ -2187,14 +2033,7 @@ impl PiForkCoordinator {
         (owner)
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(&self.work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(&self.work)?),
             )
             .await?;
         Ok(Some(report))
@@ -2233,14 +2072,7 @@ impl PiForkCoordinator {
         (owner)
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(&self.work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(&self.work)?),
             )
             .await?;
         cancel.check().map_err(|_| Error::NativeWork {
@@ -2263,14 +2095,7 @@ impl PiForkCoordinator {
         (owner)
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(&self.work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(&self.work)?),
             )
             .await?;
         self.publish(
@@ -2297,14 +2122,7 @@ impl PiForkCoordinator {
         (owner)
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(&self.work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(&self.work)?),
             )
             .await?;
         Ok(Some(prepared))
@@ -2343,14 +2161,7 @@ impl PiForkCoordinator {
         (owner)
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(&self.work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(&self.work)?),
             )
             .await?;
         Ok(prepared)
@@ -2372,12 +2183,7 @@ impl PiForkCoordinator {
     ) -> Result<PreparedPiFork> {
         let work = &self.work;
         let project_name = {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let value = report
                 .request
                 .preparation
@@ -2430,12 +2236,7 @@ impl PiForkCoordinator {
             .await
             .map_err(crate::pi_lazy_capture::native_lazy_error)?;
         let scratch_name = {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let value = report
                 .child_private_volume
                 .storage_name(&mut Some(&mut io))?;
@@ -2481,12 +2282,7 @@ impl PiForkCoordinator {
                 reason: "Pi creator report lost its actual result generation",
             })?;
         let result_name = {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let value = result_binding.volume.storage_name(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
@@ -2567,12 +2363,7 @@ impl PiForkCoordinator {
             work,
         )?;
         let verifier = {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let value = authority.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
@@ -2600,26 +2391,12 @@ impl PiForkCoordinator {
         let history: Arc<dyn acyclic_harness::fork::ForkSeedVerifier> =
             acyclic_harness::fork::StreamHistoryForkVerifier::new(
                 &stream_provider.0,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
             )?
             .into_native_shared(work)?;
         let forks = acyclic_harness::fork::CompositeForkVerifier::new(
             &[filesystem, history, capture],
-            &mut Some(
-                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
-            ),
+            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
         )?
         .into_native_shared(work)?;
         let parent = StreamAggregate::open_with_native_work(
@@ -2634,21 +2411,11 @@ impl PiForkCoordinator {
         parent_value.set_limits(context.scope().limits())?;
         parent_value = parent_value.with_fork_verifier(forks);
         {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             io.retain_owned(std::mem::size_of::<acyclic_harness::core::ApplyResult>() as u64)?;
             let (report, report_bytes) = report.copy(&mut Some(&mut io))?;
             let (scope, scope_custody) = {
-                let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+                let mut io = acyclic_harness::store::native_work_io(work)?;
                 let value = authority.0.2.copy(&mut Some(&mut io))?;
                 (value, io.into_custody())
             };
@@ -2672,12 +2439,7 @@ impl PiForkCoordinator {
             work,
         )?;
         let child_verifier = {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let value = child_authority.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
@@ -2692,19 +2454,9 @@ impl PiForkCoordinator {
         let mut child_value = child.0;
         child_value.set_limits(plan.request.child.limits)?;
         {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let (scope, scope_custody) = {
-                let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+                let mut io = acyclic_harness::store::native_work_io(work)?;
                 let value = child_authority.0.2.copy(&mut Some(&mut io))?;
                 (value, io.into_custody())
             };
@@ -2740,14 +2492,10 @@ impl PiForkCoordinator {
                 .validate(&mut Some(&mut acyclic_harness::store::native_work_io(
                     work,
                 )?))?;
-            plan.preparation.validate(&mut Some(
-                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
-            ))?;
+            plan.preparation
+                .validate(&mut Some(&mut acyclic_harness::store::native_work_io(
+                    work,
+                )?))?;
         }
         let child_input: (PiTaskInput, acyclic_fs::NativeAllocation) = self.decode_input_value(
             &plan.request.child.input,

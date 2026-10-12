@@ -1078,12 +1078,7 @@ impl PiSession {
         )?;
         let paths = paths;
         let (workspace, workspace_custody) = {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let value = project.storage_name(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
@@ -1284,14 +1279,9 @@ impl PiSession {
         };
         let report: acyclic_harness::fork::ForkReport = serde_json::from_value(value)
             .map_err(|error| acyclic_harness::Error::Invalid(error.to_string()))?;
-        report.validate(&mut Some(
-            &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?,
-        ))?;
+        report.validate(&mut Some(&mut acyclic_harness::store::native_work_io(
+            work,
+        )?))?;
         let (request, request_custody) =
             pi_root_provider::guarded_pi_value(&report.request, maximum_owned_bytes, work)?;
         let request = request;
@@ -1348,14 +1338,11 @@ impl PiSession {
                 "Pi creator substituted its original child binding or workspace".to_owned(),
             ));
         }
-        prepared.report.validate(&mut Some(
-            &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?,
-        ))?;
+        prepared
+            .report
+            .validate(&mut Some(&mut acyclic_harness::store::native_work_io(
+                work,
+            )?))?;
         binding.validate(None, [key.as_str()], false)?;
         let route = SpawnBorrowedRoute {
             task_binding: PluginTaskBinding::Pi(binding),
@@ -1514,14 +1501,7 @@ impl PiSession {
         let native_effect = acyclic_harness::effect_host::task_effect_id(
             commit.child.task_id,
             operations.native,
-            &mut Some(
-                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
-            ),
+            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
         )?;
         let body = SpawnObservation {
             operation: &commit.sdk_operation,

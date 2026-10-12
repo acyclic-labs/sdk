@@ -312,12 +312,7 @@ where
     for task in tasks.0 {
         if let Some(preparation) = task.preparation {
             let recovered = (async {
-                let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+                let mut io = acyclic_harness::store::native_work_io(work)?;
                 acyclic_harness::store::HistoryIo::retain_owned(
                     &mut io,
                     std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(
@@ -357,12 +352,7 @@ where
         }
         let task_id = task.binding.task_id;
         let mut recovered = (async {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             acyclic_harness::store::HistoryIo::retain_owned(
                 &mut io,
                 std::mem::size_of::<acyclic_harness::distributed::WorkPull>().max(
@@ -571,12 +561,7 @@ where
         .chain(binding.results.as_ref().map(|result| &result.volume))
     {
         let read = {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let value = volume.capability(
                 acyclic_harness::conversation::VolumeOperation::Read,
                 &mut Some(&mut io),
@@ -588,12 +573,7 @@ where
         }
     }
     let scratch_write = {
-        let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-            acyclic_harness::Error::NativeWork {
-                cause,
-                custody: None,
-            }
-        })?;
+        let mut io = acyclic_harness::store::native_work_io(work)?;
         let value = binding.scratch.volume.capability(
             acyclic_harness::conversation::VolumeOperation::Write,
             &mut Some(&mut io),
@@ -605,12 +585,7 @@ where
     }
     if let Some(result) = &binding.results {
         let write = {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let value = result.volume.capability(
                 acyclic_harness::conversation::VolumeOperation::Write,
                 &mut Some(&mut io),

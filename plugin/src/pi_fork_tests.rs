@@ -987,12 +987,7 @@ impl Fixture {
             &work,
         )?;
         let verifier = {
-            let mut io = acyclic_harness::store::native_work_io(&work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(&work)?;
             let value = authority.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody())
         };

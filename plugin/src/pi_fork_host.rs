@@ -514,12 +514,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
             .next()
             .ok_or_else(|| invalid("Pi project missing"))?;
         let workspace = {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let value = project.storage_name(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
@@ -685,12 +680,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         )?;
         let mut authority = (conversation.0, conversation.1);
         let mut verifier = {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let value = authority.0.1.verifier(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
@@ -763,12 +753,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
                     .values()
                     .next()
                     .ok_or_else(|| invalid("Pi child project missing"))?;
-                let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+                let mut io = acyclic_harness::store::native_work_io(work)?;
                 let name = volume.storage_name(&mut Some(&mut io))?;
                 (name, io.into_custody())
             };
@@ -952,14 +937,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         owner
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(&work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(&work)?),
             )
             .await?;
         let observed = ObservedSource {
@@ -980,14 +958,7 @@ impl<'a> crate::pi_selected_host::PiControlHost<'a> {
         owner
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(&work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(&work)?),
             )
             .await?;
         ready(

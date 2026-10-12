@@ -308,14 +308,7 @@ pub(crate) async fn guard_root_preparation_source_with_native_work<P: StreamProv
     current_owner.require_volume_grant(
         project,
         VolumeOperation::Read,
-        &mut Some(
-            &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?,
-        ),
+        &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
     )?;
     context
         .verify_original_volume_read_with_native_work(current_owner, project, work)
@@ -345,14 +338,7 @@ pub(crate) async fn guard_root_preparation_source_with_native_work<P: StreamProv
     current_owner
         .verify(
             false,
-            &mut Some(
-                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
-            ),
+            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
         )
         .await?;
     let identity = work.root_identity(Path::new(path))?;
@@ -373,14 +359,7 @@ pub(crate) async fn guard_root_preparation_source_with_native_work<P: StreamProv
     current_owner
         .verify(
             false,
-            &mut Some(
-                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
-            ),
+            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
         )
         .await?;
     Ok(identity)
@@ -576,12 +555,7 @@ pub(crate) fn root_provider<P: StreamProvider + 'static>(
         .chain(std::iter::once(&request.binding.scratch.volume))
     {
         let grant = {
-            let mut io = acyclic_harness::store::native_work_io(&original).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(&original)?;
             let value = volume.capability(VolumeOperation::Read, &mut Some(&mut io))?;
             (value, io.into_custody())
         };
@@ -595,12 +569,7 @@ pub(crate) fn root_provider<P: StreamProvider + 'static>(
         }
     }
     let grant = {
-        let mut io = acyclic_harness::store::native_work_io(&original).map_err(|cause| {
-            acyclic_harness::Error::NativeWork {
-                cause,
-                custody: None,
-            }
-        })?;
+        let mut io = acyclic_harness::store::native_work_io(&original)?;
         let value = request
             .binding
             .scratch
@@ -711,26 +680,12 @@ pub(crate) async fn bind_root_output_context_with_native_work<P: StreamProvider 
     current_owner.require_volume_grant(
         &binding.scratch.volume,
         VolumeOperation::Write,
-        &mut Some(
-            &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?,
-        ),
+        &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
     )?;
     current_owner
         .verify(
             false,
-            &mut Some(
-                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
-            ),
+            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
         )
         .await?;
     let preparation = load_original_preparation_with_native_work(
@@ -800,12 +755,7 @@ pub(crate) async fn bind_root_output_context_with_native_work<P: StreamProvider 
         work,
     )?;
     let verifier = {
-        let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-            acyclic_harness::Error::NativeWork {
-                cause,
-                custody: None,
-            }
-        })?;
+        let mut io = acyclic_harness::store::native_work_io(work)?;
         let value = authority.0.1.verifier(&mut Some(&mut io))?;
         (value, io.into_custody())
     };
@@ -847,14 +797,7 @@ pub(crate) async fn prove_root_project_source_with_native_work<P: StreamProvider
     current_owner.require_volume_grant(
         project,
         VolumeOperation::Read,
-        &mut Some(
-            &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?,
-        ),
+        &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
     )?;
     context
         .context()
@@ -1009,12 +952,7 @@ fn pi_input_write_grant_with_native_work(
     let authority = owner.authority_with_native_work(work)?;
     let authority = (authority.0, authority.1);
     let grant = {
-        let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-            acyclic_harness::Error::NativeWork {
-                cause,
-                custody: None,
-            }
-        })?;
+        let mut io = acyclic_harness::store::native_work_io(work)?;
         let grant = ContentGrant::verify(
             &authority.0.verifier,
             &authority.0.signed,
@@ -2146,12 +2084,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
             let mut root = work.display(key).map_err(native)?;
             let mut native_path = work.display(path).map_err(native)?;
             let mut volume = {
-                let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+                let mut io = acyclic_harness::store::native_work_io(work)?;
                 let value = self.preparation.request.binding.project_volumes[key]
                     .copy(&mut Some(&mut io))?;
                 (value, io.into_custody())
@@ -2212,14 +2145,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         owner
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
             )
             .await?;
         self.bind_conversation_with_native_work(effect, attempt, work)
@@ -2420,28 +2346,14 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         owner
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
             )
             .await?;
         let volume = &self.preparation.request.binding.scratch.volume;
         owner.require_volume_grant(
             volume,
             VolumeOperation::Write,
-            &mut Some(
-                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
-            ),
+            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
         )?;
         if self
             .creation_with_native_work(
@@ -2470,12 +2382,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
             let operation =
                 self.creation_operation_with_native_work(effect, attempt, "scratch", work)?;
             let name = {
-                let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?;
+                let mut io = acyclic_harness::store::native_work_io(work)?;
                 let value = volume.storage_name(&mut Some(&mut io))?;
                 (value, io.into_custody())
             };
@@ -2496,14 +2403,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         owner
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
             )
             .await?;
         let observation = self
@@ -2543,14 +2443,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         self.execution_owner()?
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
             )
             .await?;
         if let Some(observation) = self
@@ -2580,14 +2473,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         self.execution_owner()?
             .verify(
                 true,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
             )
             .await?;
         let original = self
@@ -2610,14 +2496,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
             .execution_owner()?
             .verify(
                 false,
-                &mut Some(
-                    &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                        acyclic_harness::Error::NativeWork {
-                            cause,
-                            custody: None,
-                        }
-                    })?,
-                ),
+                &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
             )
             .await
         {
@@ -2726,12 +2605,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         let operation =
             self.creation_operation_with_native_work(effect, attempt, resource, work)?;
         let name = {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let value = volume.storage_name(&mut Some(&mut io))?;
             (value, io.into_custody())
         };
@@ -3055,12 +2929,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         let effect = self.effect_id_with_native_work(work)?;
         let verifier = self.owner.effect_verifier_with_native_work(work)?;
         let reader = {
-            let mut io = acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                acyclic_harness::Error::NativeWork {
-                    cause,
-                    custody: None,
-                }
-            })?;
+            let mut io = acyclic_harness::store::native_work_io(work)?;
             let value = HistoryReader::new(
                 &self.stream,
                 verifier.0.audience(),
@@ -3165,14 +3034,7 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         acyclic_harness::effect_host::task_effect_id(
             self.owner.policy().root_task,
             self.preparation.command.operation_id,
-            &mut Some(
-                &mut acyclic_harness::store::native_work_io(work).map_err(|cause| {
-                    acyclic_harness::Error::NativeWork {
-                        cause,
-                        custody: None,
-                    }
-                })?,
-            ),
+            &mut Some(&mut acyclic_harness::store::native_work_io(work)?),
         )
     }
 
