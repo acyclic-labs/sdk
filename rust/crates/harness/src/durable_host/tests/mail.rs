@@ -119,3 +119,4 @@ async fn b09_inbox_rejects_hostile_envelopes() -> Result<()> {
     assert_eq!(f.host.inbox(recipient, 0, 1).await?.len(), 1);
     Ok(())
 }
+

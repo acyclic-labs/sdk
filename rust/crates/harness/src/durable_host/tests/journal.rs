@@ -4,28 +4,23 @@ use crate::workflow::{DurableWorkflowHost, WorkflowJournal};
 
 #[tokio::test]
 async fn b13_model_claims_use_pinned_limits_and_fence() -> Result<()> {
-    let f = fixture::fixture().await?;
+    let f = Fixture::new(
+        Arc::new(MemoryStream::default()),
+        acyclic_fs::Fs::memory(),
+        json!({"type":"integer"}),
+        Some(crate::scheduler::SessionLimits {
+            active_tasks: 1,
+            total_tasks: 1,
+            depth: 0,
+            model_steps: 2,
+        }),
+        &[],
+    )
+    .await?;
     let mut record = f.admission(1, json!(0));
     record.run_limits.max_steps = Some(1);
     f.host.admit(record).await?;
-    f.host
-        .coordinator
-        .lock()
-        .await
-        .configure_session(
-            f.issuer.audience(),
-            &f.signed,
-            &f.issuer.verifier(&mut None)?,
-            OperationId::from_bytes([1; 16]),
-            crate::scheduler::SessionLimits {
-                active_tasks: 1,
-                total_tasks: 1,
-                depth: 0,
-                model_steps: 2,
-            },
-            IdempotencyKey::new("model-session")?,
-        )
-        .await?;
+
     let owner = f.claim(1, "model").await?;
     let task = TaskId::from_bytes([1; 16]);
     let fence = crate::scheduler::LeaseFence::from(&owner.reservation);
@@ -88,12 +83,12 @@ async fn b14_workflow_pins_admission_and_transition() -> Result<()> {
         )
         .await?;
     let record = workflow.replay(0, 1).await?.pop().unwrap();
-    assert!(matches!(
+    assert_eq!(
         workflow
             .commit(0, record.idempotency_key.clone(), record.clone())
             .await?,
-        crate::workflow::WorkflowCommitOutcome::Replayed(_)
-    ));
+        record
+    );
     let mut wrong = record.clone();
     wrong.next.state = json!(1);
     wrong.transition.state = json!(1);
@@ -108,7 +103,19 @@ async fn b14_workflow_pins_admission_and_transition() -> Result<()> {
 
 #[tokio::test]
 async fn b15_replacement_rejects_stale_publications() -> Result<()> {
-    let f = fixture::fixture().await?;
+    let f = Fixture::new(
+        Arc::new(MemoryStream::default()),
+        acyclic_fs::Fs::memory(),
+        json!({"type":"integer"}),
+        Some(crate::scheduler::SessionLimits {
+            active_tasks: 2,
+            total_tasks: 2,
+            depth: 1,
+            model_steps: 2,
+        }),
+        &[],
+    )
+    .await?;
     let old = f.running(1).await?;
     let admission = old.workflow_admission().clone();
     let workflow = f.workflow(f.owner(1).await?)?;
@@ -123,20 +130,84 @@ async fn b15_replacement_rejects_stale_publications() -> Result<()> {
         )
         .await?;
     let record = workflow.replay(0, 1).await?.pop().unwrap();
+    let attempt = OperationId::from_bytes([3; 16]);
+    let journal = f.execution(f.owner(1).await?, attempt)?;
+    journal
+        .append(
+            attempt,
+            "started",
+            &ExecutionEvent::Started {
+                request_digest: [9; 32],
+            },
+            None,
+        )?
+        .await?;
+    let invocation = crate::tool::ToolInvocation::for_model_call(
+        attempt,
+        0,
+        "stale-tool".into(),
+        "test".into(),
+        json!({}),
+        None,
+    )?;
+    let invocation =
+        crate::executor::stage_json(&journal, attempt, "invocation", &invocation, None).await?;
+    f.host
+        .claim_model_dispatch(
+            TaskId::from_bytes([1; 16]),
+            attempt,
+            0,
+            [7; 32],
+            old.task_binding().1,
+        )
+        .await?;
     let replacement = f.replace(1).await?;
-    assert!(old.verify(false, &mut None).await.is_err());
+    assert!(
+        f.host
+            .claim_model_dispatch(
+                TaskId::from_bytes([1; 16]),
+                attempt,
+                0,
+                [7; 32],
+                old.task_binding().1
+            )
+            .await
+            .is_err()
+    );
+    assert!(
+        journal
+            .append(
+                attempt,
+                "tool",
+                &ExecutionEvent::ToolStarted {
+                    step: 0,
+                    call_id: "stale-tool".into(),
+                    invocation
+                },
+                None
+            )?
+            .await
+            .is_err()
+    );
+    assert_eq!(
+        f.execution(f.owner(1).await?, attempt)?
+            .replay(attempt, 0, 8, None)?
+            .await?
+            .len(),
+        1
+    );
     assert!(
         workflow
             .commit(0, record.idempotency_key.clone(), record.clone())
             .await
             .is_err()
     );
-    assert!(matches!(
+    assert_eq!(
         f.workflow(replacement)?
-            .commit(0, record.idempotency_key.clone(), record)
+            .commit(0, record.idempotency_key.clone(), record.clone())
             .await?,
-        crate::workflow::WorkflowCommitOutcome::Replayed(_)
-    ));
+        record
+    );
     Ok(())
 }
 
@@ -149,11 +220,12 @@ async fn b16_cancelled_owner_settles_existing_tool_once() -> Result<()> {
     journal
         .append(
             operation,
-            "started".into(),
-            ExecutionEvent::Started {
+            "started",
+            &(ExecutionEvent::Started {
                 request_digest: [9; 32],
-            },
-        )
+            }),
+            None,
+        )?
         .await?;
     let invocation = crate::tool::ToolInvocation::for_model_call(
         operation,
@@ -168,24 +240,26 @@ async fn b16_cancelled_owner_settles_existing_tool_once() -> Result<()> {
     journal
         .append(
             operation,
-            "tool".into(),
-            ExecutionEvent::ToolStarted {
+            "tool",
+            &(ExecutionEvent::ToolStarted {
                 step: 0,
                 call_id: "tool".into(),
                 invocation,
-            },
-        )
+            }),
+            None,
+        )?
         .await?;
     f.host.cancel(TaskId::from_bytes([1; 16])).await?;
     assert!(
         journal
             .append(
                 operation,
-                "fresh".into(),
-                ExecutionEvent::Started {
+                "fresh",
+                &(ExecutionEvent::Started {
                     request_digest: [8; 32]
-                }
-            )
+                }),
+                None
+            )?
             .await
             .is_err()
     );
@@ -197,12 +271,12 @@ async fn b16_cancelled_owner_settles_existing_tool_once() -> Result<()> {
     };
     for _ in 0..2 {
         settlement
-            .append(operation, "settle".into(), event.clone())
+            .append(operation, "settle", &(event.clone()), None)?
             .await?;
     }
     assert!(
         settlement
-            .append(operation, "another-settlement".into(), event)
+            .append(operation, "another-settlement", &(event), None)?
             .await
             .is_err()
     );
@@ -210,13 +284,14 @@ async fn b16_cancelled_owner_settles_existing_tool_once() -> Result<()> {
         settlement
             .append(
                 operation,
-                "missing".into(),
-                ExecutionEvent::ToolFailed {
+                "missing",
+                &(ExecutionEvent::ToolFailed {
                     step: 0,
                     call_id: "missing".into(),
                     reason: ToolFailureKind::ExecutorRejected
-                }
-            )
+                }),
+                None
+            )?
             .await
             .is_err()
     );
@@ -225,7 +300,19 @@ async fn b16_cancelled_owner_settles_existing_tool_once() -> Result<()> {
 
 #[tokio::test]
 async fn b17_seventy_event_replay_and_completion() -> Result<()> {
-    let f = fixture::fixture().await?;
+    let f = Fixture::new(
+        Arc::new(MemoryStream::default()),
+        acyclic_fs::Fs::memory(),
+        json!({"type":"integer"}),
+        Some(crate::scheduler::SessionLimits {
+            active_tasks: 1,
+            total_tasks: 1,
+            depth: 0,
+            model_steps: 2,
+        }),
+        &[],
+    )
+    .await?;
     let owner = f.running(1).await?;
     let (task, fence) = owner.task_binding();
     let attempt = OperationId::from_bytes([2; 16]);
@@ -247,24 +334,7 @@ async fn b17_seventy_event_replay_and_completion() -> Result<()> {
         Limits::default(),
         None,
     )?;
-    f.host
-        .coordinator
-        .lock()
-        .await
-        .configure_session(
-            f.issuer.audience(),
-            &f.signed,
-            &f.issuer.verifier(&mut None)?,
-            OperationId::from_bytes([1; 16]),
-            crate::scheduler::SessionLimits {
-                active_tasks: 1,
-                total_tasks: 1,
-                depth: 0,
-                model_steps: 2,
-            },
-            IdempotencyKey::new("model-session")?,
-        )
-        .await?;
+
     f.host
         .claim_model_dispatch(task, attempt, 0, request.request_digest(), fence.clone())
         .await?;
@@ -272,31 +342,34 @@ async fn b17_seventy_event_replay_and_completion() -> Result<()> {
     let reference = journal
         .stage(
             attempt,
-            "request".into(),
-            request.bytes().to_vec(),
+            "request",
+            &(request.bytes().to_vec()),
             "application/json",
-        )
+            None,
+        )?
         .await?;
     journal
         .append(
             attempt,
-            "started".into(),
-            ExecutionEvent::Started {
+            "started",
+            &(ExecutionEvent::Started {
                 request_digest: [9; 32],
-            },
-        )
+            }),
+            None,
+        )?
         .await?;
     journal
         .append(
             attempt,
-            "model".into(),
-            ExecutionEvent::ModelStarted {
+            "model",
+            &(ExecutionEvent::ModelStarted {
                 step: 0,
                 purpose: ModelPurpose::Response,
                 request_digest: request.request_digest(),
                 request: reference,
-            },
-        )
+            }),
+            None,
+        )?
         .await?;
     let event = crate::executor::stage_json(
         &journal,
@@ -317,20 +390,25 @@ async fn b17_seventy_event_replay_and_completion() -> Result<()> {
     let journal = f.execution(f.owner(1).await?, attempt)?;
     for index in 0..70 {
         journal
-            .append(attempt, format!("settlement-{index}"), observation.clone())
+            .append(
+                attempt,
+                &(format!("settlement-{index}")),
+                &(observation.clone()),
+                None,
+            )?
             .await?;
     }
     let cold = f.execution(f.owner(1).await?, attempt)?;
-    cold.append(attempt, "settlement-69".into(), observation.clone())
+    cold.append(attempt, "settlement-69", &(observation.clone()), None)?
         .await?;
-    assert_eq!(cold.replay(attempt, 0, 64).await?.len(), 64);
-    assert_eq!(cold.replay(attempt, 64, 64).await?.len(), 8);
+    assert_eq!(cold.replay(attempt, 0, 64, None)?.await?.len(), 64);
+    assert_eq!(cold.replay(attempt, 64, 64, None)?.await?.len(), 8);
     let mut wrong = observation.clone();
     if let ExecutionEvent::Model { step, .. } = &mut wrong {
         *step = 1;
     }
     assert!(
-        cold.append(attempt, "settlement-69".into(), wrong)
+        cold.append(attempt, "settlement-69", &(wrong), None)?
             .await
             .is_err()
     );
@@ -346,22 +424,23 @@ async fn b17_seventy_event_replay_and_completion() -> Result<()> {
     .await?;
     cold.append(
         attempt,
-        "completed".into(),
-        ExecutionEvent::Model {
+        "completed",
+        &(ExecutionEvent::Model {
             step: 0,
             purpose: ModelPurpose::Response,
             event: completed,
-        },
-    )
+        }),
+        None,
+    )?
     .await?;
     assert!(
-        cold.append(attempt, "after-completed".into(), observation.clone())
+        cold.append(attempt, "after-completed", &(observation.clone()), None)?
             .await
             .is_err()
     );
-    cold.append(attempt, "settlement-69".into(), observation)
+    cold.append(attempt, "settlement-69", &(observation), None)?
         .await?;
-    assert_eq!(cold.replay(attempt, 64, 64).await?.len(), 9);
+    assert_eq!(cold.replay(attempt, 64, 64, None)?.await?.len(), 9);
     Ok(())
 }
 
@@ -372,16 +451,60 @@ async fn b18_local_stream_reopen_keeps_cancelled_owner() -> Result<()> {
     let provider = acyclic_stream::LocalStream::open(directory.path(), Default::default())
         .await
         .map_err(|error| Error::Storage(error.to_string()))?;
+    let session = Some(crate::scheduler::SessionLimits {
+        active_tasks: 1,
+        total_tasks: 1,
+        depth: 0,
+        model_steps: 1,
+    });
     let f = Fixture::new(
         Arc::new(provider),
         acyclic_fs::Fs::memory(),
         json!({"type":"integer"}),
-        None,
+        session,
         &[],
     )
     .await?;
     let backend = f.backend.clone();
-    f.running(1).await?;
+    let mut admission = f.admission(1, json!(0));
+    admission.run_limits.max_steps = Some(1);
+    f.host.admit(admission).await?;
+    f.claim(1, "original").await?;
+    let attempt = OperationId::from_bytes([3; 16]);
+    let journal = f.execution(f.owner(1).await?, attempt)?;
+    journal
+        .append(
+            attempt,
+            "started",
+            &ExecutionEvent::Started {
+                request_digest: [9; 32],
+            },
+            None,
+        )?
+        .await?;
+    let invocation = crate::tool::ToolInvocation::for_model_call(
+        attempt,
+        0,
+        "original".into(),
+        "test".into(),
+        json!({}),
+        None,
+    )?;
+    let invocation =
+        crate::executor::stage_json(&journal, attempt, "invocation", &invocation, None).await?;
+    journal
+        .append(
+            attempt,
+            "tool",
+            &ExecutionEvent::ToolStarted {
+                step: 0,
+                call_id: "original".into(),
+                invocation,
+            },
+            None,
+        )?
+        .await?;
+    drop(journal);
     f.host.cancel(TaskId::from_bytes([1; 16])).await?;
     drop(f);
     let provider = acyclic_stream::LocalStream::open(directory.path(), Default::default())
@@ -391,27 +514,38 @@ async fn b18_local_stream_reopen_keeps_cancelled_owner() -> Result<()> {
         Arc::new(provider),
         backend,
         json!({"type":"integer"}),
-        None,
+        session,
         &[],
     )
     .await?;
-    assert!(
-        f.host
-            .cancellation_requested(TaskId::from_bytes([1; 16]), None)
-            .await?
-    );
-    let crate::distributed::WorkPull::Unresolved { lease, .. } = f
-        .host
-        .recover_work(TaskId::from_bytes([1; 16]), &mut None)
-        .await?
+    let crate::distributed::WorkPull::Unresolved { lease, .. } =
+        f.host.recover_work(TaskId::from_bytes([1; 16])).await?
     else {
         return Err(Error::Conflict("cancelled owner became runnable".into()));
     };
-    assert!(f.host.start_task(&lease, None).await.is_err());
-    f.host
-        .journal_owner(TaskId::from_bytes([1; 16]), (&lease.reservation).into())
-        .await?
-        .verify(true, &mut None)
+    assert!(f.host.start_task(&lease).await.is_err());
+    let journal = f.execution(f.owner(1).await?, attempt)?;
+    journal
+        .append(
+            attempt,
+            "settled",
+            &ExecutionEvent::ToolFailed {
+                step: 0,
+                call_id: "original".into(),
+                reason: ToolFailureKind::ExecutorRejected,
+            },
+            None,
+        )?
         .await?;
+    assert_eq!(journal.replay(attempt, 0, 8, None)?.await?.len(), 3);
+    assert!(f.host.admit(f.admission(2, json!(0))).await.is_err());
+    assert_eq!(
+        f.host
+            .observe_admission(TaskId::from_bytes([1; 16]))
+            .await?
+            .run_limits
+            .max_steps,
+        Some(1)
+    );
     Ok(())
 }

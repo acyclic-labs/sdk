@@ -117,7 +117,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         let operation_id = OperationId::from_bytes(request.batch_id.into_bytes());
         let key = format!("batch-request:{}", request.batch_id);
         let reference = self.payloads.stage(operation_id, &key, &bytes).await?;
-        reference.descriptor().verify(&bytes)?;
+        reference.descriptor().verify(&bytes, &mut None)?;
         if self.read_json(&reference).await? != canonical {
             return Err(Error::Storage("staged batch request changed".into()));
         }
@@ -139,7 +139,7 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
     }
 
     pub(super) fn validate_batch(&self, request: &DurableBatchRequest) -> Result<()> {
-        request.validate()?;
+        request.validate(&mut None)?;
         if request.execution.is_some()
             || request.policy != self.policy.as_ref().map(|policy| policy.identity())
             || request.machine.name != request.task.name
@@ -157,10 +157,11 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
             Some(&request.input_schema),
             &request.output_schema,
             None,
+            &mut None,
         )?;
         self.root_scope
             .narrow(request.scope.grants().clone(), request.scope.limits())?
-            .with_run_limits(request.scope.run_limits())?;
+            .with_run_limits(request.scope.run_limits(), &mut None)?;
         if request.parent.is_some() {
             require_descendant_grant(request.scope.grants(), &request.task)?;
         }

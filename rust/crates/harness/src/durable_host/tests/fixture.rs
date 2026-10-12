@@ -44,7 +44,7 @@ where
     pub(crate) async fn owner(&self, byte: u8) -> Result<TaskJournalOwner<P>> {
         let lease = match self
             .host
-            .recover_work(TaskId::from_bytes([byte; 16]), &mut None)
+            .recover_work(TaskId::from_bytes([byte; 16]))
             .await?
         {
             crate::distributed::WorkPull::Claimed(lease)
@@ -76,7 +76,7 @@ where
         )
     }
 
-    pub(crate) fn workflow(&self, owner: TaskJournalOwner<P>) -> Result<Workflow<P, A, O>> {
+    pub(crate) fn workflow(&self, owner: TaskJournalOwner<P>) -> Result<Arc<Workflow<P, A, O>>> {
         Workflow::for_task(
             owner,
             self.files.clone(),
@@ -89,19 +89,24 @@ where
     }
 
     pub(crate) async fn replace(&self, byte: u8) -> Result<TaskJournalOwner<P>> {
-        let owner = self.owner(byte).await?;
+        use crate::conversation::ContentPublisher;
+        let task = TaskId::from_bytes([byte; 16]);
         self.host
-            .coordinator
-            .lock()
-            .await
-            .apply(
-                IdempotencyKey::new("replace")?,
-                crate::scheduler::SchedulerEvent::LeaseReleased {
-                    operation_id: OperationId::from_bytes([byte; 16]),
-                    fence: owner.task_binding().1.clone(),
-                },
-                &mut None,
-            )
+            .suspend_workflow(task, self.owner(byte).await?.task_binding().1, 1)
+            .await?;
+        let (input, _) = self
+            .publisher
+            .stage(
+                OperationId::from_bytes([byte; 16]),
+                "replacement.json",
+                b"0",
+                "application/json",
+                "replacement.json",
+                None,
+            )?
+            .await?;
+        self.host
+            .resume_workflow(task, 1, input, IdempotencyKey::new("replace")?)
             .await?;
         self.claim(byte, "replacement").await?;
         self.owner(byte).await
@@ -131,7 +136,13 @@ where
                 &mut None,
             )
         };
-        let source = volume("source")?;
+        let source = VolumeRef::new(
+            provider.clone(),
+            "source".into(),
+            VolumeClass::Project,
+            VolumeOwner::Project("fixture-project".into()),
+            &mut None,
+        )?;
         let destination = volume("destination")?;
         let storage = volume("storage")?;
         for volume in [&source, &destination, &storage] {
@@ -245,17 +256,16 @@ where
             stream.clone(),
             payloads,
             reader.clone(),
-            issuer.audience(),
+            issuer.audience().clone(),
             signed.clone(),
             verifier,
             scope.clone(),
             tasks.clone(),
             machines.clone(),
             Arc::new(SystemUnixMillisClock),
-            None,
         )?;
         if let Some(limits) = session {
-            host = host.with_session_limits(limits, None)?;
+            host = host.with_session_limits(limits)?;
         }
         Ok(Self {
             stream,
@@ -311,13 +321,12 @@ where
                     labels: BTreeMap::new(),
                 },
                 OperationId::from_bytes([byte; 16]),
-                &mut None,
             )
             .await?
         else {
             return Err(Error::NotFound("fixture lease".into()));
         };
-        self.host.start_task(&lease, None).await?;
+        self.host.start_task(&lease).await?;
         Ok(lease)
     }
 
@@ -353,17 +362,16 @@ where
             self.stream.clone(),
             payloads,
             self.reader.clone(),
-            issuer.audience(),
+            issuer.audience().clone(),
             signed,
             verifier,
             self.scope.clone(),
             self.tasks.clone(),
             self.machines.clone(),
             Arc::new(SystemUnixMillisClock),
-            None,
         )?;
         if let Some(limits) = self.host.session_limits {
-            host = host.with_session_limits(limits, None)?;
+            host = host.with_session_limits(limits)?;
         }
         Ok(Arc::new(host))
     }
@@ -411,10 +419,29 @@ impl ResumableMachine for FixtureMachine {
     fn initialize(&self, input: &Value) -> Result<Value> {
         Ok(input.clone())
     }
-    fn transition(&self, state: &Value, _: &Value) -> Result<MachineTransition> {
+    fn transition(&self, state: &Value, input: &Value) -> Result<MachineTransition> {
+        if state.get("emitted") == Some(&Value::Bool(true)) {
+            return Ok(MachineTransition {
+                state: state.clone(),
+                commands: Vec::new(),
+                status: MachineStatus::Completed {
+                    value: json!({"ok":true}),
+                },
+            });
+        }
+        let commands = input
+            .get("created_command")
+            .map(|command| {
+                serde_json::from_value(command.clone()).map_err(|e| Error::Invalid(e.to_string()))
+            })
+            .transpose()?;
         Ok(MachineTransition {
-            state: state.clone(),
-            commands: Vec::new(),
+            state: if commands.is_some() {
+                json!({"emitted":true})
+            } else {
+                state.clone()
+            },
+            commands: commands.into_iter().collect(),
             status: MachineStatus::Suspended,
         })
     }

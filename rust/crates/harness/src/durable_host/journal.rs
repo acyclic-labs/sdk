@@ -8,7 +8,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     }
 
     pub(crate) fn validate_input_file(&self, file: &FileRef) -> Result<()> {
-        self.input_limits.validate_file(file)?;
+        self.input_limits.validate_file(file, &mut None)?;
         if !read_granted(&self.input_grants, file)? {
             return Err(Error::Unauthorized(
                 "task cannot read the execution input file".into(),
@@ -104,7 +104,11 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self,
         verifier: &AuthorityVerifier,
         maximum_payload_bytes: u64,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<()> {
+        if let Some(io) = work.as_deref() {
+            io.check_cancellation()?;
+        }
         if verifier.audience() != &self.host.owner
             || maximum_payload_bytes > self.maximum_payload_bytes
         {
@@ -163,6 +167,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
     pub(super) async fn condition(
         &self,
         write: crate::distributed::JournalWrite,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
     ) -> Result<acyclic_stream::CommitCondition> {
         self.host
             .coordinator
@@ -175,17 +180,25 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 self.operation_id(),
                 &self.fence,
                 write,
+                work,
             )
             .await
     }
 
-    pub(crate) async fn verify(&self, settlement: bool) -> Result<()> {
+    pub(crate) async fn verify(
+        &self,
+        settlement: bool,
+        work: &mut Option<&mut dyn crate::store::HistoryIo>,
+    ) -> Result<()> {
         use crate::distributed::JournalWrite;
-        self.condition(if settlement {
-            JournalWrite::Settlement
-        } else {
-            JournalWrite::Fresh
-        })
+        self.condition(
+            if settlement {
+                JournalWrite::Settlement
+            } else {
+                JournalWrite::Fresh
+            },
+            work,
+        )
         .await
         .map(|_| ())
     }
@@ -221,7 +234,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         operation: OperationId,
         event: &crate::executor::ExecutionEvent,
     ) -> Result<()> {
-        self.condition(Self::execution_write(operation, event))
+        self.condition(Self::execution_write(operation, event), &mut None)
             .await
             .map(|_| ())
     }
@@ -332,7 +345,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         write: crate::distributed::JournalWrite,
     ) -> Result<acyclic_stream::CommitRequest> {
         use acyclic_stream::{CommitCondition, CommitMutation};
-        let owner = self.condition(write).await?;
+        let owner = self.condition(write, &mut None).await?;
         let target = match self.stream.bounds(path.as_str()).await {
             Ok(_) => CommitCondition::Tail {
                 path: path.clone(),

@@ -35,16 +35,19 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                 ));
             }
             let scope = RuntimeScope::new(admission.grants, admission.limits)?
-                .with_run_limits(admission.run_limits)?;
+                .with_run_limits(admission.run_limits, &mut None)?;
             self.validate_parent_scope(admission.parent, &scope).await?;
             let mut coordinator = self.coordinator.lock().await;
-            coordinator.refresh().await?;
-            let operation = coordinator.observe_operation(
-                &self.owner,
-                &self.owner_scope,
-                &self.verifier,
-                operation_id,
-            )?;
+            coordinator.refresh(&mut None).await?;
+            let operation = coordinator
+                .observe_operation(
+                    &self.owner,
+                    &self.owner_scope,
+                    &self.verifier,
+                    operation_id,
+                    &mut None,
+                )?
+                .clone();
             crate::scheduler::require_execution_owner(&operation, &fence, false, &mut None)?;
             let session = coordinator.scheduler().session_limits(operation_id)?;
             let ceiling = (scope.limits().model_steps as u64)
@@ -58,7 +61,6 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
             let lease_digest = blake3::hash(&crate::contract::canonical_json_bytes(&fence)?);
             coordinator
                 .apply(
-                    operation_id,
                     IdempotencyKey::new(format!(
                         "model-dispatch:{attempt_id}:{step}:{lease_digest}"
                     ))?,
@@ -70,6 +72,7 @@ impl<P: StreamProvider> DurableTaskHost for CoordinatorTaskHost<P> {
                         fence,
                         ceiling,
                     },
+                    &mut None,
                 )
                 .await?;
             Ok(())
@@ -331,7 +334,7 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
             let admission = self.admission(operation_id).await?;
             self.root_scope
                 .narrow(admission.grants, admission.limits)?
-                .with_run_limits(admission.run_limits)?
+                .with_run_limits(admission.run_limits, &mut None)?
                 .with_replayed_extensions(admission.extensions)
         })
     }
@@ -341,12 +344,13 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
             let operation_id = OperationId::from_bytes(task_id.into_bytes());
             let observed = {
                 let mut coordinator = self.coordinator.lock().await;
-                coordinator.refresh().await?;
+                coordinator.refresh(&mut None).await?;
                 coordinator.observe_operation(
                     &self.owner,
                     &self.owner_scope,
                     &self.verifier,
                     operation_id,
+                    &mut None,
                 )?
             };
             match observed.outcome {
@@ -393,7 +397,7 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
             let bytes = self
                 .mail_bytes(sender, recipient, message_id, payload)
                 .await?;
-            let mailbox = self.mailbox(recipient)?;
+            let mailbox = self.mailbox(recipient)?.clone();
             loop {
                 let (tail, found) = self.mail_state(recipient, message_id, &bytes).await?;
                 if found {
@@ -463,8 +467,10 @@ impl<P: StreamProvider> TaskStateProvider for CoordinatorTaskHost<P> {
                 }
                 let event: MailEvent = serde_json::from_value(value)
                     .map_err(|error| Error::Storage(error.to_string()))?;
-                event.payload.validate()?;
-                recipient_admission.limits.validate_file(&event.payload)?;
+                event.payload.validate(&mut None)?;
+                recipient_admission
+                    .limits
+                    .validate_file(&event.payload, &mut None)?;
                 if !read_granted(&recipient_admission.grants, &event.payload)? {
                     return Err(Error::Unauthorized(
                         "mail history contains an unreadable payload".into(),
