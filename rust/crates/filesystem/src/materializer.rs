@@ -579,13 +579,13 @@ impl Drop for NativeResourceRetirement {
 #[cfg(not(target_arch = "wasm32"))]
 #[derive(Clone)]
 pub struct NativeMaterializationWork {
-    resource: Option<std::sync::Arc<NativeResourceAllowance>>,
-    capture_origin: Option<std::sync::Weak<crate::demand::CaptureTransientCustody>>,
-    invocation: Option<std::sync::Arc<NativeInvocationView>>,
+    pub(crate) resource: Option<std::sync::Arc<NativeResourceAllowance>>,
+    pub(crate) capture_origin: Option<std::sync::Weak<crate::demand::CaptureTransientCustody>>,
+    pub(crate) invocation: Option<std::sync::Arc<NativeInvocationView>>,
     #[cfg(feature = "native-mount")]
-    execution: Option<std::sync::Arc<NativeSourceExecutionView>>,
-    state: std::sync::Arc<crate::demand::NativeDemandReadMeter>,
-    cancellation: crate::CancellationToken,
+    pub(crate) execution: Option<std::sync::Arc<NativeSourceExecutionView>>,
+    pub(crate) state: std::sync::Arc<crate::demand::NativeDemandReadMeter>,
+    pub(crate) cancellation: crate::CancellationToken,
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -657,13 +657,6 @@ impl NativeMaterializationWork {
         Ok((work, cancellation))
     }
 
-    /// Aliases this complete original invocation for native SDK callbacks.
-    #[cfg(feature = "native-mount")]
-    #[must_use]
-    pub fn native_mount_work(&self) -> crate::native_mount::NativeMountMeterWork {
-        crate::native_mount::NativeMountMeterWork::from_native_materialization_work(self)
-    }
-
     /// Tests intrinsic original-ledger identity without locking or admission.
     #[must_use]
     pub fn shares_ledger(&self, other: &Self) -> bool {
@@ -701,10 +694,9 @@ impl NativeMaterializationWork {
     }
 
     #[cfg(feature = "native-mount")]
-    pub(crate) fn from_native_mount_meter_work(work: &crate::native_mount::NativeMountMeterWork) -> Self {
-        let state = std::sync::Arc::clone(work.meter());
+    pub(crate) fn from_meter(state: std::sync::Arc<crate::demand::NativeDemandReadMeter>) -> Self {
         let cancellation = state.lock().cancellation().clone();
-        Self { state, cancellation, resource: work.resource_allowance().cloned(), capture_origin: work.capture_origin().cloned(), invocation: work.invocation_view_state().cloned(), execution: work.source_execution_view().cloned() }
+        Self { state, cancellation, resource: None, capture_origin: None, invocation: None, execution: None }
     }
 
     fn state(&self) -> NativeMaterializationLeaf<'_> {
@@ -4064,7 +4056,7 @@ impl<S: MaterializationJournalStore> JournaledMaterializer<S, NativeTreeMaterial
         relative_selections: &[String],
         options: &crate::MaterializeOptions,
         journal: MaterializationJournal,
-        physical_work: &crate::native_mount::NativeMountMeterWork,
+        physical_work: &crate::NativeMaterializationWork,
         before_effect: &mut F,
     ) -> Result<MaterializationJournal, E>
     where
@@ -4076,7 +4068,7 @@ impl<S: MaterializationJournalStore> JournaledMaterializer<S, NativeTreeMaterial
         F: FnMut() -> Fut + Send,
         Fut: Future<Output = Result<(), E>> + Send,
     {
-        let original = physical_work.native_materialization_work();
+        let original = physical_work.clone();
         // This prepaid cause slot outlives every physically owned frame.
         let failure_slot = NativeStageUncertainty::<E>::new(&original)
             .map_err(|error| E::from(MaterializationError::Backend(error)))?;
@@ -6310,7 +6302,7 @@ where
                 materializer.verify_allocation(&existing).await?;
                 existing = materializer.stage_generation(
                     to_generation, &install_paths, &path_options, existing,
-                    &work.native_mount_work(), before_effect,
+                    &work, before_effect,
                 ).await?;
                 before_effect().await?;
                 materializer.verify_allocation(&existing).await?;
@@ -6441,7 +6433,7 @@ where
         materializer.verify_allocation(&prepared).await?;
         prepared = materializer.stage_generation(
             to_generation, &install_paths, &path_options, prepared,
-            &work.native_mount_work(), before_effect,
+            &work, before_effect,
         ).await?;
         before_effect().await?;
         materializer.verify_allocation(&prepared).await?;

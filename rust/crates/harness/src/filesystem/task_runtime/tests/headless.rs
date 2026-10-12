@@ -147,9 +147,7 @@ impl ModelProvider for ModelFixture {
             Ok(crate::model::ModelEvent::Completed { metadata: json!({}) }),
         ]))
     }
-    fn reconcile<'a>(&'a self, _: crate::model::ModelAttempt) -> BoxFuture<'a, Result<Option<Vec<crate::model::ModelEvent>>>> {
-        Box::pin(async { Ok(None) })
-    }
+
 }
 
 #[tokio::test]
