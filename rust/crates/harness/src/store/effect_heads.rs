@@ -123,6 +123,25 @@ pub(super) struct Tree<'a, P> {
     pub(super) authority: &'a Authority,
 }
 impl<P: StreamProvider> Tree<'_, P> {
+    pub(super) async fn record(
+        &self,
+        stream: (StreamPath, u64),
+        from: u64,
+        quota: &mut CodecQuota<'_, '_>,
+    ) -> Result<Option<operations::ObservedRecord>> {
+        let (stream, held) = stream;
+        quota.adopt(held)?;
+        let received = read(self.client, &stream, from, quota.work()).await;
+        drop(stream);
+        quota.relinquish(held)?;
+        let record = received?;
+        if let Some(record) = &record {
+            let held = record_bytes(record, quota.work());
+            quota.adopt(held)?;
+        }
+        Ok(record)
+    }
+
     async fn root_at(
         &self,
         verifier: &AuthorityVerifier,
@@ -136,15 +155,11 @@ impl<P: StreamProvider> Tree<'_, P> {
             return Ok((None, 0));
         }
         let mut quota = CodecQuota::from_retained(work, 0);
-        let (stream, path_owned) = certificate_path_with_work(authority, quota.work())?;
-        quota.adopt(path_owned)?;
-        let record = read(client, &stream, revision - 1, quota.work())
+        let stream = certificate_path_with_work(authority, quota.work())?;
+        let record = self
+            .record(stream, revision - 1, &mut quota)
             .await?
             .ok_or_else(|| Error::Unsupported("complete effect cut is missing".into()))?;
-        let held = record_bytes(&record, quota.work());
-        quota.adopt(held)?;
-        drop(stream);
-        quota.relinquish(path_owned)?;
         let mut used = 0;
         charge(&mut used, record.value.len() as u64, maximum)?;
         if record.value.len() as u64 > MAX_CERTIFICATE_BYTES {
@@ -153,8 +168,7 @@ impl<P: StreamProvider> Tree<'_, P> {
             ));
         }
         let certificate = decode_certificate_with_work(&record.value, quota.work())?;
-        let (source, held) = path(authority, "harness/v2/", None, quota.work())?;
-        quota.adopt(held)?;
+        let source = path(authority, "harness/v2/", None, quota.work())?;
         if certificate.revision != revision
             || certificate.proof
                 != verifier.effect_history_root_proof_with_work(
@@ -166,11 +180,10 @@ impl<P: StreamProvider> Tree<'_, P> {
         {
             return Err(Error::Unauthorized("effect cut proof differs".into()));
         }
-        let canonical = read(client, &source, revision - 1, quota.work())
+        let canonical = self
+            .record(source, revision - 1, &mut quota)
             .await?
             .ok_or_else(|| Error::Storage("effect cut anchor is missing".into()))?;
-        let held = record_bytes(&canonical, quota.work());
-        quota.adopt(held)?;
         charge(&mut used, canonical.value.len() as u64, maximum)?;
         if let Some(io) = quota.work().as_deref_mut() {
             io.hashed_bytes(canonical.value.len() as u64)?;

@@ -1,4 +1,5 @@
 //! Authenticated transitions over the existing atomic operation locations.
+use super::effect_heads::Tree;
 use super::{HistoryCursor, HistoryReadLimits, effect_heads, history::HistoryIo, operations};
 use crate::{
     EffectId, Error, Result,
@@ -15,42 +16,6 @@ use operations::verify_operation_binding as verify_binding;
 use operations::verify_operation_locator as verify_locator;
 use std::sync::Arc;
 
-async fn verified<P: StreamProvider>(
-    client: &Arc<P>,
-    authority: &Authority,
-    verifier: &AuthorityVerifier,
-    effect: EffectId,
-    record: &Record,
-    maximum: u64,
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<((Event, u64), u64)> {
-    let mut quota = CodecQuota::from_retained(work, 0);
-    let location = decode_location(&record.value, quota.work())?;
-    let held = location.authority.id.capacity() as u64;
-    quota.adopt(held)?;
-    if location.effect_position != Some(record.sequence) {
-        return Err(Error::Storage("effect position differs".into()));
-    }
-    let ((event, owned), used) = verify_locator(
-        client,
-        authority,
-        verifier,
-        record,
-        &location,
-        maximum,
-        quota.work(),
-    )
-    .await?;
-    quota.adopt(owned)?;
-    if crate::core::event_effect_id(&event.payload) != Some(effect) {
-        return Err(Error::Storage("effect identity differs".into()));
-    }
-    drop(location);
-    quota.relinquish(held)?;
-    quota.transfer();
-    Ok(((event, owned), used))
-}
-
 pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
     client: &Arc<P>,
     reducer: &Reducer,
@@ -58,6 +23,10 @@ pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
     publication: &mut operations::IndexedPublication,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<()> {
+    let tree = Tree {
+        client,
+        authority: reducer.authority(),
+    };
     let mut quota = CodecQuota::from_retained(work, 0);
     let mut head = None;
     if let Some(effect) = crate::core::event_effect_id(&event.payload) {
@@ -80,16 +49,15 @@ pub(super) async fn add_publication_index_with_work<P: StreamProvider>(
                 .ok_or_else(|| Error::Storage("effect head is missing".into()))?;
             let raw = record_bytes(&record, quota.work());
             quota.adopt(raw)?;
-            let ((prior, owned), _) = verified(
-                client,
-                reducer.authority(),
-                reducer.event_verifier(),
-                effect,
-                &record,
-                2 * acyclic_stream::MAX_RECORD_BYTES as u64,
-                quota.work(),
-            )
-            .await?;
+            let ((prior, owned), _) = tree
+                .verified(
+                    reducer.event_verifier(),
+                    effect,
+                    &record,
+                    2 * acyclic_stream::MAX_RECORD_BYTES as u64,
+                    quota.work(),
+                )
+                .await?;
             quota.adopt(owned)?;
             if prior.revision > reducer.revision() {
                 return Err(Error::Conflict("effect index is ahead of reducer".into()));
@@ -132,6 +100,10 @@ pub async fn effect_events<P: StreamProvider>(
     limits: HistoryReadLimits,
     work: &mut Option<&mut dyn HistoryIo>,
 ) -> Result<(Vec<Event>, u64)> {
+    let tree = Tree {
+        client,
+        authority: &cursor.authority,
+    };
     verifier.verify_audience(&cursor.authority, work)?;
     if limits.maximum_events == 0
         || limits.maximum_bytes == 0
@@ -189,16 +161,9 @@ pub async fn effect_events<P: StreamProvider>(
             .ok_or_else(|| Error::Storage("effect index is incomplete".into()))?;
         let raw = record_bytes(&record, quota.work());
         quota.adopt(raw)?;
-        let ((event, owned), bytes) = verified(
-            client,
-            &cursor.authority,
-            verifier,
-            effect,
-            &record,
-            remaining,
-            quota.work(),
-        )
-        .await?;
+        let ((event, owned), bytes) = tree
+            .verified(verifier, effect, &record, remaining, quota.work())
+            .await?;
         quota.adopt(owned)?;
         if event.revision <= previous
             || event.revision > head.revision
@@ -227,133 +192,169 @@ pub async fn effect_events<P: StreamProvider>(
     Ok((events, owned))
 }
 
-pub(super) async fn retirement_proof_with_work<P: StreamProvider>(
-    client: &Arc<P>,
-    authority: &Authority,
-    event: &Event,
-    canonical: &Record,
-    maximum: u64,
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<(bool, u64)> {
-    let EventPayload::EffectResolved { observation } = &event.payload else {
-        return Ok((false, 0));
-    };
-    if !crate::core::settled_effect(&observation.status) {
-        return Ok((false, 0));
-    }
-    if maximum == 0 {
-        return Err(Error::Invalid(
-            "effect retirement exceeds byte allowance".into(),
-        ));
-    }
-    let mut quota = CodecQuota::from_retained(work, 0);
-    let (stream, held) = path(
-        authority,
-        "harness/v2/aggregate-operations/",
-        Some((&event.operation_id, 36)),
-        quota.work(),
-    )?;
-    quota.adopt(held)?;
-    let tail = tail(client, &stream, quota.work()).await?.unwrap_or(0);
-    let operation = read(client, &stream, 0, quota.work()).await?;
-    let Some(operation) = operation else {
-        return if tail == 0 {
-            Ok((false, 0))
-        } else {
-            Err(Error::Storage("terminal operation is missing".into()))
-        };
-    };
-    let raw = record_bytes(&operation, quota.work());
-    quota.adopt(raw)?;
-    if tail != 1 {
-        return Err(Error::Storage("terminal operation is not immutable".into()));
-    }
-    let mut used = 0;
-    super::effect_heads::charge(&mut used, operation.value.len() as u64, maximum)?;
-    let location = decode_location(&operation.value, quota.work())?;
-    quota.adopt(location.authority.id.capacity() as u64)?;
-    verify_binding(
-        authority,
-        &operation,
-        &location,
-        canonical,
-        event,
-        quota.work(),
-    )?;
-    let Some(position) = location.effect_position else {
-        return Ok((false, used));
-    };
-    if used == maximum {
-        return Err(Error::Invalid(
-            "effect retirement exceeds byte allowance".into(),
-        ));
-    }
-    let (stream, held) = path(
-        authority,
-        "harness/v2/effect-transitions/",
-        Some((&observation.effect_id, 36)),
-        quota.work(),
-    )?;
-    quota.adopt(held)?;
-    let record = read(client, &stream, position, quota.work())
-        .await?
-        .ok_or_else(|| Error::Storage("terminal transition is missing".into()))?;
-    let raw = record_bytes(&record, quota.work());
-    quota.adopt(raw)?;
-    super::effect_heads::charge(&mut used, record.value.len() as u64, maximum)?;
-    let effect = decode_location(&record.value, quota.work())?;
-    quota.adopt(effect.authority.id.capacity() as u64)?;
-    if effect != location || record.commit_id != canonical.commit_id {
-        return Err(Error::Storage(
-            "terminal transition atomic binding differs".into(),
-        ));
-    }
-    Ok((true, used))
-}
+impl<P: StreamProvider> Tree<'_, P> {
+    async fn verified(
+        &self,
+        verifier: &AuthorityVerifier,
+        effect: EffectId,
+        record: &Record,
+        maximum: u64,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<((Event, u64), u64)> {
+        if record.value.len() as u64 >= maximum {
+            return Err(Error::Invalid("effect lookup exceeds byte bound".into()));
+        }
 
-pub(super) async fn retirement_proof_for_event_with_work<P: StreamProvider>(
-    client: &Arc<P>,
-    authority: &Authority,
-    event: &Event,
-    work: &mut Option<&mut dyn HistoryIo>,
-) -> Result<bool> {
-    let EventPayload::EffectResolved { observation } = &event.payload else {
-        return Ok(false);
-    };
-    if !crate::core::settled_effect(&observation.status) {
-        return Ok(false);
+        let (client, authority) = (self.client, self.authority);
+        let mut quota = CodecQuota::from_retained(work, 0);
+        let location = decode_location(&record.value, quota.work())?;
+        let held = location.authority.id.capacity() as u64;
+        quota.adopt(held)?;
+        if location.effect_position != Some(record.sequence) {
+            return Err(Error::Storage("effect position differs".into()));
+        }
+        let ((event, owned), used) = verify_locator(
+            client,
+            authority,
+            verifier,
+            record,
+            &location,
+            maximum,
+            quota.work(),
+        )
+        .await?;
+        quota.adopt(owned)?;
+        if crate::core::event_effect_id(&event.payload) != Some(effect) {
+            return Err(Error::Storage("effect identity differs".into()));
+        }
+        drop(location);
+        quota.relinquish(held)?;
+        quota.transfer();
+        Ok(((event, owned), used))
     }
-    let position = event
-        .revision
-        .checked_sub(1)
-        .ok_or_else(|| Error::Invalid("effect revision must be positive".into()))?;
-    let mut quota = CodecQuota::from_retained(work, 0);
-    let (stream, held) = path(authority, "harness/v2/", None, quota.work())?;
-    quota.adopt(held)?;
-    let record = read(client, &stream, position, quota.work())
-        .await?
-        .ok_or_else(|| Error::Storage("terminal canonical event is missing".into()))?;
-    let raw = record_bytes(&record, quota.work());
-    quota.adopt(raw)?;
-    if let Some(io) = quota.work().as_deref() {
-        io.check_cancellation()?;
+    pub(super) async fn retirement_proof_with_work(
+        &self,
+        event: &Event,
+        canonical: &Record,
+        maximum: u64,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<(bool, u64)> {
+        let (client, authority) = (self.client, self.authority);
+        let EventPayload::EffectResolved { observation } = &event.payload else {
+            return Ok((false, 0));
+        };
+        if !crate::core::settled_effect(&observation.status) {
+            return Ok((false, 0));
+        }
+        if maximum == 0 {
+            return Err(Error::Invalid(
+                "effect retirement exceeds byte allowance".into(),
+            ));
+        }
+        let mut quota = CodecQuota::from_retained(work, 0);
+        let (stream, held) = path(
+            authority,
+            "harness/v2/aggregate-operations/",
+            Some((&event.operation_id, 36)),
+            quota.work(),
+        )?;
+        quota.adopt(held)?;
+        let tail = tail(client, &stream, quota.work()).await?.unwrap_or(0);
+        let operation = read(client, &stream, 0, quota.work()).await?;
+        let Some(operation) = operation else {
+            return if tail == 0 {
+                Ok((false, 0))
+            } else {
+                Err(Error::Storage("terminal operation is missing".into()))
+            };
+        };
+        let raw = record_bytes(&operation, quota.work());
+        quota.adopt(raw)?;
+        if tail != 1 {
+            return Err(Error::Storage("terminal operation is not immutable".into()));
+        }
+        let mut used = 0;
+        super::effect_heads::charge(&mut used, operation.value.len() as u64, maximum)?;
+        let location = decode_location(&operation.value, quota.work())?;
+        quota.adopt(location.authority.id.capacity() as u64)?;
+        verify_binding(
+            authority,
+            &operation,
+            &location,
+            canonical,
+            event,
+            quota.work(),
+        )?;
+        let Some(position) = location.effect_position else {
+            return Ok((false, used));
+        };
+        if used == maximum {
+            return Err(Error::Invalid(
+                "effect retirement exceeds byte allowance".into(),
+            ));
+        }
+        let (stream, held) = path(
+            authority,
+            "harness/v2/effect-transitions/",
+            Some((&observation.effect_id, 36)),
+            quota.work(),
+        )?;
+        quota.adopt(held)?;
+        let record = read(client, &stream, position, quota.work())
+            .await?
+            .ok_or_else(|| Error::Storage("terminal transition is missing".into()))?;
+        let raw = record_bytes(&record, quota.work());
+        quota.adopt(raw)?;
+        super::effect_heads::charge(&mut used, record.value.len() as u64, maximum)?;
+        if record.value != operation.value || record.commit_id != canonical.commit_id {
+            return Err(Error::Storage(
+                "terminal transition atomic binding differs".into(),
+            ));
+        }
+        Ok((true, used))
     }
-    let expected = crate::wire_codec::encode_event(authority, event, quota.work())?;
-    let encoded = expected.capacity() as u64;
-    quota.adopt(encoded)?;
-    if record.value.as_ref() != expected.as_slice() {
-        return Err(Error::Storage("terminal canonical event differs".into()));
+    pub(super) async fn retirement_proof_for_event_with_work(
+        &self,
+        event: &Event,
+        work: &mut Option<&mut dyn HistoryIo>,
+    ) -> Result<bool> {
+        let (client, authority) = (self.client, self.authority);
+        let EventPayload::EffectResolved { observation } = &event.payload else {
+            return Ok(false);
+        };
+        if !crate::core::settled_effect(&observation.status) {
+            return Ok(false);
+        }
+        let position = event
+            .revision
+            .checked_sub(1)
+            .ok_or_else(|| Error::Invalid("effect revision must be positive".into()))?;
+        let mut quota = CodecQuota::from_retained(work, 0);
+        let (stream, held) = path(authority, "harness/v2/", None, quota.work())?;
+        quota.adopt(held)?;
+        let record = read(client, &stream, position, quota.work())
+            .await?
+            .ok_or_else(|| Error::Storage("terminal canonical event is missing".into()))?;
+        let raw = record_bytes(&record, quota.work());
+        quota.adopt(raw)?;
+        if let Some(io) = quota.work().as_deref() {
+            io.check_cancellation()?;
+        }
+        let expected = crate::wire_codec::encode_event(authority, event, quota.work())?;
+        let encoded = expected.capacity() as u64;
+        quota.adopt(encoded)?;
+        if record.value.as_ref() != expected.as_slice() {
+            return Err(Error::Storage("terminal canonical event differs".into()));
+        }
+        drop(expected);
+        quota.relinquish(encoded)?;
+        self.retirement_proof_with_work(
+            event,
+            &record,
+            2 * acyclic_stream::MAX_RECORD_BYTES as u64,
+            quota.work(),
+        )
+        .await
+        .map(|(verified, _)| verified)
     }
-    drop(expected);
-    quota.relinquish(encoded)?;
-    retirement_proof_with_work(
-        client,
-        authority,
-        event,
-        &record,
-        2 * acyclic_stream::MAX_RECORD_BYTES as u64,
-        quota.work(),
-    )
-    .await
-    .map(|(verified, _)| verified)
 }
