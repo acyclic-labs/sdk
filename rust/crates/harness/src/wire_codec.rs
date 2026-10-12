@@ -556,7 +556,7 @@ mod tests {
                     fork_policy: crate::core::ExtensionForkPolicy::Inherit,
                     content: FileRef::new(
                         VolumeRef::new(
-                            ProviderRef::new("test", "filesystem", "2")?,
+                            ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
                             "extension",
                             VolumeClass::AgentPrivate,
                             VolumeOwner::Agent(AgentId::from_bytes([9; 16])),
@@ -651,7 +651,7 @@ mod tests {
         })?;
         let file = FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("fixture", "filesystem", "2")?,
+                ProviderRef::new("fixture".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "scratch",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(agent),

@@ -39,20 +39,22 @@ struct PathHistory {
 }
 
 /// One entry in a bounded directory page.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub(crate) struct MemoryStoreEntry {
     pub(crate) name: String,
     pub(crate) kind: MemoryStoreEntryKind,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
 pub(crate) enum MemoryStoreEntryKind {
     File,
     Directory,
 }
 
 /// A generation-pinned page produced by the shared content core.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct MemoryStorePage {
     pub(crate) generation: u64,
     pub(crate) entries: Vec<MemoryStoreEntry>,
@@ -575,7 +577,7 @@ mod tests {
     use crate::resources::ProviderRef;
 
     fn store(maximum_bytes: u64, maximum_files: u64) -> Result<MemoryStore> {
-        let provider = ProviderRef::new("local", "memory", "2")?;
+        let provider = ProviderRef::new("local".into(), "memory".into(), "2".into(), &mut None)?;
         let volume = VolumeRef::new(
             provider,
             "test-volume",

@@ -719,7 +719,7 @@ impl Interaction {
         Ok(())
     }
 
-    /// Validates one response against this exact interaction request.
+    /// Validates a response on the optional history observer.
     pub fn validate_response(
         &self,
         response: &InteractionResponse,
@@ -1022,7 +1022,7 @@ mod tests {
     fn file(path: &str, bytes: &[u8]) -> Result<FileRef> {
         FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("test", "filesystem", "2")?,
+                ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "interaction-private",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([8; 16])),

@@ -866,7 +866,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
             .await?;
         let cursor_bytes = cursor.authority.id.capacity() as u64;
         drop(cursor);
-        if let Some(work) = work.as_deref_mut() { work.release_bytes(cursor_bytes)?; }
+        if let Some(work) = work.as_deref_mut() { work.release_owned(cursor_bytes)?; }
         if page.cursor.after_revision != through {
             return Err(Error::Invalid(
                 "projection suffix exceeds byte allowance".into(),
@@ -876,7 +876,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         let record_capacity = (records.capacity() * std::mem::size_of::<operations::ObservedRecord>()) as u64;
         let page_cursor_bytes = page.cursor.authority.id.capacity() as u64;
         drop(page.cursor);
-        if let Some(work) = work.as_deref_mut() { work.release_bytes(page_cursor_bytes)?; }
+        if let Some(work) = work.as_deref_mut() { work.release_owned(page_cursor_bytes)?; }
         for (event, record) in page.events.into_iter().zip(records) {
             let (indexed, bytes) = effects::retirement_proof_with_work(
                 client,
@@ -905,8 +905,8 @@ impl<P: StreamProvider> StreamAggregate<P> {
         }
         if let Some(work) = work.as_deref_mut() {
             work.release_owned(events_retained_bytes)?;
-            work.release_bytes(event_bytes)?;
-            work.release_bytes(record_capacity)?;
+            work.release_owned(event_bytes)?;
+            work.release_owned(record_capacity)?;
             work.check_cancellation()?;
         }
         Ok(())
@@ -1853,7 +1853,7 @@ impl<P: StreamProvider> StreamAggregate<P> {
         if reference.authority == *self.reducer.authority() { return Ok(()); }
         let path = reference.authority.stream_path(work)?;
         let path_bytes = if work.is_some() { path.capacity() as u64 } else { 0 };
-        let read = match operations::stream_text_with_work(&self.client, &path, work) {
+        let read = match operations::stream(&self.client, &path, work) {
             Ok(stream) => operations::one_record(&self.client, stream.stream.path(),
                 reference.revision.saturating_sub(1), work).await,
             Err(error) => Err(error),
@@ -2005,7 +2005,7 @@ mod tests {
     fn content() -> Result<FileRef> {
         FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("test", "filesystem", "2")?,
+                ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "extension",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes([8; 16])),
@@ -2792,7 +2792,7 @@ mod tests {
         {
             use crate::executor::ExecutionJournal as _;
             let filesystem_provider =
-                crate::resources::ProviderRef::new("cold-selected-context", "filesystem", "2")?;
+                crate::resources::ProviderRef::new("cold-selected-context".into(), "filesystem".into(), "2".into(), &mut None)?;
             let host = Arc::new(crate::filesystem::FilesystemHost::new(
                 acyclic_fs::Fs::memory(),
                 filesystem_provider.clone(),
@@ -3510,7 +3510,7 @@ mod tests {
         };
         let publisher = TestPublisher {
             volume: VolumeRef::new(
-                ProviderRef::new("test", "filesystem", "2")?,
+                ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "extension-child",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(crate::AgentId::from_bytes([9; 16])),
@@ -3668,7 +3668,7 @@ mod tests {
         use crate::filesystem::{FilesystemContentPublisher, FilesystemContentVerifier, FilesystemHost};
 
         let agent = crate::AgentId::from_bytes([94; 16]);
-        let provider = ProviderRef::new("admission-bytes", "filesystem", "2")?;
+        let provider = ProviderRef::new("admission-bytes".into(), "filesystem".into(), "2".into(), &mut None)?;
         let volume = VolumeRef::new(provider.clone(), "admission-bytes",
             VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
         let host = Arc::new(FilesystemHost::new(acyclic_fs::Fs::memory(), provider)?);

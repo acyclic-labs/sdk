@@ -62,8 +62,6 @@ pub(crate) use blob::{
 pub(crate) use blob::PreparedBlobDemandFailure;
 pub(crate) use checkpoint::build_checkpoint_with_accounting;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) use checkpoint::build_checkpoint_with_native_work;
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) use closure::{
     prove_generation_closure_with_native_work, prove_record_closure_with_native_work};
 pub(crate) use file_read::{
@@ -103,7 +101,7 @@ pub use attribute_mutation::{
 pub use blob::{
     AsyncBlobSource, OwnedSourceChunk, BlobBuild, BlobBuildError, BlobBuildFailure, BlobBuildOptions, BlobChild, BlobChunkRef, BlobNode, BlobPage, BlobRead, BlobReadError, BlobReadFailure, blob_page_id, build_blob, decode_blob_page, encode_blob_page, read_blob_range};
 pub use checkpoint::{
-    CheckpointError, CheckpointFailure, CheckpointReceipt, CheckpointRequest, build_checkpoint};
+    CheckpointError, CheckpointFailure, CheckpointRequest, build_checkpoint};
 #[cfg(feature = "s3-http")]
 pub(crate) use closure::prove_blob_closure_async;
 pub(crate) use closure::prove_record_closure_async;
@@ -130,7 +128,7 @@ pub use file_read::{
 pub(crate) use file_read::{
     ReadOwned, read_file_range_with_accounting, read_objects_with_accounting, retained_object_reads_bytes};
 pub use file_table::{
-    FilePayload, FilePayloadKind, FileRecord, FileRecordBatchLookup, FileRecordLookup, FileRecordReadError, FileRecordReadFailure, FileTableError, FileTablePage, InlineFileData, InlineFileDataError, MAXIMUM_INLINE_FILE_BYTES, decode_file_table_page, encode_file_table_page, file_table_page_id, lookup_file_record, lookup_file_records};
+    FilePayload, FilePayloadKind, FileRecord, FileRecordReadError, FileRecordReadFailure, FileTableError, FileTablePage, InlineFileData, InlineFileDataError, MAXIMUM_INLINE_FILE_BYTES, decode_file_table_page, encode_file_table_page, file_table_page_id, lookup_file_record, lookup_file_records};
 pub(crate) use file_table::{
     decode_file_record, encode_file_record, encode_file_table_leaf_records, lookup_file_record_async_with_custody, lookup_file_records_async_with_custody};
 pub(crate) use file_table::{
@@ -190,8 +188,7 @@ pub use range::{
     ExtentPlan, ExtentRangeRequest, ExtentReadError, ExtentReadFailure, ExtentSeekRequest, ExtentSeekTarget, ExtentSlice, plan_extent_range, seek_extent};
 pub(crate) use range::seek_extent_with_accounting;
 pub use read::{
-    TreeBatchLookup, TreeLookup, TreeReadError, TreeReadFailure, lookup_tree_entries, lookup_tree_entry};
-pub(crate) use read::lookup_tree_entry_async_with_custody;
+    TreeReadError, TreeReadFailure, lookup_tree_entries, lookup_tree_entry};
 pub(crate) use read::{
     lookup_tree_entries_async_with_accounting, lookup_tree_entry_async_with_accounting};
 pub(crate) use rebase::{

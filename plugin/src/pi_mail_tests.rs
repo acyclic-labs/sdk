@@ -22,7 +22,7 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Result<Self> {
-        let provider = ProviderRef::new("pi-mail", "filesystem", "2")?;
+        let provider = ProviderRef::new("pi-mail".into(), "filesystem".into(), "2".into(), &mut None)?;
         let host = Arc::new(FilesystemHost::new(Fs::memory(), provider.clone())?);
         let agent = AgentId::from_bytes([71;16]);
         let volume = VolumeRef::new(provider, "journal", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent))?;
@@ -163,8 +163,7 @@ async fn actual_passive_checkpoint_owner_replacement_rejects_original_mail_dispa
         .ok_or_else(|| Error::NotFound("actual child suspension".into()))?;
     let operation = OperationId::from_bytes([85;16]);
     let wake = fixture.file(operation, "replacement-wake.json", b"{}").await?;
-    runtime.task_host().resume_workflow(child, suspension.revision, wake,
-        acyclic_harness::IdempotencyKey::new("pi-mail-original-checkpoint-wake")?).await?;
+    runtime.task_host().resume_workflow(child, suspension.revision, wake, acyclic_harness::IdempotencyKey::new("pi-mail-original-checkpoint-wake")?, None).await?;
     let replacement = fixture.pull(&runtime).await?;
     assert_eq!(replacement.operation.operation_id.into_bytes(), child.into_bytes());
     let replacement_fence = LeaseFence::from(&replacement.reservation);

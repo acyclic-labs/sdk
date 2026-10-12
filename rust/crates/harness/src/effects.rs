@@ -602,7 +602,7 @@ mod tests {
     fn request_file(bytes: &[u8]) -> Result<FileRef> {
         FileRef::new(
             VolumeRef::new(
-                ProviderRef::new("test", "filesystem", "2")?,
+                ProviderRef::new("test".into(), "filesystem".into(), "2".into(), &mut None)?,
                 "effects",
                 VolumeClass::AgentPrivate,
                 VolumeOwner::Agent(AgentId::from_bytes([8; 16])),

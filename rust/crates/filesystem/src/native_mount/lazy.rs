@@ -8568,7 +8568,9 @@ mod tests {
             crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &cancellation,
         ).await?;
         assert!(receipt.work.authority_records_appended > 0);
-        assert!(view.lazy.workspace().operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.is_some());
+        assert!(view.lazy.workspace().operation_generation(
+            IdempotencyKey::from_bytes(operation.into_bytes()),
+        crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.is_some());
         assert!((async { let cancellation = &crate::CancellationToken::new(); let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, cancellation); let result = view.lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.is_none());
         assert!(matches!(view.lazy.lookup("/source-only").await,
             Err(error) if matches!(error.semantic_error(), LazyWorkspaceError::NotFound)));
@@ -8647,7 +8649,9 @@ mod tests {
             crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &cancellation,
         ).await?;
         assert!(completed.work.authority_records_appended >= 2);
-        assert!(view.lazy.workspace().operation_generation(IdempotencyKey::from_bytes(original_operation.into_bytes()), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.is_some());
+        assert!(view.lazy.workspace().operation_generation(
+            IdempotencyKey::from_bytes(original_operation.into_bytes()),
+        crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.is_some());
         assert_eq!((async { let cancellation = &crate::CancellationToken::new(); let accounting = LazyTreapWork::new(crate::WorkBudget::UNBOUNDED, cancellation); let result = view.lazy.mount_removal_publication(&accounting).await; accounting.measured(result, |error, spent| error.with_prior_work(spent).into_measured_failure()) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?, None);
         {
             let identities = view.detached.lock().map_err(|_| "poisoned identities")?;
@@ -8720,7 +8724,9 @@ mod tests {
             permit, crate::WorkBudget::UNBOUNDED, &cancellation,
         ).await?;
         assert!(completed.work.authority_records_appended > 0);
-        assert_eq!(view.lazy.workspace().operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.map(|generation| generation.id()), Some(original_generation.id()));
+        assert_eq!(view.lazy.workspace().operation_generation(
+            IdempotencyKey::from_bytes(operation.into_bytes()),
+        crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.map(|generation| generation.id()), Some(original_generation.id()));
         assert_eq!(held.read_range(0, 9)?.as_ref(), b"epoch-two");
         assert_eq!(held.lookup()?.node.file_id, identity);
         assert_eq!(std::fs::read(root.path().join("source-only"))?, b"source");
@@ -8796,7 +8802,9 @@ mod tests {
             ).await?;
             assert!(recovered.work.backend_read_operations > 0);
             if let Some(operation) = original {
-                assert_eq!(lazy.workspace().operation_generation(IdempotencyKey::from_bytes(operation.into_bytes()), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.map(|generation| generation.id()), acknowledged_generation.as_ref().map(|generation| generation.id()));
+                assert_eq!(lazy.workspace().operation_generation(
+                    IdempotencyKey::from_bytes(operation.into_bytes()),
+                crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?.map(|generation| generation.id()), acknowledged_generation.as_ref().map(|generation| generation.id()));
             }
             assert_eq!(view.read_range(&b, 0, 7)?.as_ref(), b"updated");
             assert_eq!(held.lookup()?.node.file_id, identity);
@@ -9024,7 +9032,7 @@ mod tests {
         let mut external = lazy
             .workspace().begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         external
-            .write("/external", Bytes::from_static(b"unrelated"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .write("/external", Bytes::from_static(b"unrelated"), WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await?;
         external.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         view.sync_async().await?;
@@ -9088,7 +9096,7 @@ mod tests {
         let mut conflicting = lazy
             .workspace().begin_transaction(IdempotencyKey::new(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         conflicting
-            .write("/file", Bytes::from_static(b"external"), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+            .write("/file", Bytes::from_static(b"external"), WorkBudget::UNBOUNDED, &CancellationToken::new())
             .await?;
         conflicting.commit(None, crate::PublicationPermit::Unrestricted, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new(), |_| async { Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(crate::OperationReceipt { value: (), work: crate::WorkCounters::default() }) }).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
         assert!(matches!(
@@ -10355,7 +10363,7 @@ mod tests {
         let mut view = mounted_view(source.path(), "installed-source-publication-guard").await?;
         let owner = crate::CancellationToken::new();
         let visits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        view.authored = Arc::new(Arc::try_unwrap(view.authored).map_err(|_| "fixture source still shared")?.with_native_callback_guard(Arc::new(PublicationLifetimeGuard {
+        view.authored = Arc::new(Arc::try_unwrap(view.authored).map_err(|_| "authored adapter is shared")?.with_native_callback_guard(Arc::new(PublicationLifetimeGuard {
             lifetime: owner.clone(), visits: Arc::clone(&visits),
             authored_write: true,
         })));
@@ -10407,7 +10415,7 @@ mod tests {
         guard.check(&original)?.await?;
         assert_eq!(visits.load(Ordering::Acquire), 1);
         drop(held);
-        view.authored = Arc::new(Arc::try_unwrap(view.authored).map_err(|_| "fixture source still shared")?.with_native_callback_guard(guard));
+        view.authored = Arc::new(Arc::try_unwrap(view.authored).map_err(|_| "authored adapter is shared")?.with_native_callback_guard(guard));
         let caller_visits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let result = view.authored.sync_async_with_permit_carrier_guarded(crate::PublicationPermit::Unrestricted, false, &mut super::super::adapter::NativeDemandCarrier::Native(&original), &mut super::super::view_ledger::ViewLedgerAdmission::default(), &caller, &mut
             {

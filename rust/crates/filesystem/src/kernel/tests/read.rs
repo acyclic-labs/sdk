@@ -2,6 +2,7 @@ use super::*;
 use crate::foundation::{Digest, FileId};
 use crate::kernel::{FileKind, NameEncoding, TreePage, encode_tree_page, tree_page_id};
 use crate::memory::MemoryObjectStore;
+use crate::performance::WorkCounters;
 use crate::storage::{ObjectKind, ObjectStore};
 use acyclic_stream::OwnedBytes;
 use std::task::{Context, Poll, Waker};
@@ -57,7 +58,7 @@ async fn lookup_reads_only_one_frontier() -> Result<(), Box<dyn std::error::Erro
         &CancellationToken::new(),
     ).await?;
     assert_eq!(
-        result.entry.map(|entry| entry.file_id),
+        result.value.map(|entry| entry.file_id),
         Some(FileId::from_bytes([4; 16]))
     );
     assert_eq!(result.work.page_reads, 2);
@@ -267,7 +268,7 @@ async fn batch_lookup_reads_each_shared_frontier_once_and_preserves_input_order(
     ).await?;
     assert_eq!(
         result
-            .entries
+            .value
             .iter()
             .map(|entry| entry.as_ref().map(|entry| entry.file_id))
             .collect::<Vec<_>>(),

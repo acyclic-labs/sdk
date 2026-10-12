@@ -322,7 +322,7 @@ pub(crate) fn resource_creation_proof_clone_with_custody(
             Some(version) => Some(super::native_custody::copy_text(version, quota)?),
             None => None,
         };
-        crate::resources::ResourceRef::new_with_work(source.kind(), provider, key, version, quota.work())
+        crate::resources::ResourceRef::new(source.kind(), provider, key, version, quota.work())
     }
     let mut quota = crate::wire_codec::CodecQuota::new(work, 0)?;
     quota.work().as_deref_mut().expect("proof copy observer").check_cancellation()?;
@@ -1309,7 +1309,7 @@ impl AuthorityVerifier {
         let attestation = *hasher.finalize().as_bytes();
         let capacity = canonical.capacity() as u64;
         drop(canonical);
-        if let Some(work) = work.as_deref_mut() { work.release_bytes(capacity)?; }
+        if let Some(work) = work.as_deref_mut() { work.release_owned(capacity)?; }
         Ok(attestation)
     }
 }

@@ -61,7 +61,7 @@ impl Fixture {
         let agent = AgentId::from_bytes([161; 16]);
         let task = TaskId::from_bytes([162; 16]);
         let root = [163; 16];
-        let provider = acyclic_harness::resources::ProviderRef::new("pi-fork-tests", "filesystem", "1").unwrap();
+        let provider = acyclic_harness::resources::ProviderRef::new("pi-fork-tests".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
         let journal_volume = VolumeRef::new(provider.clone(), "journal", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).unwrap();
         let scratch = VolumeRef::new(provider.clone(), "scratch", VolumeClass::AgentPrivate, VolumeOwner::Agent(agent)).unwrap();
         let project = VolumeRef::new(provider.clone(), "project", VolumeClass::Project, VolumeOwner::Project(hex::encode(root))).unwrap();
@@ -137,8 +137,7 @@ impl Fixture {
             "control", &control, &startup_work).await.unwrap();
         observed.1.absorb(&mut control.1).unwrap();
         let suspension = runtime.runtime.task_host().workflow_suspension(task).await.unwrap().unwrap();
-        runtime.runtime.task_host().resume_workflow(task, suspension.revision, control.0,
-            IdempotencyKey::new("pi-fork-test/original-parent-owner").unwrap()).await.unwrap();
+        runtime.runtime.task_host().resume_workflow(task, suspension.revision, control.0, IdempotencyKey::new("pi-fork-test/original-parent-owner").unwrap(), None).await.unwrap();
         let mut first = runtime.runtime.run_operation_with_native_work(&worker, task, &runtime.runtime.commands(), 1, &startup_work).await.unwrap();
         observed.1.absorb(&mut first.1).unwrap();
         let Some(TaskWorkerAttempt::Progress(TaskWorkerOutcome::Yielded { lease })) = first.0 else { panic!("original parent control lease"); };
@@ -355,7 +354,7 @@ impl Fixture {
 
 pub(crate) fn policy() -> PiOwnerPolicy {
     let agent = AgentId::from_bytes([81; 16]);
-    let provider = acyclic_harness::resources::ProviderRef::new("pi-owner-test", "filesystem", "1").unwrap();
+    let provider = acyclic_harness::resources::ProviderRef::new("pi-owner-test".into(), "filesystem".into(), "1".into(), &mut None).unwrap();
     let scratch = VolumeRef::new(
         provider.clone(),
         "scratch",

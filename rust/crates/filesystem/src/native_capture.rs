@@ -2868,6 +2868,7 @@ async fn capture_watch_batch_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStor
 #[cfg(test)]
 mod shared_watch_capture_tests {
     use super::*;
+    use crate::demand::NativeDemandReadMeter;
     use crate::storage::{
         ObjectId, ObjectRead, ObjectReadRequest, ObjectResult, ObjectWrite,
     };
