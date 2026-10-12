@@ -528,6 +528,18 @@ impl<S: WorkspaceLineageStore> WorkspaceGraph<S> {
         self.required(workspace).await
     }
 
+    /// Reopens one durable workspace and checks its exact identity.
+    pub async fn workspace<A: AsyncAuthorityStore, O: AsyncObjectStore>(
+        &self, fs: &crate::Fs<A, O>, workspace_id: WorkspaceId,
+        budget: crate::WorkBudget, cancellation: &crate::CancellationToken,
+    ) -> Result<Workspace<A, O>, WorkspaceLineageError<S::Error>> {
+        let record = self.resolve(workspace_id).await?;
+        let workspace = fs.open_workspace(&record.workspace_name, budget, cancellation).await
+            .map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+        if workspace.id() != workspace_id { return Err(WorkspaceLineageError::IncompatibleState); }
+        Ok(workspace)
+    }
+
     /// Returns the direct-parent chain, nearest parent first.
     pub async fn ancestors(
         &self,

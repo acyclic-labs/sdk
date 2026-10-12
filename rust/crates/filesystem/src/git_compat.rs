@@ -7837,8 +7837,8 @@ mod tests {
             Some(previous_capture.generation.workspace_id()),
             "incremental capture must fork from the prior filtered capture"
         );
-        let reopened = crate::DistributedFs::new(fs.clone(), state_store)
-            .workspace(captured.generation.workspace_id())
+        let reopened = crate::WorkspaceGraph::new(state_store)
+            .workspace(&fs, captured.generation.workspace_id(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
             .await
             .expect("reopen filtered capture from durable lineage");
         reopened

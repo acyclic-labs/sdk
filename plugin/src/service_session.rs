@@ -590,7 +590,7 @@ impl PiSession {
             self.state.roots.get_mut(&key).ok_or(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi allocated root disappeared" })?.allocation = RootAllocation::Created(creation);
         }
         self.slots.save_with_native_work(&self.resources.private_state_root, &self.relative_directory, &self.state, Survives::PowerLoss, original_native_work)?;
-        let distributed = DistributedFs::new(self.resources.fs.clone(), self.resources.store.clone());
+
         let PluginTaskBinding::Pi(binding) = &self.state.task_binding else {
             return Err(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi root binding changed during allocation" });
         };
@@ -612,7 +612,7 @@ impl PiSession {
         let mut context_roots = Vec::with_capacity(self.roots.len());
         for (key, handle) in &self.roots {
             let root = self.state.roots.get(key).ok_or(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi created root disappeared" })?;
-            let lineage = distributed.lineage().register_root_with_native_work(
+            let lineage = WorkspaceGraph::new(self.resources.store.clone()).register_root_with_native_work(
                 handle.workspace.workspace(), original_native_work, original_native_work.cancellation(),
             ).await.map_err(|(source, custody)| RootError::NativeLineage { source, custody })?.into_parts();
             drop(lineage.0);
@@ -648,7 +648,7 @@ impl PiSession {
         )?;
         context_custody.resize_retained(actual_context_bytes)
             .map_err(|cause| RootError::NativeWork { cause, custody: None })?;
-        let context = distributed.contexts().register_root_with_native_work(
+        let context = WorkspaceContextRegistry::new(self.resources.store.clone()).register_root_with_native_work(
             WorkspaceContextId::from_bytes(self.state.root_context_id), (context_roots, context_custody),
             original_native_work, original_native_work.cancellation(),
         ).await.map_err(|(source, custody)| RootError::NativeContext { source, custody })?.into_parts();
