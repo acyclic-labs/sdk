@@ -387,13 +387,10 @@ impl BrowserWorkspace {
     ) -> Result<BrowserChangeSet, JsValue> {
         let maximum_changes = wasm_u32(&maximum_changes)?;
 
-        let engine = {
-            let (workspace, from, to) = (&self.engine, &from.engine, &to.engine);
-            workspace
-                .diff(from, to, maximum_changes)
-                .await
-                .map_err(js_error)?
-        };
+        let engine = sdk_value!(unbounded_future!(
+            self.engine,
+            diff(&from.engine, &to.engine, maximum_changes)
+        ))?;
         Ok(BrowserChangeSet { engine })
     }
 
@@ -430,9 +427,12 @@ impl BrowserWorkspace {
                         "target generation",
                     )
                     .await?,
-                    acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new(),
+                    acyclic_fs::WorkBudget::UNBOUNDED,
+                    &acyclic_fs::CancellationToken::new(),
                 )
-                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                .await
+                .map(|receipt| receipt.value)
+                .map_err(|failure| failure.error)
                 .map_err(js_error)?
         };
         Ok(BrowserJoinPlan { engine })

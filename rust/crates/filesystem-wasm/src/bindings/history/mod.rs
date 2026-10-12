@@ -77,13 +77,10 @@ impl BrowserChangeSet {
     ) -> Result<BrowserChangeSet, JsValue> {
         let maximum_changes = wasm_u32(&maximum_changes)?;
 
-        let engine = {
-            let (value, next) = (&self.engine, &next.engine);
-            value
-                .compose(next, maximum_changes)
-                .await
-                .map_err(js_error)?
-        };
+        let engine = sdk_value!(unbounded_future!(
+            self.engine,
+            compose(&next.engine, maximum_changes)
+        ))?;
         Ok(BrowserChangeSet { engine })
     }
 }
@@ -123,7 +120,11 @@ impl BrowserJoinPlan {
         };
         let result = browser_join_result(
             self.engine
-                .apply(options, std::collections::BTreeMap::new(), acyclic_fs::PublicationPermit::Unrestricted)
+                .apply(
+                    options,
+                    std::collections::BTreeMap::new(),
+                    acyclic_fs::PublicationPermit::Unrestricted,
+                )
                 .await
                 .map_err(js_error)?,
         );
