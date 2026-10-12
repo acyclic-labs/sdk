@@ -498,8 +498,8 @@ impl Delivery {
         let Some(birth) = &self.original else { return false; };
         let Some(current) = work.native_source_work() else { return false; };
         let current = current.original_demand_work();
-        Arc::ptr_eq(birth.meter(), current.meter())
-            && match (birth.resource_allowance(), current.resource_allowance()) {
+        Arc::ptr_eq(&birth.state, &current.state)
+            && match (birth.resource.as_ref(), current.resource.as_ref()) {
                 (None, None) => true,
                 (Some(birth), Some(current)) => Arc::ptr_eq(birth, current),
                 _ => false,

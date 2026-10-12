@@ -261,7 +261,7 @@ fn native_original_token_registry_has_no_strong_cycle_after_last_future_drop() {
         .map_err(|(error, _)| error).unwrap();
     let state = Arc::downgrade(&token.state);
     let original = work.original_demand_work();
-    let accounting = Arc::downgrade(original.meter());
+    let accounting = Arc::downgrade(&original.state);
     let prepared = token.prepare_cancelled_with_native_work(&work).unwrap();
     drop(original);
     drop(work);
