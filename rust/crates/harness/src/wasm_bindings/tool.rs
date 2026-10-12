@@ -1,6 +1,5 @@
 use super::*;
 
-
 /// JavaScript-facing tool definition shape. The public TypeScript facade uses
 /// camelCase names while the native definition remains `snake_case`.
 #[derive(Deserialize, Tsify)]
@@ -61,11 +60,12 @@ pub fn validate_tool_invocation(definition: JsValue, invocation: JsValue) -> Res
             "tool invocation identity does not match definition",
         ));
     }
-    validate_value(
+    crate::contract::validate_json_schema_value(
         &definition.input_schema,
         &invocation.arguments,
         "tool input",
-     None,)
+        &mut None,
+    )
     .map_err(js_error)
 }
 
@@ -75,7 +75,13 @@ pub fn validate_tool_result(definition: JsValue, result: JsValue) -> Result<(), 
     let definition: ToolDefinition = from_js::<WasmToolDefinitionInput>(definition)?.into();
     definition.validate(&mut None).map_err(js_error)?;
     let result: WasmToolResultInput = from_js(result)?;
-    validate_value(&definition.output_schema, &result.value, "tool output", None).map_err(js_error)
+    crate::contract::validate_json_schema_value(
+        &definition.output_schema,
+        &result.value,
+        "tool output",
+        &mut None,
+    )
+    .map_err(js_error)
 }
 
 /// Validates the explicit result envelope without granting file or option authority.
@@ -101,7 +107,8 @@ pub fn json_tool_projection_schema(
     #[wasm_bindgen(unchecked_param_type = "WasmToolJsonSchema")] value_schema: JsValue,
 ) -> Result<JsValue, JsValue> {
     let schema = crate::tool::json_projection_schema(from_js(value_schema)?);
-    crate::contract::compile_json_schema(&schema, "tool projection", None).map_err(js_error)?;
+    crate::contract::compile_json_schema(&schema, "tool projection", &mut None)
+        .map_err(js_error)?;
     schema
         .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
         .map_err(|error| JsValue::from_str(&error.to_string()))

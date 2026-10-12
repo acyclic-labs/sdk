@@ -95,10 +95,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                     "fork has no parent scratch selection",
                 )
             })?;
-        let private_key = IdempotencyKey::new(crate::contract::preparation_format(
-            format_args!("fork:{}:{request_digest}:scratch", request.operation_id),
-            self.io.as_ref(),
-        )?)?;
+        let private_key = IdempotencyKey::new(crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!("fork:{}:{request_digest}:scratch", request.operation_id), work))?)?;
         let private_grant = self.read_grant(source_private)?;
         let project_grant = if request.authorized_source.is_some() {
             std::borrow::Cow::Borrowed(self.preparer.sealed_project_read(
@@ -127,10 +124,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         )
         .await?;
         let controller = self.preparer.controller(self.io.as_ref())?;
-        let project_key = IdempotencyKey::new(crate::contract::preparation_format(
-            format_args!("fork:{}:{request_digest}:project", request.operation_id),
-            self.io.as_ref(),
-        )?)?;
+        let project_key = IdempotencyKey::new(crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!("fork:{}:{request_digest}:project", request.operation_id), work))?)?;
         self.verify_task_lease(false).await?;
         let child_project = bounded_io::fork(
             &self.preparer.host,
@@ -149,10 +143,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
         let (child_result_volume, child_result_generation) =
             if let Some(volume) = &request.preparation.child_result_volume {
                 self.verify_task_lease(false).await?;
-                let key = IdempotencyKey::new(crate::contract::preparation_format(
-                    format_args!("fork:{}:{request_digest}:result", request.operation_id),
-                    self.io.as_ref(),
-                )?)?;
+                let key = IdempotencyKey::new(crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!("fork:{}:{request_digest}:result", request.operation_id), work))?)?;
                 let result = bounded_io::fork(
                     &self.preparer.host,
                     source_private,
@@ -193,10 +184,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                 Vec::new(),
             )
         } else {
-            let context_key = IdempotencyKey::new(crate::contract::preparation_format(
-                format_args!("fork:{}:{request_digest}:context", request.operation_id),
-                self.io.as_ref(),
-            )?)?;
+            let context_key = IdempotencyKey::new(crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!("fork:{}:{request_digest}:context", request.operation_id), work))?)?;
             let continuation_keys = if request.preparation.summary.is_some() {
                 let keys =
                     crate::filesystem::summary_fork::summary_keys(&context_key, self.io.as_ref())?;
@@ -264,10 +252,7 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Preparatio
                     "summary source proof is missing",
                 )
             })?;
-            let key = IdempotencyKey::new(crate::contract::preparation_format(
-                format_args!("fork:{}:{request_digest}:context", request.operation_id),
-                self.io.as_ref(),
-            )?)?;
+            let key = IdempotencyKey::new(crate::executor::with_history_io(self.io.as_ref(), |work| crate::contract::preparation_format(format_args!("fork:{}:{request_digest}:context", request.operation_id), work))?)?;
             let prefix = inherited_context.first().ok_or_else(|| {
                 bounded_io::failure(
                     self.io.as_ref(),

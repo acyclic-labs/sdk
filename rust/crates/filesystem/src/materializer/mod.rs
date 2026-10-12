@@ -1,4 +1,10 @@
 //! Journaled pathwise application and crash recovery.
+//!
+//! Merge publication changes an authenticated workspace head atomically. A
+//! native checkout still needs pathwise host operations, which cannot be made
+//! atomic by an operating system. This module centralizes the durable protocol:
+//! capture every preimage before the first mutation, record progress after each
+//! operation, and complete or roll back deterministically after interruption.
 
 use crate::record_store::{MAXIMUM_CAS_ATTEMPTS, next_revision};
 use crate::{GenerationId, OperationId};
@@ -10,77 +16,93 @@ use thiserror::Error;
 
 const JOURNAL_VERSION: u32 = 3;
 
-/// Native preparation images require the corresponding live binding to be absent.
+/// Image tag requiring an absent native preparation endpoint.
 #[cfg(not(target_arch = "wasm32"))]
 pub const NATIVE_PREPARATION_ABSENT_IMAGE_PREFIX: &[u8] = b"acyclic.native.prepare-absent/v1\0";
 
+mod intent;
+pub use intent::*;
+
+mod types;
+pub use types::*;
+
+mod protocol;
+pub use protocol::*;
+
+mod inspection;
+pub use inspection::*;
+
 #[cfg(not(target_arch = "wasm32"))]
-#[macro_use]
-mod runtime_meter;
+mod backend;
+#[cfg(not(target_arch = "wasm32"))]
+mod directories;
+#[cfg(not(target_arch = "wasm32"))]
+pub use backend::*;
+#[cfg(not(target_arch = "wasm32"))]
+use directories::*;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod error;
+#[cfg(not(target_arch = "wasm32"))]
+pub use error::*;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod allocation;
+#[cfg(not(target_arch = "wasm32"))]
+pub use allocation::*;
+
 #[cfg(not(target_arch = "wasm32"))]
 mod allowance;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) use allowance::*;
-#[cfg(not(target_arch = "wasm32"))]
-mod views;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use views::*;
-#[cfg(not(target_arch = "wasm32"))]
-mod builtins;
+
 #[cfg(not(target_arch = "wasm32"))]
 mod work;
 #[cfg(not(target_arch = "wasm32"))]
 pub use work::*;
 #[cfg(not(target_arch = "wasm32"))]
-mod allocation;
+mod views;
 #[cfg(not(target_arch = "wasm32"))]
-pub use allocation::*;
+pub(crate) use views::*;
+
+#[cfg(not(target_arch = "wasm32"))]
+mod runtime_meter;
+
 #[cfg(not(target_arch = "wasm32"))]
 mod reservation;
 #[cfg(not(target_arch = "wasm32"))]
 pub use reservation::*;
 #[cfg(not(target_arch = "wasm32"))]
-mod error;
+mod cleanup;
 #[cfg(not(target_arch = "wasm32"))]
-pub use error::*;
+pub(crate) use cleanup::*;
+
 #[cfg(not(target_arch = "wasm32"))]
 mod buffers;
 #[cfg(not(target_arch = "wasm32"))]
-pub use buffers::journal_owned_bytes;
+pub use buffers::*;
 #[cfg(not(target_arch = "wasm32"))]
-use buffers::*;
-mod types;
-pub use types::*;
-mod protocol;
-pub use protocol::*;
-mod inspection;
-pub use inspection::*;
+mod builtins;
+#[cfg(not(target_arch = "wasm32"))]
+mod checkout_work;
 #[cfg(not(target_arch = "wasm32"))]
 mod preparation;
 #[cfg(not(target_arch = "wasm32"))]
 pub use preparation::*;
-#[cfg(not(target_arch = "wasm32"))]
-mod backend;
-#[cfg(not(target_arch = "wasm32"))]
-mod entries;
-#[cfg(not(target_arch = "wasm32"))]
-pub use backend::*;
+
 #[cfg(not(target_arch = "wasm32"))]
 mod paths;
 #[cfg(not(target_arch = "wasm32"))]
-pub use paths::validate_native_preparation_location;
-#[cfg(not(target_arch = "wasm32"))]
-use paths::*;
-#[cfg(not(target_arch = "wasm32"))]
+pub use paths::*;
+
 mod witness;
+pub use witness::*;
+
 #[cfg(not(target_arch = "wasm32"))]
-use witness::*;
+mod metadata;
 #[cfg(not(target_arch = "wasm32"))]
-mod tree;
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) use tree::native_stat_held;
-#[cfg(not(target_arch = "wasm32"))]
-use tree::*;
+pub use metadata::*;
+
 #[cfg(all(
     feature = "local",
     feature = "native-mount",
@@ -93,11 +115,18 @@ mod publication;
     not(target_arch = "wasm32")
 ))]
 pub use publication::*;
-mod memory;
-pub use memory::*;
-#[cfg(test)]
-mod tests;
-
+#[cfg(all(
+    feature = "local",
+    feature = "native-mount",
+    not(target_arch = "wasm32")
+))]
+mod planning;
+#[cfg(all(
+    feature = "local",
+    feature = "native-mount",
+    not(target_arch = "wasm32")
+))]
+use planning::*;
 #[cfg(all(
     feature = "local",
     feature = "native-mount",
@@ -111,15 +140,8 @@ mod preflight;
 ))]
 use preflight::*;
 
-#[cfg(all(
-    feature = "local",
-    feature = "native-mount",
-    not(target_arch = "wasm32")
-))]
-mod planning;
-#[cfg(all(
-    feature = "local",
-    feature = "native-mount",
-    not(target_arch = "wasm32")
-))]
-use planning::*;
+mod memory;
+pub use memory::*;
+
+#[cfg(test)]
+mod tests;

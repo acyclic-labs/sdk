@@ -116,7 +116,7 @@ pub(super) fn recursive_byte_bound(
         return io.check_json_byte_bound(value, maximum);
     }
     let _ = io;
-    crate::contract::validate_json_byte_bound(value, maximum)
+    crate::contract::json_byte_length(value, maximum, &mut None).map(|_| ())
 }
 pub(in crate::filesystem) fn decode<T: crate::filesystem::PreparationRecord>(
     value: &Value,
@@ -244,16 +244,13 @@ pub(super) fn transition_identity(
 ) -> Result<(OperationId, IdempotencyKey)> {
     let operation = {
         let _label;
-        let label = crate::contract::preparation_format(format_args!("transition-{revision}"), io)?;
+        let label = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("transition-{revision}"), work))?;
         _label = io
             .map(|io| io.guard_owned(label.capacity() as u64))
             .transpose()?;
         derived(effect, &label, io)?
     };
-    let key = crate::contract::preparation_format(
-        format_args!("recursive-tool:{effect}:{revision}"),
-        io,
-    )?;
+    let key = crate::executor::with_history_io(io, |work| crate::contract::preparation_format(format_args!("recursive-tool:{effect}:{revision}"), work))?;
     if let Some(io) = io {
         io.retain_owned(std::mem::size_of::<IdempotencyKey>() as u64)?;
     }

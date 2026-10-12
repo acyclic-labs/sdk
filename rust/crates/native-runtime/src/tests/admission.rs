@@ -156,7 +156,8 @@ fn saturated_host_transactions_do_not_starve_native_file_io() -> io::Result<()> 
 
 #[test]
 fn dropped_admission_waiters_do_not_block_later_reads() -> io::Result<()> {
-    let file = tempfile::tempfile()?;
+    let temporary = tempfile::NamedTempFile::new()?;
+    let file = temporary.reopen()?;
     write_all_at(&file, 0, b"x", None)?;
     let mut reads = Vec::new();
     for _ in 0..64 {

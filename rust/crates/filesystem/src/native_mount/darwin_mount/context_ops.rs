@@ -20,7 +20,7 @@ impl DarwinMountContext {
             || inodes.insert(root_file_id, ROOT_INODE),
         )?;
         let (handler_budget, handler_cancellation) = {
-            let meter = work.native_read_meter().lock();
+            let meter = (&work.state).lock();
             (meter.budget, meter.cancellation().clone())
         };
         Ok(Self {
