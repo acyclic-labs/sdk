@@ -620,10 +620,10 @@ export class HarnessClient<Event = unknown> {
     this.#errors.dispose();
   }
 
-  async #run(signal?: AbortSignal): Promise<void> {
+  async #run(signal: AbortSignal): Promise<void> {
     await this.#mutations.schedule(256, () => this.#hydrateCursors());
     let delay = 50;
-    while (!signal?.aborted) {
+    while (!signal.aborted) {
       let unreceived: Connection<Event> | undefined;
       try {
         const { cursors, epoch } = await this.#mutations.schedule(256, async () => ({
@@ -632,7 +632,7 @@ export class HarnessClient<Event = unknown> {
         }));
         const connection = await this.transport.connect(cursors, signal);
         unreceived = connection;
-        if (signal?.aborted) throw new DOMException("Client replay cancelled", "AbortError");
+        if (signal.aborted) throw new DOMException("Client replay cancelled", "AbortError");
         const current = await this.#mutations.schedule(256, async () => {
           if (epoch !== this.#replayEpoch) return false;
           this.#connection = connection;
@@ -646,13 +646,13 @@ export class HarnessClient<Event = unknown> {
         unreceived = undefined;
         await this.#flushOutbox(connection, epoch, signal);
         for await (const delivery of connection) {
-          if (signal?.aborted) break;
+          if (signal.aborted) break;
           await this.#accept(delivery, epoch);
         }
         delay = 50;
       } catch (error) {
         this.#errors.publish(error);
-        if (signal?.aborted) break;
+        if (signal.aborted) break;
         if (error instanceof ClientCheckpointConflict) throw error;
         if (error instanceof ReplayError) {
           if (this.#projections.has(authorityKey(error.authority))) throw error;
@@ -671,16 +671,16 @@ export class HarnessClient<Event = unknown> {
     }
   }
 
-  async #flushOutbox(connection: Connection<Event>, epoch: number, signal?: AbortSignal): Promise<void> {
+  async #flushOutbox(connection: Connection<Event>, epoch: number, signal: AbortSignal): Promise<void> {
     let after = 0;
     let through: number | undefined;
     do {
-      if (signal?.aborted) return;
+      if (signal.aborted) return;
       const page = this.outbox.loadPage === undefined ? undefined : await this.outbox.loadPage(after, through);
       const commands = page?.commands ?? await this.outbox.load();
       for (const command of commands) {
         await this.#mutations.schedule(256, async () => {
-          if (signal?.aborted) throw new DOMException("Client replay cancelled", "AbortError");
+          if (signal.aborted) throw new DOMException("Client replay cancelled", "AbortError");
           if (epoch !== this.#replayEpoch || connection !== this.#connection) {
             throw new Error();
           }
@@ -1079,11 +1079,11 @@ function transactionDone(transaction: IDBTransaction): Promise<void> {
   });
 }
 
-async function abortableDelay(milliseconds: number, signal?: AbortSignal): Promise<void> {
+async function abortableDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
   await new Promise<void>((resolve, reject) => {
-    if (signal?.aborted) { reject(signal.reason); return; }
-    const aborted = () => { clearTimeout(timeout); reject(signal?.reason); };
-    const timeout = setTimeout(() => { signal?.removeEventListener("abort", aborted); resolve(); }, milliseconds);
-    signal?.addEventListener("abort", aborted, { once: true });
+    if (signal.aborted) { reject(signal.reason); return; }
+    const aborted = () => { clearTimeout(timeout); reject(signal.reason); };
+    const timeout = setTimeout(() => { signal.removeEventListener("abort", aborted); resolve(); }, milliseconds);
+    signal.addEventListener("abort", aborted, { once: true });
   });
 }

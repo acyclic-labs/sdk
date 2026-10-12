@@ -25,7 +25,10 @@ impl<A, O> FilesystemContentPublisher<A, O> {
         verifier: &AuthorityVerifier, scope: &Scope, maximum_bytes: u64,
         io: Option<&PreparationIo>,
     ) -> Result<Self> {
-        Self::validate_limit(maximum_bytes, io)?;
+        if maximum_bytes == 0 || maximum_bytes == u64::MAX {
+            return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid,
+                "content publication limit must be positive and finite"));
+        }
         #[cfg(not(target_arch = "wasm32"))]
         let before = io.map(PreparationIo::owned_bytes).transpose()?.unwrap_or(0);
         let mut history = io.map(PreparationIo::history_io);
@@ -43,19 +46,6 @@ impl<A, O> FilesystemContentPublisher<A, O> {
         };
         Ok(Self { host, volume, grant, maximum_bytes,
             #[cfg(not(target_arch = "wasm32"))] _native_metadata })
-    }
-
-    pub(crate) fn logical_owned_bytes(&self) -> Result<u64> {
-        self.volume.logical_owned_bytes()?.checked_add(self.grant.logical_owned_bytes()?)
-            .ok_or_else(|| Error::Invalid("content publisher ownership overflow".into()))
-    }
-
-    fn validate_limit(maximum_bytes: u64, io: Option<&PreparationIo>) -> Result<()> {
-        if maximum_bytes == 0 || maximum_bytes == u64::MAX {
-            return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid,
-                "content publication limit must be positive and finite"));
-        }
-        Ok(())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -175,9 +165,6 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static>
         }
         if version.len() != 64 || !version.bytes().all(|byte| byte.is_ascii_hexdigit()) {
             return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "file version is not a Filesystem generation"));
-        }
-        if source.descriptor().byte_length() > 9_007_199_254_740_991 {
-            return Err(super::fork_preparer_io::failure(io, crate::wire::ErrorCode::Invalid, "file byte length exceeds cross-language precision"));
         }
         #[cfg(not(target_arch = "wasm32"))]
         let root_generation = root_allocation

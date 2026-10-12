@@ -1120,15 +1120,18 @@ mod tests {
         let work = acyclic_fs::NativeMaterializationWork::new(
             FINITE_CONTENT_BUDGET, &cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
         let operation = OperationId::new();
-        let (file, hold) = scheduler.stage_with_native_work(
-            operation, "canonical-original-key", br#"{"input":1}"#, &work)?.await?;
+        let io = super::super::PreparationIo::from_native_work(&work)?;
+        let file = scheduler.stage(
+            operation, "canonical-original-key", br#"{"input":1}"#, Some(&io))?.await?;
+        let hold = io.take_native_custody(file.logical_owned_bytes()?)?;
         assert_eq!(hold.bytes(), file.logical_owned_bytes()?);
-        let (retry, retry_hold) = scheduler.stage_with_native_work(
-            operation, "canonical-original-key", br#"{"input":1}"#, &work)?.await?;
+        let retry = scheduler.stage(
+            operation, "canonical-original-key", br#"{"input":1}"#, Some(&io))?.await?;
+        let retry_hold = io.take_native_custody(retry.logical_owned_bytes()?)?;
         assert_eq!(retry, file);
-        assert_eq!(scheduler.stage(operation, "canonical-original-key", br#"{"input":1}"#).await?, file);
-        assert!(scheduler.stage_with_native_work(
-            operation, "canonical-original-key", br#"{"input":2}"#, &work)?.await.is_err());
+        assert_eq!(scheduler.stage(operation, "canonical-original-key", br#"{"input":1}"#, None)?.await?, file);
+        assert!(scheduler.stage(
+            operation, "canonical-original-key", br#"{"input":2}"#, Some(&io))?.await.is_err());
         drop(retry);
         drop(retry_hold);
         drop(file);
@@ -1137,8 +1140,9 @@ mod tests {
         denied.bytes_hashed = "canonical-original-key".len() as u64 - 1;
         let denied_work = acyclic_fs::NativeMaterializationWork::new(
             denied, &cancellation).map_err(|(cause, work)| Error::NativeConstruction { cause, work })?;
-        assert!(matches!(scheduler.stage_with_native_work(
-            OperationId::new(), "canonical-original-key", b"never", &denied_work)?.await,
+        let denied_io = super::super::PreparationIo::from_native_work(&denied_work)?;
+        assert!(matches!(scheduler.stage(
+            OperationId::new(), "canonical-original-key", b"never", Some(&denied_io))?.await,
             Err(Error::NativeWork {
                 cause: acyclic_fs::NativeTreeMaterializationError::Work(_), custody: None })));
         assert_eq!(denied_work.receipt().bytes_hashed, 0);
@@ -1411,7 +1415,7 @@ mod tests {
             });
         let storage = MemoryHarnessStorage::new(AgentId::new(), Limits::default().file_bytes).await?;
         let replacement = storage.builder()
-            .model(Model::new("test", "text", "1", Value::Null)?, Arc::new(TextModel(requests.clone())))
+            .model(Model::new("test".into(), "text".into(), "1".into(), Value::Null)?, Arc::new(TextModel(requests.clone())))
             .tools(storage.default_tools(Limits::default(), None)?)
             .grant("tool:call:acyclic.read_file").grant("tool:call:acyclic.write_file")
             .grant("tool:call:acyclic.edit_file").grant("tool:call:acyclic.list_files")
@@ -1419,7 +1423,7 @@ mod tests {
         assert_eq!(storage.run_prompt(&replacement, "replacement", Vec::new()).await?.text, "local response");
         let disabled_storage = MemoryHarnessStorage::new(AgentId::new(), Limits::default().file_bytes).await?;
         let disabled = disabled_storage.builder()
-            .model(Model::new("test", "text", "1", Value::Null)?,
+            .model(Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
                 Arc::new(ModelWithoutAccounting(TextModel(requests.clone()))))
             .grant(capability::MODEL_GENERATE).compaction(crate::context::CompactionPolicy::Disabled).build()?;
         assert_eq!(disabled_storage.run_prompt(&disabled, "disabled", Vec::new()).await?.text, "local response");
@@ -1829,7 +1833,7 @@ mod tests {
         });
         let limits = Limits::default();
         let storage = MemoryHarnessStorage::new(AgentId::new(), limits.file_bytes).await?;
-        let bundle = storage.builder().model(Model::new("test", "file", "1", Value::Null)?, model.clone())
+        let bundle = storage.builder().model(Model::new("test".into(), "file".into(), "1".into(), Value::Null)?, model.clone())
             .grant(capability::MODEL_GENERATE).tools(storage.default_tools(limits, None)?)
             .grant("tool:call:acyclic.read_file").grant("tool:call:acyclic.write_file")
             .grant("tool:call:acyclic.edit_file").grant("tool:call:acyclic.list_files")
@@ -1856,7 +1860,7 @@ mod tests {
         let requests = Arc::new(Mutex::new(Vec::new()));
         let storage = MemoryHarnessStorage::new(AgentId::new(), Limits::default().file_bytes).await?;
         let bundle = storage.builder()
-            .model(Model::new("test", "text", "1", Value::Null)?, Arc::new(TextModel(requests.clone())))
+            .model(Model::new("test".into(), "text".into(), "1".into(), Value::Null)?, Arc::new(TextModel(requests.clone())))
             .tools(storage.default_tools(Limits::default(), None)?)
             .grant("tool:call:acyclic.read_file").grant("tool:call:acyclic.write_file")
             .grant("tool:call:acyclic.edit_file").grant("tool:call:acyclic.list_files")
@@ -1902,7 +1906,7 @@ mod tests {
             .builder()
             .compaction(crate::context::CompactionPolicy::Disabled)
             .model(
-                Model::new("test", "text", "1", Value::Null)?,
+                Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
                 Arc::new(TextModel(requests.clone())),
             )
             .grant("model:generate")
@@ -2126,7 +2130,7 @@ mod tests {
             .compaction(crate::context::CompactionPolicy::Disabled)
             .tasks(tasks)
             .model(
-                Model::new("test", "text", "1", Value::Null)?,
+                Model::new("test".into(), "text".into(), "1".into(), Value::Null)?,
                 Arc::new(TextModel(Arc::new(Mutex::new(Vec::new())))),
             )
             .grant("model:generate")

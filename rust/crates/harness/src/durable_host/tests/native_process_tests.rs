@@ -1256,9 +1256,9 @@ where
                 std::fs::create_dir(&physical).map_err(|error| Error::Storage(error.to_string()))?;
                 std::fs::write(physical.join("cold.txt"), b"genuine cold project")
                     .map_err(|error| Error::Storage(error.to_string()))?;
-                let demand = Arc::new(acyclic_fs::NativeDemandSource::open(&physical,
-                    acyclic_fs::FilesystemProfile::Portable, acyclic_fs::VolumeLimits::default(), None, None)
-                    .await.map_err(|error| Error::Storage(error.to_string()))?);
+                let demand = Arc::new(acyclic_fs::NativeDemandSource::open(std::borrow::Cow::Owned(std::path::Path::new(&physical).to_path_buf()),
+                    acyclic_fs::FilesystemProfile::Portable, acyclic_fs::VolumeLimits::default(), None, None, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+                    .await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(|error| Error::Storage(error.to_string()))?);
                 let workspace = files.open_volume_with_native_work(&source, work).await?;
                 let lazy = acyclic_fs::LazyWorkspace::open_or_attach(workspace, demand,
                     acyclic_fs::MemoryLazyWorkspaceStore::default()).await
@@ -1417,7 +1417,7 @@ where
         .open_interaction(
             approval,
             Interaction::approval(
-                "Run the exact admitted process",
+                "Run the exact admitted process".into(),
                 command,
                 request.approval_digest(owner.task_binding().0, command)?,
             )?,
