@@ -294,7 +294,7 @@ where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObj
     let mut resumable_tools = ResumableToolRegistry::default();
     for kind in [Kind::Fork, Kind::Merge] {
         let machine = Arc::new(RecursiveToolMachine::new(kind, maximum_request_bytes));
-        let definition = definition(kind, maximum_request_bytes)?;
+        let definition = definition(kind, maximum_request_bytes);
         let durable = ResumableTool { definition: definition.clone(), machine };
         resumable_tools.register(durable.clone())?;
         tools.register(Tool { definition, executor: Arc::new(RecursiveExecutor {
@@ -311,7 +311,7 @@ impl Kind {
     fn grant(self) -> &'static str { match self { Self::Fork => "fork:publish", Self::Merge => "project:merge" } }
 }
 
-fn definition(kind: Kind, maximum: u64) -> Result<ToolDefinition> {
+fn definition(kind: Kind, maximum: u64) -> ToolDefinition {
     let input = match kind {
         Kind::Fork => json!({"type":"object","required":["id","msg"],"properties":{
             "id":{"type":"string"},"msg":{"type":"string"},"source":{"type":"string"}},"additionalProperties":false}),
@@ -322,13 +322,11 @@ fn definition(kind: Kind, maximum: u64) -> Result<ToolDefinition> {
     let mut input = input;
     input["x-harness-recursive-request-bytes"] = json!(maximum);
     let output = json!({"type":"object"});
-    let value = ToolDefinition { name: kind.name().into(), revision: REVISION.into(),
+    ToolDefinition { name: kind.name().into(), revision: REVISION.into(),
         description: match kind { Kind::Fork => "Prepare, publish and durably admit a new child from the actual calling task; source selects only an explicitly authorized project",
             Kind::Merge => "Import an explicitly readable pinned source project into the actual caller's project through approval and the original inspected CAS target" }.into(),
         input_schema: input, output_schema: output.clone(),
-        projection_schema: crate::tool::json_projection_schema(output) };
-    value.validate()?;
-    Ok(value)
+        projection_schema: crate::tool::json_projection_schema(output) }
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -942,8 +940,8 @@ impl Drop for InvocationCancellation {
 }
 impl<P, A, O> RecursiveExecutor<P, A, O>
 where P: StreamProvider + 'static, A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static {
-    fn source(&self) -> Result<&Arc<dyn RecursiveDefaultToolSource<P, A, O>>> {
-        self.source.as_ref().ok_or_else(|| Error::Unsupported("recursive tool provider is not bound".into()))
+    fn source(&self) -> Result<&dyn RecursiveDefaultToolSource<P, A, O>> {
+        self.source.as_deref().ok_or_else(|| Error::Unsupported("recursive tool provider is not bound".into()))
     }
     fn check_authority(&self, context: &ToolContext, invocation: &ToolInvocation,
         io: Option<&super::PreparationIo>) -> Result<()> {
@@ -2019,7 +2017,7 @@ fn recursive_effective_scope<'a>(
     } else { context.scope() }
 }
 
-impl<A: AsyncAuthorityStore, O: AsyncObjectStore> ParentProjectController<'_, A, O> {
+impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> ParentProjectController<'_, A, O> {
     /// Restores the exact originally inspected plan after a lost acknowledgement.
     pub async fn prepare_project_import_at(&self, source: &VolumeRef, source_generation: &GenerationRef,
         target_generation: &GenerationRef) -> Result<ParentMergePlan<A, O>> {
