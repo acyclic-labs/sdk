@@ -257,7 +257,7 @@ impl Fixture {
         let mut plan = coordinator.begin(&context, &self.journal, &self.fence, parent_value, self.root_handle.workspace.clone(), frozen.0,
             commit.0, ForkPreparationLimits { resources: 128, work: 1_000_000, bytes: maximum },
             work.remaining().unwrap(), work.cancellation().clone()).await.unwrap();
-        Arc::get_mut(plan._input_allocations.as_mut().unwrap()).unwrap().absorb(&mut commit.1).unwrap();
+        plan._input_allocations.as_mut().unwrap().absorb(&mut commit.1).unwrap();
         plan
     }
     fn next_commit(&self, caller: &PiTaskBinding, source: TaskId, sdk_operation: &str) -> RetainedSpawnCommit {
@@ -320,7 +320,7 @@ impl Fixture {
             ForkPreparationLimits { resources: 128, work: 1_000_000, bytes: maximum },
             work.remaining().map_err(|cause| Error::NativeWork { cause, custody: None })?,
             work.cancellation().clone()).await?;
-        Arc::get_mut(plan._input_allocations.as_mut().unwrap()).unwrap().absorb(&mut commit.1)
+        plan._input_allocations.as_mut().unwrap().absorb(&mut commit.1)
             .map_err(|cause| Error::NativeWork { cause, custody: None })?;
         Ok(plan)
     }
@@ -503,7 +503,8 @@ async fn changed_native_plan_never_prepares_or_admits_a_child() {
     let plan = fixture.plan(&crate::pi_fork::tests::work()).await;
     assert!(plan.request.child.resource_proofs.is_empty());
     for field in 0..4 {
-        let mut changed = plan.clone();
+        let mut changed = fixture.coordinator(&crate::pi_fork::tests::work()).unwrap()
+            .load_original_plan(plan.original).await.unwrap().unwrap();
         match field {
             0 => changed.commit.launch.source.entries_json = "[{\"id\":\"foreign\"}]".into(),
             1 => changed.commit.launch.session_bytes.push_str("{}\n"),

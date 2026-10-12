@@ -318,7 +318,7 @@ fn operator_decode_charge(charge: JsonCodecCharge, work: &NativeMaterializationW
 
 /// The only path loading operator credentials: a trusted host CLI action, not a hook supplied by an agent.
 pub(crate) async fn run_cli(data: &Path, cwd: PathBuf, args: &[String])
-    -> std::result::Result<(serde_json::Value, NativeAllocation), crate::service_process::ControlRequestError> {
+    -> std::result::Result<serde_json::Value, crate::service_process::ControlRequestError> {
     use crate::service_process::ControlRequestError;
     let cancellation = acyclic_fs::CancellationToken::new();
     let work = NativeMaterializationWork::new(pi_root_provider::allocation_budget(), &cancellation)
@@ -332,13 +332,10 @@ pub(crate) async fn run_cli(data: &Path, cwd: PathBuf, args: &[String])
         session: cli.session.clone(), operation: cli.operation.clone(), project_files: false, file_evidence: None },
         &work).map_err(ControlRequestError::NativeWork)?;
     let envelope = crate::ControlEnvelope::new(inspect);
-    let reply_custody;
-    let result;
-    (result, reply_custody) = crate::service_process::send_control_envelope_with_native_work(
-        data, &envelope, &work).await?;
+    let result = crate::service_process::send_control_envelope(data, &envelope).await?;
     drop(envelope);
     drop(inspect_custody);
-    if cli.approval.is_none() && !cli.project_files { return Ok((result, reply_custody)); }
+    if cli.approval.is_none() && !cli.project_files { return Ok(result); }
     let descriptor = result.get("prepared").ok_or_else(||
         ControlRequestError::Response("original operation has no prepared approval".into()))?;
     let bytes_custody;
@@ -376,9 +373,8 @@ pub(crate) async fn run_cli(data: &Path, cwd: PathBuf, args: &[String])
         .map_err(ControlRequestError::NativeWork)?;
     drop(prepared_custody);
     drop(result);
-    drop(reply_custody);
     let envelope = crate::ControlEnvelope::new(request);
-    let response = crate::service_process::send_control_envelope_with_native_work(data, &envelope, &work).await;
+    let response = crate::service_process::send_control_envelope(data, &envelope).await;
     drop(envelope);
     drop(request_custody);
     response

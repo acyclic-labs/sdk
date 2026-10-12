@@ -854,19 +854,18 @@ pub(crate) struct PiPreparedScratch<A, O> {
 }
 
 pub(crate) struct PiNativeRootSeed {
-    pub(crate) allocation: Option<NativePreparationRoot>,
+    allocation: Option<NativePreparationRoot>,
     packet: acyclic_fs::materializer::NativeOwnedRootAllocation,
     view_root: PathBuf,
     operation_root: PathBuf,
     task: acyclic_harness::TaskId,
     scratch: VolumeRef,
-    service_root: PathBuf,
-    service_identity: Option<acyclic_fs::NativeRootIdentity>,
     _metadata_custody: acyclic_fs::NativeAllocation,
 }
 
 impl PiNativeRootSeed {
-    fn witnessed_allocation(&self) -> Result<&NativePreparationRoot> {
+    /// Requires the original creator's completed allocation.
+    pub(crate) fn witnessed_allocation(&self) -> Result<&NativePreparationRoot> {
         self.allocation.as_ref().ok_or(Error::NativeBoundary {
             code: acyclic_harness::wire::ErrorCode::Indeterminate,
             reason: "Pi native root has no completed original creator witness",
@@ -919,7 +918,9 @@ impl PiNativeRootSeed {
             return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict,
                 reason: "Pi scratch workspace differs from its original filesystem creator" });
         }
-        self.service_identity = Some(meter.root_identity(&self.service_root).map_err(native_error)?);
+        let service_root = self.view_root.parent().and_then(Path::parent).and_then(Path::parent)
+            .expect("validated native view has a service parent");
+        meter.root_identity(service_root).map_err(native_error)?;
         if self.allocation.is_some() { return Ok(()); }
         let mut recovered = NativeVolumeView::<A, O>::recover_allocation(owner, options, meter)?.await?;
         if let Some(allocation) = recovered.0.as_ref() {
@@ -1086,12 +1087,6 @@ impl PiNativeRootSeed {
         })?;
         owner.verify_with_native_work(false, meter).await?;
         let allocation = seed.witnessed_allocation()?;
-        if seed.service_identity.is_none() {
-            return Err(Error::NativeBoundary {
-                code: acyclic_harness::wire::ErrorCode::Indeterminate,
-                reason: "Pi mixed preparation has no original service namespace witness",
-            });
-        }
         if seed.task != owner.task_id() || allocation.root != options.root
             || bindings.len() != 2 || bindings[0].volume != &seed.scratch || bindings[0].path != "scratch"
             || !bindings[0].writable || !matches!(bindings[0].namespace, NativeVolumeNamespace::MaterializedDirectory)
@@ -1300,7 +1295,7 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
         return Err(Error::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Conflict,
             reason: "Pi seed session selection differs from its immutable native cut" });
     }
-    let service = native_service_root(&resources.data, root_session, owner.task_id(), &options.root, meter)?;
+    native_service_root(&resources.data, root_session, owner.task_id(), &options.root, meter)?;
     let operation = NativePreparationRoot::operation(owner.task_id(), meter)?;
     let task_directory = options.root.parent().ok_or(Error::NativeBoundary {
         code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi native view has no original task namespace",
@@ -1317,17 +1312,15 @@ where P: StreamProvider + 'static, A: acyclic_fs::AsyncAuthorityStore + Send + S
     let packet = acyclic_fs::materializer::NativeOwnedRootAllocation::new_with_native_work(operation,
         &resources.private_state_root, [relative(&options.root, &resources.data)?, relative(&operation_root.0, &resources.data)?,
             relative(&target.0, &resources.data)?, relative(&backup.0, &resources.data)?], meter).map_err(native_error)?;
-    let mut service_root = meter.copy_path(service).map_err(native_error)?;
     let mut scratch = acyclic_harness::filesystem::copy_native_volume_with_work(&binding.scratch.volume, meter)?;
     let mut view_root = meter.copy_path(&options.root).map_err(native_error)?;
     let mut custody = meter.retain_owned(std::mem::size_of::<PiNativeRootSeed>() as u64).map_err(native_error)?;
-    custody.absorb(&mut service_root.1).map_err(native_error)?;
     custody.absorb(&mut scratch.1).map_err(native_error)?;
     custody.absorb(&mut view_root.1).map_err(native_error)?;
     custody.absorb(&mut operation_root.1).map_err(native_error)?;
     Ok(PiNativeRootSeed { allocation: None, packet, view_root: view_root.0, operation_root: operation_root.0,
-        task: owner.task_id(), scratch: scratch.0, service_root: service_root.0,
-        service_identity: None, _metadata_custody: custody })
+        task: owner.task_id(), scratch: scratch.0,
+        _metadata_custody: custody })
 }
 
 fn result_schema() -> Result<&'static serde_json::value::RawValue> {

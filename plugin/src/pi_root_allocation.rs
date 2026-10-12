@@ -79,32 +79,20 @@ struct RootAllocationSchema<'a>(&'a PiTaskBinding);
 
 const ID_SCHEMA: &str = r#"{"type":"array","minItems":16,"maxItems":16,"items":{"type":"integer","minimum":0,"maximum":255},"not":{"const":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}}"#;
 const KEY_SCHEMA: &str = r#"{"type":"array","minItems":32,"maxItems":32,"items":{"type":"integer","minimum":0,"maximum":255}}"#;
-const EPOCH_SCHEMA: &str = r#"{"type":"integer","minimum":0,"maximum":18446744073709551615}"#;
+const ROOT_SCHEMA: &str = r#"{
+    "type":"object","additionalProperties":false,
+    "required":["repository_workspace_id","source_identity","source_epoch","native_root_identity"],
+    "properties":{
+        "repository_workspace_id":{"type":"array","minItems":16,"maxItems":16,"items":{"type":"integer","minimum":0,"maximum":255},"not":{"const":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}},
+        "source_identity":{"type":"array","minItems":16,"maxItems":16,"items":{"type":"integer","minimum":0,"maximum":255},"not":{"const":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}},
+        "source_epoch":{"type":"integer","minimum":0,"maximum":18446744073709551615},
+        "native_root_identity":{"type":"array","minItems":16,"maxItems":16,"items":{"type":"integer","minimum":0,"maximum":255},"not":{"const":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]}}
+    }
+}"#;
 
 fn raw_schema(source: &'static str) -> &'static RawValue {
     serde_json::from_str(source).expect("static Pi allocation schema")
 }
-
-#[derive(Serialize)]
-struct RootProperties {
-    repository_workspace_id: &'static RawValue,
-    source_identity: &'static RawValue,
-    source_epoch: &'static RawValue,
-    native_root_identity: &'static RawValue,
-}
-
-fn root_schema() -> ObjectSchema<[&'static str; 4], RootProperties> {
-    object_schema(
-        ["repository_workspace_id", "source_identity", "source_epoch", "native_root_identity"],
-        RootProperties {
-            repository_workspace_id: raw_schema(ID_SCHEMA),
-            source_identity: raw_schema(ID_SCHEMA),
-            source_epoch: raw_schema(EPOCH_SCHEMA),
-            native_root_identity: raw_schema(ID_SCHEMA),
-        },
-    )
-}
-
 
 #[derive(Serialize)]
 struct GenerationProperties<'a> {
@@ -139,8 +127,9 @@ impl Serialize for SelectedRootSchemas<'_> {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeMap as _;
         let mut properties = serializer.serialize_map(Some(self.0.project_volumes.len()))?;
+        let root = raw_schema(ROOT_SCHEMA);
         for key in self.0.project_volumes.keys() {
-            properties.serialize_entry(key, &root_schema())?;
+            properties.serialize_entry(key, root)?;
         }
         properties.end()
     }

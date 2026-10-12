@@ -90,7 +90,7 @@ pub(crate) struct RetainedSpawnCommit {
     pub(crate) launch: PiNativeLaunchIntent,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PiForkPlan {
     pub(crate) original: OperationId,
@@ -102,7 +102,7 @@ pub(crate) struct PiForkPlan {
     pub(crate) project_creation: acyclic_fs::OperationId,
     pub(crate) history_limits: HistoryReadLimits,
     #[serde(skip)]
-    _input_allocations: Option<Arc<acyclic_fs::NativeAllocation>>,
+    _input_allocations: Option<acyclic_fs::NativeAllocation>,
 }
 
 impl PartialEq for PiForkPlan {
@@ -483,20 +483,18 @@ impl PiForkCoordinator {
         let preparation = prepared_admission.0;
         cancel.check().map_err(|_| Error::NativeWork { cause: acyclic_fs::NativeTreeMaterializationError::Cancelled, custody: None })?;
         (owner).verify_with_native_work(false, &self.work).await?;
-        let container = work.claim((std::mem::size_of::<acyclic_fs::NativeAllocation>()
-            + 2 * std::mem::size_of::<usize>()) as u64).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         drop(launch_reference.0);
         let mut plan = PiForkPlan { original, commit, preparation, request,
             source: snapshot, frozen, history_limits, project_creation,
-            _input_allocations: Some(Arc::new(container)) };
-        let allocations = Arc::get_mut(plan._input_allocations.as_mut().expect("new plan custody")).expect("unshared new plan");
-        for part in [&mut fork_input.1, &mut launch_reference.1, &mut request_custody]
+            _input_allocations: Some(request_custody) };
+        let allocations = plan._input_allocations.as_mut().expect("new plan custody");
+        for part in [&mut fork_input.1, &mut launch_reference.1]
             .into_iter().chain(source_read_custody.as_mut()) {
             allocations.absorb(part).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         }
         let mut publication = crate::pi_root_provider::stage_pi_input(&self.owner, &self.filesystem, original, "fork-plan", &plan, &self.work).await?;
         drop(publication.0);
-        Arc::get_mut(plan._input_allocations.as_mut().expect("new plan custody")).expect("unshared new plan")
+        plan._input_allocations.as_mut().expect("new plan custody")
             .absorb(&mut publication.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
         self.prepare_native_source(owner, &plan, source, &cancel).await?;
         Ok(plan)
@@ -519,15 +517,9 @@ impl PiForkCoordinator {
         if decoded.0.original != original { return Err(Error::NativeBoundary {
             code: acyclic_harness::wire::ErrorCode::Unauthorized,
             reason: "Pi original plan locator changed" }); }
-        { let work = &self.work;
-            let container = work.claim((std::mem::size_of::<acyclic_fs::NativeAllocation>()
-                + 2 * std::mem::size_of::<usize>()) as u64).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            drop(reference.0);
-            decoded.0._input_allocations = Some(Arc::new(container));
-            let allocations = Arc::get_mut(decoded.0._input_allocations.as_mut().expect("loaded plan custody")).expect("unshared loaded plan");
-            allocations.absorb(&mut reference.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-            allocations.absorb(&mut decoded.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
-         }
+        drop(reference.0);
+        decoded.1.absorb(&mut reference.1).map_err(|cause| Error::NativeWork { cause, custody: None })?;
+        decoded.0._input_allocations = Some(decoded.1);
         Ok(Some(decoded.0))
     }
 

@@ -882,7 +882,7 @@ impl PiNativeCommandHost {
             handles.project = None;
         }
         if let Some(seed) = handles.root_seed.as_ref() {
-            let _cleanup_receipt = if let Some(allocation) = seed.allocation.as_ref() {
+            let _cleanup_receipt = if let Ok(allocation) = seed.witnessed_allocation() {
                 let recorded = NativeVolumeView::<LocalAuthorityBackend, LocalObjectBackend>
                     ::inspect_preparation(&owner, allocation, meter, false)?.await?;
                 if recorded.is_some() {
