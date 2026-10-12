@@ -993,7 +993,7 @@ impl WasmTaskRuntime {
         let lease: WorkLease = from_js(lease)?;
         work_to_js(&work_value(
             self.runtime.reconcile_task(
-                lease, &self.commands(), maximum_commands, maximum_wait_millis,
+                lease, &self.commands(), maximum_commands, maximum_wait_millis, None,
             ).await,
         ))
     }
