@@ -73,7 +73,6 @@ mod event_json;
 pub(crate) use event_json::{
     audited_serde_diagnostic_bytes, event_payload_json_admission,
     json_decode_owned_bytes,
-    audited_preparation_diagnostic_bytes,
 };
 pub use event_json::{json_typed_diagnostic_owned_bytes, preparation_serde_diagnostic_label_bytes};
 mod snapshot_json;
@@ -92,13 +91,15 @@ pub use json::{
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) use json::{
     validate_json_byte_bound_native_trusted,
-    canonical_json_bytes_identity_native_trusted,
     canonical_json_value_into_prepaid_native_trusted,
 };
 
 /// Sorted-key JSON encoding for durable identities and Rust/WASM output.
 pub(crate) fn canonical_json_bytes<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
-    json::encode(value, JsonBounds::IDENTITY, None, &mut |_| Ok(()))
+    let mut value =
+        serde_json::to_value(value).map_err(|error| Error::Invalid(error.to_string()))?;
+    value.sort_all_objects();
+    serde_json::to_vec(&value).map_err(|error| Error::Invalid(error.to_string()))
 }
 
 /// Checks encoded JSON size without admitting owned-tree or serde heap storage.
@@ -1316,7 +1317,7 @@ pub enum Error {
         custody: Option<acyclic_fs::NativeAllocation>,
     },
     /// An actual SDK workspace publication failure, including its original prefix.
-    #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
+    #[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
     #[error("{source}")]
     NativeWorkspacePublication {
         /// The original publication cause and any physical cleanup ownership.
@@ -1418,8 +1419,9 @@ impl Error {
             Self::NativeStageUncertain { .. } => ErrorCode::Storage,
             #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
             Self::NativeView { .. } | Self::NativePublication { .. }
-            | Self::NativeWorkspacePublication { .. }
             | Self::NativeTimeout { .. } => ErrorCode::Storage,
+            #[cfg(all(feature = "filesystem-local", feature = "native-execution", not(target_arch = "wasm32")))]
+            Self::NativeWorkspacePublication { .. } => ErrorCode::Storage,
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
             Self::NativeWork { cause, .. } => native_work_error_code(cause),
         }

@@ -77,8 +77,7 @@ fn observation_parts_bytes(
 pub(super) fn receipt_bytes(value: &Receipt) -> Result<u64> {
     match value {
         Receipt::Launch(value) => {
-            let mut bytes = size_of::<LaunchReceipt>() as u64;
-            bytes = add(bytes, value.dispatch.provider.capacity() as u64)?;
+            let mut bytes = value.dispatch.provider.capacity() as u64;
             bytes = add(bytes, value.dispatch.effect_kind.capacity() as u64)?;
             bytes = add(bytes, value.dispatch.request.logical_owned_bytes()?)?;
             bytes = add(bytes, plan_bytes(&value.plan)?)?;
@@ -86,7 +85,7 @@ pub(super) fn receipt_bytes(value: &Receipt) -> Result<u64> {
             bytes = add(bytes, value.fence.reservation_id.capacity() as u64)?;
             add(bytes, value.fence.placement.capacity() as u64)
         }
-        Receipt::Observed(value) => add(size_of::<NativeObservation>() as u64, observation_parts_bytes(&value.effect, value.diagnostic.as_ref(), value.publication_failure.as_ref(), value.invocation_failure.as_ref(), &value.published)?),
+        Receipt::Observed(value) => observation_parts_bytes(&value.effect, value.diagnostic.as_ref(), value.publication_failure.as_ref(), value.invocation_failure.as_ref(), &value.published),
     }
 }
 
@@ -115,13 +114,12 @@ fn decode(bytes: &[u8], io: &super::super::PreparationIo,
     Ok(receipt)
 }
 
-
 pub(super) async fn read<P: StreamProvider>(
     owner: &TaskJournalOwner<P>, path: &StreamPath, work: &NativeMaterializationWork,
 ) -> Result<Option<(LaunchReceipt<'static>, Option<NativeObservation>, NativeAllocation)>> {
     let mut custody = work.claim(0, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
     let client = owner.stream();
-    check(work)?;
+    work.remaining()?;
     let io = super::super::PreparationIo::from_native_work(work)?;
     let mut history_io = &io;
     let mut observer = Some(&mut history_io as &mut dyn crate::store::history::HistoryIo);
@@ -130,20 +128,20 @@ pub(super) async fn read<P: StreamProvider>(
         Err(error) if matches!(crate::distributed::sdk_source(&error), StreamError::NotFound) => return Ok(None),
         Err(error) => return Err(crate::distributed::sdk_error(error, &observer)),
     };
-    check(work)?;
+    work.remaining()?;
     if !(1..=2).contains(&bounds.tail) { return Err(boundary(crate::wire::ErrorCode::Storage, "invalid native receipt length")); }
     let stream = crate::store::operations::stream(&client, path.as_str(), &mut observer)?;
     let mut records = crate::store::operations::read_records_with_work(
         &client, &stream.0, 0, bounds.tail as u32, &mut observer,
     ).await?.map_err(|error| crate::distributed::sdk_error(error, &observer))?;
-    check(work)?;
+    work.remaining()?;
     let first = records.next(&mut observer).await?.ok_or(boundary(crate::wire::ErrorCode::Storage, "missing native launch receipt"))?;
     if first.sequence != 0 { return Err(boundary(crate::wire::ErrorCode::Storage, "native receipt starts after launch")); }
     let Receipt::Launch(launch) = decode(&first.value, &io, &mut custody)? else {
         return Err(boundary(crate::wire::ErrorCode::Storage, "native launch receipt required"));
     };
     drop(first);
-    check(work)?;
+    work.remaining()?;
     let observed = match records.next(&mut observer).await? {
         Some(record) => {
             let Receipt::Observed(observed) = decode(&record.value, &io, &mut custody)? else {
@@ -160,16 +158,16 @@ pub(super) async fn read<P: StreamProvider>(
                 return Err(boundary(crate::wire::ErrorCode::Storage, "native observation identity is invalid"));
             }
             drop(record);
-            Some(*observed)
+            Some(observed)
         }
         None => None,
     };
-    check(work)?;
+    work.remaining()?;
     if bounds.tail != 1 + u64::from(observed.is_some()) || records.next(&mut observer).await?.is_some() {
         return Err(boundary(crate::wire::ErrorCode::Storage, "native receipt sequence is invalid"));
     }
-    check(work)?;
-    Ok(Some((*launch, observed, custody)))
+    work.remaining()?;
+    Ok(Some((launch, observed, custody)))
 }
 
 /// Authenticates one protected launch against the original qualified effect reader.
@@ -196,7 +194,8 @@ pub(super) async fn authenticate_core_launch<P: StreamProvider>(
     drop(state);
     drop(cursor);
     drop(io);
-    check(work)
+    work.remaining()?;
+    Ok(())
 }
 
 impl<P: StreamProvider> NativeProcessProvider<P> {
@@ -249,7 +248,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
             let (after, after_custody) = provider.owner.outcome_with_native_work(work).await?;
             if after.is_none() { provider.owner.verify(true, &mut Some(&mut crate::store::history::native_work_io(work)?)).await?; }
             drop(after); drop(after_custody);
-            check(work)?;
+            work.remaining()?;
             drop(outcome); drop(outcome_custody);
             Ok(provider)
         })?.await
@@ -293,7 +292,7 @@ impl<P: StreamProvider> NativeProcessProvider<P> {
                 drop(after); drop(after_custody);
 
     }
-            check(work)?;
+            work.remaining()?;
             let LaunchReceipt { dispatch, plan, conversation, task, command, fence,
                 approval: _, approval_digest: _ } = launch;
             drop(plan);

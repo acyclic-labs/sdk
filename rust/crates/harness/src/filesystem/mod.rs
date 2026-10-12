@@ -71,6 +71,10 @@ mod memory;
 pub use memory::MemoryHarnessStorage;
 mod text_tools;
 pub use text_tools::ExactTextReplacement;
+#[cfg(not(target_arch = "wasm32"))]
+mod root_binding;
+#[cfg(not(target_arch = "wasm32"))]
+pub use root_binding::{bind_original_root_conversation_with_native_work, native_root_output_binding_operation};
 mod root_source;
 pub use root_source::{FsRootNativeSource, FsRootProjectSourceProvider};
 #[cfg(all(feature = "native-execution", not(target_arch = "wasm32")))]
@@ -127,7 +131,6 @@ pub use native_execution::{
     NativeViewPublicationError, NativeViewPublicationReceipt,
     NativeTaskViewDrainReceipt,
     copy_native_mapping_with_work,
-    bind_original_root_conversation_with_native_work, native_root_output_binding_operation,
 };
 pub use task_commands::{
     EFFECT_TASK_COMMAND_KIND, FilesystemTaskCommands, MAIL_RECEIVE_TASK_COMMAND_KIND,
@@ -994,22 +997,22 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(work) = io.original_native_work() {
             let _changes_custody;
-            let (changes, custody) = initial.diff_to_with_native_work(head, u32::MAX, work, work.cancellation())
-                .await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+            let (changes, custody) = initial.diff_to(head, u32::MAX, work, work.cancellation())
+                .await.map(|(value, allocation)| (value, allocation.expect("native result allocation"))).map_err(|source| Error::NativeWorkspace { source, custody: None })?;
             _changes_custody = custody;
-            let (paths, custody) = changes.changed_paths_with_native_work(u32::MAX, work, work.cancellation())
-                .await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+            let (paths, custody) = changes.changed_paths(u32::MAX, work, work.cancellation())
+                .await.map(|(value, allocation)| (value, allocation.expect("native result allocation"))).map_err(|source| Error::NativeWorkspace { source, custody: None })?;
             drop(changes);
             drop(_changes_custody);
             io.absorb_native_custody(custody)?;
             return Ok(paths);
         }
         let budget = io.remaining()?;
-        let changes = match initial.diff_to(head, u32::MAX, budget, io.cancellation()).await {
+        let changes = match initial.diff_to(head, u32::MAX, budget, io.cancellation()).await.map(|receipt| receipt.value.0) {
             Ok(changes) => changes,
             Err(failure) => { io.spent(*failure.work)?; return Err(map_error(failure.error)); }
         };
-        io.receive(changes.changed_paths(u32::MAX, budget, io.cancellation()).await)
+        io.receive(changes.changed_paths(u32::MAX, budget, io.cancellation()).await).map(|(paths, _)| paths)
     }
 
     async fn verify_with_io(&self, seed: &ForkSeed, io: &PreparationIo) -> Result<()> {
@@ -1211,11 +1214,11 @@ impl<A: AsyncAuthorityStore + 'static, O: AsyncObjectStore + 'static> Filesystem
                                 return Err(interaction_host::interaction_boundary(Some(io), crate::wire::ErrorCode::Invalid, "inherited file is not pinned to the selected private generation"));
                             }
                             let selected = crate::executor::with_history_io(Some(&io), |work| FileRef::new(
-                                file.volume().copy(work)?, fork_preparer_io::clone_text(file.path(), Some(&io))?,
+                                file.volume().copy(work)?, fork_preparer_io::clone_text(file.path().into(), Some(&io))?,
                                 fork_preparer_io::clone_text(&version, Some(&io))?,
                                 FileDescriptor::new(*file.descriptor().sha256(), file.descriptor().byte_length(),
                                     fork_preparer_io::clone_text(file.descriptor().media_type(), Some(&io))?)?,
-                                fork_preparer_io::clone_text(file.display_name(), Some(&io))?, work))?;
+                                fork_preparer_io::clone_text(file.display_name().into(), Some(&io))?, work))?;
                             let original = self.host.read_pinned_io(file, self.maximum_inherited_bytes, Some(&io)).await?;
                             let final_bytes = self.host.read_pinned_io(&selected, self.maximum_inherited_bytes, Some(&io)).await?;
                             if original != final_bytes {
@@ -3681,10 +3684,10 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         scratch.absorb_native_custody(requested_custody)?;
         let page_custody;
         let mut page;
-        (page, page_custody) = generation.list_after_with_native_work(
-            &requested, after, maximum_entries as usize + usize::from(path.is_empty()),
+        (page, page_custody) = generation.list_directory(
+            &requested, after, maximum_entries.checked_add(u32::from(path.is_empty())).ok_or_else(|| Error::NativeWorkspace { source: acyclic_fs::WorkspaceError::Work(acyclic_fs::WorkError::Overflow), custody: None })?,
             work, work.cancellation(),
-        ).await.map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
+        ).await.map(|(page, allocation)| (page, allocation.expect("native directory allocation"))).map_err(|source| Error::NativeWorkspace { source, custody: None })?;
         output.absorb_native_custody(page_custody)?;
         guard().await?;
         if path.is_empty() {
@@ -4007,9 +4010,9 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> FilesystemHost<A, O> {
         match generation {
             Some(reference) => self
                 .generation(&workspace, reference)
-                .await?.list_directory(path, after, maximum_entries, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+                .await?.list_directory(path, after, maximum_entries, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)
                 .map_err(map_error),
-            None => workspace.list_directory(path, after, maximum_entries, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+            None => workspace.list_directory(path, after, maximum_entries, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)
                 .map_err(map_error),
         }
     }
@@ -4377,7 +4380,7 @@ mod tests {
         assert_eq!(
             host.read(&reference, Some(&updated), "/hello.txt", 16)
                 .await?,
-            Bytes::from_static(b"hello")
+            acyclic_stream::OwnedBytes::from_static(b"hello")
         );
         assert!(matches!(
             host.apply(
@@ -4404,10 +4407,10 @@ mod tests {
         let owner = AgentId::from_bytes([3; 16]);
         let volume = VolumeRef::new(
             provider,
-            "agent-private-a",
+            "agent-private-a".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(owner),
-        )?;
+         &mut None)?;
         host.create_volume(&volume).await?;
         let issuer = AuthorityIssuer::new(
             "test",
@@ -4489,11 +4492,11 @@ mod tests {
         assert_ne!(first.version(), second.version());
         assert_eq!(
             host.read_content(&first, &read, 16).await?,
-            Bytes::from_static(b"one")
+            acyclic_stream::OwnedBytes::from_static(b"one")
         );
         assert_eq!(
             host.read_content(&second, &read, 16).await?,
-            Bytes::from_static(b"two")
+            acyclic_stream::OwnedBytes::from_static(b"two")
         );
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -4513,8 +4516,8 @@ mod tests {
             let bytes = host.read_pinned_io(&second, 16, Some(&io)).await?;
             assert_eq!(bytes.as_ref(), b"two");
             drop(bytes);
-            let tampered = FileRef::new(first.volume().clone(), first.path(), first.version(),
-                second.descriptor().clone(), first.display_name())?;
+            let tampered = FileRef::new(first.volume().clone(), first.path().into(), first.version().into(),
+                second.descriptor().clone(), first.display_name().into(), &mut None)?;
             assert!(host.read_pinned_io(&tampered, 16, Some(&io)).await.is_err());
             let denied_scope = issuer.issue("no-files", &Capabilities::default(), Some(owner), None, &mut None).expect("scope proof");
             let denied = FilesystemForkVerifier::new_with_native_work(
@@ -4548,8 +4551,8 @@ mod tests {
                 "messages",
                 Some(&listed_generation),
                 None,
-                10,
-            )
+                10, None,
+            )?
             .await?;
         assert_eq!(portable_page.generation, listed_generation);
         assert_eq!(
@@ -4559,16 +4562,16 @@ mod tests {
                 kind: PrivateDirectoryEntryKind::File,
             }]
         );
-        let (portable_ref, portable_bytes) = erased
+        let (portable_ref, portable_bytes, _portable_hold) = erased
             .read_private_path(
                 &volume,
                 "messages",
                 "messages/first.txt",
-                Some(&listed_generation),
-            )
+                Some(&listed_generation), 16, None,
+            )?
             .await?;
         assert_eq!(portable_ref, second);
-        assert_eq!(portable_bytes, b"two");
+        assert_eq!(portable_bytes.as_ref(), b"two");
         let (pinned, delegated_bytes) = delegated_reader
             .read_private_path(
                 &volume,
@@ -4578,7 +4581,7 @@ mod tests {
             )
             .await?;
         assert_eq!(pinned, second);
-        assert_eq!(delegated_bytes, b"two");
+        assert_eq!(delegated_bytes.as_ref(), b"two");
         host.put_content(
             &volume,
             &write,
@@ -4615,7 +4618,7 @@ mod tests {
             )
             .await?;
         assert_eq!(old_ref, second);
-        assert_eq!(old_bytes, b"two");
+        assert_eq!(old_bytes.as_ref(), b"two");
         assert!(
             delegated_reader
                 .list_private_directory(&volume, "messages", "elsewhere", None, None, 10)
@@ -4625,7 +4628,7 @@ mod tests {
         let delegated =
             ContentGrant::verify_directory_read(&verifier, &delegated_scope, &volume, "messages", &mut None)?;
         let (discovered, bytes) = host
-            .read_private_path(&volume, &delegated, "messages/first.txt", None, 16)
+            .read_private_path(&volume, &delegated, "messages/first.txt", None, 16, None)
             .await?;
         assert_eq!(bytes.as_ref(), b"two");
         assert_ne!(discovered.version(), second.version());
@@ -4671,11 +4674,11 @@ mod tests {
         assert!(host.read_content(&empty, &read, 16).await?.is_empty());
         let wrong_digest = FileRef::new(
             volume.clone(),
-            first.path(),
-            first.version(),
-            FileDescriptor::new([0; 32], 3, "text/plain")?,
-            first.display_name(),
-        )?;
+            first.path().into(),
+            first.version().into(),
+            FileDescriptor::new([0; 32], 3, "text/plain".into())?,
+            first.display_name().into(),
+         &mut None)?;
         assert!(host.read_content(&wrong_digest, &read, 16).await.is_err());
         assert!(
             host.put_content(
@@ -4694,10 +4697,10 @@ mod tests {
         assert!(host.read_content(&first, &write, 16).await.is_err());
         let other = VolumeRef::new(
             volume.provider().clone(),
-            "agent-private-b",
+            "agent-private-b".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(AgentId::from_bytes([5; 16])),
-        )?;
+         &mut None)?;
         assert!(ContentGrant::verify(&verifier, &scope, &other, VolumeOperation::Read, u64::MAX, &mut None).is_err());
         Ok(())
     }
@@ -4717,10 +4720,10 @@ mod tests {
         let agent = AgentId::from_bytes([7; 16]);
         let volume = VolumeRef::new(
             provider,
-            "scratch",
+            "scratch".into(),
             VolumeClass::AgentPrivate,
             VolumeOwner::Agent(agent),
-        )?;
+         &mut None)?;
         host.create_volume(&volume).await?;
         let authority = Authority {
             kind: AggregateKind::Conversation,
@@ -4791,11 +4794,11 @@ mod tests {
         let mut missing = message.clone();
         missing.content = FileRef::new(
             volume,
-            "messages/missing.txt",
-            file.version(),
+            "messages/missing.txt".into(),
+            file.version().into(),
             file.descriptor().clone(),
-            "missing.txt",
-        )?;
+            "missing.txt".into(),
+         &mut None)?;
         let command = |id: u8, value: ConversationMessage| -> Result<Command> {
             Ok(Command {
                 operation_id: OperationId::from_bytes([id; 16]),
@@ -4811,17 +4814,16 @@ mod tests {
         assert!(aggregate.execute(command(3, missing)?, #[cfg(feature = "filesystem")] None, &mut None).await.is_err());
         assert_eq!(aggregate.reducer().revision(), 1);
         let mut missing_attachment = message.clone();
-        missing_attachment.attachments = vec![Attachment {
+        missing_attachment.attachments = crate::conversation::ReferencedAttachments::Inline { items: vec![Attachment {
             file: FileRef::new(
                 file.volume().clone(),
-                "attachments/missing.bin",
-                file.version(),
+                "attachments/missing.bin".into(),
+                file.version().into(),
                 file.descriptor().clone(),
-                "missing.bin",
-            )?,
+                "missing.bin".into(),
+             &mut None)?,
             label: None,
-        }]
-        .into();
+        }] };
         assert!(
             aggregate
                 .execute(command(5, missing_attachment)?, #[cfg(feature = "filesystem")] None, &mut None)

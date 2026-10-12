@@ -3017,12 +3017,13 @@ mod tests {
             metadata: BTreeMap::new(),
             current_input_index: None,
         };
+        let context_bytes = crate::contract::canonical_json_bytes(&context)?;
         let payloads = Arc::new(TestPayloadStore::new()?);
         let (payload, _payload_hold) = payloads
             .stage(
                 crate::OperationId::new(),
                 "context/projections/pinned.json",
-                &crate::contract::canonical_json_bytes(&context)?,
+                &context_bytes,
                 "application/json",
                 "context.json",
                 None,

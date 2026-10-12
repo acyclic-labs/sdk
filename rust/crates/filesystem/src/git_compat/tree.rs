@@ -148,7 +148,7 @@ pub async fn walk_git_tree<A: AsyncAuthorityStore, O: AsyncObjectStore>(
             let page = generation
                 .list_directory(&directory, after.as_ref(), 1_024, WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .await
-                .map(|receipt| receipt.value)
+                .map(|receipt| receipt.value.0)
                 .map_err(|failure| failure.error)?;
             for entry in &page.entries {
                 let name = entry

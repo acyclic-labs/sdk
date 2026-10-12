@@ -1,5 +1,6 @@
 //! First-party original-root allocation through the stock task effect lifecycle.
 
+use acyclic_fs::demand::{DemandSource, SourceReference};
 use super::{
     LocalGeneration, LocalLazyWorkspace, PiScratchCreation, RootCreation,
     ServiceResources, SharedPhysicalRoot, SharedRootAdmission,
@@ -10,15 +11,15 @@ use super::{
         ROOT_ALLOCATION_PROVIDER, ROOT_INPUT_DIRECTORY},
 };
 use acyclic_fs::{
-    CancellationToken, DemandSource, LazyWorkspaceStore, Lifecycle, LocalAuthorityBackend,
+    CancellationToken, LazyWorkspaceStore, Lifecycle, LocalAuthorityBackend,
     LocalObjectBackend, NativeAllocation, NativeMaterializationWork,
-    NativeTreeMaterializationError, SourceReference, VolumeConfig, WorkBudget, WorkCounters, WorkError,
+    NativeTreeMaterializationError, VolumeConfig, WorkBudget, WorkCounters, WorkError,
 };
 use acyclic_harness::{
     EffectAttemptId, EffectId, Error, IdempotencyKey, JsonBounds, JsonCodecCharge, OperationId, Result, TaskId,
-    canonical_json_bytes_bounded_native_trusted,
-    json_bytes_bounded_native_trusted,
-    json_value_bounded_native_trusted, json_from_slice_bounded_native_trusted,
+    canonical_json_bytes_bounded,
+    json_bytes_bounded,
+    json_value_bounded, json_from_slice_bounded,
     conversation::{ContentGrant, FileRef, VolumeOperation, VolumeRef},
     core::{EffectGuarantee, EffectState, EffectStatus},
     durable_host::TaskJournalOwner,
@@ -318,14 +319,22 @@ pub(crate) fn root_provider<P: StreamProvider + 'static>(
             reason: "original root allocation provider grant is absent" });
     }
     for volume in request.binding.project_volumes.values().chain(std::iter::once(&request.binding.scratch.volume)) {
-        let grant = volume.capability_with_native_work(VolumeOperation::Read, &original)?;
+        let grant = {
+            let mut io = acyclic_harness::store::history::native_work_io(&original).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = volume.capability(VolumeOperation::Read, &mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         if volume.provider() != owner.policy().journal.provider()
             || !authority.0.scope.grants().contains(&grant.0) {
             return Err(Error::NativeBoundary { code: ErrorCode::Unauthorized,
                 reason: "original root volume provider or read grant differs" });
         }
     }
-    let grant = request.binding.scratch.volume.capability_with_native_work(VolumeOperation::Write, &original)?;
+    let grant = {
+        let mut io = acyclic_harness::store::history::native_work_io(&original).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = request.binding.scratch.volume.capability(VolumeOperation::Write, &mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     if !authority.0.scope.grants().contains(&grant.0) {
         return Err(Error::NativeBoundary { code: ErrorCode::Unauthorized,
             reason: "original root scratch write grant is absent" });
@@ -364,10 +373,10 @@ pub(crate) async fn observe_root_allocation<P: StreamProvider + 'static>(
 /// Root output is its genuinely created private scratch, never the protected bootstrap journal.
 #[allow(clippy::too_many_arguments, reason = "actual caller, original protected creator and bounded producers")]
 pub(crate) async fn bind_root_output_context_with_native_work<P: StreamProvider + 'static>(
-    context: Arc<acyclic_harness::NativeTaskContext>, current_owner: &Arc<TaskJournalOwner<P>>,
+    context: Arc<acyclic_harness::runtime::NativeTaskContext>, current_owner: &Arc<TaskJournalOwner<P>>,
     owner: Arc<PiOwnerConfig>, resources: &ServiceResources, filesystem: Arc<Host>,
     stream: std::sync::Arc<P>, binding: &super::PiTaskBinding, root: &PiRootIntent, work: &NativeMaterializationWork,
-) -> Result<Arc<acyclic_harness::NativeTaskContext>> {
+) -> Result<Arc<acyclic_harness::runtime::NativeTaskContext>> {
     work.admit(WorkCounters::UNCHARGED).map_err(|cause| Error::NativeWork { cause, custody: None })?;
     let invalid = || Error::NativeBoundary { code: ErrorCode::Unauthorized,
         reason: "root output context differs from its original admitted task scope" };
@@ -405,7 +414,11 @@ pub(crate) async fn bind_root_output_context_with_native_work<P: StreamProvider 
     }
     let authority = observer.owner.conversation_authority_with_native_work(
         binding.task_id, binding.agent_id, &observer.owner.policy().grants, work)?;
-    let verifier = authority.0.1.verifier_with_native_work(work)?;
+    let verifier = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = authority.0.1.verifier(&mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     let source = filesystem.root_output_source(current_owner,
         &binding.scratch.volume, operation, &generation, &verifier.0, &authority.0.2, work).await?;
     context.bind_root_output_context_with_native_work(source, work).await?;
@@ -417,7 +430,7 @@ pub(crate) async fn bind_root_output_context_with_native_work<P: StreamProvider 
 pub(crate) async fn prove_root_project_source_with_native_work<P: StreamProvider + 'static>(
     owner: Arc<PiOwnerConfig>, resources: &ServiceResources, filesystem: Arc<Host>, stream: std::sync::Arc<P>,
     binding: &super::PiTaskBinding, intent: &PiRootIntent, project: &VolumeRef, snapshot: acyclic_fs::LazySnapshotRef,
-    context: Arc<acyclic_harness::NativeTaskContext>, current_owner: &TaskJournalOwner<P>,
+    context: Arc<acyclic_harness::runtime::NativeTaskContext>, current_owner: &TaskJournalOwner<P>,
     work: &NativeMaterializationWork,
 ) -> Result<()> {
     current_owner.require_volume_grant_with_native_work(project, VolumeOperation::Read, work)?;
@@ -670,7 +683,7 @@ async fn read_root_artifact_with_native_work<T: DeserializeOwned + Serialize>(
 
 pub(crate) async fn load_original_preparation_with_native_work(
     owner: &PiOwnerConfig, filesystem: &Host, expected_binding: &super::PiTaskBinding, expected_root: &PiRootIntent,
-    context: Arc<acyclic_harness::NativeTaskContext>, work: &NativeMaterializationWork,
+    context: Arc<acyclic_harness::runtime::NativeTaskContext>, work: &NativeMaterializationWork,
 ) -> Result<PiRootPreparation> {
     let missing = || Error::NativeBoundary { code: ErrorCode::Unauthorized,
         reason: "original root preparation upload operation is absent" };
@@ -749,7 +762,7 @@ pub(crate) fn guarded_pi_bytes<T: Serialize>(
     value: &T, maximum_bytes: u64, work: &NativeMaterializationWork,
 ) -> Result<(Vec<u8>, NativeAllocation)> {
     encode_pi(Some(maximum_bytes), None, work, |bounds, charge| {
-        json_bytes_bounded_native_trusted(value, bounds, ErrorCode::Invalid, &mut |event| charge(event))
+        json_bytes_bounded(value, bounds, Some(ErrorCode::Invalid), &mut |event| charge(event))
     })
 }
 
@@ -876,7 +889,7 @@ pub(crate) fn canonical_pi_value<T: Serialize + ?Sized>(
     value: &T, maximum_bytes: u64, work: &NativeMaterializationWork,
 ) -> Result<(Vec<u8>, NativeAllocation)> {
     encode_pi(Some(maximum_bytes), None, work, |bounds, charge| {
-        canonical_json_bytes_bounded_native_trusted(value, bounds, ErrorCode::Invalid, &mut |event| charge(event))
+        canonical_json_bytes_bounded(value, bounds, Some(ErrorCode::Invalid), &mut |event| charge(event))
     })
 }
 
@@ -907,7 +920,7 @@ pub(crate) fn guarded_pi_decode<T: DeserializeOwned>(
         maximum_items: remaining.items_examined,
         maximum_depth: 64,
     };
-    let result = json_from_slice_bounded_native_trusted(bytes, bounds, maximum_owned_bytes, code, value_schema, &mut |charge| {
+    let result = json_from_slice_bounded(std::marker::PhantomData::<T>, bytes, bounds, maximum_owned_bytes, Some(code), Some(value_schema), &mut |charge| {
         if let JsonCodecCharge::Release { bytes } = charge {
             return custody.release(bytes).map_err(native_error);
         }
@@ -954,7 +967,7 @@ pub(crate) fn guarded_pi_value<T: Serialize>(
     value: &T, maximum_owned_bytes: u64, work: &NativeMaterializationWork,
 ) -> Result<(serde_json::Value, NativeAllocation)> {
     encode_pi(None, Some(maximum_owned_bytes), work, |bounds, charge| {
-        json_value_bounded_native_trusted(value, bounds, ErrorCode::Invalid, &mut |event| charge(event))
+        json_value_bounded(value, bounds, Some(ErrorCode::Invalid), &mut |event| charge(event))
     })
 }
 
@@ -1137,7 +1150,11 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
                         .map_err(|(source, custody)| Error::NativeSource { source, custody })?,
                     None => {
                         let operation = self.creation_operation_with_native_work(effect, attempt, key, work)?;
-                        let name = volume.storage_name_with_native_work(work)?;
+                        let name = {
+                            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+                            let value = volume.storage_name(&mut Some(&mut io))?;
+                            (value, io.into_custody())
+                        };
                         acyclic_fs::LazyWorkspace::attach_with_operation_with_native_work(&self.resources.fs, &name.0, Arc::clone(&physical.source), self.resources.store.clone(), VolumeConfig::native(Lifecycle::Durable), operation, work, work.cancellation()).await
                             .map_err(|(source, custody)| Error::NativeSource { source, custody })?.0
                     }
@@ -1161,7 +1178,11 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
             owner.verify_with_native_work(false, work).await?;
             self.require_native_creation()?;
             let operation = self.creation_operation_with_native_work(effect, attempt, "scratch", work)?;
-            let name = volume.storage_name_with_native_work(work)?;
+            let name = {
+                let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+                let value = volume.storage_name(&mut Some(&mut io))?;
+                (value, io.into_custody())
+            };
             self.resources.fs.create_workspace_with_operation_with_native_work(
                 &name.0, VolumeConfig::portable(Lifecycle::Durable), operation, work, work.cancellation()).await
                 .map_err(|(source, custody)| Error::NativeWorkspace { source, custody })?;
@@ -1265,7 +1286,11 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
         resource: &str, volume: &VolumeRef, config: VolumeConfig,
         work: &NativeMaterializationWork) -> Result<Option<LocalGeneration>> {
         let operation = self.creation_operation_with_native_work(effect, attempt, resource, work)?;
-        let name = volume.storage_name_with_native_work(work)?;
+        let name = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = volume.storage_name(&mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         self.resources.fs.workspace_for_creation_operation_with_native_work(&name.0,
             config, operation, work, work.cancellation()).await
             .map_err(|(source, custody)| Error::NativeWorkspace { source, custody })
@@ -1465,8 +1490,9 @@ impl<P: StreamProvider + 'static> PiRootProvider<P> {
     }
 
     fn effect_id_with_native_work(&self, work: &NativeMaterializationWork) -> Result<EffectId> {
-        acyclic_harness::effect_host::task_effect_id_with_native_work(
-            self.owner.policy().root_task, self.preparation.command.operation_id, work)
+        acyclic_harness::effect_host::task_effect_id(
+            self.owner.policy().root_task, self.preparation.command.operation_id, &mut Some(&mut acyclic_harness::store::history::native_work_io(work)
+                .map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?))
     }
 
     fn maximum(&self) -> u64 { self.owner.policy().maximum_payload_bytes.min(super::MAXIMUM_ADAPTER_STATE_BYTES) }

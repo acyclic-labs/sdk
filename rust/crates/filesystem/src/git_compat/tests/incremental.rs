@@ -128,11 +128,12 @@ async fn newly_ignored_merge_paths_exclude_tracked_changes() {
     let changes = before
         .diff_to(&after, 16, WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
+        .map(|receipt| receipt.value.0)
         .map_err(|failure| failure.error)
         .expect("diff")
         .changed_paths(16, WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map(|receipt| receipt.value)
+        .map(|receipt| receipt.value.0)
         .map_err(|failure| failure.error)
         .expect("changed paths");
     let policy = GitIgnorePolicy::parse("*.tmp\nbuild/\n");

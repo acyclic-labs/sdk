@@ -11,26 +11,12 @@ use std::io;
 use std::ops::{Bound, Deref, RangeBounds};
 use std::sync::Arc;
 
-trait AllocationCustody: AsRef<[u8]> + Send + Sync {
-    #[cfg(not(target_arch = "wasm32"))]
-    fn metadata_meter(&self) -> &Arc<dyn NativeReadMeter>;
-}
-
-// Original data custody retires last, after the SDK-owned metadata claim.
-#[cfg(not(target_arch = "wasm32"))]
-struct GuardBundle<G> {
+// Data and SDK metadata retire before the original allocation owner.
+struct GuardBundle<G: ?Sized> {
     data: Vec<u8>,
+    #[cfg(not(target_arch = "wasm32"))]
     _metadata: ReadAllocation,
     _original_guard: G,
-}
-#[cfg(not(target_arch = "wasm32"))]
-impl<G: Send + Sync> AllocationCustody for GuardBundle<G> {
-    fn metadata_meter(&self) -> &Arc<dyn NativeReadMeter> { self._metadata.meter() }
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-impl<G> AsRef<[u8]> for GuardBundle<G> {
-    fn as_ref(&self) -> &[u8] { &self.data }
 }
 
 /// Ordinary or original-allocation-guarded immutable bytes.
@@ -40,7 +26,7 @@ pub struct OwnedBytes {
     start: usize,
     end: usize,
     retained_capacity: Option<usize>,
-    guard: Option<Arc<dyn AllocationCustody>>,
+    guard: Option<Arc<GuardBundle<dyn Send + Sync>>>,
 }
 
 impl OwnedBytes {
@@ -90,7 +76,7 @@ impl OwnedBytes {
     /// Borrows immutable bytes while retaining this carrier's original custody.
     #[must_use]
     pub fn as_slice(&self) -> &[u8] {
-        let data = self.guard.as_ref().map_or(self.bytes.as_ref(), |guard| guard.as_ref().as_ref());
+        let data = self.guard.as_ref().map_or(self.bytes.as_ref(), |guard| guard.data.as_slice());
         &data[self.start..self.end]
     }
 
@@ -126,7 +112,7 @@ impl OwnedBytes {
     pub fn matches_meter(&self, meter: &Arc<dyn NativeReadMeter>) -> bool {
         self.guard.as_ref().is_some_and(|guard| {
             let owner = meter.allocation_owner().unwrap_or_else(|| Arc::clone(meter));
-            Arc::ptr_eq(guard.metadata_meter(), &owner)
+            Arc::ptr_eq(guard._metadata.meter(), &owner)
         })
     }
 

@@ -208,7 +208,7 @@ where
             None => PiTaskOrigin::RootState(state),
             Some(parent) => PiTaskOrigin::Child(parent),
         };
-        let input = authenticate_pi_task_inner(runtime, task.binding, origin, work, pi_definition.0.identity()).await?;
+        let input = authenticate_pi_task_inner(runtime, task.binding, origin, work, pi_definition.identity()).await?;
         authenticate_original_alias(runtime, task.binding.task_id, input.0.1,
             &input.0.0, task.alias, work).await?;
     }
@@ -320,7 +320,7 @@ where
     O: acyclic_fs::AsyncObjectStore + 'static,
 {
     let definition = PiTaskMachine::new(work)?.definition(work)?;
-    let admitted = authenticate_pi_task_inner(runtime, binding, origin, work, definition.0.identity()).await?;
+    let admitted = authenticate_pi_task_inner(runtime, binding, origin, work, definition.identity()).await?;
     Ok((admitted.0.0, admitted.1))
 }
 
@@ -363,17 +363,29 @@ where
         .chain(std::iter::once(&binding.scratch.volume))
         .chain(binding.results.as_ref().map(|result| &result.volume))
     {
-        let read = volume.capability_with_native_work(acyclic_harness::conversation::VolumeOperation::Read, work)?;
+        let read = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = volume.capability(acyclic_harness::conversation::VolumeOperation::Read, &mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         if !admission.0.grants.contains(&read.0) {
             return Err(invalid("Pi selection lacks its original read grant"));
         }
     }
-    let scratch_write = binding.scratch.volume.capability_with_native_work(acyclic_harness::conversation::VolumeOperation::Write, work)?;
+    let scratch_write = {
+        let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+        let value = binding.scratch.volume.capability(acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut io))?;
+        (value, io.into_custody())
+    };
     if !admission.0.grants.contains(&scratch_write.0) {
         return Err(invalid("Pi scratch lacks its original write grant"));
     }
     if let Some(result) = &binding.results {
-        let write = result.volume.capability_with_native_work(acyclic_harness::conversation::VolumeOperation::Write, work)?;
+        let write = {
+            let mut io = acyclic_harness::store::history::native_work_io(work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+            let value = result.volume.capability(acyclic_harness::conversation::VolumeOperation::Write, &mut Some(&mut io))?;
+            (value, io.into_custody())
+        };
         if !admission.0.grants.contains(&write.0) {
             return Err(invalid("Pi result storage lacks its original created write grant"));
         }
@@ -415,8 +427,8 @@ fn decode_recovery_value<T: serde::de::DeserializeOwned>(
         maximum_bytes: super::MAXIMUM_ADAPTER_STATE_BYTES,
         maximum_items: remaining.items_examined, maximum_depth: 64,
     };
-    let result = acyclic_harness::json_from_value_owned_bounded_native_trusted::<T, _>(
-        value, bounds, std::mem::size_of::<T>() as u64,
+    let result = acyclic_harness::json_from_value_bounded::<T, _>(
+        std::borrow::Cow::Owned(value), bounds, std::mem::size_of::<T>() as u64,
         acyclic_harness::wire::ErrorCode::Invalid, schema, &mut |charge| {
             if let acyclic_harness::JsonCodecCharge::Admission { maximum_owned_bytes, value_shape } = charge {
                 let (additional, diagnostics) = recovery_conversion_quota(value_shape)?;
@@ -482,7 +494,7 @@ fn recovery_conversion_quota(shape: acyclic_harness::JsonValueShape) -> Result<(
                 "source", "selected", "configurations", "Limits", "struct Limits",
             ]))?)?;
     let diagnostics = acyclic_harness::json_typed_diagnostic_owned_bytes(
-        shape, labels, Some(acyclic_harness::ErrorCode::Invalid))?;
+        shape, labels, Some(acyclic_harness::wire::ErrorCode::Invalid))?;
     Ok((checked_quota(typed, additional)?, diagnostics))
 }
 

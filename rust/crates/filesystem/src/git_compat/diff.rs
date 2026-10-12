@@ -24,11 +24,12 @@ where
     let diff = from
         .diff_to(to, maximum_changes, WorkBudget::UNBOUNDED, cancellation)
         .await
+        .map(|receipt| receipt.value.0)
         .map_err(|failure| failure.error)?;
     let paths = diff
         .changed_paths(maximum_changes, WorkBudget::UNBOUNDED, cancellation)
         .await
-        .map(|receipt| receipt.value)
+        .map(|receipt| receipt.value.0)
         .map_err(|failure| failure.error)?;
     let mut before_policies = BTreeMap::new();
     let mut after_policies = BTreeMap::new();

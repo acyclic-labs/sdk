@@ -453,7 +453,7 @@ mod tests {
             input_schema: serde_json::json!({"type":"object"}),
             output_schema: serde_json::json!({"type":"object"}),
             parent: None, resource_proofs: Vec::new(), grants: crate::Capabilities::new(labels),
-            limits: crate::Limits::default(), run_limits: crate::runtime::TaskRunLimits::default(),
+            limits: crate::conversation::Limits::default(), run_limits: crate::runtime::TaskRunLimits::default(),
             policy: None, extensions: None, execution: None,
         })
     }

@@ -155,7 +155,7 @@ where
             let page = live
                 .list_directory(&directory, after.as_ref(), 1_024, WorkBudget::UNBOUNDED, &CancellationToken::new())
                 .await
-                .map(|receipt| receipt.value)
+                .map(|receipt| receipt.value.0)
                 .map_err(|failure| failure.error)?;
             for entry in &page.entries {
                 let name = entry.name.unicode_text().ok_or(GitCaptureError::NonPortableName)?;
@@ -287,11 +287,12 @@ where
     let changes = previous_live
         .diff_to(&live, u32::MAX, WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
+        .map(|receipt| receipt.value.0)
         .map_err(|failure| failure.error)?;
     let changed = changes
         .changed_paths(u32::MAX, WorkBudget::UNBOUNDED, &CancellationToken::new())
         .await
-        .map(|receipt| receipt.value)
+        .map(|receipt| receipt.value.0)
         .map_err(|failure| failure.error)?;
     let mut portable = Vec::with_capacity(changed.len());
     for change in changed {
