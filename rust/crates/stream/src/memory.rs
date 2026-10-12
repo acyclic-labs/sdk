@@ -101,6 +101,12 @@ pub(crate) struct MemoryOutput<T> {
     pub(crate) allocation: MemoryAllocation,
 }
 
+impl<T> MemoryOutput<T> {
+    pub(crate) fn map<U>(self, convert: impl FnOnce(T) -> U) -> MemoryOutput<U> {
+        MemoryOutput { value: convert(self.value), allocation: self.allocation }
+    }
+}
+
 struct MemoryByteReservation<'a> {
     #[cfg(not(target_arch = "wasm32"))]
     reservation: Option<NativeByteReservation<'a>>,
@@ -425,31 +431,15 @@ impl MemoryStream {
         mut request: CommitRequest,
         deadline_unix_millis: Option<u64>,
     ) -> Result<CommitOutcome, StreamError> {
-        let completion = self.commit_observed(&mut request, deadline_unix_millis, &MemoryObserver::default()).await;
+        let before: Option<&mut fn() -> std::future::Ready<MemoryResult<()>>> = None;
+        let completion = match self.commit_observed_guarded(&mut request, deadline_unix_millis, &MemoryObserver::default(), before).await {
+            Ok((completion, _)) => Ok(completion),
+            Err(GuardedCommitFailure::Memory(error) | GuardedCommitFailure::Guard(error)) => Err(error),
+        };
         ordinary(completion.map(|completion| {
             assert!(completion.error.is_none(), "ordinary commits have no fallible observer");
             completion.outcome
         }))
-    }
-
-    /// Preserves native request vectors through Local durability.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) async fn native_commit_completion_borrowed_inner(
-        &self,
-        request: &mut CommitRequest,
-        deadline_unix_millis: Option<u64>,
-        meter: Arc<dyn NativeReadMeter>,
-    ) -> std::io::Result<Result<MemoryCompletion<NativeStreamOutput<CommitOutcome>>, StreamError>> {
-        let observer = MemoryObserver { meter: Some(Arc::clone(&meter)) };
-        match self.commit_observed(request, deadline_unix_millis, &observer).await {
-            Ok(completion) => Ok(Ok(MemoryCompletion {
-                outcome: native(Ok(completion.outcome), &meter)?
-                    .expect("a completed memory outcome is already a provider success"),
-                error: completion.error,
-            })),
-            Err(MemoryFailure::Provider(error)) => Ok(Err(error)),
-            Err(MemoryFailure::Observer(error)) => Err(error),
-        }
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -488,26 +478,13 @@ impl MemoryStream {
         deadline_unix_millis: Option<u64>,
         meter: Arc<dyn NativeReadMeter>,
     ) -> NativeStreamResult<CommitOutcome> {
-        match self.native_commit_completion_borrowed_inner(&mut request, deadline_unix_millis, Arc::clone(&meter)).await? {
-            Ok(completion) => match completion.error {
+        let before: Option<&mut fn() -> std::future::Ready<Result<(), NativeStreamFailure>>> = None;
+        match self.native_commit_completion_guarded_borrowed_inner(&mut request, deadline_unix_millis, Arc::clone(&meter), before).await? {
+            Ok((completion, _)) => match completion.error {
                 Some(error) => Err(error),
                 None => Ok(Ok(completion.outcome)),
             },
-            Err(error) => Ok(Err(NativeStreamFailure::new(error, ReadAllocation::empty(&meter)))),
-        }
-    }
-
-    async fn commit_observed(
-        &self,
-        request: &mut CommitRequest,
-        deadline_unix_millis: Option<u64>,
-        observer: &MemoryObserver,
-    ) -> MemoryResult<MemoryCompletion<MemoryOutput<CommitOutcome>>> {
-        let before: Option<&mut fn() -> std::future::Ready<Result<(), std::convert::Infallible>>> = None;
-        match self.commit_observed_guarded(request, deadline_unix_millis, observer, before).await {
-            Ok((completion, _)) => Ok(completion),
-            Err(GuardedCommitFailure::Memory(error)) => Err(error),
-            Err(GuardedCommitFailure::Guard(error)) => match error {},
+            Err(error) => Ok(Err(error)),
         }
     }
 
@@ -653,19 +630,14 @@ impl MemoryStream {
             let facts = crate::preparation::mutations(&request.mutations, |path| {
                 state.paths.get(path).map(|stream| stream.tail)
             }, commit_id, committed_at_micros, observer)?;
-            let envelope = MemoryOutput {
-                value: CommittedEnvelope { commit_id, mutations: facts.value }, allocation: facts.allocation,
-            };
+            let envelope = facts.map(|mutations| CommittedEnvelope { commit_id, mutations });
             let mutations = prepare_mutations(state, &envelope.value, observer)?;
             let paths = prepare_paths(&missing.value, &envelope.value, observer)?;
             resident.absorb(observer.adopt(std::mem::size_of::<(CommitId, Arc<Replay>)>())?)?;
-            let outcome = MemoryOutput {
-                value: CommitOutcome::Committed(envelope.value),
-                allocation: envelope.allocation,
-            };
+            let outcome = envelope.map(CommitOutcome::Committed);
             (outcome, paths, mutations, Some(decision), committed_at_micros)
         } else {
-            let outcome = MemoryOutput { value: CommitOutcome::Conflict(conflicts.value), allocation: conflicts.allocation };
+            let outcome = conflicts.map(CommitOutcome::Conflict);
             (outcome, observer.vec(0)?, observer.vec(0)?, None, state.last_committed_at_micros)
         };
         let replay = clone_commit_outcome(&outcome.value, observer, false)?;
@@ -877,10 +849,7 @@ impl MemoryStream {
             let facts = crate::preparation::mutations(
                 &request.mutations, |_| Some(start), CommitId::default(), 0, &observer,
             )?;
-            let output = MemoryOutput {
-                value: CommittedEnvelope { commit_id: CommitId::default(), mutations: facts.value },
-                allocation: facts.allocation,
-            };
+            let output = facts.map(|mutations| CommittedEnvelope { commit_id: CommitId::default(), mutations });
             let mutations = prepare_mutations(&state, &output.value, &observer)?;
             let replay = clone_envelope(&output.value, &observer, false)?;
             let cached = observer.cached(None, IdempotencyOutcome::Commit(CommitOutcome::Committed(replay.value)), replay.allocation)?;
@@ -1005,10 +974,7 @@ impl MemoryStream {
                     record_prepared_work(&meter, &mut late, 1, 0);
                 }).expect("the protected recovery output has one preallocated record");
                 retain_prepared_error(&mut late, prepared.read_bytes.record(record.value.len()));
-                MemoryOutput {
-                    value: CommitOutcome::Committed(prepared.output.value),
-                    allocation: prepared.output.allocation,
-                }
+                prepared.output.map(CommitOutcome::Committed)
             }
             CommitOutcome::Conflict(conflicts) => {
                 if conflicts.len() > 2 {
@@ -1030,10 +996,7 @@ impl MemoryStream {
                     if !matched { return prepared_failure(late, StreamError::IdempotencyMismatch); }
                     prepared.conflicts.value.push(conflict.clone());
                 }
-                MemoryOutput {
-                    value: CommitOutcome::Conflict(prepared.conflicts.value),
-                    allocation: prepared.conflicts.allocation,
-                }
+                prepared.conflicts.map(CommitOutcome::Conflict)
             }
         };
         drop(state);
@@ -1100,10 +1063,7 @@ impl MemoryStream {
                     crate::preparation::fill_single_append(&mut prepared.output.value, record, || {
                         record_prepared_work(&meter, &mut late, 1, 0);
                     }).expect("the original canonical replay has one preallocated record");
-                    MemoryOutput {
-                        value: CommitOutcome::Committed(prepared.output.value),
-                        allocation: prepared.output.allocation,
-                    }
+                    prepared.output.map(CommitOutcome::Committed)
                 }
                 CommitOutcome::Conflict(conflicts) => {
                     if conflicts.len() > prepared.conflicts.value.capacity() {
@@ -1113,10 +1073,7 @@ impl MemoryStream {
                         prepared.conflicts.value.push(conflict.clone());
                         record_prepared_work(&meter, &mut late, 1, 0);
                     }
-                    MemoryOutput {
-                        value: CommitOutcome::Conflict(prepared.conflicts.value),
-                        allocation: prepared.conflicts.allocation,
-                    }
+                    prepared.conflicts.map(CommitOutcome::Conflict)
                 }
             };
             return Ok(Ok(prepared_completion(outcome, late, &meter)));
@@ -1151,10 +1108,7 @@ impl MemoryStream {
             };
             drop(prepared.reservation.take());
             publish(&mut state, publication, digest);
-            let outcome = MemoryOutput {
-                value: CommitOutcome::Conflict(prepared.conflicts.value),
-                allocation: prepared.conflicts.allocation,
-            };
+            let outcome = prepared.conflicts.map(CommitOutcome::Conflict);
             return Ok(Ok(prepared_completion(outcome, late, &meter)));
         }
         for observed in &prepared.observations {
@@ -1211,10 +1165,7 @@ impl MemoryStream {
         state.decision = decision;
         state.last_committed_at_micros = committed_at_micros;
         retain_prepared_error(&mut late, prepared.write_bytes.record(body.len()));
-        let outcome = MemoryOutput {
-            value: CommitOutcome::Committed(prepared.output.value),
-            allocation: prepared.output.allocation,
-        };
+        let outcome = prepared.output.map(CommitOutcome::Committed);
         Ok(Ok(prepared_completion(outcome, late, &meter)))
     }
 }
@@ -1617,10 +1568,7 @@ fn clone_envelope(
         output.value.push(cloned);
         observer.record_item()?;
     }
-    Ok(MemoryOutput {
-        value: CommittedEnvelope { commit_id: envelope.commit_id, mutations: output.value },
-        allocation: output.allocation,
-    })
+    Ok(output.map(|mutations| CommittedEnvelope { commit_id: envelope.commit_id, mutations }))
 }
 
 fn clone_commit_outcome(
@@ -1631,10 +1579,7 @@ fn clone_commit_outcome(
     match outcome {
         CommitOutcome::Committed(envelope) => {
             let output = clone_envelope(envelope, observer, output_read)?;
-            Ok(MemoryOutput {
-                value: CommitOutcome::Committed(output.value),
-                allocation: output.allocation,
-            })
+            Ok(output.map(CommitOutcome::Committed))
         }
         CommitOutcome::Conflict(conflicts) => {
             let mut output = observer.vec(conflicts.len())?;
@@ -1643,10 +1588,7 @@ fn clone_commit_outcome(
                 output.value.push(conflict.clone());
                 observer.record_item()?;
             }
-            Ok(MemoryOutput {
-                value: CommitOutcome::Conflict(output.value),
-                allocation: output.allocation,
-            })
+            Ok(output.map(CommitOutcome::Conflict))
         }
     }
 }
@@ -1658,10 +1600,7 @@ fn clone_idempotency_outcome(
     match outcome {
         IdempotencyOutcome::Commit(outcome) => {
             let output = clone_commit_outcome(outcome, observer, true)?;
-            Ok(MemoryOutput {
-                value: IdempotencyOutcome::Commit(output.value),
-                allocation: output.allocation,
-            })
+            Ok(output.map(IdempotencyOutcome::Commit))
         }
         IdempotencyOutcome::Append(outcome) => Ok(MemoryOutput {
             value: IdempotencyOutcome::Append(outcome.clone()),
@@ -1993,10 +1932,7 @@ impl StreamProvider for MemoryStream {
         let observer = MemoryObserver { meter: Some(Arc::clone(&meter)) };
         let original = Arc::clone(&meter);
         NativeProviderFuture::new(&original, async move {
-            native(self.bounds_inner(path, &observer).await.map(|output| MemoryOutput {
-                value: output.value.tail,
-                allocation: output.allocation,
-            }), &meter)
+            native(self.bounds_inner(path, &observer).await.map(|output| output.map(|bounds| bounds.tail)), &meter)
         })
     }
 

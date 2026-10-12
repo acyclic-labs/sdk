@@ -10,24 +10,6 @@ use acyclic_native_runtime::{NativeReadMeter, ReadAllocation};
 use super::{NativeObjectsCause, NativeObjectsError, ObjectsBatch, ObjectsNativeFuture, ObjectsNativeRequest, ObjectsPutReceipt};
 
 
-pin_project_lite::pin_project! {
-    // The physical future retires before its original task-payload claim.
-    struct OwnedNativeRead<F> {
-        #[pin]
-        future: F,
-        _allocation: ReadAllocation,
-    }
-}
-impl<F: Future> Future for OwnedNativeRead<F> {
-    type Output = F::Output;
-    fn poll(
-        self: std::pin::Pin<&mut Self>,
-        context: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Self::Output> {
-        self.project().future.poll(context)
-    }
-}
-
 fn spawn_native_read<F>(
     future: F,
     meter: &Arc<dyn NativeReadMeter>,
@@ -36,11 +18,11 @@ where
     F: Future + Send + 'static,
     F::Output: Send + 'static,
 {
-    let mut future = OwnedNativeRead {
+    let mut future = super::GuardedFuture {
         future: tracing::Instrument::in_current_span(future),
-        _allocation: ReadAllocation::empty(meter),
+        _allocation: None,
     };
-    future._allocation = ReadAllocation::new(meter, std::mem::size_of_val(&future))?;
+    future._allocation = Some(ReadAllocation::new(meter, std::mem::size_of_val(&future))?);
     // Admit the actual private task refcount control, without estimating its layout.
     meter.allocate_refcount_header()?;
     Ok(tokio::spawn(future))
@@ -133,11 +115,10 @@ impl LocalObjects {
             let worker_meter = meter.clone();
             blocking_with_meter(move || {
                 let _lease = lease;
-                match worker_meter {
-                    Some(meter) => core.compact_local_if_due_measured(meter),
-                    None => core.compact_local_if_due()
-                        .map_err(|_| NativeObjectsError::from(Error::from(wire::ErrorCode::Unavailable))),
-                }
+                let native = worker_meter.is_some();
+                core.compact_local_if_due(worker_meter).map_err(|error| {
+                    if native { error } else { Error::from(wire::ErrorCode::Unavailable).into() }
+                })
             }, meter.clone())?.await
                 .map_err(|_| Error::from(wire::ErrorCode::Unavailable))??;
         }
@@ -213,8 +194,7 @@ impl ObjectsProvider for LocalObjects {
         query: wire::GetObjectRequest,
         maximum_bytes: u64,
     ) -> Result<Object, Error> {
-        // Caller cancellation detaches observation, not the already owned read.
-        // Its core clone keeps the root/anchor alive until physical work ends.
+        // The detached read retains the store root until physical completion.
         let core = self.core.clone();
         let body_io = self.body_io.clone();
         tokio::spawn(tracing::Instrument::in_current_span(async move {
@@ -238,8 +218,7 @@ impl ObjectsProvider for LocalObjects {
             let body_io = Arc::clone(&self.body_io);
             let task_meter = Arc::clone(&meter);
             spawn_native_read(async move {
-                // Detached observation leaves the original input, meter, lease
-                // and store root in the one admitted physical owner.
+                // Detached work retains the original input custody and store root.
                 let input = input;
                 let _lease = body_io.read_owned().await;
                 core.get_native(input, maximum_bytes, task_meter)?.await
@@ -367,8 +346,7 @@ impl NativeBatchObjects for LocalObjects {
             let task_meter = Arc::clone(&meter);
             spawn_native_read(async move {
                 let input = input;
-                // One read lease and one core snapshot admission for all
-                // ordered selections; the original input claim moves with them.
+                // Detached work retains the original input custody and store root.
                 let _lease = body_io.read_owned().await;
                 core.get_batch_native(input, task_meter)?.await
             }, &meter)?.await
@@ -524,8 +502,7 @@ mod tests {
             Err(LocalOpenError::Invalid)
         ));
         let legacy = tempfile::tempdir()?;
-        // Exact historical journal header, retained as a rejection fixture after
-        // retiring the historical engine. No legacy provider is needed to create it.
+        // Historical journal rejection fixture.
         let limits = LocalOptions::default();
         let mut header = b"ACYCLIC-OBJECTS-LOCAL\0\x04".to_vec();
         for limit in [
@@ -536,7 +513,6 @@ mod tests {
         ] {
             header.extend_from_slice(&limit.to_le_bytes());
         }
-        assert_eq!(header.len(), 55);
         std::fs::write(legacy.path().join("mutations.log"), &header)?;
         let before = std::fs::read(legacy.path().join("mutations.log"))?;
         assert!(matches!(

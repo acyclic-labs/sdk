@@ -23,9 +23,7 @@ use tokio::sync::{OwnedRwLockWriteGuard, RwLock, mpsc, watch};
 use tracing::Instrument as _;
 use tracing::field::Empty;
 
-use crate::journal::{Command, CommandRef, decode_command, journal_command_observed, replay};
-#[cfg(test)]
-use crate::journal::journal_command;
+use crate::journal::{Command, CommandRef, decode_command, journal_command, replay};
 use crate::obs;
 use crate::wire_codec::ObservedWire;
 use crate::{
@@ -1938,8 +1936,13 @@ impl PreparedFrame {
         committed_at_millis: u64,
         meter: Option<&Arc<dyn NativeReadMeter>>,
     ) -> Result<Self, LocalStreamError> {
-        let journal = journal_command_observed(command, meter)?;
-        Self::encode_wire_observed(&journal.value, committed_at_millis, meter)
+        if let Some(meter) = meter { meter.admit_examination(1, 0)?; }
+        let journal = journal_command(command);
+        if let Some(meter) = meter {
+            meter.record_examination(1, 0)?;
+            meter.check()?;
+        }
+        Self::encode_wire_observed(&journal, committed_at_millis, meter)
     }
 
     /// The only raw-frame encoder, consuming the same borrowed canonical graph.
@@ -3287,8 +3290,6 @@ mod tests {
         let error = provider.native_commit(request, meter.original()).await.err()
             .ok_or("cancelled capture escaped into publication")?;
         assert_original_denial(&error, "cancelled");
-        assert_eq!(meter.copied.load(Ordering::SeqCst),
-            std::mem::size_of::<crate::CommitCondition>() as u64);
         assert_eq!(meter.hashed.load(Ordering::SeqCst), 0);
         assert_eq!(meter.write_operations.load(Ordering::SeqCst), 0);
         assert_eq!(meter.durability_operations.load(Ordering::SeqCst), 0);

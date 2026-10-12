@@ -1,5 +1,6 @@
 //! Private authenticated immutable segments and journal body reads.
-use crate::body::{BodyError, LocalBodyLocation, LocalBodyReference};
+use crate::body::{LocalBodyLocation, LocalBodyReference};
+use crate::v1::{Error, wire::ErrorCode::Unavailable};
 use crate::{LocalDurability, LocalObjectsGarbageCollection};
 use crate::v1::{NativeObjectsError, Publication};
 use std::{
@@ -34,7 +35,7 @@ pub(crate) struct LocalRoot {
 struct JournalReadGate {
     admitted: std::sync::mpsc::Sender<()>,
     release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
-    completed: std::sync::mpsc::Sender<Result<acyclic_stream::OwnedBytes, BodyError>>,
+    completed: std::sync::mpsc::Sender<Result<acyclic_stream::OwnedBytes, Error>>,
 }
 
 /// Roots are equal when they name the same directory; the handle is a cache.
@@ -73,15 +74,15 @@ impl LocalRoot {
         offset: u64,
         expected_digest: &[u8; 32],
         expected_length: usize,
-    ) -> Result<acyclic_stream::OwnedBytes, BodyError> {
+    ) -> Result<acyclic_stream::OwnedBytes, Error> {
         #[cfg(test)]
         if let Some(gate) = &self.read_gate {
-            gate.admitted.send(()).map_err(|_| BodyError::Unavailable)?;
+            gate.admitted.send(()).map_err(|_| Error::from(Unavailable))?;
             gate.release
                 .lock()
-                .map_err(|_| BodyError::Unavailable)?
+                .map_err(|_| Error::from(Unavailable))?
                 .recv()
-                .map_err(|_| BodyError::Unavailable)?;
+                .map_err(|_| Error::from(Unavailable))?;
             let result = self.read_journal_body_inner(offset, expected_digest, expected_length);
             let _ = gate.completed.send(result.clone());
             return result;
@@ -94,23 +95,23 @@ impl LocalRoot {
         offset: u64,
         expected_digest: &[u8; 32],
         expected_length: usize,
-    ) -> Result<acyclic_stream::OwnedBytes, BodyError> {
+    ) -> Result<acyclic_stream::OwnedBytes, Error> {
         if let Some(journal) = self
             .journal
             .read()
-            .map_err(|_| BodyError::Unavailable)?
+            .map_err(|_| Error::from(Unavailable))?
             .as_ref()
         {
             return read_journal_body(journal, offset, expected_digest, expected_length);
         }
-        let mut journal = self.journal.write().map_err(|_| BodyError::Unavailable)?;
+        let mut journal = self.journal.write().map_err(|_| Error::from(Unavailable))?;
         if journal.is_none() {
 
             *journal =
-                Some(File::open(self.path.join(JOURNAL_FILE)).map_err(|_| BodyError::Unavailable)?);
+                Some(File::open(self.path.join(JOURNAL_FILE)).map_err(|_| Error::from(Unavailable))?);
         }
         read_journal_body(
-            journal.as_ref().ok_or(BodyError::Unavailable)?,
+            journal.as_ref().ok_or(Error::from(Unavailable))?,
             offset,
             expected_digest,
             expected_length,
@@ -128,18 +129,18 @@ pub(crate) enum PhysicalError {
     Io(#[from] std::io::Error),
 }
 /// The caller retains `publication` until the returned offsets have been freed.
-pub(crate) fn persist_segment_measured<B: AsRef<[u8]>>(
+pub(crate) fn persist_segment<B: AsRef<[u8]>>(
     root: &Path,
     bodies: &[([u8; 32], B)],
     durability: LocalDurability,
     publication: &mut Publication,
 ) -> Result<([u8; 32], Vec<u64>), NativeObjectsError> {
-    let published = write_segment_measured(root, bodies, durability, publication)?;
-    sync_segment_directory_measured(root, durability, publication)?;
+    let published = write_segment(root, bodies, durability, publication)?;
+    sync_segment_directory(root, durability, publication)?;
     Ok(published)
 }
 
-pub(crate) fn sync_segment_directory_measured(
+pub(crate) fn sync_segment_directory(
     root: &Path,
     durability: LocalDurability,
     publication: &mut Publication,
@@ -216,7 +217,7 @@ pub(crate) fn open_publication(
 }
 
 /// Uses the same publication engine as ordinary writes.
-pub(crate) fn write_segment_measured<B: AsRef<[u8]>>(
+pub(crate) fn write_segment<B: AsRef<[u8]>>(
     root: &Path,
     bodies: &[([u8; 32], B)],
     durability: LocalDurability,
@@ -412,8 +413,7 @@ fn write_segment_inner<B: AsRef<[u8]>>(
         let _ = publication_namespace(publication, || fs::remove_file(&temporary));
         return Err(error);
     }
-    // Both callers share the native no-replace engine; the measured branch
-    // owns and accounts for its actual terminated platform pathname buffers.
+    // Use the same no-replace engine with original pathname custody.
     let published = match &publication.meter {
         Some(meter) => acyclic_native_runtime::publish_new_measured(
             &temporary, &destination, meter,
@@ -708,7 +708,7 @@ pub(crate) async fn read_body_at_async(
     location: &LocalBodyLocation,
     start: usize,
     end: usize,
-) -> Result<acyclic_stream::OwnedBytes, BodyError> {
+) -> Result<acyclic_stream::OwnedBytes, Error> {
     let backend = match location {
         LocalBodyLocation::Segment { .. } => "segment",
         LocalBodyLocation::Journal { .. } => "journal",
@@ -734,9 +734,9 @@ async fn read_body_at_inner_async(
     location: &LocalBodyLocation,
     start: usize,
     end: usize,
-) -> Result<acyclic_stream::OwnedBytes, BodyError> {
+) -> Result<acyclic_stream::OwnedBytes, Error> {
     if start > end || end > expected_length {
-        return Err(BodyError::Unavailable);
+        return Err(Error::from(Unavailable));
     }
     let (id, offset) = match location {
         LocalBodyLocation::Segment { id, offset } => (id, offset),
@@ -746,7 +746,7 @@ async fn read_body_at_inner_async(
                 root.read_journal_body(offset, &digest, expected_length)
             })
             .await
-            .map_err(|_| BodyError::Unavailable)??;
+            .map_err(|_| Error::from(Unavailable))??;
             return Ok(body.slice(start..end));
         }
     };
@@ -757,15 +757,15 @@ async fn read_body_at_inner_async(
         Ok::<_, std::io::Error>((file, length))
     })
     .await
-    .map_err(|_| BodyError::Unavailable)?
-    .map_err(|_| BodyError::Unavailable)?;
+    .map_err(|_| Error::from(Unavailable))?
+    .map_err(|_| Error::from(Unavailable))?;
     let selected_length = end.saturating_sub(start);
     let selected_offset = offset
-        .checked_add(u64::try_from(start).map_err(|_| BodyError::Unavailable)?)
-        .ok_or(BodyError::Unavailable)?;
+        .checked_add(u64::try_from(start).map_err(|_| Error::from(Unavailable))?)
+        .ok_or(Error::from(Unavailable))?;
     let maximum_prefix = SEGMENT_HEADER_BYTES
         .checked_add(MAXIMUM_SEGMENT_BODIES * SEGMENT_RECORD_BYTES)
-        .ok_or(BodyError::Unavailable)?;
+        .ok_or(Error::from(Unavailable))?;
     let reads = acyclic_native_runtime::read_batch_async(
         file,
         vec![
@@ -780,71 +780,50 @@ async fn read_body_at_inner_async(
         ],
     )
     .await
-    .map_err(|_| BodyError::Unavailable)?;
+    .map_err(|_| Error::from(Unavailable))?;
     let mut reads = reads.into_iter();
-    let prefix = reads.next().ok_or(BodyError::Unavailable)?;
-    let selected = reads.next().ok_or(BodyError::Unavailable)?;
-    if prefix.len() < SEGMENT_HEADER_BYTES
-        || prefix.get(..SEGMENT_MAGIC.len()) != Some(SEGMENT_MAGIC)
-    {
-        return Err(BodyError::Unavailable);
-    }
-    let count = usize::try_from(u32::from_le_bytes(
-        prefix
-            .get(SEGMENT_MAGIC.len()..SEGMENT_HEADER_BYTES)
-            .ok_or(BodyError::Unavailable)?
-            .try_into()
-            .map_err(|_| BodyError::Unavailable)?,
-    ))
-    .map_err(|_| BodyError::Unavailable)?;
-    if count == 0 || count > MAXIMUM_SEGMENT_BODIES {
-        return Err(BodyError::Unavailable);
-    }
-    let table_bytes = count
-        .checked_mul(SEGMENT_RECORD_BYTES)
-        .ok_or(BodyError::Unavailable)?;
-    let table_end = SEGMENT_HEADER_BYTES
-        .checked_add(table_bytes)
-        .ok_or(BodyError::Unavailable)?;
-    let table = prefix
-        .get(SEGMENT_HEADER_BYTES..table_end)
-        .ok_or(BodyError::Unavailable)?;
+    let prefix = reads.next().ok_or(Error::from(Unavailable))?;
+    let selected = reads.next().ok_or(Error::from(Unavailable))?;
+    let table = segment_table(&prefix)?;
     if selected.len() != selected_length {
-        return Err(BodyError::Unavailable);
+        return Err(Error::from(Unavailable));
     }
     if !segment_table_matches(
         table,
         file_length,
         *offset,
         expected_digest,
-        u64::try_from(expected_length).map_err(|_| BodyError::Unavailable)?,
+        u64::try_from(expected_length).map_err(|_| Error::from(Unavailable))?, &mut 0,
     )? {
-        return Err(BodyError::Unavailable);
+        return Err(Error::from(Unavailable));
     }
     // Runtime batch buffers are opaque here; preserve honest unknown capacity.
     Ok(selected.into())
 }
 
-struct NativeBodyPath {
-    path: PathBuf,
-    _allocation: acyclic_native_runtime::ReadAllocation,
+pub(crate) struct LocalPath {
+    pub(crate) path: PathBuf,
+    _allocation: Option<acyclic_native_runtime::ReadAllocation>,
 }
-fn native_body_path(
+pub(crate) fn local_path(
     root: &Path,
     suffix: &str,
-    meter: &Arc<dyn acyclic_native_runtime::NativeReadMeter>,
-) -> std::io::Result<NativeBodyPath> {
+    meter: Option<&Arc<dyn acyclic_native_runtime::NativeReadMeter>>,
+) -> Result<LocalPath, NativeObjectsError> {
     let maximum = root.as_os_str().len().checked_add(suffix.len()).and_then(|length| length.checked_add(1))
         .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
-    let mut allocation = acyclic_native_runtime::ReadAllocation::new(meter, maximum)?;
+    let mut allocation = meter.map(|meter| acyclic_native_runtime::ReadAllocation::new(meter, maximum)).transpose()?;
     let mut path = PathBuf::new();
-    path.try_reserve_exact(maximum).map_err(|error| meter.allocation_failed(error))?;
-    allocation.reconcile_capacity(path.capacity())?;
-    meter.admit_codec(0, maximum as u64, 0)?;
+    path.try_reserve_exact(maximum).map_err(|error| match meter {
+        Some(meter) => NativeObjectsError::Admission(meter.allocation_failed(error)),
+        None => NativeObjectsError::Service(crate::v1::wire::ErrorCode::Unavailable.into()),
+    })?;
+    if let Some(allocation) = &mut allocation { allocation.reconcile_capacity(path.capacity())?; }
+    if let Some(meter) = meter { meter.admit_codec(0, maximum as u64, 0)?; }
     path.push(root);
     path.push(suffix);
-    meter.record_codec(0, path.as_os_str().len() as u64, 0)?;
-    Ok(NativeBodyPath { path, _allocation: allocation })
+    if let Some(meter) = meter { meter.record_codec(0, path.as_os_str().len() as u64, 0)?; }
+    Ok(LocalPath { path, _allocation: allocation })
 }
 
 pub(crate) async fn read_body_at_native(
@@ -905,7 +884,7 @@ async fn read_body_at_native_inner(
                 let mut journal = root.journal.write()
                     .map_err(|_| std::io::Error::from(std::io::ErrorKind::Other))?;
                 if journal.is_none() {
-                    let path = native_body_path(&root.path, JOURNAL_FILE, &open_meter)?;
+                    let path = local_path(&root.path, JOURNAL_FILE, Some(&open_meter))?;
                     open_meter.admit_read(0)?;
                     *journal = Some(File::open(&path.path)?);
 
@@ -926,8 +905,8 @@ async fn read_body_at_native_inner(
                 open_meter.record_codec(64, 0, 0)?;
                 let name = std::str::from_utf8(&name)
                     .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidData))?;
-                let path = native_body_path(&root.path, "segments", &open_meter)?;
-                let file_path = native_body_path(&path.path, name, &open_meter)?;
+                let path = local_path(&root.path, "segments", Some(&open_meter))?;
+                let file_path = local_path(&path.path, name, Some(&open_meter))?;
                 open_meter.admit_read(0)?;
                 let file = File::open(&file_path.path)?;
                 drop(path);
@@ -938,7 +917,7 @@ async fn read_body_at_native_inner(
         let file_length = file.metadata()?.len();
         let file = acyclic_native_runtime::NativeFile::from_file_measured_owned(file, open_meter)
             .map_err(|(error, file)| { drop(file); error })?;
-        Ok::<_, std::io::Error>((file, file_length, location))
+        Ok::<_, NativeObjectsError>((file, file_length, location))
     }, Arc::clone(&meter))?;
     let (file, file_length, location) = opened.await.map_err(|_| unavailable())??;
     match location {
@@ -959,17 +938,11 @@ async fn read_body_at_native_inner(
                 0, prefix, maximum_prefix, false, Arc::clone(&meter),
             )?.await?;
             let prefix = prefix.freeze(actual).map_err(|_| unavailable())?;
-            if prefix.len() < SEGMENT_HEADER_BYTES || prefix.get(..SEGMENT_MAGIC.len()) != Some(SEGMENT_MAGIC) {
-                return Err(unavailable());
-            }
-            let count = u32::from_le_bytes(prefix[SEGMENT_MAGIC.len()..SEGMENT_HEADER_BYTES]
-                .try_into().map_err(|_| unavailable())?) as usize;
-            if count == 0 || count > MAXIMUM_SEGMENT_BODIES { return Err(unavailable()); }
-            let table = prefix.get(SEGMENT_HEADER_BYTES..SEGMENT_HEADER_BYTES + count * SEGMENT_RECORD_BYTES)
-                .ok_or_else(unavailable)?;
+            let table = segment_table(&prefix)?;
+            let count = table.len() / SEGMENT_RECORD_BYTES;
             meter.admit_examination(count as u64, 0)?;
             let mut examined = 0;
-            let matches = segment_table_matches_counted(
+            let matches = segment_table_matches(
                 table, file_length, offset, expected_digest, expected_length as u64, &mut examined,
             );
             meter.record_examination(examined, 0)?;
@@ -984,49 +957,46 @@ async fn read_body_at_native_inner(
     }
 }
 
+fn segment_table(prefix: &[u8]) -> Result<&[u8], Error> {
+    if prefix.get(..SEGMENT_MAGIC.len()) != Some(SEGMENT_MAGIC) { return Err(Error::from(Unavailable)); }
+    let count = u32::from_le_bytes(prefix.get(SEGMENT_MAGIC.len()..SEGMENT_HEADER_BYTES)
+        .ok_or(Error::from(Unavailable))?.try_into().map_err(|_| Error::from(Unavailable))?) as usize;
+    if count == 0 || count > MAXIMUM_SEGMENT_BODIES { return Err(Error::from(Unavailable)); }
+    prefix.get(SEGMENT_HEADER_BYTES..SEGMENT_HEADER_BYTES + count * SEGMENT_RECORD_BYTES)
+        .ok_or(Error::from(Unavailable))
+}
+
 fn segment_table_matches(
     table: &[u8],
     file_length: u64,
     expected_offset: u64,
     expected_digest: &[u8; 32],
     expected_length: u64,
-) -> Result<bool, BodyError> {
-    segment_table_matches_counted(
-        table, file_length, expected_offset, expected_digest, expected_length, &mut 0,
-    )
-}
-
-fn segment_table_matches_counted(
-    table: &[u8],
-    file_length: u64,
-    expected_offset: u64,
-    expected_digest: &[u8; 32],
-    expected_length: u64,
     examined: &mut u64,
-) -> Result<bool, BodyError> {
+) -> Result<bool, Error> {
     let mut offset = u64::try_from(
         SEGMENT_HEADER_BYTES
             .checked_add(table.len())
-            .ok_or(BodyError::Unavailable)?,
+            .ok_or(Error::from(Unavailable))?,
     )
-    .map_err(|_| BodyError::Unavailable)?;
+    .map_err(|_| Error::from(Unavailable))?;
     for record in table.as_chunks::<SEGMENT_RECORD_BYTES>().0 {
         *examined += 1;
         let digest: [u8; 32] = record
             .get(..32)
-            .ok_or(BodyError::Unavailable)?
+            .ok_or(Error::from(Unavailable))?
             .try_into()
-            .map_err(|_| BodyError::Unavailable)?;
+            .map_err(|_| Error::from(Unavailable))?;
         let length = u64::from_le_bytes(
             record
                 .get(32..SEGMENT_RECORD_BYTES)
-                .ok_or(BodyError::Unavailable)?
+                .ok_or(Error::from(Unavailable))?
                 .try_into()
-                .map_err(|_| BodyError::Unavailable)?,
+                .map_err(|_| Error::from(Unavailable))?,
         );
-        let end = offset.checked_add(length).ok_or(BodyError::Unavailable)?;
+        let end = offset.checked_add(length).ok_or(Error::from(Unavailable))?;
         if end > file_length {
-            return Err(BodyError::Unavailable);
+            return Err(Error::from(Unavailable));
         }
         if offset == expected_offset && digest == *expected_digest && length == expected_length {
             return Ok(true);
@@ -1042,25 +1012,25 @@ fn read_journal_body(
     offset: u64,
     expected_digest: &[u8; 32],
     expected_length: usize,
-) -> Result<acyclic_stream::OwnedBytes, BodyError> {
+) -> Result<acyclic_stream::OwnedBytes, Error> {
     if expected_length > MAXIMUM_INLINE_BODY_BYTES {
-        return Err(BodyError::Unavailable);
+        return Err(Error::from(Unavailable));
     }
     let mut body = vec![0_u8; expected_length];
     read_exact_at_unsequenced(journal, offset, &mut body)?;
     if blake3::hash(&body).as_bytes() != expected_digest {
-        return Err(BodyError::Unavailable);
+        return Err(Error::from(Unavailable));
     }
     Ok(body.into())
 }
 
 /// Positional read outside the native per-file operation sequencer.
-fn read_exact_at_unsequenced(file: &File, offset: u64, bytes: &mut [u8]) -> Result<(), BodyError> {
+fn read_exact_at_unsequenced(file: &File, offset: u64, bytes: &mut [u8]) -> Result<(), Error> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::FileExt as _;
         file.read_exact_at(bytes, offset)
-            .map_err(|_| BodyError::Unavailable)
+            .map_err(|_| Error::from(Unavailable))
     }
     #[cfg(windows)]
     {
@@ -1070,14 +1040,14 @@ fn read_exact_at_unsequenced(file: &File, offset: u64, bytes: &mut [u8]) -> Resu
         while !bytes.is_empty() {
             let count = file
                 .seek_read(bytes, offset)
-                .map_err(|_| BodyError::Unavailable)?;
+                .map_err(|_| Error::from(Unavailable))?;
             if count == 0 {
-                return Err(BodyError::Unavailable);
+                return Err(Error::from(Unavailable));
             }
             offset = offset
                 .checked_add(count as u64)
-                .ok_or(BodyError::Unavailable)?;
-            bytes = bytes.get_mut(count..).ok_or(BodyError::Unavailable)?;
+                .ok_or(Error::from(Unavailable))?;
+            bytes = bytes.get_mut(count..).ok_or(Error::from(Unavailable))?;
         }
         Ok(())
     }
@@ -1134,8 +1104,7 @@ pub(crate) mod tests {
         use std::sync::mpsc;
         use std::time::{Duration, Instant};
 
-        // Release even if an assertion unwinds, so a blocked worker cannot keep
-        // the test runtime alive indefinitely.
+        // Release the blocked worker during unwinding too.
         struct ReleaseOnDrop(mpsc::Sender<()>);
         impl Drop for ReleaseOnDrop {
             fn drop(&mut self) {
@@ -1166,7 +1135,7 @@ pub(crate) mod tests {
                 length: bytes.len(),
                 location: LocalBodyLocation::Journal { offset: 0 },
             };
-            let mut read = body.read_async(0, bytes.len());
+            let mut read = Box::pin(body.read(0, bytes.len(), crate::body::BodyReadMode::Ordinary));
             let waker = futures::task::noop_waker();
             let mut context = std::task::Context::from_waker(&waker);
             assert!(read.as_mut().poll(&mut context).is_pending());
@@ -1211,14 +1180,14 @@ pub(crate) mod tests {
                 .unwrap_or_else(|_| unreachable!());
             let body = acyclic_stream::OwnedBytes::from_static(b"private body bytes");
             let digest = *blake3::hash(&body).as_bytes();
-            let (id, offsets) = persist_segment_measured(
+            let (id, offsets) = persist_segment(
                 directory.path(),
                 &[(digest, body.clone())],
                 LocalDurability::FullFlush,
                 &mut Publication::new(None),
             )
             .unwrap_or_else(|_| unreachable!());
-            assert!(write_segment_measured::<acyclic_stream::OwnedBytes>(directory.path(), &[], LocalDurability::FullFlush, &mut Publication::new(None)).is_err());
+            assert!(write_segment::<acyclic_stream::OwnedBytes>(directory.path(), &[], LocalDurability::FullFlush, &mut Publication::new(None)).is_err());
             let location = LocalBodyLocation::Segment {
                 id,
                 offset: *offsets.first().unwrap_or_else(|| unreachable!()),

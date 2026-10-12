@@ -32,9 +32,6 @@ impl From<std::convert::Infallible> for ContractError {
     }
 }
 
-// The semantic source is included by the build-time schema module. These
-// declarations satisfy its runtime admission hooks; the real validators live
-// in the library crate and are never used while rendering metadata.
 #[allow(
     unused_imports,
     reason = "contract's build-time registration resolves these aliases from generated declarations"

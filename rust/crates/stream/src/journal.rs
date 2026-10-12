@@ -1,10 +1,6 @@
 //! Shared native/browser command journal codec and Rust replay.
 use crate::wire_codec;
 use crate::{AppendRequest, CommitRequest, ForkRequest, MemoryStream, StreamError, StreamProvider};
-#[cfg(not(target_arch = "wasm32"))]
-use std::sync::Arc;
-#[cfg(not(target_arch = "wasm32"))]
-use acyclic_native_runtime::NativeReadMeter;
 #[cfg(test)]
 use crate::OwnedBytes;
 use prost::Message;
@@ -45,21 +41,6 @@ pub(crate) fn journal_command<'a>(
     command: impl Into<CommandRef<'a>>,
 ) -> wire_codec::CanonicalWire<'a> {
     wire_codec::CanonicalWire::Journal(command.into())
-}
-
-#[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn journal_command_observed<'a>(
-    command: impl Into<CommandRef<'a>>,
-    meter: Option<&Arc<dyn NativeReadMeter>>,
-) -> std::io::Result<wire_codec::ObservedWire<wire_codec::CanonicalWire<'a>>> {
-    let funding = wire_codec::WireFunding::new(meter);
-    if let Some(meter) = meter { meter.admit_examination(1, 0)?; }
-    let command = journal_command(command);
-    if let Some(meter) = meter {
-        meter.record_examination(1, 0)?;
-        meter.check()?;
-    }
-    Ok(funding.finish(command))
 }
 
 pub(crate) fn decode_command(encoded: &[u8]) -> Result<Command, StreamError> {
