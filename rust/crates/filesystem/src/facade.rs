@@ -3548,7 +3548,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
         };
         self.create_workspace_with_operation_with_native_work_value(
             name, config, original_operation_id, original, cancellation, publication,
-        ).await.map_err(native_workspace_failure)
+        ).await.map_err(|error| (error, None))
     }
 
     /// Creates or recovers the immutable initial generation, sealing every real
@@ -3656,7 +3656,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 workspace, creation.initial_generation_root, original, cancellation,
             ).await.map(Some)
         }.await;
-        result.map_err(native_workspace_failure)
+        result.map_err(|error| (error, None))
     }
 
     /// Opens the workspace authenticated by its immutable native creation record.
@@ -3679,7 +3679,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
                 source: None,
             })
         }.await;
-        result.map_err(native_workspace_failure)
+        result.map_err(|error| (error, None))
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -3751,7 +3751,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             )?;
             Ok((name, id))
         })();
-        result.map_err(native_workspace_failure)
+        result.map_err(|error| (error, None))
     }
 
     // Original creation recovery authenticates its immutable first record and
@@ -4262,7 +4262,7 @@ impl<A: AsyncAuthorityStore, O: AsyncObjectStore> Fs<A, O> {
             publication.retire(&mut accounting)?;
             Ok(held)
         }.await;
-        result.map_err(native_workspace_failure)
+        result.map_err(|error| (error, None))
     }
 
     /// Durably retains one generation under a retention label.

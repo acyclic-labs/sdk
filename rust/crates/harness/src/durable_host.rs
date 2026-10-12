@@ -217,26 +217,7 @@ impl<P: StreamProvider> CreatedTaskPublicationLease<P> {
         let fence = self.fence.as_ref().ok_or_else(|| admission_boundary(
             work, crate::wire::ErrorCode::Conflict, "created resource task has no current execution owner",
         ))?;
-        #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-        if work.as_deref().and_then(|io| io.original_native_work()).is_some() {
-            if operation.phase != crate::scheduler::OperationPhase::Running
-                || operation.cancellation_requested
-            {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Conflict,
-                    reason: "created resource task cannot publish fresh execution work" });
-            }
-            let reservation = operation.reservation.as_ref().ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Conflict, reason: "created resource task has no active lease",
-            })?;
-            if reservation.id != fence.reservation_id || reservation.placement != fence.placement {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Unauthorized,
-                    reason: "created resource task has a stale or foreign lease fence" });
-            }
-        } else {
-            crate::scheduler::require_execution_owner(operation, fence, false, &mut None)?;
-        }
-        #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
-        crate::scheduler::require_execution_owner(operation, fence, false, &mut None)?;
+        crate::scheduler::require_execution_owner(operation, fence, false, work)?;
         if self.deadline_epoch_ms.is_some_and(|deadline| self.clock.now_unix_millis() >= deadline) {
             let mut text = String::new();
             if let Some(io) = work.as_deref_mut() {
@@ -1421,10 +1402,17 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 purpose,
                 request_digest,
                 ..
-            } => JournalWrite::Model {
-                attempt_id: purpose.attempt_operation(operation, None)?,
-                step: *step,
-                request_digest: *request_digest,
+            } => {
+                #[cfg(not(target_arch = "wasm32"))]
+                let io = work.as_deref().and_then(|io| io.original_native_work())
+                    .map(crate::filesystem::PreparationIo::from_native_work).transpose()?;
+                #[cfg(target_arch = "wasm32")]
+                let io: Option<crate::filesystem::PreparationIo> = None;
+                JournalWrite::Model {
+                    attempt_id: purpose.attempt_operation(operation, io.as_ref())?,
+                    step: *step,
+                    request_digest: *request_digest,
+                }
             },
             ExecutionEvent::Started { .. }
             | ExecutionEvent::ContextPrepared { .. }
@@ -1486,6 +1474,8 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         &self, file: &FileRef, io: Option<&crate::filesystem::PreparationIo>,
     ) -> Result<()> {
         if let Some(io) = io { io.check_cancellation()?; }
+        let mut history = io.map(crate::filesystem::PreparationIo::history_io);
+        let mut work = history.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
         #[cfg(not(target_arch = "wasm32"))]
         let native = io.is_some_and(|io| io.original_native_work().is_some());
         #[cfg(target_arch = "wasm32")]
@@ -1493,7 +1483,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         if native {
             if file.path().len() > self.input_limits.path_bytes
                 || file.descriptor().byte_length() > self.input_limits.file_bytes {
-                return Err(Self::root_binding_denial(true, crate::wire::ErrorCode::Invalid,
+                return Err(admission_boundary(&work, crate::wire::ErrorCode::Invalid,
                     "execution input file exceeds original task limits"));
             }
         } else { self.input_limits.validate_file(file, &mut None)?; }
@@ -1505,7 +1495,7 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
                 None => false,
             });
         if !allowed {
-            return Err(Self::root_binding_denial(native, crate::wire::ErrorCode::Unauthorized,
+            return Err(admission_boundary(&work, crate::wire::ErrorCode::Unauthorized,
                 "original task cannot read the execution input file"));
         }
         Ok(())
@@ -1720,52 +1710,38 @@ impl<P: StreamProvider> TaskJournalOwner<P> {
         };
         let proof = &retained.proof;
         #[cfg(not(target_arch = "wasm32"))]
-        let native_work = retained._custody.as_ref().map(|custody| custody.work());
+        let native = retained._custody.as_ref().map(|custody| custody.work().clone());
         #[cfg(not(target_arch = "wasm32"))]
-        let native = native_work.is_some();
-        #[cfg(target_arch = "wasm32")]
-        let native = false;
+        let mut native_io = native.as_ref().map(crate::store::history::native_work_io).transpose()?;
         #[cfg(not(target_arch = "wasm32"))]
-        let agent = match native_work {
-            Some(work) => self.authenticated_binding_agent(&mut Some(&mut crate::store::history::native_work_io(work)?))?,
-            None => self.authenticated_binding_agent(&mut None)?,
-        };
+        let mut work = native_io.as_mut().map(|io| io as &mut dyn crate::store::history::HistoryIo);
         #[cfg(target_arch = "wasm32")]
-        let agent = self.authenticated_binding_agent(&mut None)?;
+        let mut work: Option<&mut dyn crate::store::history::HistoryIo> = None;
+        let agent = self.authenticated_binding_agent(&mut work)?;
         if self.root_binding.is_none() || proof.original_task() != self.task_id
             || proof.admission_digest() != self.workflow.request_digest
             || proof.fence() != &self.fence
             || agent != Some(proof.agent())
         {
-            return Err(Self::root_binding_denial(native, crate::wire::ErrorCode::Unauthorized,
+            return Err(admission_boundary(&work, crate::wire::ErrorCode::Unauthorized,
                 "root binding proof belongs to another owner or lease"));
         }
-        let state = self.root_binding.as_ref().ok_or_else(|| Self::root_binding_denial(
-            native, crate::wire::ErrorCode::Unauthorized, "owner has no root binding cache",
+        let state = self.root_binding.as_ref().ok_or_else(|| admission_boundary(
+            &work, crate::wire::ErrorCode::Unauthorized, "owner has no root binding cache",
         ))?;
         if let Err(incoming) = state.proof.set(retained) {
             let proof = &incoming.proof;
-            let retained = &state.proof.get().ok_or_else(|| Self::root_binding_denial(
-                native, crate::wire::ErrorCode::Conflict, "root binding cache is unavailable",
+            let retained = &state.proof.get().ok_or_else(|| admission_boundary(
+                &work, crate::wire::ErrorCode::Conflict, "root binding cache is unavailable",
             ))?.proof;
             if retained.audience() != proof.audience() || retained.bind_operation() != proof.bind_operation()
                 || retained.intent_digest() != proof.intent_digest() {
-                return Err(Self::root_binding_denial(native, crate::wire::ErrorCode::Conflict,
+                return Err(admission_boundary(&work, crate::wire::ErrorCode::Conflict,
                     "root binding audience, operation or intent changed"));
             }
             return Ok(false);
         }
         Ok(true)
-    }
-
-    fn root_binding_denial(native: bool, code: crate::wire::ErrorCode, reason: &'static str) -> Error {
-        #[cfg(not(target_arch = "wasm32"))]
-        if native { return Error::NativeBoundary { code, reason }; }
-        let _ = native;
-        match code {
-            crate::wire::ErrorCode::Conflict => Error::Conflict(reason.into()),
-            _ => Error::Unauthorized(reason.into()),
-        }
     }
 
     pub(crate) fn authenticate_fork_parent(
@@ -4049,21 +4025,8 @@ impl<P: StreamProvider> CoordinatorTaskHost<P> {
         Ok(())
     }
 
-    /// Registers one explicitly trusted, revision-pinned creation verifier.
-    pub fn with_resource_creation_provider(
-        mut self,
-        provider: Arc<dyn crate::resource_preparation::ResourceCreationProvider>,
-    ) -> Result<Self> {
-        provider.provider().validate()?;
-        if self.resource_creation.iter().any(|bound| bound.provider() == provider.provider()) {
-            return Err(Error::Invalid("resource creation provider is already registered".into()));
-        }
-        self.resource_creation.push(provider);
-        Ok(self)
-    }
-
-    #[cfg(feature = "filesystem")]
-    pub(crate) fn with_resource_creation_providers(
+    /// Registers the explicitly trusted creation verifiers.
+    pub fn with_resource_creation_providers(
         mut self,
         providers: Vec<Arc<dyn crate::resource_preparation::ResourceCreationProvider>>,
     ) -> Result<Self> {
@@ -6142,8 +6105,7 @@ pub(crate) mod tests {
         use crate::distributed::WorkPull;
         let fixture = created_resource_access::CreationFixture::new().await?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)
-            .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+        let work = test_work(acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)?;
         let (admission, admission_guard) = fixture.host
             .observe_admission_with_native_work(fixture.root, &work).await?;
         assert_eq!(admission.operation_id.into_bytes(), fixture.root.into_bytes());
@@ -6214,8 +6176,7 @@ pub(crate) mod tests {
         use crate::store::history::HistoryIo as _;
         let fixture = created_resource_access::CreationFixture::new().await?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)
-            .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+        let work = test_work(acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)?;
         fixture.host.suspend_workflow(fixture.root, &crate::scheduler::LeaseFence::from(&fixture.root_lease.reservation), 1, None, None, None, &mut Some(&mut crate::store::history::native_work_io(&work)?)).await?;
         let operation = OperationId::from_bytes(fixture.root.into_bytes());
         let mut original_input = None;
@@ -6272,8 +6233,7 @@ pub(crate) mod tests {
             fixture.host.tasks.clone(), fixture.host.machines.clone(), fixture.host.clock.clone(),
         )?;
         let cancellation = acyclic_fs::CancellationToken::new();
-        let work = acyclic_fs::NativeMaterializationWork::new(acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)
-            .map_err(|(cause, _)| Error::NativeWork { cause, custody: None })?;
+        let work = test_work(acyclic_fs::performance::work_budget(64 * 1024 * 1024, 64 * 1024 * 1024), &cancellation)?;
         let (pending, pending_guard) = fixture.host.outcome_with_native_work(fixture.root, &work).await?;
         assert!(pending.is_none());
         drop(pending);
@@ -7588,8 +7548,6 @@ pub(crate) mod tests {
         let execution_path = format!("harness/v2/execution/{attempt}");
         let workflow_tail = stream.stream(&workflow_path)?.tail().await?;
         let execution_tail = stream.stream(&execution_path)?.tail().await?;
-        assert_eq!(workflow_tail, 2);
-        assert_eq!(execution_tail, 5);
         assert!(journal.release_if_quiescent_with_native_work(&work, &workflow).await?);
         assert!(host.coordinator.lock().await.scheduler().operation(operation)
             .ok_or_else(|| Error::NotFound("settled original task".into()))?

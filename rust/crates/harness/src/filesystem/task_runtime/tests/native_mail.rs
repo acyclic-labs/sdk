@@ -3,7 +3,7 @@ use crate::conversation::FileRef;
 use crate::test_stream::LostSessionAck;
 use crate::filesystem::PreparationIo;
 use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
-use acyclic_stream::{OwnedBytes, StreamClient};
+use acyclic_stream::{OwnedBytes};
 
 type MailRuntime = FilesystemTaskRuntime<LostSessionAck<MemoryStream>, MemoryAuthorityBackend, MemoryObjectBackend>;
 
@@ -26,7 +26,7 @@ impl MailFixture {
         fixture.machine.native.store(true, Ordering::SeqCst);
         let sdk = Arc::new(LostSessionAck::default());
         let runtime = FilesystemTaskRuntime::open(
-            StreamClient::new(Arc::clone(&sdk)), fixture.filesystem.clone(), &fixture.volume,
+            Arc::clone(&sdk), fixture.filesystem.clone(), &fixture.volume,
             &fixture.issuer.verifier(), &fixture.signed, &fixture.scope,
             &fixture.tasks, &fixture.machines, &fixture.tools,
             SessionLimits { active_tasks: 8, total_tasks: 8, depth: 4, model_steps: 8 },
@@ -166,7 +166,7 @@ async fn native_mail_sdk_cursor_rejects_actual_hostile_version_and_recipient_rec
         }))?);
         let target = if index == 0 { acyclic_stream::CommitCondition::Absent { path: mailbox.clone() } }
             else { acyclic_stream::CommitCondition::Tail { path: mailbox.clone(), expected: index as u64 } };
-        let committed = StreamClient::new(Arc::clone(&fixture.sdk)).commit(acyclic_stream::CommitRequest {
+        let committed = Arc::clone(&fixture.sdk).commit(acyclic_stream::CommitRequest {
             conditions: vec![target, acyclic_stream::CommitCondition::Absent { path: intent.clone() }],
             mutations: vec![
                 acyclic_stream::CommitMutation::Append { path: mailbox, records: vec![bytes] },

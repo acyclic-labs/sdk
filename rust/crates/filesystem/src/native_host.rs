@@ -2091,46 +2091,16 @@ pub(crate) fn sync_file_held_with_work<W: NativeHostWork>(file: &File, work: &mu
 #[cfg(any(feature = "native-mount", test))]
 use windows::Win32::Storage::FileSystem::FILE_BASIC_INFO;
 
-#[cfg(target_os = "linux")]
-#[derive(Debug, thiserror::Error)]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[cfg(any(feature = "native-mount", test))]
-pub(crate) enum LinuxMetadataError {
-    #[error("Linux native metadata cannot represent {0}")]
-    Unsupported(&'static str),
-    #[error(transparent)]
-    Io(#[from] io::Error),
-}
+#[derive(Debug, thiserror::Error)]
+#[error("native metadata cannot represent {0}")]
+pub(crate) struct NativeMetadataError(pub(crate) &'static str);
 
 #[cfg(target_os = "linux")]
 #[cfg(any(feature = "native-mount", test))]
 pub(crate) struct LinuxMetadataTarget {
     inode: std::os::fd::OwnedFd,
-}
-
-#[cfg(windows)]
-#[cfg(any(feature = "native-mount", test))]
-#[derive(Debug, thiserror::Error)]
-pub(crate) enum WindowsMetadataError {
-    #[error("Windows native metadata cannot represent {0}")]
-    Unsupported(&'static str),
-    #[error(transparent)]
-    Io(#[from] io::Error),
-}
-
-#[cfg(windows)]
-#[cfg(any(feature = "native-mount", test))]
-pub(crate) struct WindowsMetadataTarget {
-    file: cap_std::fs::File,
-}
-
-#[cfg(target_os = "macos")]
-#[derive(Debug, thiserror::Error)]
-#[cfg(any(feature = "native-mount", test))]
-pub(crate) enum MacMetadataError {
-    #[error("macOS native metadata cannot represent {0}")]
-    Unsupported(&'static str),
-    #[error(transparent)]
-    Io(#[from] io::Error),
 }
 
 #[cfg(target_os = "macos")]
@@ -2634,7 +2604,7 @@ impl LinuxMetadataTarget {
         work.check()?;
         if attributes.is_empty() { return Ok(()); }
         if self.observed_measured(work)?.st_mode & libc::S_IFMT == libc::S_IFLNK {
-            return Err(LinuxMetadataError::Unsupported("named_attributes on a symbolic link").into());
+            return Err(NativeMetadataError("named_attributes on a symbolic link").into());
         }
         // O_PATH cannot receive xattr calls.
         let mut pinned = [0_u8; 32];
@@ -2651,7 +2621,7 @@ impl LinuxMetadataTarget {
             number /= 10;
         }
         let pinned = std::ffi::CStr::from_bytes_with_nul(&pinned[..=length])
-            .map_err(|_| LinuxMetadataError::Unsupported("named_attributes"))?;
+            .map_err(|_| NativeMetadataError("named_attributes"))?;
         for (name, value) in attributes {
             work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
             let mut entered = false;
@@ -2677,12 +2647,12 @@ impl LinuxMetadataTarget {
                         work.record(WorkCounters { source_bytes_read: read, ..WorkCounters::UNCHARGED })?;
                     }
                     if usize::try_from(read).ok() != Some(value.len()) {
-                        return Err(LinuxMetadataError::Unsupported("named_attributes readback mismatch").into());
+                        return Err(NativeMetadataError("named_attributes readback mismatch").into());
                     }
                     for (actual, expected) in readback.iter().zip(value.iter()) {
                         work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
                         if actual != expected {
-                            return Err(LinuxMetadataError::Unsupported("named_attributes readback mismatch").into());
+                            return Err(NativeMetadataError("named_attributes readback mismatch").into());
                         }
                     }
                     Ok(())
@@ -2693,7 +2663,7 @@ impl LinuxMetadataTarget {
             });
             match result {
                 Err(DemandError::Io(error)) if !entered && error.kind() == io::ErrorKind::InvalidInput =>
-                    return Err(LinuxMetadataError::Unsupported("named_attributes").into()),
+                    return Err(NativeMetadataError("named_attributes").into()),
                 result => result?,
             }
         }
@@ -2827,17 +2797,17 @@ fn validate_linux_metadata<W: crate::demand::SourceDemandReadWork>(
         ),
     ] {
         if present {
-            return Err(LinuxMetadataError::Unsupported(field).into());
+            return Err(NativeMetadataError(field).into());
         }
     }
     if let MetadataField::Value(mode) = metadata.posix_mode {
         let kind = mode & libc::S_IFMT;
         if kind != 0 && kind != observed.st_mode & libc::S_IFMT {
-            return Err(LinuxMetadataError::Unsupported("posix_mode file type").into());
+            return Err(NativeMetadataError("posix_mode file type").into());
         }
         if mode & 0o7777 != observed.st_mode & 0o7777 {
             if observed.st_mode & libc::S_IFMT == libc::S_IFLNK {
-                return Err(LinuxMetadataError::Unsupported("posix_mode symlink").into());
+                return Err(NativeMetadataError("posix_mode symlink").into());
             }
             linux_require_fchmodat2(work)?;
         }
@@ -2860,12 +2830,12 @@ fn linux_require_fchmodat2<W: crate::demand::SourceDemandReadWork>(work: &mut W)
         )
     };
     if result == 0 {
-        return Err(LinuxMetadataError::Unsupported("fchmodat2 probe").into());
+        return Err(NativeMetadataError("fchmodat2 probe").into());
     }
     match io::Error::last_os_error().raw_os_error() {
         Some(libc::EBADF) => Ok(()),
         Some(libc::ENOSYS | libc::EINVAL) => {
-            Err(LinuxMetadataError::Unsupported("fchmodat2 AT_EMPTY_PATH").into())
+            Err(NativeMetadataError("fchmodat2 AT_EMPTY_PATH").into())
         }
         _ => Err(io::Error::last_os_error().into()),
     }
@@ -2876,33 +2846,33 @@ fn linux_require_fchmodat2<W: crate::demand::SourceDemandReadWork>(work: &mut W)
 fn verify_linux_metadata(
     observed: libc::stat,
     metadata: crate::kernel::FileMetadata,
-) -> Result<(), LinuxMetadataError> {
+) -> Result<(), NativeMetadataError> {
     use crate::kernel::MetadataField;
 
     if let MetadataField::Value(uid) = metadata.posix_uid
         && observed.st_uid != uid
     {
-        return Err(LinuxMetadataError::Unsupported("posix_uid"));
+        return Err(NativeMetadataError("posix_uid"));
     }
     if let MetadataField::Value(gid) = metadata.posix_gid
         && observed.st_gid != gid
     {
-        return Err(LinuxMetadataError::Unsupported("posix_gid"));
+        return Err(NativeMetadataError("posix_gid"));
     }
     if let MetadataField::Value(mode) = metadata.posix_mode
         && observed.st_mode & 0o7777 != mode & 0o7777
     {
-        return Err(LinuxMetadataError::Unsupported("posix_mode"));
+        return Err(NativeMetadataError("posix_mode"));
     }
     if let MetadataField::Value(ns) = metadata.accessed_ns
         && linux_observed_ns(observed.st_atime, observed.st_atime_nsec)? != ns
     {
-        return Err(LinuxMetadataError::Unsupported("accessed_ns"));
+        return Err(NativeMetadataError("accessed_ns"));
     }
     if let MetadataField::Value(ns) = metadata.modified_ns
         && linux_observed_ns(observed.st_mtime, observed.st_mtime_nsec)? != ns
     {
-        return Err(LinuxMetadataError::Unsupported("modified_ns"));
+        return Err(NativeMetadataError("modified_ns"));
     }
     Ok(())
 }
@@ -2911,7 +2881,7 @@ fn verify_linux_metadata(
 #[cfg(any(feature = "native-mount", test))]
 fn linux_time_spec(
     field: crate::kernel::MetadataField<i64>,
-) -> Result<libc::timespec, LinuxMetadataError> {
+) -> Result<libc::timespec, NativeMetadataError> {
     let crate::kernel::MetadataField::Value(ns) = field else {
         return Ok(libc::timespec {
             tv_sec: 0,
@@ -2920,19 +2890,19 @@ fn linux_time_spec(
     };
     Ok(libc::timespec {
         tv_sec: libc::time_t::try_from(ns.div_euclid(1_000_000_000))
-            .map_err(|_| LinuxMetadataError::Unsupported("timestamp range"))?,
+            .map_err(|_| NativeMetadataError("timestamp range"))?,
         tv_nsec: libc::c_long::try_from(ns.rem_euclid(1_000_000_000))
-            .map_err(|_| LinuxMetadataError::Unsupported("timestamp range"))?,
+            .map_err(|_| NativeMetadataError("timestamp range"))?,
     })
 }
 
 #[cfg(target_os = "linux")]
 #[cfg(any(feature = "native-mount", test))]
-fn linux_observed_ns(seconds: i64, nanos: i64) -> Result<i64, LinuxMetadataError> {
+fn linux_observed_ns(seconds: i64, nanos: i64) -> Result<i64, NativeMetadataError> {
     seconds
         .checked_mul(1_000_000_000)
         .and_then(|whole| whole.checked_add(nanos))
-        .ok_or(LinuxMetadataError::Unsupported("timestamp range"))
+        .ok_or(NativeMetadataError("timestamp range"))
 }
 
 #[cfg(windows)]
@@ -4678,16 +4648,49 @@ impl HostRoot {
     #[cfg(any(feature = "native-mount", test))]
     pub(crate) fn open_windows_metadata_target<W: crate::demand::SourceDemandReadWork>(
         &self, path: &Path, work: &mut W,
-    ) -> Result<WindowsMetadataTarget, DemandError> {
-        with_wide_path_with_work(path, work, |path, work| self.open_windows_metadata_target_wide_measured(path, work))
+    ) -> Result<cap_std::fs::File, DemandError> {
+        with_wide_path_with_work(path, work, |path, work| self.open_windows_metadata_target_wide(path, work))
     }
 
     #[cfg(windows)]
     #[cfg(any(feature = "native-mount", test))]
-    pub(crate) fn open_windows_metadata_target_wide_measured<W: crate::demand::SourceDemandReadWork>(
+    pub(crate) fn open_windows_metadata_target_wide<W: crate::demand::SourceDemandReadWork>(
         &self, path: &[u16], work: &mut W,
-    ) -> Result<WindowsMetadataTarget, DemandError> {
-        WindowsMetadataTarget::open_wide_measured(&self.directory, path, work)
+    ) -> Result<cap_std::fs::File, DemandError> {
+        use windows::Wdk::Storage::FileSystem::{FILE_DIRECTORY_FILE, FILE_SYNCHRONOUS_IO_NONALERT};
+        use windows::Win32::Storage::FileSystem::{
+            FILE_GENERIC_READ, FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES, SYNCHRONIZE,
+        };
+
+        work.check()?;
+        if path.is_empty() {
+            let file = open_windows_wide_at_with_work(&self.directory, &[u16::from(b'.')],
+                FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
+                FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, work, || DemandError::InvalidRequest)?
+                .ok_or(DemandError::InvalidRequest)?;
+            return Ok(file);
+        }
+        let mut separator = None;
+        for (index, unit) in path.iter().enumerate() {
+            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
+            if *unit == u16::from(b'\\') { separator = Some(index); }
+        }
+        let (parent_path, leaf) = match separator {
+            Some(index) => (&path[..index], &path[index + 1..]),
+            None => (&[][..], path),
+        };
+        if separator.is_some() && parent_path.is_empty() {
+            return Err(DemandError::InvalidRequest);
+        }
+        let parent = if parent_path.is_empty() { None } else {
+            Some(Dir::from_std_file(open_windows_wide_at_with_work(&self.directory, parent_path,
+                FILE_GENERIC_READ, FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, work, || DemandError::InvalidRequest)?
+                .ok_or(DemandError::InvalidRequest)?.into_std()))
+        };
+        let parent = parent.as_ref().unwrap_or(&self.directory);
+        let file = cap_std::fs::File::from_std(open_windows_leaf_handle_with_work(parent, leaf,
+            FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE, None, work)?);
+        Ok(file)
     }
 
 
@@ -4725,7 +4728,7 @@ fn open_macos_metadata_target<W: crate::demand::SourceDemandReadWork>(
             return Err(io::Error::other("metadata target changed during admission").into());
         }
         if !matches!(after.st_mode & libc::S_IFMT, libc::S_IFREG | libc::S_IFDIR | libc::S_IFIFO) {
-            return Err(MacMetadataError::Unsupported("non-ordinary file kind").into());
+            return Err(NativeMetadataError("non-ordinary file kind").into());
         }
         Ok(MacMetadataTarget::Held(file))
     })
@@ -4765,7 +4768,7 @@ impl MacMetadataTarget {
         work.check()?;
         if attributes.is_empty() { return Ok(()); }
         let Self::Held(file) = self else {
-            return Err(MacMetadataError::Unsupported("named_attributes on a non-ordinary file kind").into());
+            return Err(NativeMetadataError("named_attributes on a non-ordinary file kind").into());
         };
         let fd = file.as_raw_fd();
         for (name, value) in attributes {
@@ -4793,12 +4796,12 @@ impl MacMetadataTarget {
                         work.record(WorkCounters { source_bytes_read: read, ..WorkCounters::UNCHARGED })?;
                     }
                     if usize::try_from(read).ok() != Some(value.len()) {
-                        return Err(MacMetadataError::Unsupported("named_attributes readback mismatch").into());
+                        return Err(NativeMetadataError("named_attributes readback mismatch").into());
                     }
                     for (actual, expected) in readback.iter().zip(value.iter()) {
                         work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
                         if actual != expected {
-                            return Err(MacMetadataError::Unsupported("named_attributes readback mismatch").into());
+                            return Err(NativeMetadataError("named_attributes readback mismatch").into());
                         }
                     }
                     Ok(())
@@ -4809,7 +4812,7 @@ impl MacMetadataTarget {
             });
             match result {
                 Err(DemandError::Io(error)) if !entered && error.kind() == io::ErrorKind::InvalidInput =>
-                    return Err(MacMetadataError::Unsupported("named_attributes").into()),
+                    return Err(NativeMetadataError("named_attributes").into()),
                 result => result?,
             }
         }
@@ -4836,7 +4839,7 @@ impl MacMetadataTarget {
             } => {
                 let result = (|| {
                     if metadata != crate::kernel::FileMetadata::default() {
-                        return Err(MacMetadataError::Unsupported("non-ordinary file kind").into());
+                        return Err(NativeMetadataError("non-ordinary file kind").into());
                     }
                     let observed = unix_name_with_work(leaf.as_os_str(), work, |leaf, work|
                         macos_stat_at_measured(&parent, leaf, work))?;
@@ -4855,7 +4858,7 @@ impl MacMetadataTarget {
             && mode & u32::from(libc::S_IFMT) != 0
             && mode & u32::from(libc::S_IFMT) != u32::from(current.st_mode & libc::S_IFMT)
         {
-            return Err(MacMetadataError::Unsupported("posix_mode file kind").into());
+            return Err(NativeMetadataError("posix_mode file kind").into());
         }
         let uid = match metadata.posix_uid {
             MetadataField::Value(value) => value,
@@ -4875,7 +4878,7 @@ impl MacMetadataTarget {
         if let MetadataField::Value(mode) = metadata.posix_mode {
             // Ownership changes may clear setuid/setgid, so mode is applied last.
             let mask = libc::mode_t::try_from(mode & 0o7777)
-                .map_err(|_| MacMetadataError::Unsupported("posix_mode"))?;
+                .map_err(|_| NativeMetadataError("posix_mode"))?;
             native_write(work)?;
             // SAFETY: fd pins the admitted inode; fchmod reads no memory.
             if unsafe { libc::fchmod(fd, mask) } != 0 {
@@ -4892,7 +4895,7 @@ impl MacMetadataTarget {
             || matches!(metadata.accessed_ns, MetadataField::Value(value) if macos_nanos(observed.st_atime, observed.st_atime_nsec) != Some(value))
             || matches!(metadata.modified_ns, MetadataField::Value(value) if macos_nanos(observed.st_mtime, observed.st_mtime_nsec) != Some(value))
         {
-            return Err(MacMetadataError::Unsupported("metadata readback mismatch").into());
+            return Err(NativeMetadataError("metadata readback mismatch").into());
         }
         Ok(())
         })();
@@ -4905,7 +4908,7 @@ impl MacMetadataTarget {
 #[cfg(any(feature = "native-mount", test))]
 fn validate_macos_metadata_fields(
     metadata: crate::kernel::FileMetadata,
-) -> Result<(), MacMetadataError> {
+) -> Result<(), NativeMetadataError> {
     use crate::kernel::MetadataField;
 
     for (present, field) in [
@@ -4932,7 +4935,7 @@ fn validate_macos_metadata_fields(
         ),
     ] {
         if present {
-            return Err(MacMetadataError::Unsupported(field));
+            return Err(NativeMetadataError(field));
         }
     }
     Ok(())
@@ -5034,66 +5037,26 @@ fn macos_fstat_measured<W: crate::demand::SourceDemandReadWork>(fd: std::os::fd:
 
 #[cfg(windows)]
 #[cfg(any(feature = "native-mount", test))]
-impl WindowsMetadataTarget {
-    fn open_wide_measured<W: crate::demand::SourceDemandReadWork>(directory: &Dir, path: &[u16], work: &mut W) -> Result<Self, DemandError> {
-        use windows::Wdk::Storage::FileSystem::{FILE_DIRECTORY_FILE, FILE_SYNCHRONOUS_IO_NONALERT};
-        use windows::Win32::Storage::FileSystem::{
-            FILE_GENERIC_READ, FILE_READ_ATTRIBUTES, FILE_WRITE_ATTRIBUTES, SYNCHRONIZE,
-        };
-
-        work.check()?;
-        if path.is_empty() {
-            let file = open_windows_wide_at_with_work(directory, &[u16::from(b'.')],
-                FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE,
-                FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, work, || DemandError::InvalidRequest)?
-                .ok_or(DemandError::InvalidRequest)?;
-            return Ok(Self { file });
-        }
-        let mut separator = None;
-        for (index, unit) in path.iter().enumerate() {
-            work.charge(WorkCounters { items_examined: 1, ..WorkCounters::UNCHARGED })?;
-            if *unit == u16::from(b'\\') { separator = Some(index); }
-        }
-        let (parent_path, leaf) = match separator {
-            Some(index) => (&path[..index], &path[index + 1..]),
-            None => (&[][..], path),
-        };
-        if separator.is_some() && parent_path.is_empty() {
-            return Err(DemandError::InvalidRequest);
-        }
-        let parent = if parent_path.is_empty() { None } else {
-            Some(Dir::from_std_file(open_windows_wide_at_with_work(directory, parent_path,
-                FILE_GENERIC_READ, FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, work, || DemandError::InvalidRequest)?
-                .ok_or(DemandError::InvalidRequest)?.into_std()))
-        };
-        let parent = parent.as_ref().unwrap_or(directory);
-        let file = cap_std::fs::File::from_std(open_windows_leaf_handle_with_work(parent, leaf,
-            FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES | SYNCHRONIZE, None, work)?);
-        Ok(Self { file })
+pub(crate) fn apply_windows_metadata<W: crate::demand::SourceDemandReadWork>(
+    file: cap_std::fs::File, metadata: crate::kernel::FileMetadata, work: &mut W,
+) -> Result<(), DemandError> {
+    work.check()?;
+    reject_unsupported_windows_metadata(metadata)?;
+    if metadata == crate::kernel::FileMetadata::default() {
+        return Ok(());
     }
-
-
-    pub(crate) fn apply<W: crate::demand::SourceDemandReadWork>(
-        self, metadata: crate::kernel::FileMetadata, work: &mut W,
-    ) -> Result<(), DemandError> {
-        work.check()?;
-        reject_unsupported_windows_metadata(metadata)?;
-        if metadata == crate::kernel::FileMetadata::default() {
-            return Ok(());
-        }
-        let current = query_windows_basic_info_with_work(&self.file, work)?;
-        let desired = desired_windows_basic_info(metadata, current)?;
-        set_windows_basic_info_with_work(&self.file, desired, work)?;
-        verify_windows_basic_info(metadata, desired, query_windows_basic_info_with_work(&self.file, work)?)
-            .map_err(Into::into)
-    }
+    let current = query_windows_basic_info_with_work(&file, work)?;
+    let desired = desired_windows_basic_info(metadata, current)?;
+    set_windows_basic_info_with_work(&file, desired, work)?;
+    verify_windows_basic_info(metadata, desired, query_windows_basic_info_with_work(&file, work)?)
+        .map_err(Into::into)
 }
 
 #[cfg(windows)]
 #[cfg(any(feature = "native-mount", test))]
 fn reject_unsupported_windows_metadata(
     metadata: crate::kernel::FileMetadata,
-) -> Result<(), WindowsMetadataError> {
+) -> Result<(), NativeMetadataError> {
     use crate::kernel::MetadataField;
     for (field, present) in [
         (
@@ -5123,7 +5086,7 @@ fn reject_unsupported_windows_metadata(
         ),
     ] {
         if present {
-            return Err(WindowsMetadataError::Unsupported(field));
+            return Err(NativeMetadataError(field));
         }
     }
     Ok(())
@@ -5134,7 +5097,7 @@ fn reject_unsupported_windows_metadata(
 fn desired_windows_basic_info(
     metadata: crate::kernel::FileMetadata,
     current: FILE_BASIC_INFO,
-) -> Result<FILE_BASIC_INFO, WindowsMetadataError> {
+) -> Result<FILE_BASIC_INFO, NativeMetadataError> {
     use crate::kernel::MetadataField;
     const SETTABLE_ATTRIBUTES: u32 = 0x0000_0001 // readonly
         | 0x0000_0002 // hidden
@@ -5167,7 +5130,7 @@ fn desired_windows_basic_info(
                 || attributes & STRUCTURAL_ATTRIBUTES
                     != current.FileAttributes & STRUCTURAL_ATTRIBUTES
             {
-                return Err(WindowsMetadataError::Unsupported("Windows attributes"));
+                return Err(NativeMetadataError("Windows attributes"));
             }
             attributes
         }
@@ -5187,7 +5150,7 @@ fn verify_windows_basic_info(
     metadata: crate::kernel::FileMetadata,
     desired: FILE_BASIC_INFO,
     observed: FILE_BASIC_INFO,
-) -> Result<(), WindowsMetadataError> {
+) -> Result<(), NativeMetadataError> {
     use crate::kernel::MetadataField;
     for (field, expected, actual, required) in [
         (
@@ -5216,13 +5179,13 @@ fn verify_windows_basic_info(
         ),
     ] {
         if required && expected != actual {
-            return Err(WindowsMetadataError::Unsupported(field));
+            return Err(NativeMetadataError(field));
         }
     }
     if matches!(metadata.windows_attributes, MetadataField::Value(_))
         && observed.FileAttributes != desired.FileAttributes
     {
-        return Err(WindowsMetadataError::Unsupported("Windows attributes"));
+        return Err(NativeMetadataError("Windows attributes"));
     }
     Ok(())
 }
@@ -5894,13 +5857,13 @@ async fn copy_windows_file_worker(
 fn metadata_time(
     field: crate::kernel::MetadataField<i64>,
     current: i64,
-) -> Result<i64, WindowsMetadataError> {
+) -> Result<i64, NativeMetadataError> {
     let crate::kernel::MetadataField::Value(nanoseconds) = field else {
         return Ok(current);
     };
     // Applying metadata must reproduce the captured instant, so an instant between ticks is refused rather than silently moved.
     if nanoseconds % 100 != 0 {
-        return Err(WindowsMetadataError::Unsupported("sub-100ns timestamp"));
+        return Err(NativeMetadataError("sub-100ns timestamp"));
     }
     Ok(unix_nanoseconds_to_filetime(nanoseconds))
 }
@@ -6098,34 +6061,16 @@ fn filesystem_is_local_measured<W: NativeHostWork>(_directory: &Dir, work: &mut 
     Ok(false)
 }
 
-/// Deallocates an already-zero range of a host file.
+/// Deallocates an already-zero range using the supplied native meter.
 #[cfg(target_os = "macos")]
-pub fn punch_hole(file: &impl std::os::fd::AsRawFd, offset: u64, length: u64) -> io::Result<()> {
-    let mut work = ordinary_work();
-    punch_hole_with_admission(file, offset, length, |write| {
-        if write { native_write(&mut work) } else { native_read_with_work(&mut work) }.map_err(ordinary_error)
-    })
-}
-
-#[cfg(target_os = "macos")]
-pub(crate) fn punch_hole_measured(
+pub fn punch_hole(
     file: &impl std::os::fd::AsRawFd, offset: u64, length: u64,
-    meter: &dyn acyclic_native_runtime::NativeReadMeter,
-) -> io::Result<()> {
-    punch_hole_with_admission(file, offset, length, |write| {
-        if write { meter.admit_write(0) } else { meter.admit_read(0) }
-    })
-}
-
-#[cfg(target_os = "macos")]
-fn punch_hole_with_admission(
-    file: &impl std::os::fd::AsRawFd, offset: u64, length: u64,
-    mut before: impl FnMut(bool) -> io::Result<()>,
+    meter: Option<&dyn acyclic_native_runtime::NativeReadMeter>,
 ) -> io::Result<()> {
     let fd = file.as_raw_fd();
     let mut stats = std::mem::MaybeUninit::<libc::statfs>::uninit();
     loop {
-        before(false)?;
+        if let Some(meter) = meter { meter.admit_read(0)?; }
         // SAFETY: fstatfs fills live, correctly sized storage for the held descriptor.
         if unsafe { libc::fstatfs(fd, stats.as_mut_ptr()) } == 0 { break; }
         let error = io::Error::last_os_error();
@@ -6170,7 +6115,7 @@ fn punch_hole_with_admission(
         fp_length,
     };
     loop {
-        before(true)?;
+        if let Some(meter) = meter { meter.admit_write(0)?; }
         // SAFETY: the argument struct outlives this value-only fcntl call.
         if unsafe { libc::fcntl(fd, libc::F_PUNCHHOLE, &arg) } == 0 { return Ok(()); }
         let error = io::Error::last_os_error();
@@ -6212,7 +6157,7 @@ fn clone_windows_file_measured<W: crate::demand::SourceDemandReadWork>(source: &
         offset += count;
     }
     if clone_length < length {
-        let ranges = query_allocated_data_ranges_measured(source, clone_length, length - clone_length, 64, work)?;
+        let ranges = allocated_data_ranges(source, clone_length, length - clone_length, 64, work, |work| work.remaining(), native_device_control::<W>)?;
         let ranges_bytes = (ranges.capacity() * std::mem::size_of::<HostDataRange>()) as u64;
         let result: Result<(), DemandError> = (|| {
             let mut buffer = [0_u8; 64 * 1024];
@@ -6623,21 +6568,8 @@ impl Drop for YieldingFile {
     }
 }
 
-pub(crate) fn allocated_data_ranges_with_work<W: NativeHostWork<Error = DemandError, Allocation = u64>>(
-    file: &File, logical_bytes: u64, maximum_ranges: u32, work: &mut W,
-    remaining: impl FnMut(&mut W) -> Result<crate::WorkBudget, DemandError>,
-    #[cfg(windows)]
-    device_control: impl FnMut(&File, u32, &[u8], &mut [u8], &mut W) -> Result<usize, DemandError>,
-) -> Result<Vec<HostDataRange>, DemandError> {
-    query_allocated_data_ranges_with_work(
-        file, 0, logical_bytes, maximum_ranges, work, remaining,
-        #[cfg(windows)]
-        device_control,
-    )
-}
-
 #[cfg(windows)]
-fn native_device_control_measured<W: crate::demand::SourceDemandReadWork>(
+fn native_device_control<W: crate::demand::SourceDemandReadWork>(
     file: &File, code: u32, input: &[u8], output: &mut [u8], work: &mut W,
 ) -> Result<usize, DemandError> {
     work.with_native_read_meter(|meter| {
@@ -6648,23 +6580,7 @@ fn native_device_control_measured<W: crate::demand::SourceDemandReadWork>(
     })
 }
 
-pub(crate) fn query_allocated_data_ranges_measured<W: crate::demand::SourceDemandReadWork>(
-    file: &File,
-    offset: u64,
-    length: u64,
-    maximum_ranges: u32,
-    work: &mut W,
-) -> Result<Vec<HostDataRange>, DemandError> {
-    query_allocated_data_ranges_with_work(
-        file, offset, length, maximum_ranges, work, |work| work.remaining(),
-        #[cfg(windows)]
-        |file, code, input, output, work| {
-            native_device_control_measured::<W>(file, code, input, output, work)
-        },
-    )
-}
-
-pub(crate) fn query_allocated_data_ranges_with_work<W: NativeHostWork<Error = DemandError, Allocation = u64>>(
+pub(crate) fn allocated_data_ranges<W: NativeHostWork<Error = DemandError, Allocation = u64>>(
     file: &File, offset: u64, length: u64, maximum_ranges: u32, work: &mut W,
     _remaining: impl FnMut(&mut W) -> Result<crate::WorkBudget, DemandError>,
     #[cfg(windows)]
@@ -6814,19 +6730,9 @@ pub(crate) fn query_allocated_data_ranges_with_work<W: NativeHostWork<Error = De
     }
 }
 
-pub fn allocated_data_ranges(
-    file: &cap_std::fs::File,
-    logical_bytes: u64,
-    maximum_ranges: u32,
-) -> io::Result<Vec<HostDataRange>> {
-    query_allocated_data_ranges_measured(
-        &file.try_clone()?.into_std(), 0, logical_bytes, maximum_ranges, &mut ordinary_work(),
-    ).map_err(ordinary_error)
-}
-
 #[cfg(all(test, target_os = "macos"))]
 mod macos_metadata_tests {
-    use super::{HostRoot, MacMetadataError};
+    use super::{HostRoot, NativeMetadataError};
     use crate::kernel::{FileMetadata, MetadataField};
     use std::os::unix::fs::MetadataExt as _;
     use std::path::Path;
@@ -6924,7 +6830,7 @@ mod macos_metadata_tests {
                     posix_flags: MetadataField::Value(1),
                     ..FileMetadata::default()
                 }, &mut work),
-            Err(crate::DemandError::MacMetadata(MacMetadataError::Unsupported(_)))
+            Err(crate::DemandError::MacMetadata(NativeMetadataError(_)))
         ));
         assert!(matches!(
             root.open_macos_metadata_target(Path::new("file"), &mut work)?
@@ -6932,7 +6838,7 @@ mod macos_metadata_tests {
                     changed_ns: MetadataField::Value(1),
                     ..FileMetadata::default()
                 }, &mut work),
-            Err(crate::DemandError::MacMetadata(MacMetadataError::Unsupported(_)))
+            Err(crate::DemandError::MacMetadata(NativeMetadataError(_)))
         ));
         Ok(())
     }
@@ -6976,7 +6882,7 @@ mod macos_metadata_tests {
                     posix_mode: MetadataField::Value(0o640),
                     ..FileMetadata::default()
                 }, &mut work),
-            Err(crate::DemandError::MacMetadata(MacMetadataError::Unsupported(_)))
+            Err(crate::DemandError::MacMetadata(NativeMetadataError(_)))
         ));
         let old_socket = temporary.path().join("old-socket");
         let pending = root.open_macos_metadata_target(Path::new("socket"), &mut work)?;
@@ -7221,7 +7127,7 @@ mod tests {
                 created_ns: MetadataField::Value(12),
                 ..representable
             }, &mut work),
-            Err(crate::DemandError::LinuxMetadata(super::LinuxMetadataError::Unsupported(_)))
+            Err(crate::DemandError::LinuxMetadata(super::NativeMetadataError(_)))
         ));
         assert_eq!(
             std::fs::metadata(&moved)?.permissions().mode() & 0o7777,
@@ -7324,7 +7230,7 @@ mod windows_clone_tests {
     use crate::WorkCounters;
     use super::create_windows_symbolic_link_with_work;
     use super::{
-        HostRoot, UNIX_EPOCH_FILETIME, WindowsMetadataError, allocated_data_ranges,
+        HostRoot, UNIX_EPOCH_FILETIME, NativeMetadataError, allocated_data_ranges,
         filetime_to_unix_nanoseconds, unix_nanoseconds_to_filetime,
     };
     use acyclic_native_runtime::{Durability, NativeFile, OwnedWrite};
@@ -7693,8 +7599,7 @@ mod windows_clone_tests {
             (Path::new("file"), ARCHIVE | HIDDEN),
             (Path::new("directory"), DIRECTORY | HIDDEN),
         ] {
-            root.open_windows_metadata_target(path, &mut work)?
-                .apply(FileMetadata {
+            super::apply_windows_metadata(root.open_windows_metadata_target(path, &mut work)?, FileMetadata {
                     windows_attributes: MetadataField::Value(attributes),
                     created_ns: MetadataField::Value(FIXED_NS),
                     modified_ns: MetadataField::Value(FIXED_NS + 100),
@@ -7711,10 +7616,8 @@ mod windows_clone_tests {
         let mut permissions = std::fs::metadata(&file)?.permissions();
         permissions.set_readonly(true);
         std::fs::set_permissions(&file, permissions.clone())?;
-        root.open_windows_metadata_target(Path::new("file"), &mut work)?
-            .apply(FileMetadata::default(), &mut work)?;
-        root.open_windows_metadata_target(Path::new("file"), &mut work)?
-            .apply(FileMetadata {
+        super::apply_windows_metadata(root.open_windows_metadata_target(Path::new("file"), &mut work)?, FileMetadata::default(), &mut work)?;
+        super::apply_windows_metadata(root.open_windows_metadata_target(Path::new("file"), &mut work)?, FileMetadata {
                 windows_attributes: MetadataField::Value(ARCHIVE),
                 ..FileMetadata::default()
             }, &mut work)?;
@@ -7735,25 +7638,23 @@ mod windows_clone_tests {
         std::fs::write(temporary.path().join("outside"), b"outside")?;
         let root = HostRoot::open(&root_path, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
         assert!(matches!(
-            root.open_windows_metadata_target(Path::new("file"), &mut work)
-                .map_err(std::io::Error::other)?
-                .apply(FileMetadata {
+            super::apply_windows_metadata(root.open_windows_metadata_target(Path::new("file"), &mut work)
+                .map_err(std::io::Error::other)?, FileMetadata {
                     windows_attributes: MetadataField::Value(REPARSE_POINT),
                     ..FileMetadata::default()
                 }, &mut work),
-            Err(crate::DemandError::WindowsMetadata(WindowsMetadataError::Unsupported(_)))
+            Err(crate::DemandError::WindowsMetadata(NativeMetadataError(_)))
         ));
         assert!(matches!(
-            root.open_windows_metadata_target(Path::new("file"), &mut work)
-                .map_err(std::io::Error::other)?
-                .apply(FileMetadata {
+            super::apply_windows_metadata(root.open_windows_metadata_target(Path::new("file"), &mut work)
+                .map_err(std::io::Error::other)?, FileMetadata {
                     named_attributes: MetadataField::Value(crate::ObjectId {
                         kind: crate::ObjectKind::AttributePage,
                         digest: crate::Digest::from_bytes([7; 32]),
                     }),
                     ..FileMetadata::default()
                 }, &mut work),
-            Err(crate::DemandError::WindowsMetadata(WindowsMetadataError::Unsupported(_)))
+            Err(crate::DemandError::WindowsMetadata(NativeMetadataError(_)))
         ));
         assert!(
             root.open_windows_metadata_target(Path::new("../outside"), &mut work)
@@ -7871,8 +7772,7 @@ mod windows_clone_tests {
         let target_attributes = std::fs::symlink_metadata(&target)?.file_attributes();
         let link_attributes = std::fs::symlink_metadata(&link)?.file_attributes();
         let root = HostRoot::open(&root_path, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
-        root.open_windows_metadata_target(Path::new("link"), &mut work)?
-            .apply(FileMetadata {
+        super::apply_windows_metadata(root.open_windows_metadata_target(Path::new("link"), &mut work)?, FileMetadata {
                 windows_attributes: MetadataField::Value(link_attributes | HIDDEN),
                 created_ns: MetadataField::Value(FIXED_NS),
                 modified_ns: MetadataField::Value(FIXED_NS + 100),
@@ -7913,7 +7813,7 @@ mod windows_clone_tests {
         let replacement_attributes = replacement_metadata.file_attributes();
         let replacement_modified = replacement_metadata.last_write_time();
         let moved_attributes = std::fs::metadata(&moved)?.file_attributes();
-        target.apply(FileMetadata {
+        super::apply_windows_metadata(target, FileMetadata {
             windows_attributes: MetadataField::Value(moved_attributes | HIDDEN),
             modified_ns: MetadataField::Value(MODIFIED_NS),
             ..FileMetadata::default()
@@ -8064,7 +7964,7 @@ mod windows_clone_tests {
             "advertised block cloning rejected an unaligned file"
         );
         let mut target = root.open_file(target_path, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
-        let ranges = allocated_data_ranges(&target, 1024 * 1024 + 17, 3)?;
+        let ranges = allocated_data_ranges(&target.try_clone()?.into_std(), 0, 1024 * 1024 + 17, 3, &mut super::ordinary_work(), |work| work.remaining(), super::native_device_control).map_err(super::ordinary_error)?;
         assert_eq!(ranges.len(), 2, "clone must preserve the sparse middle");
         target.seek(SeekFrom::Start(1024 * 1024))?;
         let mut tail = [0; 17];
@@ -8123,7 +8023,7 @@ mod windows_clone_tests {
         target.seek(SeekFrom::Start(length - 1))?;
         target.read_exact(&mut byte)?;
         assert_eq!(byte, [0x11]);
-        let ranges = allocated_data_ranges(&target, length, 4)?;
+        let ranges = allocated_data_ranges(&target.try_clone()?.into_std(), 0, length, 4, &mut super::ordinary_work(), |work| work.remaining(), super::native_device_control).map_err(super::ordinary_error)?;
         assert_eq!(ranges.len(), 3, "multi-request clone must preserve holes");
         Ok(())
     }
@@ -8155,8 +8055,8 @@ mod windows_clone_tests {
         }
         file.sync_all()?;
         let source = root.open_file(path, &mut crate::native_host::ordinary_work()).map_err(crate::native_host::ordinary_error)?;
-        assert!(allocated_data_ranges(&source, 20 * 1024 * 1024, 9).is_err());
-        let ranges = allocated_data_ranges(&source, 20 * 1024 * 1024, 10)?;
+        assert!(allocated_data_ranges(&source.try_clone()?.into_std(), 0, 20 * 1024 * 1024, 9, &mut super::ordinary_work(), |work| work.remaining(), super::native_device_control).is_err());
+        let ranges = allocated_data_ranges(&source.try_clone()?.into_std(), 0, 20 * 1024 * 1024, 10, &mut super::ordinary_work(), |work| work.remaining(), super::native_device_control).map_err(super::ordinary_error)?;
         assert_eq!(ranges.len(), 10);
         assert_eq!(ranges[0].offset, 0);
         assert_eq!(ranges[9].offset, 18 * 1024 * 1024);

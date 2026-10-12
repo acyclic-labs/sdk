@@ -320,7 +320,7 @@ pub use native_mount::{
     OwnedNativeMountOriginalWorkScope,
     initialize_native_mount_services,
     detach_native_mount_destination_after_crash, materialize_checkout,
-    materialize_checkout_path, materialize_checkout_paths,
+    materialize_checkout_paths,
     mount_native, mount_native_over_existing, probe_native_mount,
     probe_native_storage_accelerations, probe_native_storage_capabilities,
     prepare_native_mount_start,
