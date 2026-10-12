@@ -361,7 +361,7 @@ impl<A, O> FilesystemRootBootstrapAllocation<A, O> {
     }
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn matches_native_work(&self, work: &acyclic_fs::NativeMaterializationWork) -> bool {
-        self._custody.matches_work(work)
+        self._custody.work().shares_allocation_context(work)
     }
     /// Shares the paid allocation on its original ledger.
     #[cfg(not(target_arch = "wasm32"))]

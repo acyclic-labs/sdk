@@ -48,7 +48,7 @@ impl NativeFilesystemVerificationBinding {
         &self,
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<()> {
-        if !self.custody.matches_work(work) {
+        if !self.custody.work().shares_allocation_context(work) {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
                 reason: "Filesystem verifier belongs to another original resource",

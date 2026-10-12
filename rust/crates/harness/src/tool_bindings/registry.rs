@@ -48,18 +48,21 @@ impl PreparedToolRegistration {
             .checked_add(self.key.0.capacity() as u64)
             .and_then(|bytes| bytes.checked_add(self.key.1.capacity() as u64))
             .ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid, reason: "tool registration ownership overflow",
+                code: crate::wire::ErrorCode::Invalid,
+                reason: "tool registration ownership overflow",
             })?;
         if let RegistrationSelection::Insert(name, selection) = &self.selection {
             let revision = match selection {
                 ModelSelection::Revision(revision) => revision.capacity() as u64,
                 _ => 0,
             };
-            bytes = bytes.checked_add(std::mem::size_of::<(String, ModelSelection)>() as u64)
+            bytes = bytes
+                .checked_add(std::mem::size_of::<(String, ModelSelection)>() as u64)
                 .and_then(|bytes| bytes.checked_add(name.capacity() as u64))
                 .and_then(|bytes| bytes.checked_add(revision))
                 .ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid, reason: "tool registration ownership overflow",
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "tool registration ownership overflow",
                 })?;
         }
         Ok(bytes)
@@ -72,7 +75,11 @@ impl ToolRegistry {
     pub fn new(
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
-        let custody = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
+        let custody = work.claim(
+            std::mem::size_of::<Self>() as u64,
+            0,
+            acyclic_fs::WorkCounters::UNCHARGED,
+        )?;
         Ok((Self::default(), custody))
     }
 
@@ -85,7 +92,10 @@ impl ToolRegistry {
 
     /// Moves a paid definition and the original provider objects into this registry.
     #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-    #[allow(clippy::too_many_arguments, reason = "paid definition and original providers")]
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "paid definition and original providers"
+    )]
     pub fn register_with_native_work(
         &mut self,
         definition: ToolDefinition,
@@ -105,8 +115,10 @@ impl ToolRegistry {
                 code: crate::wire::ErrorCode::Invalid,
                 reason: "tool definition ownership overflow",
             })?;
-        if !custody.matches_work(work) || custody.bytes() < original
-            || !definition.1.matches_work(work) || definition.1.bytes() < definition_bytes
+        if !custody.work().shares_allocation_context(work)
+            || custody.bytes() < original
+            || !definition.1.work().shares_allocation_context(work)
+            || definition.1.bytes() < definition_bytes
         {
             return Err(Error::NativeBoundary {
                 code: crate::wire::ErrorCode::Unauthorized,
@@ -120,17 +132,23 @@ impl ToolRegistry {
         let mut published = false;
         let result = (|| {
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;
-            let tool = Tool { definition: definition.0, executor, projection };
+            let tool = Tool {
+                definition: definition.0,
+                executor,
+                projection,
+            };
             let prepared = self.prepare_registration(tool, Some(&io))?;
             let extra = prepared.additional_owned_bytes()?;
             let released = match &prepared.selection {
-                RegistrationSelection::ReplaceAmbiguous => match self.selected.get(&prepared.key.0) {
+                RegistrationSelection::ReplaceAmbiguous => match self.selected.get(&prepared.key.0)
+                {
                     Some(ModelSelection::Revision(revision)) => revision.capacity() as u64,
                     _ => 0,
                 },
                 _ => 0,
             };
-            let retained = original.checked_add(definition_bytes)
+            let retained = original
+                .checked_add(definition_bytes)
                 .and_then(|bytes| bytes.checked_add(extra))
                 .and_then(|bytes| bytes.checked_sub(released))
                 .ok_or(Error::NativeBoundary {
@@ -162,9 +180,11 @@ impl ToolRegistry {
         crate::executor::with_history_io(io, |work| tool.definition.validate(work))?;
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
-            io.retain_owned((std::mem::size_of::<(String, String)>()
-                + std::mem::size_of::<Arc<dyn ToolExecutor>>()
-                + std::mem::size_of::<Arc<dyn ToolProjection>>()) as u64)?;
+            io.retain_owned(
+                (std::mem::size_of::<(String, String)>()
+                    + std::mem::size_of::<Arc<dyn ToolExecutor>>()
+                    + std::mem::size_of::<Arc<dyn ToolProjection>>()) as u64,
+            )?;
             let counters = acyclic_fs::WorkCounters {
                 items_examined: self.versions.len() as u64,
                 ..Default::default()
@@ -178,14 +198,18 @@ impl ToolRegistry {
         );
         if self.versions.contains_key(&key) {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if io.and_then(crate::executor::PreparationIo::original_native_work).is_some() {
+            if io
+                .and_then(crate::executor::PreparationIo::original_native_work)
+                .is_some()
+            {
                 return Err(Error::NativeBoundary {
                     code: crate::wire::ErrorCode::Conflict,
                     reason: "tool revision is already registered",
                 });
             }
             return Err(Error::Conflict(format!(
-                "tool {}@{} is already registered", key.0, key.1,
+                "tool {}@{} is already registered",
+                key.0, key.1,
             )));
         }
         let previous = self.versions.keys().any(|(logical, _)| logical == &key.0);
@@ -206,7 +230,11 @@ impl ToolRegistry {
             };
             RegistrationSelection::Insert(name, selection)
         };
-        Ok(PreparedToolRegistration { key, tool, selection })
+        Ok(PreparedToolRegistration {
+            key,
+            tool,
+            selection,
+        })
     }
 
     fn publish_registration(&mut self, prepared: PreparedToolRegistration) {
@@ -234,29 +262,37 @@ impl ToolRegistry {
                 .checked_add(name.capacity() as u64)
                 .and_then(|bytes| bytes.checked_add(revision.capacity() as u64))
                 .and_then(|bytes| bytes.checked_add(definition_deep));
-            bytes = bytes.checked_add(row.ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid, reason: "tool registry ownership overflow",
-            })?).ok_or(Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid, reason: "tool registry ownership overflow",
-            })?;
+            bytes = bytes
+                .checked_add(row.ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "tool registry ownership overflow",
+                })?)
+                .ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "tool registry ownership overflow",
+                })?;
         }
         for (name, selection) in &self.selected {
             let deep = match selection {
                 ModelSelection::Revision(revision) => revision.capacity() as u64,
                 _ => 0,
             };
-            bytes = bytes.checked_add(std::mem::size_of::<(String, ModelSelection)>() as u64)
+            bytes = bytes
+                .checked_add(std::mem::size_of::<(String, ModelSelection)>() as u64)
                 .and_then(|bytes| bytes.checked_add(name.capacity() as u64))
                 .and_then(|bytes| bytes.checked_add(deep))
                 .ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid, reason: "tool registry ownership overflow",
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "tool registry ownership overflow",
                 })?;
         }
         for name in self.catalog_revisions.keys() {
-            bytes = bytes.checked_add(std::mem::size_of::<(String, [u8; 32])>() as u64)
+            bytes = bytes
+                .checked_add(std::mem::size_of::<(String, [u8; 32])>() as u64)
                 .and_then(|bytes| bytes.checked_add(name.capacity() as u64))
                 .ok_or(Error::NativeBoundary {
-                    code: crate::wire::ErrorCode::Invalid, reason: "tool registry ownership overflow",
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "tool registry ownership overflow",
                 })?;
         }
         Ok(bytes)
@@ -331,12 +367,15 @@ impl ToolRegistry {
 
     /// Returns one assembled tool.
     pub(crate) fn get(
-        &self, name: &str, io: Option<&crate::executor::PreparationIo>,
+        &self,
+        name: &str,
+        io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<&Tool>> {
         #[cfg(feature = "filesystem")]
         if let Some(io) = io {
             io.charge(acyclic_fs::WorkCounters {
-                items_examined: name.len() as u64, ..Default::default()
+                items_examined: name.len() as u64,
+                ..Default::default()
             })?;
         }
         if let Some((logical, revision)) = name.rsplit_once('@') {
@@ -350,7 +389,9 @@ impl ToolRegistry {
 
     /// Resolves a pinned revision independently of the model-visible choice.
     pub(crate) fn get_version(
-        &self, name: &str, revision: &str,
+        &self,
+        name: &str,
+        revision: &str,
         io: Option<&crate::executor::PreparationIo>,
     ) -> Result<Option<&Tool>> {
         let key = (
@@ -367,7 +408,11 @@ impl ToolRegistry {
         work: &acyclic_fs::NativeMaterializationWork,
     ) -> Result<(Self, acyclic_fs::NativeAllocation)> {
         use crate::filesystem::UploadRecord as _;
-        let mut custody = work.claim(std::mem::size_of::<Self>() as u64, 0, acyclic_fs::WorkCounters::UNCHARGED)?;
+        let mut custody = work.claim(
+            std::mem::size_of::<Self>() as u64,
+            0,
+            acyclic_fs::WorkCounters::UNCHARGED,
+        )?;
         let mut copied = Self::default();
         for ((name, revision), tool) in &self.versions {
             let io = crate::filesystem::PreparationIo::from_native_work(work)?;
@@ -375,8 +420,10 @@ impl ToolRegistry {
             let definition = crate::model::clone_tool_definition(&tool.definition, Some(&io))?;
             let retained = (std::mem::size_of::<ToolDefinition>() as u64)
                 .checked_add(definition.logical_owned_bytes()?)
-                .ok_or(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "tool definition ownership overflow" })?;
+                .ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "tool definition ownership overflow",
+                })?;
             let mut definition_hold = io.into_native_custody(retained)?;
             let mut name_hold;
             let (name, hold) = work.display(name)?;
@@ -391,11 +438,19 @@ impl ToolRegistry {
                 + std::mem::size_of::<Arc<dyn ToolExecutor>>() as u64
                 + std::mem::size_of::<Arc<dyn ToolProjection>>() as u64;
             custody.resize_retained(custody.bytes().checked_add(slots).ok_or(
-                Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "native tool registry ownership overflow" })?)?;
-            copied.versions.insert((name, revision), Tool {
-                definition, executor: tool.executor.clone(), projection: tool.projection.clone(),
-            });
+                Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "native tool registry ownership overflow",
+                },
+            )?)?;
+            copied.versions.insert(
+                (name, revision),
+                Tool {
+                    definition,
+                    executor: tool.executor.clone(),
+                    projection: tool.projection.clone(),
+                },
+            );
         }
         for (name, selection) in &self.selected {
             let mut name_hold;
@@ -413,10 +468,15 @@ impl ToolRegistry {
                 ModelSelection::Ambiguous => ModelSelection::Ambiguous,
                 ModelSelection::Hidden => ModelSelection::Hidden,
             };
-            custody.resize_retained(custody.bytes().checked_add(
-                std::mem::size_of::<(String, ModelSelection)>() as u64).ok_or(
-                Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "native tool selection ownership overflow" })?)?;
+            custody.resize_retained(
+                custody
+                    .bytes()
+                    .checked_add(std::mem::size_of::<(String, ModelSelection)>() as u64)
+                    .ok_or(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Invalid,
+                        reason: "native tool selection ownership overflow",
+                    })?,
+            )?;
             copied.selected.insert(name, selection);
         }
         for (name, revision) in &self.catalog_revisions {
@@ -424,33 +484,49 @@ impl ToolRegistry {
             let (name, owned) = work.display(name)?;
             hold = owned;
             custody.absorb(&mut hold)?;
-            custody.resize_retained(custody.bytes().checked_add(
-                std::mem::size_of::<(String, [u8; 32])>() as u64).ok_or(
-                Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "native tool catalog ownership overflow" })?)?;
+            custody.resize_retained(
+                custody
+                    .bytes()
+                    .checked_add(std::mem::size_of::<(String, [u8; 32])>() as u64)
+                    .ok_or(Error::NativeBoundary {
+                        code: crate::wire::ErrorCode::Invalid,
+                        reason: "native tool catalog ownership overflow",
+                    })?,
+            )?;
             copied.catalog_revisions.insert(name, *revision);
         }
         Ok((copied, custody))
     }
 
     /// Returns the unambiguous model-visible selection in canonical order.
-    pub fn definitions(&self, io: Option<&crate::executor::PreparationIo>) -> Result<Vec<ToolDefinition>> {
+    pub fn definitions(
+        &self,
+        io: Option<&crate::executor::PreparationIo>,
+    ) -> Result<Vec<ToolDefinition>> {
         #[cfg(feature = "filesystem")]
-        if let Some(io) = io { io.retain_owned(std::mem::size_of::<Vec<ToolDefinition>>() as u64)?; }
+        if let Some(io) = io {
+            io.retain_owned(std::mem::size_of::<Vec<ToolDefinition>>() as u64)?;
+        }
         let mut definitions = crate::model::vec_with_capacity(self.selected.len(), io)?;
         for (name, selection) in &self.selected {
             let revision = match selection {
                 ModelSelection::Revision(revision) => revision,
                 ModelSelection::Hidden => continue,
                 ModelSelection::Ambiguous => {
-                    return Err(crate::executor::stock_boundary(io, crate::wire::ErrorCode::Conflict,
-                        "tool requires an explicit model revision"));
+                    return Err(crate::executor::stock_boundary(
+                        io,
+                        crate::wire::ErrorCode::Conflict,
+                        "tool requires an explicit model revision",
+                    ));
                 }
             };
-            let tool = self
-                .get_version(name, revision, io)?
-                .ok_or_else(|| crate::executor::stock_boundary(io, crate::wire::ErrorCode::Storage,
-                    "selected tool revision is not registered"))?;
+            let tool = self.get_version(name, revision, io)?.ok_or_else(|| {
+                crate::executor::stock_boundary(
+                    io,
+                    crate::wire::ErrorCode::Storage,
+                    "selected tool revision is not registered",
+                )
+            })?;
             definitions.push(crate::model::clone_tool_definition(&tool.definition, io)?);
         }
         Ok(definitions)

@@ -15,7 +15,7 @@ impl NativeTreeMaterializationBackend {
             if metadata.is_dir() {
                 Ok(open_native_walk_directory(&parent, name, &self.work())?.into_std_file())
             } else {
-                crate::native_host::open_leaf_with_work(
+                crate::native_host::open_leaf(
                     &parent,
                     leaf,
                     &crate::native_host::NativeOpenOptions::Read,
@@ -23,7 +23,7 @@ impl NativeTreeMaterializationBackend {
                 )
             }
         })?;
-        let actual = crate::native_host::stat_file_with_work(&file, &mut &self.work())?;
+        let actual = crate::native_host::stat_file(&file, &mut &self.work())?;
         let mut hasher = blake3::Hasher::new();
         hash_native_metadata_edit(&actual, None, &mut hasher, &self.work())?;
         if actual
@@ -45,7 +45,7 @@ impl NativeTreeMaterializationBackend {
                     actual.file_attributes() & !1
                 }
             });
-            crate::native_host::set_file_attributes_held_measured(
+            crate::native_host::set_file_attributes_held(
                 &parent,
                 leaf,
                 attributes,
@@ -140,7 +140,7 @@ impl NativeTreeMaterializationBackend {
         for root in [&self.held_root, &self.held_target, &self.held_backup] {
             let directory = root.open_dir_held(Path::new(""), &mut &self.work())?;
             let (mut reader, _cursor) =
-                crate::native_host::read_dir_held_with_work(&directory, &mut &self.work())?;
+                crate::native_host::read_dir_held(&directory, &mut &self.work())?;
             if next_native_walk_name(&mut reader, &self.work())?.is_some() {
                 return Err(NativeTreeMaterializationError::ExternalMutation);
             }
@@ -160,7 +160,7 @@ impl NativeTreeMaterializationBackend {
             .held_root
             .open_dir_held(Path::new(""), &mut &self.work())?;
         let (mut reader, _cursor) =
-            crate::native_host::read_dir_held_with_work(&directory, &mut &self.work())?;
+            crate::native_host::read_dir_held(&directory, &mut &self.work())?;
         while let Some(entry) = next_native_walk_name(&mut reader, &self.work())? {
             let _allocation = entry.1;
             let name = entry.0;
@@ -218,10 +218,8 @@ impl NativeTreeMaterializationBackend {
                     .held_target
                     .open_dir_held(Path::new(""), &mut &backend.work())?;
                 let identity = if path.is_empty() {
-                    let (mut reader, _cursor) = crate::native_host::read_dir_held_with_work(
-                        &directory,
-                        &mut &backend.work(),
-                    )?;
+                    let (mut reader, _cursor) =
+                        crate::native_host::read_dir_held(&directory, &mut &backend.work())?;
                     while let Some(entry) = next_native_walk_name(&mut reader, &backend.work())? {
                         let _allocation = entry.1;
                         let name = entry.0;
@@ -247,7 +245,7 @@ impl NativeTreeMaterializationBackend {
                             .ok_or(NativeTreeMaterializationError::InvalidLayout)?,
                     );
                     remove_native_held(&parent, leaf, &backend.work())?;
-                    let directory = crate::native_host::create_new_directory_held_with_work(
+                    let directory = crate::native_host::create_new_directory_held(
                         &parent,
                         leaf,
                         &mut &backend.work(),
@@ -257,7 +255,7 @@ impl NativeTreeMaterializationBackend {
                 crate::native_host::sync_directory_held(&directory, &mut &backend.work())?;
                 Ok(identity)
             },
-            Some(self.work().runtime_meter()),
+            Some((self.work().runtime_meter(), false)),
         )
         .map_err(NativeTreeMaterializationError::from_runtime_error)?
         .await?

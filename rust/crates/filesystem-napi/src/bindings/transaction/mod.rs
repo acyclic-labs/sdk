@@ -331,26 +331,15 @@ pub(in crate::bindings) fn native_transaction_conflict(
 pub(in crate::bindings) fn workspace_commit(
     outcome: TransactionCommit<LocalAuthorityBackend, LocalObjectBackend>,
 ) -> NativeWorkspaceCommit {
-    match outcome {
-        TransactionCommit::Committed(generation) => NativeWorkspaceCommit {
-            status: "committed".to_owned(),
-            generation_id: Some(Buffer::from(generation.id().digest().into_bytes().to_vec())),
-        },
-        TransactionCommit::AlreadyCommitted(generation) => NativeWorkspaceCommit {
-            status: "already-committed".to_owned(),
-            generation_id: Some(Buffer::from(generation.id().digest().into_bytes().to_vec())),
-        },
-        TransactionCommit::Conflict { actual } => NativeWorkspaceCommit {
-            status: "conflict".to_owned(),
-            generation_id: Some(Buffer::from(actual.id().digest().into_bytes().to_vec())),
-        },
-        TransactionCommit::Fenced => NativeWorkspaceCommit {
-            status: "fenced".to_owned(),
-            generation_id: None,
-        },
-        TransactionCommit::IdempotencyConflict => NativeWorkspaceCommit {
-            status: "idempotency-conflict".to_owned(),
-            generation_id: None,
-        },
+    let (status, generation) = match outcome {
+        TransactionCommit::Committed(value) => ("committed", Some(value)),
+        TransactionCommit::AlreadyCommitted(value) => ("already-committed", Some(value)),
+        TransactionCommit::Conflict { actual } => ("conflict", Some(actual)),
+        TransactionCommit::Fenced => ("fenced", None),
+        TransactionCommit::IdempotencyConflict => ("idempotency-conflict", None),
+    };
+    NativeWorkspaceCommit {
+        status: status.to_owned(),
+        generation_id: generation.map(|value| native_generation_buffer(value.id())),
     }
 }
