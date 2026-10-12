@@ -1,3 +1,4 @@
+use acyclic_harness::TaskId;
 use super::*;
 use crate::pi_fork::tests::work;
 use crate::{pi_caller, pi_fork::tests::Fixture};

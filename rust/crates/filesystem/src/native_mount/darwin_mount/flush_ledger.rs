@@ -1,16 +1,10 @@
 use super::*;
 
 /// Orders completed native mutations against source flushes.
-///
-/// A mutating callback advances `completed` only after its source call
-/// returns, so a flush that samples `completed` before it starts covers every
-/// mutation up to that sample. The ledger starts dirty because the state the
-/// mount opened over may be unpublished, and the first sync must cover it.
 pub(super) struct FlushLedger {
     pub(super) completed: AtomicU64,
     pub(super) flushed: AtomicU64,
-    /// Serializes flushes: a waiter that a finished flush already covered
-    /// returns without flushing again, so concurrent syncs share one flush.
+    /// Serializes flushes: a waiter that a finished flush already covered returns without flushing again, so concurrent syncs share one flush.
     pub(super) flushing: Mutex<()>,
 }
 
@@ -23,8 +17,7 @@ impl FlushLedger {
         }
     }
 
-    /// Records one completed (or failed, possibly partial) mutation and
-    /// returns its sequence.
+    /// Records one completed (or failed, possibly partial) mutation and returns its sequence.
     pub(in crate::native_mount) fn record(&self) -> u64 {
         self.completed.fetch_add(1, Ordering::AcqRel) + 1
     }
@@ -33,20 +26,23 @@ impl FlushLedger {
         self.completed.load(Ordering::Acquire)
     }
 
-    /// Makes every mutation up to `required` durable, flushing the source
-    /// only when no earlier successful flush already covers it.
-    pub(in crate::native_mount) fn flush_through(&self, required: u64, source: &dyn MountFilesystem) -> Result<(), i32> {
+    /// Makes every mutation up to `required` durable, flushing the source only when no earlier successful flush already covers it.
+    pub(in crate::native_mount) fn flush_through(
+        &self,
+        required: u64,
+        source: &dyn MountFilesystem,
+        work: &crate::NativeMaterializationWork,
+    ) -> Result<(), NativeMountError> {
         if self.flushed.load(Ordering::Acquire) >= required {
             return Ok(());
         }
-        let _flushing = self.flushing.lock().map_err(|_| libc::EIO)?;
+        let _flushing = self.flushing.lock().map_err(|_| driver_errno(libc::EIO))?;
         if self.flushed.load(Ordering::Acquire) >= required {
             return Ok(());
         }
         let covered = self.latest();
-        source.flush().map_err(errno)?;
+        source.flush(work)?;
         self.flushed.fetch_max(covered, Ordering::AcqRel);
         Ok(())
     }
 }
-

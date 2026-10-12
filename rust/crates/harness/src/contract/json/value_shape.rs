@@ -1,6 +1,6 @@
 //! Streaming extension of the canonical lexical admission pass.
 
-use super::{AdmissionFailure, JsonBounds, JsonCodecCharge, JsonValueSchema, JsonValueShape, Result, ShapeOrigin};
+use super::{CodecError, JsonBounds, JsonCodecCharge, JsonValueSchema, JsonValueShape, Result, ShapeOrigin};
 
 const RAW_KEY: &[u8] = b"$serde_json::private::RawValue";
 const KEYS: [&[u8]; 76] = [
@@ -629,14 +629,14 @@ impl ValueInspector {
 
     pub(super) fn push<F: FnMut(JsonCodecCharge) -> Result<()>>(
         &mut self, byte: u8, charge: &mut F,
-    ) -> std::result::Result<(), AdmissionFailure> {
+    ) -> std::result::Result<(), CodecError> {
         if matches!(self.schema, Some(JsonValueSchema::None)) { return Ok(()); }
         self.push_layer(0, byte, charge)
     }
 
     fn push_layer<F: FnMut(JsonCodecCharge) -> Result<()>>(
         &mut self, initial_layer: usize, byte: u8, charge: &mut F,
-    ) -> std::result::Result<(), AdmissionFailure> {
+    ) -> std::result::Result<(), CodecError> {
         let mut pending = [Pending::EMPTY; LAYERS];
         pending[0] = Pending { layer: initial_layer, bytes: [byte, 0, 0, 0], len: 1, position: 0 };
         let mut length = 1;
@@ -679,7 +679,7 @@ impl ValueInspector {
 
     fn owned_enter<'a, F: FnMut(JsonCodecCharge) -> Result<()>>(
         &mut self, value: &'a serde_json::Value, charge: &mut F,
-    ) -> std::result::Result<Option<OwnedFrame<'a>>, AdmissionFailure> {
+    ) -> std::result::Result<Option<OwnedFrame<'a>>, CodecError> {
         let selection = self.select(0);
         let scope = Self::value_scope(selection);
         self.item(0, scope);
@@ -724,13 +724,13 @@ impl ValueInspector {
         }
     }
 
-    pub(super) fn finish(&self, input_bytes: u64, lexical_items: u64) -> std::result::Result<JsonValueShape, AdmissionFailure> {
+    pub(super) fn finish(&self, input_bytes: u64, lexical_items: u64) -> std::result::Result<JsonValueShape, CodecError> {
         let stats = self.stats;
         if stats.overflow || lexical_items.checked_add(stats.items).is_none_or(|items| items > self.bounds.maximum_items) {
-            return Err(AdmissionFailure::Bound(ITEM_LIMIT));
+            return Err(CodecError::Bound(ITEM_LIMIT));
         }
         if stats.depth > self.bounds.maximum_depth.min(256) as usize {
-            return Err(AdmissionFailure::Bound(DEPTH_LIMIT));
+            return Err(CodecError::Bound(DEPTH_LIMIT));
         }
         Ok(JsonValueShape { input_bytes, lexical_items, virtual_items: stats.items,
             raw_bytes: stats.bytes, raw_frames: stats.raw_frames,
@@ -751,12 +751,12 @@ struct OwnedMeter {
 impl OwnedMeter {
     fn visit<F: FnMut(JsonCodecCharge) -> Result<()>>(
         &mut self, depth: usize, payload: usize, charge: &mut F,
-    ) -> std::result::Result<(), AdmissionFailure> {
-        if depth > self.bounds.maximum_depth.min(256) as usize { return Err(AdmissionFailure::Bound(DEPTH_LIMIT)); }
-        if self.items >= self.bounds.maximum_items { return Err(AdmissionFailure::Bound(ITEM_LIMIT)); }
+    ) -> std::result::Result<(), CodecError> {
+        if depth > self.bounds.maximum_depth.min(256) as usize { return Err(CodecError::Bound(DEPTH_LIMIT)); }
+        if self.items >= self.bounds.maximum_items { return Err(CodecError::Bound(ITEM_LIMIT)); }
         let bytes = self.bytes.checked_add(1).and_then(|bytes| bytes.checked_add(payload as u64))
-            .ok_or(AdmissionFailure::Bound("JSON byte limit exceeded"))?;
-        if bytes > self.bounds.maximum_bytes { return Err(AdmissionFailure::Bound("JSON byte limit exceeded")); }
+            .ok_or(CodecError::Bound("JSON byte limit exceeded"))?;
+        if bytes > self.bounds.maximum_bytes { return Err(CodecError::Bound("JSON byte limit exceeded")); }
         charge(JsonCodecCharge::Inspect { items: 1 })?;
         self.items += 1;
         self.bytes = bytes;
@@ -767,7 +767,7 @@ impl OwnedMeter {
 /// Borrowed resident-tree witness immediately before a genuine from_value conversion.
 pub(super) fn inspect_owned<F: FnMut(JsonCodecCharge) -> Result<()>>(
     value: &serde_json::Value, bounds: JsonBounds, schema: JsonValueSchema, charge: &mut F,
-) -> std::result::Result<JsonValueShape, AdmissionFailure> {
+) -> std::result::Result<JsonValueShape, CodecError> {
     let mut inspector = ValueInspector::new(Some(schema), bounds);
     let mut meter = OwnedMeter { bounds, items: 0, bytes: 0 };
     let mut stack: [Option<OwnedFrame<'_>>; 257] = std::array::from_fn(|_| None);

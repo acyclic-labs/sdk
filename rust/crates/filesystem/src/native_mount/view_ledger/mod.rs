@@ -1,19 +1,19 @@
 //! Exact invalidation of cached mount lookups.
 
+use super::{MountSourceError, adapter::NativeDemandCarrier};
 use crate::FileId;
 use crate::kernel::{LogicalName, NameEncoding, NamespacePath};
+use notifications::ViewObservers;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError, RwLock, Weak};
-use unicode_normalization::UnicodeNormalization as _;
-use super::{adapter::NativeDemandCarrier, MountSourceError};
 use storage::ChangeMap;
-use notifications::ViewObservers;
-mod storage;
-mod notifications;
+use unicode_normalization::UnicodeNormalization as _;
 mod node_change;
+mod notifications;
+mod storage;
 pub(super) use notifications::PreparedEverythingNotification;
 
 static VIEW_CHANGES: AtomicU64 = AtomicU64::new(0);
@@ -109,7 +109,9 @@ pub trait ViewObserver: Send + Sync {
     fn view_changed(&self, position: ViewStamp, origin: ViewOrigin);
 
     /// Known native allocation ownership for an SDK observer.
-    fn allocation_custody(&self) -> Option<crate::demand::NativeMountAllocationCustody> { None }
+    fn allocation_custody(&self) -> Option<crate::demand::NativeMountAllocationCustody> {
+        None
+    }
 
     /// Changes to the source may not all have been reported by `position`,
     fn view_unconfirmed(&self, position: ViewStamp) {
@@ -179,20 +181,36 @@ pub(crate) struct ViewLedger {
 }
 
 impl ViewLedger {
-    pub(super) fn new(carrier: &mut NativeDemandCarrier<'_>) -> Result<Arc<Self>, MountSourceError> {
+    pub(super) fn new(
+        carrier: &mut NativeDemandCarrier<'_>,
+    ) -> Result<Arc<Self>, MountSourceError> {
         let custody = carrier.new_custody()?;
-        carrier.with_work(|work| custody.claim(std::mem::size_of::<Self>() as u64, work))
+        carrier
+            .with_work(|work| custody.claim(std::mem::size_of::<Self>() as u64, work))
             .map_err(super::lazy::mount_demand_error)?;
-        Ok(Arc::new(Self { _custody: Some(custody), ..Self::default() }))
+        Ok(Arc::new(Self {
+            _custody: Some(custody),
+            ..Self::default()
+        }))
     }
 
-    pub(super) fn stamp(&self) -> ViewStamp { ViewStamp::of(&self.latest) }
+    pub(super) fn stamp(&self) -> ViewStamp {
+        ViewStamp::of(&self.latest)
+    }
 
-    pub(super) fn record(&self, change: &ViewChange<'_>, carrier: &mut NativeDemandCarrier<'_>)
-        -> Result<(), MountSourceError>
-    {
+    pub(super) fn record(
+        &self,
+        change: &ViewChange<'_>,
+        carrier: &mut NativeDemandCarrier<'_>,
+    ) -> Result<(), MountSourceError> {
         let observers = self.observers.live(carrier)?;
-        storage::charge(carrier, crate::WorkCounters { items_examined: observers.0.len() as u64, ..crate::WorkCounters::UNCHARGED })?;
+        storage::charge(
+            carrier,
+            crate::WorkCounters {
+                items_examined: observers.0.len() as u64,
+                ..crate::WorkCounters::UNCHARGED
+            },
+        )?;
         let position = ViewStamp::next();
         let recorded = (|| {
             match change {
@@ -202,22 +220,42 @@ impl ViewLedger {
                     self.rebound(path, position, carrier)?;
                     self.nodes.record(key_of(id), position, carrier)?;
                 }
-                ViewChange::Moved { from, to, moved, replaced } => {
+                ViewChange::Moved {
+                    from,
+                    to,
+                    moved,
+                    replaced,
+                } => {
                     self.rebound(from, position, carrier)?;
                     self.rebound(to, position, carrier)?;
                     self.nodes.record(key_of(moved), position, carrier)?;
-                    if let Some(id) = replaced { self.nodes.record(key_of(id), position, carrier)?; }
+                    if let Some(id) = replaced {
+                        self.nodes.record(key_of(id), position, carrier)?;
+                    }
                 }
                 ViewChange::Effect(effect) => {
-                    for id in &effect.nodes { self.nodes.record(key_of(id), position, carrier)?; }
+                    for id in &effect.nodes {
+                        self.nodes.record(key_of(id), position, carrier)?;
+                    }
                     for (directory, name) in &effect.names {
                         let directory = path_key(directory, carrier)?;
-                        self.bindings.record(child_key(directory, name, carrier)?, position, carrier)?;
+                        self.bindings.record(
+                            child_key(directory, name, carrier)?,
+                            position,
+                            carrier,
+                        )?;
                         self.directories.record(directory, position, carrier)?;
                     }
-                    for path in &effect.subtrees { self.rebound(path, position, carrier)?; }
-                    for path in &effect.listings { self.directories.record(path_key(path, carrier)?, position, carrier)?; }
-                    if effect.everything { position.record_in(&self.everything); }
+                    for path in &effect.subtrees {
+                        self.rebound(path, position, carrier)?;
+                    }
+                    for path in &effect.listings {
+                        self.directories
+                            .record(path_key(path, carrier)?, position, carrier)?;
+                    }
+                    if effect.everything {
+                        position.record_in(&self.everything);
+                    }
                 }
                 ViewChange::Everything => position.record_in(&self.everything),
                 ViewChange::Unconfirmed => position.record_in(&self.unconfirmed),
@@ -227,22 +265,30 @@ impl ViewLedger {
         position.record_in(&self.latest);
         let origin = ViewOrigin::current();
         for observer in &observers.0 {
-            if matches!(change, ViewChange::Unconfirmed) { observer.view_unconfirmed(position); }
-            else { observer.view_changed(position, origin); }
+            if matches!(change, ViewChange::Unconfirmed) {
+                observer.view_unconfirmed(position);
+            } else {
+                observer.view_changed(position, origin);
+            }
         }
         recorded
     }
 
-    fn rebound(&self, path: &NamespacePath, position: ViewStamp, carrier: &mut NativeDemandCarrier<'_>)
-        -> Result<(), MountSourceError>
-    {
+    fn rebound(
+        &self,
+        path: &NamespacePath,
+        position: ViewStamp,
+        carrier: &mut NativeDemandCarrier<'_>,
+    ) -> Result<(), MountSourceError> {
         let (mut parent, mut terminal) = (None, key_of(&()));
         for name in path.components() {
             parent = Some(terminal);
             terminal = child_key(terminal, name, carrier)?;
         }
         self.bindings.record(terminal, position, carrier)?;
-        if let Some(parent) = parent { self.directories.record(parent, position, carrier)?; }
+        if let Some(parent) = parent {
+            self.directories.record(parent, position, carrier)?;
+        }
         Ok(())
     }
     /// Whether no reported or unconfirmed change invalidated this lookup.
@@ -266,61 +312,79 @@ impl ViewLedger {
         stamp: ViewStamp,
         work: &mut crate::demand::DemandWork,
     ) -> Result<bool, MountSourceError> {
-        query(path, work, || {
-        let mut terminal = None;
-        stamp.precedes_none_of(&self.everything)
-            && self.bindings.unchanged_since(stamp, |unchanged| {
-                PathKeys::new(path).all(|key| {
-                    terminal = Some(key);
-                    unchanged(key)
+        admitted_names(path.components(), work, || {
+            let mut terminal = None;
+            stamp.precedes_none_of(&self.everything)
+                && self.bindings.unchanged_since(stamp, |unchanged| {
+                    PathKeys::new(path).all(|key| {
+                        terminal = Some(key);
+                        unchanged(key)
+                    })
                 })
-            })
-            && terminal.is_none_or(|key| {
-                self.directories
-                    .unchanged_since(stamp, |unchanged| unchanged(key))
-            })
-            && file_id.is_none_or(|file_id| {
-                self.nodes
-                    .unchanged_since(stamp, |unchanged| unchanged(key_of(&file_id)))
-            })
-            })
+                && terminal.is_none_or(|key| {
+                    self.directories
+                        .unchanged_since(stamp, |unchanged| unchanged(key))
+                })
+                && file_id.is_none_or(|file_id| {
+                    self.nodes
+                        .unchanged_since(stamp, |unchanged| unchanged(key_of(&file_id)))
+                })
+        })
     }
 
     /// Whether every binding in this path is unchanged since the stamp.
-    pub(super) fn binding_unchanged_since(&self, path: &NamespacePath, stamp: ViewStamp, work: &mut crate::demand::DemandWork) -> Result<bool, MountSourceError> {
-        query(path, work, || {
-        stamp.precedes_none_of(&self.unconfirmed)
-            && stamp.precedes_none_of(&self.everything)
-            && self
-                .bindings
-                .unchanged_since(stamp, |unchanged| PathKeys::new(path).all(unchanged))
-            })
+    pub(super) fn binding_unchanged_since(
+        &self,
+        path: &NamespacePath,
+        stamp: ViewStamp,
+        work: &mut crate::demand::DemandWork,
+    ) -> Result<bool, MountSourceError> {
+        admitted_names(path.components(), work, || {
+            stamp.precedes_none_of(&self.unconfirmed)
+                && stamp.precedes_none_of(&self.everything)
+                && self
+                    .bindings
+                    .unchanged_since(stamp, |unchanged| PathKeys::new(path).all(unchanged))
+        })
     }
 
     /// Whether this directory listing is unchanged since the stamp.
-    pub(super) fn listing_unchanged_since(&self, path: &NamespacePath, stamp: ViewStamp, work: &mut crate::demand::DemandWork) -> Result<bool, MountSourceError> {
-        query(path, work, || {
-        let Some(directory) = PathKeys::new(path).last() else {
-            return false;
-        };
-        stamp.precedes_none_of(&self.unconfirmed)
-            && stamp.precedes_none_of(&self.everything)
-            && self
-                .directories
-                .unchanged_since(stamp, |unchanged| unchanged(directory))
-            })
+    pub(super) fn listing_unchanged_since(
+        &self,
+        path: &NamespacePath,
+        stamp: ViewStamp,
+        work: &mut crate::demand::DemandWork,
+    ) -> Result<bool, MountSourceError> {
+        admitted_names(path.components(), work, || {
+            let Some(directory) = PathKeys::new(path).last() else {
+                return false;
+            };
+            stamp.precedes_none_of(&self.unconfirmed)
+                && stamp.precedes_none_of(&self.everything)
+                && self
+                    .directories
+                    .unchanged_since(stamp, |unchanged| unchanged(directory))
+        })
     }
 
     /// Whether this node is unchanged since the stamp.
-    pub(super) fn node_unchanged_since(&self, file_id: FileId, stamp: ViewStamp, work: &mut crate::demand::DemandWork) -> Result<bool, MountSourceError> {
-        work.charge(crate::WorkCounters { items_examined: 3, ..crate::WorkCounters::UNCHARGED }).map_err(super::lazy::mount_demand_error)?;
+    pub(super) fn node_unchanged_since(
+        &self,
+        file_id: FileId,
+        stamp: ViewStamp,
+        work: &mut crate::demand::DemandWork,
+    ) -> Result<bool, MountSourceError> {
+        work.charge(crate::WorkCounters {
+            items_examined: 3,
+            ..crate::WorkCounters::UNCHARGED
+        })
+        .map_err(super::lazy::mount_demand_error)?;
         Ok(stamp.precedes_none_of(&self.unconfirmed)
             && stamp.precedes_none_of(&self.everything)
             && self
                 .nodes
                 .unchanged_since(stamp, |unchanged| unchanged(key_of(&file_id))))
     }
-
 }
 
 /// Keys of a path's root and every successive prefix, including the path.
@@ -351,8 +415,15 @@ impl Iterator for PathKeys<'_> {
     }
 }
 
-fn path_key(path: &NamespacePath, carrier: &mut NativeDemandCarrier<'_>) -> Result<u64, MountSourceError> {
-    carrier.with_work(|work| query(path, work, || PathKeys::new(path).last().unwrap_or_else(|| key_of(&()))))
+fn path_key(
+    path: &NamespacePath,
+    carrier: &mut NativeDemandCarrier<'_>,
+) -> Result<u64, MountSourceError> {
+    carrier.with_work(|work| {
+        admitted_names(path.components(), work, || {
+            PathKeys::new(path).last().unwrap_or_else(|| key_of(&()))
+        })
+    })
 }
 
 /// Keys `name` beneath `parent` by its spelling fold: the name's Unicode
@@ -431,40 +502,65 @@ fn key_of(value: &impl Hash) -> u64 {
     hasher.finish()
 }
 
-
-fn child_key(parent: u64, name: &LogicalName, carrier: &mut NativeDemandCarrier<'_>) -> Result<u64, MountSourceError> {
-    carrier.with_work(|work| admitted_names(std::slice::from_ref(name), work, || hash_child(parent, name)))
+fn child_key(
+    parent: u64,
+    name: &LogicalName,
+    carrier: &mut NativeDemandCarrier<'_>,
+) -> Result<u64, MountSourceError> {
+    carrier.with_work(|work| {
+        admitted_names(std::slice::from_ref(name), work, || {
+            hash_child(parent, name)
+        })
+    })
 }
 
-fn query<T>(path: &NamespacePath, work: &mut crate::demand::DemandWork, read: impl FnOnce() -> T)
-    -> Result<T, MountSourceError>
-{
-    admitted_names(path.components(), work, read)
-}
-
-fn admitted_names<T>(names: &[LogicalName], work: &mut crate::demand::DemandWork, read: impl FnOnce() -> T)
-    -> Result<T, MountSourceError>
-{
+fn admitted_names<T>(
+    names: &[LogicalName],
+    work: &mut crate::demand::DemandWork,
+    read: impl FnOnce() -> T,
+) -> Result<T, MountSourceError> {
     let mut scratch = 0_u64;
     let mut items = 3_u64;
     for name in names {
-        items = items.checked_add((name.as_bytes().len() as u64).checked_mul(4).and_then(|n| n.checked_add(1)).ok_or(crate::WorkError::Overflow)?).ok_or(crate::WorkError::Overflow)?;
+        items = items
+            .checked_add(
+                (name.as_bytes().len() as u64)
+                    .checked_mul(4)
+                    .and_then(|n| n.checked_add(1))
+                    .ok_or(crate::WorkError::Overflow)?,
+            )
+            .ok_or(crate::WorkError::Overflow)?;
         let unicode_scratch = match name.encoding() {
             NameEncoding::WindowsUtf16Le => crate::kernel::types::utf16le_units(name.as_bytes())
-                .is_some_and(|units| units.clone().any(|unit| unit >= 0x80)
-                    && char::decode_utf16(units).all(|value| value.is_ok())),
-            NameEncoding::Utf8 | NameEncoding::PosixBytes => !name.as_bytes().is_ascii()
-                && std::str::from_utf8(name.as_bytes()).is_ok(),
+                .is_some_and(|units| {
+                    units.clone().any(|unit| unit >= 0x80)
+                        && char::decode_utf16(units).all(|value| value.is_ok())
+                }),
+            NameEncoding::Utf8 | NameEncoding::PosixBytes => {
+                !name.as_bytes().is_ascii() && std::str::from_utf8(name.as_bytes()).is_ok()
+            }
         };
         if unicode_scratch {
-            scratch = scratch.max((name.as_bytes().len() as u64).checked_mul(32).ok_or(crate::WorkError::Overflow)?);
+            scratch = scratch.max(
+                (name.as_bytes().len() as u64)
+                    .checked_mul(32)
+                    .ok_or(crate::WorkError::Overflow)?,
+            );
         }
     }
-    work.charge(crate::WorkCounters { items_examined: items, ..crate::WorkCounters::UNCHARGED })
-        .map_err(super::lazy::mount_demand_error)?;
-    if scratch != 0 { work.allocate(scratch).map_err(super::lazy::mount_demand_error)?; }
+    work.charge(crate::WorkCounters {
+        items_examined: items,
+        ..crate::WorkCounters::UNCHARGED
+    })
+    .map_err(super::lazy::mount_demand_error)?;
+    if scratch != 0 {
+        work.allocate(scratch)
+            .map_err(super::lazy::mount_demand_error)?;
+    }
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(read));
-    let released = work.release(scratch).map_err(super::lazy::mount_demand_error);
+    let released = work
+        .release(scratch)
+        .map_err(super::lazy::mount_demand_error);
     match result {
         Ok(value) => released.map(|()| value),
         Err(panic) => std::panic::resume_unwind(panic),

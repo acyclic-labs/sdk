@@ -101,8 +101,8 @@ async fn chosen_child_default_source_and_foreign_project_do_not_import_transcrip
     assert_eq!(request, original);
     let selected = TaskId::from_bytes([205;16]);
     let explicit = ForkToolArguments { source: Some(selected), ..arguments.clone() };
-    let foreign = VolumeRef::new(fixture.filesystem_provider.clone(), "authorized-review-source", VolumeClass::Project,
-        VolumeOwner::Project("created-project".into()))?;
+    let foreign = VolumeRef::new(fixture.filesystem_provider.clone(), "authorized-review-source".into(), VolumeClass::Project,
+        VolumeOwner::Project("created-project".into()), &mut None)?;
     let generation = fixture.filesystem.create_volume(&foreign).await?.generation;
     explicit.select_project(fixture.root, selected, foreign, generation, fixture.root_scope.limits(), &mut request)?;
     assert_eq!(request.parent, original.parent);
@@ -140,8 +140,8 @@ async fn authenticated_output_selection_preserves_child_authority_and_rejects_ro
     assert!(Arc::ptr_eq(&binding.reader, &same.reader));
     assert!(Arc::ptr_eq(binding.writer.as_ref().ok_or_else(|| Error::Invalid("created writer missing".into()))?,
         same.writer.as_ref().ok_or_else(|| Error::Invalid("selected writer missing".into()))?));
-    let root_volume = VolumeRef::new(fixture.filesystem_provider.clone(), "scheduler",
-        VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::from_bytes([80;16])))?;
+    let root_volume = VolumeRef::new(fixture.filesystem_provider.clone(), "scheduler".into(),
+        VolumeClass::AgentPrivate, VolumeOwner::Agent(AgentId::from_bytes([80;16])), &mut None)?;
     assert!(selected.created_content_bindings(&root_volume).is_err());
     assert!(context.clone().with_output_volume(&root_volume).is_err());
     let root = fixture.harness.durable_context(fixture.root, fixture.root_lease.operation.operation_id).await?;

@@ -619,7 +619,7 @@ where
         }
         let generation = self.generation(request.generation).await?;
         let after = page.after.map(input_logical_name).transpose()?;
-        let listed = generation.list_directory(&request.path, after.as_ref(), page.maximum_items, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)
+        let listed = generation.list_directory(&request.path, after.as_ref(), page.maximum_items, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value.0).map_err(|failure| failure.error)
             .map_err(|error| status(&error))?;
         let next = listed
             .has_more
@@ -1628,8 +1628,8 @@ async fn apply_mutation<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         Mutation::Remove(value) => transaction.remove(&value.path, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error),
         Mutation::Rename(value) => {
             transaction
-                .rename_with_replace(&value.source, &value.destination, value.replace)
-                .await
+                .rename(&value.source, &value.destination, value.replace, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new())
+                .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
         }
         Mutation::HardLink(value) => {
             transaction

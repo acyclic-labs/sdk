@@ -56,7 +56,10 @@ unsafe extern "C" {
         interrupted_before_namespace: *mut c_int,
     ) -> c_int;
     pub(super) fn acyclic_fs_darwin_mount_interrupt(session: *mut c_void);
-    pub(super) fn acyclic_fs_darwin_mount_invalidate(session: *mut c_void, path: *const c_char) -> c_int;
+    pub(super) fn acyclic_fs_darwin_mount_invalidate(
+        session: *mut c_void,
+        path: *const c_char,
+    ) -> c_int;
     pub(super) fn acyclic_fs_darwin_mount_attribute_timeout() -> u32;
     pub(super) fn acyclic_fs_darwin_mount_fill_directory(
         buffer: *mut c_void,

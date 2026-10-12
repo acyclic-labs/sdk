@@ -209,6 +209,7 @@ pub(crate) fn owned_logical_bytes(value: &Value) -> u64 {
 
 #[derive(Debug)]
 enum CodecError {
+    Root(Error),
     Interrupted,
     Bound(&'static str),
     Json(serde_json::Error),
@@ -217,6 +218,7 @@ enum CodecError {
 impl std::fmt::Display for CodecError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Root(error) => std::fmt::Display::fmt(error, formatter),
             Self::Interrupted => formatter.write_str("JSON admission interrupted"),
             Self::Bound(reason) => formatter.write_str(reason),
             Self::Json(error) => std::fmt::Display::fmt(error, formatter),
@@ -227,6 +229,7 @@ impl std::fmt::Display for CodecError {
 impl std::error::Error for CodecError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
+            Self::Root(error) => Some(error),
             Self::Interrupted | Self::Bound(_) => None,
             Self::Json(error) => Some(error),
             Self::Allocation(error) => Some(error),
@@ -244,9 +247,13 @@ impl From<serde_json::Error> for CodecError {
 impl From<std::collections::TryReserveError> for CodecError {
     fn from(error: std::collections::TryReserveError) -> Self { Self::Allocation(error) }
 }
+impl From<Error> for CodecError {
+    fn from(error: Error) -> Self { Self::Root(error) }
+}
 impl CodecError {
     fn into_io(self) -> std::io::Error {
         match self {
+            Self::Root(_) => unreachable!("original errors stay outside serde's writer bridge"),
             Self::Interrupted => std::io::ErrorKind::Interrupted.into(),
             Self::Bound(_) => std::io::ErrorKind::InvalidData.into(),
             Self::Json(error) => std::io::Error::other(error),
@@ -257,6 +264,7 @@ impl CodecError {
         #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
         if let Some(code) = native_code {
             return match self {
+                Self::Root(error) => error,
                 Self::Interrupted => unreachable!("interruption retains its original owned Root cause"),
                 Self::Bound(reason) => Error::NativeBoundary { code, reason },
                 Self::Json(source) => Error::NativeEncode { code, source, custody: None },
@@ -266,11 +274,15 @@ impl CodecError {
         #[cfg(not(all(feature = "filesystem", not(target_arch = "wasm32"))))]
         let _ = native_code;
         match self {
+            Self::Root(error) => error,
             Self::Interrupted => unreachable!("interruption retains its original owned Root cause"),
             Self::Bound(reason) => Error::Invalid(reason.into()),
             Self::Json(error) => Error::Invalid(error.to_string()),
             Self::Allocation(error) => Error::Allocation(error),
         }
+    }
+    fn into_error(self, code: Option<crate::wire::ErrorCode>) -> Error {
+        self.into_root_with_code(code.map(|_| crate::wire::ErrorCode::Invalid))
     }
 }
 
@@ -307,10 +319,7 @@ pub(crate) fn json_owned_value_shape_bounded<F: FnMut(JsonCodecCharge) -> Result
     value: &Value, bounds: JsonBounds, schema: JsonValueSchema, charge: &mut F,
 ) -> Result<JsonValueShape> {
     value_shape::inspect_owned(value, JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds }, schema, charge)
-        .map_err(|failure| match failure {
-            AdmissionFailure::Root(error) => error,
-            AdmissionFailure::Bound(reason) => shape_boundary(reason),
-        })
+        .map_err(|error| error.into_error(Some(crate::wire::ErrorCode::Invalid)))
 }
 
 /// NEW logical Value-container/Raw replay/scratch/static diagnostic quota for a genuine consuming Value converter, using the original SDK-issued owned shape.
@@ -391,6 +400,12 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> Drop for Meter<'_, F> {
 }
 
 impl<F: FnMut(JsonCodecCharge) -> Result<()>> Meter<'_, F> {
+    fn forward(&mut self, error: CodecError) -> CodecError {
+        match error {
+            CodecError::Root(error) => { self.failure = Some(error); CodecError::Interrupted },
+            error => error,
+        }
+    }
     fn root_error(&mut self, error: CodecError) -> Error {
         self.first_error().unwrap_or_else(|| error.into_root_with_code(self.native_code))
     }
@@ -847,14 +862,6 @@ pub fn canonical_json_bytes_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCha
     encode(value, JsonBounds { maximum_depth: bounds.maximum_depth.min(256), ..bounds }, code, charge)
 }
 
-/// Native carrier for the legacy identity policy, restricted to an already paid, trusted resident Value.
-#[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-pub(crate) fn canonical_json_bytes_identity_native_trusted<F: FnMut(JsonCodecCharge) -> Result<()>>(
-    value: &Value, code: crate::wire::ErrorCode, charge: &mut F,
-) -> Result<Vec<u8>> {
-    encode(value, JsonBounds::IDENTITY, Some(code), charge)
-}
-
 /// SDK-private sizing of an already bounded, audited closed source.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) fn validate_json_byte_bound_native_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
@@ -884,9 +891,9 @@ pub(super) fn count_json_bytes_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodec
                     JsonCodecCharge::Work { items, .. } => JsonCodecCharge::Work { bytes: 0, items },
                     other => other,
                 }).map_err(|error| meter.root_error(error))
-            }).map_err(|failure| match failure {
-                AdmissionFailure::Root(error) => { meter.failure = Some(error); CodecError::Interrupted.into_io() },
-                AdmissionFailure::Bound(reason) => meter.bound(reason).into_io(),
+            }).map_err(|error| match meter.forward(error) {
+                CodecError::Bound(reason) => meter.bound(reason).into_io(),
+                error => error.into_io(),
             })?;
             Ok(bytes.len())
         }
@@ -897,10 +904,7 @@ pub(super) fn count_json_bytes_trusted<T: Serialize + ?Sized, F: FnMut(JsonCodec
         return Err(sizing.meter.root_error(error.into()));
     }
     if let Some(error) = sizing.meter.first_error() { return Err(error); }
-    sizing.scan.end_inline().map_err(|failure| match failure {
-        AdmissionFailure::Root(error) => error,
-        AdmissionFailure::Bound(reason) => sizing.meter.root_error(CodecError::Bound(reason)),
-    })?;
+    sizing.scan.end_inline().map_err(|error| sizing.meter.root_error(error))?;
     if let Err(error) = sizing.meter.charge(JsonCodecCharge::Work { bytes: 0, items: 0 }) {
         return Err(sizing.meter.root_error(error));
     }
@@ -948,15 +952,12 @@ fn encode_value<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
 /// Finish an SDK-owned, already canonical immutable journal template in its caller-owned prepaid output.
 #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
 pub(crate) fn canonical_json_value_into_prepaid_native_trusted<F: FnMut(JsonCodecCharge) -> Result<()>>(
-    value: &Value, output: &mut Vec<u8>, maximum_bytes: u64,
+    value: &Value, output: &mut [u8], maximum_bytes: u64,
     code: crate::wire::ErrorCode, charge: &mut F,
-) -> Result<()> {
+) -> Result<usize> {
     let maximum = usize::try_from(maximum_bytes)
         .map_err(|_| Error::NativeBoundary { code, reason: "JSON output exceeds address space" })?;
-    if !output.is_empty() {
-        return Err(Error::NativeBoundary { code, reason: "JSON prepaid output must be empty" });
-    }
-    if output.capacity() < maximum {
+    if output.len() < maximum {
         return Err(Error::NativeBoundary { code, reason: "JSON prepaid output capacity is insufficient" });
     }
     let mut meter = Meter { bounds: JsonBounds { maximum_bytes, ..JsonBounds::IDENTITY },
@@ -965,37 +966,40 @@ pub(crate) fn canonical_json_value_into_prepaid_native_trusted<F: FnMut(JsonCode
     if let Err(error) = meter.charge(JsonCodecCharge::Work { bytes: 0, items: 0 }) {
         return Err(meter.root_error(error));
     }
-    write_canonical_output(value, output, maximum, &mut meter)
+    write_canonical_output(value, &mut std::io::Cursor::new(output), maximum, &mut meter)
 }
 
 struct Output<'a, 'b, F: FnMut(JsonCodecCharge) -> Result<()>> {
-    bytes: &'a mut Vec<u8>,
+    bytes: &'a mut dyn std::io::Write,
     maximum: usize,
+    written: usize,
     meter: &'a mut Meter<'b, F>,
 }
 
 impl<F: FnMut(JsonCodecCharge) -> Result<()>> std::io::Write for Output<'_, '_, F> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        let remaining = self.maximum.checked_sub(self.bytes.len())
+        let remaining = self.maximum.checked_sub(self.written)
             .ok_or_else(|| self.meter.bound("JSON exceeds admitted output").into_io())?;
         if bytes.len() > remaining {
             return Err(self.meter.bound("JSON exceeds admitted output").into_io());
         }
         self.meter.charge(JsonCodecCharge::Work { bytes: bytes.len() as u64, items: 0 }).map_err(CodecError::into_io)?;
         self.meter.charge(JsonCodecCharge::Copy { bytes: bytes.len() as u64 }).map_err(CodecError::into_io)?;
-        self.bytes.extend_from_slice(bytes);
+        self.bytes.write_all(bytes)?;
+        self.written += bytes.len();
         Ok(bytes.len())
     }
     fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
 }
 
 fn write_canonical_output<F: FnMut(JsonCodecCharge) -> Result<()>>(
-    value: &Value, bytes: &mut Vec<u8>, maximum: usize, meter: &mut Meter<'_, F>,
-) -> Result<()> {
-    if let Err(error) = serde_json::to_writer(Output { bytes, maximum, meter }, value) {
-        return Err(meter.root_error(error.into()));
+    value: &Value, bytes: &mut dyn std::io::Write, maximum: usize, meter: &mut Meter<'_, F>,
+) -> Result<usize> {
+    let mut output = Output { bytes, maximum, written: 0, meter };
+    if let Err(error) = serde_json::to_writer(&mut output, value) {
+        return Err(output.meter.root_error(error.into()));
     }
-    Ok(())
+    Ok(output.written)
 }
 
 pub(super) fn encode<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Result<()>>(
@@ -1060,33 +1064,11 @@ struct Scan {
     atom: bool,
     inspector: Option<ValueInspector>,
 }
-enum AdmissionFailure {
-    Root(Error),
-    Bound(&'static str),
-}
-impl From<Error> for AdmissionFailure {
-    fn from(error: Error) -> Self { Self::Root(error) }
-}
-impl AdmissionFailure {
-    fn into_error(self, code: Option<crate::wire::ErrorCode>) -> Error {
-        match self {
-            Self::Root(error) => error,
-            Self::Bound(reason) => {
-                #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-                if code.is_some() {
-                    return Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid, reason };
-                }
-                let _ = code;
-                Error::Invalid(reason.into())
-            }
-        }
-    }
-}
 impl Scan {
     fn with_value_schema(schema: Option<JsonValueSchema>, bounds: JsonBounds) -> Self {
         Self { inspector: Some(ValueInspector::new(schema, bounds)), ..Self::default() }
     }
-    fn value_shape(&self) -> std::result::Result<JsonValueShape, AdmissionFailure> {
+    fn value_shape(&self) -> std::result::Result<JsonValueShape, CodecError> {
         self.end_inline()?;
         self.inspector.as_ref().expect("Value shape requested only from configured source pass")
             .finish(self.bytes, self.items)
@@ -1096,9 +1078,9 @@ impl Scan {
     }
     fn push_inline<F: FnMut(JsonCodecCharge) -> Result<()>>(
         &mut self, bytes: &[u8], bounds: JsonBounds, charge: &mut F,
-    ) -> std::result::Result<(), AdmissionFailure> {
+    ) -> std::result::Result<(), CodecError> {
         for &byte in bytes {
-            if self.bytes >= bounds.maximum_bytes { return Err(AdmissionFailure::Bound(LEXICAL_BYTE_ERROR)); }
+            if self.bytes >= bounds.maximum_bytes { return Err(CodecError::Bound(LEXICAL_BYTE_ERROR)); }
             charge(JsonCodecCharge::Read { bytes: 1 })?;
             self.bytes += 1;
             if let Some(inspector) = &mut self.inspector { inspector.push(byte, charge)?; }
@@ -1112,13 +1094,13 @@ impl Scan {
             let item = match byte {
                 b'"' => { self.string = true; self.atom = false; true }
                 b'[' | b'{' => { self.depth += 1; self.atom = false; true }
-                b']' | b'}' => { self.depth = self.depth.checked_sub(1).ok_or(AdmissionFailure::Bound(LEXICAL_NESTING_ERROR))?; self.atom = false; false }
+                b']' | b'}' => { self.depth = self.depth.checked_sub(1).ok_or(CodecError::Bound(LEXICAL_NESTING_ERROR))?; self.atom = false; false }
                 b':' | b',' | b' ' | b'\r' | b'\n' | b'\t' => { self.atom = false; false }
                 _ => { let first = !self.atom; self.atom = true; first }
             };
             if item {
                 if item_depth > bounds.maximum_depth || self.items >= bounds.maximum_items {
-                    return Err(AdmissionFailure::Bound(LEXICAL_ITEM_ERROR));
+                    return Err(CodecError::Bound(LEXICAL_ITEM_ERROR));
                 }
                 charge(JsonCodecCharge::Work { bytes: 0, items: 1 })?;
                 self.items += 1;
@@ -1129,8 +1111,8 @@ impl Scan {
     fn end(&self) -> Result<()> {
         self.end_inline().map_err(|failure| failure.into_error(None))
     }
-    fn end_inline(&self) -> std::result::Result<(), AdmissionFailure> {
-        if self.string || self.depth != 0 { return Err(AdmissionFailure::Bound(LEXICAL_INCOMPLETE_ERROR)); }
+    fn end_inline(&self) -> std::result::Result<(), CodecError> {
+        if self.string || self.depth != 0 { return Err(CodecError::Bound(LEXICAL_INCOMPLETE_ERROR)); }
         Ok(())
     }
 }
@@ -1146,8 +1128,8 @@ pub(super) fn admit_json_trusted<F: FnMut(JsonCodecCharge) -> Result<()>>(bytes:
 
 fn admit_json_inline<F: FnMut(JsonCodecCharge) -> Result<()>>(
     bytes: &[u8], bounds: JsonBounds, charge: &mut F,
-) -> std::result::Result<(), AdmissionFailure> {
-    if bytes.len() as u64 > bounds.maximum_bytes { return Err(AdmissionFailure::Bound(LEXICAL_BYTE_ERROR)); }
+) -> std::result::Result<(), CodecError> {
+    if bytes.len() as u64 > bounds.maximum_bytes { return Err(CodecError::Bound(LEXICAL_BYTE_ERROR)); }
     let mut scan = Scan::default();
     scan.push_inline(bytes, bounds, charge)?;
     scan.end_inline()
@@ -1155,8 +1137,8 @@ fn admit_json_inline<F: FnMut(JsonCodecCharge) -> Result<()>>(
 
 fn admit_json_value_shape_inline<F: FnMut(JsonCodecCharge) -> Result<()>>(
     bytes: &[u8], bounds: JsonBounds, schema: Option<JsonValueSchema>, charge: &mut F,
-) -> std::result::Result<JsonValueShape, AdmissionFailure> {
-    if bytes.len() as u64 > bounds.maximum_bytes { return Err(AdmissionFailure::Bound(LEXICAL_BYTE_ERROR)); }
+) -> std::result::Result<JsonValueShape, CodecError> {
+    if bytes.len() as u64 > bounds.maximum_bytes { return Err(CodecError::Bound(LEXICAL_BYTE_ERROR)); }
     let mut scan = Scan::with_value_schema(schema, bounds);
     scan.push_inline(bytes, bounds, charge)?;
     scan.value_shape()
@@ -1193,9 +1175,9 @@ pub fn json_bytes_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Re
                     JsonCodecCharge::Read { bytes } => JsonCodecCharge::Work { bytes, items: 0 },
                     other => other,
                 }).map_err(|error| meter.root_error(error))
-            }).map_err(|failure| match failure {
-                AdmissionFailure::Root(error) => { meter.failure = Some(error); CodecError::Interrupted.into_io() },
-                AdmissionFailure::Bound(reason) => meter.bound(reason).into_io(),
+            }).map_err(|error| match meter.forward(error) {
+                CodecError::Bound(reason) => meter.bound(reason).into_io(),
+                error => error.into_io(),
             })?;
             if let Some(output) = self.output.as_mut() {
                 if bytes.len() > self.maximum - output.len() {
@@ -1214,10 +1196,7 @@ pub fn json_bytes_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Re
             return Err(first.meter.root_error(error.into()));
         }
         if let Some(error) = first.meter.first_error() { return Err(error); }
-        first.scan.end_inline().map_err(|failure| match failure {
-            AdmissionFailure::Root(error) => error,
-            AdmissionFailure::Bound(reason) => first.meter.root_error(CodecError::Bound(reason)),
-        })?;
+        first.scan.end_inline().map_err(|error| first.meter.root_error(error))?;
         usize::try_from(first.scan.bytes)
             .map_err(|_| first.meter.root_error(CodecError::Bound("JSON output exceeds address space")))?
     };
@@ -1236,10 +1215,7 @@ pub fn json_bytes_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Re
             return Err(second.meter.root_error(error.into()));
         }
         if let Some(error) = second.meter.first_error() { return Err(error); }
-        second.scan.end_inline().map_err(|failure| match failure {
-            AdmissionFailure::Root(error) => error,
-            AdmissionFailure::Bound(reason) => second.meter.root_error(CodecError::Bound(reason)),
-        })?;
+        second.scan.end_inline().map_err(|error| second.meter.root_error(error))?;
         if second.scan.bytes != size as u64 {
             return Err(second.meter.root_error(CodecError::Bound("JSON serialization changed between admission and encoding")));
         }
@@ -1258,9 +1234,9 @@ where S: serde::de::DeserializeSeed<'de>, F: FnMut(JsonCodecCharge) -> Result<()
     let value_shape = admit_json_value_shape_inline(bytes, bounds, value_schema, charge)
         .map_err(|failure| failure.into_error(code))?;
     let scratch = (bytes.len() as u64).max(8).checked_mul(2)
-        .ok_or_else(|| AdmissionFailure::Bound("JSON scratch bound overflow").into_error(code))?;
+        .ok_or_else(|| CodecError::Bound("JSON scratch bound overflow").into_error(code))?;
     let maximum_owned_bytes = maximum_owned_bytes.checked_add(scratch)
-        .ok_or_else(|| AdmissionFailure::Bound("JSON owned bound overflow").into_error(code))?;
+        .ok_or_else(|| CodecError::Bound("JSON owned bound overflow").into_error(code))?;
     charge(JsonCodecCharge::Admission { maximum_owned_bytes, value_shape })?;
     charge(JsonCodecCharge::Work { bytes: 0, items: 0 })?;
     let mut decoder = serde_json::Deserializer::from_slice(bytes);
@@ -1322,14 +1298,8 @@ impl<F: FnMut(JsonCodecCharge) -> Result<()>> ser::Serializer for Raw<'_, '_, F>
             meter.charge(event).map_err(|error| meter.root_error(error))?;
             meter.items += items;
             Ok(())
-        }).map_err(|failure| match failure {
-            AdmissionFailure::Root(error) => { meter.failure = Some(error); CodecError::Interrupted },
-            AdmissionFailure::Bound(reason) => CodecError::Bound(reason),
-        })?;
-        let value_shape = scan.value_shape().map_err(|failure| match failure {
-            AdmissionFailure::Root(error) => { meter.failure = Some(error); CodecError::Interrupted },
-            AdmissionFailure::Bound(reason) => CodecError::Bound(reason),
-        })?;
+        }).map_err(|error| meter.forward(error))?;
+        let value_shape = scan.value_shape().map_err(|error| meter.forward(error))?;
         meter.items = meter.items.checked_add(value_shape.virtual_items)
             .ok_or_else(|| CodecError::Bound("JSON item count overflow"))?;
         let maximum_owned_bytes = value_storage_bytes(value_shape)

@@ -2366,10 +2366,10 @@ impl NativeWorkspace {
                         .generation(acyclic_fs::GenerationId::new(Digest::from_bytes(fixed_32(
                             &id,
                             "target generation",
-                        )?)))
-                        .await
+                        )?)), acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+                        .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
                         .map_err(napi_error)?,
-                    None => target.inner.head().await.map_err(napi_error)?,
+                    None => target.inner.head(acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error).map_err(napi_error)?,
                 },
             )
             .await
@@ -2622,7 +2622,7 @@ impl NativeGeneration {
 
         let after = after.map(native_workspace_name).transpose()?;
         Box::pin(
-            async { self.inner.list_directory(&path, after.as_ref(), maximum_entries, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error) },
+            async { self.inner.list_directory(&path, after.as_ref(), maximum_entries, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new()).await.map(|receipt| receipt.value.0).map_err(|failure| failure.error) },
         )
         .await
         .map(native_workspace_directory_page)
@@ -3031,8 +3031,8 @@ impl NativeWorkspaceTransaction {
         self.inner
             .lock()
             .await
-            .rename(&source, &destination)
-            .await
+            .rename(&source, &destination, true, acyclic_fs::WorkBudget::UNBOUNDED, &acyclic_fs::CancellationToken::new())
+            .await.map(|receipt| receipt.value).map_err(|failure| failure.error)
             .map_err(napi_error)
     }
 

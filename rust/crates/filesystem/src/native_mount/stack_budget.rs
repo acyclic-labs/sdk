@@ -65,9 +65,15 @@ fn measure<T: Send>(
     kind: &'static str,
     callback: impl FnOnce() -> Result<T, MountSourceError> + Send,
 ) -> Result<T, MountSourceError> {
-    let (_, unoptimized, optimized) = BUDGETS.iter().find(|(name, _, _)| *name == kind)
+    let (_, unoptimized, optimized) = BUDGETS
+        .iter()
+        .find(|(name, _, _)| *name == kind)
         .expect("every measured kind has a budget");
-    let budget = if cfg!(debug_assertions) { *unoptimized } else { *optimized };
+    let budget = if cfg!(debug_assertions) {
+        *unoptimized
+    } else {
+        *optimized
+    };
     let (result, used) = tokio::task::block_in_place(|| deepest_stack(callback));
     measured.push((kind, used.div_ceil(1024), budget));
     result
@@ -125,7 +131,18 @@ async fn lazy_workspace(
     } else {
         FilesystemProfile::Posix
     };
-    let demand = NativeDemandSource::open(std::borrow::Cow::Owned(std::path::Path::new(&source_root).to_path_buf()), profile, VolumeLimits::default(), None, None, crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+    let demand = NativeDemandSource::open(
+        std::borrow::Cow::Owned(std::path::Path::new(&source_root).to_path_buf()),
+        profile,
+        VolumeLimits::default(),
+        None,
+        None,
+        crate::WorkBudget::UNBOUNDED,
+        &crate::CancellationToken::new(),
+    )
+    .await
+    .map(|receipt| receipt.value)
+    .map_err(|failure| failure.error)?;
     let engine = Fs::local(LocalOptions::new(root.join("state"))).await?;
     let lazy = Arc::new(
         LazyWorkspace::attach(
@@ -140,7 +157,13 @@ async fn lazy_workspace(
         .workspace()
         .checkout(
             GenerationSelector::Head,
-            CheckoutMode::tracking_transaction(), crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
+            CheckoutMode::tracking_transaction(),
+            crate::WorkBudget::UNBOUNDED,
+            &crate::CancellationToken::new(),
+        )
+        .await
+        .map(|receipt| receipt.value)
+        .map_err(|failure| failure.error)?;
     let config = checkout.volume_config();
     let authored = Arc::new(CheckoutMountSource::new(
         Arc::new(SharedCheckout::with_publication(
@@ -153,12 +176,19 @@ async fn lazy_workspace(
 }
 
 fn measure_common(source: &str, view: &dyn MountFilesystem) -> TestResult {
+    let work = crate::NativeMaterializationWork::new(
+        crate::performance::BOUNDARY_BUDGET,
+        &crate::CancellationToken::new(),
+    )
+    .map_err(|(error, _)| MountSourceError::NativeWork(error))?;
     let mut measured = Vec::new();
     let read = path("read.txt");
     measure(&mut measured, "readdir-root", || {
         view.read_directory(&MountPath::root(), None, 256)
     })?;
-    measure(&mut measured, "readdir", || view.read_directory(&path("dir"), None, 256))?;
+    measure(&mut measured, "readdir", || {
+        view.read_directory(&path("dir"), None, 256)
+    })?;
     measure(&mut measured, "lookup", || view.lookup(&read))?;
     let pinned = measure(&mut measured, "lookup-pinned", || view.lookup_pinned(&read))?;
     let opened = measure(&mut measured, "open", || view.open_file(&read))?;
@@ -169,20 +199,27 @@ fn measure_common(source: &str, view: &dyn MountFilesystem) -> TestResult {
             view.read_pinned(&read, pin, 0, CONTENT.into(), 16 * 1024, &mut |_, _| Ok(()))
         })?;
     } else {
-        measure(&mut measured, "read-pinned", || view.read_range(&read, 0, CONTENT))?;
+        measure(&mut measured, "read-pinned", || {
+            view.read_range(&read, 0, CONTENT)
+        })?;
     }
     measure(&mut measured, "create", || {
-        view.create_file(&path("created.txt"), FileMetadata::default(), None, &crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &crate::CancellationToken::new()).map_err(|(error, _)| MountSourceError::NativeWork(error))?)
+        view.create_file(&path("created.txt"), FileMetadata::default(), None, &work)
     })?;
     let created = view.open_file(&path("created.txt"))?;
     measure(&mut measured, "write", || {
         created.write_range(0, Bytes::from_static(b"written"))
     })?;
     measure(&mut measured, "mkdir", || {
-        view.create_directory(&path("made"), FileMetadata::default(), &crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &crate::CancellationToken::new()).map_err(|(error, _)| MountSourceError::NativeWork(error))?)
+        view.create_directory(&path("made"), FileMetadata::default(), &work)
     })?;
     measure(&mut measured, "rename", || {
-        view.rename(&path("created.txt"), &path("made/created.txt"), false, &crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &crate::CancellationToken::new()).map_err(|(error, _)| MountSourceError::NativeWork(error))?)
+        view.rename(
+            &path("created.txt"),
+            &path("made/created.txt"),
+            false,
+            &work,
+        )
     })?;
     measure(&mut measured, "write-existing", || {
         view.open_file(&path("write.txt"))?
@@ -194,25 +231,46 @@ fn measure_common(source: &str, view: &dyn MountFilesystem) -> TestResult {
         .ok_or(MountSourceError::NotFound)?
         .metadata;
     measure(&mut measured, "setattr-existing", || {
-        view.set_attributes(&attributes, metadata, Some(1), &crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &crate::CancellationToken::new()).map_err(|(error, _)| MountSourceError::NativeWork(error))?)
+        view.set_attributes(&attributes, metadata, Some(1), &work)
     })?;
     measure(&mut measured, "rename-existing", || {
-        view.rename(&path("rename.txt"), &path("renamed.txt"), false, &crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &crate::CancellationToken::new()).map_err(|(error, _)| MountSourceError::NativeWork(error))?)
+        view.rename(&path("rename.txt"), &path("renamed.txt"), false, &work)
     })?;
-    measure(&mut measured, "remove-existing", || view.remove(&path("remove.txt"), None, &crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &crate::CancellationToken::new()).map_err(|(error, _)| MountSourceError::NativeWork(error))?))?;
-    measure(&mut measured, "lookup-deep", || view.lookup(&path(&deep("read.txt"))))?;
+    measure(&mut measured, "remove-existing", || {
+        view.remove(&path("remove.txt"), None, &work)
+    })?;
+    measure(&mut measured, "lookup-deep", || {
+        view.lookup(&path(&deep("read.txt")))
+    })?;
     measure(&mut measured, "write-deep", || {
         view.open_file(&path(&deep("write.txt")))?
             .write_range(0, Bytes::from_static(b"written"))
     })?;
-    measure(&mut measured, "flush", || view.flush(&crate::NativeMaterializationWork::new(crate::performance::BOUNDARY_BUDGET, &crate::CancellationToken::new()).map_err(|(error, _)| MountSourceError::NativeWork(error))?))?;
-    let profile = if cfg!(debug_assertions) { "unoptimized" } else { "optimized" };
+    measure(&mut measured, "flush", || view.flush(&work))?;
+    let profile = if cfg!(debug_assertions) {
+        "unoptimized"
+    } else {
+        "optimized"
+    };
     for (kind, used, budget) in &measured {
-        println!("stack {} {profile} {source} {kind}: {used} KiB of {budget} KiB", std::env::consts::OS);
+        println!(
+            "stack {} {profile} {source} {kind}: {used} KiB of {budget} KiB",
+            std::env::consts::OS
+        );
     }
-    assert_eq!(measured.len(), BUDGETS.len(), "every budgeted kind is measured");
-    let over = measured.iter().filter(|(_, used, budget)| used > budget).collect::<Vec<_>>();
-    assert!(over.is_empty(), "{source} callbacks exceed their stack budget (kind, KiB used, KiB budget): {over:?}");
+    assert_eq!(
+        measured.len(),
+        BUDGETS.len(),
+        "every budgeted kind is measured"
+    );
+    let over = measured
+        .iter()
+        .filter(|(_, used, budget)| used > budget)
+        .collect::<Vec<_>>();
+    assert!(
+        over.is_empty(),
+        "{source} callbacks exceed their stack budget (kind, KiB used, KiB budget): {over:?}"
+    );
     Ok(())
 }
 
@@ -256,7 +314,18 @@ const BUDGETS: &[(&str, usize, usize)] = &[
 async fn lazy_view_callbacks_fit_their_stack_budgets() -> TestResult {
     let root = tempfile::tempdir()?;
     let (lazy, authored) = lazy_workspace(root.path()).await?;
-    let view = { super::adapter::CallbackRuntime::create()?; let cancellation = authored.cancellation().clone(); let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation); LazyMountSource::new(lazy, authored, "/".to_owned(), super::adapter::NativeDemandCarrier::Borrowed(&mut work), None) }?;
+    let view = {
+        super::adapter::CallbackRuntime::create()?;
+        let cancellation = authored.cancellation().clone();
+        let mut work = crate::demand::DemandWork::new(crate::WorkBudget::UNBOUNDED, &cancellation);
+        LazyMountSource::new(
+            lazy,
+            authored,
+            "/".to_owned(),
+            super::adapter::NativeDemandCarrier::Borrowed(&mut work),
+            None,
+        )
+    }?;
     measure_common("lazy", &view)?;
     Ok(())
 }
@@ -272,10 +341,14 @@ async fn checkout_callbacks_fit_their_stack_budgets() -> TestResult {
         for component in parent.components() {
             directory = directory.child(component.clone());
             if authored.lookup(&directory)?.is_none() {
-                super::adapter::boundary(authored.cancellation(), |work| authored.create_directory(&directory, FileMetadata::default(), work))?;
+                super::adapter::boundary(authored.cancellation(), |work| {
+                    authored.create_directory(&directory, FileMetadata::default(), work)
+                })?;
             }
         }
-        crate::native_mount::adapter::boundary(authored.cancellation(), |work| authored.create_file(&file, FileMetadata::default(), None, work))?;
+        crate::native_mount::adapter::boundary(authored.cancellation(), |work| {
+            authored.create_file(&file, FileMetadata::default(), None, work)
+        })?;
         authored
             .open_file(&file)?
             .write_range(0, Bytes::from(vec![7_u8; CONTENT as usize]))?;

@@ -1,7 +1,4 @@
 //! Self-contained macOS mount projection over loopback `NFSv4`.
-//!
-//! The embedded C transport translates NFS requests into this module's bounded
-//! callbacks; the canonical Rust checkout remains the only filesystem state.
 
 #![allow(
     unsafe_code,
@@ -9,36 +6,29 @@
 )]
 
 use super::{
-    ATTRIBUTE_PAGE_SIZE, DIRECTORY_PAGE_SIZE, DriverStartFailure,
-    MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES, MountAttributeWriteMode, MountDirectoryEntry,
-    MountFilesystem, MountLookup, MountNodeKind, MountOpenFile, MountPath, MountRangeAllocation,
-    MountSeekTarget, MountSourceError, NativeMountError, NativeMountRequest, ViewObserver,
-    ViewOrigin, ViewStamp, create_metadata, errno, metadata_or, source_error, system_time_ns,
+    ATTRIBUTE_PAGE_SIZE, DIRECTORY_PAGE_SIZE, MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES,
+    MountAttributeWriteMode, MountDirectoryEntry, MountFilesystem, MountLookup, MountNodeKind,
+    MountOpenFile, MountPath, MountRangeAllocation, MountSeekTarget, MountSourceError,
+    NativeMountError, NativeMountRequest, ViewObserver, ViewOrigin, ViewStamp, create_metadata,
+    metadata_or, system_time_ns,
 };
 use crate::FileId;
 use crate::kernel::{FileMetadata, MetadataField};
-use bytes::Bytes;
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
-use std::fs::Metadata;
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 use std::ptr;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError, RwLock, Weak};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Condvar, Mutex, PoisonError, RwLock, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
 
 const ROOT_INODE: u64 = 1;
 const MAXIMUM_LOOKUP_CACHE_ENTRIES: usize = 65_536;
-/// Most times a listing that has delivered no entry starts over in a view
-/// that keeps moving before it fails.
+/// Most times a listing that has delivered no entry starts over in a view that keeps moving before it fails.
 const MAXIMUM_LISTING_RESTARTS: usize = 8;
-/// Most labelled objects a revalidation verifies against the source after
-/// an unconfirmed fence; with more, waiting out the attribute timeout costs
-/// less.
+/// Most labelled objects a revalidation verifies against the source after an unconfirmed fence; with more, waiting out the attribute timeout costs less.
 const MAXIMUM_VERIFIED_LABELS: usize = 4_096;
 const MAXIMUM_CALLBACK_BYTES: usize = i32::MAX as usize;
 const RENAME_NOREPLACE: u32 = 1;
@@ -50,8 +40,7 @@ const MOUNT_VISIBILITY_TIMEOUT: Duration = Duration::from_secs(10);
 const MOUNT_LOOP_EXIT_TIMEOUT: Duration = Duration::from_secs(4);
 const DISKUTIL_VISIBILITY_TIMEOUT: Duration = Duration::from_secs(2);
 const DIRECT_UNMOUNT_TIMEOUT: Duration = Duration::from_secs(3);
-/// How soon after its callback returns a reply is assumed to reach the NFS
-/// client (see [`DarwinMountContext::revalidate`]).
+/// How soon after its callback returns a reply is assumed to reach the NFS client (see [`DarwinMountContext::revalidate`]).
 const REPLY_DELIVERY_SLACK: Duration = Duration::from_millis(100);
 const CALLBACK_DRAIN_POLL: Duration = Duration::from_millis(1);
 mod mode {
@@ -65,9 +54,12 @@ mod mode {
     pub(super) const IFREG: u32 = libc::S_IFREG as u32;
 }
 
-
 mod transport;
 use transport::*;
+mod funding;
+use funding::*;
+mod work_scope;
+use work_scope::*;
 mod handles;
 use handles::*;
 mod state;
@@ -102,5 +94,37 @@ use paths::*;
 #[cfg(test)]
 mod tests;
 
+pub(super) use cleanup::DarwinRecoveryControl;
 pub(super) use session::DarwinMountSession;
-pub(super) use cleanup::recover_destination;
+pub(super) use work_scope::DarwinStartupMeterScope;
+
+mod callback_errors;
+use callback_errors::*;
+mod requests;
+
+mod source_bytes;
+use source_bytes::*;
+
+mod file_handles;
+
+mod native_stat;
+
+mod directory_handle;
+use directory_handle::*;
+
+mod resources;
+use resources::*;
+
+mod startup_buffers;
+use startup_buffers::*;
+
+mod teardown_error;
+pub use teardown_error::DarwinTeardownFailure;
+
+mod mount_probe;
+use mount_probe::*;
+mod retirement;
+use retirement::*;
+mod startup;
+
+const STOP_POLL_INTERVAL: Duration = Duration::from_millis(10);

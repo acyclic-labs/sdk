@@ -417,7 +417,7 @@ impl PiSession {
                 return Err(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi original root creation was substituted" });
             }
             if !handles.contains_key(key) && !self.roots.contains_key(key) {
-                let expected = acyclic_fs::SourceReference {
+                let expected = acyclic_fs::demand::SourceReference {
                     identity: creation.source_identity, epoch: creation.source_epoch,
                 };
                 let physical = self.resources.shared_roots.acquire_with_native_work(
@@ -442,7 +442,11 @@ impl PiSession {
                     return Err(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi native root identity changed after allocation" });
                 }
                 let volume = binding.project_volumes.get(key).ok_or(RootError::NativeBoundary { code: acyclic_harness::wire::ErrorCode::Invalid, reason: "Pi root has no original project volume" })?;
-                let workspace_name = volume.storage_name_with_native_work(original_native_work)?;
+                let workspace_name = {
+                    let mut io = acyclic_harness::store::history::native_work_io(original_native_work).map_err(|cause| acyclic_harness::Error::NativeWork { cause, custody: None })?;
+                    let value = volume.storage_name(&mut Some(&mut io))?;
+                    (value, io.into_custody())
+                };
                 let workspace = self.resources.fs.open_workspace_with_native_work(
                     &workspace_name.0, original_native_work, original_native_work.cancellation(),
                 ).await.map_err(|(source, custody)| RootError::NativeFilesystem { source, custody })?;

@@ -8,18 +8,19 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_getxattr(
     value: *mut c_char,
     length: usize,
 ) -> c_int {
-    let _span = callback_span!(TRACE, getxattr);
-    ffi_status(address, &_span, |context| {
-        let path = mount_path(path)?;
-        if !context.may_have_named_attributes(&path)? {
-            return Err(libc::ENOATTR);
+    let span = callback_span!(TRACE, getxattr);
+    ffi(address, &span, false, |context, work| {
+        let path = mount_path(path, work)?;
+        if !context.may_have_named_attributes(&path, work)? {
+            return Err(driver_errno(libc::ENOATTR));
         }
         let bytes = context
             .source
-            .read_attribute(&path, c_bytes(name)?)
-            .map_err(errno)?
-            .ok_or(libc::ENOATTR)?;
-        copy_variable_result(&bytes, value, length)
+            .read_attribute(&path, c_bytes(name, work)?, work)?
+            .ok_or_else(|| driver_errno(libc::ENOATTR))?;
+        source_bytes(bytes, work, |bytes| {
+            copy_variable_result(bytes, value, length, work)
+        })
     })
 }
 
@@ -32,26 +33,31 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_setxattr(
     length: usize,
     flags: c_int,
 ) -> c_int {
-    let _span = callback_span!(TRACE, setxattr);
-    ffi_status(address, &_span, |context| {
-        if length > MAXIMUM_CALLBACK_BYTES {
-            return Err(libc::E2BIG);
-        }
+    let span = callback_span!(TRACE, setxattr);
+    ffi(address, &span, true, |context, work| {
+        bounded_length(length).map_err(driver_errno)?;
         let mode = match flags {
             0 => MountAttributeWriteMode::Upsert,
             libc::XATTR_CREATE => MountAttributeWriteMode::Create,
             libc::XATTR_REPLACE => MountAttributeWriteMode::Replace,
-            _ => return Err(libc::EINVAL),
+            _ => return Err(driver_errno(libc::EINVAL)),
         };
-        // SAFETY: the bridge forwards FUSE's `length`-byte attribute value, readable
-        // for the callback.
-        let bytes = unsafe { std::slice::from_raw_parts(value.cast::<u8>(), length) };
-        let (path, name) = (mount_path(path)?, c_bytes(name)?);
-        context.mutate(|| {
-            context
-                .source
-                .write_attribute(&path, name, Bytes::copy_from_slice(bytes), mode)
-        })?;
+        // SAFETY: the bridge retains each nonempty length-byte input.
+        let input = if length == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(value.cast::<u8>(), length) }
+        };
+        let bytes = copy_bytes(work, input)?;
+        let (path, name) = (mount_path(path, work)?, c_bytes(name, work)?);
+        context.mutate(
+            || {
+                context
+                    .source
+                    .write_attribute(&path, name, bytes, mode, work)
+            },
+            work,
+        )?;
         Ok(0)
     })
 }
@@ -63,41 +69,50 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_listxattr(
     list: *mut c_char,
     length: usize,
 ) -> c_int {
-    let _span = callback_span!(TRACE, listxattr);
-    ffi_status(address, &_span, |context| {
-        let path = mount_path(path)?;
-        if !context.may_have_named_attributes(&path)? {
-            return copy_variable_result(&[], list, length);
+    let span = callback_span!(TRACE, listxattr);
+    ffi(address, &span, false, |context, work| {
+        let path = mount_path(path, work)?;
+        if !context.may_have_named_attributes(&path, work)? {
+            return copy_variable_result(&[], list, length, work);
         }
-        let mut cursor = None;
-        let mut encoded = Vec::new();
+        let mut cursor: Option<(Vec<u8>, crate::NativeAllocation)> = None;
+        let mut encoded = DarwinOwned::empty(Vec::new());
         loop {
-            let page = context
-                .source
-                .list_attributes(&path, cursor.as_deref(), ATTRIBUTE_PAGE_SIZE)
-                .map_err(errno)?;
-            for name in page.names {
+            let mut page = context.source.list_attributes_with_meter(
+                &path,
+                cursor.as_ref().map(|cursor| cursor.0.as_slice()),
+                ATTRIBUTE_PAGE_SIZE,
+                work,
+            )?;
+            for name in &page.0.names {
+                work.charge(scan_work(name.len() as u64))?;
                 if name.contains(&0) {
-                    return Err(libc::EIO);
+                    return Err(driver_errno(libc::EIO));
                 }
                 let required = encoded
                     .len()
                     .checked_add(name.len())
-                    .and_then(|value| value.checked_add(1))
-                    .ok_or(libc::EOVERFLOW)?;
-                if required > MAXIMUM_NATIVE_ATTRIBUTE_LIST_BYTES {
-                    return Err(libc::E2BIG);
+                    .and_then(|n| n.checked_add(1))
+                    .ok_or(crate::WorkError::Overflow)?;
+                grow_bytes(&mut encoded, required, work)?;
+                copying(work, copy_work(name.len() as u64 + 1), || {
+                    encoded.extend_from_slice(name);
+                    encoded.push(0);
+                })?;
+            }
+            let Some(next) = page.0.next_cursor.take() else {
+                break;
+            };
+            let next_allocation = page.1.split_off(next.capacity() as u64)?;
+            if let Some((previous, _)) = &cursor {
+                work.charge(scan_work(previous.len().min(next.len()) as u64))?;
+                if *previous == next {
+                    return Err(driver_errno(libc::EIO));
                 }
-                encoded.extend_from_slice(&name);
-                encoded.push(0);
             }
-            match page.next_cursor {
-                Some(next) if cursor.as_ref() != Some(&next) => cursor = Some(next),
-                Some(_) => return Err(libc::EIO),
-                None => break,
-            }
+            cursor = Some((next, next_allocation));
         }
-        copy_variable_result(&encoded, list, length)
+        copy_variable_result(&encoded, list, length, work)
     })
 }
 
@@ -107,10 +122,10 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_removexattr(
     path: *const c_char,
     name: *const c_char,
 ) -> c_int {
-    let _span = callback_span!(TRACE, removexattr);
-    ffi_status(address, &_span, |context| {
-        let (path, name) = (mount_path(path)?, c_bytes(name)?);
-        context.mutate(|| context.source.remove_attribute(&path, name))?;
+    let span = callback_span!(TRACE, removexattr);
+    ffi(address, &span, true, |context, work| {
+        let (path, name) = (mount_path(path, work)?, c_bytes(name, work)?);
+        context.mutate(|| context.source.remove_attribute(&path, name, work), work)?;
         Ok(0)
     })
 }
@@ -123,20 +138,21 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_lseek(
     offset: i64,
     whence: c_int,
 ) -> i64 {
-    let _span = callback_span!(TRACE, lseek, fh = handle, offset = offset);
-    ffi_offset(address, &_span, |context| {
-        let offset = u64::try_from(offset).map_err(|_| libc::EINVAL)?;
+    let span = callback_span!(TRACE, lseek, fh = handle, offset = offset);
+    ffi(address, &span, false, |context, work| {
+        let offset = u64::try_from(offset).map_err(|_| driver_errno(libc::EINVAL))?;
         let target = match whence {
             libc::SEEK_DATA => MountSeekTarget::Data,
             libc::SEEK_HOLE => MountSeekTarget::Hole,
-            _ => return Err(libc::EINVAL),
+            _ => return Err(driver_errno(libc::EINVAL)),
         };
-        let result = context
-            .file_or_open(&mount_path(path)?, handle)?
-            .seek(offset, target)
-            .map_err(errno)?
-            .ok_or(libc::ENXIO)?;
-        i64::try_from(result).map_err(|_| libc::EOVERFLOW)
+        let file = context.file_target(&*mount_path(path, work)?, handle, work)?;
+        let offset = file
+            .file
+            .0
+            .seek_with_meter(offset, target, work)?
+            .ok_or_else(|| driver_errno(libc::ENXIO))?;
+        i64::try_from(offset).map_err(|_| driver_errno(libc::EOVERFLOW))
     })
 }
 
@@ -149,11 +165,11 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_fallocate(
     offset: i64,
     length: i64,
 ) -> c_int {
-    let _span = callback_span!(TRACE, fallocate, fh = handle, offset = offset, len = length);
-    ffi_status(address, &_span, |context| {
-        let offset = u64::try_from(offset).map_err(|_| libc::EINVAL)?;
-        let length = u64::try_from(length).map_err(|_| libc::EINVAL)?;
-        let (operation, permitted_flags) = if mode & FALLOC_FL_PUNCH_HOLE != 0 {
+    let span = callback_span!(TRACE, fallocate, fh = handle, offset = offset, len = length);
+    ffi(address, &span, true, |context, work| {
+        let offset = u64::try_from(offset).map_err(|_| driver_errno(libc::EINVAL))?;
+        let length = u64::try_from(length).map_err(|_| driver_errno(libc::EINVAL))?;
+        let (operation, permitted) = if mode & FALLOC_FL_PUNCH_HOLE != 0 {
             (
                 MountRangeAllocation::PunchHole,
                 FALLOC_FL_PUNCH_HOLE | FALLOC_FL_KEEP_SIZE,
@@ -173,12 +189,15 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_fallocate(
                 FALLOC_FL_KEEP_SIZE,
             )
         };
-        if mode & !permitted_flags != 0 {
-            return Err(libc::EOPNOTSUPP);
+        if mode & !permitted != 0 {
+            return Err(driver_errno(libc::EOPNOTSUPP));
         }
-        context.mutate_file(&mount_path(path)?, handle, |file| {
-            file.allocate_range(offset, length, operation)
-        })?;
+        context.mutate_file(
+            &*mount_path(path, work)?,
+            handle,
+            |file| file.allocate_range_with_meter(offset, length, operation, work),
+            work,
+        )?;
         Ok(0)
     })
 }
@@ -195,38 +214,35 @@ pub(super) unsafe extern "C" fn acyclic_fs_darwin_mount_copy_file_range(
     length: usize,
     flags: c_int,
 ) -> i64 {
-    let _span = callback_span!(TRACE, copy_file_range, fh = source_handle);
-    ffi_offset(address, &_span, |context| {
+    let span = callback_span!(TRACE, copy_file_range, fh = source_handle);
+    ffi(address, &span, true, |context, work| {
         if flags != 0 {
-            return Err(libc::EINVAL);
+            return Err(driver_errno(libc::EINVAL));
         }
-        let source_offset = u64::try_from(source_offset).map_err(|_| libc::EINVAL)?;
-        let destination_offset = u64::try_from(destination_offset).map_err(|_| libc::EINVAL)?;
-        let length = u64::try_from(length).map_err(|_| libc::EOVERFLOW)?;
-        let source = context.file_or_open(&mount_path(source_path)?, source_handle)?;
+        let source_offset = u64::try_from(source_offset).map_err(|_| driver_errno(libc::EINVAL))?;
+        let destination_offset =
+            u64::try_from(destination_offset).map_err(|_| driver_errno(libc::EINVAL))?;
+        let length = u64::try_from(length).map_err(|_| driver_errno(libc::EOVERFLOW))?;
+        let source = context.file_target(&*mount_path(source_path, work)?, source_handle, work)?;
         let length = context.mutate_file(
-            &mount_path(destination_path)?,
+            &*mount_path(destination_path, work)?,
             destination_handle,
             |destination| {
-                let source_lookup = source.lookup()?;
-                let destination_lookup = destination.lookup()?;
-                let length = length.min(
-                    source_lookup
-                        .node
-                        .logical_bytes
-                        .saturating_sub(source_offset),
-                );
+                let source = source.file.0.lookup_with_meter(work)?;
+                let destination = destination.lookup_with_meter(work)?;
+                let length = length.min(source.node.logical_bytes.saturating_sub(source_offset));
                 context.source.clone_range_by_id(
-                    source_lookup.node.file_id,
+                    source.node.file_id,
                     source_offset,
-                    destination_lookup.node.file_id,
+                    destination.node.file_id,
                     destination_offset,
                     length,
+                    work,
                 )?;
                 Ok(length)
             },
+            work,
         )?;
-        i64::try_from(length).map_err(|_| libc::EOVERFLOW)
+        i64::try_from(length).map_err(|_| driver_errno(libc::EOVERFLOW))
     })
 }
-
