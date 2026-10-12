@@ -3,7 +3,7 @@ import { type AgentInput, type ModelContent, type ToolDefinition, type ToolRef, 
 import { type SelectedModelContext, publicModelContent } from "./projection.js";
 import { type TaskDefinition, Task, durableMachineDigest, nativeLimits, nativeRunLimits, freezeSchema, type HostTaskAttachment, componentKey, type Admission, observeAdmittedTask, validatedHostTask, pinnedOutputSchema, AdmissionUncertainError, type GroupId, type Outcome, type TaskChildrenPage } from "./task.js";
 import { type RegisteredTool, type AgentHarnessComponents, harnessConstruction } from "./harness-builder.js";
-import { type PolicyIdentity, ExecutionScope, type InteractionHandler, type ComponentIdentity, samePolicyIdentity, validatePolicyIdentity, narrowGrants, narrowLimits, composePolicies, policyApprovals, ToolApprovalError } from "./execution-scope.js";
+import { type PolicyIdentity, ExecutionScope, type InteractionHandler, type ComponentIdentity, samePolicyIdentity, validatePolicyIdentity, narrowLimits, composePolicies, policyApprovals, ToolApprovalError } from "./execution-scope.js";
 import { type FileRef, type Attachment } from "./conversation.js";
 import { type NativeContracts, type WasmExecutionPlacementWire, type WasmTaskAdmissionWire, type WasmTaskAdmissionInput, type WasmToolJsonValue, type ModelEventAdmissionState } from "./native-contracts.js";
 import { type ProjectWorkspaceProvider } from "./project.js";
@@ -382,7 +382,8 @@ export class AgentHarness {
   async scoped(scope: ExecutionScope): Promise<AgentHarness> {
     if (scope.modelBinding) this.contracts.encodeCanonicalJson(scope.modelBinding.identity.options);
     const parentPolicy = this.scope.policyProvider ?? this.components.policy;
-    const grants = narrowGrants(this.scope.grants, scope.grants, scope.grantsExplicit || scope.grants.length > 0);
+    const grants = scope.grantsExplicit || scope.grants.length > 0 ? scope.grants : this.scope.grants;
+    if (grants.some(grant => !this.scope.grants.includes(grant))) throw new Error("child scope cannot widen grants");
     const limits = narrowLimits(this.scope.limits, scope.limits);
     const policy = composePolicies(parentPolicy, scope.policyProvider);
     const narrowed = new ExecutionScope(

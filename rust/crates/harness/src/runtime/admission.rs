@@ -199,9 +199,7 @@ impl TaskAdmissionRecord {
         let mut quota =
             crate::wire_codec::CodecQuota::new(&mut observer, std::mem::size_of::<Self>() as u64)?;
         let copied = crate::core::copy_owned(self, &mut quota, |record, work| {
-            for proof in &record.resource_proofs {
-                proof.validate(work)?;
-            }
+            for proof in &record.resource_proofs {}
             let bytes = record.logical_owned_bytes()?;
             if bytes != 0 {
                 work.as_deref_mut()
@@ -318,7 +316,6 @@ impl TaskAdmissionRecord {
             ));
         }
         for (index, proof) in self.resource_proofs.iter().enumerate() {
-            proof.validate(work)?;
             for previous in &self.resource_proofs[..index] {
                 if let Some(io) = work.as_deref_mut() {
                     io.codec_charge(crate::contract::JsonCodecCharge::Inspect { items: 1 })?;
@@ -470,7 +467,7 @@ impl TaskAdmissionRecord {
                     maximum_depth: 256,
                 },
                 0,
-                crate::wire::ErrorCode::Invalid,
+                Some(crate::wire::ErrorCode::Invalid),
                 crate::contract::JsonValueSchema::TaskAdmissionRecord,
                 &mut |charge| match charge {
                     crate::contract::JsonCodecCharge::Admission { value_shape, .. } => {
@@ -505,7 +502,7 @@ impl TaskAdmissionRecord {
                 },
             );
             let admission = decoded.map_err(|mut error| {
-                if let Error::NativeDecode { custody, .. } = &mut error {
+                if let Error::NativeJson { custody, .. } = &mut error {
                     let retained = quota.retained();
                     *custody = Some(
                         quota

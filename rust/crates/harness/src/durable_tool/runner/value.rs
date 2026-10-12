@@ -89,7 +89,7 @@ pub(super) fn tool_validate_projection(
     {
         let bytes = content.logical_owned_bytes()?;
         drop(content);
-        return io.release(bytes);
+        return io.release(bytes).map_err(Into::into);
     }
     drop(content);
     Ok(())
@@ -159,12 +159,15 @@ pub(super) fn tool_success(
         }
         let metadata =
             (std::mem::size_of::<Outcome<Value>>() - std::mem::size_of::<ToolResult>()) as u64;
-        guard.resize_retained(guard.bytes().checked_add(metadata).ok_or(
-            Error::NativeBoundary {
-                code: crate::wire::ErrorCode::Invalid,
-                reason: "native tool outcome ownership overflow",
-            },
-        )?)?;
+        guard.resize(
+            guard
+                .bytes()
+                .checked_add(metadata)
+                .ok_or(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "native tool outcome ownership overflow",
+                })?,
+        )?;
         return Ok((Outcome::Succeeded(result.0.value), result.1));
     }
     Ok((Outcome::Succeeded(result.0.value), None))

@@ -470,7 +470,7 @@ impl RuntimeScope {
             if work
                 .as_deref()
                 .is_some_and(|io| io.original_native_work().is_some())
-                && !access.has_native_custody()
+                && !access.native_custody.is_none()
             {
                 return Err(scope_metadata_boundary(
                     work,
@@ -657,7 +657,7 @@ impl RuntimeScope {
             .publication_lease
             .as_ref()
             .ok_or_else(|| Error::Unauthorized("created child parent lease is not bound".into()))?;
-        lease.verify().await?;
+        lease.verify(None)?.await?;
         lease.fence()
     }
 
@@ -735,9 +735,9 @@ impl RuntimeScope {
                 })?;
             #[cfg(feature = "filesystem")]
             if let Some(io) = io {
-                return io.verify_publication_lease(lease.as_ref()).await;
+                return lease.verify(Some(io))?.await;
             }
-            lease.verify().await?;
+            lease.verify(None)?.await?;
         }
         let _ = io;
         Ok(())
@@ -772,8 +772,8 @@ impl RuntimeScope {
             .as_ref()?
             .references
             .iter()
-            .find(|binding| &binding.file == file)
-            .map(|binding| &binding.reader)
+            .find(|(reference, _)| reference == file)
+            .map(|(_, reader)| reader)
     }
 
     #[cfg(feature = "filesystem")]

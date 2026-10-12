@@ -29,20 +29,15 @@ pub(super) fn readonly_cleanup_standalone(
     let Some(before) = before else {
         return Ok(());
     };
-    let release = |allocations: &mut AllocationLedger| {
-        let keep = before.checked_add(retained).ok_or(WorkError::Overflow)?;
-        let retired = allocations
-            .live_bytes()
-            .checked_sub(keep)
-            .ok_or(WorkError::Overflow)?;
-        allocations
-            .release(retired)
-            .map_err(crate::collection::handle_allocation_error)
+    let Some((allocations, _, _, _)) = accounting.standalone_parts() else {
+        return Ok(());
     };
-    match accounting {
-        KernelAccounting::Standalone { allocations, .. } => release(allocations),
-        KernelAccounting::BorrowedStandalone { allocations, .. } => release(allocations),
-        #[cfg(not(target_arch = "wasm32"))]
-        KernelAccounting::NativeOriginal { .. } => Ok(()),
-    }
+    let keep = before.checked_add(retained).ok_or(WorkError::Overflow)?;
+    let retired = allocations
+        .live_bytes()
+        .checked_sub(keep)
+        .ok_or(WorkError::Overflow)?;
+    allocations
+        .release(retired)
+        .map_err(crate::collection::handle_allocation_error)
 }

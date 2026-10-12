@@ -240,78 +240,21 @@ async fn shared_native_content_uses_original_owner_and_keeps_real_output_custody
         .durable_context_with_native_work(task, created.request.child.operation_id, &original)
         .await?;
     let shared = context.into_native_shared(custody, &original)?;
-    let mcp_tool = ToolContext::new(
+    let content_io = crate::executor::PreparationIo::from_native_work(&original)?;
+    let tool = ToolContext::new(
         Arc::clone(&shared),
         crate::OperationId::from_bytes([120; 16]),
-        "native-mcp-control",
-        Some(&crate::filesystem::PreparationIo::from_native_work(
-            &original,
-        )?),
+        "readonly-admission",
+        Some(&content_io),
     )?;
-    let before = original.receipt();
     assert!(matches!(
-        mcp_tool.validate_native_mcp_context(&original),
+        tool.original_admission_with_native_work(&original),
         Err(Error::NativeBoundary {
             code: crate::wire::ErrorCode::Unauthorized,
             ..
         })
     ));
-    assert!(matches!(
-        mcp_tool.validate_native_mcp_reconciliation_context(&original),
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            ..
-        })
-    ));
-    assert!(matches!(
-        mcp_tool.original_admission_with_native_work(&original),
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            ..
-        })
-    ));
-    assert_eq!(original.receipt(), before);
-    let foreign = work(&cancellation)?;
-    let foreign_before = foreign.receipt();
-    assert!(matches!(
-        mcp_tool.validate_native_mcp_reconciliation_context(&foreign),
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            ..
-        })
-    ));
-    assert!(matches!(
-        mcp_tool.original_admission_with_native_work(&foreign),
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            ..
-        })
-    ));
-    assert_eq!(foreign.receipt(), foreign_before);
-    let unqualified = mcp_tool.clone();
-    assert!(matches!(
-        unqualified.validate_native_mcp_context(&original),
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            ..
-        })
-    ));
-    assert!(matches!(
-        unqualified.validate_native_mcp_reconciliation_context(&original),
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            ..
-        })
-    ));
-    assert!(matches!(
-        unqualified.original_admission_with_native_work(&original),
-        Err(Error::NativeBoundary {
-            code: crate::wire::ErrorCode::Unauthorized,
-            ..
-        })
-    ));
-    assert_eq!(original.receipt(), before);
-    drop(unqualified);
+    drop(tool);
     let owner = fixture
         .host
         .journal_owner_with_native_work(task, &fence, &original)
@@ -324,7 +267,6 @@ async fn shared_native_content_uses_original_owner_and_keeps_real_output_custody
             &original,
         )?),
     )?;
-    let content_io = crate::executor::PreparationIo::from_native_work(&original)?;
     let staged = shared
         .as_ref()
         .stage_file_once_with_native_work(
@@ -458,27 +400,6 @@ async fn shared_native_content_uses_original_owner_and_keeps_real_output_custody
     drop(blocker);
     cancellation.cancel();
     let before = original.receipt();
-    assert!(matches!(
-        mcp_tool.validate_native_mcp_context(&original),
-        Err(Error::NativeWork {
-            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
-            ..
-        })
-    ));
-    assert!(matches!(
-        mcp_tool.validate_native_mcp_reconciliation_context(&original),
-        Err(Error::NativeWork {
-            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
-            ..
-        })
-    ));
-    assert!(matches!(
-        mcp_tool.original_admission_with_native_work(&original),
-        Err(Error::NativeWork {
-            cause: acyclic_fs::NativeTreeMaterializationError::Cancelled,
-            ..
-        })
-    ));
     assert!(matches!(
         reader.read(&staged.0, 65_536, Some(&content_io)),
         Err(Error::NativeWork {

@@ -254,8 +254,8 @@ test("required capture failure never publishes a child; optional failures remain
   const invalidOmission = { ...seed, omissions: [{ ...seed.omissions[0]!, outcome: { kind: "indeterminate" as const, value: "not-an-operation" as OperationId } }] };
   expect(() => contracts.validate("fork_seed", invalidOmission)).toThrow();
   expect(() => contracts.validate("fork_seed", { ...seed, resources: [...seed.resources, seed.resources[0]!] })).toThrow();
-  await expect(contracts.validate("resource_ref", { kind: "artifact", provider: filesystem, key: [1], version: null }))
-    .resolves.toBeDefined();
+  expect(contracts.validate("resource_ref", { kind: "artifact", provider: filesystem, key: [1], version: null }))
+    .toBeDefined();
 });
 
 test("project capture cannot retain the parent's project volume", () => {

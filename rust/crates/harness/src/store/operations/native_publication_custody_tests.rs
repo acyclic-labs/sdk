@@ -84,7 +84,7 @@ async fn native_message_lookup_provider_corruption_bound_and_cancellation_releas
         .await
         .expect_err("original provider record is corrupt or denied");
         match mode {
-            0 => assert!(matches!(&error, Error::NativeDecode { .. })),
+            0 => assert!(matches!(&error, Error::NativeJson { .. })),
             1 => assert!(matches!(&error, Error::NativeBoundary { .. })),
             2 => assert!(matches!(
                 &error,

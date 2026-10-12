@@ -92,11 +92,11 @@ impl McpCatalog {
             "harness/mcp-catalog-install/v1",
             self,
             previous
-                .map(crate::contract::canonical_json_digest)
+                .map(|value| crate::contract::canonical_json_digest(value, u64::MAX, &mut None))
                 .transpose()?,
             maximum_tools,
             maximum_bytes,
-        ))
+        ), u64::MAX, &mut None)
     }
 
     /// Installs after verifying signed scope and exact approval.
@@ -292,9 +292,9 @@ impl McpCatalog {
         next.pin_catalog_revision(
             &prefix,
             previous
-                .map(crate::contract::canonical_json_digest)
+                .map(|value| crate::contract::canonical_json_digest(value, u64::MAX, &mut None))
                 .transpose()?,
-            crate::contract::canonical_json_digest(self)?,
+            crate::contract::canonical_json_digest(self, u64::MAX, &mut None)?,
         )?;
         if let Some(old) = previous {
             for remote in &old.tools {

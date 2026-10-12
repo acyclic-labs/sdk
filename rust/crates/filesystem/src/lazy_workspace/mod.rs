@@ -71,6 +71,7 @@ impl<A, O, D, S> LazyWorkspace<A, O, D, S> {
 
 mod model;
 use model::*;
+pub use model::LAZY_SNAPSHOT_DOMAIN;
 mod hash;
 pub(crate) use hash::hash_lazy_value;
 pub(crate) use model::LAZY_STATE_SCHEMA;

@@ -55,7 +55,7 @@ fn ordinary_host() -> Result<ConversationEffectHost<MemoryStream>> {
         scope,
         SchemaRegistry::new(),
         content,
-        EffectRegistry::new(None)?,
+        EffectRegistry::new(None, None)?,
         None,
         None,
     )
@@ -71,17 +71,11 @@ fn native_host_metadata_survives_shared_clone_until_physical_drop() -> Result<()
         .expect("original allowance")
         .peak_allocation_bytes;
     let ordinary = ordinary_host()?;
-    let host = ordinary.clone_with_native_work(&work)?;
+    let host = ordinary.copy(&work)?;
     assert_eq!(host.authority, ordinary.authority);
     assert_eq!(host.scope, ordinary.scope);
     assert!(host.providers.require_native_metadata(&work).is_ok());
-    assert!(
-        host.providers
-            .clone()
-            .require_native_metadata(&work)
-            .is_err()
-    );
-    let shared = host.into_arc_with_native_work(&work)?;
+    let shared = host.into_arc(&work)?;
     let alias = Arc::clone(&shared);
     assert!(
         work.remaining()
@@ -119,7 +113,7 @@ fn native_catalog_denies_metadata_before_allocation() {
         .expect("only meter backing is admitted");
     let before = work.receipt().allocation_operations;
     assert!(matches!(
-        EffectRegistry::new(Some(&work)),
+        EffectRegistry::new(Some(&work), None),
         Err(Error::NativeWork { .. })
     ));
     assert_eq!(work.receipt().allocation_operations, before);
@@ -129,7 +123,7 @@ fn native_catalog_denies_metadata_before_allocation() {
     cancellation.cancel();
     let before = work.receipt().allocation_operations;
     assert!(matches!(
-        EffectRegistry::new(Some(&work)),
+        EffectRegistry::new(Some(&work), None),
         Err(Error::NativeWork { .. })
     ));
     assert_eq!(work.receipt().allocation_operations, before);
@@ -155,7 +149,7 @@ fn native_host_rejects_real_foreign_scope_and_cancelled_metadata_source() -> Res
             &mut None,
         )
         .expect("scope proof");
-    assert!(host.clone_with_native_work(&work).is_err());
+    assert!(host.copy(&work).is_err());
     assert_eq!(
         work.remaining()
             .expect("rejected clone dropped")
@@ -164,10 +158,7 @@ fn native_host_rejects_real_foreign_scope_and_cancelled_metadata_source() -> Res
     );
     cancellation.cancel();
     let before = work.receipt().allocation_operations;
-    assert!(matches!(
-        host.clone_with_native_work(&work),
-        Err(Error::NativeWork { .. })
-    ));
+    assert!(matches!(host.copy(&work), Err(Error::NativeWork { .. })));
     assert_eq!(work.receipt().allocation_operations, before);
     Ok(())
 }
@@ -183,10 +174,10 @@ fn native_host_refuses_a_foreign_arc_ledger_before_allocation() -> Result<()> {
         .remaining()
         .expect("original allowance")
         .peak_allocation_bytes;
-    let host = ordinary_host()?.clone_with_native_work(&original)?;
+    let host = ordinary_host()?.copy(&original)?;
     let before = foreign.receipt().allocation_operations;
     assert!(matches!(
-        host.into_arc_with_native_work(&foreign),
+        host.into_arc(&foreign),
         Err(Error::NativeBoundary { .. })
     ));
     assert_eq!(foreign.receipt().allocation_operations, before);

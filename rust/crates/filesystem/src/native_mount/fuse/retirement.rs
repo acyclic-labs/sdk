@@ -68,17 +68,6 @@ pub(super) struct FuseRetirementHelper {
 
 impl FuseRetirementHelper {
     pub(super) fn prepare(
-        work: &crate::NativeMaterializationWork,
-    ) -> Result<Option<Self>, NativeMountError> {
-        let program = match fuse_recovery_helper(work) {
-            Ok(program) => program,
-            Err(NativeMountError::CapabilityUnavailable(_)) => return Ok(None),
-            Err(error) => return Err(error),
-        };
-        Self::prepare_program(program, work).map(Some)
-    }
-
-    pub(super) fn prepare_program(
         program: &'static std::ffi::CStr,
         work: &crate::NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {

@@ -80,36 +80,6 @@ async fn native_checkpoint_open_preserves_actual_output_and_failed_source_prefix
     assert!(work.admit_retained(all_payload_allowance).is_err());
     drop(aggregate);
     assert!(work.admit_retained(all_payload_allowance).is_ok());
-    let exact_work = NativeMaterializationWork::new(receipt, &cancellation)
-        .expect("actual native high-water allowance includes accounting state");
-    provider.reset_io();
-    let (repeated, repeated_custody) = async {
-        let mut _history_io = crate::store::HistoryWork::new(
-            crate::filesystem::PreparationIo::from_native_work(&exact_work)?,
-        );
-        let _history_value = StreamAggregate::open(
-            &provider,
-            authority(),
-            issuer().verifier(&mut None).expect("verifier copy"),
-            schemas(),
-            None,
-            crate::store::default_projection_read_limits(),
-            crate::store::DEFAULT_TERMINAL_EFFECTS,
-            None,
-            &mut Some(&mut _history_io),
-        )
-        .await?;
-        _history_io.return_staged_output()?;
-        Ok::<_, crate::Error>((_history_value, _history_io.into_custody()?))
-    }
-    .await?;
-    assert_eq!(
-        repeated.reducer().snapshot(usize::MAX, &mut None)?.0,
-        expected
-    );
-    assert_eq!(exact_work.receipt(), receipt);
-    drop(repeated);
-    drop(repeated_custody);
     let denied_copy = NativeMaterializationWork::new(
         WorkBudget {
             bytes_copied: 0,

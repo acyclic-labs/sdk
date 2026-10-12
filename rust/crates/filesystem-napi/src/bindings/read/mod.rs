@@ -55,14 +55,7 @@ impl NativeCheckout {
     pub async fn lookup_no_follow(&self, path: String) -> Result<NativeLookup> {
         let path = native_path(&path, self.config)?;
         let mut checkout = Box::pin(self.inner.lock()).await;
-        let receipt = checkout
-            .lookup_no_follow(
-                &path,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
-            )
-            .await
-            .map_err(napi_error)?;
+        let receipt = checkout_call!(self, checkout, lookup_no_follow(&path,))?;
         let record = receipt.value.record;
         Ok(NativeLookup {
             exists: record.is_some(),
@@ -89,14 +82,7 @@ impl NativeCheckout {
             .map(|path| native_path(path, self.config))
             .collect::<Result<Vec<_>>>()?;
         let mut checkout = Box::pin(self.inner.lock()).await;
-        let receipt = checkout
-            .lookup_batch_no_follow(
-                &paths,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
-            )
-            .await
-            .map_err(napi_error)?;
+        let receipt = checkout_call!(self, checkout, lookup_batch_no_follow(&paths,))?;
         let entries = receipt
             .value
             .entries
@@ -123,14 +109,7 @@ impl NativeCheckout {
     pub async fn stat_no_follow(&self, path: String) -> Result<NativeStat> {
         let path = native_path(&path, self.config)?;
         let mut checkout = Box::pin(self.inner.lock()).await;
-        let receipt = checkout
-            .lookup_no_follow_with_metadata(
-                &path,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
-            )
-            .await
-            .map_err(napi_error)?;
+        let receipt = checkout_call!(self, checkout, lookup_no_follow_with_metadata(&path,))?;
         let (record, metadata_canonical_bytes) = match receipt.value {
             Some(value) => (
                 Some(encode_file_record(value.record)),
@@ -158,14 +137,7 @@ impl NativeCheckout {
     pub async fn read_file_record_by_id(&self, file_id: Buffer) -> Result<NativeFileRecordRead> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
         let mut checkout = Box::pin(self.inner.lock()).await;
-        let receipt = checkout
-            .read_file_record_by_id(
-                file_id,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
-            )
-            .await
-            .map_err(napi_error)?;
+        let receipt = checkout_call!(self, checkout, read_file_record_by_id(file_id,))?;
         Ok(NativeFileRecordRead {
             record: encode_file_record(receipt.value),
             work_json: work_json(&receipt.work)?,
@@ -244,18 +216,17 @@ impl NativeCheckout {
     ) -> Result<NativeFileRead> {
         let path = native_path(&path, self.config)?;
         let mut checkout = Box::pin(self.inner.lock()).await;
-        let receipt = checkout
-            .read_file_range(
+        let receipt = checkout_call!(
+            self,
+            checkout,
+            read_file_range(
                 &path,
                 ByteRange {
                     offset: bigint_u64(&offset, "offset")?,
                     length: bigint_u64(&length, "length")?,
                 },
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
             )
-            .await
-            .map_err(napi_error)?;
+        )?;
         Ok(NativeFileRead {
             bytes: Buffer::from(receipt.value.bytes.to_vec()),
             work_json: work_json(&receipt.work)?,
@@ -272,18 +243,17 @@ impl NativeCheckout {
     ) -> Result<NativeFileRead> {
         let file_id = FileId::from_bytes(fixed_16(&file_id)?);
         let mut checkout = Box::pin(self.inner.lock()).await;
-        let receipt = checkout
-            .read_file_range_by_id(
+        let receipt = checkout_call!(
+            self,
+            checkout,
+            read_file_range_by_id(
                 file_id,
                 ByteRange {
                     offset: bigint_u64(&offset, "offset")?,
                     length: bigint_u64(&length, "length")?,
                 },
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
             )
-            .await
-            .map_err(napi_error)?;
+        )?;
         Ok(NativeFileRead {
             bytes: Buffer::from(receipt.value.bytes.to_vec()),
             work_json: work_json(&receipt.work)?,
@@ -295,14 +265,7 @@ impl NativeCheckout {
     pub async fn read_symbolic_link(&self, path: String) -> Result<NativeFileRead> {
         let path = native_path(&path, self.config)?;
         let mut checkout = Box::pin(self.inner.lock()).await;
-        let receipt = checkout
-            .read_symbolic_link(
-                &path,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
-            )
-            .await
-            .map_err(napi_error)?;
+        let receipt = checkout_call!(self, checkout, read_symbolic_link(&path,))?;
         Ok(NativeFileRead {
             bytes: Buffer::from(receipt.value.bytes.to_vec()),
             work_json: work_json(&receipt.work)?,
@@ -314,14 +277,7 @@ impl NativeCheckout {
     pub async fn read_reparse_point(&self, path: String) -> Result<NativeFileRead> {
         let path = native_path(&path, self.config)?;
         let mut checkout = Box::pin(self.inner.lock()).await;
-        let receipt = checkout
-            .read_reparse_point(
-                &path,
-                acyclic_fs::performance::BOUNDARY_BUDGET,
-                &self.cancellation,
-            )
-            .await
-            .map_err(napi_error)?;
+        let receipt = checkout_call!(self, checkout, read_reparse_point(&path,))?;
         Ok(NativeFileRead {
             bytes: Buffer::from(receipt.value.to_vec()),
             work_json: work_json(&receipt.work)?,

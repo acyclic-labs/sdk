@@ -15,7 +15,7 @@ impl TaskContext {
         let binding = self
             .harness
             .tools
-            .get_version(&tool.name, &tool.revision, None)?
+            .get(&tool.name, Some(&tool.revision), None)?
             .ok_or_else(|| Error::NotFound(format!("tool {}", tool.name)))?;
         if binding.definition != *tool {
             return Err(Error::Conflict(

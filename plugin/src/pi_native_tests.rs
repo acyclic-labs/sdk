@@ -159,7 +159,7 @@ fn original_host_settings_reject_child_substitution_and_strip_caller_credentials
         !host
             .environment
             .keys()
-            .any(|key| is_caller_environment(key))
+            .any(|key| pi_caller::is_environment_key(key))
     );
     let limits = capture_limits(
         acyclic_harness::conversation::Limits {

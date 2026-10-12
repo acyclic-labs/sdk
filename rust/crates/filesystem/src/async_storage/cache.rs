@@ -42,20 +42,6 @@ pub(crate) fn owned_read(
     Ok(read)
 }
 
-pub(crate) fn observe_read(
-    custody: &crate::kernel::ProofDataCustody,
-    result: ObjectResult<ObjectRead>,
-) -> ObjectResult<ObjectRead> {
-    let work = match &result {
-        Ok(receipt) => receipt.work,
-        Err(failure) => *failure.work,
-    };
-    custody
-        .record_completed_leaf_work(work)
-        .map_err(|error| crate::storage::ObjectFailure::new(error.into(), work))?;
-    result
-}
-
 /// Exact identity of one authenticated decoded-object representation.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[doc(hidden)]

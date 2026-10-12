@@ -522,7 +522,7 @@ fn private_root_directory_grant_reads_descendants_without_write_authority() -> R
     assert!(read_granted(&grants, &file)?);
     assert!(!grants.contains(&volume.capability(VolumeOperation::Write, &mut None)?));
     for capability in [
-        file.read_capability()?,
+        file.read_capability( &mut None)?,
         volume.capability(VolumeOperation::Read, &mut None)?,
         volume.directory_read_capability("notes", &mut None)?,
         volume.directory_read_capability("notes/nested", &mut None)?,

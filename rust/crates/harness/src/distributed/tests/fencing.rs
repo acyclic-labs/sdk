@@ -9,16 +9,7 @@ async fn owned_child_declaration_rechecks_parent_and_recovers_tail_conflict() ->
             DistributedCoordinator::open(&client, gate.clone(), None, &mut None).await?;
         let parent = OperationId::from_bytes([41; 16]);
         declare(&mut first, spec(parent, 0)?, "fenced-parent").await?;
-        let lease = start(
-            &mut first,
-            &Worker {
-                id: "parent-worker".into(),
-                available: ResourceSnapshot::default(),
-                labels: BTreeMap::new(),
-            },
-            "parent-start",
-        )
-        .await?;
+        let lease = start(&mut first, &worker("parent-worker"), "parent-start").await?;
         assert_eq!(lease.operation.operation_id, parent);
         let fence = LeaseFence::from(&lease.reservation);
         let mut second = open(&client).await?;
@@ -144,11 +135,7 @@ async fn selected_command_wake_rechecks_wait_and_recovers_tail_conflict() -> Res
         let task = OperationId::from_bytes([51; 16]);
         let selected = OperationId::from_bytes([52; 16]);
         declare(&mut first, spec(task, 0)?, "wake-task").await?;
-        let worker = Worker {
-            id: "wake-worker".into(),
-            available: ResourceSnapshot::default(),
-            labels: BTreeMap::new(),
-        };
+        let worker = worker("wake-worker");
         let lease = start(&mut first, &worker, "wake-start").await?;
         assert_eq!(lease.operation.operation_id, task);
         let fence = LeaseFence::from(&lease.reservation);
@@ -360,16 +347,7 @@ async fn passive_suspension_atomically_fences_execution_and_recovers_commit_ack(
             let task = OperationId::from_bytes([91; 16]);
             let execution = OperationId::from_bytes([92; 16]);
             declare(&mut coordinator, spec(task, 0)?, "idle-task").await?;
-            let lease = start(
-                &mut coordinator,
-                &Worker {
-                    id: "idle-worker".into(),
-                    available: ResourceSnapshot::default(),
-                    labels: BTreeMap::new(),
-                },
-                "idle-start",
-            )
-            .await?;
+            let lease = start(&mut coordinator, &worker("idle-worker"), "idle-start").await?;
             assert_eq!(lease.operation.operation_id, task);
             let fence = LeaseFence::from(&lease.reservation);
             if let Some(tail) = existing_tail {

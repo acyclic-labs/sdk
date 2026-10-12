@@ -44,7 +44,7 @@ pub fn json_value_bounded<T: Serialize + ?Sized, F: FnMut(JsonCodecCharge) -> Re
         tree_only: true,
     };
     let value = encode_value(value, &mut meter)?;
-    let owned = owned_logical_bytes(&value);
+    let owned = json_value_logical_owned_bytes(&value)?;
     let released = meter.retained.checked_sub(owned).ok_or_else(|| {
         CodecError::Bound("JSON retention accounting differs").into_root_with_code(native_code)
     })?;

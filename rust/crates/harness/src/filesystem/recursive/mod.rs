@@ -1,26 +1,31 @@
 //! Recursive forks over the existing task and provider journals.
-use crate::{AgentId, Capabilities, Error, OperationId, Outcome, Result, TaskId,
+use crate::filesystem::{FORK_PREPARE_TASK_COMMAND_KIND, FilesystemForkPreparer};
+use crate::{
+    AgentId, Capabilities, Error, OperationId, Outcome, Result, TaskId,
     conversation::{Limits, VolumeOperation, VolumeRef},
     fork::{ForkReport, ForkRequest, ResourceRevision},
     resource_preparation::ResourcePreparationRequest,
-    resources::GenerationRef, runtime::{TaskAdmissionRecord, TaskDefinition},
-    workflow::{MachineIdentity, MachineStatus, MachineTransition, ResumableMachine, WorkflowCommand}};
+    resources::GenerationRef,
+    runtime::{TaskAdmissionRecord, TaskDefinition},
+    workflow::{
+        MachineIdentity, MachineStatus, MachineTransition, ResumableMachine, WorkflowCommand,
+    },
+};
 use acyclic_fs::{AsyncAuthorityStore, AsyncObjectStore};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
-use crate::filesystem::{FilesystemForkPreparer, FORK_PREPARE_TASK_COMMAND_KIND};
-mod source;
-mod preparation;
 mod machine;
 #[cfg(not(target_arch = "wasm32"))]
 mod native;
-pub use source::{recursive_fork_source, restore_recursive_fork_source};
-pub(in crate::filesystem) use source::fork_request;
+mod preparation;
+mod source;
+pub use machine::ForkPreparationMachine;
 #[cfg(not(target_arch = "wasm32"))]
 pub use native::restore_recursive_fork_source_with_native_work;
 pub use preparation::fork_preparation_request;
-pub use machine::ForkPreparationMachine;
+pub(in crate::filesystem) use source::fork_request;
+pub use source::{recursive_fork_source, restore_recursive_fork_source};
 /// Portable fork arguments.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -40,7 +45,9 @@ pub struct ForkToolArguments {
 impl ForkToolArguments {
     /// Resolves the default without performing IO or granting source authority.
     pub fn source_task(
-        &self, caller: TaskId, limits: Limits,
+        &self,
+        caller: TaskId,
+        limits: Limits,
         work: &mut Option<&mut dyn crate::store::history::HistoryIo>,
     ) -> Result<TaskId> {
         limits.validate(work)?;
@@ -49,11 +56,18 @@ impl ForkToolArguments {
         }
         if self.msg.len() as u64 > limits.file_bytes {
             #[cfg(all(feature = "filesystem", not(target_arch = "wasm32")))]
-            if work.as_deref().is_some_and(|observer| observer.original_native_work().is_some()) {
-                return Err(Error::NativeBoundary { code: crate::wire::ErrorCode::Invalid,
-                    reason: "fork message exceeds admitted file bytes" });
+            if work
+                .as_deref()
+                .is_some_and(|observer| observer.original_native_work().is_some())
+            {
+                return Err(Error::NativeBoundary {
+                    code: crate::wire::ErrorCode::Invalid,
+                    reason: "fork message exceeds admitted file bytes",
+                });
             }
-            return Err(Error::Invalid("fork message exceeds admitted file bytes".into()));
+            return Err(Error::Invalid(
+                "fork message exceeds admitted file bytes".into(),
+            ));
         }
         Ok(self.source.unwrap_or(caller))
     }
@@ -69,26 +83,41 @@ impl ForkToolArguments {
         request: &mut ForkRequest,
     ) -> Result<()> {
         request.validate(&mut None)?;
-        let revision = ResourceRevision::Project { volume: project, generation };
+        let revision = ResourceRevision::Project {
+            volume: project,
+            generation,
+        };
         revision.validate(&mut None)?;
         if let ResourceRevision::Project { volume, .. } = &revision
             && (volume == &request.preparation.child_project_volume
                 || volume.provider() != request.preparation.child_project_volume.provider())
         {
-            return Err(Error::Invalid("selected source does not match child provider/allocation".into()));
+            return Err(Error::Invalid(
+                "selected source does not match child provider/allocation".into(),
+            ));
         }
-        if self.source_task(caller, limits, &mut None)? != selected_task || request.child_agent != self.id {
-            return Err(Error::Unauthorized("fork source or new child identity differs from selection".into()));
+        if self.source_task(caller, limits, &mut None)? != selected_task
+            || request.child_agent != self.id
+        {
+            return Err(Error::Unauthorized(
+                "fork source or new child identity differs from selection".into(),
+            ));
         }
         if selected_task != caller
-            && (request.preparation.inherited_through_sequence != 0 || request.preparation.summary.is_some())
+            && (request.preparation.inherited_through_sequence != 0
+                || request.preparation.summary.is_some())
         {
-            return Err(Error::Unsupported("foreign workspace source cannot inherit conversation history".into()));
+            return Err(Error::Unsupported(
+                "foreign workspace source cannot inherit conversation history".into(),
+            ));
         }
-        let mut selected = request.selections.iter_mut().filter(|selection| {
-            matches!(selection.revision, ResourceRevision::Project { .. })
-        });
-        let project_selection = selected.next().ok_or_else(|| Error::Invalid("fork has no project selection".into()))?;
+        let mut selected = request
+            .selections
+            .iter_mut()
+            .filter(|selection| matches!(selection.revision, ResourceRevision::Project { .. }));
+        let project_selection = selected
+            .next()
+            .ok_or_else(|| Error::Invalid("fork has no project selection".into()))?;
         if selected.next().is_some() {
             return Err(Error::Invalid("fork repeats project selection".into()));
         }
@@ -155,4 +184,3 @@ pub struct ForkPreparationLimits {
     /// Complete canonical request and provider IO allowance.
     pub bytes: u64,
 }
-

@@ -2,22 +2,13 @@ use super::*;
 
 #[tokio::test]
 async fn repeated_join_preserves_prior_incremental_publications() -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let parent = fs
-        .create_workspace(
-            "incremental-parent",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("incremental-parent", B, &cancel)
         .await?
         .value;
-    let parent_base = parent
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let parent_base = parent.head(B, &cancel).await?.value;
     let child = parent
         .fork(
             "incremental-child",
@@ -25,20 +16,15 @@ async fn repeated_join_preserves_prior_incremental_publications() -> Result<(), 
                 parent_base.clone(),
                 IdempotencyKey::from_bytes([0x67; 16]),
             ),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            allow::<FsError>,
         )
         .await?
         .value;
     child.write_text("/first.txt", "first").await?;
-    let first = child.join_into(&parent).plan().await?;
+    let first = child.join_into(&parent).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert!(matches!(
         first
             .apply(
@@ -46,13 +32,13 @@ async fn repeated_join_preserves_prior_incremental_publications() -> Result<(), 
                     if_target: first.target_head(),
                     idempotency_key: IdempotencyKey::from_bytes([0x68; 16]),
                 },
-                crate::PublicationPermit::Unrestricted
+                PublicationPermit::Unrestricted
             )
             .await?,
         JoinOutcome::Applied(_)
     ));
     child.write_text("/second.txt", "second").await?;
-    let second = child.join_into(&parent).plan().await?;
+    let second = child.join_into(&parent).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert!(matches!(
         second
             .apply(
@@ -60,19 +46,14 @@ async fn repeated_join_preserves_prior_incremental_publications() -> Result<(), 
                     if_target: second.target_head(),
                     idempotency_key: IdempotencyKey::from_bytes([0x69; 16]),
                 },
-                crate::PublicationPermit::Unrestricted
+                PublicationPermit::Unrestricted
             )
             .await?,
         JoinOutcome::Applied(_)
     ));
     assert_eq!(
         parent
-            .read(
-                "/first.txt",
-                64,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .read("/first.txt", 64, B, &cancel)
             .await?
             .value
             .as_ref(),
@@ -80,12 +61,7 @@ async fn repeated_join_preserves_prior_incremental_publications() -> Result<(), 
     );
     assert_eq!(
         parent
-            .read(
-                "/second.txt",
-                64,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
+            .read("/second.txt", 64, B, &cancel)
             .await?
             .value
             .as_ref(),
@@ -97,76 +73,43 @@ async fn repeated_join_preserves_prior_incremental_publications() -> Result<(), 
 #[tokio::test]
 async fn side_effect_free_join_combines_independent_fork_and_target_changes()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
-    let main = fs
-        .create_workspace(
-            "main",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let main = fs.create_workspace("main", B, &cancel).await?.value;
     main.write_text("/base", "base").await?;
-    let base = main
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let base = main.head(B, &cancel).await?.value;
     let agent = main
         .fork(
             "agent",
             ForkOptions::from_generation(base, IdempotencyKey::new()),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            allow::<FsError>,
         )
         .await?
         .value;
     agent.write_text("/agent", "agent").await?;
     main.write_text("/main", "main").await?;
 
-    let plan = agent.join_into(&main).plan().await?;
+    let plan = agent.join_into(&main).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let expected = plan.target_head();
     let idempotency_key = IdempotencyKey::new();
-    assert!(
-        main.read(
-            "/agent",
-            16,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .is_err()
-    );
+    assert!(main.read("/agent", 16, B, &cancel).await.is_err());
     let outcome = plan
         .apply(
             ApplyOptions {
                 if_target: expected,
                 idempotency_key,
             },
-            crate::PublicationPermit::Unrestricted,
+            PublicationPermit::Unrestricted,
         )
         .await?;
     let JoinOutcome::Applied(joined) = outcome else {
         return Err("join did not publish".into());
     };
     let witness = plan
-        .commit_witness(
-            &joined,
-            idempotency_key,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )?
+        .commit_witness(&joined, idempotency_key, B, &cancel)?
         .value;
     assert!(main.verify_join_commit(&witness).await?);
     let mut forged = serde_json::to_value(witness)?;
@@ -175,72 +118,33 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
     let forged: crate::JoinCommitWitness = serde_json::from_value(forged)?;
     assert!(!main.verify_join_commit(&forged).await?);
     assert_eq!(
-        main.operation_generation(
-            idempotency_key,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await?
-        .value
-        .ok_or("join operation was not recoverable")?
-        .id(),
+        main.operation_generation(idempotency_key, B, &cancel)
+            .await?
+            .value
+            .ok_or("join operation was not recoverable")?
+            .id(),
         joined.generation.id()
     );
     assert!(
-        main.operation_generation(
-            IdempotencyKey::new(),
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await?
-        .value
-        .is_none()
+        main.operation_generation(IdempotencyKey::new(), B, &cancel)
+            .await?
+            .value
+            .is_none()
     );
     assert_eq!(
-        joined
-            .generation
-            .read(
-                "/base",
-                16,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value,
+        joined.generation.read("/base", 16, B, &cancel).await?.value,
         OwnedBytes::from_static(b"base")
     );
     assert_eq!(
-        main.read(
-            "/agent",
-            16,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await?
-        .value,
+        main.read("/agent", 16, B, &cancel).await?.value,
         OwnedBytes::from_static(b"agent")
     );
     assert_eq!(
-        main.read(
-            "/main",
-            16,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await?
-        .value,
+        main.read("/main", 16, B, &cancel).await?.value,
         OwnedBytes::from_static(b"main")
     );
     assert_eq!(
-        agent
-            .read(
-                "/agent",
-                16,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new()
-            )
-            .await?
-            .value,
+        agent.read("/agent", 16, B, &cancel).await?.value,
         OwnedBytes::from_static(b"agent")
     );
     assert!(matches!(
@@ -249,7 +153,7 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
                 if_target: expected,
                 idempotency_key,
             },
-            crate::PublicationPermit::Unrestricted
+            PublicationPermit::Unrestricted
         )
         .await?,
         JoinOutcome::AlreadyApplied(_)
@@ -258,11 +162,7 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
     assert!(main.verify_join_commit(&witness).await?);
     let ordinary_key = IdempotencyKey::new();
     let mut ordinary = main
-        .begin_transaction(
-            ordinary_key,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .begin_transaction(ordinary_key, B, &cancel)
         .await?
         .value;
     ordinary.write_text("/ordinary", "not a join").await?;
@@ -270,28 +170,17 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
         ordinary
             .commit(
                 None,
-                crate::PublicationPermit::Unrestricted,
-                crate::WorkBudget::UNBOUNDED,
-                &crate::CancellationToken::new(),
-                |_| async {
-                    Ok::<_, crate::OperationFailure<crate::WorkspaceError>>(
-                        crate::OperationReceipt {
-                            value: (),
-                            work: crate::WorkCounters::default(),
-                        },
-                    )
-                }
+                PublicationPermit::Unrestricted,
+                B,
+                &cancel,
+                allow::<WorkspaceError>
             )
             .await?
             .value,
         TransactionCommit::Committed(_)
     ));
     let ordinary_generation = main
-        .operation_generation(
-            ordinary_key,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .operation_generation(ordinary_key, B, &cancel)
         .await?
         .value
         .ok_or("ordinary operation was not recoverable")?;
@@ -306,67 +195,33 @@ async fn side_effect_free_join_combines_independent_fork_and_target_changes()
 #[tokio::test]
 async fn exact_generation_join_matches_head_plan_and_rejects_stale_target()
 -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
-    let main = fs
-        .create_workspace(
-            "main-exact",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let main = fs.create_workspace("main-exact", B, &cancel).await?.value;
     main.write_text("/base", "base").await?;
-    let base = main
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let base = main.head(B, &cancel).await?.value;
     let agent = main
         .fork(
             "agent-exact",
             ForkOptions::from_generation(base, IdempotencyKey::new()),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            allow::<FsError>,
         )
         .await?
         .value;
     agent.write_text("/agent", "agent").await?;
-    let source = agent
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
-    let target = main
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let source = agent.head(B, &cancel).await?.value;
+    let target = main.head(B, &cancel).await?.value;
     let planned = agent
         .join_into(&main)
-        .plan_at(
-            &source,
-            &target,
-            WorkBudget::UNBOUNDED,
-            &CancellationToken::new(),
-        )
+        .plan_at(&source, &target, B, &cancel)
         .await?
         .value;
     assert_eq!(planned.source_head(), source.id());
     assert_eq!(planned.target_head(), target.id());
-    let current = agent.join_into(&main).plan().await?;
+    let current = agent.join_into(&main).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     assert_eq!(planned.source_head(), current.source_head());
     assert_eq!(planned.target_head(), current.target_head());
 
@@ -374,76 +229,45 @@ async fn exact_generation_join_matches_head_plan_and_rejects_stale_target()
     assert!(matches!(
         agent
             .join_into(&main)
-            .plan_at(
-                &source,
-                &target,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error),
-        Err(WorkspaceError::StaleTarget)
+            .plan_at(&source, &target, B, &cancel)
+            .await,
+        Err(OperationFailure {
+            error: WorkspaceError::StaleTarget,
+            ..
+        })
     ));
     assert!(matches!(
         agent
             .join_into(&main)
-            .plan_at(
-                &target,
-                &main
-                    .head(
-                        crate::WorkBudget::UNBOUNDED,
-                        &crate::CancellationToken::new()
-                    )
-                    .await?
-                    .value,
-                WorkBudget::UNBOUNDED,
-                &CancellationToken::new()
-            )
-            .await
-            .map(|receipt| receipt.value)
-            .map_err(|failure| failure.error),
-        Err(WorkspaceError::ForeignGeneration)
+            .plan_at(&target, &main.head(B, &cancel).await?.value, B, &cancel)
+            .await,
+        Err(OperationFailure {
+            error: WorkspaceError::ForeignGeneration,
+            ..
+        })
     ));
     Ok(())
 }
 
 #[tokio::test]
 async fn join_rejects_a_stale_target_without_mutation() -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
-    let main = fs
-        .create_workspace(
-            "main",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
-    let base = main
-        .head(
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let main = fs.create_workspace("main", B, &cancel).await?.value;
+    let base = main.head(B, &cancel).await?.value;
     let agent = main
         .fork(
             "agent",
             ForkOptions::from_generation(base, IdempotencyKey::new()),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            allow::<FsError>,
         )
         .await?
         .value;
     agent.write_text("/agent", "agent").await?;
-    let plan = agent.join_into(&main).plan().await?;
+    let plan = agent.join_into(&main).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let expected = plan.target_head();
     main.write_text("/raced", "winner").await?;
     let outcome = plan
@@ -452,31 +276,13 @@ async fn join_rejects_a_stale_target_without_mutation() -> Result<(), Box<dyn Er
                 if_target: expected,
                 idempotency_key: IdempotencyKey::new(),
             },
-            crate::PublicationPermit::Unrestricted,
+            PublicationPermit::Unrestricted,
         )
         .await?;
     assert!(matches!(outcome, JoinOutcome::StaleTarget(_)));
-    assert!(
-        main.read(
-            "/agent",
-            16,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await
-        .map(|receipt| receipt.value)
-        .map_err(|failure| failure.error)
-        .is_err()
-    );
+    assert!(main.read("/agent", 16, B, &cancel).await.is_err());
     assert_eq!(
-        main.read(
-            "/raced",
-            16,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await?
-        .value,
+        main.read("/raced", 16, B, &cancel).await?.value,
         OwnedBytes::from_static(b"winner")
     );
     Ok(())
@@ -484,44 +290,25 @@ async fn join_rejects_a_stale_target_without_mutation() -> Result<(), Box<dyn Er
 
 #[tokio::test]
 async fn merge_drivers_resolve_and_publish_real_workspace_joins() -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
-    let main = fs
-        .create_workspace(
-            "driver-main",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value;
+    let main = fs.create_workspace("driver-main", B, &cancel).await?.value;
     main.write_text("/shared", "base").await?;
     let agent = main
         .fork(
             "driver-agent",
-            ForkOptions::from_generation(
-                main.head(
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                )
-                .await?
-                .value,
-                IdempotencyKey::new(),
-            ),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            ForkOptions::from_generation(main.head(B, &cancel).await?.value, IdempotencyKey::new()),
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            allow::<FsError>,
         )
         .await?
         .value;
     agent.write_text("/shared", "agent").await?;
     main.write_text("/shared", "main").await?;
 
-    let plan = agent.join_into(&main).plan().await?;
+    let plan = agent.join_into(&main).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let mut registry = crate::MergeDriverRegistry::new();
     registry.register("theirs", Arc::new(SelectTheirsDriver))?;
     registry.set_default("theirs")?;
@@ -544,25 +331,13 @@ async fn merge_drivers_resolve_and_publish_real_workspace_joins() -> Result<(), 
     assert!(
         main.verify_join_commit(
             &plan
-                .commit_witness(
-                    &application,
-                    join_key,
-                    WorkBudget::UNBOUNDED,
-                    &CancellationToken::new()
-                )?
+                .commit_witness(&application, join_key, B, &cancel)?
                 .value
         )
         .await?
     );
     assert_eq!(
-        main.read(
-            "/shared",
-            16,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new()
-        )
-        .await?
-        .value,
+        main.read("/shared", 16, B, &cancel).await?.value,
         OwnedBytes::from_static(b"agent")
     );
     Ok(())
@@ -570,44 +345,28 @@ async fn merge_drivers_resolve_and_publish_real_workspace_joins() -> Result<(), 
 
 #[tokio::test]
 async fn default_text_driver_projects_markers_and_publishes_them() -> Result<(), Box<dyn Error>> {
+    let cancel = CancellationToken::new();
     let fs = Fs::memory();
     let main = fs
-        .create_workspace(
-            "text-driver-main",
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
+        .create_workspace("text-driver-main", B, &cancel)
         .await?
         .value;
     main.write_text("/shared", "base\n").await?;
     let agent = main
         .fork(
             "text-driver-agent",
-            ForkOptions::from_generation(
-                main.head(
-                    crate::WorkBudget::UNBOUNDED,
-                    &crate::CancellationToken::new(),
-                )
-                .await?
-                .value,
-                IdempotencyKey::new(),
-            ),
-            crate::PublicationPermit::Unrestricted,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-            |_| {
-                std::future::ready(Ok(crate::OperationReceipt {
-                    value: (),
-                    work: crate::WorkCounters::UNCHARGED,
-                }))
-            },
+            ForkOptions::from_generation(main.head(B, &cancel).await?.value, IdempotencyKey::new()),
+            PublicationPermit::Unrestricted,
+            B,
+            &cancel,
+            allow::<FsError>,
         )
         .await?
         .value;
     agent.write_text("/shared", "agent\n").await?;
     main.write_text("/shared", "main\n").await?;
 
-    let plan = agent.join_into(&main).plan().await?;
+    let plan = agent.join_into(&main).plan(crate::WorkBudget::UNBOUNDED, &crate::CancellationToken::new()).await.map(|receipt| receipt.value).map_err(|failure| failure.error)?;
     let JoinOutcome::Conflicted {
         conflicts,
         truncated,
@@ -617,7 +376,7 @@ async fn default_text_driver_projects_markers_and_publishes_them() -> Result<(),
                 if_target: plan.target_head(),
                 idempotency_key: IdempotencyKey::new(),
             },
-            crate::PublicationPermit::Unrestricted,
+            PublicationPermit::Unrestricted,
         )
         .await?
     else {
@@ -647,17 +406,7 @@ async fn default_text_driver_projects_markers_and_publishes_them() -> Result<(),
         )
         .await?;
     assert!(matches!(outcome, JoinOutcome::Applied(_)));
-    let merged = String::from_utf8(
-        main.read(
-            "/shared",
-            1024,
-            crate::WorkBudget::UNBOUNDED,
-            &crate::CancellationToken::new(),
-        )
-        .await?
-        .value
-        .to_vec(),
-    )?;
+    let merged = String::from_utf8(main.read("/shared", 1024, B, &cancel).await?.value.to_vec())?;
     assert!(merged.contains("<<<<<<< ours"));
     assert!(merged.contains("main"));
     assert!(merged.contains("agent"));

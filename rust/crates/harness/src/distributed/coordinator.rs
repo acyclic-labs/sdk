@@ -228,7 +228,12 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
         .into_iter()
         .flatten()
         {
-            crate::contract::validate_json_schema_value(schema, &value, "scheduler result", custody.work())?;
+            crate::contract::validate_json_schema_value(
+                schema,
+                &value,
+                "scheduler result",
+                custody.work(),
+            )?;
         }
         Ok(())
     }
@@ -400,25 +405,9 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .await
         };
         custody.relinquish(custody.retained())?;
-        let outcome = match appended {
-            Ok(outcome) => outcome,
-            Err(error) if idle_execution.is_none() && coordinator_retry_conflict(&error) => {
-                self.refresh(custody.work()).await?;
-                if self
-                    .intent_matches(key, &event, &digest, custody.work())
-                    .await?
-                    == Some(true)
-                {
-                    self.validate_command_wait(&event, waiting_command, true, custody.work())?;
-                    self.validate_parent_owner(&event, parent_fence, custody.work())?;
-                    return self.validate_replay(&event, custody.work()).map(|()| false);
-                }
-                return Err(error);
-            }
-            Err(error) => return Err(error),
-        };
-        let applied = match outcome {
-            AppendOutcome::Committed(receipt) => {
+
+        let applied = match appended {
+            Ok(AppendOutcome::Committed(receipt)) => {
                 if receipt.end.checked_sub(receipt.start) != Some(1) || receipt.tail < receipt.end {
                     return Err(coordinator_boundary(
                         custody.work(),
@@ -426,9 +415,13 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
                         "invalid coordinator append receipt",
                     ));
                 }
-                receipt.start == revision - 1
+                Ok(receipt.start == revision - 1)
             }
-            AppendOutcome::TailConflict { .. } => false,
+            Ok(AppendOutcome::TailConflict { .. }) => Ok(false),
+            Err(error) if idle_execution.is_none() && error.code() == wire::ErrorCode::Conflict => {
+                Err(error)
+            }
+            Err(error) => return Err(error),
         };
         self.refresh(custody.work()).await?;
         if self
@@ -436,15 +429,20 @@ impl<P: StreamProvider> DistributedCoordinator<P> {
             .await?
             != Some(true)
         {
-            return Err(coordinator_boundary(
-                custody.work(),
-                wire::ErrorCode::Conflict,
-                "coordinator publication differs from its intent",
-            ));
+            return applied.and_then(|_| {
+                Err(coordinator_boundary(
+                    custody.work(),
+                    wire::ErrorCode::Conflict,
+                    "coordinator publication differs from its intent",
+                ))
+            });
+        }
+        if applied.is_err() {
+            self.validate_command_wait(&event, waiting_command, true, custody.work())?;
         }
         self.validate_replay(&event, custody.work())?;
         self.validate_parent_owner(&event, parent_fence, custody.work())?;
-        Ok(applied)
+        Ok(applied.unwrap_or(false))
     }
 
     fn validate_replay(
