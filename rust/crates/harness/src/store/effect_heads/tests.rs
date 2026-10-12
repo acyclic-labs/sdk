@@ -171,7 +171,7 @@ async fn original_cut_authenticates_absence_and_rejects_rebinding_and_non_atomic
     assert_eq!(
         root_at(&valid, &authority(), &issuer().verifier(&mut None).expect("verifier copy"), 1, exact, &mut None)
             .await?
-            .hash,
+            .0,
         None
     );
     let non_atomic = copy_cut(&canonical[0].value, certificates[0].value.clone(), false).await?;

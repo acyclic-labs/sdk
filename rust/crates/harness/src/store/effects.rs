@@ -619,6 +619,7 @@ mod native_effect_paid_point_tests {
     use super::super::{checkpoints, history::native_work_io};
     use acyclic_fs::{CancellationToken, NativeMaterializationWork, WorkBudget};
     use acyclic_stream::{IdempotencyKey, MemoryStream};
+    use bytes::Bytes;
     use crate::{
         Capabilities, IdempotencyKey as CommandKey, OperationId,
         conversation::{FileDescriptor, FileRef, VolumeClass, VolumeOwner, VolumeRef},
@@ -680,7 +681,7 @@ mod native_effect_paid_point_tests {
         }, &cancellation).expect("same original finite effect point ledger");
         let mut io = native_work_io(&native).expect("original point decoder source custody");
         let cursor = HistoryCursor { authority, after_revision: 0, through_revision: 1 };
-        let (events, paid) = read(
+        let (events, paid) = effect_events(
             &client, &issuer.verifier(&mut None).expect("verifier copy"), &cursor, effect,
             HistoryReadLimits { maximum_events: 8, maximum_bytes: 1_048_576 },
             &mut Some(&mut io),

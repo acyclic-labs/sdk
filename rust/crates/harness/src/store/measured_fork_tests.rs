@@ -1,3 +1,4 @@
+use bytes::Bytes;
 
 use super::*;
 use acyclic_fs::{CancellationToken, WorkBudget};
@@ -180,10 +181,8 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     };
     let owner = fixture.host.journal_owner(task, (&lease.reservation).into()).await?;
     let child_agent = AgentId::from_bytes([94; 16]);
-    let project = VolumeRef::new(fixture.filesystem_provider.clone(), "measured-child-project", VolumeClass::Project,
-        VolumeOwner::Project("created-project".into()))?;
-    let private = VolumeRef::new(fixture.filesystem_provider.clone(), "measured-child-private", VolumeClass::AgentPrivate,
-        VolumeOwner::Agent(child_agent))?;
+    let project = VolumeRef::new(fixture.filesystem_provider.clone(), ("measured-child-project").into(), VolumeClass::Project, VolumeOwner::Project("created-project".into()), &mut None)?;
+    let private = VolumeRef::new(fixture.filesystem_provider.clone(), ("measured-child-private").into(), VolumeClass::AgentPrivate, VolumeOwner::Agent(child_agent), &mut None)?;
     let project_generation = created.seed.resources.iter().find_map(|resource| match &resource.revision {
         ResourceRevision::Project { generation, .. } => Some(generation.clone()), _ => None,
     }).ok_or_else(|| Error::Invalid("original created project generation missing".into()))?;
@@ -202,8 +201,8 @@ async fn guarded_fork_fixture() -> Result<GuardedForkFixture> {
     fork.selections[2].revision = ResourceRevision::PrivateVolume {
         volume: created.private.clone(), generation: created.seed.child_private_generation.clone(), paths: Vec::new(),
     };
-    let history = crate::history::HistoryReader::new(&fixture.stream, &fork.parent, &(parent_issuer.verifier(&mut None).expect("verifier copy")), &mut None)?
-        .fork_history(parent.reducer(), 0, crate::history::HistoryReadLimits { maximum_events: 2, maximum_bytes: 65_536 }, &mut None).await?;
+    let history = crate::store::history::HistoryReader::new(&fixture.stream, &fork.parent, &(parent_issuer.verifier(&mut None).expect("verifier copy")), &mut None)?
+        .fork_history(parent.reducer(), 0, crate::store::history::HistoryReadLimits { maximum_events: 2, maximum_bytes: 65_536 }, &mut None).await?;
     let resolver = Arc::new(FilesystemContentVerifier::new(
         fixture.filesystem.clone(), &parent_issuer.verifier(&mut None).expect("verifier copy"), &parent_scope, 65_536, None,
     )?);
