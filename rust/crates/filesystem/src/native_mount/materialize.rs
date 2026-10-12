@@ -1751,8 +1751,8 @@ async fn restore_io<T: Send + 'static>(
         let _restore_lock = lock;
         operation(&mut NativeSourceWork::new(&work))
     };
-    let task = acyclic_native_runtime::run_blocking_io_measured(
-        crate::obs::in_context(context, operation), observer,
+    let task = acyclic_native_runtime::run_blocking_io(
+        crate::obs::in_context(context, operation), Some((observer, false)),
     ).map_err(|error| materialize_native_error(crate::NativeTreeMaterializationError::from_runtime_error(error)))?;
     task.await.map_err(|error| {
         materialize_native_error(crate::NativeTreeMaterializationError::from_runtime_error(error))
@@ -2370,7 +2370,7 @@ where
                     let file = receipt.host(|work| host_root.open_file_positional_wide_with_work(&host_path.units, work))?.into_std();
                     let meter = receipt.native_meter();
                     let file = receipt.runtime_result(
-                        acyclic_native_runtime::NativeFile::from_file_measured_owned(file, meter)
+                        acyclic_native_runtime::NativeFile::from_file(file, Some(acyclic_native_runtime::NativeFileMeter::Owned(meter)))
                             .map_err(|(error, file)| { drop(file); error }),
                     )?;
                     sync_generation_file(&file, receipt, before_effect).await?;
@@ -2484,9 +2484,7 @@ where
 #[cfg(windows)]
 fn mark_sparse_measured(file: &File, meter: &dyn acyclic_native_runtime::NativeReadMeter) -> std::io::Result<()> {
     let mut output = [];
-    acyclic_native_runtime::device_control_in_place_measured_mutation(
-        file, windows::Win32::System::Ioctl::FSCTL_SET_SPARSE, &[], &mut output, meter,
-    )?;
+    acyclic_native_runtime::device_control_in_place(file, windows::Win32::System::Ioctl::FSCTL_SET_SPARSE, &[], &mut output, Some((meter, acyclic_native_runtime::NativeOperationKind::Write)))?;
     Ok(())
 }
 
@@ -2795,11 +2793,11 @@ async fn generation_blocking<T: Send + 'static>(
 ) -> Result<T, GenerationFailure> {
     let observer = receipt.native_meter();
     let original = receipt.custody.work().clone();
-    let task = receipt.runtime_result(acyclic_native_runtime::run_blocking_io_measured(
+    let task = receipt.runtime_result(acyclic_native_runtime::run_blocking_io(
         move || {
             operation(&mut NativeSourceWork::from_native_materialization_work(&original))
         },
-        observer,
+        Some((observer, false)),
     ))?;
     let result = receipt.runtime_result(task.await)?;
     result.map_err(|error| GenerationFailure::new(materialize_demand_error(error), receipt.work))
@@ -2986,14 +2984,14 @@ fn create_file(
         // SAFETY: the measured host constructor opens this new, held-root-relative
         // handle overlapped, without a completion-port association or other I/O.
         let native = unsafe {
-            acyclic_native_runtime::NativeFile::from_overlapped_file_measured_owned_unchecked(file, meter)
+            acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file, Some(acyclic_native_runtime::NativeFileMeter::Owned(meter)))
         };
         receipt.runtime_result(native.map_err(|(error, file)| { drop(file); error }))
     }
     #[cfg(unix)]
     {
         receipt.runtime_result(
-            acyclic_native_runtime::NativeFile::from_file_measured_owned(file, meter)
+            acyclic_native_runtime::NativeFile::from_file(file, Some(acyclic_native_runtime::NativeFileMeter::Owned(meter)))
                 .map_err(|(error, file)| { drop(file); error }),
         )
     }

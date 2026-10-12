@@ -3696,7 +3696,7 @@ impl FuseRetirementHelper {
         work: &crate::NativeMaterializationWork,
     ) -> Result<Self, NativeMountError> {
         let normal = work.allocation_work();
-        let frame = acyclic_native_runtime::ProcessTree::prepare_closed_process_measured(
+        let frame = acyclic_native_runtime::ProcessTree::prepare_closed_process(
             5, normal.runtime_meter_owner(),
         ).map_err(|error| normal.runtime_error(error))?;
         // Reserve the bounded observation and termination loops, including reap.

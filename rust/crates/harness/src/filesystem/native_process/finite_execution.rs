@@ -514,23 +514,20 @@ async fn capture<P: StreamProvider + 'static>(
                     Ok(acyclic_native_runtime::ProcessInput { bytes, complete: exchange.is_complete() })
                 };
                 let output = match original.as_ref() {
-                    Some(work) => process.wait_with_exchange_observed_with_meter(timeout, maximum,
-                        request.maximum_bytes as usize, &first, buffers.take().expect("admitted capture buffers"), work.runtime_meter(), poll, observe),
-                    None => process.wait_with_exchange_observed(timeout, maximum, request.maximum_bytes as usize, &first, poll, observe),
+                    Some(work) => process.wait_with_output(timeout, maximum, Some(acyclic_native_runtime::CaptureInput::Exchange { initial: &first, maximum: request.maximum_bytes as usize }), poll, observe, Some(work.runtime_meter()), Some(buffers.take().expect("admitted capture buffers"))),
+                    None => process.wait_with_output(timeout, maximum, Some(acyclic_native_runtime::CaptureInput::Exchange { initial: &first, maximum: request.maximum_bytes as usize }), poll, observe, None, None),
                 };
                 drop(exchange); drop(first); drop(response_custody); drop(exchange_custody);
                 output
             } else if let Some(input) = &invocation.standard_input {
                 match original.as_ref() {
-                    Some(work) => process.wait_with_input_observed_with_meter(timeout, maximum, input,
-                        buffers.take().expect("admitted capture buffers"), work.runtime_meter(), poll),
-                    None => process.wait_with_input_observed(timeout, maximum, input, poll),
+                    Some(work) => process.wait_with_output(timeout, maximum, Some(acyclic_native_runtime::CaptureInput::Literal(input)), poll, |_| Ok(acyclic_native_runtime::ProcessInput::default()), Some(work.runtime_meter()), Some(buffers.take().expect("admitted capture buffers"))),
+                    None => process.wait_with_output(timeout, maximum, Some(acyclic_native_runtime::CaptureInput::Literal(input)), poll, |_| Ok(acyclic_native_runtime::ProcessInput::default()), None, None),
                 }
             } else {
                 match original.as_ref() {
-                    Some(work) => process.wait_with_output_observed_with_meter(timeout, maximum,
-                        buffers.take().expect("admitted capture buffers"), work.runtime_meter(), poll),
-                    None => process.wait_with_output_observed(timeout, maximum, poll),
+                    Some(work) => process.wait_with_output(timeout, maximum, None, poll, |_| Ok(acyclic_native_runtime::ProcessInput::default()), Some(work.runtime_meter()), Some(buffers.take().expect("admitted capture buffers"))),
+                    None => process.wait_with_output(timeout, maximum, None, poll, |_| Ok(acyclic_native_runtime::ProcessInput::default()), None, None),
                 }
             };
             if original.is_some() && (!process.is_reaped()

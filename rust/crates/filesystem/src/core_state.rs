@@ -52,7 +52,7 @@ const OWNER_LOCK: &str = "owner.lock";
 async fn run_local_transaction<T: Send + 'static>(
     operation: impl FnOnce() -> Result<T, LocalCoreStateStoreError> + Send + 'static,
 ) -> Result<T, LocalCoreStateStoreError> {
-    acyclic_native_runtime::run_blocking_io(operation).await?
+    acyclic_native_runtime::run_blocking_io(operation, None).expect("unmetered task construction cannot fail").await?
 }
 
 /// One journaled private namespace shared by core control-plane state.

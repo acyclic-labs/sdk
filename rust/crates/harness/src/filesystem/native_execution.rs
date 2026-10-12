@@ -1493,7 +1493,7 @@ impl NativePreparationRoot {
         let (operation_directory, mut operation_custody) = work.copy_path(operation_directory).map_err(native_root_error)?;
         custody.absorb(&mut operation_custody).map_err(native_root_error)?;
         let meter = work.clone();
-        acyclic_native_runtime::run_blocking_io_measured(move || {
+        acyclic_native_runtime::run_blocking_io(move || {
             let backend = acyclic_fs::NativeTreeMaterializationBackend::open(root, operation_directory, Some(custody), meter.clone()).map_err(native_root_error)?;
             backend.require_initial_empty().map_err(native_root_error)?;
             let expected_identity = acyclic_fs::NativeRootIdentity::from_bytes(
@@ -1507,7 +1507,7 @@ impl NativePreparationRoot {
             let (operation_directory, mut operation_custody) = meter.copy_path(backend.operation_directory_path()).map_err(native_root_error)?;
             custody.absorb(&mut operation_custody).map_err(native_root_error)?;
             Ok::<_, Error>((Self { root, operation_directory, expected_identity, expected_preparation_identity }, custody))
-        }, work.runtime_meter_owner())
+        }, Some((work.runtime_meter_owner(), false)))
             .map_err(|error| native_root_error(work.runtime_error(error)))?
             .await.map_err(|error| native_root_error(work.runtime_error(error)))?
         })
@@ -3143,9 +3143,9 @@ async fn native_backend(
     let (operation_directory, mut operation_custody) = work.copy_path(&allocation.operation_directory).map_err(native_root_error)?;
     custody.absorb(&mut operation_custody).map_err(native_root_error)?;
     let meter = work.clone();
-    let backend = acyclic_native_runtime::run_blocking_io_measured(move || {
+    let backend = acyclic_native_runtime::run_blocking_io(move || {
         acyclic_fs::NativeTreeMaterializationBackend::open(root, operation_directory, Some(custody), meter)
-    }, work.runtime_meter_owner())
+    }, Some((work.runtime_meter_owner(), false)))
         .map_err(|error| native_root_error(work.runtime_error(error)))?
         .await.map_err(|error| native_root_error(work.runtime_error(error)))?
         .map_err(native_root_error)?;

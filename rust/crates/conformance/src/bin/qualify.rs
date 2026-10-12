@@ -806,7 +806,7 @@ async fn run_sqlite_child(mode: &str, path: &Path) -> Result<(), String> {
             std::time::Duration::from_secs(120),
             8 * 1024 * 1024,
         )
-    })
+    }, None).expect("unmetered task construction cannot fail")
     .await
     .map_err(|error| error.to_string())?
     .map_err(|error| error.to_string())?;

@@ -2421,7 +2421,7 @@ fn projection_native_call<T>(
 }
 
 fn wait_native_unit_measured(
-    completion: acyclic_native_runtime::UnitCompletion,
+    completion: acyclic_native_runtime::NativeCompletion<()>,
     work: &super::NativeMountMeterWork,
 ) -> Result<(), NativeMountError> {
     let mut completion = std::pin::pin!(completion);
@@ -3078,9 +3078,7 @@ impl<'a> ProjectedNativeWriter<'a> {
         }
         // SAFETY: the existing raw native creator set asynchronous I/O and this transfer is the handle's sole positional I/O owner.
         let file = match unsafe {
-            acyclic_native_runtime::NativeFile::from_overlapped_file_measured_unchecked(
-                writer_file, work.native_materialization_work().runtime_meter(),
-            )
+            acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(writer_file, Some(acyclic_native_runtime::NativeFileMeter::Borrowed(work.native_materialization_work().runtime_meter())))
         } {
             Ok(file) => file,
             Err((error, returned_file)) => {
@@ -3403,8 +3401,8 @@ fn write_source_chunk(
     let packet = RetainedBuffer::source_chunk(packet, projection)?;
     let meter = projection.work.native_materialization_work().runtime_meter_owner();
     let completion = file.control_bounded_async(move |file, meter| {
-        acyclic_native_runtime::write_all_at_measured_held(
-            file, offset, &std::ops::Deref::deref(&packet).bytes, meter,
+        acyclic_native_runtime::write_all_at(
+            file, offset, &std::ops::Deref::deref(&packet).bytes, Some((meter, true)),
         )
     }, meter).map_err(projection_io_error)?;
     let written = wait_native_unit_measured(completion, projection.work);
@@ -7233,7 +7231,7 @@ mod tests {
                 .custom_flags(windows::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED.0)
                 .open(&destination)?;
             // SAFETY: this fresh FILE_FLAG_OVERLAPPED handle has no independent I/O or completion-port association; the fixture transfers it.
-            let file = unsafe { acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file)? };
+            let file = unsafe { acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file, None).map_err(|(error, _)| error)? };
             let (result, counters, live) = measured_source_leaf(source.as_ref(), budget, &cancellation, |projection| {
                 let entries = super::source_listing(projection, &MountPath::root())?;
                 let entry = entries.iter().find(|entry| entry.component.as_slice() == component.as_slice())

@@ -1019,9 +1019,9 @@ impl NativeMaterializationWork {
         &self, output: &mut W, bytes: &[u8],
     ) -> Result<(), NativeTreeMaterializationError> {
         use acyclic_native_runtime::{
-            NativeOperationKind, NativeOperationReservation, OwnedNativeByteReservation,
+            NativeOperationKind, NativeOperationReservation, NativeByteReservation,
         };
-        let mut transfer = OwnedNativeByteReservation::new(
+        let mut transfer = NativeByteReservation::new(
             self.runtime_meter_owner(), NativeOperationKind::Write, bytes.len(),
         ).map_err(|error| self.runtime_error(error))?;
         let mut offset = 0;
@@ -2435,7 +2435,7 @@ impl acyclic_native_runtime::NativeReadMeter for NativeOwnedCleanupCredit {
 impl crate::native_host::NativeHostWork for &std::sync::Arc<NativeOwnedCleanupCredit> {
     type Error = NativeTreeMaterializationError;
     type Allocation = acyclic_native_runtime::ReadAllocation;
-    type CleanupWrite = acyclic_native_runtime::OwnedNativeOperationReservation;
+    type CleanupWrite = acyclic_native_runtime::NativeOperationReservation<std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>>;
 
     fn io_error_kind(error: &Self::Error) -> Option<std::io::ErrorKind> {
         match error { NativeTreeMaterializationError::Io(error) => Some(error.kind()), _ => None }
@@ -2462,7 +2462,7 @@ impl crate::native_host::NativeHostWork for &std::sync::Arc<NativeOwnedCleanupCr
     }
     fn release(&mut self, allocation: Self::Allocation) -> Result<(), Self::Error> { drop(allocation); Ok(()) }
     fn reserve_cleanup_write(&mut self) -> Result<Self::CleanupWrite, Self::Error> {
-        acyclic_native_runtime::OwnedNativeOperationReservation::new(
+        acyclic_native_runtime::NativeOperationReservation::new(
             self.runtime_meter_owner(), acyclic_native_runtime::NativeOperationKind::Write, 1,
         ).map_err(|error| self.host_relay(error))
     }
@@ -4566,7 +4566,7 @@ impl NativeTreeMaterializationBackend {
                     };
                     crate::native_host::directory_identity_materialization_measured(&allocation, &work).map(|identity| identity.to_bytes())
                 }
-            }).await.map_err(|error| backend_error(NativeTreeMaterializationError::Io(error)))?.map_err(backend_error)?;
+            }, None).expect("unmetered task construction cannot fail").await.map_err(|error| backend_error(NativeTreeMaterializationError::Io(error)))?.map_err(backend_error)?;
             match step {
                 MaterializationPreparationAllocation::Operation => progress.operation = Some(actual),
                 MaterializationPreparationAllocation::Target => progress.target = Some(actual),
@@ -4808,7 +4808,7 @@ impl NativeTreeMaterializationBackend {
             };
             crate::native_host::sync_directory_held_measured(&directory, &backend.work)?;
             Ok(identity)
-        }).await?
+        }, None).expect("unmetered task construction cannot fail").await?
     }
 
     fn exists(&self, path: &NativeEntry<'_>) -> Result<bool, NativeTreeMaterializationError> {
@@ -5036,7 +5036,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
                 crate::native_host::sync_metadata_held_with_work(&parent, leaf, &mut &backend.work)?;
             }
             Ok(())
-        }).await?
+        }, None).expect("unmetered task construction cannot fail").await?
     }
 
     fn retain_plan(&self, plan: &MaterializationPlan) -> Result<Option<NativeAllocation>, Self::Error> {
@@ -5102,7 +5102,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
                 *slot = crate::native_host::HostRoot::open_materialization_measured(path, &backend.work)?.identity().to_bytes();
             }
             Ok(Some(current))
-        }).await?
+        }, None).expect("unmetered task construction cannot fail").await?
     }
 
     async fn observe_allocation_identity(&self) -> Result<Option<[u8; 16]>, Self::Error> {
@@ -5111,7 +5111,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
         acyclic_native_runtime::run_blocking_io(move || {
             crate::native_host::HostRoot::open_materialization_measured(root.as_path(), &work)
                 .map(|held| Some(held.identity().to_bytes())).map_err(Self::Error::from)
-        }).await?
+        }, None).expect("unmetered task construction cannot fail").await?
     }
 
     async fn capture(
@@ -5159,7 +5159,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
             Ok(OwnedMaterializationPreimage {
                 preimage: MaterializationPreimage { image }, custody: Some(custody),
             })
-        })
+        }, None).expect("unmetered task construction cannot fail")
         .await?
     }
 
@@ -5213,7 +5213,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
                 };
             }
             Ok(MaterializationObservation::Diverged)
-        })
+        }, None).expect("unmetered task construction cannot fail")
         .await?
     }
 
@@ -5288,7 +5288,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
                 backend.rename(&target, &live)?;
             }
             Ok(())
-        })
+        }, None).expect("unmetered task construction cannot fail")
         .await?
     }
 
@@ -5339,7 +5339,7 @@ impl MaterializationBackend for NativeTreeMaterializationBackend {
                 Some(expected) if current == Some(expected) => Ok(()),
                 Some(_) => Err(native_diagnostic(&backend.work, path, NativeTreeMaterializationError::MissingPreimage)?),
             }
-        })
+        }, None).expect("unmetered task construction cannot fail")
         .await?
     }
 }
@@ -6589,7 +6589,7 @@ where
             if actual != source_root_identity { return Err(NativeTreeMaterializationError::AllocationChanged { expected: source_root_identity, actual }); }
             Ok::<_, NativeTreeMaterializationError>((root, operation_directory, path_custody))
         }
-    }).await??;
+    }, None).expect("unmetered task construction cannot fail").await??;
     if let Some(mut existing) = MaterializationJournalStore::load(&store, operation_id).await? {
         if existing.root_identity != Some(source_root_identity.to_bytes()) {
             return Err(NativeWorkspacePublicationError::MismatchedJournal);
@@ -6607,7 +6607,7 @@ where
         let backend = acyclic_native_runtime::run_blocking_io({
             let work = work.clone();
             move || NativeTreeMaterializationBackend::open(root, operation_directory, Some(path_custody), work)
-        })
+        }, None).expect("unmetered task construction cannot fail")
         .await??;
         if backend.held_root.identity() != source_root_identity {
             return Err(NativeTreeMaterializationError::AllocationChanged { expected: source_root_identity, actual: backend.held_root.identity() }.into());
@@ -6757,7 +6757,7 @@ where
     let backend = acyclic_native_runtime::run_blocking_io({
         let work = work.clone();
         move || NativeTreeMaterializationBackend::open(root, operation_directory, Some(path_custody), work)
-    }).await??;
+    }, None).expect("unmetered task construction cannot fail").await??;
     let materializer = JournaledMaterializer::new(store, backend);
     materializer.verify_allocation(&prepared).await?;
     let allocated_target = crate::NativeRootIdentity::from_bytes(prepared.preparation_identity.ok_or(NativeTreeMaterializationError::IndeterminatePreparation)?.target);

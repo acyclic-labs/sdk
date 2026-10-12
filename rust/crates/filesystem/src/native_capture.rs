@@ -1742,9 +1742,7 @@ fn native_device_control_in_scope(
     file: &impl std::os::windows::io::AsRawHandle,
     code: u32, input: &[u8], output: &mut [u8], scope: &CaptureWorkScope,
 ) -> Result<usize, DemandError> {
-    acyclic_native_runtime::device_control_in_place_measured(
-        file, code, input, output, &CaptureNativeReadMeter(scope),
-    ).map_err(|error| scope.original().take_native_io_failure()
+    acyclic_native_runtime::device_control_in_place(file, code, input, output, Some((&CaptureNativeReadMeter(scope), acyclic_native_runtime::NativeOperationKind::Read))).map_err(|error| scope.original().take_native_io_failure()
         .unwrap_or_else(|| native_demand_error(error)))
 }
 
@@ -1954,7 +1952,7 @@ async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStore>(
         let host_cancellation = cancellation.clone();
         let worker = meter.clone();
         let task_meter: std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter> = meter.original().clone();
-        let task = acyclic_native_runtime::run_blocking_io_measured(move || {
+        let task = acyclic_native_runtime::run_blocking_io(move || {
             let mut host_work = CaptureNativeHostWork::new(&worker);
             let result = (|| {
                 let source_root = HostRoot::open_with_work(&source_path, &mut host_work)
@@ -1986,7 +1984,7 @@ async fn capture_subtrees_in_scope<A: AsyncAuthorityStore, O: AsyncObjectStore>(
                     Err(failure)
                 }
             }
-        }, task_meter);
+        }, Some((task_meter, false)));
         let result = match task {
             Ok(task) => task.await.map_err(native_demand_error),
             Err(error) => Err(native_demand_error(error)),
@@ -6680,7 +6678,7 @@ async fn settled_sparse_ranges(
                 let runtime = meter.native().runtime_meter_owner_with_capture_custody(
                     meter.custody.as_ref().expect("capture scope is live"))
                     .map_err(|error| OperationFailure::new(CaptureError::NativeKernel(error), capture_meter(meter).completed()))?;
-                let value = reader.read_exact_measured(wanted as usize, runtime)
+                let value = reader.read(wanted as usize, runtime, true)
                     .await.map_err(|error| {
                         let cause = if let Some(cause) = meter.original().take_native_io_failure() {
                             capture_demand_error(cause)
@@ -6793,7 +6791,7 @@ fn native_positional_file(
     // SAFETY: a positional handle is opened overlapped; this fresh file
     // object is attached to no port, and this sole duplicate carries all of
     // its I/O.
-    unsafe { acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file) }
+    unsafe { acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file, None).map_err(|(error, _)| error) }
 }
 
 /// The native file a handle from [`HostRoot::open_file_positional`] reads
@@ -6802,7 +6800,7 @@ fn native_positional_file(
 fn native_positional_file(
     file: std::fs::File,
 ) -> std::io::Result<acyclic_native_runtime::NativeFile> {
-    acyclic_native_runtime::NativeFile::from_file(file)
+    acyclic_native_runtime::NativeFile::from_file(file, None).map_err(|(error, _)| error)
 }
 
 struct NativeRangeSource {
@@ -6819,10 +6817,10 @@ fn native_positional_file_measured(
     let meter = scope.native().runtime_meter_owner();
     #[cfg(windows)]
     let result = unsafe {
-        acyclic_native_runtime::NativeFile::from_overlapped_file_measured_owned_unchecked(file, meter)
+        acyclic_native_runtime::NativeFile::from_overlapped_file_unchecked(file, Some(acyclic_native_runtime::NativeFileMeter::Owned(meter)))
     };
     #[cfg(not(windows))]
-    let result = acyclic_native_runtime::NativeFile::from_file_measured_owned(file, meter);
+    let result = acyclic_native_runtime::NativeFile::from_file(file, Some(acyclic_native_runtime::NativeFileMeter::Owned(meter)));
     result.map_err(|(error, file)| {
         // This is an ordinary std file, not an explicit SDK close operation.
         // Retire its physical handle before projecting the original failure.
@@ -6880,7 +6878,7 @@ impl crate::kernel::AsyncBlobSource for NativeRangeSource {
             Some(custody) => original.runtime_meter_owner_with_capture_custody(custody)?,
             None => original.runtime_meter_owner(),
         };
-        let result = reader.read_exact_measured(maximum, runtime).await
+        let result = reader.read(maximum, runtime, true).await
             .map_err(|error| {
                 original.native_read_meter().take_native_io_failure()
                     .map(crate::materializer::native_materialization_work_error)
@@ -6991,7 +6989,7 @@ mod native_range_tests {
         assert!(std::sync::Arc::ptr_eq(&base, &original.runtime_meter_owner()));
         let packet = acyclic_native_runtime::AsyncRangeReader::new(
             std::sync::Arc::clone(&native), 0, 3,
-        ).read_exact_measured(3, meter).await?;
+        ).read(3, meter, true).await?;
         let prefix = original.receipt();
         scope.release()?;
         // The real returned data and native file tail remain alive here.
@@ -7183,7 +7181,7 @@ mod native_range_tests {
         let ordinary = crate::NativeMaterializationWork::new(original_budget(), &cancellation)
             .expect("fund ordinary accounting state");
         let ordinary_baseline = ordinary.receipt();
-        let packet = reader(&path, 8)?.read_measured(8, ordinary.runtime_meter_owner()).await?;
+        let packet = reader(&path, 8)?.read(8, ordinary.runtime_meter_owner(), false).await?;
         assert_eq!(packet.bytes.as_ref(), b"abc");
         assert_eq!(ordinary.receipt().allocation_operations - ordinary_baseline.allocation_operations,
             partial.allocation_operations - baseline.allocation_operations + 1);
@@ -7284,7 +7282,7 @@ mod native_range_tests {
             .expect("fund original accounting state");
         let live = original.live_allocation_bytes();
         let remaining = original.remaining()?.peak_allocation_bytes;
-        let packet = reader(&path, 3)?.read_exact_measured(3, original.runtime_meter_owner()).await?;
+        let packet = reader(&path, 3)?.read(3, original.runtime_meter_owner(), true).await?;
         let prefix = original.receipt();
         assert_eq!(original.live_allocation_bytes(), live + packet.buffer_capacity as u64);
         let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
@@ -7341,7 +7339,7 @@ mod native_range_tests {
         let live = original.live_allocation_bytes();
         let remaining = original.remaining()?.peak_allocation_bytes;
         let mut reader = reader(&path, 8)?;
-        let result = reader.read_measured(8, original.runtime_meter_owner()).await?;
+        let result = reader.read(8, original.runtime_meter_owner(), false).await?;
         assert_eq!(result.bytes.as_ref(), b"abc");
         assert!(result.buffer_capacity >= 8);
         let prefix = original.receipt();
@@ -7390,7 +7388,7 @@ mod native_range_tests {
         let task_meter = std::sync::Arc::clone(original.meter());
         let (started, pending) = tokio::sync::oneshot::channel();
         let (resume, resumed) = std::sync::mpsc::channel();
-        let task = acyclic_native_runtime::run_blocking_io_measured(move || {
+        let task = acyclic_native_runtime::run_blocking_io(move || {
             let native = capture_native_original(&worker).map_err(|failure| failure.error)?;
             let mut scope = CaptureWorkScope::new(&native).map_err(|failure| failure.error)?;
             let root = HostRoot::open_with_work(&path, &mut capture_meter(&scope))
@@ -7403,7 +7401,7 @@ mod native_range_tests {
             let checked = worker.check();
             scope.release().map_err(|failure| failure.error)?;
             Ok::<_, CaptureError>((root, checked))
-        }, task_meter)?;
+        }, Some((task_meter, false)))?;
         let task = tokio::spawn(task);
         pending.await?;
         assert_eq!(caller_buffer, b"held");
@@ -7463,7 +7461,7 @@ mod native_range_tests {
         let task_meter = std::sync::Arc::clone(original.meter());
         let (started, pending) = tokio::sync::oneshot::channel();
         let (resume, resumed) = std::sync::mpsc::channel();
-        let task = acyclic_native_runtime::run_blocking_io_measured(move || -> () {
+        let task = acyclic_native_runtime::run_blocking_io(move || -> () {
             let native = capture_native_original(&worker)
                 .expect("fault fixture must preserve its complete native resource");
             let scope = CaptureWorkScope::new(&native)
@@ -7478,7 +7476,7 @@ mod native_range_tests {
             resumed.recv().expect("caller must resume the worker");
             drop(root);
             panic!("native capture fault after the completed held-root probe");
-        }, task_meter)?;
+        }, Some((task_meter, false)))?;
         let task = tokio::spawn(task);
         pending.await?;
         let prefix = original.counters()?;
@@ -7541,7 +7539,7 @@ mod native_range_tests {
         let temporary = tempfile::tempdir()?;
         let path = temporary.path().join("alias");
         std::fs::write(&path, b"body")?;
-        let held = acyclic_native_runtime::NativeFile::from_file(std::fs::File::open(&path)?)?;
+        let held = acyclic_native_runtime::NativeFile::from_file(std::fs::File::open(&path)?, None).map_err(|(error, _)| error)?;
         let transferred = std::fs::File::open(&path)?;
         let cancellation = CancellationToken::new();
         let mut permitted = budget();
@@ -7549,7 +7547,7 @@ mod native_range_tests {
         permitted.items_examined = 16 * 1024;
         let mut work = DemandWork::new(permitted, &cancellation);
         let meter = NativeDemandReadMeter(std::sync::Mutex::new(&mut work));
-        let alias = acyclic_native_runtime::NativeFile::from_file_measured(transferred, &meter)
+        let alias = acyclic_native_runtime::NativeFile::from_file(transferred, Some(acyclic_native_runtime::NativeFileMeter::Borrowed(&meter)))
             .map_err(|(error, file)| { drop(file); error })?;
         let owned_bytes = alias.logical_owned_bytes();
         assert_eq!(owned_bytes, std::mem::size_of::<std::fs::File>() as u64);

@@ -5367,13 +5367,13 @@ pub mod native {
             };
             let worker = shared.clone();
             let task_meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = shared.clone();
-            let task = acyclic_native_runtime::run_blocking_io_measured(
+            let task = acyclic_native_runtime::run_blocking_io(
                 crate::obs::in_context(crate::obs::caller_context(), move || {
                     let mut work = NativeSourceWork::ordinary(&worker);
                     let input = SourceRootInput::from_admitted(path, &mut work)?;
                     Self::open_blocking(input, profile, limits, reference, observer, &mut work)
                 }),
-                task_meter,
+                Some((task_meter, false)),
             );
             let result = match task {
                 Ok(mut task) => tokio::select! {
@@ -5414,11 +5414,11 @@ pub mod native {
             let mut cancelled = OriginalSourceCancelled::prepare(work)?;
             let worker = original.clone();
             let task_meter = work.materialization_work()?.runtime_meter_owner();
-            let spawned = acyclic_native_runtime::run_blocking_io_measured(
+            let spawned = acyclic_native_runtime::run_blocking_io(
                 crate::obs::in_context(crate::obs::caller_context(), move || {
                     let mut work = NativeSourceWork::from_original_work(&worker);
                     Self::open_blocking(input, profile, limits, reference, observer, &mut work)
-                }), task_meter,
+                }), Some((task_meter, false)),
             );
             let mut selected_cancellation = false;
             let result = match spawned {
@@ -5658,13 +5658,13 @@ pub mod native {
             let task_meter = work.materialization_work()?.runtime_meter_owner();
             let source = self.clone();
             let context = crate::obs::caller_context();
-            let spawned = acyclic_native_runtime::run_blocking_io_measured(
+            let spawned = acyclic_native_runtime::run_blocking_io(
                 crate::obs::in_context(context, move || {
                     let _permit = permit;
                     let mut worker = NativeSourceWork::from_original_work(&worker_work);
                     worker.operation_stop = Some(&stop.stopped);
                     job(source, &path.path, &mut worker)
-                }), task_meter,
+                }), Some((task_meter, false)),
             );
             let mut selected_cancellation = false;
             let result = match spawned {
@@ -5749,12 +5749,12 @@ pub mod native {
             let task_meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = shared.clone();
             let source = self.clone();
             let context = crate::obs::caller_context();
-            let spawned = acyclic_native_runtime::run_blocking_io_measured(
+            let spawned = acyclic_native_runtime::run_blocking_io(
                 crate::obs::in_context(context, move || {
                     let _permit = permit;
                     let mut held = NativeSourceWork::ordinary(&worker_work);
                     job(source, &mut held)
-                }), task_meter,
+                }), Some((task_meter, false)),
             );
             let result = match spawned {
                 Ok(mut worker) => tokio::select! {
@@ -6966,7 +6966,7 @@ pub mod native {
             };
             let worker_work = Arc::clone(&shared);
             let task_meter: Arc<dyn acyclic_native_runtime::NativeReadMeter> = shared.clone();
-            let task = acyclic_native_runtime::run_blocking_io_measured(
+            let task = acyclic_native_runtime::run_blocking_io(
                 crate::obs::in_context(crate::obs::caller_context(), move || {
                     let mut work = NativeSourceWork::ordinary(&worker_work);
                     let path_bytes = path_owned_bytes(&file.relative);
@@ -6975,11 +6975,11 @@ pub mod native {
                     let released = work.release(path_bytes);
                     released.and(result)
                 }),
-                task_meter,
+                Some((task_meter, false)),
             );
             let mut expired = false;
             let result = match task {
-                Ok(task) => task.wait_measured(std::time::Instant::now().checked_add(deadline), &mut prepared, || {
+                Ok(task) => task.wait(std::time::Instant::now().checked_add(deadline), &mut prepared, || {
                     expired = true;
                     stop.store(true, Ordering::Release);
                 }).map_err(native_demand_error).and_then(std::convert::identity),

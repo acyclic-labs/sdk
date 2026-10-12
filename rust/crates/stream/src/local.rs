@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use acyclic_native_runtime::{
     NativeByteReservation, NativeOperationKind, NativeOperationReservation, NativeReadMeter,
-    OwnedNativeByteReservation, OwnedNativeOperationReservation, OwnershipAnchor, ReadAllocation,
+    OwnershipAnchor, ReadAllocation,
 };
 use async_trait::async_trait;
 #[cfg(test)]
@@ -312,7 +312,7 @@ impl LocalInner {
         target: u64,
         file: &File,
         durability: LocalDurability,
-        mut admission: Option<OwnedNativeOperationReservation>,
+        mut admission: Option<NativeOperationReservation<Arc<dyn NativeReadMeter>>>,
     ) -> LocalCompletion<()> {
         #[cfg(test)]
         {
@@ -353,7 +353,7 @@ struct JournalFlushPlan {
     inner: Arc<LocalInner>,
     file: Arc<File>,
     durability: LocalDurability,
-    admission: Option<OwnedNativeOperationReservation>,
+    admission: Option<NativeOperationReservation<Arc<dyn NativeReadMeter>>>,
     _allocation: Option<ReadAllocation>,
 }
 
@@ -922,7 +922,7 @@ impl LocalStream {
     ) -> LocalCompletion<JournalFlushPlan> {
         let journal = self.inner.journal.journal.lock()
             .map_err(|_| LocalCompletionError::Stream(self.inner.poison()))?;
-        let admission = meter.map(|meter| OwnedNativeOperationReservation::new(
+        let admission = meter.map(|meter| NativeOperationReservation::new(
             Arc::clone(meter), NativeOperationKind::Durability, 1,
         )).transpose()?;
         let allocation = meter.map(|meter| ReadAllocation::new(
@@ -2015,8 +2015,8 @@ impl PreparedFrame {
 /// Request-owned native allowance, admitted while the mutation can still decline without editing semantic state.
 struct AdmittedFrameWrite {
     meter: Arc<dyn NativeReadMeter>,
-    operations: Option<OwnedNativeOperationReservation>,
-    bytes: OwnedNativeByteReservation,
+    operations: Option<NativeOperationReservation<Arc<dyn NativeReadMeter>>>,
+    bytes: NativeByteReservation<Arc<dyn NativeReadMeter>>,
     closed: bool,
 }
 
@@ -2036,10 +2036,10 @@ impl From<FrameWriteFailure> for LocalStreamError {
 
 impl AdmittedFrameWrite {
     fn new(meter: &Arc<dyn NativeReadMeter>, length: usize) -> std::io::Result<Self> {
-        let operations = OwnedNativeOperationReservation::new(
+        let operations = NativeOperationReservation::new(
             Arc::clone(meter), NativeOperationKind::Write, 1,
         )?;
-        let bytes = OwnedNativeByteReservation::new(
+        let bytes = NativeByteReservation::new(
             Arc::clone(meter), NativeOperationKind::Write, length,
         )?;
         Ok(Self { meter: Arc::clone(meter), operations: Some(operations), bytes, closed: false })
@@ -2064,7 +2064,7 @@ impl AdmittedFrameWrite {
                     physical = Err(FrameWriteFailure::Incomplete);
                     break;
                 }
-                None => match OwnedNativeOperationReservation::new(
+                None => match NativeOperationReservation::new(
                     Arc::clone(&self.meter), NativeOperationKind::Write, 1,
                 ) {
                     Ok(operations) => operations,
@@ -2107,7 +2107,7 @@ impl AdmittedFrameWrite {
 }
 
 fn attempt_control<T>(
-    admission: &mut Option<OwnedNativeOperationReservation>,
+    admission: &mut Option<NativeOperationReservation<Arc<dyn NativeReadMeter>>>,
     operation: impl FnOnce() -> T,
 ) -> (T, std::io::Result<()>) {
     match admission {
@@ -2175,7 +2175,7 @@ impl SnapshotFile {
     fn create(
         path: &Path,
         meter: Option<&Arc<dyn NativeReadMeter>>,
-        controls: &mut Option<OwnedNativeOperationReservation>,
+        controls: &mut Option<NativeOperationReservation<Arc<dyn NativeReadMeter>>>,
         observed: &mut std::io::Result<()>,
         started: &mut bool,
     ) -> Result<Self, LocalStreamError> {
@@ -2412,13 +2412,13 @@ impl Journal {
             let encoded = encode_snapshot_observed(self.limits, epoch, state, meter)?;
             let header = encode_header(self.limits, epoch)?;
             // Admit fixed boundaries before create; admit data retries separately.
-            let mut controls = meter.map(|meter| OwnedNativeOperationReservation::new(
+            let mut controls = meter.map(|meter| NativeOperationReservation::new(
                 Arc::clone(meter), NativeOperationKind::Write, 3,
             )).transpose()?;
-            let mut seeks = meter.map(|meter| OwnedNativeOperationReservation::new(
+            let mut seeks = meter.map(|meter| NativeOperationReservation::new(
                 Arc::clone(meter), NativeOperationKind::Read, 1,
             )).transpose()?;
-            let mut durability = meter.map(|meter| OwnedNativeOperationReservation::new(
+            let mut durability = meter.map(|meter| NativeOperationReservation::new(
                 Arc::clone(meter), NativeOperationKind::Durability, 3,
             )).transpose()?;
             let mut snapshot_write = meter.map(|meter| AdmittedFrameWrite::new(meter, encoded.value.len()))
@@ -2694,7 +2694,7 @@ fn frame_is_valid(bytes: &[u8]) -> bool {
 }
 
 fn sync_file(file: &File, durability: LocalDurability) -> std::io::Result<()> {
-    acyclic_native_runtime::sync_file(file, native_durability(durability))
+    acyclic_native_runtime::sync_file(file, native_durability(durability), None)
 }
 
 fn sync_file_data(file: &File, durability: LocalDurability) -> std::io::Result<()> {

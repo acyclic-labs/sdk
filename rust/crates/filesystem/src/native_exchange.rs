@@ -942,7 +942,7 @@ pub(crate) fn recover_native_entry_exchange(live: &Path) -> Result<(), NativeExc
             durable_rename(
                 &scratch,
                 live,
-                acyclic_native_runtime::RenameMode::NoReplace,
+                acyclic_native_runtime::RenameMode::NoReplace, None,
             )?;
         }
         remove_entry_exchange_witness(&witness)?;
@@ -1051,7 +1051,7 @@ fn move_back(from: &Path, into: &Path, relative: &[PathBuf]) -> Result<(), Nativ
         match durable_rename(
             &source,
             &destination,
-            acyclic_native_runtime::RenameMode::NoReplace,
+            acyclic_native_runtime::RenameMode::NoReplace, None,
         ) {
             Ok(()) => {}
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
@@ -1080,7 +1080,7 @@ fn write_journal(path: &Path, journal: &NativeExchangeJournal) -> Result<(), Nat
     durable_rename(
         &temporary,
         path,
-        acyclic_native_runtime::RenameMode::Replace,
+        acyclic_native_runtime::RenameMode::Replace, None,
     )?;
     Ok(())
 }
@@ -1185,17 +1185,17 @@ fn exchange(live: &Path, prepared: &Path) -> Result<(), NativeExchangeError> {
     durable_rename(
         live,
         &scratch,
-        acyclic_native_runtime::RenameMode::NoReplace,
+        acyclic_native_runtime::RenameMode::NoReplace, None,
     )?;
     if let Err(error) = durable_rename(
         prepared,
         live,
-        acyclic_native_runtime::RenameMode::NoReplace,
+        acyclic_native_runtime::RenameMode::NoReplace, None,
     ) {
         let _ = durable_rename(
             &scratch,
             live,
-            acyclic_native_runtime::RenameMode::NoReplace,
+            acyclic_native_runtime::RenameMode::NoReplace, None,
         );
         if entry_exists(live)? && !entry_exists(&scratch)? {
             remove_entry_exchange_witness(&witness)?;
@@ -1205,7 +1205,7 @@ fn exchange(live: &Path, prepared: &Path) -> Result<(), NativeExchangeError> {
     durable_rename(
         &scratch,
         prepared,
-        acyclic_native_runtime::RenameMode::NoReplace,
+        acyclic_native_runtime::RenameMode::NoReplace, None,
     )?;
     remove_entry_exchange_witness(&witness)?;
     Ok(())
@@ -1240,7 +1240,7 @@ fn recover_exchange(
         durable_rename(
             &scratch,
             &journal.live,
-            acyclic_native_runtime::RenameMode::NoReplace,
+            acyclic_native_runtime::RenameMode::NoReplace, None,
         )?;
         None
     } else if live == Some(replacement) && prepared.is_none() && scratch_identity == Some(original)
@@ -1248,7 +1248,7 @@ fn recover_exchange(
         durable_rename(
             &scratch,
             &journal.prepared,
-            acyclic_native_runtime::RenameMode::NoReplace,
+            acyclic_native_runtime::RenameMode::NoReplace, None,
         )?;
         Some(journal.prepared.clone())
     } else if live == Some(replacement) && prepared == Some(original) && scratch_identity.is_none()
@@ -2260,7 +2260,7 @@ mod tests {
         durable_rename(
             &live,
             &scratch,
-            acyclic_native_runtime::RenameMode::NoReplace,
+            acyclic_native_runtime::RenameMode::NoReplace, None,
         )
         .expect("move live to scratch");
 
@@ -2310,13 +2310,13 @@ mod tests {
         durable_rename(
             &live,
             &scratch,
-            acyclic_native_runtime::RenameMode::NoReplace,
+            acyclic_native_runtime::RenameMode::NoReplace, None,
         )
         .expect("move live to scratch");
         durable_rename(
             &prepared,
             &live,
-            acyclic_native_runtime::RenameMode::NoReplace,
+            acyclic_native_runtime::RenameMode::NoReplace, None,
         )
         .expect("publish replacement");
 

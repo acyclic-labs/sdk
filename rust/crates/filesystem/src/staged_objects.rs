@@ -339,11 +339,11 @@ impl<S> StagedObjects<S> {
     ///
     /// Returns the host error if the private spill file cannot be created.
     pub async fn open(inner: S, spill_directory: PathBuf) -> std::io::Result<Self> {
-        let spill = acyclic_native_runtime::run_blocking_io(move || create_spill(&spill_directory))
+        let spill = acyclic_native_runtime::run_blocking_io(move || create_spill(&spill_directory), None).expect("unmetered task construction cannot fail")
             .await??;
         Ok(Self {
             inner,
-            spill: NativeFile::from_file(spill)?,
+            spill: NativeFile::from_file(spill, None).map_err(|(error, _)| error)?,
             index: std::sync::RwLock::new(Index::default()),
             spill_io: RwLock::new(()),
             collection: Arc::default(),
@@ -431,7 +431,7 @@ impl<S> StagedObjects<S> {
                     buffer, buffer_control.expect("native spill buffer is admitted"), native,
                 ).map_err(ObjectFailure::before_work)?;
                 self.spill.control_bounded_async(move |file, meter| {
-                    acyclic_native_runtime::write_all_at_measured_held(file, offset, &bytes, meter)
+                    acyclic_native_runtime::write_all_at(file, offset, &bytes, Some((meter, true)))
                 }, native.runtime_meter_owner())
                     .map_err(|error| ObjectFailure::before_work(native.runtime_error(error).into()))?
                     .await.map_err(|error| ObjectFailure::before_work(native.runtime_error(error).into()))?;
@@ -1812,7 +1812,7 @@ mod tests {
         let _spill_file = store.spill_io.write().await;
         let spill_bytes = bytes.clone();
         store.spill.control_async(move |file| {
-            acyclic_native_runtime::write_all_at(file, 0, spill_bytes.as_slice())
+            acyclic_native_runtime::write_all_at(file, 0, spill_bytes.as_slice(), None)
         }).await?;
         let mut index = store.index_mut();
         if let Some(Staged::Resident { order, .. }) = index.objects.get(&id) {
@@ -1944,7 +1944,7 @@ mod tests {
             let offset = store.index().spill_end;
             let spill_bytes = second_bytes.clone();
             store.spill.control_async(move |file| {
-                acyclic_native_runtime::write_all_at(file, offset, spill_bytes.as_slice())
+                acyclic_native_runtime::write_all_at(file, offset, spill_bytes.as_slice(), None)
             }).await?;
             let mut index = store.index_mut();
             if let Some(Staged::Resident { order, .. }) = index.objects.get(&second) {

@@ -3276,7 +3276,7 @@ fn poll_direct(
             backend_read_operations: 1, ..crate::WorkCounters::UNCHARGED
         })?;
         let accepted = task.task.take().ok_or(NativeMountError::ControlPending)?;
-        std::task::Poll::Ready(accepted.wait_measured(None, std::future::pending(), || {}))
+        std::task::Poll::Ready(accepted.wait(None, std::future::pending(), || {}))
     } else {
         std::pin::Pin::new(task.task.as_mut().ok_or(NativeMountError::ControlPending)?)
             .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
@@ -3297,7 +3297,7 @@ fn poll_direct(
 // original reserved operation, including worker panic and observer abandonment.
 struct AcceptedDirectUnmount {
     path: DirectUnmountPath,
-    operation: acyclic_native_runtime::OwnedNativeOperationReservation,
+    operation: acyclic_native_runtime::NativeOperationReservation<std::sync::Arc<dyn acyclic_native_runtime::NativeReadMeter>>,
     _scope: Option<DarwinStartupMeterScope>,
     _original_work: crate::NativeMaterializationWork,
 }
@@ -3323,7 +3323,7 @@ fn prepare_direct_unmount(
     })?;
     let credit = crate::materializer::NativeOwnedCleanupCredit::from_reserved(credit)?;
     let task_meter = credit.runtime_meter_owner();
-    let operation = acyclic_native_runtime::OwnedNativeOperationReservation::new(
+    let operation = acyclic_native_runtime::NativeOperationReservation::new(
         Arc::clone(&task_meter), acyclic_native_runtime::NativeOperationKind::Write, 1,
     ).map_err(|error| darwin_stop_work_error(native.meter().take_native_io_failure()
         .unwrap_or_else(|| native_demand_error(error))))?;
@@ -3333,8 +3333,8 @@ fn prepare_direct_unmount(
         path: DirectUnmountPath::Driver(Arc::clone(resources)), operation, _scope: None,
         _original_work: original.allocation_work(),
     };
-    let task = acyclic_native_runtime::prepare_blocking_io_measured(
-        move || run_accepted_direct_unmount(owned), task_meter,
+    let task = acyclic_native_runtime::run_blocking_io(
+        move || run_accepted_direct_unmount(owned), Some((task_meter, true)),
     ).map_err(|error| darwin_stop_work_error(native.meter().take_native_io_failure()
         .unwrap_or_else(|| native_demand_error(error))))?;
     Ok(DirectUnmountTask {
@@ -3376,7 +3376,7 @@ fn bounded_direct_unmount(
     let original = meter.work.lock().unwrap_or_else(PoisonError::into_inner)
         .as_ref().cloned().ok_or(crate::DemandError::Cancelled)?;
     let task_meter = original.native_materialization_work().runtime_meter_owner();
-    let operation = acyclic_native_runtime::OwnedNativeOperationReservation::new(
+    let operation = acyclic_native_runtime::NativeOperationReservation::new(
         Arc::clone(&task_meter), acyclic_native_runtime::NativeOperationKind::Write, 1,
     ).map_err(|error| darwin_stop_work_error(original.meter().take_native_io_failure()
         .unwrap_or_else(|| native_demand_error(error))))?;
@@ -3384,8 +3384,8 @@ fn bounded_direct_unmount(
         path, operation, _scope: scope.map(DarwinStartupMeterScope::try_clone_for_io).transpose()?,
         _original_work: original.native_materialization_work().allocation_work(),
     };
-    let task = acyclic_native_runtime::run_blocking_io_measured(
-        move || run_accepted_direct_unmount(owned), task_meter,
+    let task = acyclic_native_runtime::run_blocking_io(
+        move || run_accepted_direct_unmount(owned), Some((task_meter, false)),
     ).map_err(|error| darwin_stop_work_error(original.meter().take_native_io_failure()
         .unwrap_or_else(|| native_demand_error(error))))?;
     // Custody is installed before even the first readiness probe can be denied.
@@ -3453,7 +3453,7 @@ impl PreparedDiskutilProcess {
         let credit = original.reserve_work(Self::admitted_work()?)?;
         let credit = crate::materializer::NativeOwnedCleanupCredit::from_reserved(credit)?;
         let original_work = original.allocation_work();
-        let frame = acyclic_native_runtime::ProcessTree::prepare_closed_process_measured(
+        let frame = acyclic_native_runtime::ProcessTree::prepare_closed_process(
             3, original_work.runtime_meter_owner(),
         ).map_err(|error| NativeMountError::from(original.runtime_error(error)))?;
         Ok(Self { frame: Some(frame), credit, original_work })
@@ -6028,14 +6028,14 @@ mod tests {
         let meter = new_detach_meter(&native)?;
         let path = DirectUnmountPath::Recovery(DetachPath::new_with_work(temporary.path(), &creator)?);
         let task_meter = creator.runtime_meter_owner();
-        let operation = acyclic_native_runtime::OwnedNativeOperationReservation::new(
+        let operation = acyclic_native_runtime::NativeOperationReservation::new(
             Arc::clone(&task_meter), acyclic_native_runtime::NativeOperationKind::Write, 1,
         ).map_err(|error| creator.runtime_error(error))?;
         let owned = AcceptedDirectUnmount {
             path, operation, _scope: None, _original_work: creator.allocation_work(),
         };
-        let accepted = acyclic_native_runtime::prepare_blocking_io_measured(
-            move || run_accepted_direct_unmount(owned), task_meter,
+        let accepted = acyclic_native_runtime::run_blocking_io(
+            move || run_accepted_direct_unmount(owned), Some((task_meter, true)),
         ).map_err(|error| creator.runtime_error(error))?;
         let mut control = DarwinRecoveryControl::default();
         control.0.direct = Some(DirectUnmountTask {
